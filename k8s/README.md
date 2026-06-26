@@ -81,6 +81,8 @@ kubectl apply -f k8s/network-scan-cli/base/job-resume.yaml
 ## Проверка манифестов локально
 
 ```bash
+./k8s/scripts/validate-kustomize.sh
+# или вручную:
 kubectl kustomize k8s/network-scan-cli/overlays/dev
 kubectl kustomize k8s/network-scan-cli/overlays/prod
 ```
