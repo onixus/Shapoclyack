@@ -16,8 +16,8 @@ Network Scan CLI — контейнеризированный batch-пайпла
 - выход: JSON / JSONL / CSV + Markdown/HTML;
 - stateful: checkpoint, `per_run_output`, `--resume`.
 
-Сейчас эталон запуска — **Docker Compose** (`docker-compose.yml`): `NET_RAW`/`NET_ADMIN`, 8 CPU / 8 GiB, volumes для `inputs`, `config`, `output`, `state`.  
-В Octo-man **нет** готовых k8s-манифестов — их нужно добавить по этому плану.
+Сейчас эталон запуска в Docker — **docker-compose.yml** в Octo-man: `NET_RAW`/`NET_ADMIN`, 8 CPU / 8 GiB, volumes.  
+**Манифесты Kubernetes, k8s-конфиг и все доработки под K8s — в Shapoclyack** (`k8s/network-scan-cli/`).
 
 ---
 
@@ -84,26 +84,21 @@ flowchart LR
 
 ---
 
-## Структура артефактов в Octo-man
+## Структура артефактов в Shapoclyack
 
-Добавить в исходный репозиторий:
+Всё K8s — **только в этом репозитории**:
 
 ```
-k8s/
-  base/
-    namespace.yaml
-    serviceaccount.yaml
-    pvc.yaml
-    configmap.yaml          # пример; production — через overlay
-    job.yaml
-    cronjob.yaml
-  overlays/
-    dev/                    # меньше ресурсов, vuln-offline
-    prod/                   # hostNetwork, nodeSelector, taints
-scanner/config/k8s.yaml     # консервативный профиль для кластера
+Shapoclyack/k8s/network-scan-cli/
+  base/config/k8s.yaml      # конфиг сканера для кластера
+  base/                     # namespace, SA, PVC, Job, CronJob
+  overlays/dev/             # меньше ресурсов, режим safe
+  overlays/prod/            # hostNetwork, nodeSelector, taints
+  examples/                 # пример Secret с целями
 ```
 
-Документация: раздел в `README.md` / `README.ru.md` + ссылка на этот план в Shapoclyack.
+Runbook: [`k8s/README.md`](../k8s/README.md).  
+В Octo-man — только образ и исходный код; ссылка на Shapoclyack в README при необходимости.
 
 ---
 
@@ -198,9 +193,9 @@ spec:
 
 ---
 
-## Конфиг `scanner/config/k8s.yaml`
+## Конфиг `k8s/network-scan-cli/base/config/k8s.yaml`
 
-На базе `default.yaml`, но консервативнее для shared-инфраструктуры:
+В Shapoclyack, на базе `default.yaml` из Octo-man, но консервативнее для shared-инфраструктуры:
 
 ```yaml
 runtime:
@@ -232,7 +227,7 @@ profiles:
 | OOM / CPU throttle ломает тайминги | requests/limits по профилю; снизить concurrency в k8s.yaml |
 | Потеря state при eviction | PVC + `--resume`; RWX при multi-node |
 | Высокий PPS → алерты IDS / деградация сети | `safe`/`balanced` по умолчанию; согласовать rate с сетевиками |
-| Логи только в файле на PVC | дублировать в stdout (доработка в Octo-man) |
+| Логи только в файле на PVC | дублировать в stdout (код — Octo-man; манифест sidecar — Shapoclyack) |
 | GHCR private | `imagePullSecrets` в namespace |
 
 ---
@@ -258,14 +253,13 @@ profiles:
 
 ## CI / приёмка
 
-Добавить в Octo-man workflow `k8s-e2e.yml`:
+Workflow **в Shapoclyack** (`.github/workflows/k8s-validate.yml` и при необходимости `k8s-e2e.yml`):
 
-1. kind или k3s в GitHub Actions.
-2. nginx-мишени (аналог `tests/e2e/run.sh`).
-3. Job → проверка: живой хост, порт 80, артефакты на PVC, exit 0.
-4. Тест resume: kill pod → Job с `--resume` → успех.
+1. `kubectl kustomize` для overlays dev/prod на каждый PR.
+2. kind/k3s e2e: nginx-мишени, Job из `k8s/network-scan-cli/`, проверка exit 0.
+3. Тест resume: kill pod → `job-resume.yaml` → успех.
 
-Критерий готовности: **зелёный k8s-e2e на PR** + документированный runbook.
+Критерий готовности: **зелёная k8s-валидация на PR** + runbook в `k8s/README.md`.
 
 ---
 
@@ -286,10 +280,10 @@ profiles:
 | # | Этап | Репозиторий | Результат |
 |---|------|-------------|-----------|
 | 1 | Согласовать сетевой паттерн (A/B) и платформу | Shapoclyack | зафиксированные требования |
-| 2 | `scanner/config/k8s.yaml` | Octo-man | конфиг для кластера |
-| 3 | `k8s/base` + overlays | Octo-man | манифесты |
-| 4 | kind e2e в CI | Octo-man | автоматическая приёмка |
-| 5 | Runbook (запуск / resume / артефакты) | Octo-man README | эксплуатация |
+| 2 | `k8s/network-scan-cli/base/config/k8s.yaml` | Shapoclyack | конфиг для кластера |
+| 3 | `k8s/network-scan-cli/base` + overlays | Shapoclyack | манифесты |
+| 4 | k8s validate / e2e в CI | Shapoclyack | автоматическая приёмка |
+| 5 | Runbook (запуск / resume / артефакты) | Shapoclyack `k8s/README.md` | эксплуатация |
 | 6 | Пилот на dev-кластере | инфра | smoke на реальном /24 |
 | 7 | Prod CronJob + мониторинг | инфра | регулярные сканы |
 
@@ -299,7 +293,7 @@ profiles:
 
 | Сценарий | Действие |
 |----------|----------|
-| Разовый скан | `kubectl create -f k8s/job.yaml` или Helm с параметрами |
+| Разовый скан | `kubectl apply -k k8s/network-scan-cli/overlays/prod` |
 | По расписанию | CronJob |
 | Прерванный скан | Job с `--resume [--run-id <id>]` |
 | Большой `/16` | один Job; батчинг уже в коде |
@@ -309,7 +303,9 @@ profiles:
 
 ## Ссылки
 
-- Исходники: https://github.com/onixus/Octo-man
+- **K8s-манифесты:** [k8s/network-scan-cli/](../k8s/network-scan-cli/)
+- **Runbook:** [k8s/README.md](../k8s/README.md)
+- Исходники сканера: https://github.com/onixus/Octo-man
 - Пометки для AI-агента: [AGENTS.md](../AGENTS.md)
 - Docker-эталон: `docker-compose.yml` в Octo-man
 - Образ: `ghcr.io/onixus/octo-man`

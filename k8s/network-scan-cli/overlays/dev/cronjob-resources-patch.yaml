@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: network-scan-scheduled
+spec:
+  # suspend: true  # включить после настройки secret и PVC
+  schedule: "0 3 * * 6"
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          containers:
+            - name: scanner
+              args:
+                - --config
+                - /app/scanner/config/k8s.yaml
+                - --mode
+                - safe
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 1Gi
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
