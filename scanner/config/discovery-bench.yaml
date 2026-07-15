@@ -1,0 +1,69 @@
+# Discovery throughput benchmark — minimal downstream work (port 80 only, light NSE).
+# Use with bench/up.sh and: bench/run-discovery.sh
+runtime:
+  mode: fast
+  output_dir: scanner/output/bench
+  state_dir: scanner/state/bench
+  retries: 1
+  timeout_seconds: 3600
+  nse_timeout_seconds: 120
+  nse_concurrency: 4
+  nse_hosts_per_scan: 16
+  discover_concurrency: 8
+  ports_concurrency: 4
+  per_run_output: false
+  keep_intermediate: true
+
+profiles:
+  safe:
+    discover_rate: 3000
+    port_rate: 3000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: bench
+    nse_concurrency: 4
+  balanced:
+    discover_rate: 6000
+    port_rate: 3000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: bench
+    nse_concurrency: 4
+  fast:
+    discover_rate: 12000
+    port_rate: 5000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: bench
+    nse_concurrency: 4
+
+batching:
+  enabled: true
+  # /22 → four /24 batches; list of 1000 IPs → chunks of max_targets_per_batch
+  ipv4_prefix: 24
+  max_targets_per_batch: 256
+
+discovery:
+  source: naabu
+  skip_discovery: false
+  disjoint_batches: true
+  adaptive:
+    enabled: true
+    wave2_rate: 1600
+
+ports:
+  source: naabu
+  protocol: tcp
+  custom_ports_file: scanner/inputs/bench/ports.txt
+
+nse_profiles:
+  bench:
+    scripts: "default"
+    version_detection: true
+    os_detection: false
+
+reporting:
+  markdown_summary: true
+  html_summary: false
+  csv_export: true
+  json_export: true

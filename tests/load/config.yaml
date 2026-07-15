@@ -1,0 +1,58 @@
+# Light synthetic load test for CI: many docker targets, offline NSE, multi-batch.
+runtime:
+  mode: safe
+  retries: 1
+  timeout_seconds: 600
+  nse_timeout_seconds: 240
+  nse_concurrency: 4
+  nse_max_rate: 0
+  per_run_output: false
+
+profiles:
+  safe:
+    discover_rate: 2000
+    port_rate: 2000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: load
+    nse_concurrency: 4
+  balanced:
+    discover_rate: 2000
+    port_rate: 2000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: load
+    nse_concurrency: 4
+  fast:
+    discover_rate: 2000
+    port_rate: 2000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: load
+    nse_concurrency: 4
+
+batching:
+  enabled: true
+  ipv4_prefix: 24
+  max_targets_per_batch: 8
+
+discovery:
+  source: naabu
+  profile: custom
+  skip_discovery: false
+
+ports:
+  source: naabu
+  custom_ports_file: scanner/inputs/ports.txt
+
+nse_profiles:
+  load:
+    scripts: "default"
+    version_detection: true
+    os_detection: false
+
+reporting:
+  markdown_summary: true
+  html_summary: true
+  csv_export: true
+  json_export: true

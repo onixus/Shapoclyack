@@ -1,0 +1,10 @@
+# Accepted, documented vulnerability exceptions for the Trivy CI gate.
+# The non-blocking "Trivy report" step does NOT use this file, so these still
+# show up in CI logs for visibility.
+
+# CVE-2025-68121 — Go stdlib crypto/tls: incorrect certificate validation during
+# TLS session resumption. Present in the upstream dnsx/naabu Go binaries (compiled
+# with Go < 1.24.13). We already pin the latest available releases (dnsx 1.2.3,
+# naabu 2.6.1); no fixed tool release exists yet. Out of our control until
+# ProjectDiscovery rebuilds with patched Go — revisit and bump the pins then.
+CVE-2025-68121

@@ -1,0 +1,78 @@
+# Realistic discovery benchmark: full CIDR scan (/22), real naabu -sn, no skip_discovery.
+# Tuned for completeness over raw speed (lower rate, fewer parallel discover batches).
+runtime:
+  mode: balanced
+  output_dir: scanner/output/bench
+  state_dir: scanner/state/bench
+  retries: 2
+  timeout_seconds: 3600
+  nse_timeout_seconds: 120
+  nse_concurrency: 4
+  nse_hosts_per_scan: 16
+  discover_concurrency: 2
+  ports_concurrency: 4
+  per_run_output: false
+  keep_intermediate: true
+
+profiles:
+  safe:
+    discover_rate: 1600
+    port_rate: 2500
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: bench
+    nse_concurrency: 4
+  balanced:
+    discover_rate: 3000
+    port_rate: 3750
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: bench
+    nse_concurrency: 4
+  fast:
+    discover_rate: 5000
+    port_rate: 5000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: bench
+    nse_concurrency: 4
+
+batching:
+  enabled: true
+  ipv4_prefix: 24
+  max_targets_per_batch: 128
+
+discovery:
+  source: naabu
+  profile: custom
+  skip_discovery: false
+  skip_known_alive: true
+  disjoint_batches: true
+  adaptive:
+    enabled: true
+    wave2_rate: 2500
+    min_gap: 1
+  exclude_last_octets: [1]
+  verify:
+    enabled: true
+    rate: 1250
+  hostnames:
+    forward: true
+    reverse: false
+
+ports:
+  source: naabu
+  protocol: tcp
+  custom_ports_file: scanner/inputs/bench/ports.txt
+
+nse_profiles:
+  bench:
+    scripts: "default"
+    version_detection: true
+    os_detection: false
+
+reporting:
+  markdown_summary: true
+  html_summary: false
+  csv_export: true
+  json_export: true

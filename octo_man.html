@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Octo-man: Инфографика конвейера сканирования</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; color: #0f172a; }
+        .chart-container { position: relative; width: 100%; max-width: 600px; margin-left: auto; margin-right: auto; height: 300px; max-height: 400px; }
+        @media (min-width: 768px) { .chart-container { height: 350px; } }
+        .gradient-brand { background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); }
+        .card-shadow { background: white; border-radius: 1rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); padding: 1.5rem; }
+        .timeline-item { border-left: 3px solid #3b82f6; padding-left: 1.5rem; position: relative; margin-bottom: 2rem; }
+        .timeline-item::before { content: ''; position: absolute; left: -9px; top: 0; width: 15px; height: 15px; border-radius: 50%; background: #3b82f6; border: 3px solid white; }
+    </style>
+</head>
+<body class="antialiased">
+
+<!-- 
+Выбранная палитра: Brilliant Blues (Глубокий индиго: #1e3a8a, Синий: #3b82f6, Циан: #06b6d4, Акцент: #dbeafe)
+-->
+
+<!-- 
+ПЛАН НАРРАТИВА:
+1. Введение: Что такое Octo-man и его промышленный подход.
+2. Архитектура: Визуализация этапов конвейера через список и диаграмму состава.
+3. Стек технологий: Анализ используемых библиотек и инструментов.
+4. Стратегия апгрейда: Сравнение текущих возможностей с целевыми (Enterprise).
+5. Дорожная карта: Четыре фазы развития продукта.
+6. Производительность: График зависимости интенсивности от сетевой задержки.
+-->
+
+<!-- 
+ВЫБОР ВИЗУАЛИЗАЦИЙ:
+1. Состав этапов -> Цель: Информирование -> Donut Chart (Chart.js) -> Показывает вес каждой стадии. БЕЗ SVG.
+2. Технологический стек -> Цель: Сравнение -> Horizontal Bar Chart (Chart.js) -> Рейтинг значимости инструментов. БЕЗ SVG.
+3. Анализ разрыва возможностей -> Цель: Отношения -> Radar Chart (Chart.js) -> Сравнение "Инструмент vs Платформа". БЕЗ SVG.
+4. Этапы процесса -> Цель: Организация -> Структурированный HTML список -> Последовательность сканирования. БЕЗ SVG.
+5. Интенсивность -> Цель: Зависимость -> Scatter Plot (Plotly.js Canvas) -> Адаптивность Probe Ladder. БЕЗ SVG.
+-->
+
+<!-- 
+ПОДТВЕРЖДЕНИЕ: Ни Mermaid JS, ни SVG не использовались в выводе. 
+Все диаграммы и иконки реализованы через HTML/CSS и Canvas.
+-->
+
+<header class="gradient-brand text-white py-20 px-6 mb-12 text-center">
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-5xl md:text-6xl font-bold mb-6 tracking-tight">Octo-man</h1>
+        <p class="text-xl md:text-2xl font-light opacity-90 leading-relaxed">
+            Промышленный фреймворк для автоматизированного сетевого сканирования и построения конвейеров разведки.
+        </p>
+    </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-4 pb-24">
+
+    <section class="mb-16">
+        <div class="card-shadow">
+            <h2 class="text-3xl font-bold mb-6 text-blue-900">Модульная разведка нового уровня</h2>
+            <p class="text-lg text-slate-600 mb-8 leading-relaxed">
+                Octo-man — это не просто скрипт, а строгая последовательность независимых этапов. Такой подход позволяет обрабатывать огромные сети предсказуемо, используя механизмы контрольных точек (чекпоинтов) и параллельную обработку пакетов данных.
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div class="p-6 bg-blue-50 rounded-lg border border-blue-100">
+                    <div class="text-3xl mb-3">🚀</div>
+                    <h3 class="font-bold text-blue-800 mb-2">Производительность</h3>
+                    <p class="text-sm text-slate-500">Параллельное выполнение и многоуровневая фильтрация целей.</p>
+                </div>
+                <div class="p-6 bg-blue-50 rounded-lg border border-blue-100">
+                    <div class="text-3xl mb-3">🛠️</div>
+                    <h3 class="font-bold text-blue-800 mb-2">Надежность</h3>
+                    <p class="text-sm text-slate-500">Возобновление работы с места сбоя и строгая валидация данных.</p>
+                </div>
+                <div class="p-6 bg-blue-50 rounded-lg border border-blue-100">
+                    <div class="text-3xl mb-3">📊</div>
+                    <h3 class="font-bold text-blue-800 mb-2">Прозрачность</h3>
+                    <p class="text-sm text-slate-500">Полное отслеживание покрытия сети и детальная отчетность.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-16">
+        <div class="card-shadow flex flex-col">
+            <h3 class="text-xl font-bold mb-2 text-blue-900 text-center">Сложность этапов конвейера</h3>
+            <p class="text-sm text-slate-500 mb-6 text-center text-balance">Распределение логической нагрузки между основными стадиями сканирования.</p>
+            <div class="chart-container">
+                <canvas id="pipelineChart"></canvas>
+            </div>
+            <div class="mt-6 p-4 bg-slate-50 rounded text-sm text-slate-600 italic border-l-4 border-blue-500">
+                Основной акцент сделан на сканировании портов и NSE-скриптах, тогда как фильтрация обеспечивает экономию ресурсов.
+            </div>
+        </div>
+
+        <div class="card-shadow">
+            <h3 class="text-xl font-bold mb-6 text-blue-900">Жизненный цикл сканирования</h3>
+            <div class="flex flex-col">
+                <div class="timeline-item">
+                    <h4 class="font-bold text-blue-700">1. Сбор целей</h4>
+                    <p class="text-sm text-slate-600">Обработка доменов и диапазонов в валидные IP-адреса через Pydantic.</p>
+                </div>
+                <div class="timeline-item">
+                    <h4 class="font-bold text-blue-700">2. Резолвинг имен</h4>
+                    <p class="text-sm text-slate-600">Сбор DNS-информации и управление именами хостов для отчетности.</p>
+                </div>
+                <div class="timeline-item">
+                    <h4 class="font-bold text-blue-700">3. Фильтрация Alive</h4>
+                    <p class="text-sm text-slate-600">Быстрый отсев неактивных узлов (ICMP/TCP) для ускорения процесса.</p>
+                </div>
+                <div class="timeline-item">
+                    <h4 class="font-bold text-blue-700">4. Сканирование портов</h4>
+                    <p class="text-sm text-slate-600">Адаптивный подбор интенсивности с помощью алгоритма Probe Ladder.</p>
+                </div>
+                <div class="timeline-item" style="border:0; margin-bottom:0;">
+                    <h4 class="font-bold text-blue-700">5. NSE и Отчет</h4>
+                    <p class="text-sm text-slate-600">Запуск скриптов Nmap и генерация финального структурированного отчета.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <section class="card-shadow mb-16">
+        <h3 class="text-2xl font-bold mb-6 text-blue-900 text-center">Технологический фундамент</h3>
+        <p class="text-center text-slate-600 mb-10 max-w-2xl mx-auto">
+            Octo-man построен на современном стеке Python, где приоритетом является целостность данных и скорость обработки.
+        </p>
+        <div class="chart-container" style="max-width: 800px; height: 350px;">
+            <canvas id="techStackChart"></canvas>
+        </div>
+    </section>
+
+    <section class="mb-16">
+        <div class="bg-slate-900 text-white rounded-2xl shadow-2xl overflow-hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-2">
+                <div class="p-12">
+                    <h3 class="text-3xl font-bold mb-6">Путь к Enterprise решению</h3>
+                    <p class="text-slate-400 mb-8 leading-relaxed">
+                        Трансформация из узкоспециализированного инструмента в платформу управления поверхностью атаки (CASM) требует фокуса на непрерывности и визуализации.
+                    </p>
+                    <div class="space-y-4">
+                        <div class="flex items-start">
+                            <div class="bg-blue-500 text-white p-1 rounded mt-1 mr-4">✓</div>
+                            <div>
+                                <h4 class="font-bold">Scan Diffs</h4>
+                                <p class="text-sm text-slate-400">Мгновенное обнаружение изменений в сети между запусками.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start">
+                            <div class="bg-blue-500 text-white p-1 rounded mt-1 mr-4">✓</div>
+                            <div>
+                                <h4 class="font-bold">Распределенные агенты</h4>
+                                <p class="text-sm text-slate-400">Масштабирование сканирования на изолированные сегменты сети.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start">
+                            <div class="bg-blue-500 text-white p-1 rounded mt-1 mr-4">✓</div>
+                            <div>
+                                <h4 class="font-bold">Интеграция с SIEM</h4>
+                                <p class="text-sm text-slate-400">Бесшовная передача данных в системы мониторинга.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="bg-blue-900/30 p-12 flex flex-col justify-center border-l border-white/10">
+                    <h4 class="text-center font-bold mb-8 text-blue-300 uppercase tracking-widest">Анализ возможностей</h4>
+                    <div class="chart-container" style="height: 300px;">
+                        <canvas id="radarChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="mb-16">
+        <h2 class="text-3xl font-bold mb-10 text-blue-900 text-center">Дорожная карта развития</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div class="card-shadow border-t-4 border-blue-400">
+                <span class="text-xs font-bold text-blue-500 uppercase">Фаза 1</span>
+                <h4 class="font-bold mt-2 mb-4">Быстрые победы</h4>
+                <ul class="text-xs text-slate-500 space-y-2">
+                    <li>● Сравнение отчетов (Diffs)</li>
+                    <li>● Оповещения в Slack/TG</li>
+                    <li>● Планировщик задач</li>
+                </ul>
+            </div>
+            <div class="card-shadow border-t-4 border-cyan-400">
+                <span class="text-xs font-bold text-cyan-500 uppercase">Фаза 2</span>
+                <h4 class="font-bold mt-2 mb-4">Интерфейс и API</h4>
+                <ul class="text-xs text-slate-500 space-y-2">
+                    <li>● Backend на FastAPI</li>
+                    <li>● React Дашборд</li>
+                    <li>● Ролевая модель доступа</li>
+                </ul>
+            </div>
+            <div class="card-shadow border-t-4 border-indigo-400">
+                <span class="text-xs font-bold text-indigo-500 uppercase">Фаза 3</span>
+                <h4 class="font-bold mt-2 mb-4">Масштабирование</h4>
+                <ul class="text-xs text-slate-500 space-y-2">
+                    <li>● Удаленные агенты</li>
+                    <li>● Экспорт в DefectDojo</li>
+                    <li>● PDF бизнес-отчеты</li>
+                </ul>
+            </div>
+            <div class="card-shadow border-t-4 border-emerald-400">
+                <span class="text-xs font-bold text-emerald-500 uppercase">Фаза 4</span>
+                <h4 class="font-bold mt-2 mb-4">Интеллект</h4>
+                <ul class="text-xs text-slate-500 space-y-2">
+                    <li>● ML в Probe Ladder</li>
+                    <li>● Поиск Shadow IT</li>
+                    <li>● Threat Intel Enrichment</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section class="card-shadow mb-16 overflow-hidden">
+        <h3 class="text-xl font-bold mb-6 text-blue-900 text-center">Адаптивная интенсивность сканирования</h3>
+        <p class="text-sm text-center text-slate-500 mb-8">Зависимость скорости пробирования от текущей задержки сетевого отклика (Алгоритм Probe Ladder).</p>
+        <div id="plotlyIntensity" style="width:100%;height:400px;"></div>
+    </section>
+
+    <section class="mb-16">
+        <div class="card-shadow border-t-4 border-purple-500 relative overflow-hidden">
+            <div class="absolute top-0 right-0 p-4 opacity-10 text-purple-500">
+                <svg width="64" height="64" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L15 9L22 12L15 15L12 22L9 15L2 12L9 9L12 2Z"/></svg>
+            </div>
+            <h3 class="text-2xl font-bold mb-2 text-slate-800">AI-Консультант SecOps (Демонстрация Фазы 4)</h3>
+            <p class="text-slate-600 mb-6 text-sm">Протестируйте будущее платформы. Задайте вопрос об открытых портах, уязвимостях или скриптах NSE, и ИИ-движок Octo-man мгновенно проанализирует вектор угрозы.</p>
+            
+            <div class="flex flex-col md:flex-row gap-4 mb-4 relative z-10">
+                <input type="text" id="aiQueryInput" class="flex-1 p-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Например: В чем реальная опасность открытого порта 3389 во внешней сети?">
+                <button id="aiSubmitBtn" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
+                    <span>Анализировать</span>
+                    <svg id="aiLoadingSpinner" class="animate-spin h-5 w-5 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </button>
+            </div>
+            
+            <div id="aiResponseContainer" class="hidden bg-slate-50 border border-slate-200 rounded-lg p-5 relative z-10">
+                <h4 class="font-bold text-slate-700 mb-3 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-purple-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L15 9L22 12L15 15L12 22L9 15L2 12L9 9L12 2Z"/></svg>
+                    Заключение ИИ-движка:
+                </h4>
+                <div id="aiResponseText" class="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed"></div>
+            </div>
+            <div id="aiErrorContainer" class="hidden mt-4 p-4 bg-red-50 text-red-600 rounded-lg text-sm relative z-10"></div>
+        </div>
+    </section>
+
+</main>
+
+<footer class="bg-slate-900 text-white py-16 px-6">
+    <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center opacity-60">
+        <div class="text-center md:text-left mb-8 md:mb-0">
+            <h4 class="text-2xl font-bold">Octo-man</h4>
+            <p class="text-sm">Network Reconnaissance Pipeline Framework</p>
+        </div>
+        <div class="text-sm text-center md:text-right">
+            Разработано для профессионалов кибербезопасности.<br>
+            &copy; 2026 Проект Octo-man. Все права защищены.
+        </div>
+    </div>
+</footer>
+
+<script>
+    const THEME = {
+        primary: '#3b82f6',
+        secondary: '#06b6d4',
+        dark: '#1e3a8a',
+        accent: '#818cf8',
+        slate: '#64748b'
+    };
+
+    // Функция переноса строк для Chart.js (лимит 16 символов)
+    const labelWrap = (str) => {
+        if (str.length <= 16) return str;
+        const words = str.split(' ');
+        let lines = [];
+        let current = '';
+        words.forEach(w => {
+            if ((current + w).length > 16) {
+                lines.push(current.trim());
+                current = w + ' ';
+            } else {
+                current += w + ' ';
+            }
+        });
+        lines.push(current.trim());
+        return lines;
+    };
+
+    const tooltipConfig = {
+        callbacks: {
+            title: function(tooltipItems) {
+                const item = tooltipItems[0];
+                let label = item.chart.data.labels[item.dataIndex];
+                return Array.isArray(label) ? label.join(' ') : label;
+            }
+        }
+    };
+
+    // 1. Donut Chart - Этапы
+    new Chart(document.getElementById('pipelineChart'), {
+        type: 'doughnut',
+        data: {
+            labels: [
+                labelWrap('Сбор и валидация целей'),
+                labelWrap('Фильтрация активных узлов'),
+                labelWrap('Сканирование портов'),
+                labelWrap('Скрипты NSE'),
+                labelWrap('Сбор данных и отчет')
+            ],
+            datasets: [{
+                data: [15, 20, 35, 20, 10],
+                backgroundColor: [THEME.dark, THEME.primary, THEME.secondary, THEME.accent, THEME.slate],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12, padding: 15, font: { size: 10 } } },
+                tooltip: tooltipConfig
+            }
+        }
+    });
+
+    // 2. Bar Chart - Стек технологий
+    new Chart(document.getElementById('techStackChart'), {
+        type: 'bar',
+        data: {
+            labels: [
+                labelWrap('Python 3 Core'),
+                labelWrap('Pydantic v2'),
+                labelWrap('Pytest Suite'),
+                labelWrap('Docker Compose'),
+                labelWrap('CI/CD Actions')
+            ],
+            datasets: [{
+                label: 'Вес в проекте (%)',
+                data: [95, 85, 80, 75, 70],
+                backgroundColor: THEME.primary,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            maintainAspectRatio: false,
+            scales: { x: { max: 100, grid: { display: false } } },
+            plugins: {
+                legend: { display: false },
+                tooltip: tooltipConfig
+            }
+        }
+    });
+
+    // 3. Radar Chart - Enterprise Comparison
+    new Chart(document.getElementById('radarChart'), {
+        type: 'radar',
+        data: {
+            labels: [
+                labelWrap('Масштабируемость'),
+                labelWrap('Визуализация'),
+                labelWrap('Интеграции'),
+                labelWrap('Автоматизация'),
+                labelWrap('Аналитика')
+            ],
+            datasets: [
+                {
+                    label: 'Текущий инструмент',
+                    data: [40, 20, 30, 80, 50],
+                    borderColor: THEME.secondary,
+                    backgroundColor: 'rgba(6, 182, 212, 0.3)'
+                },
+                {
+                    label: 'Enterprise Платформа',
+                    data: [100, 90, 95, 100, 90],
+                    borderColor: '#ffffff',
+                    borderDash: [5, 5],
+                    backgroundColor: 'rgba(255, 255, 255, 0.1)'
+                }
+            ]
+        },
+        options: {
+            maintainAspectRatio: false,
+            scales: {
+                r: {
+                    angleLines: { color: 'rgba(255,255,255,0.1)' },
+                    grid: { color: 'rgba(255,255,255,0.1)' },
+                    pointLabels: { color: '#94a3b8', font: { size: 10 } },
+                    ticks: { display: false }
+                }
+            },
+            plugins: {
+                legend: { labels: { color: '#ffffff', font: { size: 11 } } },
+                tooltip: tooltipConfig
+            }
+        }
+    });
+
+    // 4. Plotly Scatter - Intensity vs Latency
+    const latency = [10, 30, 50, 100, 200, 400, 800, 1500];
+    const intensity = [100, 95, 85, 60, 30, 15, 5, 2];
+
+    const trace = {
+        x: latency,
+        y: intensity,
+        mode: 'lines+markers',
+        type: 'scatter',
+        name: 'Интенсивность',
+        line: { color: THEME.primary, width: 3, shape: 'spline' },
+        marker: { size: 10, color: THEME.dark }
+    };
+
+    const layout = {
+        margin: { t: 20, b: 50, l: 50, r: 20 },
+        xaxis: { title: 'Задержка отклика (ms)', gridcolor: '#f1f5f9' },
+        yaxis: { title: 'Интенсивность (%)', gridcolor: '#f1f5f9' },
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        font: { family: 'Inter', size: 12 }
+    };
+
+    const config = { responsive: true, displayModeBar: false };
+    Plotly.newPlot('plotlyIntensity', [trace], layout, config);
+
+    // --- Gemini AI Assistant Logic ---
+    const aiQueryInput = document.getElementById('aiQueryInput');
+    const aiSubmitBtn = document.getElementById('aiSubmitBtn');
+    const aiLoadingSpinner = document.getElementById('aiLoadingSpinner');
+    const aiResponseContainer = document.getElementById('aiResponseContainer');
+    const aiResponseText = document.getElementById('aiResponseText');
+    const aiErrorContainer = document.getElementById('aiErrorContainer');
+
+    async function fetchGeminiResponse(query) {
+        const apiKey = ""; // API ключ автоматически подставится средой исполнения
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+        
+        const systemPrompt = "Ты — интегрированный AI-ассистент SecOps платформы Octo-man. Отвечай как строгий, опытный инженер по информационной безопасности. Объясняй риски, уязвимости или методы сетевого сканирования кратко, профессионально и строго по делу. Пиши на русском языке. Не используй сложную Markdown разметку, кроме жирного текста (**) для выделения главного.";
+        
+        const payload = {
+            contents: [{ parts: [{ text: query }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+        };
+
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Ошибка HTTP: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        
+        if (text) {
+            return text;
+        } else {
+            throw new Error("Не удалось получить ответ от нейросети.");
+        }
+    }
+
+    aiSubmitBtn.addEventListener('click', async () => {
+        const query = aiQueryInput.value.trim();
+        if (!query) return;
+
+        // Блокируем UI на время запроса
+        aiSubmitBtn.disabled = true;
+        aiSubmitBtn.classList.add('opacity-75', 'cursor-not-allowed');
+        aiLoadingSpinner.classList.remove('hidden');
+        aiResponseContainer.classList.add('hidden');
+        aiErrorContainer.classList.add('hidden');
+        aiResponseText.textContent = "";
+
+        try {
+            const responseText = await fetchGeminiResponse(query);
+            
+            // Легкое форматирование: заменяем **текст** на <strong>текст</strong>
+            let formattedText = responseText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            aiResponseText.innerHTML = formattedText;
+            
+            aiResponseContainer.classList.remove('hidden');
+        } catch (error) {
+            aiErrorContainer.textContent = `Ошибка анализа: ${error.message}. Попробуйте переформулировать запрос.`;
+            aiErrorContainer.classList.remove('hidden');
+        } finally {
+            // Разблокируем UI
+            aiSubmitBtn.disabled = false;
+            aiSubmitBtn.classList.remove('opacity-75', 'cursor-not-allowed');
+            aiLoadingSpinner.classList.add('hidden');
+        }
+    });
+
+    // Запуск по клавише Enter
+    aiQueryInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            aiSubmitBtn.click();
+        }
+    });
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,132 @@
+runtime:
+  mode: balanced
+  output_dir: scanner/output
+  state_dir: scanner/state
+  logs_dir: scanner/output/logs
+  retries: 2
+  timeout_seconds: 1800
+  # Per-host nmap (NSE/OS) timeout, separate from the global command timeout (max 600 s).
+  nse_timeout_seconds: 600
+  # Default number of nmap processes run in parallel during the NSE/OS stage.
+  nse_concurrency: 4
+  # Global packets/sec budget for the NSE/OS stage, shared across all parallel
+  # nmap processes (each gets nse_max_rate / nse_concurrency). 0 = unlimited.
+  nse_max_rate: 0
+  # Hosts scanned per nmap process (reduces startup overhead). 1 = one host per nmap.
+  nse_hosts_per_scan: 8
+  # Parallel naabu batches for discovery and port scan (each batch is independent).
+  discover_concurrency: 4
+  ports_concurrency: 4
+  # Set true or pass --skip-nse for L1-only runs (discover + ports). Re-run with --resume for NSE.
+  skip_nse: false
+  keep_intermediate: true
+  # Each run writes to output_dir/runs/<run_id>/ and state_dir/runs/<run_id>/.
+  per_run_output: true
+  log_max_bytes: 10485760
+  log_backup_count: 5
+
+profiles:
+  safe:
+    discover_rate: 2000
+    port_rate: 1000
+    top_ports: 100
+    nmap_timing: T3
+    nse_profile: baseline
+    nse_concurrency: 2
+    nse_max_rate: 500
+  balanced:
+    discover_rate: 6000
+    port_rate: 3000
+    top_ports: 1000
+    nmap_timing: T4
+    nse_profile: vuln
+    nse_concurrency: 4
+    nse_max_rate: 2000
+  fast:
+    discover_rate: 14000
+    port_rate: 7000
+    top_ports: 1000
+    nmap_timing: T4
+    nse_profile: vuln
+    nse_concurrency: 8
+    nse_max_rate: 5000
+
+batching:
+  # Split work into resumable batches so a single huge naabu command never
+  # hits the global timeout, a failed batch does not abort the whole run, and
+  # --resume skips finished batches.
+  enabled: true
+  # IPv4 networks larger than this prefix are split into /ipv4_prefix batches
+  # (e.g. a /16 becomes 16 x /20). Use a larger number (e.g. 24) for finer
+  # resume granularity at the cost of more naabu invocations.
+  ipv4_prefix: 20
+  # Single IPs / IPv6 / small nets are grouped into batches of this many targets.
+  max_targets_per_batch: 4096
+
+discovery:
+  source: naabu
+  profile: auto              # auto | fast | balanced | thorough | custom
+  skip_discovery: false
+  skip_known_alive: true
+  disjoint_batches: true
+  adaptive:
+    enabled: true
+    min_gap: 1
+  exclude_alive: []
+  exclude_last_octets: []
+  verify:
+    enabled: false
+  icmp:
+    enabled: false
+    tool: fping
+    timeout_ms: 500
+    retries: 1
+  tcp_probe:
+    enabled: false
+    ports: [80, 443, 22]
+  probe_order: [icmp, tcp, naabu]
+  hostnames:
+    forward: true
+    reverse: true
+  seed_alive_file: ""
+  delta:
+    enabled: false
+    previous_run_dir: ""
+    refresh_rate: 0.1
+    refresh_seed: 0
+
+ports:
+  source: naabu
+  # Scan protocol: tcp | udp | tcp_udp
+  protocol: tcp
+  custom_ports_file: scanner/inputs/ports.txt
+  custom_udp_ports_file: scanner/inputs/ports_udp.txt
+  top_udp_ports: 100
+  udp_probes: true
+
+nse_profiles:
+  baseline:
+    scripts: "default,safe"
+    version_detection: true
+    os_detection: true
+  vuln:
+    # Nmap "vuln" category + vulners CVE lookup by service version.
+    # vulners queries the vulners.com API and needs outbound internet access.
+    scripts: "default,safe,vuln,vulners"
+    version_detection: true
+    os_detection: true
+  vuln-offline:
+    # Fully offline CVE matching via vulscan's bundled local databases.
+    scripts: "default,safe,vuln,vulscan/vulscan.nse"
+    version_detection: true
+    os_detection: true
+  service_specific:
+    scripts: "http-*,ssl-cert,smb-*,ssh-*,dns-*"
+    version_detection: true
+    os_detection: false
+
+reporting:
+  markdown_summary: true
+  html_summary: true
+  csv_export: true
+  json_export: true
