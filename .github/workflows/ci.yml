@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff==0.15.20
+      - name: Ruff check
+        run: ruff check scanner tests
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Compile sources
+        run: python -m compileall scanner tests
+      - name: Run tests
+        run: python -m pytest -q
+
+  image:
+    name: Image (build, smoke, e2e, scan, SBOM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: network-scan-cli:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke-check toolchain in image
+        run: |
+          docker run --rm --entrypoint sh network-scan-cli:ci -c '
+            set -e
+            naabu -version
+            dnsx -version
+            nmap --version | head -n 1
+            test -f /usr/share/nmap/scripts/nmap-vulners/vulners.nse
+            test -f /usr/share/nmap/scripts/vulscan/vulscan.nse
+            python -m compileall scanner
+          '
+      - name: End-to-end scan against a target container
+        run: bash tests/e2e/run.sh network-scan-cli:ci
+      - name: Light synthetic load test (16 targets)
+        run: bash tests/load/run.sh network-scan-cli:ci --hosts 16
+      - name: Trivy report (non-blocking, all severities)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: network-scan-cli:ci
+          format: table
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+      - name: Trivy gate (fail on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: network-scan-cli:ci
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          exit-code: "1"
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          image: network-scan-cli:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          if-no-files-found: error

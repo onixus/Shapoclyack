@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+import csv
+import json
+import re
+import xml.etree.ElementTree as ET
+from collections import Counter
+from pathlib import Path
+
+from .utils import save_json
+
+_CVE_WITH_SCORE_RE = re.compile(r"(CVE-\d{4}-\d{3,7})\s+(\d{1,2}(?:\.\d+)?)", re.IGNORECASE)
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{3,7}", re.IGNORECASE)
+
+SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+
+
+def _severity(cvss: float | None) -> str:
+    if cvss is None:
+        return "unknown"
+    if cvss >= 9.0:
+        return "critical"
+    if cvss >= 7.0:
+        return "high"
+    if cvss >= 4.0:
+        return "medium"
+    if cvss > 0:
+        return "low"
+    return "unknown"
+
+
+def _extract_cves(output: str) -> list[tuple[str, float | None]]:
+    """Extract (CVE, CVSS) pairs from NSE output (vulners/vulscan/vuln scripts)."""
+    found: dict[str, float | None] = {}
+    for match in _CVE_WITH_SCORE_RE.finditer(output):
+        cve = match.group(1).upper()
+        try:
+            score: float | None = float(match.group(2))
+        except ValueError:
+            score = None
+        existing = found.get(cve)
+        if cve not in found or (score is not None and (existing is None or score > existing)):
+            found[cve] = score
+    for match in _CVE_RE.finditer(output):
+        found.setdefault(match.group(0).upper(), None)
+    return list(found.items())
+
+
+def _host_address(host: ET.Element) -> str:
+    for address in host.findall("address"):
+        if address.attrib.get("addrtype") in ("ipv4", "ipv6"):
+            return address.attrib.get("addr", "unknown")
+    address_node = host.find("address")
+    return address_node.attrib.get("addr", "unknown") if address_node is not None else "unknown"
+
+
+def _script_record(host: str, port: str, script: ET.Element) -> dict:
+    output = (script.attrib.get("output", "") or "").strip()
+    has_cve = bool(_CVE_RE.search(output))
+    return {
+        "host": host,
+        "port": port,
+        "script_id": script.attrib.get("id", ""),
+        "output": output,
+        "vulnerable": "VULNERABLE" in output.upper() or has_cve,
+    }
+
+
+def _parse_nmap_xml(nmap_dir: Path) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return (services, os_matches, script_findings) parsed from Nmap XML files."""
+    services: list[dict] = []
+    os_matches: list[dict] = []
+    script_findings: list[dict] = []
+
+    for xml_file in sorted(nmap_dir.rglob("*.xml")):
+        try:
+            root = ET.fromstring(xml_file.read_text(encoding="utf-8"))
+        except ET.ParseError:
+            continue
+        for host in root.findall("host"):
+            address = _host_address(host)
+
+            for osmatch in host.findall("./os/osmatch"):
+                os_matches.append(
+                    {
+                        "host": address,
+                        "name": osmatch.attrib.get("name", ""),
+                        "accuracy": osmatch.attrib.get("accuracy", ""),
+                    }
+                )
+
+            for script in host.findall("./hostscript/script"):
+                script_findings.append(_script_record(address, "", script))
+
+            for port in host.findall("./ports/port"):
+                state = port.find("state")
+                if state is None or state.attrib.get("state") != "open":
+                    continue
+                service = port.find("service")
+                portid = port.attrib.get("portid", "")
+                services.append(
+                    {
+                        "host": address,
+                        "port": portid,
+                        "protocol": port.attrib.get("protocol", ""),
+                        "service": (service.attrib.get("name", "unknown") if service is not None else "unknown"),
+                        "product": (service.attrib.get("product", "") if service is not None else ""),
+                        "version": (service.attrib.get("version", "") if service is not None else ""),
+                    }
+                )
+                for script in port.findall("script"):
+                    script_findings.append(_script_record(address, portid, script))
+
+    return services, os_matches, script_findings
+
+
+def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
+    """Turn raw NSE script output into structured, severity-ranked vulnerability findings."""
+    vulnerabilities: list[dict] = []
+    for finding in script_findings:
+        output = finding["output"]
+        cves = _extract_cves(output)
+        if cves:
+            for cve, cvss in cves:
+                vulnerabilities.append(
+                    {
+                        "host": finding["host"],
+                        "port": finding["port"],
+                        "script_id": finding["script_id"],
+                        "cve": cve,
+                        "cvss": cvss,
+                        "severity": _severity(cvss),
+                    }
+                )
+        elif "VULNERABLE" in output.upper():
+            vulnerabilities.append(
+                {
+                    "host": finding["host"],
+                    "port": finding["port"],
+                    "script_id": finding["script_id"],
+                    "cve": None,
+                    "cvss": None,
+                    "severity": "unknown",
+                }
+            )
+
+    vulnerabilities.sort(
+        key=lambda item: (SEVERITY_ORDER.get(item["severity"], 0), item["cvss"] or 0.0),
+        reverse=True,
+    )
+    return vulnerabilities
+
+
+def _lookup_hostname(hostnames_map: dict, host: str) -> str:
+    entry = hostnames_map.get(host) or {}
+    primary = entry.get("primary")
+    if isinstance(primary, str) and primary:
+        return primary
+    names = entry.get("names")
+    if isinstance(names, list) and names:
+        return str(names[0])
+    return ""
+
+
+def build_reports(
+    output_dir: Path,
+    total_targets: int,
+    alive_hosts: list[str],
+    open_ports: list[str],
+    nmap_dir: Path,
+    markdown_summary: bool,
+    html_summary: bool,
+    csv_export: bool,
+    json_export: bool,
+    hostnames_map: dict | None = None,
+) -> None:
+    hostnames = hostnames_map or {}
+    findings, os_matches, script_findings = _parse_nmap_xml(nmap_dir)
+    if hostnames:
+        for item in findings:
+            item["hostname"] = _lookup_hostname(hostnames, item["host"])
+        for item in script_findings:
+            item["hostname"] = _lookup_hostname(hostnames, item["host"])
+        for item in os_matches:
+            item["hostname"] = _lookup_hostname(hostnames, item["host"])
+    service_counter = Counter(item["service"] for item in findings)
+    vulnerabilities = _build_vulnerabilities(script_findings)
+    severity_counts = Counter(item["severity"] for item in vulnerabilities)
+    vulnerable_hosts = sorted({item["host"] for item in vulnerabilities})
+    hosts_with_names = sum(
+        1 for host in alive_hosts if _lookup_hostname(hostnames, host)
+    )
+
+    best_os_by_host: dict[str, dict] = {}
+    for match in os_matches:
+        host = match["host"]
+        current = best_os_by_host.get(host)
+        if current is None or int(match["accuracy"] or 0) > int(current["accuracy"] or 0):
+            best_os_by_host[host] = match
+
+    summary = {
+        "total_targets": total_targets,
+        "alive_hosts": len(alive_hosts),
+        "alive_hosts_with_names": hosts_with_names,
+        "open_host_port_pairs": len(open_ports),
+        "nmap_open_services": len(findings),
+        "os_detected_hosts": len(best_os_by_host),
+        "nse_script_findings": len(script_findings),
+        "potential_vulnerabilities": len(vulnerabilities),
+        "vulnerable_hosts": len(vulnerable_hosts),
+        "vulnerabilities_by_severity": {
+            sev: severity_counts.get(sev, 0) for sev in ("critical", "high", "medium", "low", "unknown")
+        },
+        "top_services": service_counter.most_common(15),
+    }
+    save_json(output_dir / "summary.json", summary)
+
+    if hostnames:
+        save_json(
+            output_dir / "alive_hosts.json",
+            [
+                {
+                    "host": host,
+                    "hostname": _lookup_hostname(hostnames, host),
+                    "names": (hostnames.get(host) or {}).get("names", []),
+                }
+                for host in sorted(set(alive_hosts))
+            ],
+        )
+
+    # OS and vulnerability findings are core deliverables and always exported.
+    save_json(output_dir / "os_findings.json", os_matches)
+    save_json(output_dir / "script_findings.json", script_findings)
+    save_json(output_dir / "vulnerabilities.json", vulnerabilities)
+
+    vuln_csv = output_dir / "vulnerabilities.csv"
+    with vuln_csv.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["host", "port", "severity", "cvss", "cve", "script_id"])
+        writer.writeheader()
+        for item in vulnerabilities:
+            writer.writerow({key: item.get(key, "") for key in writer.fieldnames})
+
+    if json_export:
+        save_json(output_dir / "findings.json", findings)
+        (output_dir / "findings.jsonl").write_text(
+            "".join(json.dumps(item, ensure_ascii=True) + "\n" for item in findings),
+            encoding="utf-8",
+        )
+
+    if csv_export:
+        csv_path = output_dir / "findings.csv"
+        fieldnames = ["host", "hostname", "port", "protocol", "service", "product", "version"]
+        with csv_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for item in findings:
+                writer.writerow({key: item.get(key, "") for key in fieldnames})
+
+    if markdown_summary:
+        sev = summary["vulnerabilities_by_severity"]
+        md_lines = [
+            "# Scan Summary",
+            "",
+            f"- Total targets: {summary['total_targets']}",
+            f"- Alive hosts: {summary['alive_hosts']}",
+            f"- Alive hosts with resolved names: {summary['alive_hosts_with_names']}",
+            f"- Open host:port pairs: {summary['open_host_port_pairs']}",
+            f"- Parsed open services from Nmap XML: {summary['nmap_open_services']}",
+            f"- Hosts with OS detected: {summary['os_detected_hosts']}",
+            f"- NSE script findings: {summary['nse_script_findings']}",
+            f"- Potential vulnerabilities: {summary['potential_vulnerabilities']} "
+            f"(across {summary['vulnerable_hosts']} hosts)",
+            f"- Severity: critical {sev['critical']}, high {sev['high']}, "
+            f"medium {sev['medium']}, low {sev['low']}, unknown {sev['unknown']}",
+            "",
+            "## Top Services",
+        ]
+        for service, count in summary["top_services"]:
+            md_lines.append(f"- {service}: {count}")
+
+        md_lines += ["", "## Operating Systems"]
+        if best_os_by_host:
+            for host, match in sorted(best_os_by_host.items()):
+                md_lines.append(f"- {host}: {match['name']} (accuracy {match['accuracy']}%)")
+        else:
+            md_lines.append("- none detected")
+
+        md_lines += ["", "## Vulnerabilities (highest severity first)"]
+        if vulnerabilities:
+            for item in vulnerabilities[:50]:
+                location = f"{item['host']}:{item['port']}" if item["port"] else item["host"]
+                cve = item["cve"] or item["script_id"]
+                cvss = f" CVSS {item['cvss']}" if item["cvss"] is not None else ""
+                md_lines.append(f"- [{item['severity'].upper()}] {location} {cve}{cvss} ({item['script_id']})")
+            if len(vulnerabilities) > 50:
+                md_lines.append(f"- ... and {len(vulnerabilities) - 50} more (see vulnerabilities.json)")
+        else:
+            md_lines.append("- none detected")
+
+        (output_dir / "summary.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+
+    if html_summary:
+        summary_md = (output_dir / "summary.md").read_text(encoding="utf-8") if (output_dir / "summary.md").exists() else ""
+        html = (
+            "<html><head><meta charset='utf-8'><title>Scan Summary</title></head><body><pre>"
+            + summary_md.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            + "</pre></body></html>"
+        )
+        (output_dir / "summary.html").write_text(html, encoding="utf-8")

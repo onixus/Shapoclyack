@@ -1,0 +1,61 @@
+# Minimal, fast, internet-free config for the end-to-end CI scan.
+# Targets a single container, scans port 80, runs default NSE scripts + -sV.
+runtime:
+  mode: safe
+  retries: 1
+  timeout_seconds: 300
+  nse_timeout_seconds: 180
+  nse_concurrency: 2
+  nse_max_rate: 0
+  per_run_output: false
+
+profiles:
+  safe:
+    discover_rate: 1000
+    port_rate: 1000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: e2e
+    nse_concurrency: 2
+  balanced:
+    discover_rate: 1000
+    port_rate: 1000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: e2e
+    nse_concurrency: 2
+  fast:
+    discover_rate: 1000
+    port_rate: 1000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: e2e
+    nse_concurrency: 2
+
+batching:
+  enabled: true
+  ipv4_prefix: 24
+  max_targets_per_batch: 256
+
+discovery:
+  source: naabu
+  profile: custom            # e2e: do not apply mode presets (fast CI scan)
+  skip_discovery: false
+
+ports:
+  source: naabu
+  custom_ports_file: scanner/inputs/ports.txt
+
+nse_profiles:
+  # Fast and offline: no vulners (needs internet), no OS detection (slow/unreliable
+  # between containers). Just default scripts + service version detection.
+  e2e:
+    scripts: "default"
+    version_detection: true
+    os_detection: false
+
+reporting:
+  markdown_summary: true
+  html_summary: true
+  csv_export: true
+  json_export: true

@@ -1,0 +1,6 @@
+# Custom UDP ports (one per line). Used when ports.protocol is udp or tcp_udp.
+# If empty, built-in top UDP ports (see ports.top_udp_ports) are scanned.
+#
+# 53
+# 123
+# 161
