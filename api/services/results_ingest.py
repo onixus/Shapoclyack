@@ -37,7 +37,11 @@ def extract_run_archive(archive_bytes: bytes, dest_dir: Path) -> Path:
         members = _safe_members(tf, dest_dir)
         if not members:
             raise IngestError("archive has no members")
-        tf.extractall(dest_dir, members=members)
+        # filter="data" blocks links/device nodes on Python 3.12+; ignore on older.
+        try:
+            tf.extractall(dest_dir, members=members, filter="data")
+        except TypeError:
+            tf.extractall(dest_dir, members=members)
     return dest_dir
 
 
