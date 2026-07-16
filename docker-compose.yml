@@ -1,15 +1,15 @@
-# Octo-man all-in-one (API + Web UI + scanner tools).
+# Shapoclyack all-in-one (Octo-man product: API + Web UI + scanner tools).
 # Web UI job start is enabled by default (OCTO_ALLOW_SCAN_START=true).
 #
 #   docker compose up --build
 #   open http://localhost:8080  (operator / operator-change-me)
 
 services:
-  octo-man:
+  shapoclyack:
     build:
       context: .
       dockerfile: Dockerfile.allinone
-    image: ghcr.io/onixus/octo-man-aio:0.3.2.1
+    image: ghcr.io/onixus/shapoclyack-aio:0.3.2.1
     ports:
       - "8080:8080"
     environment:

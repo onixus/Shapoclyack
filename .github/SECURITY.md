@@ -15,9 +15,9 @@ Published container images receive tags for the current semver release (see [Rel
 We recommend always using the latest image tags, for example:
 
 ```bash
-docker pull ghcr.io/onixus/octo-man-aio:0.3.2.1
-docker pull ghcr.io/onixus/octo-man-scanner:0.3.2.1
-docker pull ghcr.io/onixus/octo-man-api:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-aio:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-scanner:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-api:0.3.2.1
 ```
 
 ## Reporting a vulnerability
@@ -32,7 +32,7 @@ Report issues in this repository (application code, Dockerfile, CI workflows, pu
 Include as much detail as possible:
 
 - Description and impact
-- Affected version / image tag (`ghcr.io/onixus/octo-man:…`)
+- Affected version / image tag (`ghcr.io/onixus/shapoclyack-aio:…` or `-scanner` / `-api`)
 - Steps to reproduce or proof-of-concept
 - Suggested fix (if any)
 
@@ -79,7 +79,7 @@ will not be pursued as a policy violation by the maintainers.
 - Treat PVC data under `output/` / `state/` as **sensitive** (banners, CVE findings, hostnames).
 - Replace demo JWT secret and `*-change-me` API passwords before any shared or production use.
 - Prefer cluster Secrets (`octo-man-api`, `octo-man-alerts`) over committing credentials to YAML.
-- Pull images only from **`ghcr.io/onixus/octo-man`** / **`ghcr.io/onixus/octo-man-api`** and verify tags match [official releases](https://github.com/onixus/Shapoclyack/releases).
+- Pull images only from **`ghcr.io/onixus/shapoclyack-aio`**, **`shapoclyack-scanner`**, or **`shapoclyack-api`** and verify tags match [official releases](https://github.com/onixus/Shapoclyack/releases).
 
 ## Security updates
 
