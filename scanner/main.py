@@ -339,6 +339,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         checkpoint.mark_done("nse")
 
     reporting = config.reporting
+    enrichment = config.enrichment
     build_reports(
         output_dir=paths.output_dir,
         total_targets=len(all_targets),
@@ -350,6 +351,10 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         html_summary=reporting.html_summary,
         csv_export=reporting.csv_export,
         json_export=reporting.json_export,
+        cvss4_enabled=enrichment.cvss4.enabled,
+        cvss4_database=enrichment.cvss4.database,
+        geoip_enabled=enrichment.geoip.enabled,
+        geoip_database=enrichment.geoip.database,
     )
     checkpoint.mark_done("report")
 

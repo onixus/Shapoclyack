@@ -39,8 +39,9 @@ def get_vulnerabilities(
     _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
     limit: Annotated[int, Query(ge=1, le=10000)] = 5000,
+    host: Annotated[str | None, Query(description="Filter findings by target host/IP")] = None,
 ) -> list[VulnerabilityItem]:
-    items = runs_service.get_vulnerabilities(settings, run_id, limit=limit)
+    items = runs_service.get_vulnerabilities(settings, run_id, limit=limit, host=host)
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return items

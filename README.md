@@ -44,6 +44,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - Retry + timeout handling per external command (with a separate per-host `nse_timeout_seconds`).
 - Range batching + fine-grained checkpoint/resume (per discovery/port batch and per NSE host).
 - Report exports with summary, parsed Nmap service data, OS matches and vulnerability findings.
+- **CVSS v4 enrichment** (`enrichment.cvss4`): local CVE → CVSS 4.0 JSON map (`scanner/data/cvss4/`); refresh via `scripts/fetch-cvss4-db.py`.
+- **GeoIP enrichment** (`enrichment.geoip`): country/city per host via MaxMind GeoLite2 `.mmdb` or JSON overlay; Web UI shows location and can filter findings by target. Fetch MMDB with `scripts/fetch-geoip-db.sh` (do not redistribute MaxMind DB files in the image).
 - **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`.
 - **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
 - **DefectDojo export** (`defectdojo` / `--export-defectdojo`): Generic Findings Import via API v2 reimport (Phase 3).

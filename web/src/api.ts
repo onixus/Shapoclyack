@@ -25,8 +25,14 @@ export type Vulnerability = {
   port: string | null;
   cve: string | null;
   cvss: number | null;
+  cvss4: number | null;
+  cvss4_vector: string | null;
+  cvss4_severity: string | null;
   severity: string | null;
   script_id: string | null;
+  country: string | null;
+  city: string | null;
+  country_iso: string | null;
 };
 
 export type JobInfo = {
@@ -109,9 +115,18 @@ export function fetchRun(token: string, runId: string) {
   return request<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`, {}, token);
 }
 
-export function fetchVulns(token: string, runId: string, limit = 5000) {
+export function fetchVulns(
+  token: string,
+  runId: string,
+  limit = 5000,
+  host?: string | null,
+) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (host) {
+    params.set("host", host);
+  }
   return request<Vulnerability[]>(
-    `/api/runs/${encodeURIComponent(runId)}/vulnerabilities?limit=${limit}`,
+    `/api/runs/${encodeURIComponent(runId)}/vulnerabilities?${params}`,
     {},
     token,
   );

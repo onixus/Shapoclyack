@@ -13,3 +13,7 @@ web/node_modules/
 web/dist/
 *.egg-info/
 .ruff_cache/
+# MaxMind GeoLite2 databases (license-restricted; fetch via scripts/fetch-geoip-db.sh)
+*.mmdb
+!tests/data/geoip/GeoIP2-City-Test.mmdb
+scanner/data/geoip/GeoLite2-*.mmdb

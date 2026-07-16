@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "source": "overlay-seed",
+  "entries": {
+    "1.1.1.1": {
+      "country": "Australia",
+      "country_iso": "AU",
+      "city": "Sydney",
+      "latitude": -33.8688,
+      "longitude": 151.2093
+    },
+    "8.8.8.8": {
+      "country": "United States",
+      "country_iso": "US",
+      "city": "Mountain View",
+      "latitude": 37.4056,
+      "longitude": -122.0775
+    },
+    "9.9.9.9": {
+      "country": "United States",
+      "country_iso": "US",
+      "city": "Berkeley",
+      "latitude": 37.751,
+      "longitude": -97.822
+    },
+    "127.0.0.1": {
+      "country": "Private",
+      "country_iso": "",
+      "city": "localhost"
+    },
+    "192.168.1.1": {
+      "country": "Private",
+      "country_iso": "",
+      "city": "LAN"
+    }
+  }
+}
