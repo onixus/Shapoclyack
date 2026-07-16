@@ -37,6 +37,11 @@ class Settings:
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
     users: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_USERS))
     allow_scan_start: bool = True
+    # local = API pod runs scanner in a thread; agent = remote workers claim jobs.
+    job_execution_mode: str = "local"
+    # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables agent API.
+    agent_token: str = ""
+    agent_stale_seconds: int = 120
 
 
 def load_settings() -> Settings:
@@ -51,6 +56,10 @@ def load_settings() -> Settings:
     origins = os.environ.get("OCTO_API_CORS", "*").strip()
     cors = [part.strip() for part in origins.split(",") if part.strip()] or ["*"]
 
+    mode = os.environ.get("OCTO_JOB_EXECUTION_MODE", "local").strip().lower()
+    if mode not in {"local", "agent"}:
+        mode = "local"
+
     return Settings(
         jwt_secret=os.environ.get("OCTO_JWT_SECRET", "octo-man-dev-secret-change-me"),
         jwt_expire_minutes=int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")),
@@ -62,4 +71,7 @@ def load_settings() -> Settings:
         users=users,
         allow_scan_start=os.environ.get("OCTO_ALLOW_SCAN_START", "true").lower()
         in {"1", "true", "yes"},
+        job_execution_mode=mode,
+        agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
+        agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
     )

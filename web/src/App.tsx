@@ -4,6 +4,7 @@ import LoginPage from "./pages/LoginPage";
 import RunsPage from "./pages/RunsPage";
 import RunDetailPage from "./pages/RunDetailPage";
 import JobsPage from "./pages/JobsPage";
+import AgentsPage from "./pages/AgentsPage";
 import Shell from "./components/Shell";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -28,6 +29,7 @@ export default function App() {
         <Route index element={<RunsPage />} />
         <Route path="runs/:runId" element={<RunDetailPage />} />
         <Route path="jobs" element={<JobsPage />} />
+        <Route path="agents" element={<AgentsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

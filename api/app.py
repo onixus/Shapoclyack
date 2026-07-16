@@ -7,21 +7,24 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
+from api.routes import agents as agents_routes
 from api.routes import auth as auth_routes
 from api.routes import jobs as jobs_routes
 from api.routes import runs as runs_routes
 from api.schemas import HealthResponse
+from api.services import agents as agents_service
 from api.services import jobs as jobs_service
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     jobs_service.load_jobs(settings)
+    agents_service.load_agents(settings)
 
     app = FastAPI(
         title="Octo-man API",
         version=__version__,
-        description="Phase 2 HTTP API for Octo-man scan runs, jobs, and RBAC-protected access.",
+        description="HTTP API for Octo-man scan runs, jobs, remote agents, and RBAC-protected access.",
     )
     app.add_middleware(
         CORSMiddleware,
@@ -38,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_routes.router, prefix="/api")
     app.include_router(runs_routes.router, prefix="/api")
     app.include_router(jobs_routes.router, prefix="/api")
+    app.include_router(agents_routes.router, prefix="/api")
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():

@@ -74,6 +74,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY scanner /app/scanner
+COPY agent /app/agent
 
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin scanner && \
     mkdir -p /app/scanner/output /app/scanner/state && \

@@ -78,11 +78,15 @@ Default RBAC:
 | Role | Access |
 |------|--------|
 | `viewer` | List/read runs, summaries, diffs, vulns, artifacts |
-| `operator` | Viewer + start/list scan jobs via API |
+| `operator` | Viewer + start/list scan jobs / agents via API |
 | `admin` | Same as operator in v0.3.0 (reserved for future admin APIs) |
 
 Scan start from the API image stays **off** (`OCTO_ALLOW_SCAN_START=false`): use the
 Kubernetes `Job` / `CronJob` for scans; the UI reads results from the shared PVC.
+
+Remote agents (optional): set `OCTO_JOB_EXECUTION_MODE=agent`, share `OCTO_AGENT_TOKEN`,
+make API output/state mounts writable, and run `python -m agent` (see
+`k8s/octo-man/examples/agent-mode-api-patch.yaml` and `agent-deployment.example.yaml`).
 
 ### 5. Observe / resume
 

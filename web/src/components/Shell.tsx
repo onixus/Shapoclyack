@@ -19,6 +19,7 @@ export default function Shell() {
             Runs
           </NavLink>
           {canOperate ? <NavLink to="/jobs">Jobs</NavLink> : null}
+          {canOperate ? <NavLink to="/agents">Agents</NavLink> : null}
         </nav>
         <div className="session">
           <span>
