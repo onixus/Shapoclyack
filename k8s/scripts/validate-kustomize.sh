@@ -8,7 +8,7 @@ if ! command -v kubectl >/dev/null 2>&1; then
   exit 1
 fi
 
-for target in base overlays/dev overlays/prod; do
+for target in base overlays/dev overlays/prod overlays/api-readonly; do
   echo "kustomize: octo-man/${target}"
   kubectl kustomize "${ROOT}/octo-man/${target}" > /dev/null
 done

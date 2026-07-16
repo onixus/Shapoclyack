@@ -36,6 +36,9 @@ jobs:
           - name: api
             dockerfile: Dockerfile.api
             image: ghcr.io/onixus/octo-man-api
+          - name: aio
+            dockerfile: Dockerfile.allinone
+            image: ghcr.io/onixus/octo-man-aio
     steps:
       - uses: actions/checkout@v4
 
@@ -61,6 +64,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=match,pattern=v(.*),group=1
             type=ref,event=tag
             type=sha
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.event_name == 'release' }}

@@ -13,8 +13,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
 | **Pipeline** | `resolve → discovery → hostnames → ports → NSE (service/OS + CVE)` |
 | **Inputs** | CIDR / IP / FQDN |
 | **Outputs** | JSON / JSONL / CSV + Markdown / HTML (+ diffs, alerts) |
-| **Runtime** | Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
-| **Release** | **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** — `ghcr.io/onixus/octo-man:0.3.0`, `ghcr.io/onixus/octo-man-api:0.3.0` |
+| **Runtime** | All-in-one (`docker compose`) or Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
+| **Release** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** — `ghcr.io/onixus/octo-man-aio:0.3.2.1` (+ scanner / api images) |
 
 ### Docs map
 
@@ -47,7 +47,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **Business PDF reports** (`reporting.pdf_summary`): executive `summary.pdf` with severity KPIs and priority findings (Phase 3).
 - **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
 - **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`).
-- **Kubernetes** (primary runtime): `Job` / `CronJob` / API Deployment under `k8s/octo-man`.
+- **All-in-one** (`octo-man-aio` / `docker compose`): Web UI starts local scans by default.
+- **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man`.
 
 ## Project Layout
 
@@ -237,14 +238,24 @@ HTTP control plane for reviewing runs and (optionally) launching scans.
 
 ### Start the API + UI
 
-Kubernetes (after `kubectl apply -k k8s/octo-man/overlays/dev`):
+### All-in-one (default)
 
 ```bash
-kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
-# open http://localhost:8080
+docker compose up --build
+# open http://localhost:8080  — operator / operator-change-me
 ```
 
-Local development:
+Image: `ghcr.io/onixus/octo-man-aio:0.3.2.1` (scanner tools + API + UI).  
+`OCTO_ALLOW_SCAN_START=true` and `OCTO_JOB_EXECUTION_MODE=local` are baked in.
+
+Kubernetes (aio Deployment, UI can start scans):
+
+```bash
+kubectl apply -k k8s/octo-man/overlays/dev
+kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
+```
+
+Local API-only development (no scanner binaries in PATH unless installed):
 
 ```bash
 pip install -r requirements-api.txt
@@ -286,9 +297,10 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
   `POST /api/agent/heartbeat`, `POST /api/agent/jobs/claim`,
   `POST /api/agent/jobs/{id}/results`
 
-Scan start from the API image is **off by default** (`OCTO_ALLOW_SCAN_START=false`) because the
-API image does not bundle naabu/nmap. Start scans with the Kubernetes `Job` / `CronJob` and use
-the UI to inspect results on the shared PVC.
+**Default (aio / compose / k8s base):** Web UI job start is **on** (`OCTO_ALLOW_SCAN_START=true`).  
+The thin `octo-man-api` image still has no naabu/nmap — use it only via
+`k8s/octo-man/overlays/api-readonly` (`OCTO_ALLOW_SCAN_START=false`) when the UI should be
+results-only and scans run as `Job` / `CronJob` / remote agents.
 
 ### Remote agents (Phase 3)
 
@@ -310,9 +322,8 @@ python -m agent --config scanner/config/default.yaml
 ```
 
 Operators can watch agents on the **Agents** page. Jobs show `execution=agent` and the assigned
-agent id. In Kubernetes, agent mode needs a writable API mount for `scanner/output` and
-`scanner/state` (base Deployment is read-only for results-only UI); see
-`k8s/octo-man/examples/agent-mode-api-patch.yaml` and `agent-deployment.example.yaml`.
+agent id. See `k8s/octo-man/examples/agent-mode-api-patch.yaml` and
+`agent-deployment.example.yaml`.
 
 ## Exit codes
 
@@ -469,29 +480,37 @@ Published product images:
 
 | Image | Dockerfile |
 |-------|------------|
-| `ghcr.io/onixus/octo-man` | `Dockerfile` (scanner) |
-| `ghcr.io/onixus/octo-man-api` | `Dockerfile.api` (API + dashboard) |
+| `ghcr.io/onixus/octo-man-aio` | `Dockerfile.allinone` (scanner + API + UI, **default**) |
+| `ghcr.io/onixus/octo-man` | `Dockerfile` (scanner Job/CronJob) |
+| `ghcr.io/onixus/octo-man-api` | `Dockerfile.api` (thin API + dashboard) |
 
-Tagging for `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`, commit `sha-<...>`, and `latest`.
-`workflow_dispatch` can publish an extra ad-hoc tag via the `tag` input.
+Tagging for `v*` tags: full version (incl. `0.3.2.1`), semver patterns when applicable,
+commit `sha-<...>`, and `latest`. `workflow_dispatch` can publish an extra ad-hoc tag.
 
-Pull and run scanner:
+Pull and run all-in-one:
 
 ```bash
-docker pull ghcr.io/onixus/octo-man:0.3.0
+docker pull ghcr.io/onixus/octo-man-aio:0.3.2.1
+docker compose up
+```
+
+Scanner-only:
+
+```bash
+docker pull ghcr.io/onixus/octo-man:0.3.2.1
 docker run --rm \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/inputs:/app/scanner/inputs" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/octo-man:0.3.0 --config scanner/config/default.yaml --mode balanced
+  ghcr.io/onixus/octo-man:0.3.2.1 --config scanner/config/default.yaml --mode balanced
 ```
 
-To cut a release build, push a semver tag (triggers GHCR publish):
+To cut a release build, push a version tag (triggers GHCR publish):
 
 ```bash
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.3.2.1 && git push origin v0.3.2.1
 ```
 
 > The GHCR package may be **private** by default; make it public (or authenticate

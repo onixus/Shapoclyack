@@ -1,0 +1,30 @@
+# Octo-man all-in-one (API + Web UI + scanner tools).
+# Web UI job start is enabled by default (OCTO_ALLOW_SCAN_START=true).
+#
+#   docker compose up --build
+#   open http://localhost:8080  (operator / operator-change-me)
+
+services:
+  octo-man:
+    build:
+      context: .
+      dockerfile: Dockerfile.allinone
+    image: ghcr.io/onixus/octo-man-aio:0.3.2.1
+    ports:
+      - "8080:8080"
+    environment:
+      OCTO_JWT_SECRET: ${OCTO_JWT_SECRET:-octo-man-dev-secret-change-me}
+      OCTO_ALLOW_SCAN_START: "true"
+      OCTO_JOB_EXECUTION_MODE: local
+      OCTO_CONFIG: scanner/config/default.yaml
+      OCTO_OUTPUT_DIR: scanner/output
+      OCTO_STATE_DIR: scanner/state
+      OCTO_WEB_DIST: web/dist
+    volumes:
+      - ./scanner/inputs:/app/scanner/inputs
+      - ./scanner/output:/app/scanner/output
+      - ./scanner/state:/app/scanner/state
+      - ./scanner/config:/app/scanner/config:ro
+    cap_add:
+      - NET_RAW
+    restart: unless-stopped

@@ -1,24 +1,28 @@
 # Octo-man — Kubernetes
 
-Primary runtime for **v0.3.0+**. Images are built with Docker; orchestration is
-**Kubernetes + kustomize** (docker-compose is retired).
+Primary cluster runtime for **v0.3.2.1+**. Default control plane is the **all-in-one**
+image with Web UI scan start enabled.
 
 | Image | Tag | Role |
 |-------|-----|------|
-| `ghcr.io/onixus/octo-man` | `0.3.0` | Scanner pipeline (`Job` / `CronJob`) |
-| `ghcr.io/onixus/octo-man-api` | `0.3.0` | FastAPI + React dashboard |
+| `ghcr.io/onixus/octo-man-aio` | `0.3.2.1` | API + UI + scanner tools (**default Deployment**) |
+| `ghcr.io/onixus/octo-man` | `0.3.2.1` | Scanner pipeline (`Job` / `CronJob`) |
+| `ghcr.io/onixus/octo-man-api` | `0.3.2.1` | Thin API + UI (results-only overlay) |
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
+
+For local labs, prefer `docker compose up` at the repo root.
 
 ## Layout
 
 ```
 k8s/octo-man/
-├── base/                 # namespace, SA, PVC, Job, CronJob, API Deployment/Service
-├── base/config/k8s.yaml  # scanner ConfigMap source (cluster-tuned rates, vuln-offline)
+├── base/                 # namespace, SA, PVC, Job, CronJob, aio API Deployment/Service
+├── base/config/k8s.yaml  # scanner ConfigMap source
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
-└── examples/             # Secrets / Ingress samples
+├── overlays/api-readonly/# thin octo-man-api, OCTO_ALLOW_SCAN_START=false
+└── examples/             # Secrets / Ingress / agent samples
 ```
 
 ## Quick start (pull release images)
@@ -49,7 +53,7 @@ Base kustomization also generates a **dev-only** `octo-man-api` JWT secret
 
 ### 3. Apply overlay
 
-**Dev** (smaller CPU/RAM, `--mode safe`):
+**Dev** (aio API with UI job start, smaller CPU/RAM, Job `--mode safe`):
 
 ```bash
 kubectl apply -k k8s/octo-man/overlays/dev
@@ -62,6 +66,12 @@ kubectl apply -k k8s/octo-man/overlays/dev
 
 ```bash
 kubectl apply -k k8s/octo-man/overlays/prod
+```
+
+**Results-only API** (thin image, no local scan start):
+
+```bash
+kubectl apply -k k8s/octo-man/overlays/api-readonly
 ```
 
 ### 4. Dashboard
@@ -79,14 +89,11 @@ Default RBAC:
 |------|--------|
 | `viewer` | List/read runs, summaries, diffs, vulns, artifacts |
 | `operator` | Viewer + start/list scan jobs / agents via API |
-| `admin` | Same as operator in v0.3.0 (reserved for future admin APIs) |
+| `admin` | Same as operator (reserved for future admin APIs) |
 
-Scan start from the API image stays **off** (`OCTO_ALLOW_SCAN_START=false`): use the
-Kubernetes `Job` / `CronJob` for scans; the UI reads results from the shared PVC.
-
-Remote agents (optional): set `OCTO_JOB_EXECUTION_MODE=agent`, share `OCTO_AGENT_TOKEN`,
-make API output/state mounts writable, and run `python -m agent` (see
-`k8s/octo-man/examples/agent-mode-api-patch.yaml` and `agent-deployment.example.yaml`).
+Default aio Deployment sets **`OCTO_ALLOW_SCAN_START=true`** so operators start scans from
+the Jobs page. Scheduled scans can still use `Job` / `CronJob`. Remote agents remain optional
+(`examples/agent-mode-api-patch.yaml`, `agent-deployment.example.yaml`).
 
 ### 5. Observe / resume
 
@@ -101,28 +108,14 @@ Artifacts: PVC `scanner-data` → `output/` and `state/` subPaths.
 ## Optional: build images yourself
 
 ```bash
+docker build -t ghcr.io/onixus/octo-man-aio:local -f Dockerfile.allinone .
 docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
 docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
 # kind load docker-image … / k3d image import … / push to your registry
 # then patch image names in the overlay or kustomize images: transformer
 ```
 
-## Workload map
-
-| Capability | Kubernetes object |
-|---|---|
-| One-shot scan | `Job/network-scan` |
-| Scheduled / delta scan | `CronJob/network-scan-scheduled` |
-| Resume interrupted run | `job-resume.yaml` (manual apply) |
-| API + dashboard | `Deployment/octo-man-api` + `Service` |
-
-## Storage note
-
-`scanner-data` defaults to `ReadWriteOnce`. API + scan Jobs must land on the same node
-(prod overlay pins both to `workload=scanner`), or switch the PVC to `ReadWriteMany`
-when your StorageClass supports it.
-
-## Validate manifests
+## Validate
 
 ```bash
 ./k8s/scripts/validate-kustomize.sh
