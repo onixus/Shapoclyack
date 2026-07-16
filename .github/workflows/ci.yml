@@ -99,7 +99,16 @@ jobs:
       - name: End-to-end scan against a target container
         run: bash tests/e2e/run.sh network-scan-cli:ci
       - name: Light synthetic load test (16 targets)
-        run: bash tests/load/run.sh network-scan-cli:ci --hosts 16
+        uses: ./.github/actions/synthetic-load-test
+        with:
+          image: network-scan-cli:ci
+          build: "false"
+          hosts: "16"
+          config: tests/load/config.yaml
+          resume_test: "false"
+          scan_timeout_sec: "2400"
+          metrics_path: load-metrics-ci-${{ github.run_id }}.json
+          artifact_name: load-test-metrics-ci-${{ github.run_id }}
       - name: Trivy report (non-blocking, all severities)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
