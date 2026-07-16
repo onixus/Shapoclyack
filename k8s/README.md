@@ -5,8 +5,8 @@ image with Web UI scan start enabled.
 
 | Image | Tag | Role |
 |-------|-----|------|
-| `ghcr.io/onixus/octo-man-aio` | `0.3.2.1` | API + UI + scanner tools (**default Deployment**) |
-| `ghcr.io/onixus/octo-man` | `0.3.2.1` | Scanner pipeline (`Job` / `CronJob`) |
+| `ghcr.io/onixus/octo-man-aio` | `0.3.2.1` | API + UI + scanner (**default** Deployment / Job / CronJob) |
+| `ghcr.io/onixus/octo-man-scanner` | `0.3.2.1` | Scanner-only (lighter Job/CronJob alternative) |
 | `ghcr.io/onixus/octo-man-api` | `0.3.2.1` | Thin API + UI (results-only overlay) |
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
@@ -109,7 +109,7 @@ Artifacts: PVC `scanner-data` → `output/` and `state/` subPaths.
 
 ```bash
 docker build -t ghcr.io/onixus/octo-man-aio:local -f Dockerfile.allinone .
-docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
+docker build -t ghcr.io/onixus/octo-man-scanner:local -f Dockerfile .
 docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
 # kind load docker-image … / k3d image import … / push to your registry
 # then patch image names in the overlay or kustomize images: transformer

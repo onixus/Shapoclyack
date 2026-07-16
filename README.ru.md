@@ -405,7 +405,7 @@ ruff check scanner api tests
 
 ```bash
 docker pull ghcr.io/onixus/octo-man-aio:0.3.2.1
-docker pull ghcr.io/onixus/octo-man:0.3.2.1
+docker pull ghcr.io/onixus/octo-man-scanner:0.3.2.1
 docker pull ghcr.io/onixus/octo-man-api:0.3.2.1
 ```
 

@@ -22,9 +22,13 @@ All-in-one release: Web UI can start scans by default.
 
 | Image | Tag |
 |-------|-----|
-| `ghcr.io/onixus/octo-man` | `0.3.2.1`, `latest` |
-| `ghcr.io/onixus/octo-man-api` | `0.3.2.1`, `latest` |
 | `ghcr.io/onixus/octo-man-aio` | `0.3.2.1`, `latest` |
+| `ghcr.io/onixus/octo-man-api` | `0.3.2.1`, `latest` |
+| `ghcr.io/onixus/octo-man-scanner` | `0.3.2.1`, `latest` |
+
+> Legacy `ghcr.io/onixus/octo-man` stays linked to the old `onixus/Octo-man` package ACL;
+> Shapoclyack Actions publish `octo-man-scanner` / `octo-man-aio` instead. K8s Job/CronJob
+> use the aio image with `command: ["python", "-m", "scanner.main"]`.
 
 ### Upgrade notes
 
