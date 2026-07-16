@@ -189,6 +189,28 @@ class AlertsConfig(BaseModel):
     telegram: TelegramAlertConfig = Field(default_factory=TelegramAlertConfig)
 
 
+class DefectDojoConfig(BaseModel):
+    """Push Generic Findings Import JSON to DefectDojo API v2 (reimport-scan)."""
+
+    enabled: bool = False
+    # Prefer env OCTO_DEFECTDOJO_URL / OCTO_DEFECTDOJO_API_KEY over YAML secrets.
+    url: str = ""
+    api_key: str = ""
+    product_name: str = "Octo-man"
+    product_type_name: str = "Network"
+    # Stable engagement name so reimport closes mitigated findings across runs.
+    engagement_name: str = "Octo-man"
+    test_title: str = "Octo-man NSE"
+    min_severity: Literal["critical", "high", "medium", "low", "unknown"] = "high"
+    include_without_cve: bool = True
+    close_old_findings: bool = True
+    active: bool = True
+    verified: bool = False
+    auto_create_context: bool = True
+    verify_ssl: bool = True
+    timeout_seconds: int = Field(default=60, ge=5, le=600)
+
+
 class SchedulerConfig(BaseModel):
     # In-process / compose scheduler (python -m scanner.scheduler). Disabled by default.
     enabled: bool = False
@@ -200,6 +222,7 @@ class SchedulerConfig(BaseModel):
     delta: bool = False
     skip_nse: bool = False
     notify: bool = False
+    export_defectdojo: bool = False
     # 0 = run forever; >0 stops after N successful schedule ticks (useful for tests).
     max_runs: int = Field(default=0, ge=0, le=1_000_000)
 
@@ -221,6 +244,7 @@ class AppConfig(BaseModel):
     nse_profiles: dict[str, NseProfileConfig]
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     @field_validator("profiles")

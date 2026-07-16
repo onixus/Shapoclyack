@@ -68,6 +68,7 @@ def test_build_scan_command_flags():
             "delta": True,
             "skip_nse": True,
             "notify": True,
+            "export_defectdojo": True,
         }
     )
     cfg = load_config(raw)
@@ -77,3 +78,4 @@ def test_build_scan_command_flags():
     assert "--delta" in command
     assert "--skip-nse" in command
     assert "--notify" in command
+    assert "--export-defectdojo" in command

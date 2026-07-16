@@ -47,6 +47,7 @@ class StartScanRequest(BaseModel):
     delta: bool = False
     skip_nse: bool = False
     notify: bool = False
+    export_defectdojo: bool = False
     run_id: str | None = None
 
 
