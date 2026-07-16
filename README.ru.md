@@ -12,6 +12,20 @@
 - этапы: `resolve -> discovery -> hostname enrichment -> fast ports -> Nmap NSE (версии сервисов/ОС + уязвимости/CVE)`
 - выход: `JSON/JSONL/CSV` + сводка `Markdown/HTML`
 
+## Phase 2: API, дашборд и RBAC
+
+```bash
+docker compose up --build api
+# UI: http://localhost:8080
+```
+
+Роли: `viewer` (чтение прогонов), `operator` (запуск jobs), `admin` (зарезервировано).  
+Демо-пользователи: `viewer` / `operator` / `admin` с паролями `*-change-me` — сразу смените.
+Секрет JWT: `OCTO_JWT_SECRET`. Список пользователей: `OCTO_API_USERS` (JSON).
+
+Запуск сканов из API-образа по умолчанию выключен (`OCTO_ALLOW_SCAN_START=false`): в образе API
+нет naabu/nmap. Сканируйте через `docker compose run scanner …`, результаты смотрите в UI.
+
 ## Быстрый старт
 
 ### 1) Сборка

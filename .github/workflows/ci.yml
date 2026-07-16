@@ -24,7 +24,7 @@ jobs:
       - name: Install ruff
         run: pip install ruff==0.15.20
       - name: Ruff check
-        run: ruff check scanner tests
+        run: ruff check scanner api tests
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -42,9 +42,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Compile sources
-        run: python -m compileall scanner tests
+        run: python -m compileall scanner api tests
       - name: Run tests
         run: python -m pytest -q
+
+  web:
+    name: Web dashboard (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install and build
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
 
   image:
     name: Image (build, smoke, e2e, scan, SBOM)

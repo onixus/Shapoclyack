@@ -1,0 +1,472 @@
+:root {
+  --ink: #07161a;
+  --ink-soft: #16323a;
+  --foam: #e7f6f4;
+  --mist: rgba(231, 246, 244, 0.72);
+  --teal: #0f8a7a;
+  --teal-deep: #065f56;
+  --cyan: #2bb8c8;
+  --sand: #d7c4a3;
+  --danger: #c45c4a;
+  --warn: #c48a2b;
+  --ok: #2f8f5b;
+  --line: rgba(7, 22, 26, 0.12);
+  --shadow: 0 24px 60px rgba(4, 20, 24, 0.28);
+  --font-display: "Syne", sans-serif;
+  --font-body: "Source Sans 3", sans-serif;
+  color: var(--ink);
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1200px 700px at 10% -10%, rgba(43, 184, 200, 0.28), transparent 55%),
+    radial-gradient(900px 600px at 90% 0%, rgba(15, 138, 122, 0.22), transparent 50%),
+    linear-gradient(160deg, #dceeea 0%, #f3f7f4 42%, #e8efe8 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.login-hero {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.login-atmosphere {
+  position: absolute;
+  inset: -10%;
+  background:
+    radial-gradient(circle at 20% 30%, rgba(43, 184, 200, 0.35), transparent 35%),
+    radial-gradient(circle at 80% 20%, rgba(15, 138, 122, 0.3), transparent 40%),
+    linear-gradient(120deg, #0b2e33 0%, #14645c 48%, #1d8f7a 100%);
+  transform: scale(1.02);
+  animation: drift 14s ease-in-out infinite alternate;
+}
+
+@keyframes drift {
+  from {
+    transform: scale(1.02) translate3d(-1%, -1%, 0);
+  }
+  to {
+    transform: scale(1.06) translate3d(1.5%, 1%, 0);
+  }
+}
+
+.login-panel {
+  position: relative;
+  z-index: 1;
+  width: min(520px, 100%);
+  color: var(--foam);
+  animation: rise 700ms ease-out both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hero-brand {
+  font-size: clamp(2.8rem, 8vw, 4.4rem);
+  margin: 0 0 0.4rem;
+  letter-spacing: -0.04em;
+}
+
+.login-panel h1 {
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+  line-height: 1.15;
+  margin: 0 0 0.75rem;
+  font-weight: 700;
+  max-width: 16ch;
+}
+
+.lede {
+  margin: 0 0 1.6rem;
+  color: rgba(231, 246, 244, 0.82);
+  max-width: 36ch;
+}
+
+.login-form,
+.job-form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.login-form label,
+.job-form label:not(.check) {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.95rem;
+}
+
+.login-form input,
+.job-form select,
+.job-form input[type="text"] {
+  border: 1px solid rgba(231, 246, 244, 0.28);
+  background: rgba(7, 22, 26, 0.28);
+  color: var(--foam);
+  border-radius: 0.55rem;
+  padding: 0.75rem 0.9rem;
+}
+
+.login-form input:focus,
+.job-form select:focus {
+  outline: 2px solid rgba(43, 184, 200, 0.65);
+  outline-offset: 1px;
+}
+
+.primary-btn,
+.ghost-btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.8rem 1.2rem;
+  cursor: pointer;
+  transition: transform 160ms ease, background 160ms ease, opacity 160ms ease;
+}
+
+.primary-btn {
+  background: linear-gradient(120deg, var(--cyan), var(--teal));
+  color: #042226;
+  font-weight: 700;
+}
+
+.primary-btn:hover,
+.ghost-btn:hover {
+  transform: translateY(-1px);
+}
+
+.primary-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.ghost-btn {
+  background: transparent;
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+}
+
+.form-error {
+  color: #ffb4a8;
+  margin: 0;
+}
+
+.login-form .form-error {
+  color: #ffb4a8;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+  background: rgba(243, 247, 244, 0.7);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.brand-mark {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 30% 70% 60% 40% / 40% 30% 70% 60%;
+  background:
+    radial-gradient(circle at 30% 30%, #9ce7df, transparent 40%),
+    linear-gradient(140deg, var(--cyan), var(--teal-deep));
+  box-shadow: 0 8px 20px rgba(6, 95, 86, 0.28);
+  animation: morph 8s ease-in-out infinite alternate;
+}
+
+@keyframes morph {
+  from {
+    border-radius: 30% 70% 60% 40% / 40% 30% 70% 60%;
+  }
+  to {
+    border-radius: 60% 40% 30% 70% / 50% 60% 40% 50%;
+  }
+}
+
+.brand-name {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin: 0;
+  line-height: 1;
+}
+
+.brand-sub,
+.muted {
+  color: rgba(7, 22, 26, 0.62);
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+}
+
+.nav-links {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.nav-links a {
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  color: var(--ink-soft);
+}
+
+.nav-links a.active {
+  background: rgba(15, 138, 122, 0.14);
+  color: var(--teal-deep);
+  font-weight: 700;
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.page {
+  width: min(1100px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 1.75rem 0 3rem;
+}
+
+.stack {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.section-head h1 {
+  font-family: var(--font-display);
+  margin: 0;
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  letter-spacing: -0.03em;
+}
+
+.section-head p {
+  margin: 0.35rem 0 0;
+  color: rgba(7, 22, 26, 0.65);
+}
+
+.run-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.run-row {
+  display: grid;
+  gap: 0.55rem;
+  padding: 1rem 1.1rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--line);
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.run-row:not(.static):hover {
+  transform: translateY(-2px);
+  border-color: rgba(15, 138, 122, 0.35);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.run-row strong {
+  display: block;
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.run-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  color: rgba(7, 22, 26, 0.7);
+  font-size: 0.92rem;
+}
+
+.pill {
+  background: rgba(43, 184, 200, 0.18);
+  color: var(--teal-deep);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.metric-strip > div,
+.panel {
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: 1rem 1.1rem;
+}
+
+.metric-strip strong {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  letter-spacing: -0.03em;
+}
+
+.metric-strip span {
+  color: rgba(7, 22, 26, 0.62);
+  font-size: 0.9rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.6rem;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+}
+
+.sev-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sev {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: rgba(7, 22, 26, 0.08);
+}
+
+.sev-critical {
+  background: rgba(196, 92, 74, 0.18);
+  color: #8d2f22;
+}
+
+.sev-high {
+  background: rgba(196, 138, 43, 0.18);
+  color: #8a5a12;
+}
+
+.sev-medium {
+  background: rgba(43, 184, 200, 0.16);
+  color: #0d5f68;
+}
+
+.sev-low,
+.sev-unknown {
+  background: rgba(7, 22, 26, 0.08);
+  color: var(--ink-soft);
+}
+
+.vuln-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.vuln-list li {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.back-link {
+  color: var(--teal-deep);
+  font-weight: 600;
+}
+
+.check {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.job-form {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  align-items: end;
+}
+
+.job-form .primary-btn {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.job-form select {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--line);
+}
+
+.center-state {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  color: var(--ink-soft);
+}
+
+@media (max-width: 800px) {
+  .topbar {
+    flex-wrap: wrap;
+  }
+
+  .metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .session {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

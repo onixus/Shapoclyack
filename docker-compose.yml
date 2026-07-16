@@ -24,6 +24,29 @@ services:
       - ./scanner/state:/app/scanner/state
     command: ["--config", "scanner/config/default.yaml", "--mode", "fast"]
 
+  # Phase 2 API + React dashboard
+  # UI: http://localhost:8080  (default users: admin/operator/viewer — change passwords)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: octo-man-api:latest
+    container_name: octo-man-api
+    ports:
+      - "8080:8080"
+    environment:
+      OCTO_JWT_SECRET: ${OCTO_JWT_SECRET:-octo-man-dev-secret-change-me}
+      OCTO_ALLOW_SCAN_START: ${OCTO_ALLOW_SCAN_START:-false}
+      OCTO_OUTPUT_DIR: scanner/output
+      OCTO_STATE_DIR: scanner/state
+      OCTO_CONFIG: scanner/config/default.yaml
+      OCTO_WEB_DIST: web/dist
+    volumes:
+      - ./scanner/inputs:/app/scanner/inputs
+      - ./scanner/config:/app/scanner/config
+      - ./scanner/output:/app/scanner/output
+      - ./scanner/state:/app/scanner/state
+
   # Phase 1 scheduler: docker compose --profile scheduler up scheduler
   # Set scheduler.enabled: true in YAML or OCTO_SCHEDULER_ENABLED=true.
   scheduler:
