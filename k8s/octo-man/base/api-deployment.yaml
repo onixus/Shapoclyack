@@ -24,7 +24,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: api
-          image: ghcr.io/onixus/octo-man-api:0.3.0
+          image: ghcr.io/onixus/octo-man-aio:0.3.2.1
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -39,7 +39,9 @@ spec:
             - name: OCTO_WEB_DIST
               value: web/dist
             - name: OCTO_ALLOW_SCAN_START
-              value: "false"
+              value: "true"
+            - name: OCTO_JOB_EXECUTION_MODE
+              value: local
             - name: OCTO_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -63,24 +65,27 @@ spec:
             periodSeconds: 20
           resources:
             requests:
-              cpu: "100m"
-              memory: 256Mi
+              cpu: "500m"
+              memory: 1Gi
             limits:
-              cpu: "1"
-              memory: 512Mi
+              cpu: "4"
+              memory: 4Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
+              add:
+                - NET_RAW
           volumeMounts:
             - name: data
               mountPath: /app/scanner/output
               subPath: output
-              readOnly: true
             - name: data
               mountPath: /app/scanner/state
               subPath: state
+            - name: inputs
+              mountPath: /app/scanner/inputs
               readOnly: true
             - name: config
               mountPath: /app/scanner/config
@@ -89,6 +94,10 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: scanner-data
+        - name: inputs
+          secret:
+            secretName: scan-targets
+            optional: true
         - name: config
           configMap:
             name: scanner-config

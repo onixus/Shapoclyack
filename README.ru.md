@@ -5,9 +5,9 @@
 
 | | |
 |---|---|
-| **Релиз** | **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** |
-| **Образы** | `ghcr.io/onixus/octo-man:0.3.0`, `ghcr.io/onixus/octo-man-api:0.3.0` |
-| **Runtime** | Kubernetes ([k8s/README.md](k8s/README.md)) |
+| **Релиз** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** |
+| **Образы** | `ghcr.io/onixus/octo-man-aio:0.3.2.1` (+ `octo-man`, `octo-man-api`) |
+| **Runtime** | All-in-one (`docker compose`) или Kubernetes ([k8s/README.md](k8s/README.md)) |
 | **История** | [CHANGELOG.md](CHANGELOG.md) |
 
 ## Назначение
@@ -18,30 +18,32 @@
 - выход: `JSON/JSONL/CSV` + сводка `Markdown/HTML` (+ diffs, alerts)
 - управление: Kubernetes Job/CronJob и UI на `:8080`
 
-## Kubernetes (основной способ запуска)
-
-Полная инструкция: [k8s/README.md](k8s/README.md).
+## All-in-one (по умолчанию)
 
 ```bash
-docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
-docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
+docker compose up --build
+# UI: http://localhost:8080 — operator / operator-change-me
+# Запуск сканов из Jobs включён (OCTO_ALLOW_SCAN_START=true)
+```
+
+## Kubernetes
+
+Полная инструкция: [k8s/README.md](k8s/README.md). Base/dev используют образ **aio**
+с управлением сканами из Web UI.
+
+```bash
+docker build -t ghcr.io/onixus/octo-man-aio:local -f Dockerfile.allinone .
 kubectl apply -k k8s/octo-man/overlays/dev
 kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 ```
 
-## Phase 2: API, дашборд и RBAC
+Тонкий API без локальных сканов: `overlays/api-readonly`.
 
-```bash
-kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
-# UI: http://localhost:8080
-```
+## Phase 2: API, дашборд и RBAC
 
 Роли: `viewer` (чтение прогонов), `operator` (jobs + агенты), `admin` (зарезервировано).  
 Демо-пользователи: `viewer` / `operator` / `admin` с паролями `*-change-me` — сразу смените.
 Секрет JWT: `OCTO_JWT_SECRET` / Secret `octo-man-api`.
-
-Запуск сканов из API-образа по умолчанию выключен (`OCTO_ALLOW_SCAN_START=false`).
-Сканируйте через `Job`/`CronJob`, результаты смотрите в UI (общий PVC).
 
 Удалённые агенты (фаза 3): `OCTO_JOB_EXECUTION_MODE=agent`, `OCTO_AGENT_TOKEN`, воркер
 `python -m agent`. Подробности и примеры k8s — в README (EN) и
@@ -402,8 +404,9 @@ ruff check scanner api tests
 - Образы: `ghcr.io/onixus/octo-man` (сканер) и `ghcr.io/onixus/octo-man-api` (API + UI).
 
 ```bash
-docker pull ghcr.io/onixus/octo-man:0.3.0
-docker pull ghcr.io/onixus/octo-man-api:0.3.0
+docker pull ghcr.io/onixus/octo-man-aio:0.3.2.1
+docker pull ghcr.io/onixus/octo-man:0.3.2.1
+docker pull ghcr.io/onixus/octo-man-api:0.3.2.1
 ```
 
 Подробности и полный пример запуска — в [README.md](README.md#container-image-ghcr).

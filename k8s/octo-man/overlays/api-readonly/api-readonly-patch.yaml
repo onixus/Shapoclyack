@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/onixus/octo-man-api:0.3.2.1
+          env:
+            - name: OCTO_ALLOW_SCAN_START
+              value: "false"
+            - name: OCTO_JOB_EXECUTION_MODE
+              value: local
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /app/scanner/output
+              subPath: output
+              readOnly: true
+            - name: data
+              mountPath: /app/scanner/state
+              subPath: state
+              readOnly: true
+            - name: config
+              mountPath: /app/scanner/config
+              readOnly: true

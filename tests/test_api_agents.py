@@ -65,7 +65,7 @@ def test_agent_register_heartbeat_and_list(tmp_path, monkeypatch):
     reg = client.post(
         "/api/agent/register",
         headers=_agent_headers(),
-        json={"hostname": "edge-1", "version": "0.3.0", "labels": {"zone": "lab"}},
+        json={"hostname": "edge-1", "version": "0.3.2.1", "labels": {"zone": "lab"}},
     )
     assert reg.status_code == 200
     agent_id = reg.json()["agent_id"]

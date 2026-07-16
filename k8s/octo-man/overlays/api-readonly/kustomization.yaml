@@ -1,0 +1,9 @@
+# Thin results-only API (no local scan start). Prefer overlays/dev for all-in-one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: api-readonly-patch.yaml

@@ -1,13 +1,10 @@
-# Strategic-merge style notes for running the API in remote-agent mode.
-# Apply on top of the base API Deployment when workers should claim jobs
-# and upload run archives (base mounts are read-only for results-only UI).
+# Switch the default aio API Deployment to remote-agent execution mode.
+# Workers claim jobs and upload run archives (see agent-deployment.example.yaml).
 #
-# Required env (via Deployment env / Secret):
+# Required:
 #   OCTO_JOB_EXECUTION_MODE=agent
 #   OCTO_ALLOW_SCAN_START=true
 #   OCTO_AGENT_TOKEN=<from secret octo-man-agent>
-#
-# Volume mounts must be writable for ingest:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,12 +24,3 @@ spec:
                 secretKeyRef:
                   name: octo-man-agent
                   key: OCTO_AGENT_TOKEN
-          volumeMounts:
-            - name: data
-              mountPath: /app/scanner/output
-              subPath: output
-              readOnly: false
-            - name: data
-              mountPath: /app/scanner/state
-              subPath: state
-              readOnly: false

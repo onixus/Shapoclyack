@@ -2,6 +2,37 @@
 
 All notable changes to Octo-man are documented in this file.
 
+## [0.3.2.1] — 2026-07-16
+
+All-in-one release: Web UI can start scans by default.
+
+### Added
+
+- **All-in-one image** `ghcr.io/onixus/octo-man-aio` (`Dockerfile.allinone`): scanner tools + API + React UI + agent client
+- **`docker-compose.yml`**: one-command local stack with Jobs UI scan start enabled
+- Kustomize overlay `overlays/api-readonly` for the thin results-only API image
+
+### Changed
+
+- Default API Deployment uses **aio** image with `OCTO_ALLOW_SCAN_START=true`, writable PVC mounts, `NET_RAW`, and optional `scan-targets` inputs
+- GHCR publish matrix builds scanner, api, and aio (tag matching supports `v0.3.2.1`)
+- Phase 3 items (DefectDojo, PDF, remote agents, scan targets / UDP ports) are included in this release train
+
+### Images
+
+| Image | Tag |
+|-------|-----|
+| `ghcr.io/onixus/octo-man` | `0.3.2.1`, `latest` |
+| `ghcr.io/onixus/octo-man-api` | `0.3.2.1`, `latest` |
+| `ghcr.io/onixus/octo-man-aio` | `0.3.2.1`, `latest` |
+
+### Upgrade notes
+
+- Preferred local path: `docker compose up --build` → http://localhost:8080
+- Preferred cluster path: `kubectl apply -k k8s/octo-man/overlays/dev` (aio + UI job start)
+- For results-only API (no local scans): `kubectl apply -k k8s/octo-man/overlays/api-readonly`
+- Change default API demo passwords / set `OCTO_JWT_SECRET` before any real use
+
 ## [0.3.0] — 2026-07-16
 
 First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cutover.
@@ -27,14 +58,6 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 - Scanner and API container UIDs pinned to `1000` for Kubernetes `securityContext`
 - Restored GHCR publish workflow for both product images
 - Extracted reusable composite action `.github/actions/synthetic-load-test` for CI / heavy load workflows
-
-### Unreleased (Phase 3)
-
-- DefectDojo export: Generic Findings Import via `/api/v2/reimport-scan/` (`defectdojo.*`, `--export-defectdojo`, env `OCTO_DEFECTDOJO_*`)
-- Business PDF report: executive `summary.pdf` (`reporting.pdf_summary`, fpdf2)
-- Web UI / API scan targets: `ranges` / `domains` / `ports` on `POST /api/jobs` + Jobs page form; per-job input files + `--ports-file`
-- Remote agents: `OCTO_JOB_EXECUTION_MODE=agent`, shared `OCTO_AGENT_TOKEN`, `/api/agent/*` claim/upload API, `python -m agent` worker, Agents page
-- Web UI / API UDP ports: `ports_udp` on `POST /api/jobs` + Jobs form; `--ports-udp-file`; fluid dashboard layout
 
 ### Images
 
