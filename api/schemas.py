@@ -48,6 +48,24 @@ class VulnerabilityItem(BaseModel):
     country_iso: str | None = None
 
 
+class AliveHostItem(BaseModel):
+    host: str
+    hostname: str | None = None
+    names: list[str] = Field(default_factory=list)
+    country: str | None = None
+    city: str | None = None
+    country_iso: str | None = None
+    vulnerability_count: int = 0
+
+
+class PortAggregateItem(BaseModel):
+    port: str
+    protocol: str | None = None
+    host_count: int = 0
+    vulnerability_count: int = 0
+    hosts: list[str] = Field(default_factory=list)
+
+
 class StartScanRequest(BaseModel):
     mode: Literal["safe", "balanced", "fast"] = "balanced"
     delta: bool = False

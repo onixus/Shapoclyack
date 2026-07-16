@@ -35,6 +35,24 @@ export type Vulnerability = {
   country_iso: string | null;
 };
 
+export type AliveHost = {
+  host: string;
+  hostname: string | null;
+  names: string[];
+  country: string | null;
+  city: string | null;
+  country_iso: string | null;
+  vulnerability_count: number;
+};
+
+export type PortAggregate = {
+  port: string;
+  protocol: string | null;
+  host_count: number;
+  vulnerability_count: number;
+  hosts: string[];
+};
+
 export type JobInfo = {
   job_id: string;
   status: "queued" | "running" | "succeeded" | "failed";
@@ -120,13 +138,33 @@ export function fetchVulns(
   runId: string,
   limit = 5000,
   host?: string | null,
+  port?: string | null,
 ) {
   const params = new URLSearchParams({ limit: String(limit) });
   if (host) {
     params.set("host", host);
   }
+  if (port) {
+    params.set("port", port);
+  }
   return request<Vulnerability[]>(
     `/api/runs/${encodeURIComponent(runId)}/vulnerabilities?${params}`,
+    {},
+    token,
+  );
+}
+
+export function fetchHosts(token: string, runId: string, limit = 10000) {
+  return request<AliveHost[]>(
+    `/api/runs/${encodeURIComponent(runId)}/hosts?limit=${limit}`,
+    {},
+    token,
+  );
+}
+
+export function fetchPorts(token: string, runId: string, limit = 10000) {
+  return request<PortAggregate[]>(
+    `/api/runs/${encodeURIComponent(runId)}/ports?limit=${limit}`,
     {},
     token,
   );

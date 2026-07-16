@@ -447,6 +447,7 @@ select {
 }
 
 .metric-strip > div,
+.metric-btn,
 .panel {
   background: rgba(255, 255, 255, 0.58);
   border: 1px solid var(--line);
@@ -454,16 +455,106 @@ select {
   padding: 1rem 1.1rem;
 }
 
-.metric-strip strong {
+.metric-btn {
+  display: grid;
+  gap: 0.15rem;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.metric-btn:hover,
+.metric-btn.active {
+  transform: translateY(-1px);
+  border-color: rgba(15, 138, 122, 0.4);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.metric-strip strong,
+.metric-btn strong {
   display: block;
   font-family: var(--font-display);
   font-size: 1.6rem;
   letter-spacing: -0.03em;
 }
 
-.metric-strip span {
+.metric-strip span,
+.metric-btn span {
   color: rgba(7, 22, 26, 0.62);
   font-size: 0.9rem;
+}
+
+.metric-hint {
+  font-size: 0.78rem !important;
+  font-weight: 600;
+  color: var(--teal-deep) !important;
+}
+
+.explore-scroll {
+  max-height: min(40vh, 26rem);
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  margin-top: 0.35rem;
+  padding-top: 0.65rem;
+}
+
+.explore-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.explore-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.35);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.explore-row:hover,
+.explore-row.active {
+  border-color: rgba(15, 138, 122, 0.35);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.explore-main {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.explore-main strong {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  margin: 0 0 0.85rem;
+}
+
+.metric-tag {
+  border-radius: 0.55rem;
+  padding: 0.18rem 0.5rem;
+  font-weight: 700;
+  font-size: 0.78rem;
+  background: rgba(15, 138, 122, 0.12);
+  color: var(--teal-deep);
 }
 
 .panel h2 {
@@ -600,36 +691,6 @@ select {
   text-align: right;
 }
 
-.vuln-filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 0.75rem 1rem;
-  margin: 0 0 0.85rem;
-}
-
-.vuln-filter {
-  display: grid;
-  gap: 0.3rem;
-  min-width: min(100%, 16rem);
-}
-
-.vuln-filter span {
-  font-size: 0.8rem;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.vuln-filter select {
-  width: 100%;
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--line);
-  border-radius: 0.55rem;
-  background: rgba(255, 255, 255, 0.7);
-  color: inherit;
-  font: inherit;
-}
-
 .vuln-groups {
   display: grid;
   gap: 0.75rem;
@@ -704,6 +765,11 @@ select {
   color: var(--teal-deep);
   font-size: 0.85rem;
   font-weight: 600;
+}
+
+.vuln-geo.missing {
+  color: rgba(7, 22, 26, 0.45);
+  font-weight: 500;
 }
 
 @media (max-width: 720px) {

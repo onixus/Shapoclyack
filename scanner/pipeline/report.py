@@ -270,8 +270,8 @@ def build_reports(
         }
         for host in sorted(set(alive_hosts))
     ]
-    if hostnames or geo_map:
-        save_json(output_dir / "alive_hosts.json", alive_rows)
+    # Always export so the Web UI can list targets (with GeoIP when available).
+    save_json(output_dir / "alive_hosts.json", alive_rows)
     if geo_map:
         save_json(output_dir / "geoip.json", geo_map)
 

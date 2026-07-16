@@ -77,6 +77,33 @@ def _write_run(root: Path, run_id: str) -> None:
         ),
         encoding="utf-8",
     )
+    (run_dir / "alive_hosts.json").write_text(
+        json.dumps(
+            [
+                {
+                    "host": "10.0.0.1",
+                    "hostname": "alpha.lab",
+                    "names": ["alpha.lab"],
+                    "country": "United States",
+                    "city": "Ashburn",
+                    "country_iso": "US",
+                },
+                {
+                    "host": "10.0.0.2",
+                    "hostname": "",
+                    "names": [],
+                    "country": "Germany",
+                    "city": "Berlin",
+                    "country_iso": "DE",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "open_ports.txt").write_text(
+        "10.0.0.1:22/tcp\n10.0.0.2:80/tcp\n10.0.0.3:443/tcp\n10.0.0.1:443/tcp\n",
+        encoding="utf-8",
+    )
     (run_dir / "diff.json").write_text(
         json.dumps({"has_changes": True, "counts": {"hosts_added": 1, "hosts_removed": 0}}),
         encoding="utf-8",
@@ -133,6 +160,26 @@ def test_list_and_get_run(tmp_path: Path):
     filtered = client.get("/api/runs/run-a/vulnerabilities?host=10.0.0.1", headers=headers)
     assert filtered.status_code == 200
     assert [item["cve"] for item in filtered.json()] == ["CVE-2020-1"]
+
+    by_port = client.get("/api/runs/run-a/vulnerabilities?port=443", headers=headers)
+    assert by_port.status_code == 200
+    assert [item["cve"] for item in by_port.json()] == ["CVE-2020-0"]
+
+    hosts = client.get("/api/runs/run-a/hosts", headers=headers)
+    assert hosts.status_code == 200
+    host_payload = hosts.json()
+    assert {row["host"] for row in host_payload} == {"10.0.0.1", "10.0.0.2"}
+    ashburn = next(row for row in host_payload if row["host"] == "10.0.0.1")
+    assert ashburn["city"] == "Ashburn"
+    assert ashburn["country"] == "United States"
+    assert ashburn["vulnerability_count"] == 1
+
+    ports = client.get("/api/runs/run-a/ports", headers=headers)
+    assert ports.status_code == 200
+    port_map = {row["port"]: row for row in ports.json()}
+    assert port_map["443"]["host_count"] == 2
+    assert port_map["22"]["host_count"] == 1
+    assert port_map["443"]["vulnerability_count"] == 1
 
     diff = client.get("/api/runs/run-a/diff", headers=headers)
     assert diff.status_code == 200

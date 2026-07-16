@@ -1,17 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { fetchRun, fetchVulns, type RunDetail, type Vulnerability } from "../api";
+import {
+  fetchHosts,
+  fetchPorts,
+  fetchRun,
+  fetchVulns,
+  type AliveHost,
+  type PortAggregate,
+  type RunDetail,
+  type Vulnerability,
+} from "../api";
 import { useAuth } from "../auth";
 
 const SEVERITIES = ["critical", "high", "medium", "low", "unknown"] as const;
 type Severity = (typeof SEVERITIES)[number];
+type FocusPanel = "none" | "hosts" | "ports";
 
 function normalizeSeverity(value: string | null | undefined): Severity {
   const key = (value || "unknown").toLowerCase();
   return (SEVERITIES as readonly string[]).includes(key) ? (key as Severity) : "unknown";
 }
 
-function formatLocation(item: Vulnerability): string {
+function formatLocation(item: { city?: string | null; country?: string | null; country_iso?: string | null }): string {
   const bits = [item.city, item.country].filter(Boolean);
   if (bits.length === 0 && item.country_iso) {
     return item.country_iso;
@@ -46,7 +56,6 @@ function countBySeverity(
       counts[key] = fromSummary;
     }
   }
-  // Prefer live list counts when they are available (and may exceed summary).
   if (vulns.length > 0) {
     const live: Record<Severity, number> = {
       critical: 0,
@@ -68,9 +77,13 @@ export default function RunDetailPage() {
   const { token } = useAuth();
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [vulns, setVulns] = useState<Vulnerability[]>([]);
+  const [hosts, setHosts] = useState<AliveHost[]>([]);
+  const [ports, setPorts] = useState<PortAggregate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activeSeverity, setActiveSeverity] = useState<Severity | "all">("all");
-  const [activeTarget, setActiveTarget] = useState<string>("all");
+  const [activeHost, setActiveHost] = useState<string | null>(null);
+  const [activePort, setActivePort] = useState<string | null>(null);
+  const [focusPanel, setFocusPanel] = useState<FocusPanel>("none");
   const [openGroups, setOpenGroups] = useState<Record<Severity, boolean>>({
     critical: true,
     high: true,
@@ -84,13 +97,17 @@ export default function RunDetailPage() {
     async function load() {
       if (!token || !runId) return;
       try {
-        const [run, findings] = await Promise.all([
+        const [run, findings, hostRows, portRows] = await Promise.all([
           fetchRun(token, runId),
           fetchVulns(token, runId, 5000),
+          fetchHosts(token, runId),
+          fetchPorts(token, runId),
         ]);
         if (!cancelled) {
           setDetail(run);
           setVulns(findings);
+          setHosts(hostRows);
+          setPorts(portRows);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load run");
@@ -112,18 +129,35 @@ export default function RunDetailPage() {
     Number(summary.potential_vulnerabilities ?? 0) ||
     SEVERITIES.reduce((sum, key) => sum + severityCounts[key], 0);
 
-  const targetOptions = useMemo(() => {
-    const hosts = new Set<string>();
-    for (const item of vulns) {
-      if (item.host) hosts.add(item.host);
+  const geoByHost = useMemo(() => {
+    const map = new Map<string, AliveHost>();
+    for (const host of hosts) {
+      map.set(host.host, host);
     }
-    return Array.from(hosts).sort((a, b) => a.localeCompare(b));
-  }, [vulns]);
+    return map;
+  }, [hosts]);
 
   const filteredVulns = useMemo(() => {
-    if (activeTarget === "all") return vulns;
-    return vulns.filter((item) => item.host === activeTarget);
-  }, [vulns, activeTarget]);
+    return vulns.filter((item) => {
+      if (activeHost && item.host !== activeHost) return false;
+      if (activePort && item.port !== activePort) return false;
+      return true;
+    });
+  }, [vulns, activeHost, activePort]);
+
+  const enrichedVulns = useMemo(() => {
+    return filteredVulns.map((item) => {
+      if (item.country || item.city || item.country_iso || !item.host) return item;
+      const geo = geoByHost.get(item.host);
+      if (!geo) return item;
+      return {
+        ...item,
+        country: geo.country,
+        city: geo.city,
+        country_iso: geo.country_iso,
+      };
+    });
+  }, [filteredVulns, geoByHost]);
 
   const grouped = useMemo(() => {
     const groups: Record<Severity, Vulnerability[]> = {
@@ -133,11 +167,11 @@ export default function RunDetailPage() {
       low: [],
       unknown: [],
     };
-    for (const item of filteredVulns) {
+    for (const item of enrichedVulns) {
       groups[normalizeSeverity(item.severity)].push(item);
     }
     return groups;
-  }, [filteredVulns]);
+  }, [enrichedVulns]);
 
   const filteredSeverityCounts = useMemo(() => {
     const counts: Record<Severity, number> = {
@@ -147,20 +181,52 @@ export default function RunDetailPage() {
       low: 0,
       unknown: 0,
     };
-    for (const item of filteredVulns) {
+    for (const item of enrichedVulns) {
       counts[normalizeSeverity(item.severity)] += 1;
     }
     return counts;
-  }, [filteredVulns]);
+  }, [enrichedVulns]);
+
+  const filtersActive = Boolean(activeHost || activePort);
+  const displayTotal = filtersActive ? enrichedVulns.length : totalVulns;
+  const displaySeverityCounts = filtersActive ? filteredSeverityCounts : severityCounts;
+  const displayMaxSeverity = Math.max(1, ...SEVERITIES.map((key) => displaySeverityCounts[key]));
 
   const visibleSeverities = SEVERITIES.filter((key) =>
     activeSeverity === "all"
-      ? filteredSeverityCounts[key] > 0 || grouped[key].length > 0
+      ? displaySeverityCounts[key] > 0 || grouped[key].length > 0
       : key === activeSeverity,
   );
 
+  const hostsWithGeo = hosts.filter((h) => h.country || h.city || h.country_iso).length;
+
   function toggleGroup(key: Severity) {
     setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  function toggleHostsPanel() {
+    setFocusPanel((prev) => (prev === "hosts" ? "none" : "hosts"));
+  }
+
+  function togglePortsPanel() {
+    setFocusPanel((prev) => (prev === "ports" ? "none" : "ports"));
+  }
+
+  function selectHost(host: string) {
+    setActiveHost((prev) => (prev === host ? null : host));
+    setActivePort(null);
+    setFocusPanel("hosts");
+  }
+
+  function selectPort(port: string) {
+    setActivePort((prev) => (prev === port ? null : port));
+    setActiveHost(null);
+    setFocusPanel("ports");
+  }
+
+  function clearFilters() {
+    setActiveHost(null);
+    setActivePort(null);
   }
 
   if (error) {
@@ -179,9 +245,6 @@ export default function RunDetailPage() {
   }
 
   const counts = (detail.diff?.counts || null) as Record<string, number> | null;
-  const displayTotal = activeTarget === "all" ? totalVulns : filteredVulns.length;
-  const displaySeverityCounts = activeTarget === "all" ? severityCounts : filteredSeverityCounts;
-  const displayMaxSeverity = Math.max(1, ...SEVERITIES.map((key) => displaySeverityCounts[key]));
 
   return (
     <section className="stack run-detail">
@@ -190,18 +253,37 @@ export default function RunDetailPage() {
       </Link>
       <header className="section-head">
         <h1>{detail.run_id}</h1>
-        <p>Pipeline artifacts and vulnerability findings for this run.</p>
+        <p>Click Alive hosts or Open ports to explore targets, GeoIP, and port aggregation.</p>
       </header>
 
       <div className="metric-strip">
-        <div>
-          <strong>{String(summary.alive_hosts ?? "—")}</strong>
+        <button
+          type="button"
+          className={`metric-btn ${focusPanel === "hosts" ? "active" : ""}`}
+          onClick={toggleHostsPanel}
+          aria-pressed={focusPanel === "hosts"}
+        >
+          <strong>{String(summary.alive_hosts ?? hosts.length ?? "—")}</strong>
           <span>Alive hosts</span>
-        </div>
-        <div>
-          <strong>{String(summary.open_host_port_pairs ?? "—")}</strong>
+          <span className="metric-hint">
+            {hostsWithGeo > 0 ? `${hostsWithGeo} with GeoIP` : "show targets"}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={`metric-btn ${focusPanel === "ports" ? "active" : ""}`}
+          onClick={togglePortsPanel}
+          aria-pressed={focusPanel === "ports"}
+        >
+          <strong>
+            {String(
+              summary.open_host_port_pairs ??
+                (ports.reduce((n, p) => n + p.host_count, 0) || "—"),
+            )}
+          </strong>
           <span>Open ports</span>
-        </div>
+          <span className="metric-hint">{ports.length} distinct ports</span>
+        </button>
         <div>
           <strong>{String(totalVulns || "—")}</strong>
           <span>Vulnerabilities</span>
@@ -212,13 +294,99 @@ export default function RunDetailPage() {
         </div>
       </div>
 
+      {focusPanel === "hosts" ? (
+        <div className="panel explore-panel">
+          <div className="vulns-panel-head">
+            <h2>Alive hosts</h2>
+            <p className="muted">
+              {hosts.length} targets · click a host to filter findings
+              {activeHost ? ` · selected ${activeHost}` : ""}
+            </p>
+          </div>
+          {hosts.length === 0 ? (
+            <p className="muted">No alive hosts recorded for this run.</p>
+          ) : (
+            <div className="explore-scroll">
+              <ul className="explore-list">
+                {hosts.map((host) => {
+                  const location = formatLocation(host);
+                  return (
+                    <li key={host.host}>
+                      <button
+                        type="button"
+                        className={`explore-row ${activeHost === host.host ? "active" : ""}`}
+                        onClick={() => selectHost(host.host)}
+                      >
+                        <span className="explore-main">
+                          <strong>{host.host}</strong>
+                          <span className="muted">
+                            {host.hostname || (host.names[0] ?? "no hostname")}
+                            {host.vulnerability_count
+                              ? ` · ${host.vulnerability_count} vulns`
+                              : " · no vulns"}
+                          </span>
+                        </span>
+                        <span className={`vuln-geo ${location ? "" : "missing"}`}>
+                          {location || "No GeoIP"}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {focusPanel === "ports" ? (
+        <div className="panel explore-panel">
+          <div className="vulns-panel-head">
+            <h2>Open ports (aggregated)</h2>
+            <p className="muted">
+              {ports.length} ports · click a port to filter findings
+              {activePort ? ` · selected :${activePort}` : ""}
+            </p>
+          </div>
+          {ports.length === 0 ? (
+            <p className="muted">No open ports recorded for this run.</p>
+          ) : (
+            <div className="explore-scroll">
+              <ul className="explore-list">
+                {ports.map((row) => (
+                  <li key={`${row.port}/${row.protocol || "tcp"}`}>
+                    <button
+                      type="button"
+                      className={`explore-row ${activePort === row.port ? "active" : ""}`}
+                      onClick={() => selectPort(row.port)}
+                    >
+                      <span className="explore-main">
+                        <strong>
+                          :{row.port}
+                          {row.protocol ? `/${row.protocol}` : ""}
+                        </strong>
+                        <span className="muted">
+                          {row.host_count} hosts
+                          {row.vulnerability_count ? ` · ${row.vulnerability_count} vulns` : ""}
+                        </span>
+                      </span>
+                      <span className="metric-tag">{row.host_count}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      ) : null}
+
       <div className="panel severity-dashboard">
         <div className="severity-dashboard-head">
           <h2>Severity dashboard</h2>
           <p className="muted">
-            {displayTotal} findings · click a row to filter · {filteredVulns.length} shown
-            {activeTarget !== "all" ? ` for ${activeTarget}` : ""}
-            {totalVulns > vulns.length ? ` of ${totalVulns}` : ""}
+            {displayTotal} findings · click a row to filter severity
+            {activeHost ? ` · host ${activeHost}` : ""}
+            {activePort ? ` · port ${activePort}` : ""}
           </p>
         </div>
         <div className="severity-scale">
@@ -271,33 +439,23 @@ export default function RunDetailPage() {
       <div className="panel vulns-panel">
         <div className="vulns-panel-head">
           <h2>Vulnerabilities by severity</h2>
-          <p className="muted">Grouped findings with GeoIP location and target filter.</p>
+          <p className="muted">
+            GeoIP shown per finding
+            {filtersActive ? " · filtered view" : ""}.
+          </p>
         </div>
 
-        <div className="vuln-filters">
-          <label className="vuln-filter">
-            <span>Target</span>
-            <select
-              value={activeTarget}
-              onChange={(event) => setActiveTarget(event.target.value)}
-              aria-label="Filter vulnerabilities by target"
-            >
-              <option value="all">All targets ({targetOptions.length})</option>
-              {targetOptions.map((host) => (
-                <option key={host} value={host}>
-                  {host}
-                </option>
-              ))}
-            </select>
-          </label>
-          {activeTarget !== "all" ? (
-            <button type="button" className="ghost-btn" onClick={() => setActiveTarget("all")}>
-              Clear target filter
+        {filtersActive ? (
+          <div className="active-filters">
+            {activeHost ? <span className="pill">host {activeHost}</span> : null}
+            {activePort ? <span className="pill">port {activePort}</span> : null}
+            <button type="button" className="ghost-btn" onClick={clearFilters}>
+              Clear filters
             </button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
-        {filteredVulns.length === 0 ? <p className="muted">No vulnerability findings.</p> : null}
+        {enrichedVulns.length === 0 ? <p className="muted">No vulnerability findings.</p> : null}
 
         <div className="vuln-groups">
           {visibleSeverities.map((key) => {
@@ -330,11 +488,9 @@ export default function RunDetailPage() {
                                 {item.port ? `:${item.port}` : ""}
                                 {item.script_id && item.cve ? ` · ${item.script_id}` : ""}
                               </span>
-                              {location ? (
-                                <span className="vuln-geo" title={item.country_iso || undefined}>
-                                  {location}
-                                </span>
-                              ) : null}
+                              <span className={`vuln-geo ${location ? "" : "missing"}`}>
+                                {location || "No GeoIP"}
+                              </span>
                             </span>
                           </li>
                         );

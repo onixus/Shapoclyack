@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from api.schemas import RunDetail, RunSummary, VulnerabilityItem
+from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.settings import Settings
 
 
@@ -15,6 +15,60 @@ def _load_json(path: Path) -> Any | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+
+
+def _read_lines(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _parse_endpoint(value: str) -> tuple[str, str, str | None]:
+    """Return (host, port, protocol) from ``host:port[/proto]`` (IPv6 bracketed)."""
+    raw = value.strip()
+    protocol: str | None = None
+    if raw.endswith("/tcp"):
+        protocol = "tcp"
+        raw = raw[: -len("/tcp")]
+    elif raw.endswith("/udp"):
+        protocol = "udp"
+        raw = raw[: -len("/udp")]
+    if raw.startswith("[") and "]" in raw:
+        host, _, rest = raw.partition("]")
+        host = host[1:]
+        port = rest[1:] if rest.startswith(":") else rest
+        return host, port, protocol
+    if ":" in raw:
+        host, _, port = raw.rpartition(":")
+        return host, port, protocol
+    return raw, "", protocol
+
+
+def _geo_map(run_dir: Path) -> dict[str, dict[str, str | None]]:
+    out: dict[str, dict[str, str | None]] = {}
+    geo = _load_json(run_dir / "geoip.json")
+    if isinstance(geo, dict):
+        for host, value in geo.items():
+            if isinstance(value, dict):
+                out[str(host)] = {
+                    "country": value.get("country") or None,
+                    "city": value.get("city") or None,
+                    "country_iso": value.get("country_iso") or None,
+                }
+    alive = _load_json(run_dir / "alive_hosts.json")
+    if isinstance(alive, list):
+        for row in alive:
+            if not isinstance(row, dict) or not row.get("host"):
+                continue
+            host = str(row["host"])
+            current = out.setdefault(host, {"country": None, "city": None, "country_iso": None})
+            if not current.get("country") and row.get("country"):
+                current["country"] = row.get("country")
+            if not current.get("city") and row.get("city"):
+                current["city"] = row.get("city")
+            if not current.get("country_iso") and row.get("country_iso"):
+                current["country_iso"] = row.get("country_iso")
+    return out
 
 
 def _run_dirs(settings: Settings) -> list[Path]:
@@ -104,6 +158,7 @@ def get_vulnerabilities(
     *,
     limit: int = 5000,
     host: str | None = None,
+    port: str | None = None,
 ) -> list[VulnerabilityItem] | None:
     run_dir = get_run_dir(settings, run_id)
     if run_dir is None:
@@ -114,17 +169,24 @@ def get_vulnerabilities(
     if not isinstance(raw, list):
         return []
     host_filter = host.strip().lower() if host else None
+    port_filter = port.strip() if port else None
+    geo = _geo_map(run_dir)
     items: list[VulnerabilityItem] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
         entry_host = entry.get("host")
+        entry_port = str(entry.get("port")) if entry.get("port") is not None else None
         if host_filter and str(entry_host or "").lower() != host_filter:
             continue
+        if port_filter and (entry_port or "") != port_filter:
+            continue
+        host_key = str(entry_host or "")
+        geo_hit = geo.get(host_key, {})
         items.append(
             VulnerabilityItem(
                 host=entry_host,
-                port=str(entry.get("port")) if entry.get("port") is not None else None,
+                port=entry_port,
                 cve=entry.get("cve"),
                 cvss=entry.get("cvss"),
                 cvss4=entry.get("cvss4"),
@@ -132,9 +194,9 @@ def get_vulnerabilities(
                 cvss4_severity=entry.get("cvss4_severity"),
                 severity=entry.get("severity"),
                 script_id=entry.get("script_id"),
-                country=entry.get("country"),
-                city=entry.get("city"),
-                country_iso=entry.get("country_iso"),
+                country=entry.get("country") or geo_hit.get("country"),
+                city=entry.get("city") or geo_hit.get("city"),
+                country_iso=entry.get("country_iso") or geo_hit.get("country_iso"),
             )
         )
     items.sort(
@@ -143,6 +205,117 @@ def get_vulnerabilities(
             -(float(item.cvss4) if item.cvss4 is not None else (float(item.cvss) if item.cvss is not None else -1.0)),
             str(item.host or ""),
             str(item.cve or ""),
+        )
+    )
+    return items[:limit]
+
+
+def get_hosts(settings: Settings, run_id: str, *, limit: int = 10000) -> list[AliveHostItem] | None:
+    run_dir = get_run_dir(settings, run_id)
+    if run_dir is None:
+        return None
+    geo = _geo_map(run_dir)
+    vulns = _load_json(run_dir / "vulnerabilities.json")
+    vuln_counts: dict[str, int] = {}
+    if isinstance(vulns, list):
+        for entry in vulns:
+            if isinstance(entry, dict) and entry.get("host"):
+                vuln_counts[str(entry["host"])] = vuln_counts.get(str(entry["host"]), 0) + 1
+
+    rows: list[AliveHostItem] = []
+    alive = _load_json(run_dir / "alive_hosts.json")
+    if isinstance(alive, list) and alive:
+        for entry in alive:
+            if not isinstance(entry, dict) or not entry.get("host"):
+                continue
+            host = str(entry["host"])
+            geo_hit = geo.get(host, {})
+            names = entry.get("names") if isinstance(entry.get("names"), list) else []
+            rows.append(
+                AliveHostItem(
+                    host=host,
+                    hostname=entry.get("hostname") or None,
+                    names=[str(n) for n in names],
+                    country=entry.get("country") or geo_hit.get("country"),
+                    city=entry.get("city") or geo_hit.get("city"),
+                    country_iso=entry.get("country_iso") or geo_hit.get("country_iso"),
+                    vulnerability_count=vuln_counts.get(host, 0),
+                )
+            )
+    else:
+        for host in _read_lines(run_dir / "alive_ips.txt"):
+            geo_hit = geo.get(host, {})
+            rows.append(
+                AliveHostItem(
+                    host=host,
+                    country=geo_hit.get("country"),
+                    city=geo_hit.get("city"),
+                    country_iso=geo_hit.get("country_iso"),
+                    vulnerability_count=vuln_counts.get(host, 0),
+                )
+            )
+    rows.sort(key=lambda item: (-item.vulnerability_count, item.host))
+    return rows[:limit]
+
+
+def get_ports(settings: Settings, run_id: str, *, limit: int = 10000) -> list[PortAggregateItem] | None:
+    run_dir = get_run_dir(settings, run_id)
+    if run_dir is None:
+        return None
+
+    # port_key -> {protocol, hosts}
+    buckets: dict[str, dict[str, Any]] = {}
+    for line in _read_lines(run_dir / "open_ports.txt"):
+        host, port, protocol = _parse_endpoint(line)
+        if not port:
+            continue
+        key = f"{port}/{(protocol or 'tcp')}"
+        bucket = buckets.setdefault(key, {"port": port, "protocol": protocol or "tcp", "hosts": set()})
+        if host:
+            bucket["hosts"].add(host)
+
+    findings = _load_json(run_dir / "findings.json")
+    if isinstance(findings, list):
+        for entry in findings:
+            if not isinstance(entry, dict):
+                continue
+            port = str(entry.get("port") or "")
+            if not port:
+                continue
+            protocol = str(entry.get("protocol") or "tcp")
+            host = str(entry.get("host") or "")
+            key = f"{port}/{protocol}"
+            bucket = buckets.setdefault(key, {"port": port, "protocol": protocol, "hosts": set()})
+            if host:
+                bucket["hosts"].add(host)
+
+    vulns = _load_json(run_dir / "vulnerabilities.json")
+    vuln_by_port: dict[str, int] = {}
+    if isinstance(vulns, list):
+        for entry in vulns:
+            if isinstance(entry, dict) and entry.get("port") is not None:
+                p = str(entry["port"])
+                vuln_by_port[p] = vuln_by_port.get(p, 0) + 1
+
+    items: list[PortAggregateItem] = []
+    for bucket in buckets.values():
+        hosts = sorted(bucket["hosts"])
+        port = str(bucket["port"])
+        items.append(
+            PortAggregateItem(
+                port=port,
+                protocol=bucket.get("protocol"),
+                host_count=len(hosts),
+                vulnerability_count=vuln_by_port.get(port, 0),
+                hosts=hosts[:200],
+            )
+        )
+    items.sort(
+        key=lambda item: (
+            -item.host_count,
+            -item.vulnerability_count,
+            int(item.port) if item.port.isdigit() else 0,
+            item.port,
         )
     )
     return items[:limit]

@@ -110,6 +110,8 @@ def test_build_reports_writes_vuln_and_os_artifacts(tmp_path: Path):
     assert vulns[0]["severity"] == "critical"
 
     assert (output_dir / "vulnerabilities.csv").exists()
+    alive = json.loads((output_dir / "alive_hosts.json").read_text(encoding="utf-8"))
+    assert alive[0]["host"] == "10.0.0.5"
 
     md = (output_dir / "summary.md").read_text(encoding="utf-8")
     assert "Vulnerabilities" in md
