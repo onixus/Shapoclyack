@@ -21,7 +21,7 @@ COPY scanner /app/scanner
 COPY api /app/api
 COPY --from=web-build /web/dist /app/web/dist
 
-RUN useradd --create-home --shell /usr/sbin/nologin octo && \
+RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
     mkdir -p /app/scanner/output /app/scanner/state && \
     chown -R octo:octo /app
 USER octo

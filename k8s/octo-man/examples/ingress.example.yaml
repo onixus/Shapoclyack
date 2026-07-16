@@ -1,0 +1,24 @@
+# Optional Ingress for the dashboard/API. Adjust className and host for your cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: octo-man-api
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: api
+  annotations:
+    # nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: octo-man.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: octo-man-api
+                port:
+                  number: 8080

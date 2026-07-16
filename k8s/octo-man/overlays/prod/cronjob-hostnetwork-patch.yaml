@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: network-scan-scheduled
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          nodeSelector:
+            workload: scanner
+          tolerations:
+            - key: scanner
+              operator: Equal
+              value: "true"
+              effect: NoSchedule

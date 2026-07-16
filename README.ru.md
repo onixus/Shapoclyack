@@ -12,81 +12,72 @@
 - этапы: `resolve -> discovery -> hostname enrichment -> fast ports -> Nmap NSE (версии сервисов/ОС + уязвимости/CVE)`
 - выход: `JSON/JSONL/CSV` + сводка `Markdown/HTML`
 
+## Kubernetes (основной способ запуска)
+
+Полная инструкция: [k8s/README.md](k8s/README.md).
+
+```bash
+docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
+docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
+kubectl apply -k k8s/octo-man/overlays/dev
+kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
+```
+
 ## Phase 2: API, дашборд и RBAC
 
 ```bash
-docker compose up --build api
+kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 # UI: http://localhost:8080
 ```
 
 Роли: `viewer` (чтение прогонов), `operator` (запуск jobs), `admin` (зарезервировано).  
 Демо-пользователи: `viewer` / `operator` / `admin` с паролями `*-change-me` — сразу смените.
-Секрет JWT: `OCTO_JWT_SECRET`. Список пользователей: `OCTO_API_USERS` (JSON).
+Секрет JWT: `OCTO_JWT_SECRET` / Secret `octo-man-api`.
 
-Запуск сканов из API-образа по умолчанию выключен (`OCTO_ALLOW_SCAN_START=false`): в образе API
-нет naabu/nmap. Сканируйте через `docker compose run scanner …`, результаты смотрите в UI.
+Запуск сканов из API-образа по умолчанию выключен (`OCTO_ALLOW_SCAN_START=false`).
+Сканируйте через `Job`/`CronJob`, результаты смотрите в UI (общий PVC).
 
 ## Быстрый старт
 
-### 1) Сборка
+### 1) Сборка образов
 
 ```bash
-docker compose build
+docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
+docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
 ```
 
-### 2) Подготовка входов
+### 2) Подготовка входов и деплой
 
-Заполните:
-- `scanner/inputs/ranges.txt`
-- `scanner/inputs/domains.txt`
-- при необходимости `scanner/inputs/ports.txt` и `scanner/inputs/ports_udp.txt`
-
-### 3) Запуск
+Заполните `scanner/inputs/{ranges,domains,ports}.txt`, создайте Secret `scan-targets`, затем:
 
 ```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced
+kubectl apply -k k8s/octo-man/overlays/dev
+kubectl -n network-scan logs -f job/network-scan
 ```
 
-> В `docker-compose.yml` по умолчанию задан `--mode fast` при запуске `docker compose up scanner`
-> без переопределения `command`. В примерах ниже явно указан `balanced`.
+### 3) Локальный one-shot без кластера (опционально)
+
+```bash
+docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+  -v "$PWD/scanner:/app/scanner" ghcr.io/onixus/octo-man:local \
+  --config scanner/config/default.yaml --mode balanced
+```
 
 ### 4) Возобновление после прерывания
 
 ```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --resume
+kubectl apply -f k8s/octo-man/base/job-resume.yaml
 ```
 
-С включённым `per_run_output` (по умолчанию) resume продолжает последний прогон из
-`scanner/state/latest_run.json` или явный id:
+### 5) L1-скан, затем NSE
 
-```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced \
-  --resume --run-id 20260626T104530Z
-```
-
-### 5) L1-скан, затем NSE отдельным прогоном
-
-Быстрый проход (discover + ports + отчёты без NSE), затем обогащение через `--resume`:
-
-```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --skip-nse
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --resume
-```
-
-Или `runtime.skip_nse: true` в конфиге. Удобно для больших сетей: сначала живые хосты и порты, потом Nmap/NSE.
+`--skip-nse` на первом Job, затем `job-resume.yaml` / `--resume`.  
+Или `runtime.skip_nse: true` в конфиге.
 
 ### 6) Инкрементальный (delta) discovery
 
-Повторный проход только по новым хостам в scope и случайной выборке уже известных alive.
-Требует предыдущего полного baseline-прогона с `per_run_output: true`:
-
-```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --delta
-```
-
-Или `discovery.delta.enabled: true` в конфиге. Опционально `discovery.seed_alive_file` —
-предзаполнение alive из CMDB/DHCP. **Не** используйте delta на первом скане, после смены
-диапазонов или когда нужен полный baseline.
+CronJob уже передаёт `--delta`. Для one-shot добавьте флаг в args Job или локальный `docker run … --delta`.
+**Не** используйте delta на первом скане / после смены диапазонов.
 
 ## Валидация конфигурации
 
@@ -117,9 +108,7 @@ YAML проверяется при старте через **Pydantic** (`scanne
 ## Логирование и лимиты
 
 - Ротация логов: `pipeline.log` с `log_max_bytes` / `log_backup_count` в `runtime:`.
-- `docker-compose.yml`: `mem_limit: 8g`, `cpus: "8.0"`, ulimits `nproc`/`nofile` — под
-  агрессивный скан (`--mode fast`: 8× nmap + 4× naabu). Для `safe`/`balanced` на слабом
-  хосте уменьшите лимиты.
+- Kubernetes Job/CronJob: requests/limits `4–8 CPU` / `4–8Gi` (overlay `dev` снижает лимиты).
 
 ## Рекомендации по профилям и rate-limit
 
@@ -161,35 +150,19 @@ YAML проверяется при старте через **Pydantic** (`scanne
 открытые порты и CVE с предыдущим `run_id` из `latest_run.json`:
 
 ```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced \
-  --compare-run-id 20260626T104530Z
+# diff пишется автоматически между прогонами Job/CronJob
 ```
 
 Отключить: `--no-diff`.
 
 ### Оповещения Slack / Telegram
 
-```bash
-export OCTO_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
-export OCTO_TELEGRAM_BOT_TOKEN="123:abc"
-export OCTO_TELEGRAM_CHAT_ID="-100123"
-docker compose run --rm -e OCTO_SLACK_WEBHOOK -e OCTO_TELEGRAM_BOT_TOKEN -e OCTO_TELEGRAM_CHAT_ID \
-  scanner --config scanner/config/default.yaml --mode balanced --notify
-```
-
-`alerts.on_diff_only: true` — слать только при изменениях в diff. Сбой доставки не валит скан.
+Secret `octo-man-alerts` + `--notify` на Job, либо `alerts.enabled: true` в YAML.
+`alerts.on_diff_only: true` — слать только при изменениях в diff.
 
 ### Планировщик задач
 
-```bash
-python -m scanner.scheduler --config scanner/config/default.yaml --dry-run
-python -m scanner.scheduler --config scanner/config/default.yaml --once
-docker compose --profile scheduler up scheduler
-```
-
-`scheduler.cron` — 5 полей UTC; `interval_seconds > 0` заменяет cron. В проде удобнее
-системный cron + `docker compose run --rm scanner …`.
+В кластере — `CronJob/network-scan-scheduled`. Локально: `python -m scanner.scheduler --once`.
 
 ## Батчинг и возобновление (resume)
 
@@ -295,7 +268,7 @@ Checkpoint NSE: ключи `host/tcp` и `host/udp`. XML — в `nmap/tcp/` и `
 - `runtime.nse_max_rate` / `profiles.<name>.nse_max_rate` — глобальный бюджет пакетов/сек на этап NSE/OS. Делится между параллельными процессами nmap (каждый получает `nse_max_rate / nse_concurrency` через `nmap --max-rate`). `0` — без ограничения (полагаемся на тайминг-шаблон). Так совокупный шум скана остаётся ограниченным независимо от уровня параллелизма.
 - `runtime.nse_timeout_seconds` — таймаут nmap на один хост (отдельно от глобального `timeout_seconds`; максимум **600** с / 10 мин).
 - `runtime.skip_nse` / флаг `--skip-nse` — пропустить NSE (L1: discover + ports + отчёты); затем `--resume` для обогащения.
-- `nse_profiles.<name>.os_detection: true` включает `nmap -O --osscan-guess`. Требует raw-сокетов (`NET_RAW`/`NET_ADMIN`, уже выданы в `docker-compose.yml`).
+- `nse_profiles.<name>.os_detection: true` включает `nmap -O --osscan-guess`. Требует raw-сокетов (`NET_RAW`/`NET_ADMIN` в Job/CronJob securityContext).
 
 Артефакты по ОС и уязвимостям: `scanner/output/os_findings.json`, `scanner/output/script_findings.json`, `scanner/output/vulnerabilities.json`, `scanner/output/vulnerabilities.csv`.
 

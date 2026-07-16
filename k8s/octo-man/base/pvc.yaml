@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scanner-data
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    # Prefer ReadWriteMany when your StorageClass supports it so API + Jobs
+    # can share artifacts across nodes. RWO works if pods land on one node.
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: <your-class>

@@ -152,7 +152,7 @@ alerts:
     chat_id: ""
 
 # Optional in-container scheduler: python -m scanner.scheduler
-# Production tip: prefer host cron/systemd; use this for compose labs.
+# In Kubernetes prefer CronJob (k8s/octo-man); this helper is for local labs.
 scheduler:
   enabled: false
   cron: "0 2 * * *"          # daily 02:00 UTC

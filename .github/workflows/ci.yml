@@ -62,6 +62,14 @@ jobs:
           npm ci
           npm run build
 
+  kustomize:
+    name: Kustomize (validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate overlays
+        run: ./k8s/scripts/validate-kustomize.sh
+
   image:
     name: Image (build, smoke, e2e, scan, SBOM)
     runs-on: ubuntu-latest

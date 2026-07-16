@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: network-scan
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: octo-man
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - pvc.yaml
+  - job.yaml
+  - cronjob.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+
+configMapGenerator:
+  - name: scanner-config
+    files:
+      - k8s.yaml=config/k8s.yaml
+
+secretGenerator:
+  - name: octo-man-api
+    literals:
+      - jwt_secret=octo-man-dev-secret-change-me
+
+generatorOptions:
+  disableNameSuffixHash: true

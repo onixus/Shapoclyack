@@ -4,7 +4,7 @@
 # Usage:
 #   bench/run-discovery.sh [alive_hosts] [target_count] [cidr|list]
 #
-# Prerequisites: docker compose, image built (script builds if missing).
+# Prerequisites: docker, image built (script builds if missing).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +29,7 @@ echo "[bench] bringing up emulated network"
 cd "${ROOT_DIR}"
 if ! docker image inspect network-scan-cli:latest >/dev/null 2>&1; then
   echo "[bench] building scanner image"
-  docker compose build scanner
+  docker build -t network-scan-cli:latest -f Dockerfile .
 fi
 
 RANGES="${ROOT_DIR}/scanner/inputs/bench/ranges.txt"
@@ -49,7 +49,6 @@ if [[ "${BENCH_DOCKER_LIMITS:-0}" == "1" ]]; then
 fi
 
 set +e
-# compose run does not accept --network on all versions; mirror docker-compose.yml via docker run.
 docker run --rm --network "${BENCH_NET_NAME}" \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   "${DOCKER_LIMITS[@]}" \
