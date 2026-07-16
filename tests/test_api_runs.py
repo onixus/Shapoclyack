@@ -38,13 +38,29 @@ def _write_run(root: Path, run_id: str) -> None:
         json.dumps(
             [
                 {
+                    "host": "10.0.0.2",
+                    "port": "80",
+                    "cve": "CVE-2020-2",
+                    "cvss": 4.0,
+                    "severity": "medium",
+                    "script_id": "vulners",
+                },
+                {
                     "host": "10.0.0.1",
                     "port": "22",
                     "cve": "CVE-2020-1",
                     "cvss": 7.5,
                     "severity": "high",
                     "script_id": "vulners",
-                }
+                },
+                {
+                    "host": "10.0.0.3",
+                    "port": "443",
+                    "cve": "CVE-2020-0",
+                    "cvss": 9.8,
+                    "severity": "critical",
+                    "script_id": "vulners",
+                },
             ]
         ),
         encoding="utf-8",
@@ -95,7 +111,8 @@ def test_list_and_get_run(tmp_path: Path):
 
     vulns = client.get("/api/runs/run-a/vulnerabilities", headers=headers)
     assert vulns.status_code == 200
-    assert vulns.json()[0]["cve"] == "CVE-2020-1"
+    cves = [item["cve"] for item in vulns.json()]
+    assert cves == ["CVE-2020-0", "CVE-2020-1", "CVE-2020-2"]
 
     diff = client.get("/api/runs/run-a/diff", headers=headers)
     assert diff.status_code == 200

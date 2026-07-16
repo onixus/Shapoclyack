@@ -109,9 +109,9 @@ export function fetchRun(token: string, runId: string) {
   return request<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`, {}, token);
 }
 
-export function fetchVulns(token: string, runId: string) {
+export function fetchVulns(token: string, runId: string, limit = 5000) {
   return request<Vulnerability[]>(
-    `/api/runs/${encodeURIComponent(runId)}/vulnerabilities?limit=100`,
+    `/api/runs/${encodeURIComponent(runId)}/vulnerabilities?limit=${limit}`,
     {},
     token,
   );
