@@ -135,9 +135,47 @@ YAML проверяется при старте через **Pydantic** (`scanne
 7. **Verify (опционально)**: повторный ping живых хостов без открытых портов (`discovery.verify`).
 8. **NSE/Nmap** (можно отложить через `--skip-nse`): углубление по найденным `host:port` — версии сервисов, **ОС (`-O`)**, **CVE (`vuln`/`vulners`/`vulscan`)**. Параллельный пул nmap.
 9. **Отчёты**: JSON/CSV + сводка с ОС, hostname и уязвимостями.
+10. **Diff отчётов** (фаза 1): сравнение с предыдущим прогоном → `diff.json` / `diff.md`.
+11. **Оповещения** (фаза 1, опционально): Slack / Telegram через `--notify` или `alerts.enabled`.
 
 Двухфазный режим: `--skip-nse` → `--resume` (L1, затем enrichment).  
 Инкрементальный режим: `--delta` после baseline (см. выше).
+
+### Diff отчётов
+
+По умолчанию (`reporting.diff.enabled: true`) после отчётов сравниваются живые хосты,
+открытые порты и CVE с предыдущим `run_id` из `latest_run.json`:
+
+```bash
+docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced
+docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced \
+  --compare-run-id 20260626T104530Z
+```
+
+Отключить: `--no-diff`.
+
+### Оповещения Slack / Telegram
+
+```bash
+export OCTO_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export OCTO_TELEGRAM_BOT_TOKEN="123:abc"
+export OCTO_TELEGRAM_CHAT_ID="-100123"
+docker compose run --rm -e OCTO_SLACK_WEBHOOK -e OCTO_TELEGRAM_BOT_TOKEN -e OCTO_TELEGRAM_CHAT_ID \
+  scanner --config scanner/config/default.yaml --mode balanced --notify
+```
+
+`alerts.on_diff_only: true` — слать только при изменениях в diff. Сбой доставки не валит скан.
+
+### Планировщик задач
+
+```bash
+python -m scanner.scheduler --config scanner/config/default.yaml --dry-run
+python -m scanner.scheduler --config scanner/config/default.yaml --once
+docker compose --profile scheduler up scheduler
+```
+
+`scheduler.cron` — 5 полей UTC; `interval_seconds > 0` заменяет cron. В проде удобнее
+системный cron + `docker compose run --rm scanner …`.
 
 ## Батчинг и возобновление (resume)
 

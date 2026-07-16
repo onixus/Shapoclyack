@@ -152,11 +152,64 @@ class NseProfileConfig(BaseModel):
     os_detection: bool = False
 
 
+class DiffReportingConfig(BaseModel):
+    # Compare current run artifacts against the previous run (hosts/ports/CVEs).
+    enabled: bool = True
+    previous_run_dir: str = ""
+    markdown: bool = True
+
+
 class ReportingConfig(BaseModel):
     markdown_summary: bool = True
     html_summary: bool = True
     csv_export: bool = True
     json_export: bool = True
+    diff: DiffReportingConfig = Field(default_factory=DiffReportingConfig)
+
+
+class SlackAlertConfig(BaseModel):
+    enabled: bool = False
+    # Prefer env OCTO_SLACK_WEBHOOK over committing secrets to YAML.
+    webhook_url: str = ""
+
+
+class TelegramAlertConfig(BaseModel):
+    enabled: bool = False
+    # Prefer env OCTO_TELEGRAM_BOT_TOKEN / OCTO_TELEGRAM_CHAT_ID.
+    bot_token: str = ""
+    chat_id: str = ""
+
+
+class AlertsConfig(BaseModel):
+    enabled: bool = False
+    min_severity: Literal["critical", "high", "medium", "low", "unknown"] = "high"
+    # When true, skip notifications unless a report diff found changes.
+    on_diff_only: bool = False
+    slack: SlackAlertConfig = Field(default_factory=SlackAlertConfig)
+    telegram: TelegramAlertConfig = Field(default_factory=TelegramAlertConfig)
+
+
+class SchedulerConfig(BaseModel):
+    # In-process / compose scheduler (python -m scanner.scheduler). Disabled by default.
+    enabled: bool = False
+    # 5-field cron (UTC): minute hour day-of-month month day-of-week (0=Sunday).
+    cron: str = "0 2 * * *"
+    # If > 0, use a fixed interval instead of cron.
+    interval_seconds: int = Field(default=0, ge=0, le=31_536_000)
+    mode: Literal["safe", "balanced", "fast"] | None = None
+    delta: bool = False
+    skip_nse: bool = False
+    notify: bool = False
+    # 0 = run forever; >0 stops after N successful schedule ticks (useful for tests).
+    max_runs: int = Field(default=0, ge=0, le=1_000_000)
+
+    @field_validator("cron")
+    @classmethod
+    def validate_cron(cls, expr: str) -> str:
+        parts = expr.split()
+        if len(parts) != 5:
+            raise ValueError("cron must have 5 fields: minute hour dom month dow")
+        return expr
 
 
 class AppConfig(BaseModel):
@@ -167,6 +220,8 @@ class AppConfig(BaseModel):
     ports: PortsConfig = Field(default_factory=PortsConfig)
     nse_profiles: dict[str, NseProfileConfig]
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     @field_validator("profiles")
     @classmethod
