@@ -87,6 +87,23 @@ def test_geoip_json_overlay_lookup(tmp_path: Path):
     db.close()
 
 
+def test_geoip_mmdb_fixture_lookup():
+    """Exercise real MaxMind GeoIP2 City .mmdb reader path (test fixture)."""
+    mmdb = Path(__file__).resolve().parent / "data" / "geoip" / "GeoIP2-City-Test.mmdb"
+    assert mmdb.is_file(), f"missing test MMDB fixture: {mmdb}"
+    db = GeoIpDatabase.load(mmdb)
+    try:
+        hit = db.lookup("81.2.69.142")
+        assert hit["country_iso"] == "GB"
+        assert hit["country"] == "United Kingdom"
+        assert hit["city"] == "London"
+        missing = db.lookup("1.1.1.1")
+        assert missing["country"] == ""
+        assert missing["city"] == ""
+    finally:
+        db.close()
+
+
 def test_build_reports_attaches_cvss4_and_geo(tmp_path: Path):
     nmap_dir = tmp_path / "nmap"
     nmap_dir.mkdir()
@@ -154,3 +171,47 @@ def test_build_reports_attaches_cvss4_and_geo(tmp_path: Path):
     md = (out / "summary.md").read_text(encoding="utf-8")
     assert "CVSS4" in md
     assert "Mountain View" in md
+
+
+def test_build_reports_geoip_mmdb_fixture(tmp_path: Path):
+    mmdb = Path(__file__).resolve().parent / "data" / "geoip" / "GeoIP2-City-Test.mmdb"
+    nmap_dir = tmp_path / "nmap"
+    nmap_dir.mkdir()
+    (nmap_dir / "host.xml").write_text(
+        """<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <address addr="81.2.69.142" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="80">
+        <state state="open"/>
+        <service name="http"/>
+        <script id="vulners" output="CVE-2014-0160 7.5 https://example"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>
+""",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    out.mkdir()
+    build_reports(
+        output_dir=out,
+        total_targets=1,
+        alive_hosts=["81.2.69.142"],
+        open_ports=["81.2.69.142:80"],
+        nmap_dir=nmap_dir,
+        markdown_summary=False,
+        html_summary=False,
+        csv_export=False,
+        json_export=False,
+        cvss4_enabled=False,
+        geoip_enabled=True,
+        geoip_database=mmdb,
+    )
+    vulns = json.loads((out / "vulnerabilities.json").read_text(encoding="utf-8"))
+    assert vulns[0]["country_iso"] == "GB"
+    assert vulns[0]["city"] == "London"
+    geo = json.loads((out / "geoip.json").read_text(encoding="utf-8"))
+    assert geo["81.2.69.142"]["country"] == "United Kingdom"

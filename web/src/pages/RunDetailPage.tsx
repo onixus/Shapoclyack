@@ -111,7 +111,6 @@ export default function RunDetailPage() {
   const totalVulns =
     Number(summary.potential_vulnerabilities ?? 0) ||
     SEVERITIES.reduce((sum, key) => sum + severityCounts[key], 0);
-  const maxSeverityCount = Math.max(1, ...SEVERITIES.map((key) => severityCounts[key]));
 
   const targetOptions = useMemo(() => {
     const hosts = new Set<string>();
