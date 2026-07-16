@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Lightweight scan scheduler for Phase 1.
 
 Runs ``python -m scanner.main`` on a cron schedule or fixed interval.
 Prefer host cron / systemd timers in production; this module is useful for
 docker-compose one-container schedules and local labs.
 """
+
+from __future__ import annotations
 
 import argparse
 import logging
