@@ -1,0 +1,16 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: network-scan
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        workload: scanner
+      tolerations:
+        - key: scanner
+          operator: Equal
+          value: "true"
+          effect: NoSchedule

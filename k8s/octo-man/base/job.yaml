@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: network-scan
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: scan-job
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 14400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: octo-man
+        app.kubernetes.io/component: scan-job
+    spec:
+      restartPolicy: Never
+      serviceAccountName: scanner
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: scanner
+          image: ghcr.io/onixus/octo-man:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /app/scanner/config/k8s.yaml
+            - --mode
+            - balanced
+          resources:
+            requests:
+              cpu: "4"
+              memory: 4Gi
+            limits:
+              cpu: "8"
+              memory: 8Gi
+          securityContext:
+            capabilities:
+              add:
+                - NET_RAW
+                - NET_ADMIN
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: data
+              mountPath: /app/scanner/output
+              subPath: output
+            - name: data
+              mountPath: /app/scanner/state
+              subPath: state
+            - name: inputs
+              mountPath: /app/scanner/inputs
+              readOnly: true
+            - name: config
+              mountPath: /app/scanner/config
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: scanner-data
+        - name: inputs
+          secret:
+            secretName: scan-targets
+        - name: config
+          configMap:
+            name: scanner-config

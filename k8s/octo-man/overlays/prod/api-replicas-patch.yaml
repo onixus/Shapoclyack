@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-api
+spec:
+  replicas: 1
+  template:
+    spec:
+      # Keep API on a scanner node when using RWO PVC so Jobs can share data.
+      nodeSelector:
+        workload: scanner
+      tolerations:
+        - key: scanner
+          operator: Equal
+          value: "true"
+          effect: NoSchedule

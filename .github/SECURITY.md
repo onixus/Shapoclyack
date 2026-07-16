@@ -41,7 +41,7 @@ We aim to acknowledge reports within **5 business days** and to provide a remedi
 
 - Python code under `scanner/`
 - Shell helpers under `scripts/` and `bench/` that ship with the repo
-- `Dockerfile`, `docker-compose.yml`, and GitHub Actions workflows that build or publish the image
+- `Dockerfile`, `Dockerfile.api`, `k8s/` manifests, and GitHub Actions workflows that build or publish the image
 - Misconfiguration or unsafe defaults in shipped YAML configs that lead to unintended exposure **of the scanner host or operator data**
 
 ### Out of scope

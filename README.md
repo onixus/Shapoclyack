@@ -34,15 +34,16 @@ Latest release: **[v0.2.0](https://github.com/onixus/Octo-man/releases/tag/v0.2.
 - **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
 - **Task scheduler** (`python -m scanner.scheduler`): cron or interval runner for recurring scans.
 - **Phase 2 API + dashboard**: FastAPI backend, React UI, JWT RBAC (`viewer` / `operator` / `admin`).
+- **Kubernetes deployment** (primary): kustomize under `k8s/octo-man` (Job / CronJob / API).
 
 ## Project Layout
 
-- `Dockerfile` / `Dockerfile.api`
-- `docker-compose.yml` (`scanner` + `api` services; optional `scheduler` profile)
+- `Dockerfile` / `Dockerfile.api` — image builds (scanner + API/UI)
+- `k8s/` — **primary runtime**: kustomize base + `dev`/`prod` overlays ([k8s/README.md](k8s/README.md))
 - `scanner/config/default.yaml` (+ optional `discovery-bench*.yaml` for discovery tuning)
 - `scanner/inputs/{ranges.txt,domains.txt,ports.txt,ports_udp.txt}`
 - `scanner/main.py`
-- `scanner/scheduler.py`
+- `scanner/scheduler.py` — optional in-process scheduler (K8s prefers CronJob)
 - `scanner/pipeline/*`
 - `api/` — FastAPI app (`python -m api`)
 - `web/` — React dashboard (Vite); production build served by the API
@@ -85,52 +86,56 @@ Invalid lines are written to `scanner/output/normalized/contract_validation.json
 
 ## Usage
 
-### 1) Build
+Primary runtime is **Kubernetes**. Full steps: [k8s/README.md](k8s/README.md).
+
+### 1) Build images
 
 ```bash
-docker compose build
+docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
+docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
 ```
 
-### 2) Prepare targets
-
-Edit:
-- `scanner/inputs/ranges.txt`
-- `scanner/inputs/domains.txt`
-- optional `scanner/inputs/ports.txt`
-
-### 3) Run a scan
+### 2) Prepare targets + deploy (Kubernetes)
 
 ```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced
+kubectl create secret generic scan-targets -n network-scan \
+  --from-file=ranges.txt=scanner/inputs/ranges.txt \
+  --from-file=domains.txt=scanner/inputs/domains.txt \
+  --from-file=ports.txt=scanner/inputs/ports.txt \
+  --from-file=ports_udp.txt=scanner/inputs/ports_udp.txt \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl apply -k k8s/octo-man/overlays/dev
+kubectl -n network-scan logs -f job/network-scan
 ```
 
-> `docker-compose.yml` defaults to `--mode fast` when you run `docker compose up scanner`
-> without overriding `command`. Examples below use `balanced` explicitly.
+### 3) Local one-shot without a cluster (optional)
+
+```bash
+docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+  -v "$PWD/scanner/inputs:/app/scanner/inputs" \
+  -v "$PWD/scanner/config:/app/scanner/config" \
+  -v "$PWD/scanner/output:/app/scanner/output" \
+  -v "$PWD/scanner/state:/app/scanner/state" \
+  ghcr.io/onixus/octo-man:local \
+  --config scanner/config/default.yaml --mode balanced
+```
 
 ### 4) Resume after interruption
 
-```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --resume
-```
-
-With per-run output enabled (default), resume continues the latest run recorded in
-`scanner/state/latest_run.json`, or pass an explicit id:
+Kubernetes:
 
 ```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced \
-  --resume --run-id 20260626T104530Z
+kubectl apply -f k8s/octo-man/base/job-resume.yaml
 ```
+
+Local docker run: add `--resume` (and optional `--run-id …`). With per-run output enabled
+(default), resume continues the latest run in `scanner/state/latest_run.json`.
 
 ### 5) L1 scan, then enrich with NSE later
 
-Run discovery + port scan + reports only (skip NSE), then resume for Nmap/NSE:
-
-```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --skip-nse
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --resume
-```
-
-Or set `runtime.skip_nse: true` in the config. Useful for large networks: get alive hosts and open ports quickly, enrich in a second pass.
+Use `--skip-nse` on the first Job/run, then `--resume` (or `job-resume.yaml`) for Nmap/NSE.
+Or set `runtime.skip_nse: true` in the config.
 
 ### 6) Incremental (delta) discovery
 
@@ -138,7 +143,10 @@ Re-probe only hosts new to scope since the previous run, plus a random refresh s
 known-alive hosts. Requires a prior full baseline scan with `per_run_output: true`:
 
 ```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced --delta
+# CronJob already passes --delta; for a one-shot Job, patch args or run locally:
+docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+  -v "$PWD/scanner:/app/scanner" ghcr.io/onixus/octo-man:local \
+  --config scanner/config/default.yaml --mode balanced --delta
 ```
 
 Or enable `discovery.delta.enabled: true` in the config. Optional `discovery.seed_alive_file`
@@ -148,47 +156,19 @@ first scan, after changing input ranges, or when you need a full baseline.
 ### 7) Report diffs (Phase 1)
 
 After reports are written, the pipeline compares the current run to the previous one
-(from `scanner/state/latest_run.json`, or an explicit path / id):
-
-```bash
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced
-# next run automatically writes diff.json / diff.md vs the prior run
-docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced \
-  --compare-run-id 20260626T104530Z
-```
-
-Disable with `--no-diff` or `reporting.diff.enabled: false`. Diff covers alive hosts,
-open `host:port` pairs, and structured vulnerabilities.
+(from `scanner/state/latest_run.json`, or an explicit path / id). Disable with `--no-diff`
+or `reporting.diff.enabled: false`. Artifacts: `diff.json` / `diff.md`.
 
 ### 8) Slack / Telegram alerts (Phase 1)
 
-```bash
-export OCTO_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
-export OCTO_TELEGRAM_BOT_TOKEN="123:abc"
-export OCTO_TELEGRAM_CHAT_ID="-100123"
-docker compose run --rm -e OCTO_SLACK_WEBHOOK -e OCTO_TELEGRAM_BOT_TOKEN -e OCTO_TELEGRAM_CHAT_ID \
-  scanner --config scanner/config/default.yaml --mode balanced --notify
-```
+Provide credentials via Secret `octo-man-alerts` (see `k8s/octo-man/examples/api-secrets.example.yaml`)
+or env `OCTO_SLACK_WEBHOOK` / `OCTO_TELEGRAM_*`, and pass `--notify` on the Job.
+Or set `alerts.enabled: true` in YAML. Delivery is fail-soft (`alerts.json`).
 
-Or set `alerts.enabled: true` and enable `alerts.slack` / `alerts.telegram` in YAML.
-Use `alerts.on_diff_only: true` to notify only when the report diff has changes.
-Alert delivery is fail-soft (logged to `alerts.json`; scan exit code stays success).
+### 9) Scheduling (Phase 1)
 
-### 9) Task scheduler (Phase 1)
-
-```bash
-# dry-run: print next fire time + command
-python -m scanner.scheduler --config scanner/config/default.yaml --dry-run
-
-# single immediate scan (ignores wait)
-python -m scanner.scheduler --config scanner/config/default.yaml --once
-
-# compose profile (set scheduler.enabled / cron in YAML, or OCTO_SCHEDULER_ENABLED=true)
-docker compose --profile scheduler up scheduler
-```
-
-`scheduler.cron` is a 5-field UTC expression; `scheduler.interval_seconds` overrides cron when > 0.
-For production hosts, a system crontab calling `docker compose run --rm scanner …` is also fine.
+In Kubernetes use `CronJob/network-scan-scheduled` (preferred). The in-process helper remains
+for labs: `python -m scanner.scheduler --dry-run` / `--once`.
 
 ## Configuration validation
 
@@ -213,8 +193,10 @@ HTTP control plane for reviewing runs and (optionally) launching scans.
 
 ### Start the API + UI
 
+Kubernetes (after `kubectl apply -k k8s/octo-man/overlays/dev`):
+
 ```bash
-docker compose up --build api
+kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 # open http://localhost:8080
 ```
 
@@ -254,8 +236,8 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
 - `GET|POST /api/jobs` (operator+)
 
 Scan start from the API image is **off by default** (`OCTO_ALLOW_SCAN_START=false`) because the
-API image does not bundle naabu/nmap. Enable it when running the API with the scanner toolchain
-available, or start scans via `docker compose run scanner …` and use the UI to inspect results.
+API image does not bundle naabu/nmap. Start scans with the Kubernetes `Job` / `CronJob` and use
+the UI to inspect results on the shared PVC.
 
 ## Exit codes
 
@@ -273,12 +255,10 @@ available, or start scans via `docker compose run scanner …` and use the UI to
 Pipeline logs use a **rotating file** at `logs_dir/pipeline.log` (defaults:
 `log_max_bytes: 10485760`, `log_backup_count: 5`). Tune under `runtime:` in the config.
 
-## Resource limits (Docker Compose)
+## Resource limits (Kubernetes)
 
-`docker-compose.yml` sets container limits to reduce the risk of host exhaustion during large
-scans: `mem_limit: 8g`, `cpus: "8.0"`, and raised `nproc`/`nofile` ulimits (sized for
-`--mode fast`: 8 parallel nmap + 4 parallel naabu batches). Lower for `safe`/`balanced`
-on smaller hosts.
+Base Job/CronJob requests/limits are `4–8 CPU` / `4–8Gi` memory. The `dev` overlay lowers these
+and uses `--mode safe`. Tune patches under `k8s/octo-man/overlays/*/`.
 
 ## Validation Helpers
 
@@ -574,7 +554,7 @@ NSE checkpoint keys use `host/tcp` and `host/udp`. Nmap XML lives under `nmap/tc
 - `runtime.skip_nse`: skip the NSE stage (L1 scan). Combine with `--resume` for a two-phase workflow.
 
 OS detection and SYN/ICMP probing require raw sockets. The container is granted
-`NET_RAW`/`NET_ADMIN` via `docker-compose.yml`; outside compose run with equivalent capabilities.
+`NET_RAW`/`NET_ADMIN` in the Kubernetes Job/CronJob securityContext (or `--cap-add` for local `docker run`).
 
 ## Batching & Resume
 
@@ -634,7 +614,8 @@ Paths below assume `runtime.per_run_output: true` (default); artifacts live unde
 - Use only in environments where you are authorized to scan.
 - Prefer running from a Linux host/network where raw scanning is allowed.
 - High-rate profiles can trigger IDS/IPS and impact network stability.
-- If `docker compose build` fails with Docker socket errors, start Docker daemon/Desktop first.
+- If `docker build` fails with Docker socket errors, start Docker daemon/Desktop first.
+- Prefer `kubectl apply -k k8s/octo-man/overlays/dev` for day-to-day runs; see [k8s/README.md](k8s/README.md).
 
 ## Licenses
 

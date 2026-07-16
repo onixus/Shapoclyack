@@ -21,5 +21,12 @@ cat > scanner/inputs/ports.txt <<EOF
 # use profile top-ports
 EOF
 
-docker compose run --rm scanner --config scanner/config/default.yaml --mode fast
+docker build -t network-scan-cli:local -f Dockerfile .
+docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+  -v "${ROOT_DIR}/scanner/inputs:/app/scanner/inputs" \
+  -v "${ROOT_DIR}/scanner/config:/app/scanner/config" \
+  -v "${ROOT_DIR}/scanner/output:/app/scanner/output" \
+  -v "${ROOT_DIR}/scanner/state:/app/scanner/state" \
+  network-scan-cli:local \
+  --config scanner/config/default.yaml --mode fast
 echo "Load profile run finished. Check scanner/output/summary.json"
