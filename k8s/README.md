@@ -3,9 +3,9 @@
 Primary deployment path for Octo-man. Images are still built with Docker/`docker build`,
 but runtime orchestration is **Kubernetes + kustomize** (docker-compose is retired).
 
-Images:
-- Scanner: `ghcr.io/onixus/octo-man`
-- API + dashboard: `ghcr.io/onixus/octo-man-api`
+Images (release `v0.3.0`):
+- Scanner: `ghcr.io/onixus/octo-man:0.3.0`
+- API + dashboard: `ghcr.io/onixus/octo-man-api:0.3.0`
 
 ## Layout
 

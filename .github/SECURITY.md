@@ -2,19 +2,21 @@
 
 ## Supported versions
 
-Security fixes are applied to the **latest release** on [`master`](https://github.com/onixus/Octo-man/tree/master).
-Published container images receive tags for the current semver release (see [Releases](https://github.com/onixus/Octo-man/releases)).
+Security fixes are applied to the **latest release** on [`main`](https://github.com/onixus/Shapoclyack/tree/main).
+Published container images receive tags for the current semver release (see [Releases](https://github.com/onixus/Shapoclyack/releases)).
 
 | Version   | Supported |
 |-----------|-----------|
-| `0.2.x`   | Yes       |
-| `0.1.x`   | Yes (security fixes only; upgrade to `0.2.x` recommended) |
+| `0.3.x`   | Yes       |
+| `0.2.x`   | Yes (security fixes only; upgrade to `0.3.x` recommended) |
+| `0.1.x`   | No        |
 | `< 0.1.0` | No        |
 
-We recommend always using the latest image tag, for example:
+We recommend always using the latest image tags, for example:
 
 ```bash
-docker pull ghcr.io/onixus/octo-man:0.2.0
+docker pull ghcr.io/onixus/octo-man:0.3.0
+docker pull ghcr.io/onixus/octo-man-api:0.3.0
 ```
 
 ## Reporting a vulnerability
@@ -23,7 +25,7 @@ docker pull ghcr.io/onixus/octo-man:0.2.0
 
 Report issues in this repository (application code, Dockerfile, CI workflows, published GHCR image build) through one of these channels:
 
-1. **[GitHub Private vulnerability reporting](https://github.com/onixus/Octo-man/security/advisories/new)** (preferred)
+1. **[GitHub Private vulnerability reporting](https://github.com/onixus/Shapoclyack/security/advisories/new)** (preferred)
 2. **Repository maintainer contact:** open a draft advisory or contact the [`onixus`](https://github.com/onixus) account owners via GitHub if private reporting is unavailable
 
 Include as much detail as possible:
@@ -73,9 +75,9 @@ will not be pursued as a policy violation by the maintainers.
 - Run the container with **`NET_RAW` / `NET_ADMIN`** only when needed for scanning; do not grant extra capabilities.
 - Mount only required volumes (`inputs`, `output`, `config`, `state`); do not expose the Docker socket to the scanner container.
 - Treat `scanner/output/` as **sensitive** (scan results, possible credentials in service banners, vulnerability data).
-- Pull images only from **`ghcr.io/onixus/octo-man`** and verify tags match [official releases](https://github.com/onixus/Octo-man/releases).
+- Pull images only from **`ghcr.io/onixus/octo-man`** / **`ghcr.io/onixus/octo-man-api`** and verify tags match [official releases](https://github.com/onixus/Shapoclyack/releases).
 
 ## Security updates
 
-Subscribe to [Releases](https://github.com/onixus/Octo-man/releases) and [GitHub Security Advisories](https://github.com/onixus/Octo-man/security/advisories) for this repository.
+Subscribe to [Releases](https://github.com/onixus/Shapoclyack/releases) and [GitHub Security Advisories](https://github.com/onixus/Shapoclyack/security/advisories) for this repository.
 Image rebuilds for dependency fixes are published under new patch/minor semver tags as needed.

@@ -10,7 +10,7 @@ Reproducible CLI pipeline for scanning large networks:
 - stages: `resolve -> discovery -> hostname enrichment -> fast ports -> Nmap NSE (service/OS detection + vuln/CVE)`
 - output: `JSON/JSONL/CSV` + `Markdown/HTML` summary
 
-Latest release: **[v0.2.0](https://github.com/onixus/Octo-man/releases/tag/v0.2.0)** — container image `ghcr.io/onixus/octo-man:0.2.0`.
+Latest release: **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** — images `ghcr.io/onixus/octo-man:0.3.0` and `ghcr.io/onixus/octo-man-api:0.3.0`.
 
 ## What It Implements
 
@@ -380,33 +380,37 @@ Defaults and overrides live in `bench/env.defaults` (`BENCH_NET_NAME`, `BENCH_SU
 
 ## Container Image (GHCR)
 
-`.github/workflows/docker-publish.yml` builds a multi-arch image (`linux/amd64`, `linux/arm64`)
-and pushes it to GitHub Container Registry. It runs when a `v*` tag is pushed, when a GitHub
+`.github/workflows/docker-publish.yml` builds multi-arch images (`linux/amd64`, `linux/arm64`)
+and pushes them to GitHub Container Registry. It runs when a `v*` tag is pushed, when a GitHub
 release is published, or manually via **workflow_dispatch**.
 
-Published as `ghcr.io/onixus/octo-man` (image name is the lowercased `owner/repo`). Tagging:
+Published product images:
 
-- a version tag `vX.Y.Z` produces image tags `X.Y.Z`, `X.Y`, `X`, the commit `sha-<...>` and `latest`;
-- non-semver tags (e.g. `v0.0.1a`) are published verbatim as the image tag (plus `latest`);
-- `workflow_dispatch` can publish an extra ad-hoc tag via the `tag` input.
+| Image | Dockerfile |
+|-------|------------|
+| `ghcr.io/onixus/octo-man` | `Dockerfile` (scanner) |
+| `ghcr.io/onixus/octo-man-api` | `Dockerfile.api` (API + dashboard) |
 
-Pull and run:
+Tagging for `vX.Y.Z`: `X.Y.Z`, `X.Y`, `X`, commit `sha-<...>`, and `latest`.
+`workflow_dispatch` can publish an extra ad-hoc tag via the `tag` input.
+
+Pull and run scanner:
 
 ```bash
-docker pull ghcr.io/onixus/octo-man:latest
+docker pull ghcr.io/onixus/octo-man:0.3.0
 docker run --rm \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/inputs:/app/scanner/inputs" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/octo-man:latest --config scanner/config/default.yaml --mode balanced
+  ghcr.io/onixus/octo-man:0.3.0 --config scanner/config/default.yaml --mode balanced
 ```
 
 To cut a release build, push a semver tag (triggers GHCR publish):
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 > The GHCR package may be **private** by default; make it public (or authenticate

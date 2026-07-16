@@ -26,7 +26,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: scanner
-          image: ghcr.io/onixus/octo-man:latest
+          image: ghcr.io/onixus/octo-man:0.3.0
           imagePullPolicy: IfNotPresent
           args:
             - --config
