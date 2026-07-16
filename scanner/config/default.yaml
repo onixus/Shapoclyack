@@ -151,6 +151,26 @@ alerts:
     bot_token: ""
     chat_id: ""
 
+# DefectDojo export (Generic Findings Import via /api/v2/reimport-scan/).
+# Prefer env credentials: OCTO_DEFECTDOJO_URL, OCTO_DEFECTDOJO_API_KEY
+# Enable with defectdojo.enabled: true or CLI --export-defectdojo.
+defectdojo:
+  enabled: false
+  url: ""
+  api_key: ""
+  product_name: "Octo-man"
+  product_type_name: "Network"
+  engagement_name: "Octo-man"
+  test_title: "Octo-man NSE"
+  min_severity: high
+  include_without_cve: true
+  close_old_findings: true
+  active: true
+  verified: false
+  auto_create_context: true
+  verify_ssl: true
+  timeout_seconds: 60
+
 # Optional in-container scheduler: python -m scanner.scheduler
 # In Kubernetes prefer CronJob (k8s/octo-man); this helper is for local labs.
 scheduler:
@@ -161,4 +181,5 @@ scheduler:
   delta: false
   skip_nse: false
   notify: false
+  export_defectdojo: false
   max_runs: 0                # 0 = forever

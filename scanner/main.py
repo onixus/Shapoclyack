@@ -26,6 +26,7 @@ from scanner.pipeline.hostnames import enrich_discovery_hostnames
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ports import fast_port_scan
 from scanner.pipeline.alerts import send_alerts
+from scanner.pipeline.defectdojo import export_to_defectdojo
 from scanner.pipeline.report import build_reports
 from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
@@ -65,6 +66,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Send Slack/Telegram alerts after reports (requires alerts.* config or env credentials)",
     )
+    parser.add_argument(
+        "--export-defectdojo",
+        action="store_true",
+        help="Export vulnerabilities to DefectDojo after reports (requires defectdojo.* or env credentials)",
+    )
     return parser.parse_args()
 
 
@@ -99,6 +105,10 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     if args.notify:
         config = config.model_copy(
             update={"alerts": config.alerts.model_copy(update={"enabled": True})}
+        )
+    if args.export_defectdojo:
+        config = config.model_copy(
+            update={"defectdojo": config.defectdojo.model_copy(update={"enabled": True})}
         )
 
     output_base = Path(config.runtime.output_dir)
@@ -347,6 +357,17 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         )
         (paths.output_dir / "alerts.json").write_text(
             json.dumps(alert_result, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    if config.defectdojo.enabled:
+        dd_result = export_to_defectdojo(
+            config.defectdojo,
+            run_id=paths.run_id,
+            output_dir=paths.output_dir,
+        )
+        (paths.output_dir / "defectdojo.json").write_text(
+            json.dumps(dd_result, indent=2) + "\n",
             encoding="utf-8",
         )
 

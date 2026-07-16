@@ -119,6 +119,8 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         command.append("--skip-nse")
     if request.notify:
         command.append("--notify")
+    if request.export_defectdojo:
+        command.append("--export-defectdojo")
     if request.run_id:
         command.extend(["--run-id", request.run_id])
 

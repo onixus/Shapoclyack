@@ -181,9 +181,20 @@ def test_default_yaml_phase1_sections():
     assert cfg.alerts.min_severity == "high"
     assert cfg.alerts.slack.enabled is False
     assert cfg.alerts.telegram.enabled is False
+    assert cfg.defectdojo.enabled is False
+    assert cfg.defectdojo.product_name == "Octo-man"
+    assert cfg.defectdojo.min_severity == "high"
     assert cfg.scheduler.enabled is False
     assert cfg.scheduler.cron == "0 2 * * *"
     assert cfg.scheduler.mode is None
+    assert cfg.scheduler.export_defectdojo is False
+
+
+def test_defectdojo_min_severity_validation():
+    raw = _minimal_config()
+    raw["defectdojo"] = {"min_severity": "urgent"}
+    with pytest.raises(ValidationError):
+        load_config(raw)
 
 
 def test_scheduler_cron_must_have_five_fields():

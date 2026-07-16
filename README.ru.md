@@ -146,6 +146,7 @@ YAML проверяется при старте через **Pydantic** (`scanne
 9. **Отчёты**: JSON/CSV + сводка с ОС, hostname и уязвимостями.
 10. **Diff отчётов** (фаза 1): сравнение с предыдущим прогоном → `diff.json` / `diff.md`.
 11. **Оповещения** (фаза 1, опционально): Slack / Telegram через `--notify` или `alerts.enabled`.
+12. **DefectDojo** (фаза 3, опционально): Generic Findings Import через `--export-defectdojo` или `defectdojo.enabled`.
 
 Двухфазный режим: `--skip-nse` → `--resume` (L1, затем enrichment).  
 Инкрементальный режим: `--delta` после baseline (см. выше).
@@ -165,6 +166,22 @@ YAML проверяется при старте через **Pydantic** (`scanne
 
 Secret `octo-man-alerts` + `--notify` на Job, либо `alerts.enabled: true` в YAML.
 `alerts.on_diff_only: true` — слать только при изменениях в diff.
+
+### Экспорт в DefectDojo (фаза 3)
+
+Отправляет `vulnerabilities.json` в DefectDojo как **Generic Findings Import**
+(`POST /api/v2/reimport-scan/`).
+
+```bash
+export OCTO_DEFECTDOJO_URL="https://defectdojo.example.com"
+export OCTO_DEFECTDOJO_API_KEY="your-api-token"
+python -m scanner.main --config scanner/config/default.yaml --mode balanced --export-defectdojo
+```
+
+Либо `defectdojo.enabled: true` в YAML. Артефакты: `defectdojo_findings.json` (payload),
+`defectdojo.json` (статус). Ошибка DD не валит скан.
+
+В API: `"export_defectdojo": true` в теле `POST /api/jobs`.
 
 ### Планировщик задач
 

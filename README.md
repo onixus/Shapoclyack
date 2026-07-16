@@ -43,6 +43,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - Report exports with summary, parsed Nmap service data, OS matches and vulnerability findings.
 - **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`.
 - **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
+- **DefectDojo export** (`defectdojo` / `--export-defectdojo`): Generic Findings Import via API v2 reimport (Phase 3).
 - **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
 - **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`).
 - **Kubernetes** (primary runtime): `Job` / `CronJob` / API Deployment under `k8s/octo-man`.
@@ -176,7 +177,26 @@ Provide credentials via Secret `octo-man-alerts` (see `k8s/octo-man/examples/api
 or env `OCTO_SLACK_WEBHOOK` / `OCTO_TELEGRAM_*`, and pass `--notify` on the Job.
 Or set `alerts.enabled: true` in YAML. Delivery is fail-soft (`alerts.json`).
 
-### 9) Scheduling (Phase 1)
+### 9) DefectDojo export (Phase 3)
+
+Push ranked `vulnerabilities.json` into DefectDojo as **Generic Findings Import** through
+`/api/v2/reimport-scan/` (auto-creates Product / Engagement when allowed).
+
+```bash
+export OCTO_DEFECTDOJO_URL="https://defectdojo.example.com"
+export OCTO_DEFECTDOJO_API_KEY="your-api-token"
+python -m scanner.main --config scanner/config/default.yaml --mode balanced --export-defectdojo
+```
+
+Or set `defectdojo.enabled: true` in YAML. Always writes `defectdojo_findings.json` (payload) and
+`defectdojo.json` (status). Delivery is fail-soft — scan exit code stays success if DD is down.
+
+Key settings: `product_name`, `engagement_name` (stable name recommended for reimport),
+`min_severity`, `close_old_findings`, `verify_ssl`.
+
+API jobs accept `"export_defectdojo": true` on `POST /api/jobs`.
+
+### 10) Scheduling (Phase 1)
 
 In Kubernetes use `CronJob/network-scan-scheduled` (preferred). The in-process helper remains
 for labs: `python -m scanner.scheduler --dry-run` / `--once`.
@@ -628,6 +648,7 @@ Paths below assume `runtime.per_run_output: true` (default); artifacts live unde
 - `summary.{json,md,html}` (includes severity breakdown and hostname counts)
 - `diff.json` / `diff.md` (report diff vs previous run when `reporting.diff.enabled`)
 - `alerts.json` (notification attempt result when `alerts.enabled` / `--notify`)
+- `defectdojo_findings.json` / `defectdojo.json` (DefectDojo payload + status when enabled)
 - `logs/pipeline.log`
 
 ## Notes

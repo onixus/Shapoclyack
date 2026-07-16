@@ -131,6 +131,8 @@ def build_scan_command(config: AppConfig, config_path: str) -> list[str]:
         command.append("--skip-nse")
     if sched.notify:
         command.append("--notify")
+    if sched.export_defectdojo:
+        command.append("--export-defectdojo")
     return command
 
 

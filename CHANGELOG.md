@@ -28,6 +28,10 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 - Restored GHCR publish workflow for both product images
 - Extracted reusable composite action `.github/actions/synthetic-load-test` for CI / heavy load workflows
 
+### Unreleased (Phase 3)
+
+- DefectDojo export: Generic Findings Import via `/api/v2/reimport-scan/` (`defectdojo.*`, `--export-defectdojo`, env `OCTO_DEFECTDOJO_*`)
+
 ### Images
 
 | Image | Tag |
