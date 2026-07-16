@@ -147,6 +147,7 @@ YAML проверяется при старте через **Pydantic** (`scanne
 10. **Diff отчётов** (фаза 1): сравнение с предыдущим прогоном → `diff.json` / `diff.md`.
 11. **Оповещения** (фаза 1, опционально): Slack / Telegram через `--notify` или `alerts.enabled`.
 12. **DefectDojo** (фаза 3, опционально): Generic Findings Import через `--export-defectdojo` или `defectdojo.enabled`.
+13. **PDF-отчёт** (фаза 3): executive `summary.pdf` при `reporting.pdf_summary` (по умолчанию включено).
 
 Двухфазный режим: `--skip-nse` → `--resume` (L1, затем enrichment).  
 Инкрементальный режим: `--delta` после baseline (см. выше).
@@ -182,6 +183,12 @@ python -m scanner.main --config scanner/config/default.yaml --mode balanced --ex
 `defectdojo.json` (статус). Ошибка DD не валит скан.
 
 В API: `"export_defectdojo": true` в теле `POST /api/jobs`.
+
+### PDF бизнес-отчёт (фаза 3)
+
+При `reporting.pdf_summary: true` (по умолчанию) после отчётов и diff пишется `summary.pdf`:
+KPI, severity, топ-сервисы, таблица приоритетных findings, дельта к прошлому прогону.
+Настройки: `pdf_title`, `pdf_org_name`, `pdf_max_vulnerabilities`. Отключить: `pdf_summary: false`.
 
 ### Планировщик задач
 

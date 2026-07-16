@@ -177,6 +177,8 @@ def test_default_yaml_phase1_sections():
     cfg = AppConfig.model_validate(yaml.safe_load(text))
     assert cfg.reporting.diff.enabled is True
     assert cfg.reporting.diff.markdown is True
+    assert cfg.reporting.pdf_summary is True
+    assert cfg.reporting.pdf_max_vulnerabilities == 40
     assert cfg.alerts.enabled is False
     assert cfg.alerts.min_severity == "high"
     assert cfg.alerts.slack.enabled is False

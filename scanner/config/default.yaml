@@ -130,6 +130,11 @@ reporting:
   html_summary: true
   csv_export: true
   json_export: true
+  # Business PDF for leadership / ticket attachments (written after reports + diff).
+  pdf_summary: true
+  pdf_title: "Octo-man Security Scan Report"
+  pdf_org_name: ""
+  pdf_max_vulnerabilities: 40
   # Compare hosts/ports/CVEs against the previous run (latest_run.json or previous_run_dir).
   diff:
     enabled: true

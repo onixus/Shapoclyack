@@ -164,6 +164,11 @@ class ReportingConfig(BaseModel):
     html_summary: bool = True
     csv_export: bool = True
     json_export: bool = True
+    # Business PDF (summary.pdf) for leadership / ticket attachments.
+    pdf_summary: bool = True
+    pdf_title: str = "Octo-man Security Scan Report"
+    pdf_org_name: str = ""
+    pdf_max_vulnerabilities: int = Field(default=40, ge=1, le=500)
     diff: DiffReportingConfig = Field(default_factory=DiffReportingConfig)
 
 
