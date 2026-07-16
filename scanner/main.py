@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="scanner/config/default.yaml", help="Path to YAML config")
     parser.add_argument("--ranges", default="scanner/inputs/ranges.txt", help="Path to CIDR/IP inputs")
     parser.add_argument("--domains", default="scanner/inputs/domains.txt", help="Path to FQDN inputs")
+    parser.add_argument(
+        "--ports-file",
+        help="Override ports.custom_ports_file for this run (TCP port list)",
+    )
     parser.add_argument("--mode", choices=["safe", "balanced", "fast"], help="Override speed profile")
     parser.add_argument("--run-id", help="Run identifier for per-run output dirs (required for explicit resume)")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
@@ -110,6 +114,14 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     if args.export_defectdojo:
         config = config.model_copy(
             update={"defectdojo": config.defectdojo.model_copy(update={"enabled": True})}
+        )
+    if args.ports_file:
+        config = config.model_copy(
+            update={
+                "ports": config.ports.model_copy(
+                    update={"custom_ports_file": str(Path(args.ports_file))}
+                )
+            }
         )
 
     output_base = Path(config.runtime.output_dir)

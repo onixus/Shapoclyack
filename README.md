@@ -277,7 +277,10 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
 - `GET /api/auth/me`
 - `GET /api/runs`, `GET /api/runs/{run_id}`, `GET /api/runs/{run_id}/vulnerabilities`
 - `GET /api/runs/{run_id}/diff`, `GET /api/runs/{run_id}/artifacts/{path}`
-- `GET|POST /api/jobs` (operator+)
+- `GET|POST /api/jobs` (operator+) — optional body fields `ranges` / `domains` / `ports`
+  (newline-separated). When set, the API writes per-job inputs under
+  `state/job_inputs/<job_id>/` and passes `--ranges` / `--domains` / `--ports-file`.
+  The Jobs page in the web UI exposes the same fields.
 
 Scan start from the API image is **off by default** (`OCTO_ALLOW_SCAN_START=false`) because the
 API image does not bundle naabu/nmap. Start scans with the Kubernetes `Job` / `CronJob` and use

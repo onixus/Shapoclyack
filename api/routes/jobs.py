@@ -38,5 +38,7 @@ def start_job(
 ) -> JobInfo:
     try:
         return jobs_service.start_scan(settings, body, username=user.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc

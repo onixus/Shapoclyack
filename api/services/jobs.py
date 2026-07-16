@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from api.schemas import JobInfo, StartScanRequest
+from api.services.targets import parse_target_payload
 from api.settings import Settings
 
 _LOCK = threading.Lock()
@@ -64,6 +65,54 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
         _persist(settings)
 
 
+def _write_lines(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(lines)
+    if body:
+        body += "\n"
+    path.write_text(body, encoding="utf-8")
+
+
+def _prepare_target_inputs(
+    settings: Settings,
+    job_id: str,
+    request: StartScanRequest,
+) -> tuple[Path | None, dict[str, int] | None, list[str]]:
+    """Write per-job input files when overrides are provided.
+
+    Returns (inputs_dir, target_counts, extra_cli_args).
+    """
+    parsed = parse_target_payload(
+        ranges_text=request.ranges,
+        domains_text=request.domains,
+        ports_text=request.ports,
+    )
+    if parsed is None:
+        return None, None, []
+
+    inputs_dir = settings.state_dir / "job_inputs" / job_id
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    extra: list[str] = []
+    counts: dict[str, int] = {}
+
+    if parsed.ranges is not None and parsed.domains is not None:
+        ranges_path = inputs_dir / "ranges.txt"
+        domains_path = inputs_dir / "domains.txt"
+        _write_lines(ranges_path, parsed.ranges)
+        _write_lines(domains_path, parsed.domains)
+        extra.extend(["--ranges", str(ranges_path), "--domains", str(domains_path)])
+        counts["ranges"] = len(parsed.ranges)
+        counts["domains"] = len(parsed.domains)
+
+    if parsed.ports is not None:
+        ports_path = inputs_dir / "ports.txt"
+        _write_lines(ports_path, parsed.ports)
+        extra.extend(["--ports-file", str(ports_path)])
+        counts["ports"] = len(parsed.ports)
+
+    return inputs_dir, counts or None, extra
+
+
 def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
     _update_job(settings, job_id, status="running", started_at=datetime.now(UTC).isoformat())
     try:
@@ -104,6 +153,9 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
     if not settings.allow_scan_start:
         raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
 
+    job_id = uuid.uuid4().hex[:12]
+    _, target_counts, target_args = _prepare_target_inputs(settings, job_id, request)
+
     command = [
         sys.executable,
         "-m",
@@ -123,8 +175,8 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         command.append("--export-defectdojo")
     if request.run_id:
         command.extend(["--run-id", request.run_id])
+    command.extend(target_args)
 
-    job_id = uuid.uuid4().hex[:12]
     record = {
         "job_id": job_id,
         "status": "queued",
@@ -136,6 +188,7 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         "exit_code": None,
         "error": None,
         "requested_by": username,
+        "target_counts": target_counts,
     }
     with _LOCK:
         _JOBS[job_id] = record
