@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Annotated
@@ -133,3 +134,22 @@ def require_role(minimum: Role):
         return user
 
     return _checker
+
+
+def require_agent(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> str:
+    """Authenticate a remote scanner agent via shared OCTO_AGENT_TOKEN."""
+    if not settings.agent_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Agent API disabled (OCTO_AGENT_TOKEN not set)",
+        )
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    provided = credentials.credentials.encode("utf-8")
+    expected = settings.agent_token.encode("utf-8")
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent token")
+    return "agent"

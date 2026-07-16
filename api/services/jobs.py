@@ -10,7 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from api.schemas import JobInfo, StartScanRequest
+from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
+from api.services import agents as agents_service
+from api.services import results_ingest
 from api.services.targets import parse_target_payload
 from api.settings import Settings
 
@@ -113,6 +115,36 @@ def _prepare_target_inputs(
     return inputs_dir, counts or None, extra
 
 
+def _build_command(
+    settings: Settings,
+    request: StartScanRequest,
+    *,
+    run_id: str | None,
+    target_args: list[str],
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "scanner.main",
+        "--config",
+        str(settings.config_path),
+        "--mode",
+        request.mode,
+    ]
+    if request.delta:
+        command.append("--delta")
+    if request.skip_nse:
+        command.append("--skip-nse")
+    if request.notify:
+        command.append("--notify")
+    if request.export_defectdojo:
+        command.append("--export-defectdojo")
+    if run_id:
+        command.extend(["--run-id", run_id])
+    command.extend(target_args)
+    return command
+
+
 def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
     _update_job(settings, job_id, status="running", started_at=datetime.now(UTC).isoformat())
     try:
@@ -154,33 +186,19 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
 
     job_id = uuid.uuid4().hex[:12]
+    execution = "agent" if settings.job_execution_mode == "agent" else "local"
+    run_id = request.run_id
+    if execution == "agent" and not run_id:
+        run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
     _, target_counts, target_args = _prepare_target_inputs(settings, job_id, request)
+    command = _build_command(settings, request, run_id=run_id, target_args=target_args)
 
-    command = [
-        sys.executable,
-        "-m",
-        "scanner.main",
-        "--config",
-        str(settings.config_path),
-        "--mode",
-        request.mode,
-    ]
-    if request.delta:
-        command.append("--delta")
-    if request.skip_nse:
-        command.append("--skip-nse")
-    if request.notify:
-        command.append("--notify")
-    if request.export_defectdojo:
-        command.append("--export-defectdojo")
-    if request.run_id:
-        command.extend(["--run-id", request.run_id])
-    command.extend(target_args)
-
-    record = {
+    queued_at = datetime.now(UTC).isoformat()
+    record: dict[str, Any] = {
         "job_id": job_id,
         "status": "queued",
-        "run_id": request.run_id,
+        "run_id": run_id,
         "mode": request.mode,
         "command": command,
         "started_at": None,
@@ -189,11 +207,126 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         "error": None,
         "requested_by": username,
         "target_counts": target_counts,
+        "execution": execution,
+        "assigned_agent_id": None,
+        "queued_at": queued_at,
+        "scan_options": {
+            "mode": request.mode,
+            "delta": request.delta,
+            "skip_nse": request.skip_nse,
+            "notify": request.notify,
+            "export_defectdojo": request.export_defectdojo,
+        },
     }
     with _LOCK:
         _JOBS[job_id] = record
         _persist(settings)
 
-    thread = threading.Thread(target=_run_job, args=(settings, job_id, command), daemon=True)
-    thread.start()
+    if execution == "local":
+        thread = threading.Thread(target=_run_job, args=(settings, job_id, command), daemon=True)
+        thread.start()
+
     return JobInfo.model_validate(record)
+
+
+def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
+    inputs_dir = settings.state_dir / "job_inputs" / job_id
+    if not inputs_dir.is_dir():
+        return {}
+    out: dict[str, str] = {}
+    for name in ("ranges.txt", "domains.txt", "ports.txt"):
+        path = inputs_dir / name
+        if path.is_file():
+            out[name] = path.read_text(encoding="utf-8")
+    return out
+
+
+def claim_job(settings: Settings, agent_id: str) -> AgentClaimResponse | None:
+    """Assign the oldest queued agent job to ``agent_id``, or return None."""
+    if agents_service.get_agent(agent_id) is None:
+        raise LookupError("Unknown agent_id; register first")
+
+    with _LOCK:
+        candidates = [
+            job
+            for job in _JOBS.values()
+            if job.get("execution") == "agent"
+            and job.get("status") == "queued"
+            and not job.get("assigned_agent_id")
+        ]
+        candidates.sort(key=lambda item: str(item.get("queued_at") or item.get("job_id")))
+        if not candidates:
+            return None
+        job = candidates[0]
+        job["status"] = "running"
+        job["assigned_agent_id"] = agent_id
+        job["started_at"] = datetime.now(UTC).isoformat()
+        _persist(settings)
+        job_id = str(job["job_id"])
+        run_id = str(job.get("run_id") or "")
+        opts = dict(job.get("scan_options") or {})
+        mode = str(job.get("mode") or opts.get("mode") or "balanced")
+
+    if not run_id:
+        run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        _update_job(settings, job_id, run_id=run_id)
+
+    agents_service.touch_job(agent_id, job_id, status="busy")
+    return AgentClaimResponse(
+        job_id=job_id,
+        run_id=run_id,
+        mode=mode,
+        delta=bool(opts.get("delta", False)),
+        skip_nse=bool(opts.get("skip_nse", False)),
+        notify=bool(opts.get("notify", False)),
+        export_defectdojo=bool(opts.get("export_defectdojo", False)),
+        inputs=_read_job_inputs(settings, job_id),
+    )
+
+
+def complete_job(
+    settings: Settings,
+    job_id: str,
+    *,
+    agent_id: str,
+    exit_code: int,
+    error: str | None = None,
+    run_id: str | None = None,
+    archive_bytes: bytes | None = None,
+) -> JobInfo:
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            raise LookupError("Job not found")
+        if job.get("execution") != "agent":
+            raise ValueError("Job is not an agent job")
+        if job.get("assigned_agent_id") != agent_id:
+            raise PermissionError("Job is assigned to a different agent")
+        if job.get("status") not in {"running", "queued"}:
+            raise ValueError(f"Job is already {job.get('status')}")
+        resolved_run_id = run_id or job.get("run_id")
+
+    if archive_bytes:
+        if not resolved_run_id:
+            raise ValueError("run_id required when uploading results")
+        dest = settings.output_dir / "runs" / str(resolved_run_id)
+        try:
+            results_ingest.extract_run_archive(archive_bytes, dest)
+            results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
+        except results_ingest.IngestError as exc:
+            raise ValueError(str(exc)) from exc
+
+    status = "succeeded" if exit_code == 0 else "failed"
+    _update_job(
+        settings,
+        job_id,
+        status=status,
+        finished_at=datetime.now(UTC).isoformat(),
+        exit_code=exit_code,
+        run_id=str(resolved_run_id) if resolved_run_id else None,
+        error=(error[:2000] if error else None),
+    )
+    agents_service.touch_job(agent_id, None, status="idle")
+    result = get_job(job_id)
+    assert result is not None
+    return result

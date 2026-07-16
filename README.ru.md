@@ -36,12 +36,16 @@ kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 # UI: http://localhost:8080
 ```
 
-Роли: `viewer` (чтение прогонов), `operator` (запуск jobs), `admin` (зарезервировано).  
+Роли: `viewer` (чтение прогонов), `operator` (jobs + агенты), `admin` (зарезервировано).  
 Демо-пользователи: `viewer` / `operator` / `admin` с паролями `*-change-me` — сразу смените.
 Секрет JWT: `OCTO_JWT_SECRET` / Secret `octo-man-api`.
 
 Запуск сканов из API-образа по умолчанию выключен (`OCTO_ALLOW_SCAN_START=false`).
 Сканируйте через `Job`/`CronJob`, результаты смотрите в UI (общий PVC).
+
+Удалённые агенты (фаза 3): `OCTO_JOB_EXECUTION_MODE=agent`, `OCTO_AGENT_TOKEN`, воркер
+`python -m agent`. Подробности и примеры k8s — в README (EN) и
+`k8s/octo-man/examples/agent-*.yaml`.
 
 ## Быстрый старт
 

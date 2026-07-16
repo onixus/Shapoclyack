@@ -268,7 +268,7 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
 | Role | Capabilities |
 |------|----------------|
 | `viewer` | List/read runs, summaries, diffs, vulnerabilities, artifacts |
-| `operator` | Viewer + start/list scan jobs |
+| `operator` | Viewer + start/list scan jobs and view remote agents |
 | `admin` | Same as operator in this release (reserved for future admin APIs) |
 
 ### Key endpoints
@@ -281,10 +281,38 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
   (newline-separated). When set, the API writes per-job inputs under
   `state/job_inputs/<job_id>/` and passes `--ranges` / `--domains` / `--ports-file`.
   The Jobs page in the web UI exposes the same fields.
+- `GET /api/agents` (operator+) — registered remote agents
+- Agent API (shared bearer `OCTO_AGENT_TOKEN`): `POST /api/agent/register`,
+  `POST /api/agent/heartbeat`, `POST /api/agent/jobs/claim`,
+  `POST /api/agent/jobs/{id}/results`
 
 Scan start from the API image is **off by default** (`OCTO_ALLOW_SCAN_START=false`) because the
 API image does not bundle naabu/nmap. Start scans with the Kubernetes `Job` / `CronJob` and use
 the UI to inspect results on the shared PVC.
+
+### Remote agents (Phase 3)
+
+Set `OCTO_JOB_EXECUTION_MODE=agent` so `POST /api/jobs` only enqueues work. Remote workers run
+the scanner and upload a run tarball back to the API.
+
+```bash
+# API
+export OCTO_JOB_EXECUTION_MODE=agent
+export OCTO_ALLOW_SCAN_START=true
+export OCTO_AGENT_TOKEN=replace-me
+export OCTO_JWT_SECRET=dev-secret
+python -m api
+
+# Worker (scanner image / host with naabu+nmap)
+export OCTO_API_URL=http://127.0.0.1:8080
+export OCTO_AGENT_TOKEN=replace-me
+python -m agent --config scanner/config/default.yaml
+```
+
+Operators can watch agents on the **Agents** page. Jobs show `execution=agent` and the assigned
+agent id. In Kubernetes, agent mode needs a writable API mount for `scanner/output` and
+`scanner/state` (base Deployment is read-only for results-only UI); see
+`k8s/octo-man/examples/agent-mode-api-patch.yaml` and `agent-deployment.example.yaml`.
 
 ## Exit codes
 

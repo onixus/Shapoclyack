@@ -159,6 +159,8 @@ export default function JobsPage() {
               <strong>{job.job_id}</strong>
               <span className="muted">
                 {job.mode} · {job.status}
+                {job.execution ? ` · ${job.execution}` : ""}
+                {job.assigned_agent_id ? ` · agent ${job.assigned_agent_id.slice(0, 8)}` : ""}
                 {job.run_id ? ` · run ${job.run_id}` : ""}
                 {job.target_counts
                   ? ` · targets r${job.target_counts.ranges ?? 0}/d${job.target_counts.domains ?? 0}` +

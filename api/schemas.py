@@ -67,3 +67,50 @@ class JobInfo(BaseModel):
     error: str | None = None
     requested_by: str
     target_counts: dict[str, int] | None = None
+    execution: Literal["local", "agent"] = "local"
+    assigned_agent_id: str | None = None
+
+
+class AgentRegisterRequest(BaseModel):
+    agent_id: str | None = None
+    hostname: str = ""
+    version: str = ""
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class AgentHeartbeatRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=128)
+    status: Literal["idle", "busy", "error"] = "idle"
+    current_job_id: str | None = None
+    detail: str | None = None
+
+
+class AgentInfo(BaseModel):
+    agent_id: str
+    hostname: str = ""
+    version: str = ""
+    labels: dict[str, str] = Field(default_factory=dict)
+    status: Literal["idle", "busy", "error", "stale"] = "idle"
+    current_job_id: str | None = None
+    detail: str | None = None
+    registered_at: str | None = None
+    last_seen_at: str | None = None
+    online: bool = False
+
+
+class AgentClaimResponse(BaseModel):
+    job_id: str
+    run_id: str
+    mode: str
+    delta: bool = False
+    skip_nse: bool = False
+    notify: bool = False
+    export_defectdojo: bool = False
+    inputs: dict[str, str] = Field(default_factory=dict)
+
+
+class AgentCompleteRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=128)
+    exit_code: int = 0
+    run_id: str | None = None
+    error: str | None = None

@@ -40,6 +40,21 @@ export type JobInfo = {
   error: string | null;
   requested_by: string;
   target_counts?: Record<string, number> | null;
+  execution?: "local" | "agent";
+  assigned_agent_id?: string | null;
+};
+
+export type AgentInfo = {
+  agent_id: string;
+  hostname: string;
+  version: string;
+  labels: Record<string, string>;
+  status: "idle" | "busy" | "error" | "stale";
+  current_job_id: string | null;
+  detail: string | null;
+  registered_at: string | null;
+  last_seen_at: string | null;
+  online: boolean;
 };
 
 async function request<T>(
@@ -104,6 +119,10 @@ export function fetchVulns(token: string, runId: string) {
 
 export function fetchJobs(token: string) {
   return request<JobInfo[]>("/api/jobs", {}, token);
+}
+
+export function fetchAgents(token: string) {
+  return request<AgentInfo[]>("/api/agents", {}, token);
 }
 
 export function startScan(
