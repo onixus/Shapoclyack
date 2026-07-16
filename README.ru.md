@@ -3,7 +3,7 @@
 Основной README проекта: [README.md](README.md).  
 Этот файл — дополнительная русская версия с практическими рекомендациями по эксплуатации.
 
-Актуальный релиз: **[v0.2.0](https://github.com/onixus/Octo-man/releases/tag/v0.2.0)** — образ `ghcr.io/onixus/octo-man:0.2.0`.
+Актуальный релиз: **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** — образы `ghcr.io/onixus/octo-man:0.3.0` и `ghcr.io/onixus/octo-man-api:0.3.0`.
 
 ## Назначение
 
@@ -360,10 +360,12 @@ ruff check scanner tests
   аттестации **SBOM + SLSA provenance**.
 - Публикация (`.github/workflows/docker-publish.yml`) собирает мультиарх-образ
   (`linux/amd64`, `linux/arm64`) и пушит его в GHCR по тегу `v*`, при релизе или вручную.
-- Готовый образ: `ghcr.io/onixus/octo-man` (теги `latest`, `X.Y.Z`, `sha-<...>`).
+- Готовые образы: `ghcr.io/onixus/octo-man` и `ghcr.io/onixus/octo-man-api`
+  (теги `latest`, `X.Y.Z`, `sha-<...>`).
 
 ```bash
-docker pull ghcr.io/onixus/octo-man:0.2.0
+docker pull ghcr.io/onixus/octo-man:0.3.0
+docker pull ghcr.io/onixus/octo-man-api:0.3.0
 ```
 
 Подробности и полный пример запуска — в [README.md](README.md#container-image-ghcr).
