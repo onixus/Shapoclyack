@@ -1,16 +1,22 @@
-# Network Scan CLI (Русская документация)
+# Octo-man (документация на русском)
 
-Основной README проекта: [README.md](README.md).  
-Этот файл — дополнительная русская версия с практическими рекомендациями по эксплуатации.
+Основной README: [README.md](README.md).  
+Этот файл — эксплуатационные рекомендации на русском.
 
-Актуальный релиз: **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** — образы `ghcr.io/onixus/octo-man:0.3.0` и `ghcr.io/onixus/octo-man-api:0.3.0`.
+| | |
+|---|---|
+| **Релиз** | **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** |
+| **Образы** | `ghcr.io/onixus/octo-man:0.3.0`, `ghcr.io/onixus/octo-man-api:0.3.0` |
+| **Runtime** | Kubernetes ([k8s/README.md](k8s/README.md)) |
+| **История** | [CHANGELOG.md](CHANGELOG.md) |
 
 ## Назначение
 
-Решение выполняет контейнеризированный пайплайн для больших сетей:
+Контейнеризированный пайплайн разведки больших сетей + API/дашборд:
 - вход: `CIDR + IP + FQDN`
-- этапы: `resolve -> discovery -> hostname enrichment -> fast ports -> Nmap NSE (версии сервисов/ОС + уязвимости/CVE)`
-- выход: `JSON/JSONL/CSV` + сводка `Markdown/HTML`
+- этапы: `resolve → discovery → hostnames → ports → NSE (версии/ОС + CVE)`
+- выход: `JSON/JSONL/CSV` + сводка `Markdown/HTML` (+ diffs, alerts)
+- управление: Kubernetes Job/CronJob и UI на `:8080`
 
 ## Kubernetes (основной способ запуска)
 
@@ -321,7 +327,7 @@ tests/load/run.sh network-scan-cli:ci --hosts 32 --config tests/load/config-heav
 Переменные окружения для `tests/load/run.sh`: `CHECKPOINT_TIMEOUT_SEC`, `SCAN_TIMEOUT_SEC`,
 `KEEP_WORK=1` (отладка, не удалять temp-директорию).
 
-- **Бенчмарк discovery** (docker-лаборатория на master):
+- **Бенчмарк discovery** (локальная docker-лаборатория):
 
 ```bash
 bench/up.sh [alive] [target_count] [cidr|list]   # поднять сеть + nginx-мишени
@@ -343,25 +349,19 @@ bench/down.sh                                    # снести сеть и ко
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q
-ruff check scanner tests
+ruff check scanner api tests
 ```
 
-## Контейнерный образ (GHCR) и CI
+## Контейнерные образы (GHCR) и CI
 
-- CI (`.github/workflows/ci.yml`) на каждый push в `master` и PR гоняет `ruff`, `pytest`
-  (Python 3.11/3.12) и job `image`: сборка, smoke-проверка инструментов, **end-to-end скан**
-  против тестового контейнера, **синтетический load test** (16 мишеней), **сканирование образа Trivy**
-  и генерация **SBOM**.
-- E2E (`tests/e2e/run.sh`): поднимает целевой контейнер (`nginx:alpine`) в приватной docker-сети,
-  запускает сканер с минимальным офлайн-конфигом и проверяет, что хост жив, порт `80` открыт,
-  сервис определён и отчёты сформированы.
-- Trivy: неблокирующий отчёт (CRITICAL/HIGH/MEDIUM) + гейт, падающий только на **устранимые
-  CRITICAL**. SBOM (SPDX) выгружается артефактом; при публикации к образу прикрепляются
-  аттестации **SBOM + SLSA provenance**.
-- Публикация (`.github/workflows/docker-publish.yml`) собирает мультиарх-образ
-  (`linux/amd64`, `linux/arm64`) и пушит его в GHCR по тегу `v*`, при релизе или вручную.
-- Готовые образы: `ghcr.io/onixus/octo-man` и `ghcr.io/onixus/octo-man-api`
-  (теги `latest`, `X.Y.Z`, `sha-<...>`).
+- CI (`.github/workflows/ci.yml`) на каждый push в `main` и PR: `ruff`, `pytest` (3.11/3.12),
+  сборка web-дашборда, проверка kustomize, job `image` (smoke, e2e, load×16, Trivy, SBOM).
+- E2E (`tests/e2e/run.sh`): целевой `nginx:alpine` в приватной docker-сети, офлайн-конфиг,
+  проверка alive / порт `80` / сервис / артефакты отчёта.
+- Trivy: неблокирующий отчёт + гейт на **устранимые CRITICAL**; при публикации — SBOM + SLSA.
+- Публикация (`.github/workflows/docker-publish.yml`) — мультиарх `linux/amd64` + `linux/arm64`
+  для **обоих** образов по тегу `v*`, релизу или `workflow_dispatch`.
+- Образы: `ghcr.io/onixus/octo-man` (сканер) и `ghcr.io/onixus/octo-man-api` (API + UI).
 
 ```bash
 docker pull ghcr.io/onixus/octo-man:0.3.0
