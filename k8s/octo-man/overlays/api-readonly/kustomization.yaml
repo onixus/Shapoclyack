@@ -1,4 +1,5 @@
-# Thin results-only API (no local scan start). Prefer overlays/dev for all-in-one.
+# Thin results-only API image (shapoclyack-api, no local scan start).
+# Prefer overlays/dev for all-in-one (shapoclyack-aio).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

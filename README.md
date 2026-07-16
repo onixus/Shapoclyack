@@ -5,6 +5,9 @@
 
 Containerized network reconnaissance pipeline with a Kubernetes control plane, HTTP API, and dashboard.
 
+**Product:** Octo-man · **Repository / container registry:** Shapoclyack  
+(`ghcr.io/onixus/shapoclyack-{aio,scanner,api}` — not the legacy `octo-man` GHCR packages).
+
 English is the primary documentation language.  
 Russian ops notes: [README.ru.md](README.ru.md).
 
@@ -14,7 +17,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 | **Inputs** | CIDR / IP / FQDN |
 | **Outputs** | JSON / JSONL / CSV + Markdown / HTML (+ diffs, alerts) |
 | **Runtime** | All-in-one (`docker compose`) or Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
-| **Release** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** — `ghcr.io/onixus/octo-man-aio:0.3.2.1` (+ `octo-man-scanner` / `octo-man-api`) |
+| **Release** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** — `ghcr.io/onixus/shapoclyack-aio:0.3.2.1` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 
 ### Docs map
 
@@ -47,7 +50,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **Business PDF reports** (`reporting.pdf_summary`): executive `summary.pdf` with severity KPIs and priority findings (Phase 3).
 - **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
 - **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`).
-- **All-in-one** (`octo-man-aio` / `docker compose`): Web UI starts local scans by default.
+- **All-in-one** (`shapoclyack-aio` / `docker compose`): Web UI starts local scans by default.
 - **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man`.
 
 ## Project Layout
@@ -105,8 +108,8 @@ Primary runtime is **Kubernetes**. Full steps: [k8s/README.md](k8s/README.md).
 ### 1) Build images
 
 ```bash
-docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
-docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
+docker build -t ghcr.io/onixus/shapoclyack-scanner:local -f Dockerfile .
+docker build -t ghcr.io/onixus/shapoclyack-api:local -f Dockerfile.api .
 ```
 
 ### 2) Prepare targets + deploy (Kubernetes)
@@ -131,7 +134,7 @@ docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/octo-man:local \
+  ghcr.io/onixus/shapoclyack-scanner:local \
   --config scanner/config/default.yaml --mode balanced
 ```
 
@@ -159,7 +162,7 @@ known-alive hosts. Requires a prior full baseline scan with `per_run_output: tru
 ```bash
 # CronJob already passes --delta; for a one-shot Job, patch args or run locally:
 docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
-  -v "$PWD/scanner:/app/scanner" ghcr.io/onixus/octo-man:local \
+  -v "$PWD/scanner:/app/scanner" ghcr.io/onixus/shapoclyack-scanner:local \
   --config scanner/config/default.yaml --mode balanced --delta
 ```
 
@@ -245,7 +248,7 @@ docker compose up --build
 # open http://localhost:8080  — operator / operator-change-me
 ```
 
-Image: `ghcr.io/onixus/octo-man-aio:0.3.2.1` (scanner tools + API + UI).  
+Image: `ghcr.io/onixus/shapoclyack-aio:0.3.2.1` (scanner tools + API + UI).  
 `OCTO_ALLOW_SCAN_START=true` and `OCTO_JOB_EXECUTION_MODE=local` are baked in.
 
 Kubernetes (aio Deployment, UI can start scans):
@@ -298,7 +301,7 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
   `POST /api/agent/jobs/{id}/results`
 
 **Default (aio / compose / k8s base):** Web UI job start is **on** (`OCTO_ALLOW_SCAN_START=true`).  
-The thin `octo-man-api` image still has no naabu/nmap — use it only via
+The thin `shapoclyack-api` image still has no naabu/nmap — use it only via
 `k8s/octo-man/overlays/api-readonly` (`OCTO_ALLOW_SCAN_START=false`) when the UI should be
 results-only and scans run as `Job` / `CronJob` / remote agents.
 
@@ -480,9 +483,9 @@ Published product images:
 
 | Image | Dockerfile |
 |-------|------------|
-| `ghcr.io/onixus/octo-man-aio` | `Dockerfile.allinone` (scanner + API + UI, **default**) |
-| `ghcr.io/onixus/octo-man-scanner` | `Dockerfile` (scanner-only) |
-| `ghcr.io/onixus/octo-man-api` | `Dockerfile.api` (thin API + dashboard) |
+| `ghcr.io/onixus/shapoclyack-aio` | `Dockerfile.allinone` (scanner + API + UI, **default**) |
+| `ghcr.io/onixus/shapoclyack-scanner` | `Dockerfile` (scanner-only) |
+| `ghcr.io/onixus/shapoclyack-api` | `Dockerfile.api` (thin API + dashboard) |
 
 Tagging for `v*` tags: full version (incl. `0.3.2.1`), semver patterns when applicable,
 commit `sha-<...>`, and `latest`. `workflow_dispatch` can publish an extra ad-hoc tag.
@@ -490,21 +493,21 @@ commit `sha-<...>`, and `latest`. `workflow_dispatch` can publish an extra ad-ho
 Pull and run all-in-one:
 
 ```bash
-docker pull ghcr.io/onixus/octo-man-aio:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-aio:0.3.2.1
 docker compose up
 ```
 
 Scanner-only:
 
 ```bash
-docker pull ghcr.io/onixus/octo-man-scanner:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-scanner:0.3.2.1
 docker run --rm \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/inputs:/app/scanner/inputs" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/octo-man-scanner:0.3.2.1 --config scanner/config/default.yaml --mode balanced
+  ghcr.io/onixus/shapoclyack-scanner:0.3.2.1 --config scanner/config/default.yaml --mode balanced
 ```
 
 To cut a release build, push a version tag (triggers GHCR publish):

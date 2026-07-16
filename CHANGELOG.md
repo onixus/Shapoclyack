@@ -1,6 +1,22 @@
 # Changelog
 
-All notable changes to Octo-man are documented in this file.
+All notable changes to the Octo-man product (hosted in Shapoclyack) are documented in this file.
+
+## Unreleased
+
+### Changed
+
+- **Container images are Shapoclyack-scoped** and no longer published under the legacy
+  `ghcr.io/onixus/octo-man*` package names:
+  - `ghcr.io/onixus/shapoclyack-aio`
+  - `ghcr.io/onixus/shapoclyack-scanner`
+  - `ghcr.io/onixus/shapoclyack-api`
+- Compose service renamed to `shapoclyack`; Dockerfiles carry OCI source labels for this repo
+
+### Upgrade notes
+
+- Retag / pull `shapoclyack-*` images (do not use bare `ghcr.io/onixus/octo-man`)
+- Update any local `image:` overrides to the new names
 
 ## [0.3.2.1] — 2026-07-16
 
@@ -8,7 +24,7 @@ All-in-one release: Web UI can start scans by default.
 
 ### Added
 
-- **All-in-one image** `ghcr.io/onixus/octo-man-aio` (`Dockerfile.allinone`): scanner tools + API + React UI + agent client
+- **All-in-one image** (`Dockerfile.allinone`): scanner tools + API + React UI + agent client
 - **`docker-compose.yml`**: one-command local stack with Jobs UI scan start enabled
 - Kustomize overlay `overlays/api-readonly` for the thin results-only API image
 
@@ -18,17 +34,13 @@ All-in-one release: Web UI can start scans by default.
 - GHCR publish matrix builds scanner, api, and aio (tag matching supports `v0.3.2.1`)
 - Phase 3 items (DefectDojo, PDF, remote agents, scan targets / UDP ports) are included in this release train
 
-### Images
+### Images (at release; superseded by `shapoclyack-*` names — see Unreleased)
 
-| Image | Tag |
+| Image (historical) | Tag |
 |-------|-----|
 | `ghcr.io/onixus/octo-man-aio` | `0.3.2.1`, `latest` |
 | `ghcr.io/onixus/octo-man-api` | `0.3.2.1`, `latest` |
 | `ghcr.io/onixus/octo-man-scanner` | `0.3.2.1`, `latest` |
-
-> Legacy `ghcr.io/onixus/octo-man` stays linked to the old `onixus/Octo-man` package ACL;
-> Shapoclyack Actions publish `octo-man-scanner` / `octo-man-aio` instead. K8s Job/CronJob
-> use the aio image with `command: ["python", "-m", "scanner.main"]`.
 
 ### Upgrade notes
 
@@ -63,7 +75,7 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 - Restored GHCR publish workflow for both product images
 - Extracted reusable composite action `.github/actions/synthetic-load-test` for CI / heavy load workflows
 
-### Images
+### Images (historical)
 
 | Image | Tag |
 |-------|-----|
@@ -78,4 +90,4 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 
 ## [0.2.1] — 2026-07-15
 
-Inherited from upstream Octo-man (NSE `-Pn` fix, docs/infographic). See prior Octo-man releases for 0.2.x history.
+Inherited from pre-Shapoclyack Octo-man history (NSE `-Pn` fix, docs/infographic).

@@ -6,7 +6,7 @@
 | | |
 |---|---|
 | **Релиз** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** |
-| **Образы** | `ghcr.io/onixus/octo-man-aio:0.3.2.1` (+ `octo-man`, `octo-man-api`) |
+| **Образы** | `ghcr.io/onixus/shapoclyack-aio:0.3.2.1` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 | **Runtime** | All-in-one (`docker compose`) или Kubernetes ([k8s/README.md](k8s/README.md)) |
 | **История** | [CHANGELOG.md](CHANGELOG.md) |
 
@@ -32,7 +32,7 @@ docker compose up --build
 с управлением сканами из Web UI.
 
 ```bash
-docker build -t ghcr.io/onixus/octo-man-aio:local -f Dockerfile.allinone .
+docker build -t ghcr.io/onixus/shapoclyack-aio:local -f Dockerfile.allinone .
 kubectl apply -k k8s/octo-man/overlays/dev
 kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 ```
@@ -54,8 +54,8 @@ kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 ### 1) Сборка образов
 
 ```bash
-docker build -t ghcr.io/onixus/octo-man:local -f Dockerfile .
-docker build -t ghcr.io/onixus/octo-man-api:local -f Dockerfile.api .
+docker build -t ghcr.io/onixus/shapoclyack-scanner:local -f Dockerfile .
+docker build -t ghcr.io/onixus/shapoclyack-api:local -f Dockerfile.api .
 ```
 
 ### 2) Подготовка входов и деплой
@@ -71,7 +71,7 @@ kubectl -n network-scan logs -f job/network-scan
 
 ```bash
 docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
-  -v "$PWD/scanner:/app/scanner" ghcr.io/onixus/octo-man:local \
+  -v "$PWD/scanner:/app/scanner" ghcr.io/onixus/shapoclyack-scanner:local \
   --config scanner/config/default.yaml --mode balanced
 ```
 
@@ -401,12 +401,12 @@ ruff check scanner api tests
 - Trivy: неблокирующий отчёт + гейт на **устранимые CRITICAL**; при публикации — SBOM + SLSA.
 - Публикация (`.github/workflows/docker-publish.yml`) — мультиарх `linux/amd64` + `linux/arm64`
   для **обоих** образов по тегу `v*`, релизу или `workflow_dispatch`.
-- Образы: `ghcr.io/onixus/octo-man` (сканер) и `ghcr.io/onixus/octo-man-api` (API + UI).
+- Образы: `shapoclyack-aio` (по умолчанию), `shapoclyack-scanner`, `shapoclyack-api`.
 
 ```bash
-docker pull ghcr.io/onixus/octo-man-aio:0.3.2.1
-docker pull ghcr.io/onixus/octo-man-scanner:0.3.2.1
-docker pull ghcr.io/onixus/octo-man-api:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-aio:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-scanner:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-api:0.3.2.1
 ```
 
 Подробности и полный пример запуска — в [README.md](README.md#container-image-ghcr).
