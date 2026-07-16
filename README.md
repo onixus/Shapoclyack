@@ -30,15 +30,18 @@ Latest release: **[v0.2.0](https://github.com/onixus/Octo-man/releases/tag/v0.2.
 - Retry + timeout handling per external command (with a separate per-host `nse_timeout_seconds`).
 - Range batching + fine-grained checkpoint/resume (per discovery/port batch and per NSE host).
 - Report exports with summary, parsed Nmap service data, OS matches and vulnerability findings.
+- **Phase 2 API + dashboard**: FastAPI backend, React UI, JWT RBAC (`viewer` / `operator` / `admin`).
 
 ## Project Layout
 
-- `Dockerfile`
-- `docker-compose.yml`
+- `Dockerfile` / `Dockerfile.api`
+- `docker-compose.yml` (`scanner` + `api` services)
 - `scanner/config/default.yaml` (+ optional `discovery-bench*.yaml` for discovery tuning)
 - `scanner/inputs/{ranges.txt,domains.txt,ports.txt,ports_udp.txt}`
 - `scanner/main.py`
 - `scanner/pipeline/*`
+- `api/` — FastAPI app (`python -m api`)
+- `web/` — React dashboard (Vite); production build served by the API
 - `tests/{e2e,load}/` — CI integration tests
 - `scripts/{smoke.sh,load-test.sh}` — local helpers
 - `bench/{up,down,run-discovery,run-realistic}.sh` — local discovery benchmark lab
@@ -154,6 +157,56 @@ When `runtime.per_run_output: true` (default), each scan writes to isolated dire
 
 `run_id` defaults to a UTC timestamp (`20260626T104530Z`) or can be set via `--run-id`.
 Set `per_run_output: false` to keep the legacy flat layout (`scanner/output/`).
+
+## Phase 2: API, dashboard, and RBAC
+
+HTTP control plane for reviewing runs and (optionally) launching scans.
+
+### Start the API + UI
+
+```bash
+docker compose up --build api
+# open http://localhost:8080
+```
+
+Local development:
+
+```bash
+pip install -r requirements-api.txt
+cd web && npm install && npm run build && cd ..
+OCTO_JWT_SECRET=dev-secret python -m api
+```
+
+### Default users (change immediately)
+
+| User | Password | Role |
+|------|----------|------|
+| `admin` | `admin-change-me` | admin |
+| `operator` | `operator-change-me` | operator |
+| `viewer` | `viewer-change-me` | viewer |
+
+Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set a strong
+`OCTO_JWT_SECRET`.
+
+### Roles
+
+| Role | Capabilities |
+|------|----------------|
+| `viewer` | List/read runs, summaries, diffs, vulnerabilities, artifacts |
+| `operator` | Viewer + start/list scan jobs |
+| `admin` | Same as operator in this release (reserved for future admin APIs) |
+
+### Key endpoints
+
+- `POST /api/auth/login` → JWT
+- `GET /api/auth/me`
+- `GET /api/runs`, `GET /api/runs/{run_id}`, `GET /api/runs/{run_id}/vulnerabilities`
+- `GET /api/runs/{run_id}/diff`, `GET /api/runs/{run_id}/artifacts/{path}`
+- `GET|POST /api/jobs` (operator+)
+
+Scan start from the API image is **off by default** (`OCTO_ALLOW_SCAN_START=false`) because the
+API image does not bundle naabu/nmap. Enable it when running the API with the scanner toolchain
+available, or start scans via `docker compose run scanner …` and use the UI to inspect results.
 
 ## Exit codes
 

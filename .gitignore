@@ -9,3 +9,7 @@ scanner/state/*
 scanner/inputs/bench/ranges.txt
 scanner/inputs/bench/.bench-net
 .DS_Store
+web/node_modules/
+web/dist/
+*.egg-info/
+.ruff_cache/

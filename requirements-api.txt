@@ -1,0 +1,8 @@
+-r requirements.txt
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+PyJWT==2.10.1
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
+python-multipart==0.0.20
+httpx==0.28.1
