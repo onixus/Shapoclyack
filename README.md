@@ -297,8 +297,10 @@ ruff check scanner api tests
 - **test**: `compileall` + `pytest` on Python 3.11 and 3.12
 - **web**: `npm ci` + production build of the React dashboard
 - **kustomize**: `./k8s/scripts/validate-kustomize.sh`
-- **image**: build scanner image, toolchain smoke, e2e scan, light load test (16 hosts),
-  Trivy gate, SBOM artifact
+- **image**: build scanner image, toolchain smoke, e2e scan, light load test via
+  `.github/actions/synthetic-load-test` (16 hosts), Trivy gate, SBOM artifact
+
+Heavy load runs live in `.github/workflows/load-test.yml` (manual / weekly / `workflow_call`).
 
 Release tags (`v*`) trigger `.github/workflows/docker-publish.yml` for both GHCR images.
 
@@ -322,11 +324,15 @@ tests/e2e/run.sh network-scan-cli:ci
 runs discovery → ports → parallel NSE across batches, validates that ≥95% of targets are found,
 and records duration / peak RSS metrics.
 
-**CI (every PR):** 16 targets, config `tests/load/config.yaml`.
+Reusable composite action: `.github/actions/synthetic-load-test` (build optional, metrics artifact,
+job summary). Used by:
 
-**Heavy (manual / weekly):** workflow `.github/workflows/load-test.yml` — default **32** targets,
-`tests/load/config-heavy.yaml`, per-run dirs, optional mid-scan interrupt + `--resume` on manual
-dispatch (scheduled weekly run skips resume).
+| Trigger | Hosts | Config | Resume |
+|---------|------:|--------|--------|
+| CI image job (every PR) | 16 | `tests/load/config.yaml` | no |
+| `Load test` workflow (`workflow_dispatch`) | 32 (default) | `tests/load/config-heavy.yaml` | yes (default) |
+| `Load test` workflow (weekly cron) | 32 | heavy | no |
+| `workflow_call` into `load-test.yml` | caller-defined | caller-defined | caller-defined |
 
 Environment overrides for `tests/load/run.sh`:
 
@@ -344,6 +350,8 @@ tests/load/run.sh network-scan-cli:ci --hosts 16
 tests/load/run.sh network-scan-cli:ci --hosts 32 --config tests/load/config-heavy.yaml \
   --run-id local-heavy --resume-test
 ```
+
+Manual / scheduled heavy run: **Actions → Load test → Run workflow**.
 
 For a **real-network** load run against your own CIDR (outside CI), use `scripts/load-test.sh <cidr>`.
 

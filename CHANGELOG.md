@@ -26,6 +26,7 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 - Retired `docker-compose.yml` as the deploy path (Dockerfiles remain for image builds)
 - Scanner and API container UIDs pinned to `1000` for Kubernetes `securityContext`
 - Restored GHCR publish workflow for both product images
+- Extracted reusable composite action `.github/actions/synthetic-load-test` for CI / heavy load workflows
 
 ### Images
 

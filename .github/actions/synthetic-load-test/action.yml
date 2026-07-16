@@ -1,0 +1,168 @@
+name: Synthetic load test
+description: >
+  Build (optional) and run the Octo-man synthetic multi-target load harness
+  (tests/load/run.sh) against nginx containers on a private Docker network.
+  Validates ≥95% host/port coverage and emits duration / peak-RSS metrics.
+
+inputs:
+  image:
+    description: Scanner image tag to run (must already exist unless build=true)
+    required: false
+    default: network-scan-cli:load
+  build:
+    description: Build the scanner image with docker/build-push-action before the run
+    required: false
+    default: "true"
+  hosts:
+    description: Number of synthetic target containers
+    required: false
+    default: "32"
+  config:
+    description: Path to scanner YAML relative to the repo root
+    required: false
+    default: tests/load/config-heavy.yaml
+  resume_test:
+    description: Interrupt mid-scan and verify --resume (true/false)
+    required: false
+    default: "false"
+  run_id:
+    description: Scanner run id (required when resume_test=true or per_run_output configs)
+    required: false
+    default: ""
+  checkpoint_timeout_sec:
+    description: Max seconds to wait for resume checkpoint progress
+    required: false
+    default: "120"
+  scan_timeout_sec:
+    description: Hard timeout (seconds) for the scanner container
+    required: false
+    default: "1800"
+  min_fraction:
+    description: Minimum fraction of targets that must pass validation
+    required: false
+    default: "0.95"
+  metrics_path:
+    description: Workspace-relative path to write metrics JSON
+    required: false
+    default: load-metrics.json
+  upload_artifact:
+    description: Upload metrics JSON as a workflow artifact
+    required: false
+    default: "true"
+  artifact_name:
+    description: Name of the uploaded metrics artifact
+    required: false
+    default: load-test-metrics
+
+outputs:
+  metrics_path:
+    description: Absolute path to the metrics JSON file
+    value: ${{ steps.run.outputs.metrics_path }}
+  passed:
+    description: Whether the load harness reported success (true/false)
+    value: ${{ steps.summary.outputs.passed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      if: inputs.build == 'true'
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build scanner image
+      if: inputs.build == 'true'
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        push: false
+        load: true
+        tags: ${{ inputs.image }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Run synthetic load harness
+      id: run
+      shell: bash
+      env:
+        HOSTS: ${{ inputs.hosts }}
+        CONFIG: ${{ inputs.config }}
+        RESUME: ${{ inputs.resume_test }}
+        RUN_ID: ${{ inputs.run_id }}
+        IMAGE: ${{ inputs.image }}
+        CHECKPOINT_TIMEOUT_SEC: ${{ inputs.checkpoint_timeout_sec }}
+        SCAN_TIMEOUT_SEC: ${{ inputs.scan_timeout_sec }}
+        MIN_FRACTION: ${{ inputs.min_fraction }}
+        METRICS_COPY_TO: ${{ github.workspace }}/${{ inputs.metrics_path }}
+      run: |
+        set -euo pipefail
+        metrics_abs="${METRICS_COPY_TO}"
+        echo "metrics_path=${metrics_abs}" >> "${GITHUB_OUTPUT}"
+
+        args=("${IMAGE}" --hosts "${HOSTS}" --config "${CONFIG}")
+        if [[ -n "${RUN_ID}" ]]; then
+          args+=(--run-id "${RUN_ID}")
+        fi
+        if [[ "${RESUME}" == "true" || "${RESUME}" == "1" ]]; then
+          if [[ -z "${RUN_ID}" ]]; then
+            echo "run_id is required when resume_test=true" >&2
+            exit 2
+          fi
+          args+=(--resume-test)
+        fi
+
+        bash tests/load/run.sh "${args[@]}"
+
+    - name: Write job summary
+      id: summary
+      if: always()
+      shell: bash
+      env:
+        METRICS_FILE: ${{ github.workspace }}/${{ inputs.metrics_path }}
+      run: |
+        set -euo pipefail
+        passed="false"
+        if [[ -f "${METRICS_FILE}" ]]; then
+          python3 - "${METRICS_FILE}" >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+        import json, sys
+        from pathlib import Path
+
+        data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+        passed = bool(data.get("passed"))
+        status = "PASS" if passed else "FAIL"
+        print(f"## Synthetic load test — {status}")
+        print("")
+        print("| Metric | Value |")
+        print("|--------|-------|")
+        print(f"| Targets | {data.get('target_count', data.get('host_count', 'n/a'))} |")
+        print(f"| Alive hosts | {data.get('alive_hosts', 'n/a')} |")
+        print(f"| Open :80 matches | {data.get('open_port_matches', 'n/a')} |")
+        print(f"| Nmap services | {data.get('nmap_open_services', 'n/a')} |")
+        print(f"| Duration | {data.get('duration_sec', 'n/a')} s |")
+        print(f"| Peak RSS | {data.get('peak_rss_mb', 'n/a')} MiB |")
+        print(f"| Resume test | {data.get('resume_test', False)} |")
+        print(f"| Run id | `{data.get('run_id') or '—'}` |")
+        failures = data.get("failures") or []
+        if failures:
+            print("")
+            print("### Failures")
+            for item in failures:
+                print(f"- {item}")
+        Path("/tmp/load-test-passed.txt").write_text("true" if passed else "false", encoding="utf-8")
+        PY
+          passed="$(cat /tmp/load-test-passed.txt)"
+        else
+          {
+            echo "## Synthetic load test — NO METRICS"
+            echo ""
+            echo "Metrics file was not produced: \`${METRICS_FILE}\`."
+          } >> "${GITHUB_STEP_SUMMARY}"
+        fi
+        echo "passed=${passed}" >> "${GITHUB_OUTPUT}"
+
+    - name: Upload load-test metrics
+      if: always() && inputs.upload_artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: ${{ inputs.metrics_path }}
+        if-no-files-found: ignore

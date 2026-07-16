@@ -13,6 +13,28 @@ on:
         required: false
         default: true
         type: boolean
+      config:
+        description: Scanner config path (repo-relative)
+        required: false
+        default: tests/load/config-heavy.yaml
+        type: string
+  workflow_call:
+    inputs:
+      host_count:
+        description: Number of synthetic target containers
+        required: false
+        default: "32"
+        type: string
+      resume_test:
+        description: Interrupt mid-scan and verify --resume
+        required: false
+        default: false
+        type: boolean
+      config:
+        description: Scanner config path (repo-relative)
+        required: false
+        default: tests/load/config-heavy.yaml
+        type: string
   schedule:
     # Weekly heavy load test (Sunday 03:00 UTC) — no resume to stay within timeout.
     - cron: "0 3 * * 0"
@@ -21,46 +43,73 @@ permissions:
   contents: read
 
 concurrency:
-  group: load-test-${{ github.ref }}
+  group: load-test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   heavy-load:
-    name: Heavy synthetic load (${{ github.event.inputs.host_count || '32' }} hosts)
+    name: Heavy synthetic load
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          tags: network-scan-cli:load
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Run heavy load test
-        timeout-minutes: 45
+
+      - name: Resolve load-test inputs
+        id: opts
+        shell: bash
         env:
-          HOSTS: ${{ github.event.inputs.host_count || '32' }}
-          # Scheduled runs skip resume (full scan only); manual dispatch defaults to resume test.
-          RESUME: ${{ github.event_name == 'schedule' && '0' || (github.event.inputs.resume_test != false && '1' || '0') }}
-          CHECKPOINT_TIMEOUT_SEC: "120"
-          SCAN_TIMEOUT_SEC: "1800"
-          METRICS_COPY_TO: ${{ github.workspace }}/load-metrics-${{ github.run_id }}.json
+          EVENT_NAME: ${{ github.event_name }}
+          # inputs.* for workflow_dispatch / workflow_call; event.inputs for dispatch only.
+          HOSTS_INPUT: ${{ inputs.host_count || github.event.inputs.host_count || '32' }}
+          CONFIG_INPUT: ${{ inputs.config || github.event.inputs.config || 'tests/load/config-heavy.yaml' }}
+          # Do not use || on booleans — false is falsy in GitHub Expressions.
+          RESUME_DISPATCH: ${{ github.event.inputs.resume_test }}
+          RESUME_CALL: ${{ inputs.resume_test }}
         run: |
           set -euo pipefail
-          args=(network-scan-cli:load --hosts "${HOSTS}" --config tests/load/config-heavy.yaml --run-id "gha-load-${GITHUB_RUN_ID}")
-          if [[ "${RESUME}" == "1" ]]; then
-            args+=(--resume-test)
-          fi
-          bash tests/load/run.sh "${args[@]}"
-      - name: Upload load-test metrics
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
+          hosts="${HOSTS_INPUT}"
+          config="${CONFIG_INPUT}"
+
+          case "${EVENT_NAME}" in
+            schedule)
+              resume="false"
+              ;;
+            workflow_call)
+              if [[ "${RESUME_CALL}" == "true" ]]; then
+                resume="true"
+              else
+                resume="false"
+              fi
+              ;;
+            *)
+              # workflow_dispatch default is true; string "false" disables resume.
+              if [[ "${RESUME_DISPATCH}" == "false" ]]; then
+                resume="false"
+              else
+                resume="true"
+              fi
+              ;;
+          esac
+
+          {
+            echo "hosts=${hosts}"
+            echo "config=${config}"
+            echo "resume=${resume}"
+            echo "run_id=gha-load-${GITHUB_RUN_ID}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Resolved: hosts=${hosts} config=${config} resume=${resume}"
+
+      - name: Synthetic load test
+        uses: ./.github/actions/synthetic-load-test
         with:
-          name: load-test-metrics-${{ github.run_id }}
-          path: load-metrics-${{ github.run_id }}.json
-          if-no-files-found: ignore
+          image: network-scan-cli:load
+          build: "true"
+          hosts: ${{ steps.opts.outputs.hosts }}
+          config: ${{ steps.opts.outputs.config }}
+          resume_test: ${{ steps.opts.outputs.resume }}
+          run_id: ${{ steps.opts.outputs.run_id }}
+          checkpoint_timeout_sec: "120"
+          scan_timeout_sec: "1800"
+          metrics_path: load-metrics-${{ github.run_id }}.json
+          artifact_name: load-test-metrics-${{ github.run_id }}

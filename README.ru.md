@@ -320,12 +320,20 @@ tests/load/run.sh network-scan-cli:ci --hosts 32 --config tests/load/config-heav
   --run-id local-heavy --resume-test
 ```
 
-В CI на каждый PR — 16 мишеней (`tests/load/config.yaml`). Тяжёлый прогон — workflow
-`.github/workflows/load-test.yml`: по умолчанию **32** хоста, `tests/load/config-heavy.yaml`.
-Ручной запуск — с `--resume-test`; еженедельный cron — без resume (полный скан).
+Переиспользуемый composite action: `.github/actions/synthetic-load-test` (опциональная сборка
+образа, artifact с метриками, summary в job).
+
+| Запуск | Хосты | Конфиг | Resume |
+|--------|------:|--------|--------|
+| CI (каждый PR) | 16 | `tests/load/config.yaml` | нет |
+| Workflow `Load test` (вручную) | 32 | `tests/load/config-heavy.yaml` | да |
+| Workflow `Load test` (cron) | 32 | heavy | нет |
+| `workflow_call` | задаёт вызывающий | задаёт вызывающий | задаёт вызывающий |
 
 Переменные окружения для `tests/load/run.sh`: `CHECKPOINT_TIMEOUT_SEC`, `SCAN_TIMEOUT_SEC`,
 `KEEP_WORK=1` (отладка, не удалять temp-директорию).
+
+Ручной тяжёлый прогон: **Actions → Load test → Run workflow**.
 
 - **Бенчмарк discovery** (локальная docker-лаборатория):
 
