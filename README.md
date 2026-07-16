@@ -30,20 +30,24 @@ Latest release: **[v0.2.0](https://github.com/onixus/Octo-man/releases/tag/v0.2.
 - Retry + timeout handling per external command (with a separate per-host `nse_timeout_seconds`).
 - Range batching + fine-grained checkpoint/resume (per discovery/port batch and per NSE host).
 - Report exports with summary, parsed Nmap service data, OS matches and vulnerability findings.
+- **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`.
+- **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
+- **Task scheduler** (`python -m scanner.scheduler`): cron or interval runner for recurring scans.
 - **Phase 2 API + dashboard**: FastAPI backend, React UI, JWT RBAC (`viewer` / `operator` / `admin`).
 
 ## Project Layout
 
 - `Dockerfile` / `Dockerfile.api`
-- `docker-compose.yml` (`scanner` + `api` services)
+- `docker-compose.yml` (`scanner` + `api` services; optional `scheduler` profile)
 - `scanner/config/default.yaml` (+ optional `discovery-bench*.yaml` for discovery tuning)
 - `scanner/inputs/{ranges.txt,domains.txt,ports.txt,ports_udp.txt}`
 - `scanner/main.py`
+- `scanner/scheduler.py`
 - `scanner/pipeline/*`
 - `api/` — FastAPI app (`python -m api`)
 - `web/` — React dashboard (Vite); production build served by the API
 - `tests/{e2e,load}/` — CI integration tests
-- `scripts/{smoke.sh,load-test.sh}` — local helpers
+- `scripts/{smoke.sh,load-test.sh,schedule.sh}` — local helpers
 - `bench/{up,down,run-discovery,run-realistic}.sh` — local discovery benchmark lab
 - `scanner/output/*` (generated; per-run under `scanner/output/runs/<run_id>/` when enabled)
 - `scanner/state/checkpoint.json` (generated; per-run under `scanner/state/runs/<run_id>/` by default)
@@ -140,6 +144,51 @@ docker compose run --rm scanner --config scanner/config/default.yaml --mode bala
 Or enable `discovery.delta.enabled: true` in the config. Optional `discovery.seed_alive_file`
 pre-seeds alive hosts from CMDB/DHCP before the first delta run. Do **not** use delta on the
 first scan, after changing input ranges, or when you need a full baseline.
+
+### 7) Report diffs (Phase 1)
+
+After reports are written, the pipeline compares the current run to the previous one
+(from `scanner/state/latest_run.json`, or an explicit path / id):
+
+```bash
+docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced
+# next run automatically writes diff.json / diff.md vs the prior run
+docker compose run --rm scanner --config scanner/config/default.yaml --mode balanced \
+  --compare-run-id 20260626T104530Z
+```
+
+Disable with `--no-diff` or `reporting.diff.enabled: false`. Diff covers alive hosts,
+open `host:port` pairs, and structured vulnerabilities.
+
+### 8) Slack / Telegram alerts (Phase 1)
+
+```bash
+export OCTO_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export OCTO_TELEGRAM_BOT_TOKEN="123:abc"
+export OCTO_TELEGRAM_CHAT_ID="-100123"
+docker compose run --rm -e OCTO_SLACK_WEBHOOK -e OCTO_TELEGRAM_BOT_TOKEN -e OCTO_TELEGRAM_CHAT_ID \
+  scanner --config scanner/config/default.yaml --mode balanced --notify
+```
+
+Or set `alerts.enabled: true` and enable `alerts.slack` / `alerts.telegram` in YAML.
+Use `alerts.on_diff_only: true` to notify only when the report diff has changes.
+Alert delivery is fail-soft (logged to `alerts.json`; scan exit code stays success).
+
+### 9) Task scheduler (Phase 1)
+
+```bash
+# dry-run: print next fire time + command
+python -m scanner.scheduler --config scanner/config/default.yaml --dry-run
+
+# single immediate scan (ignores wait)
+python -m scanner.scheduler --config scanner/config/default.yaml --once
+
+# compose profile (set scheduler.enabled / cron in YAML, or OCTO_SCHEDULER_ENABLED=true)
+docker compose --profile scheduler up scheduler
+```
+
+`scheduler.cron` is a 5-field UTC expression; `scheduler.interval_seconds` overrides cron when > 0.
+For production hosts, a system crontab calling `docker compose run --rm scanner …` is also fine.
 
 ## Configuration validation
 
@@ -576,6 +625,8 @@ Paths below assume `runtime.per_run_output: true` (default); artifacts live unde
 - `vulnerabilities.json` (structured CVE findings with `cvss`/`severity`, severity-ranked)
 - `vulnerabilities.csv` (same findings, flat CSV)
 - `summary.{json,md,html}` (includes severity breakdown and hostname counts)
+- `diff.json` / `diff.md` (report diff vs previous run when `reporting.diff.enabled`)
+- `alerts.json` (notification attempt result when `alerts.enabled` / `--notify`)
 - `logs/pipeline.log`
 
 ## Notes

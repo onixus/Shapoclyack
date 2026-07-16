@@ -47,3 +47,29 @@ services:
       - ./scanner/output:/app/scanner/output
       - ./scanner/state:/app/scanner/state
 
+  # Phase 1 scheduler: docker compose --profile scheduler up scheduler
+  # Set scheduler.enabled: true in YAML or OCTO_SCHEDULER_ENABLED=true.
+  scheduler:
+    profiles: ["scheduler"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: network-scan-cli:latest
+    container_name: network-scan-scheduler
+    entrypoint: ["python", "-m", "scanner.scheduler"]
+    environment:
+      OCTO_SCHEDULER_ENABLED: "true"
+      OCTO_SLACK_WEBHOOK: ${OCTO_SLACK_WEBHOOK:-}
+      OCTO_TELEGRAM_BOT_TOKEN: ${OCTO_TELEGRAM_BOT_TOKEN:-}
+      OCTO_TELEGRAM_CHAT_ID: ${OCTO_TELEGRAM_CHAT_ID:-}
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    mem_limit: 8g
+    cpus: "8.0"
+    volumes:
+      - ./scanner/inputs:/app/scanner/inputs
+      - ./scanner/config:/app/scanner/config
+      - ./scanner/output:/app/scanner/output
+      - ./scanner/state:/app/scanner/state
+    command: ["--config", "scanner/config/default.yaml"]
