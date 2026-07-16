@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
 
 from api.auth import Role, TokenUser, get_settings, require_role
-from api.schemas import RunDetail, RunSummary, VulnerabilityItem
+from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.services import runs as runs_service
 from api.settings import Settings
 
@@ -33,6 +33,32 @@ def get_run(
     return detail
 
 
+@router.get("/{run_id}/hosts", response_model=list[AliveHostItem])
+def get_hosts(
+    run_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    limit: Annotated[int, Query(ge=1, le=20000)] = 10000,
+) -> list[AliveHostItem]:
+    items = runs_service.get_hosts(settings, run_id, limit=limit)
+    if items is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return items
+
+
+@router.get("/{run_id}/ports", response_model=list[PortAggregateItem])
+def get_ports(
+    run_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    limit: Annotated[int, Query(ge=1, le=20000)] = 10000,
+) -> list[PortAggregateItem]:
+    items = runs_service.get_ports(settings, run_id, limit=limit)
+    if items is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return items
+
+
 @router.get("/{run_id}/vulnerabilities", response_model=list[VulnerabilityItem])
 def get_vulnerabilities(
     run_id: str,
@@ -40,8 +66,9 @@ def get_vulnerabilities(
     settings: Annotated[Settings, Depends(get_settings)],
     limit: Annotated[int, Query(ge=1, le=10000)] = 5000,
     host: Annotated[str | None, Query(description="Filter findings by target host/IP")] = None,
+    port: Annotated[str | None, Query(description="Filter findings by port")] = None,
 ) -> list[VulnerabilityItem]:
-    items = runs_service.get_vulnerabilities(settings, run_id, limit=limit, host=host)
+    items = runs_service.get_vulnerabilities(settings, run_id, limit=limit, host=host, port=port)
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return items
