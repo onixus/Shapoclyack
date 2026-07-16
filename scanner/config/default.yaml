@@ -130,3 +130,35 @@ reporting:
   html_summary: true
   csv_export: true
   json_export: true
+  # Compare hosts/ports/CVEs against the previous run (latest_run.json or previous_run_dir).
+  diff:
+    enabled: true
+    previous_run_dir: ""
+    markdown: true
+
+# Slack / Telegram notifications after reports. Prefer env credentials over YAML secrets:
+#   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
+# Enable with alerts.enabled: true or CLI --notify.
+alerts:
+  enabled: false
+  min_severity: high
+  on_diff_only: false
+  slack:
+    enabled: false
+    webhook_url: ""
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+
+# Optional in-container scheduler: python -m scanner.scheduler
+# Production tip: prefer host cron/systemd; use this for compose labs.
+scheduler:
+  enabled: false
+  cron: "0 2 * * *"          # daily 02:00 UTC
+  interval_seconds: 0        # if > 0, overrides cron
+  mode: null                 # null = runtime.mode
+  delta: false
+  skip_nse: false
+  notify: false
+  max_runs: 0                # 0 = forever

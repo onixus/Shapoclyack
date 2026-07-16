@@ -168,3 +168,33 @@ def test_default_yaml_parses():
     assert cfg.runtime.nse_hosts_per_scan == 8
     assert cfg.ports.protocol == "tcp"
     assert cfg.ports.udp_probes is True
+
+
+def test_default_yaml_phase1_sections():
+    import yaml
+
+    text = Path("scanner/config/default.yaml").read_text(encoding="utf-8")
+    cfg = AppConfig.model_validate(yaml.safe_load(text))
+    assert cfg.reporting.diff.enabled is True
+    assert cfg.reporting.diff.markdown is True
+    assert cfg.alerts.enabled is False
+    assert cfg.alerts.min_severity == "high"
+    assert cfg.alerts.slack.enabled is False
+    assert cfg.alerts.telegram.enabled is False
+    assert cfg.scheduler.enabled is False
+    assert cfg.scheduler.cron == "0 2 * * *"
+    assert cfg.scheduler.mode is None
+
+
+def test_scheduler_cron_must_have_five_fields():
+    raw = _minimal_config()
+    raw["scheduler"] = {"cron": "0 2 *"}
+    with pytest.raises(ValidationError):
+        load_config(raw)
+
+
+def test_alerts_min_severity_validation():
+    raw = _minimal_config()
+    raw["alerts"] = {"min_severity": "urgent"}
+    with pytest.raises(ValidationError):
+        load_config(raw)

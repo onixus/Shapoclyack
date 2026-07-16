@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -24,7 +25,9 @@ from scanner.pipeline.errors import StageFailureError
 from scanner.pipeline.hostnames import enrich_discovery_hostnames
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ports import fast_port_scan
+from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.report import build_reports
+from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
 from scanner.pipeline.run_context import resolve_run_paths, write_run_meta
 from scanner.pipeline.utils import load_json, load_yaml, read_lines, setup_logging, write_lines
@@ -47,6 +50,20 @@ def parse_args() -> argparse.Namespace:
         "--delta",
         action="store_true",
         help="Incremental discovery: probe only new scope hosts and refresh a sample of known alive",
+    )
+    parser.add_argument(
+        "--compare-run-id",
+        help="Previous run id for report diffs (default: latest_run.json before this run)",
+    )
+    parser.add_argument(
+        "--no-diff",
+        action="store_true",
+        help="Disable report diffs for this run",
+    )
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send Slack/Telegram alerts after reports (requires alerts.* config or env credentials)",
     )
     return parser.parse_args()
 
@@ -79,6 +96,11 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         )
     profile = config.profiles[profile_name]
 
+    if args.notify:
+        config = config.model_copy(
+            update={"alerts": config.alerts.model_copy(update={"enabled": True})}
+        )
+
     output_base = Path(config.runtime.output_dir)
     state_base = Path(config.runtime.state_dir)
     previous_alive_file = None
@@ -90,11 +112,28 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             per_run_output=config.runtime.per_run_output,
         )
 
+    # Capture previous run *before* resolve_run_paths overwrites latest_run.json.
+    diff_enabled = config.reporting.diff.enabled and not args.no_diff and not args.resume
+    previous_run_dir = None
+    if diff_enabled:
+        previous_run_dir = resolve_previous_run_dir(
+            output_base=output_base,
+            state_base=state_base,
+            previous_run_dir=config.reporting.diff.previous_run_dir,
+            compare_run_id=args.compare_run_id or "",
+            per_run_output=config.runtime.per_run_output,
+        )
+
     try:
         paths = resolve_run_paths(config.runtime, run_id=args.run_id, resume=args.resume)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return exit_codes.CONFIG_ERROR
+
+    # Avoid diffing a run against itself when --run-id reuses the previous id.
+    if previous_run_dir is not None and previous_run_dir.resolve() == paths.output_dir.resolve():
+        logging.info("Report diff skipped: previous run dir is the current run")
+        previous_run_dir = None
 
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     paths.state_dir.mkdir(parents=True, exist_ok=True)
@@ -285,6 +324,31 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         json_export=reporting.json_export,
     )
     checkpoint.mark_done("report")
+
+    diff_result = None
+    if previous_run_dir is not None:
+        try:
+            diff_result = write_report_diff(
+                paths.output_dir,
+                previous_run_dir,
+                markdown=reporting.diff.markdown,
+            )
+            checkpoint.mark_done("diff")
+        except Exception:  # noqa: BLE001
+            logging.exception("Report diff failed; continuing without diff artifacts")
+
+    if config.alerts.enabled:
+        summary = load_json(paths.output_dir / "summary.json", fallback={})
+        alert_result = send_alerts(
+            config.alerts,
+            run_id=paths.run_id,
+            summary=summary if isinstance(summary, dict) else {},
+            diff=diff_result,
+        )
+        (paths.output_dir / "alerts.json").write_text(
+            json.dumps(alert_result, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     logging.info("Pipeline finished. Output directory: %s", paths.output_dir)
     return exit_codes.SUCCESS
