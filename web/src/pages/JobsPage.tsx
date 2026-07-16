@@ -10,6 +10,10 @@ export default function JobsPage() {
   const [delta, setDelta] = useState(false);
   const [skipNse, setSkipNse] = useState(false);
   const [notify, setNotify] = useState(false);
+  const [exportDefectdojo, setExportDefectdojo] = useState(false);
+  const [ranges, setRanges] = useState("");
+  const [domains, setDomains] = useState("");
+  const [ports, setPorts] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -53,6 +57,10 @@ export default function JobsPage() {
         delta,
         skip_nse: skipNse,
         notify,
+        export_defectdojo: exportDefectdojo,
+        ranges: ranges.trim() ? ranges : undefined,
+        domains: domains.trim() ? domains : undefined,
+        ports: ports.trim() ? ports : undefined,
       });
       await refresh();
     } catch (err) {
@@ -66,7 +74,7 @@ export default function JobsPage() {
     <section className="stack">
       <header className="section-head">
         <h1>Scan jobs</h1>
-        <p>Operator controls for launching pipeline runs through the API.</p>
+        <p>Set targets and launch pipeline runs through the API.</p>
       </header>
 
       <form className="panel job-form" onSubmit={onStart}>
@@ -78,6 +86,45 @@ export default function JobsPage() {
             <option value="fast">fast</option>
           </select>
         </label>
+
+        <fieldset className="target-fields">
+          <legend>Scan targets</legend>
+          <p className="muted target-hint">
+            Leave fields empty to use server default input files. If you fill ranges or domains,
+            both host inputs are overridden for this job (empty side stays empty).
+          </p>
+          <label>
+            Ranges (IP / CIDR)
+            <textarea
+              value={ranges}
+              onChange={(e) => setRanges(e.target.value)}
+              rows={4}
+              placeholder={"10.0.0.0/24\n192.168.1.10"}
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            Domains (FQDN)
+            <textarea
+              value={domains}
+              onChange={(e) => setDomains(e.target.value)}
+              rows={3}
+              placeholder={"scanme.nmap.org\nexample.com"}
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            Ports (optional TCP list)
+            <textarea
+              value={ports}
+              onChange={(e) => setPorts(e.target.value)}
+              rows={2}
+              placeholder={"22,80,443\n8000-8010"}
+              spellCheck={false}
+            />
+          </label>
+        </fieldset>
+
         <label className="check">
           <input type="checkbox" checked={delta} onChange={(e) => setDelta(e.target.checked)} />
           Delta discovery
@@ -89,6 +136,14 @@ export default function JobsPage() {
         <label className="check">
           <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
           Notify
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={exportDefectdojo}
+            onChange={(e) => setExportDefectdojo(e.target.checked)}
+          />
+          Export to DefectDojo
         </label>
         <button type="submit" className="primary-btn" disabled={busy}>
           {busy ? "Starting…" : "Start scan"}
@@ -105,6 +160,10 @@ export default function JobsPage() {
               <span className="muted">
                 {job.mode} · {job.status}
                 {job.run_id ? ` · run ${job.run_id}` : ""}
+                {job.target_counts
+                  ? ` · targets r${job.target_counts.ranges ?? 0}/d${job.target_counts.domains ?? 0}` +
+                    (job.target_counts.ports != null ? `/p${job.target_counts.ports}` : "")
+                  : ""}
               </span>
             </div>
             <div className="run-metrics">

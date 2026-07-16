@@ -49,6 +49,10 @@ class StartScanRequest(BaseModel):
     notify: bool = False
     export_defectdojo: bool = False
     run_id: str | None = None
+    # Newline-separated targets. Empty / omitted → server default input files.
+    ranges: str | None = None
+    domains: str | None = None
+    ports: str | None = None
 
 
 class JobInfo(BaseModel):
@@ -62,3 +66,4 @@ class JobInfo(BaseModel):
     exit_code: int | None = None
     error: str | None = None
     requested_by: str
+    target_counts: dict[str, int] | None = None

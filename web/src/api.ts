@@ -39,6 +39,7 @@ export type JobInfo = {
   exit_code: number | null;
   error: string | null;
   requested_by: string;
+  target_counts?: Record<string, number> | null;
 };
 
 async function request<T>(
@@ -107,7 +108,16 @@ export function fetchJobs(token: string) {
 
 export function startScan(
   token: string,
-  body: { mode: string; delta: boolean; skip_nse: boolean; notify: boolean },
+  body: {
+    mode: string;
+    delta: boolean;
+    skip_nse: boolean;
+    notify: boolean;
+    export_defectdojo?: boolean;
+    ranges?: string;
+    domains?: string;
+    ports?: string;
+  },
 ) {
   return request<JobInfo>(
     "/api/jobs",
