@@ -41,10 +41,11 @@ We aim to acknowledge reports within **5 business days** and to provide a remedi
 
 ### In scope
 
-- Python code under `scanner/`
+- Python code under `scanner/` and `api/`
+- React dashboard under `web/`
 - Shell helpers under `scripts/` and `bench/` that ship with the repo
-- `Dockerfile`, `Dockerfile.api`, `k8s/` manifests, and GitHub Actions workflows that build or publish the image
-- Misconfiguration or unsafe defaults in shipped YAML configs that lead to unintended exposure **of the scanner host or operator data**
+- `Dockerfile`, `Dockerfile.api`, `k8s/` manifests, and GitHub Actions workflows that build or publish images
+- Misconfiguration or unsafe defaults in shipped YAML configs / demo credentials that lead to unintended exposure **of the scanner host or operator data**
 
 ### Out of scope
 
@@ -68,13 +69,15 @@ will not be pursued as a policy violation by the maintainers.
 - **CI image gate:** Trivy fails the pipeline on fixable **CRITICAL** issues in the built image (`ignore-unfixed: true`; exceptions in `.trivyignore` are reviewed and time-bounded).
 - **SBOM + provenance:** Release images on GHCR include SPDX SBOM and SLSA provenance attestations (see [docker-publish workflow](workflows/docker-publish.yml)).
 - **Reproducible pins:** Base image digest, dnsx/naabu checksums, and NSE script commits are pinned in the `Dockerfile` (see README *Reproducible & Pinned Builds*).
-- **Least privilege in container:** Scanner runs as non-root user `scanner`; raw sockets use file capabilities on `naabu`/`nmap` only.
+- **Least privilege in containers:** Scanner runs as non-root UID `1000` (`scanner`); API as UID `1000` (`octo`). Raw sockets use file capabilities on `naabu`/`nmap` only.
 
 ## Operator security notes
 
-- Run the container with **`NET_RAW` / `NET_ADMIN`** only when needed for scanning; do not grant extra capabilities.
-- Mount only required volumes (`inputs`, `output`, `config`, `state`); do not expose the Docker socket to the scanner container.
-- Treat `scanner/output/` as **sensitive** (scan results, possible credentials in service banners, vulnerability data).
+- Grant **`NET_RAW` / `NET_ADMIN`** only to scanner Jobs/CronJobs; the API Deployment drops all capabilities.
+- Do not expose the Docker socket to scanner or API pods.
+- Treat PVC data under `output/` / `state/` as **sensitive** (banners, CVE findings, hostnames).
+- Replace demo JWT secret and `*-change-me` API passwords before any shared or production use.
+- Prefer cluster Secrets (`octo-man-api`, `octo-man-alerts`) over committing credentials to YAML.
 - Pull images only from **`ghcr.io/onixus/octo-man`** / **`ghcr.io/onixus/octo-man-api`** and verify tags match [official releases](https://github.com/onixus/Shapoclyack/releases).
 
 ## Security updates

@@ -1,16 +1,27 @@
-# Network Scan CLI (Containerized)
+# Octo-man
 
-[![CI](https://github.com/onixus/Octo-man/actions/workflows/ci.yml/badge.svg)](https://github.com/onixus/Octo-man/actions/workflows/ci.yml)
+[![CI](https://github.com/onixus/Shapoclyack/actions/workflows/ci.yml/badge.svg)](https://github.com/onixus/Shapoclyack/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/onixus/Shapoclyack)](https://github.com/onixus/Shapoclyack/releases/latest)
+
+Containerized network reconnaissance pipeline with a Kubernetes control plane, HTTP API, and dashboard.
 
 English is the primary documentation language.  
-For a Russian version with extra operational recommendations, see [README.ru.md](README.ru.md).
+Russian ops notes: [README.ru.md](README.ru.md).
 
-Reproducible CLI pipeline for scanning large networks:
-- input: `CIDR + IP + FQDN`
-- stages: `resolve -> discovery -> hostname enrichment -> fast ports -> Nmap NSE (service/OS detection + vuln/CVE)`
-- output: `JSON/JSONL/CSV` + `Markdown/HTML` summary
+| | |
+|---|---|
+| **Pipeline** | `resolve → discovery → hostnames → ports → NSE (service/OS + CVE)` |
+| **Inputs** | CIDR / IP / FQDN |
+| **Outputs** | JSON / JSONL / CSV + Markdown / HTML (+ diffs, alerts) |
+| **Runtime** | Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
+| **Release** | **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** — `ghcr.io/onixus/octo-man:0.3.0`, `ghcr.io/onixus/octo-man-api:0.3.0` |
 
-Latest release: **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.0)** — images `ghcr.io/onixus/octo-man:0.3.0` and `ghcr.io/onixus/octo-man-api:0.3.0`.
+### Docs map
+
+- [CHANGELOG.md](CHANGELOG.md) — release history
+- [k8s/README.md](k8s/README.md) — deploy Job / CronJob / API
+- [.github/SECURITY.md](.github/SECURITY.md) — vulnerability reporting
+- [octo_man.html](octo_man.html) — product roadmap infographic
 
 ## What It Implements
 
@@ -32,9 +43,9 @@ Latest release: **[v0.3.0](https://github.com/onixus/Shapoclyack/releases/tag/v0
 - Report exports with summary, parsed Nmap service data, OS matches and vulnerability findings.
 - **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`.
 - **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
-- **Task scheduler** (`python -m scanner.scheduler`): cron or interval runner for recurring scans.
-- **Phase 2 API + dashboard**: FastAPI backend, React UI, JWT RBAC (`viewer` / `operator` / `admin`).
-- **Kubernetes deployment** (primary): kustomize under `k8s/octo-man` (Job / CronJob / API).
+- **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
+- **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`).
+- **Kubernetes** (primary runtime): `Job` / `CronJob` / API Deployment under `k8s/octo-man`.
 
 ## Project Layout
 
@@ -262,36 +273,34 @@ and uses `--mode safe`. Tune patches under `k8s/octo-man/overlays/*/`.
 
 ## Validation Helpers
 
-- `scripts/smoke.sh`:
-  - compiles Python sources;
-  - runs pipeline with current input files.
-- `scripts/load-test.sh <cidr>`:
-  - writes a temporary CIDR target;
-  - runs `fast` profile in container.
+- `scripts/smoke.sh` — compile sources and run the pipeline against current inputs
+- `scripts/load-test.sh <cidr>` — write a temporary CIDR and run `fast` in a local container
+- `./k8s/scripts/validate-kustomize.sh` — render/validate `dev` and `prod` overlays
+- `scripts/schedule.sh` — thin wrapper around `python -m scanner.scheduler` (labs only)
 
 ## Tests
 
-Unit tests cover the pure helpers and parsers: input validation, port grouping,
-custom port parsing, IPv6 `host:port` handling, TCP/UDP protocol modes, adaptive
-discovery and coverage tracking, NSE rate-budget split, the nmap command builder,
-report extraction (services, OS matches, CVE/CVSS + severity ranking), config schema
-validation, per-run directory resolution, and load-test result checks.
+Unit tests cover pipeline helpers (contract, batching, discovery, NSE, reports, diffs,
+alerts, scheduler, config schema, run paths) and the Phase 2 API (auth, RBAC, runs).
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q
-ruff check scanner tests
+ruff check scanner api tests
 ```
 
 ## Continuous Integration
 
-`.github/workflows/ci.yml` runs on every push to `master` and on pull requests:
+`.github/workflows/ci.yml` runs on every push to `main` and on pull requests:
 
-- **lint**: `ruff check`.
-- **test**: `compileall` + `pytest` on Python 3.11 and 3.12.
-- **image**: builds the image, smoke-checks the toolchain, runs an **end-to-end scan**
-  against a throwaway target container, a **light synthetic load test** (16 docker targets),
-  scans the image with **Trivy**, and generates a **SBOM** artifact.
+- **lint**: `ruff check scanner api tests`
+- **test**: `compileall` + `pytest` on Python 3.11 and 3.12
+- **web**: `npm ci` + production build of the React dashboard
+- **kustomize**: `./k8s/scripts/validate-kustomize.sh`
+- **image**: build scanner image, toolchain smoke, e2e scan, light load test (16 hosts),
+  Trivy gate, SBOM artifact
+
+Release tags (`v*`) trigger `.github/workflows/docker-publish.yml` for both GHCR images.
 
 ### End-to-end test
 
@@ -623,7 +632,7 @@ Paths below assume `runtime.per_run_output: true` (default); artifacts live unde
 
 ## Licenses
 
-This project's own source code (the `scanner/` package, `scripts/`, configs and docs)
+This project's own source code (`scanner/`, `api/`, `web/`, `k8s/`, `scripts/`, configs and docs)
 has **no license declared yet**. Until a license is added, default copyright applies and
 others have no redistribution rights — add a license (e.g. `MIT` or `Apache-2.0`) at the
 repository root before publishing.
@@ -658,8 +667,9 @@ with every license below.
 
 | Package | License | Scope |
 |---|---|---|
-| PyYAML | MIT | runtime |
-| pydantic | MIT | runtime |
+| PyYAML | MIT | runtime (scanner) |
+| pydantic | MIT | runtime (scanner + API) |
+| FastAPI / Uvicorn / PyJWT / passlib / httpx | MIT / BSD | runtime (API) |
 | pytest | MIT | dev/test |
 | ruff | MIT | dev/lint |
 
