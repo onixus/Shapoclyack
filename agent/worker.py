@@ -161,6 +161,10 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         ports_path = workdir / "ports.txt"
         ports_path.write_text(inputs["ports.txt"], encoding="utf-8")
         args.extend(["--ports-file", str(ports_path)])
+    if "ports_udp.txt" in inputs:
+        ports_udp_path = workdir / "ports_udp.txt"
+        ports_udp_path.write_text(inputs["ports_udp.txt"], encoding="utf-8")
+        args.extend(["--ports-udp-file", str(ports_udp_path)])
     return args
 
 

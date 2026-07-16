@@ -29,6 +29,7 @@
 html,
 body,
 #root {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -143,7 +144,9 @@ select {
 
 .job-form textarea {
   resize: vertical;
-  min-height: 4.5rem;
+  width: 100%;
+  min-height: clamp(3.5rem, 10vh, 8rem);
+  height: clamp(3.5rem, 12vh, 9rem);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9rem;
   line-height: 1.4;
@@ -156,6 +159,7 @@ select {
   display: grid;
   gap: 0.85rem;
   margin: 0;
+  grid-column: 1 / -1;
 }
 
 .job-form .target-fields legend {
@@ -217,7 +221,8 @@ select {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 100%;
   display: grid;
   grid-template-rows: auto 1fr;
 }
@@ -303,14 +308,80 @@ select {
 }
 
 .page {
-  width: min(1100px, calc(100% - 2rem));
-  margin: 0 auto;
-  padding: 1.75rem 0 3rem;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 1.1rem clamp(0.85rem, 2vw, 2rem) 1.5rem;
+  min-height: 0;
+  overflow: auto;
 }
 
 .stack {
   display: grid;
-  gap: 1.25rem;
+  gap: 1rem;
+  width: 100%;
+}
+
+.jobs-layout {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.jobs-layout .jobs-head {
+  grid-column: 1 / -1;
+}
+
+.jobs-layout .jobs-side {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.jobs-layout .job-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1.1rem;
+  grid-column: 1 / -1;
+}
+
+.target-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 720px) {
+  .target-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1100px) {
+  .jobs-layout {
+    grid-template-columns: minmax(22rem, 0.95fr) minmax(0, 1.25fr);
+    gap: 1.25rem;
+    min-height: calc(100dvh - 5.25rem);
+  }
+
+  .jobs-layout .job-form {
+    position: sticky;
+    top: 0.25rem;
+    max-height: calc(100dvh - 5.75rem);
+    overflow: auto;
+    align-self: start;
+  }
+}
+
+@media (min-width: 1200px) {
+  .runs-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1600px) {
+  .runs-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .section-head h1 {
@@ -467,11 +538,32 @@ select {
 .job-form {
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   align-items: end;
+  width: 100%;
 }
 
 .job-form .primary-btn {
   grid-column: 1 / -1;
   justify-self: start;
+}
+
+.panel.job-form {
+  color: var(--ink);
+}
+
+.panel.job-form .target-fields {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.panel.job-form .target-fields legend,
+.panel.job-form label:not(.check) {
+  color: var(--ink);
+}
+
+.panel.job-form textarea {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
 }
 
 .job-form select {

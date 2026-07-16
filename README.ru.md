@@ -187,7 +187,8 @@ python -m scanner.main --config scanner/config/default.yaml --mode balanced --ex
 `defectdojo.json` (статус). Ошибка DD не валит скан.
 
 В API: `"export_defectdojo": true` в теле `POST /api/jobs`.
-Цели скана можно задать полями `ranges` / `domains` / `ports` (или формой на странице Jobs).
+Цели скана можно задать полями `ranges` / `domains` / `ports` / `ports_udp`
+(или формой на странице Jobs; UDP — при `ports.protocol: udp|tcp_udp`).
 
 ### PDF бизнес-отчёт (фаза 3)
 

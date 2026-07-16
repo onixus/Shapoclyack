@@ -14,6 +14,7 @@ export default function JobsPage() {
   const [ranges, setRanges] = useState("");
   const [domains, setDomains] = useState("");
   const [ports, setPorts] = useState("");
+  const [portsUdp, setPortsUdp] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -61,6 +62,7 @@ export default function JobsPage() {
         ranges: ranges.trim() ? ranges : undefined,
         domains: domains.trim() ? domains : undefined,
         ports: ports.trim() ? ports : undefined,
+        ports_udp: portsUdp.trim() ? portsUdp : undefined,
       });
       await refresh();
     } catch (err) {
@@ -71,8 +73,8 @@ export default function JobsPage() {
   }
 
   return (
-    <section className="stack">
-      <header className="section-head">
+    <section className="stack jobs-layout">
+      <header className="section-head jobs-head">
         <h1>Scan jobs</h1>
         <p>Set targets and launch pipeline runs through the API.</p>
       </header>
@@ -91,90 +93,111 @@ export default function JobsPage() {
           <legend>Scan targets</legend>
           <p className="muted target-hint">
             Leave fields empty to use server default input files. If you fill ranges or domains,
-            both host inputs are overridden for this job (empty side stays empty).
+            both host inputs are overridden for this job (empty side stays empty). UDP list is used
+            when <code>ports.protocol</code> is <code>udp</code> or <code>tcp_udp</code>.
           </p>
-          <label>
-            Ranges (IP / CIDR)
-            <textarea
-              value={ranges}
-              onChange={(e) => setRanges(e.target.value)}
-              rows={4}
-              placeholder={"10.0.0.0/24\n192.168.1.10"}
-              spellCheck={false}
-            />
-          </label>
-          <label>
-            Domains (FQDN)
-            <textarea
-              value={domains}
-              onChange={(e) => setDomains(e.target.value)}
-              rows={3}
-              placeholder={"scanme.nmap.org\nexample.com"}
-              spellCheck={false}
-            />
-          </label>
-          <label>
-            Ports (optional TCP list)
-            <textarea
-              value={ports}
-              onChange={(e) => setPorts(e.target.value)}
-              rows={2}
-              placeholder={"22,80,443\n8000-8010"}
-              spellCheck={false}
-            />
-          </label>
+          <div className="target-grid">
+            <label>
+              Ranges (IP / CIDR)
+              <textarea
+                value={ranges}
+                onChange={(e) => setRanges(e.target.value)}
+                rows={4}
+                placeholder={"10.0.0.0/24\n192.168.1.10"}
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              Domains (FQDN)
+              <textarea
+                value={domains}
+                onChange={(e) => setDomains(e.target.value)}
+                rows={4}
+                placeholder={"scanme.nmap.org\nexample.com"}
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              TCP ports (optional)
+              <textarea
+                value={ports}
+                onChange={(e) => setPorts(e.target.value)}
+                rows={3}
+                placeholder={"22,80,443\n8000-8010"}
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              UDP ports (optional)
+              <textarea
+                value={portsUdp}
+                onChange={(e) => setPortsUdp(e.target.value)}
+                rows={3}
+                placeholder={"53,123,161\n500-510"}
+                spellCheck={false}
+              />
+            </label>
+          </div>
         </fieldset>
 
-        <label className="check">
-          <input type="checkbox" checked={delta} onChange={(e) => setDelta(e.target.checked)} />
-          Delta discovery
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={skipNse} onChange={(e) => setSkipNse(e.target.checked)} />
-          Skip NSE
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
-          Notify
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={exportDefectdojo}
-            onChange={(e) => setExportDefectdojo(e.target.checked)}
-          />
-          Export to DefectDojo
-        </label>
+        <div className="job-flags">
+          <label className="check">
+            <input type="checkbox" checked={delta} onChange={(e) => setDelta(e.target.checked)} />
+            Delta discovery
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={skipNse} onChange={(e) => setSkipNse(e.target.checked)} />
+            Skip NSE
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
+            Notify
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={exportDefectdojo}
+              onChange={(e) => setExportDefectdojo(e.target.checked)}
+            />
+            Export to DefectDojo
+          </label>
+        </div>
         <button type="submit" className="primary-btn" disabled={busy}>
           {busy ? "Starting…" : "Start scan"}
         </button>
       </form>
 
-      {error ? <p className="form-error">{error}</p> : null}
+      <div className="jobs-side">
+        {error ? <p className="form-error">{error}</p> : null}
 
-      <div className="run-list">
-        {jobs.map((job) => (
-          <div key={job.job_id} className="run-row static">
-            <div>
-              <strong>{job.job_id}</strong>
-              <span className="muted">
-                {job.mode} · {job.status}
-                {job.execution ? ` · ${job.execution}` : ""}
-                {job.assigned_agent_id ? ` · agent ${job.assigned_agent_id.slice(0, 8)}` : ""}
-                {job.run_id ? ` · run ${job.run_id}` : ""}
-                {job.target_counts
-                  ? ` · targets r${job.target_counts.ranges ?? 0}/d${job.target_counts.domains ?? 0}` +
-                    (job.target_counts.ports != null ? `/p${job.target_counts.ports}` : "")
-                  : ""}
-              </span>
+        <div className="run-list">
+          {jobs.length === 0 ? <p className="muted">No jobs yet.</p> : null}
+          {jobs.map((job) => (
+            <div key={job.job_id} className="run-row static">
+              <div>
+                <strong>{job.job_id}</strong>
+                <span className="muted">
+                  {job.mode} · {job.status}
+                  {job.execution ? ` · ${job.execution}` : ""}
+                  {job.assigned_agent_id ? ` · agent ${job.assigned_agent_id.slice(0, 8)}` : ""}
+                  {job.run_id ? ` · run ${job.run_id}` : ""}
+                  {job.target_counts
+                    ? ` · targets r${job.target_counts.ranges ?? 0}/d${job.target_counts.domains ?? 0}` +
+                      (job.target_counts.ports != null ? `/tcp${job.target_counts.ports}` : "") +
+                      (job.target_counts.ports_udp != null
+                        ? `/udp${job.target_counts.ports_udp}`
+                        : "")
+                    : ""}
+                </span>
+              </div>
+              <div className="run-metrics">
+                <span>by {job.requested_by}</span>
+                <span>{job.exit_code === null ? "—" : `exit ${job.exit_code}`}</span>
+              </div>
+              {job.error ? <p className="form-error">{job.error}</p> : null}
             </div>
-            <div className="run-metrics">
-              <span>by {job.requested_by}</span>
-              <span>{job.exit_code === null ? "—" : `exit ${job.exit_code}`}</span>
-            </div>
-            {job.error ? <p className="form-error">{job.error}</p> : null}
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </section>
   );

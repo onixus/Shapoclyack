@@ -46,7 +46,7 @@ export default function AgentsPage() {
       {agents.length === 0 ? (
         <p className="muted">No agents registered yet. Start one with <code>python -m agent</code>.</p>
       ) : (
-        <div className="run-list">
+        <div className="run-list runs-grid">
           {agents.map((agent) => (
             <div key={agent.agent_id} className="run-row static">
               <div>

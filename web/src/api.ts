@@ -136,6 +136,7 @@ export function startScan(
     ranges?: string;
     domains?: string;
     ports?: string;
+    ports_udp?: string;
   },
 ) {
   return request<JobInfo>(

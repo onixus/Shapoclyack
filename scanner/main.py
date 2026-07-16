@@ -44,6 +44,10 @@ def parse_args() -> argparse.Namespace:
         "--ports-file",
         help="Override ports.custom_ports_file for this run (TCP port list)",
     )
+    parser.add_argument(
+        "--ports-udp-file",
+        help="Override ports.custom_udp_ports_file for this run (UDP port list)",
+    )
     parser.add_argument("--mode", choices=["safe", "balanced", "fast"], help="Override speed profile")
     parser.add_argument("--run-id", help="Run identifier for per-run output dirs (required for explicit resume)")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
@@ -115,13 +119,14 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         config = config.model_copy(
             update={"defectdojo": config.defectdojo.model_copy(update={"enabled": True})}
         )
+    ports_updates: dict[str, str] = {}
     if args.ports_file:
+        ports_updates["custom_ports_file"] = str(Path(args.ports_file))
+    if args.ports_udp_file:
+        ports_updates["custom_udp_ports_file"] = str(Path(args.ports_udp_file))
+    if ports_updates:
         config = config.model_copy(
-            update={
-                "ports": config.ports.model_copy(
-                    update={"custom_ports_file": str(Path(args.ports_file))}
-                )
-            }
+            update={"ports": config.ports.model_copy(update=ports_updates)}
         )
 
     output_base = Path(config.runtime.output_dir)
