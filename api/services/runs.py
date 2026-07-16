@@ -98,7 +98,13 @@ _SEVERITY_RANK = {
 }
 
 
-def get_vulnerabilities(settings: Settings, run_id: str, *, limit: int = 5000) -> list[VulnerabilityItem] | None:
+def get_vulnerabilities(
+    settings: Settings,
+    run_id: str,
+    *,
+    limit: int = 5000,
+    host: str | None = None,
+) -> list[VulnerabilityItem] | None:
     run_dir = get_run_dir(settings, run_id)
     if run_dir is None:
         return None
@@ -107,24 +113,34 @@ def get_vulnerabilities(settings: Settings, run_id: str, *, limit: int = 5000) -
         return []
     if not isinstance(raw, list):
         return []
+    host_filter = host.strip().lower() if host else None
     items: list[VulnerabilityItem] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
+        entry_host = entry.get("host")
+        if host_filter and str(entry_host or "").lower() != host_filter:
+            continue
         items.append(
             VulnerabilityItem(
-                host=entry.get("host"),
+                host=entry_host,
                 port=str(entry.get("port")) if entry.get("port") is not None else None,
                 cve=entry.get("cve"),
                 cvss=entry.get("cvss"),
+                cvss4=entry.get("cvss4"),
+                cvss4_vector=entry.get("cvss4_vector"),
+                cvss4_severity=entry.get("cvss4_severity"),
                 severity=entry.get("severity"),
                 script_id=entry.get("script_id"),
+                country=entry.get("country"),
+                city=entry.get("city"),
+                country_iso=entry.get("country_iso"),
             )
         )
     items.sort(
         key=lambda item: (
             _SEVERITY_RANK.get(str(item.severity or "unknown").lower(), 4),
-            -(float(item.cvss) if item.cvss is not None else -1.0),
+            -(float(item.cvss4) if item.cvss4 is not None else (float(item.cvss) if item.cvss is not None else -1.0)),
             str(item.host or ""),
             str(item.cve or ""),
         )

@@ -119,6 +119,14 @@ reporting:
     previous_run_dir: ""
     markdown: true
 
+enrichment:
+  cvss4:
+    enabled: true
+    database: scanner/data/cvss4/cvss4.json
+  geoip:
+    enabled: true
+    database: scanner/data/geoip/geoip-overlay.json
+
 alerts:
   enabled: false
   min_severity: high

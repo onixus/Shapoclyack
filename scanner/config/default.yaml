@@ -141,6 +141,18 @@ reporting:
     previous_run_dir: ""
     markdown: true
 
+# Post-scan enrichment for reports / Web UI.
+enrichment:
+  cvss4:
+    enabled: true
+    # Local CVE → CVSS v4 map. Refresh with: python3 scripts/fetch-cvss4-db.py
+    database: scanner/data/cvss4/cvss4.json
+  geoip:
+    enabled: true
+    # JSON overlay for labs/tests, or MaxMind GeoLite2-City.mmdb in production.
+    # Fetch MMDB: MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh
+    database: scanner/data/geoip/geoip-overlay.json
+
 # Slack / Telegram notifications after reports. Prefer env credentials over YAML secrets:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
 # Enable with alerts.enabled: true or CLI --notify.

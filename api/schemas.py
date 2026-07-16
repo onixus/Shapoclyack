@@ -38,8 +38,14 @@ class VulnerabilityItem(BaseModel):
     port: str | None = None
     cve: str | None = None
     cvss: float | None = None
+    cvss4: float | None = None
+    cvss4_vector: str | None = None
+    cvss4_severity: str | None = None
     severity: str | None = None
     script_id: str | None = None
+    country: str | None = None
+    city: str | None = None
+    country_iso: str | None = None
 
 
 class StartScanRequest(BaseModel):

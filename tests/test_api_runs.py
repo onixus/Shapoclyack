@@ -42,24 +42,36 @@ def _write_run(root: Path, run_id: str) -> None:
                     "port": "80",
                     "cve": "CVE-2020-2",
                     "cvss": 4.0,
+                    "cvss4": 4.2,
                     "severity": "medium",
                     "script_id": "vulners",
+                    "country": "Germany",
+                    "city": "Berlin",
+                    "country_iso": "DE",
                 },
                 {
                     "host": "10.0.0.1",
                     "port": "22",
                     "cve": "CVE-2020-1",
                     "cvss": 7.5,
+                    "cvss4": 8.1,
                     "severity": "high",
                     "script_id": "vulners",
+                    "country": "United States",
+                    "city": "Ashburn",
+                    "country_iso": "US",
                 },
                 {
                     "host": "10.0.0.3",
                     "port": "443",
                     "cve": "CVE-2020-0",
                     "cvss": 9.8,
+                    "cvss4": 10.0,
                     "severity": "critical",
                     "script_id": "vulners",
+                    "country": "France",
+                    "city": "Paris",
+                    "country_iso": "FR",
                 },
             ]
         ),
@@ -111,8 +123,16 @@ def test_list_and_get_run(tmp_path: Path):
 
     vulns = client.get("/api/runs/run-a/vulnerabilities", headers=headers)
     assert vulns.status_code == 200
-    cves = [item["cve"] for item in vulns.json()]
+    payload = vulns.json()
+    cves = [item["cve"] for item in payload]
     assert cves == ["CVE-2020-0", "CVE-2020-1", "CVE-2020-2"]
+    assert payload[0]["cvss4"] == 10.0
+    assert payload[0]["city"] == "Paris"
+    assert payload[0]["country"] == "France"
+
+    filtered = client.get("/api/runs/run-a/vulnerabilities?host=10.0.0.1", headers=headers)
+    assert filtered.status_code == 200
+    assert [item["cve"] for item in filtered.json()] == ["CVE-2020-1"]
 
     diff = client.get("/api/runs/run-a/diff", headers=headers)
     assert diff.status_code == 200

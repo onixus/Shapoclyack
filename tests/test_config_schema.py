@@ -46,6 +46,24 @@ def test_load_config_accepts_minimal_valid():
     cfg = load_config(_minimal_config())
     assert cfg.runtime.mode == "balanced"
     assert cfg.profiles["safe"].top_ports == 100
+    assert cfg.enrichment.cvss4.enabled is True
+    assert cfg.enrichment.geoip.enabled is True
+    assert "cvss4" in cfg.enrichment.cvss4.database
+    assert "geoip" in cfg.enrichment.geoip.database
+
+
+def test_load_config_accepts_enrichment_overrides():
+    cfg = load_config(
+        _minimal_config(
+            enrichment={
+                "cvss4": {"enabled": False, "database": "/tmp/cvss4.json"},
+                "geoip": {"enabled": True, "database": "/tmp/GeoLite2-City.mmdb"},
+            }
+        )
+    )
+    assert cfg.enrichment.cvss4.enabled is False
+    assert cfg.enrichment.cvss4.database == "/tmp/cvss4.json"
+    assert cfg.enrichment.geoip.database.endswith("GeoLite2-City.mmdb")
 
 
 def test_load_config_rejects_unknown_runtime_mode():

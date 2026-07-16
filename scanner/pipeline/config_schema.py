@@ -172,6 +172,24 @@ class ReportingConfig(BaseModel):
     diff: DiffReportingConfig = Field(default_factory=DiffReportingConfig)
 
 
+class Cvss4Config(BaseModel):
+    enabled: bool = True
+    # Local CVE → CVSS v4 JSON map. Refresh with scripts/fetch-cvss4-db.py
+    database: str = "scanner/data/cvss4/cvss4.json"
+
+
+class GeoIpConfig(BaseModel):
+    enabled: bool = True
+    # MaxMind GeoLite2-City.mmdb or JSON overlay (labs/tests).
+    # Fetch MMDB with scripts/fetch-geoip-db.sh (requires MAXMIND_LICENSE_KEY).
+    database: str = "scanner/data/geoip/geoip-overlay.json"
+
+
+class EnrichmentConfig(BaseModel):
+    cvss4: Cvss4Config = Field(default_factory=Cvss4Config)
+    geoip: GeoIpConfig = Field(default_factory=GeoIpConfig)
+
+
 class SlackAlertConfig(BaseModel):
     enabled: bool = False
     # Prefer env OCTO_SLACK_WEBHOOK over committing secrets to YAML.
@@ -248,6 +266,7 @@ class AppConfig(BaseModel):
     ports: PortsConfig = Field(default_factory=PortsConfig)
     nse_profiles: dict[str, NseProfileConfig]
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
+    enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
