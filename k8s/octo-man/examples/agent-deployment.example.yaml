@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: agent
-          image: ghcr.io/onixus/octo-man:0.3.2.1
+          image: ghcr.io/onixus/octo-man-aio:0.3.2.1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "agent"]
           args:

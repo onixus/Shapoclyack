@@ -14,7 +14,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 | **Inputs** | CIDR / IP / FQDN |
 | **Outputs** | JSON / JSONL / CSV + Markdown / HTML (+ diffs, alerts) |
 | **Runtime** | All-in-one (`docker compose`) or Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
-| **Release** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** — `ghcr.io/onixus/octo-man-aio:0.3.2.1` (+ scanner / api images) |
+| **Release** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** — `ghcr.io/onixus/octo-man-aio:0.3.2.1` (+ `octo-man-scanner` / `octo-man-api`) |
 
 ### Docs map
 
@@ -481,7 +481,7 @@ Published product images:
 | Image | Dockerfile |
 |-------|------------|
 | `ghcr.io/onixus/octo-man-aio` | `Dockerfile.allinone` (scanner + API + UI, **default**) |
-| `ghcr.io/onixus/octo-man` | `Dockerfile` (scanner Job/CronJob) |
+| `ghcr.io/onixus/octo-man-scanner` | `Dockerfile` (scanner-only) |
 | `ghcr.io/onixus/octo-man-api` | `Dockerfile.api` (thin API + dashboard) |
 
 Tagging for `v*` tags: full version (incl. `0.3.2.1`), semver patterns when applicable,
@@ -497,14 +497,14 @@ docker compose up
 Scanner-only:
 
 ```bash
-docker pull ghcr.io/onixus/octo-man:0.3.2.1
+docker pull ghcr.io/onixus/octo-man-scanner:0.3.2.1
 docker run --rm \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/inputs:/app/scanner/inputs" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/octo-man:0.3.2.1 --config scanner/config/default.yaml --mode balanced
+  ghcr.io/onixus/octo-man-scanner:0.3.2.1 --config scanner/config/default.yaml --mode balanced
 ```
 
 To cut a release build, push a version tag (triggers GHCR publish):

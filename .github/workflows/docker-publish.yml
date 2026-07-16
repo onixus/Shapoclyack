@@ -30,9 +30,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Legacy ghcr.io/onixus/octo-man is linked to the old Octo-man repo and
+          # rejects GITHUB_TOKEN writes from Shapoclyack — publish as octo-man-scanner.
           - name: scanner
             dockerfile: Dockerfile
-            image: ghcr.io/onixus/octo-man
+            image: ghcr.io/onixus/octo-man-scanner
           - name: api
             dockerfile: Dockerfile.api
             image: ghcr.io/onixus/octo-man-api
