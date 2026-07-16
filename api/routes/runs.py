@@ -38,7 +38,7 @@ def get_vulnerabilities(
     run_id: str,
     _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
-    limit: Annotated[int, Query(ge=1, le=2000)] = 200,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 5000,
 ) -> list[VulnerabilityItem]:
     items = runs_service.get_vulnerabilities(settings, run_id, limit=limit)
     if items is None:

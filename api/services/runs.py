@@ -89,7 +89,16 @@ def get_run_detail(settings: Settings, run_id: str) -> RunDetail | None:
     )
 
 
-def get_vulnerabilities(settings: Settings, run_id: str, *, limit: int = 200) -> list[VulnerabilityItem] | None:
+_SEVERITY_RANK = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+    "unknown": 4,
+}
+
+
+def get_vulnerabilities(settings: Settings, run_id: str, *, limit: int = 5000) -> list[VulnerabilityItem] | None:
     run_dir = get_run_dir(settings, run_id)
     if run_dir is None:
         return None
@@ -99,7 +108,7 @@ def get_vulnerabilities(settings: Settings, run_id: str, *, limit: int = 200) ->
     if not isinstance(raw, list):
         return []
     items: list[VulnerabilityItem] = []
-    for entry in raw[:limit]:
+    for entry in raw:
         if not isinstance(entry, dict):
             continue
         items.append(
@@ -112,7 +121,15 @@ def get_vulnerabilities(settings: Settings, run_id: str, *, limit: int = 200) ->
                 script_id=entry.get("script_id"),
             )
         )
-    return items
+    items.sort(
+        key=lambda item: (
+            _SEVERITY_RANK.get(str(item.severity or "unknown").lower(), 4),
+            -(float(item.cvss) if item.cvss is not None else -1.0),
+            str(item.host or ""),
+            str(item.cve or ""),
+        )
+    )
+    return items[:limit]
 
 
 def read_artifact_text(settings: Settings, run_id: str, relative: str, *, max_bytes: int = 1_000_000) -> str | None:
