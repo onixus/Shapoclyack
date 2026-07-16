@@ -27,6 +27,7 @@ from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ports import fast_port_scan
 from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.defectdojo import export_to_defectdojo
+from scanner.pipeline.pdf_report import write_business_pdf
 from scanner.pipeline.report import build_reports
 from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
@@ -346,6 +347,19 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             checkpoint.mark_done("diff")
         except Exception:  # noqa: BLE001
             logging.exception("Report diff failed; continuing without diff artifacts")
+
+    if reporting.pdf_summary:
+        try:
+            write_business_pdf(
+                paths.output_dir,
+                run_id=paths.run_id,
+                title=reporting.pdf_title,
+                org_name=reporting.pdf_org_name,
+                max_vulnerabilities=reporting.pdf_max_vulnerabilities,
+            )
+            checkpoint.mark_done("pdf")
+        except Exception:  # noqa: BLE001
+            logging.exception("PDF business report failed; continuing without summary.pdf")
 
     if config.alerts.enabled:
         summary = load_json(paths.output_dir / "summary.json", fallback={})

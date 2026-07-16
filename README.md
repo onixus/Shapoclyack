@@ -44,6 +44,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`.
 - **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
 - **DefectDojo export** (`defectdojo` / `--export-defectdojo`): Generic Findings Import via API v2 reimport (Phase 3).
+- **Business PDF reports** (`reporting.pdf_summary`): executive `summary.pdf` with severity KPIs and priority findings (Phase 3).
 - **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
 - **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`).
 - **Kubernetes** (primary runtime): `Job` / `CronJob` / API Deployment under `k8s/octo-man`.
@@ -196,7 +197,19 @@ Key settings: `product_name`, `engagement_name` (stable name recommended for rei
 
 API jobs accept `"export_defectdojo": true` on `POST /api/jobs`.
 
-### 10) Scheduling (Phase 1)
+### 10) Business PDF report (Phase 3)
+
+When `reporting.pdf_summary: true` (default), the pipeline writes an executive PDF after reports
+and (if present) the run diff:
+
+- file: `summary.pdf`
+- contents: KPIs, severity breakdown, top services, priority findings table, optional delta vs previous run
+- branding: `reporting.pdf_title`, `reporting.pdf_org_name`
+- truncate findings list with `reporting.pdf_max_vulnerabilities` (default 40)
+
+Disable with `reporting.pdf_summary: false`. PDF generation is fail-soft.
+
+### 11) Scheduling (Phase 1)
 
 In Kubernetes use `CronJob/network-scan-scheduled` (preferred). The in-process helper remains
 for labs: `python -m scanner.scheduler --dry-run` / `--once`.
@@ -649,6 +662,7 @@ Paths below assume `runtime.per_run_output: true` (default); artifacts live unde
 - `diff.json` / `diff.md` (report diff vs previous run when `reporting.diff.enabled`)
 - `alerts.json` (notification attempt result when `alerts.enabled` / `--notify`)
 - `defectdojo_findings.json` / `defectdojo.json` (DefectDojo payload + status when enabled)
+- `summary.pdf` (business PDF when `reporting.pdf_summary`)
 - `logs/pipeline.log`
 
 ## Notes

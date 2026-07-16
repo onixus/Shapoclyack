@@ -31,6 +31,7 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 ### Unreleased (Phase 3)
 
 - DefectDojo export: Generic Findings Import via `/api/v2/reimport-scan/` (`defectdojo.*`, `--export-defectdojo`, env `OCTO_DEFECTDOJO_*`)
+- Business PDF report: executive `summary.pdf` (`reporting.pdf_summary`, fpdf2)
 
 ### Images
 
