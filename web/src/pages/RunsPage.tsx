@@ -40,7 +40,7 @@ export default function RunsPage() {
       {!loading && !error && runs.length === 0 ? (
         <p className="muted">No runs found yet. Start a scan from Jobs (operator+) or the CLI.</p>
       ) : null}
-      <div className="run-list">
+      <div className="run-list runs-grid">
         {runs.map((run) => (
           <Link key={run.run_id} to={`/runs/${encodeURIComponent(run.run_id)}`} className="run-row">
             <div>

@@ -34,6 +34,7 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 - Business PDF report: executive `summary.pdf` (`reporting.pdf_summary`, fpdf2)
 - Web UI / API scan targets: `ranges` / `domains` / `ports` on `POST /api/jobs` + Jobs page form; per-job input files + `--ports-file`
 - Remote agents: `OCTO_JOB_EXECUTION_MODE=agent`, shared `OCTO_AGENT_TOKEN`, `/api/agent/*` claim/upload API, `python -m agent` worker, Agents page
+- Web UI / API UDP ports: `ports_udp` on `POST /api/jobs` + Jobs form; `--ports-udp-file`; fluid dashboard layout
 
 ### Images
 

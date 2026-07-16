@@ -88,6 +88,7 @@ def _prepare_target_inputs(
         ranges_text=request.ranges,
         domains_text=request.domains,
         ports_text=request.ports,
+        ports_udp_text=request.ports_udp,
     )
     if parsed is None:
         return None, None, []
@@ -111,6 +112,12 @@ def _prepare_target_inputs(
         _write_lines(ports_path, parsed.ports)
         extra.extend(["--ports-file", str(ports_path)])
         counts["ports"] = len(parsed.ports)
+
+    if parsed.ports_udp is not None:
+        ports_udp_path = inputs_dir / "ports_udp.txt"
+        _write_lines(ports_udp_path, parsed.ports_udp)
+        extra.extend(["--ports-udp-file", str(ports_udp_path)])
+        counts["ports_udp"] = len(parsed.ports_udp)
 
     return inputs_dir, counts or None, extra
 
@@ -234,7 +241,7 @@ def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
     if not inputs_dir.is_dir():
         return {}
     out: dict[str, str] = {}
-    for name in ("ranges.txt", "domains.txt", "ports.txt"):
+    for name in ("ranges.txt", "domains.txt", "ports.txt", "ports_udp.txt"):
         path = inputs_dir / name
         if path.is_file():
             out[name] = path.read_text(encoding="utf-8")

@@ -53,6 +53,7 @@ class StartScanRequest(BaseModel):
     ranges: str | None = None
     domains: str | None = None
     ports: str | None = None
+    ports_udp: str | None = None
 
 
 class JobInfo(BaseModel):

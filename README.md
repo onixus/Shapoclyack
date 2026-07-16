@@ -277,10 +277,10 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
 - `GET /api/auth/me`
 - `GET /api/runs`, `GET /api/runs/{run_id}`, `GET /api/runs/{run_id}/vulnerabilities`
 - `GET /api/runs/{run_id}/diff`, `GET /api/runs/{run_id}/artifacts/{path}`
-- `GET|POST /api/jobs` (operator+) — optional body fields `ranges` / `domains` / `ports`
-  (newline-separated). When set, the API writes per-job inputs under
-  `state/job_inputs/<job_id>/` and passes `--ranges` / `--domains` / `--ports-file`.
-  The Jobs page in the web UI exposes the same fields.
+- `GET|POST /api/jobs` (operator+) — optional body fields `ranges` / `domains` / `ports` /
+  `ports_udp` (newline-separated). When set, the API writes per-job inputs under
+  `state/job_inputs/<job_id>/` and passes `--ranges` / `--domains` / `--ports-file` /
+  `--ports-udp-file`. The Jobs page exposes the same fields.
 - `GET /api/agents` (operator+) — registered remote agents
 - Agent API (shared bearer `OCTO_AGENT_TOKEN`): `POST /api/agent/register`,
   `POST /api/agent/heartbeat`, `POST /api/agent/jobs/claim`,
