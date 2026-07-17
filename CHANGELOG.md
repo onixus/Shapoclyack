@@ -4,6 +4,12 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Changed
+
+- Documented platform evolution roadmap ([ROADMAP.md](ROADMAP.md)): NATS JetStream,
+  MSSP multi-tenancy, ClickHouse analytics, K8s autoscaling, Cloudflare/CT/Maddy
+- Updated [octo_man.html](octo_man.html) roadmap infographic to match
+
 ## [0.33] — 2026-07-16
 
 GitHub release / tag: [`shapoclyack-0.33`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33).

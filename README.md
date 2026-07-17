@@ -22,6 +22,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 ### Docs map
 
 - [CHANGELOG.md](CHANGELOG.md) — release history
+- [ROADMAP.md](ROADMAP.md) — MSSP / Enterprise platform evolution (NATS, tenancy, ClickHouse, …)
 - [k8s/README.md](k8s/README.md) — deploy Job / CronJob / API
 - [.github/SECURITY.md](.github/SECURITY.md) — vulnerability reporting
 - [octo_man.html](octo_man.html) — product roadmap infographic
