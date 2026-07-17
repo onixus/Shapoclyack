@@ -1,11 +1,18 @@
-"""Safe extraction of agent-uploaded run archives into output/runs/<run_id>/."""
+"""Safe extraction of agent-uploaded run archives + NATS ingest gateway (Phase 1)."""
 
 from __future__ import annotations
 
+import base64
 import io
 import json
+import logging
 import tarfile
 from pathlib import Path
+from typing import Any
+
+from api.services import nats_bus
+
+LOG = logging.getLogger("octo-man.ingest")
 
 
 class IngestError(ValueError):
@@ -28,15 +35,27 @@ def _safe_members(tf: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
     return members
 
 
-def extract_run_archive(archive_bytes: bytes, dest_dir: Path) -> Path:
-    """Extract tar.gz into dest_dir (created to receive run artifacts)."""
+def validate_archive(archive_bytes: bytes) -> None:
+    """Validate tar.gz structure without extracting (gateway pre-check)."""
     if not archive_bytes:
         raise IngestError("empty archive")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+            members = _safe_members(tf, Path("/tmp/octo-ingest-validate"))
+            if not members:
+                raise IngestError("archive has no members")
+    except IngestError:
+        raise
+    except tarfile.TarError as exc:
+        raise IngestError(f"invalid archive: {exc}") from exc
+
+
+def extract_run_archive(archive_bytes: bytes, dest_dir: Path) -> Path:
+    """Extract tar.gz into dest_dir (created to receive run artifacts)."""
+    validate_archive(archive_bytes)
     dest_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
         members = _safe_members(tf, dest_dir)
-        if not members:
-            raise IngestError("archive has no members")
         # filter="data" blocks links/device nodes on Python 3.12+; ignore on older.
         try:
             tf.extractall(dest_dir, members=members, filter="data")
@@ -52,3 +71,51 @@ def update_latest_run_pointer(state_dir: Path, run_id: str) -> None:
         json.dumps({"run_id": run_id}, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def publish_raw_results(
+    *,
+    nats_url: str,
+    job_id: str,
+    run_id: str,
+    agent_id: str,
+    exit_code: int,
+    archive_bytes: bytes,
+    error: str | None = None,
+    include_archive_b64: bool = True,
+    max_inline_bytes: int = 4_000_000,
+) -> dict[str, Any]:
+    """Validate and publish to ``ingest.raw_results`` with JetStream Msg-Id dedupe.
+
+    Returns metadata about the publish attempt. Filesystem extract remains the
+    caller's responsibility until Phase 3 ClickHouse consumer lands.
+    """
+    validate_archive(archive_bytes)
+    digest = nats_bus.archive_sha256(archive_bytes)
+    msg_id = nats_bus.ingest_msg_id(job_id=job_id, run_id=run_id, archive_sha256=digest)
+    payload: dict[str, Any] = {
+        "job_id": job_id,
+        "run_id": run_id,
+        "agent_id": agent_id,
+        "exit_code": exit_code,
+        "error": error,
+        "archive_sha256": digest,
+        "archive_bytes": len(archive_bytes),
+    }
+    if include_archive_b64 and len(archive_bytes) <= max_inline_bytes:
+        payload["archive_b64"] = base64.b64encode(archive_bytes).decode("ascii")
+    else:
+        payload["archive_inline"] = False
+
+    bus = nats_bus.get_bus(nats_url)
+    published = False
+    if bus is not None:
+        published = bus.publish_ingest(payload, msg_id=msg_id)
+        if published:
+            LOG.info(
+                "Published ingest.raw_results job=%s run=%s msg_id=%s",
+                job_id,
+                run_id,
+                msg_id,
+            )
+    return {"msg_id": msg_id, "archive_sha256": digest, "published": published}

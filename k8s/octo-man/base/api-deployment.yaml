@@ -42,6 +42,10 @@ spec:
               value: "true"
             - name: OCTO_JOB_EXECUTION_MODE
               value: local
+            # Empty disables NATS (HTTP agent claim/upload only). Enable with:
+            # nats://octo-man-nats-client:4222
+            - name: OCTO_NATS_URL
+              value: ""
             - name: OCTO_JWT_SECRET
               valueFrom:
                 secretKeyRef:

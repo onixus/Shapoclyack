@@ -3,8 +3,23 @@
 #
 #   docker compose up --build
 #   open http://localhost:8080  (operator / operator-change-me)
+#
+# Optional NATS JetStream (Phase 1):
+#   docker compose --profile nats up --build
+#   set OCTO_NATS_URL=nats://nats:4222 and OCTO_JOB_EXECUTION_MODE=agent
 
 services:
+  nats:
+    image: nats:2.10.24-alpine
+    profiles: ["nats"]
+    command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+    restart: unless-stopped
+
   shapoclyack:
     build:
       context: .
@@ -20,6 +35,8 @@ services:
       OCTO_OUTPUT_DIR: scanner/output
       OCTO_STATE_DIR: scanner/state
       OCTO_WEB_DIST: web/dist
+      # Empty = legacy HTTP agent claim. With profile nats: nats://nats:4222
+      OCTO_NATS_URL: ${OCTO_NATS_URL:-}
     volumes:
       - ./scanner/inputs:/app/scanner/inputs
       - ./scanner/output:/app/scanner/output
@@ -28,3 +45,6 @@ services:
     cap_add:
       - NET_RAW
     restart: unless-stopped
+
+volumes:
+  nats-data:

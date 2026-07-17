@@ -1,0 +1,15 @@
+# Enable NATS JetStream for API (job publish + ingest.raw_results).
+# Apply via kustomize patchesStrategicMerge or:
+#   kubectl patch deploy octo-man-api -n network-scan --type=json -p='[...]'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: OCTO_NATS_URL
+              value: nats://octo-man-nats-client:4222

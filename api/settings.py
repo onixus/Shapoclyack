@@ -42,6 +42,8 @@ class Settings:
     # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables agent API.
     agent_token: str = ""
     agent_stale_seconds: int = 120
+    # NATS JetStream URL (e.g. nats://octo-man-nats-client:4222). Empty disables broker.
+    nats_url: str = ""
 
 
 def load_settings() -> Settings:
@@ -74,4 +76,5 @@ def load_settings() -> Settings:
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
+        nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
     )

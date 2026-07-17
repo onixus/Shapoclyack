@@ -54,7 +54,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
 - **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`); severity dashboard; click Alive hosts / Open ports to explore and filter findings.
 - **All-in-one** (`shapoclyack-aio` / `docker compose`): Web UI starts local scans by default.
-- **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man`.
+- **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man` (includes optional NATS JetStream StatefulSet; enable with `OCTO_NATS_URL`).
+- **Remote agents**: HTTP claim/upload by default; set `OCTO_NATS_URL` for JetStream job pull (`jobs.scan`) + ingest publish (`ingest.raw_results`).
 
 ## Project Layout
 
