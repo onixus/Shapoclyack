@@ -34,7 +34,7 @@ spec:
               containerPort: 9009
           env:
             - name: CLICKHOUSE_DB
-              value: octo_man
+              value: shapoclyack
             - name: CLICKHOUSE_USER
               value: default
             - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
@@ -78,6 +78,10 @@ spec:
             - name: config
               mountPath: /etc/clickhouse-server/users.d/octo-man-users.xml
               subPath: users.xml
+              readOnly: true
+            - name: config
+              mountPath: /docker-entrypoint-initdb.d/init.sql
+              subPath: init.sql
               readOnly: true
       volumes:
         - name: config

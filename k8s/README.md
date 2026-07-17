@@ -44,6 +44,11 @@ Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream `
 
 Base includes `octo-man-clickhouse` under `base/clickhouse/` (50Gi PVC).
 Client DNS: `octo-man-clickhouse-client:8123` (HTTP) / `:9000` (native).
+
+First-boot schema via `/docker-entrypoint-initdb.d/init.sql` (ConfigMap):
+database `shapoclyack`, table `shapoclyack_vulnerabilities`
+(`ReplacingMergeTree`, ordered by `tenant_id, asset_ip, cve_id`).
+
 Wire-up and NATS→ClickHouse consumer land in Phase 3; manifests are ready for deploy.
 
 ### MSSP tenancy (Phase 2)
