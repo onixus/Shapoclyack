@@ -2,7 +2,6 @@
 # Local / CI validation for Octo-man kustomize overlays.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-ROOT="$PWD"
 
 if ! command -v kubectl >/dev/null 2>&1; then
   echo "kubectl is required" >&2
