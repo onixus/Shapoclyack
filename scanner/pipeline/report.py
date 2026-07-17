@@ -346,8 +346,16 @@ def build_reports(
             f"- Severity: critical {sev['critical']}, high {sev['high']}, "
             f"medium {sev['medium']}, low {sev['low']}, unknown {sev['unknown']}",
             "",
-            "## Top Services",
+            "## Hosts by country",
         ]
+        hosts_by_country = summary.get("hosts_by_country") or {}
+        if hosts_by_country:
+            for country, count in hosts_by_country.items():
+                md_lines.append(f"- {country}: {count}")
+        else:
+            md_lines.append("- none (GeoIP database empty or disabled)")
+
+        md_lines += ["", "## Top Services"]
         for service, count in summary["top_services"]:
             md_lines.append(f"- {service}: {count}")
 
