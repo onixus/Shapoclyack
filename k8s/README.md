@@ -17,7 +17,9 @@ For local labs, prefer `docker compose up` at the repo root.
 
 ```
 k8s/octo-man/
-├── base/                 # namespace, SA, PVC, NATS JetStream, Job, CronJob, aio API Deployment/Service
+├── base/                 # namespace, SA, PVC, NATS, ClickHouse, Job, CronJob, aio API
+├── base/nats/            # JetStream StatefulSet + Services + ConfigMap
+├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
 ├── base/config/k8s.yaml  # scanner ConfigMap source
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
@@ -25,9 +27,9 @@ k8s/octo-man/
 └── examples/             # Secrets / Ingress / agent / NATS enable patches
 ```
 
-### NATS JetStream (Phase 1)
+### NATS JetStream
 
-Base includes `octo-man-nats` StatefulSet + Services (`octo-man-nats`, `octo-man-nats-client`).
+Base includes `octo-man-nats` under `base/nats/` (ConfigMap + StatefulSet + headless/client Services).
 API/agent stay HTTP-only until you set:
 
 ```bash
@@ -37,6 +39,12 @@ OCTO_NATS_URL=nats://octo-man-nats-client:4222
 Example patches: `examples/nats-api-patch.yaml`, `examples/nats-agent-patch.yaml`.
 
 Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream `INGEST`).
+
+### ClickHouse
+
+Base includes `octo-man-clickhouse` under `base/clickhouse/` (50Gi PVC).
+Client DNS: `octo-man-clickhouse-client:8123` (HTTP) / `:9000` (native).
+Wire-up and NATS→ClickHouse consumer land in Phase 3; manifests are ready for deploy.
 
 ### MSSP tenancy (Phase 2)
 

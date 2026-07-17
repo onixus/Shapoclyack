@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: octo-man-clickhouse
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: clickhouse
+spec:
+  serviceName: octo-man-clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/component: clickhouse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: octo-man
+        app.kubernetes.io/component: clickhouse
+    spec:
+      # Official image runs as uid 101 (clickhouse).
+      securityContext:
+        fsGroup: 101
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.8-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+            - name: interserver
+              containerPort: 9009
+          env:
+            - name: CLICKHOUSE_DB
+              value: octo_man
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                # clickhouse-server may need SYS_NICE for scheduling hints
+                - SYS_NICE
+          volumeMounts:
+            - name: clickhouse-data
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/octo-man-config.xml
+              subPath: config.xml
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/users.d/octo-man-users.xml
+              subPath: users.xml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: octo-man-clickhouse-config
+  volumeClaimTemplates:
+    - metadata:
+        name: clickhouse-data
+        labels:
+          app.kubernetes.io/name: octo-man
+          app.kubernetes.io/component: clickhouse
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50Gi
