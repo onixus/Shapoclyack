@@ -1,7 +1,8 @@
-"""GeoIP lookup (MaxMind GeoLite2 .mmdb or JSON overlay)."""
+"""GeoIP lookup (MaxMind GeoLite2 .mmdb, DB-IP MMDB, or JSON overlay)."""
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -10,11 +11,24 @@ from typing import Any
 LOG = logging.getLogger(__name__)
 
 
+def _private_geo(ip: str) -> dict[str, str] | None:
+    """Label RFC1918 / loopback / link-local so lab scans are not all 'No GeoIP'."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if addr.is_loopback:
+        return {"country": "Private", "city": "localhost", "country_iso": ""}
+    if addr.is_private or addr.is_link_local or addr.is_reserved:
+        return {"country": "Private", "city": "LAN", "country_iso": ""}
+    return None
+
+
 class GeoIpDatabase:
     """Resolve IPv4/IPv6 → country / city.
 
     Supports:
-    - MaxMind GeoLite2-City ``.mmdb`` via the ``geoip2`` package
+    - MaxMind GeoLite2-City / DB-IP City Lite ``.mmdb`` via the ``geoip2`` package
     - JSON overlay ``{ "1.2.3.4": {"country": "...", "city": "...", "country_iso": "XX"} }``
       for labs/tests without redistributing MaxMind data
     """
@@ -90,6 +104,9 @@ class GeoIpDatabase:
                 "city": hit.get("city") or "",
                 "country_iso": hit.get("country_iso") or "",
             }
+        private = _private_geo(ip)
+        if private is not None:
+            return private
         if self._reader is None:
             return empty
         try:

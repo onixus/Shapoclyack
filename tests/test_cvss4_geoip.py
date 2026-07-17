@@ -60,6 +60,16 @@ def test_cvss4_load_wrapped_and_enrich(tmp_path: Path):
     assert vulns[1]["cvss4"] is None
 
 
+def test_geoip_private_ip_labeled():
+    db = GeoIpDatabase.load(None)
+    hit = db.lookup("172.19.0.2")
+    assert hit["country"] == "Private"
+    assert hit["city"] == "LAN"
+    assert db.lookup("127.0.0.1")["city"] == "localhost"
+    # Public IP with empty DB stays empty
+    assert db.lookup("8.8.8.8")["country"] == ""
+
+
 def test_geoip_json_overlay_lookup(tmp_path: Path):
     overlay = tmp_path / "geo.json"
     overlay.write_text(

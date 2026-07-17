@@ -320,7 +320,7 @@ function RunDetailInner() {
           ) : null}
         </TabsContent>
 
-        <TabsContent value="hosts">
+        <TabsContent value="hosts" className="space-y-2">
           <HostList
             hosts={hosts}
             activeHost={activeHost}
@@ -329,6 +329,18 @@ function RunDetailInner() {
               setActivePort(null);
             }}
           />
+          {hosts.some((h) => h.country || h.city) ? (
+            <p className="text-xs text-muted-foreground">
+              <a
+                href="https://db-ip.com"
+                target="_blank"
+                rel="noreferrer"
+                className="underline-offset-2 hover:underline"
+              >
+                IP Geolocation by DB-IP
+              </a>
+            </p>
+          ) : null}
         </TabsContent>
 
         <TabsContent value="ports">
