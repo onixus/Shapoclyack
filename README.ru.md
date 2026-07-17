@@ -9,7 +9,7 @@
 | **Образы** | `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 | **Runtime** | All-in-one (`docker compose`) или Kubernetes ([k8s/README.md](k8s/README.md)) |
 | **История** | [CHANGELOG.md](CHANGELOG.md) |
-| **Roadmap** | [ROADMAP.md](ROADMAP.md) — MSSP / Enterprise (NATS, tenancy, ClickHouse, …) |
+| **Roadmap** | [ROADMAP.md](ROADMAP.md) — MSSP / Enterprise (NATS, tenancy, ClickHouse, Web UI v2, …) |
 
 ## Назначение
 
