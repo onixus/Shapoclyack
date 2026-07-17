@@ -17,7 +17,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 | **Inputs** | CIDR / IP / FQDN |
 | **Outputs** | JSON / JSONL / CSV + Markdown / HTML (+ diffs, alerts) |
 | **Runtime** | All-in-one (`docker compose`) or Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
-| **Release** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** — `ghcr.io/onixus/shapoclyack-aio:0.3.2.1` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
+| **Release** | **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33)** — `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 
 ### Docs map
 
@@ -45,13 +45,13 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - Range batching + fine-grained checkpoint/resume (per discovery/port batch and per NSE host).
 - Report exports with summary, parsed Nmap service data, OS matches and vulnerability findings.
 - **CVSS v4 enrichment** (`enrichment.cvss4`): local CVE → CVSS 4.0 JSON map (`scanner/data/cvss4/`); refresh via `scripts/fetch-cvss4-db.py`.
-- **GeoIP enrichment** (`enrichment.geoip`): country/city per host via MaxMind GeoLite2 `.mmdb` or JSON overlay; Web UI shows location and can filter findings by target. Fetch MMDB with `scripts/fetch-geoip-db.sh` (do not redistribute MaxMind DB files in the image).
+- **GeoIP enrichment** (`enrichment.geoip`): country/city per host via MaxMind GeoLite2 `.mmdb` or JSON overlay; Web UI shows location on Alive hosts / findings. Fetch MMDB with `scripts/fetch-geoip-db.sh` (do not redistribute MaxMind DB files in the image).
 - **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`.
 - **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
 - **DefectDojo export** (`defectdojo` / `--export-defectdojo`): Generic Findings Import via API v2 reimport (Phase 3).
 - **Business PDF reports** (`reporting.pdf_summary`): executive `summary.pdf` with severity KPIs and priority findings (Phase 3).
 - **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
-- **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`).
+- **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`); severity dashboard; click Alive hosts / Open ports to explore and filter findings.
 - **All-in-one** (`shapoclyack-aio` / `docker compose`): Web UI starts local scans by default.
 - **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man`.
 
@@ -250,7 +250,7 @@ docker compose up --build
 # open http://localhost:8080  — operator / operator-change-me
 ```
 
-Image: `ghcr.io/onixus/shapoclyack-aio:0.3.2.1` (scanner tools + API + UI).  
+Image: `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (scanner tools + API + UI).  
 `OCTO_ALLOW_SCAN_START=true` and `OCTO_JOB_EXECUTION_MODE=local` are baked in.
 
 Kubernetes (aio Deployment, UI can start scans):
@@ -382,7 +382,8 @@ ruff check scanner api tests
 
 Heavy load runs live in `.github/workflows/load-test.yml` (manual / weekly / `workflow_call`).
 
-Release tags (`v*`) trigger `.github/workflows/docker-publish.yml` for both GHCR images.
+Release tags (`v*`) and published GitHub releases trigger `.github/workflows/docker-publish.yml`
+for the GHCR images (`shapoclyack-aio` / `scanner` / `api`).
 
 ### End-to-end test
 
@@ -489,33 +490,35 @@ Published product images:
 | `ghcr.io/onixus/shapoclyack-scanner` | `Dockerfile` (scanner-only) |
 | `ghcr.io/onixus/shapoclyack-api` | `Dockerfile.api` (thin API + dashboard) |
 
-Tagging for `v*` tags: full version (incl. `0.3.2.1`), semver patterns when applicable,
-commit `sha-<...>`, and `latest`. `workflow_dispatch` can publish an extra ad-hoc tag.
+Tagging: tag name as image tag (e.g. `shapoclyack-0.33`), semver patterns when the tag is
+`v*`-shaped, commit `sha-<...>`, and `latest` on tag/release publishes.
+`workflow_dispatch` can publish an extra ad-hoc tag.
 
 Pull and run all-in-one:
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
 docker compose up
 ```
 
 Scanner-only:
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-scanner:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.33
 docker run --rm \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/inputs:/app/scanner/inputs" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/shapoclyack-scanner:0.3.2.1 --config scanner/config/default.yaml --mode balanced
+  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.33 --config scanner/config/default.yaml --mode balanced
 ```
 
-To cut a release build, push a version tag (triggers GHCR publish):
+To cut a release build, push a version tag and/or publish a GitHub Release (triggers GHCR publish):
 
 ```bash
-git tag v0.3.2.1 && git push origin v0.3.2.1
+git tag shapoclyack-0.33 && git push origin shapoclyack-0.33
+# or: gh release create shapoclyack-0.33 --generate-notes
 ```
 
 > The GHCR package may be **private** by default; make it public (or authenticate
