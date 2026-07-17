@@ -42,8 +42,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Compile sources
-        run: python -m compileall scanner api tests
+        run: python -m compileall scanner api tests agent
+      - name: Start JetStream broker
+        run: |
+          docker run -d --name ci-nats-js -p 4222:4222 -p 8222:8222 \
+            nats:2.10.24-alpine --jetstream --store_dir=/data --http_port=8222
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8222/healthz >/dev/null && break
+            sleep 0.5
+          done
       - name: Run tests
+        env:
+          OCTO_NATS_URL: nats://127.0.0.1:4222
         run: python -m pytest -q
 
   web:
