@@ -1,0 +1,25 @@
+# NATS auto-wire overlay for Shapoclyack compose.
+#
+# Usage (recommended):
+#   docker compose -f docker-compose.yml -f docker-compose.nats.yml --profile nats up --build
+#
+# Or:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.nats.yml COMPOSE_PROFILES=nats docker compose up --build
+#
+# Sets OCTO_NATS_URL and waits for JetStream health before starting the aio API.
+
+services:
+  nats:
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  shapoclyack:
+    environment:
+      OCTO_NATS_URL: ${OCTO_NATS_URL:-nats://nats:4222}
+    depends_on:
+      nats:
+        condition: service_healthy

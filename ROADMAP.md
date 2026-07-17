@@ -59,7 +59,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Decouple agents from DB polling and ensure resilient data ingestion.
 
-**Status:** **In progress** — JetStream manifests + API publish + agent pull (opt-in via `OCTO_NATS_URL`).
+**Status:** **In progress** — JetStream manifests + compose auto-wire + long-lived agent pull + live broker tests.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|

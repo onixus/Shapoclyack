@@ -98,7 +98,6 @@ class NatsBus:
                 retention=RetentionPolicy.WORK_QUEUE,
                 storage=StorageType.FILE,
                 max_msgs=100_000,
-                duplicate_window=120_000_000_000,  # 120s in nanoseconds
             )
         )
         await self._ensure_stream(
@@ -108,7 +107,6 @@ class NatsBus:
                 retention=RetentionPolicy.LIMITS,
                 storage=StorageType.FILE,
                 max_msgs=500_000,
-                duplicate_window=600_000_000_000,  # 600s
             )
         )
         # Prefetch pull consumer for agents (created by API so agents can bind).
@@ -128,13 +126,21 @@ class NatsBus:
 
     async def _ensure_stream(self, config: Any) -> None:
         assert self._js is not None
-        try:
-            await self._js.add_stream(config=config)
-        except Exception:  # noqa: BLE001
+        last_exc: BaseException | None = None
+        for attempt in range(1, 6):
             try:
-                await self._js.update_stream(config=config)
-            except Exception:  # noqa: BLE001
-                LOG.debug("stream %s already present", config.name)
+                await self._js.add_stream(config=config)
+                return
+            except Exception as add_exc:  # noqa: BLE001
+                last_exc = add_exc
+                # Already present (or raced with another API replica) — treat as success.
+                try:
+                    await self._js.stream_info(config.name)
+                    return
+                except Exception as info_exc:  # noqa: BLE001
+                    last_exc = info_exc
+                    await asyncio.sleep(0.2 * attempt)
+        LOG.warning("stream %s not ready after retries: %s", config.name, last_exc)
 
     def _call(self, coro: Any, *, timeout: float = 15.0) -> Any:
         if not self._started or self._js is None:

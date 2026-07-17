@@ -1,8 +1,8 @@
 """Poll the Octo-man API for agent jobs and run the local scanner.
 
 When OCTO_NATS_URL is set, jobs are pulled from JetStream subject ``jobs.scan``
-(durable consumer ``octo-agents``) instead of HTTP claim polling. Register,
-heartbeat, and results upload remain HTTP.
+(durable consumer ``octo-agents``) via a long-lived connection instead of HTTP
+claim polling. Register, heartbeat, and results upload remain HTTP.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -281,23 +282,49 @@ def _execute_job(
     LOG.info("Job %s finished exit=%s", job["job_id"], exit_code)
 
 
-async def _nats_pull_and_claim(
-    nats_url: str,
-    client: AgentClient,
-    agent_id: str,
-    *,
-    timeout: float = 5.0,
-) -> dict[str, Any] | None:
-    """Fetch one ``jobs.scan`` offer, HTTP-claim it, then ACK/NAK the JetStream message."""
-    import nats
-    from nats.errors import TimeoutError as NatsTimeout
-    from nats.js.api import AckPolicy, ConsumerConfig
+class AgentNatsSession:
+    """Long-lived JetStream pull session for ``jobs.scan`` (durable ``octo-agents``)."""
 
-    nc = await nats.connect(nats_url, name="octo-man-agent", connect_timeout=5)
-    try:
-        js = nc.jetstream()
+    def __init__(self, nats_url: str, *, connect_timeout: float = 5.0) -> None:
+        self._nats_url = nats_url
+        self._connect_timeout = connect_timeout
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop, name="octo-agent-nats", daemon=True
+        )
+        self._nc: Any = None
+        self._sub: Any = None
+        self._started = False
+        self._lock = threading.Lock()
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._thread.start()
+            fut = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
+            fut.result(timeout=self._connect_timeout + 10)
+            self._started = True
+            LOG.info("NATS agent session connected (%s)", self._nats_url)
+
+    async def _connect(self) -> None:
+        import nats
+        from nats.js.api import AckPolicy, ConsumerConfig
+
+        self._nc = await nats.connect(
+            self._nats_url,
+            name="octo-man-agent",
+            connect_timeout=self._connect_timeout,
+            max_reconnect_attempts=-1,
+            reconnect_time_wait=1,
+        )
+        js = self._nc.jetstream()
         try:
-            sub = await js.pull_subscribe(
+            self._sub = await js.pull_subscribe(
                 SUBJECT_JOBS_SCAN,
                 durable=CONSUMER_AGENTS,
                 stream=STREAM_JOBS,
@@ -312,36 +339,102 @@ async def _nats_pull_and_claim(
                     max_deliver=5,
                 ),
             )
-            sub = await js.pull_subscribe(
+            self._sub = await js.pull_subscribe(
                 SUBJECT_JOBS_SCAN,
                 durable=CONSUMER_AGENTS,
                 stream=STREAM_JOBS,
             )
+
+    def close(self) -> None:
+        with self._lock:
+            if self._nc is not None and self._loop.is_running():
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(self._nc.drain(), self._loop)
+                    fut.result(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._nc = None
+                self._sub = None
+            if self._loop.is_running():
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            self._started = False
+
+    def _ensure_ready(self) -> None:
+        if self._started and self._nc is not None and self._sub is not None:
+            try:
+                if self._nc.is_connected:
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+        self.close()
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop, name="octo-agent-nats", daemon=True
+        )
+        self._started = False
+        self.start()
+
+    def pull_and_claim(
+        self,
+        client: AgentClient,
+        agent_id: str,
+        *,
+        timeout: float = 5.0,
+    ) -> dict[str, Any] | None:
+        """Fetch one offer, HTTP-claim it, then ACK/NAK. Reconnects if the session drops."""
+        self._ensure_ready()
+
+        async def _once() -> dict[str, Any] | None:
+            from nats.errors import TimeoutError as NatsTimeout
+
+            assert self._sub is not None
+            try:
+                msgs = await self._sub.fetch(1, timeout=timeout)
+            except NatsTimeout:
+                return None
+            if not msgs:
+                return None
+            msg = msgs[0]
+            try:
+                payload = json.loads(msg.data.decode("utf-8"))
+            except json.JSONDecodeError:
+                await msg.term()
+                return None
+            if not isinstance(payload, dict) or not payload.get("job_id"):
+                await msg.term()
+                return None
+            job_id = str(payload["job_id"])
+            claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+            if claimed is None:
+                LOG.warning("NATS offer %s not claimable; NAK", job_id)
+                await msg.nak()
+                return None
+            await msg.ack()
+            return claimed
+
         try:
-            msgs = await sub.fetch(1, timeout=timeout)
-        except NatsTimeout:
+            fut = asyncio.run_coroutine_threadsafe(_once(), self._loop)
+            return fut.result(timeout=timeout + 30)
+        except Exception:  # noqa: BLE001
+            LOG.exception("NATS pull/claim failed; will reconnect")
+            self.close()
             return None
-        if not msgs:
-            return None
-        msg = msgs[0]
-        try:
-            payload = json.loads(msg.data.decode("utf-8"))
-        except json.JSONDecodeError:
-            await msg.term()
-            return None
-        if not isinstance(payload, dict) or not payload.get("job_id"):
-            await msg.term()
-            return None
-        job_id = str(payload["job_id"])
-        claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
-        if claimed is None:
-            LOG.warning("NATS offer %s not claimable; NAK", job_id)
-            await msg.nak()
-            return None
-        await msg.ack()
-        return claimed
+
+
+async def _nats_pull_and_claim(
+    nats_url: str,
+    client: AgentClient,
+    agent_id: str,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any] | None:
+    """One-shot pull (tests / legacy); prefer :class:`AgentNatsSession` in the agent loop."""
+    session = AgentNatsSession(nats_url)
+    try:
+        session.start()
+        return session.pull_and_claim(client, agent_id, timeout=timeout)
     finally:
-        await nc.drain()
+        session.close()
 
 
 def _pull_nats_job(
@@ -350,7 +443,10 @@ def _pull_nats_job(
     agent_id: str,
     *,
     timeout: float = 5.0,
+    session: AgentNatsSession | None = None,
 ) -> dict[str, Any] | None:
+    if session is not None:
+        return session.pull_and_claim(client, agent_id, timeout=timeout)
     return asyncio.run(
         _nats_pull_and_claim(nats_url, client, agent_id, timeout=timeout)
     )
@@ -389,50 +485,60 @@ def run_loop(args: argparse.Namespace) -> int:
         info.get("hostname"),
         info.get("tenant_id"),
     )
+
+    nats_session: AgentNatsSession | None = None
     if args.nats_url:
         LOG.info("NATS pull enabled (%s) subject=%s", args.nats_url, SUBJECT_JOBS_SCAN)
+        nats_session = AgentNatsSession(args.nats_url)
+        nats_session.start()
 
     token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))
 
-    while True:
-        try:
-            if args.provisioning_key and time.time() >= token_refresh_at:
-                exchanged = client.exchange_provisioning_key(args.provisioning_key)
-                client.set_token(str(exchanged["access_token"]))
-                expires = int(exchanged.get("expires_in") or 3600)
-                token_refresh_at = time.time() + max(60, expires // 2)
-                LOG.info("Refreshed agent JWT (tenant=%s)", exchanged.get("tenant_id"))
+    try:
+        while True:
+            try:
+                if args.provisioning_key and time.time() >= token_refresh_at:
+                    exchanged = client.exchange_provisioning_key(args.provisioning_key)
+                    client.set_token(str(exchanged["access_token"]))
+                    expires = int(exchanged.get("expires_in") or 3600)
+                    token_refresh_at = time.time() + max(60, expires // 2)
+                    LOG.info("Refreshed agent JWT (tenant=%s)", exchanged.get("tenant_id"))
 
-            client.heartbeat(agent_id, status="idle")
-            job: dict[str, Any] | None = None
-            if args.nats_url:
-                job = _pull_nats_job(
-                    args.nats_url,
+                client.heartbeat(agent_id, status="idle")
+                job: dict[str, Any] | None = None
+                if nats_session is not None:
+                    job = _pull_nats_job(
+                        args.nats_url,
+                        client,
+                        agent_id,
+                        timeout=max(1.0, args.poll_interval),
+                        session=nats_session,
+                    )
+                else:
+                    job = client.claim(agent_id)
+
+                if job is None:
+                    if nats_session is None:
+                        time.sleep(args.poll_interval)
+                    continue
+
+                _execute_job(
                     client,
-                    agent_id,
-                    timeout=max(1.0, args.poll_interval),
+                    agent_id=agent_id,
+                    job=job,
+                    config=Path(args.config),
+                    output_dir=Path(args.output_dir),
                 )
-            else:
-                job = client.claim(agent_id)
+            except KeyboardInterrupt:
+                LOG.info("Shutting down")
+                return 0
+            except Exception:  # noqa: BLE001
+                LOG.exception("Agent loop error")
+                time.sleep(args.poll_interval)
+    finally:
+        if nats_session is not None:
+            nats_session.close()
 
-            if job is None:
-                if not args.nats_url:
-                    time.sleep(args.poll_interval)
-                continue
-
-            _execute_job(
-                client,
-                agent_id=agent_id,
-                job=job,
-                config=Path(args.config),
-                output_dir=Path(args.output_dir),
-            )
-        except KeyboardInterrupt:
-            LOG.info("Shutting down")
-            return 0
-        except Exception:  # noqa: BLE001
-            LOG.exception("Agent loop error")
-            time.sleep(args.poll_interval)
 
 
 def build_parser() -> argparse.ArgumentParser:
