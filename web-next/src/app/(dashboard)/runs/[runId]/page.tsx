@@ -16,14 +16,7 @@ import {
   type PortAggregate,
   type Vulnerability,
 } from "@/lib/api";
-
-const SEVERITIES = ["critical", "high", "medium", "low", "unknown"] as const;
-type Severity = (typeof SEVERITIES)[number];
-
-function normalizeSeverity(value: string | null | undefined): Severity {
-  const key = (value || "unknown").toLowerCase();
-  return (SEVERITIES as readonly string[]).includes(key) ? (key as Severity) : "unknown";
-}
+import { SEVERITIES, normalizeSeverity, type Severity } from "@/lib/run-data";
 
 function formatLocation(item: {
   city?: string | null;

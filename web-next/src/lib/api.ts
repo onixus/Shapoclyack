@@ -162,26 +162,6 @@ export type ProvisioningKeyInfo = {
   key?: string | null;
 };
 
-/** Mock-shaped tenant row still used by Assets / Dashboard demos. */
-export type Tenant = {
-  id: string;
-  name: string;
-  status: "active" | "paused" | "provisioning";
-  agentCount: number;
-  assetCount: number;
-  createdAt: string;
-};
-
-export type AssetRow = {
-  id: string;
-  host: string;
-  tenant: string;
-  openPorts: number;
-  criticality: "critical" | "high" | "medium" | "low" | "info";
-  lastScanned: string;
-  diff?: { kind: "port" | "cve"; label: string };
-};
-
 export async function login(username: string, password: string) {
   try {
     const { data } = await api.post<{
