@@ -170,8 +170,29 @@ def test_default_yaml_adaptive_discovery():
     text = Path("scanner/config/default.yaml").read_text(encoding="utf-8")
     cfg = AppConfig.model_validate(yaml.safe_load(text))
     assert cfg.discovery.adaptive.enabled is True
+    assert cfg.discovery.adaptive.wave2_rate == 2500
     assert cfg.discovery.disjoint_batches is True
+    assert cfg.discovery.verify.enabled is True
+    assert cfg.discovery.verify.rate == 1250
+    assert cfg.batching.ipv4_prefix == 24
+    assert cfg.batching.max_targets_per_batch == 1024
     assert cfg.runtime.skip_nse is False
+    assert cfg.profiles["balanced"].discover_rate == 4000
+
+
+def test_k8s_yaml_discovery_completeness_knobs():
+    import yaml
+
+    text = Path("k8s/octo-man/base/config/k8s.yaml").read_text(encoding="utf-8")
+    cfg = AppConfig.model_validate(yaml.safe_load(text))
+    assert cfg.discovery.verify.enabled is True
+    assert cfg.discovery.verify.rate == 1250
+    assert cfg.discovery.adaptive.wave2_rate == 2500
+    assert cfg.batching.ipv4_prefix == 24
+    assert cfg.batching.max_targets_per_batch == 1024
+    # Keep reverse DNS and vuln-offline — not bench-only settings.
+    assert cfg.discovery.hostnames.reverse is True
+    assert cfg.profiles["balanced"].nse_profile == "vuln-offline"
 
 
 def test_default_yaml_parses():

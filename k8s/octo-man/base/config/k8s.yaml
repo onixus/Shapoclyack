@@ -48,8 +48,9 @@ profiles:
 
 batching:
   enabled: true
-  ipv4_prefix: 20
-  max_targets_per_batch: 4096
+  # Finer /24 batches (from realistic bench) for better resume on large CIDRs.
+  ipv4_prefix: 24
+  max_targets_per_batch: 1024
 
 discovery:
   source: naabu
@@ -59,11 +60,15 @@ discovery:
   disjoint_batches: true
   adaptive:
     enabled: true
+    # Explicit wave-2 rate validated in discovery-bench-realistic.
+    wave2_rate: 2500
     min_gap: 1
   exclude_alive: []
   exclude_last_octets: []
   verify:
-    enabled: false
+    # Second-pass verify reduces missed alive hosts (realistic bench default).
+    enabled: true
+    rate: 1250
   icmp:
     enabled: false
     tool: fping
