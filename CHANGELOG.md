@@ -4,6 +4,22 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+## [0.33] — 2026-07-16
+
+GitHub release / tag: [`shapoclyack-0.33`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33).
+
+### Added
+
+- **CVSS v4 enrichment** (`enrichment.cvss4`): local CVE → CVSS 4.0 JSON map
+  (`scanner/data/cvss4/`); refresh with `scripts/fetch-cvss4-db.py`
+- **GeoIP enrichment** (`enrichment.geoip`): country/city per host via MaxMind GeoLite2
+  `.mmdb` or JSON overlay; always export `alive_hosts.json` / `geoip.json`
+- **Run results explore UI**: click **Alive hosts** / **Open ports** to list targets
+  (with GeoIP) and port aggregation; filter findings by host or port
+- API endpoints `GET /api/runs/{id}/hosts` and `GET /api/runs/{id}/ports`
+- **Severity dashboard** in the Web UI (grouped, scrollable vulnerability lists)
+- Test fixture `tests/data/geoip/GeoIP2-City-Test.mmdb` for the `.mmdb` reader path
+
 ### Changed
 
 - **Container images are Shapoclyack-scoped** and no longer published under the legacy
@@ -12,11 +28,23 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   - `ghcr.io/onixus/shapoclyack-scanner`
   - `ghcr.io/onixus/shapoclyack-api`
 - Compose service renamed to `shapoclyack`; Dockerfiles carry OCI source labels for this repo
+- Vulnerability API backfills GeoIP from `geoip.json` / `alive_hosts.json` when missing on a finding
+
+### Images
+
+| Image | Tag |
+|-------|-----|
+| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.33`, `latest` |
+| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.33`, `latest` |
+| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.33`, `latest` |
 
 ### Upgrade notes
 
-- Retag / pull `shapoclyack-*` images (do not use bare `ghcr.io/onixus/octo-man`)
+- Pull `shapoclyack-*` images (do not use bare `ghcr.io/onixus/octo-man`)
 - Update any local `image:` overrides to the new names
+- For production GeoIP: `MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh` and point
+  `enrichment.geoip.database` at the `.mmdb`
+- Existing scan runs without GeoIP fields need a new scan after enrichment is configured
 
 ## [0.3.2.1] — 2026-07-16
 
@@ -34,7 +62,7 @@ All-in-one release: Web UI can start scans by default.
 - GHCR publish matrix builds scanner, api, and aio (tag matching supports `v0.3.2.1`)
 - Phase 3 items (DefectDojo, PDF, remote agents, scan targets / UDP ports) are included in this release train
 
-### Images (at release; superseded by `shapoclyack-*` names — see Unreleased)
+### Images (historical; superseded by `shapoclyack-*` in 0.33)
 
 | Image (historical) | Tag |
 |-------|-----|

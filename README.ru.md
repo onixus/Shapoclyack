@@ -5,8 +5,8 @@
 
 | | |
 |---|---|
-| **Релиз** | **[v0.3.2.1](https://github.com/onixus/Shapoclyack/releases/tag/v0.3.2.1)** |
-| **Образы** | `ghcr.io/onixus/shapoclyack-aio:0.3.2.1` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
+| **Релиз** | **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33)** |
+| **Образы** | `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 | **Runtime** | All-in-one (`docker compose`) или Kubernetes ([k8s/README.md](k8s/README.md)) |
 | **История** | [CHANGELOG.md](CHANGELOG.md) |
 
@@ -404,9 +404,9 @@ ruff check scanner api tests
 - Образы: `shapoclyack-aio` (по умолчанию), `shapoclyack-scanner`, `shapoclyack-api`.
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:0.3.2.1
-docker pull ghcr.io/onixus/shapoclyack-scanner:0.3.2.1
-docker pull ghcr.io/onixus/shapoclyack-api:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.33
+docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.33
 ```
 
 Подробности и полный пример запуска — в [README.md](README.md#container-image-ghcr).
