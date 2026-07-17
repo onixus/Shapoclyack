@@ -87,6 +87,7 @@ def _to_info(agent: dict[str, Any]) -> AgentInfo:
         registered_at=agent.get("registered_at"),
         last_seen_at=agent.get("last_seen_at"),
         online=online,
+        tenant_id=str(agent.get("tenant_id") or "default"),
     )
 
 
@@ -96,13 +97,17 @@ def register_agent(
     hostname: str = "",
     version: str = "",
     labels: dict[str, str] | None = None,
+    tenant_id: str = "default",
 ) -> AgentInfo:
     now = _now_iso()
     with _lock:
         if agent_id and agent_id in _agents:
             agent = _agents[agent_id]
+            if agent.get("tenant_id") and agent.get("tenant_id") != tenant_id:
+                raise PermissionError("agent_id belongs to a different tenant")
             agent["hostname"] = hostname or agent.get("hostname") or ""
             agent["version"] = version or agent.get("version") or ""
+            agent["tenant_id"] = tenant_id
             if labels is not None:
                 agent["labels"] = dict(labels)
             agent["last_seen_at"] = now
@@ -122,6 +127,7 @@ def register_agent(
             "detail": None,
             "registered_at": now,
             "last_seen_at": now,
+            "tenant_id": tenant_id,
         }
         _agents[new_id] = agent
         _persist_unlocked()

@@ -31,11 +31,18 @@ spec:
             - "--api-url"
             - "http://octo-man-api:8080"
           env:
+            - name: OCTO_AGENT_PROVISIONING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: octo-man-agent
+                  key: OCTO_AGENT_PROVISIONING_KEY
+                  optional: true
             - name: OCTO_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: octo-man-agent
                   key: OCTO_AGENT_TOKEN
+                  optional: true
             - name: OCTO_OUTPUT_DIR
               value: scanner/output
             - name: OCTO_AGENT_HOSTNAME

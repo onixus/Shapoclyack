@@ -38,6 +38,13 @@ Example patches: `examples/nats-api-patch.yaml`, `examples/nats-agent-patch.yaml
 
 Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream `INGEST`).
 
+### MSSP tenancy (Phase 2)
+
+- Admin: `POST /api/tenants`, `POST /api/tenants/{id}/provisioning-keys`
+- Agent: `POST /api/auth/agent/token` with provisioning key → short-lived JWT
+- Env: `OCTO_AGENT_PROVISIONING_KEY` (preferred) or legacy `OCTO_AGENT_TOKEN` (`tenant_id=default`)
+- Examples: `networkpolicy-agent.example.yaml`, `externalsecret.example.yaml`
+
 ## Quick start (pull release images)
 
 ### 1. Namespace + scan targets

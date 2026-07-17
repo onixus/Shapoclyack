@@ -6,6 +6,9 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 2 (MSSP tenancy)** — JSON-backed tenants + provisioning keys; agents exchange
+  keys for short-lived JWTs (`tenant_id` claims); cross-tenant claim/upload denied;
+  NATS messages carry `tenant_id` headers; NetworkPolicy + ExternalSecrets examples
 - **Phase 1 (NATS JetStream)** — opt-in via `OCTO_NATS_URL`:
   - k8s StatefulSet/Services `octo-man-nats` (+ client Service)
   - API publishes agent jobs to `jobs.scan` and raw archives to `ingest.raw_results`

@@ -73,6 +73,8 @@ class StartScanRequest(BaseModel):
     notify: bool = False
     export_defectdojo: bool = False
     run_id: str | None = None
+    # MSSP tenant (Phase 2). Defaults to "default" when omitted.
+    tenant_id: str | None = None
     # Newline-separated targets. Empty / omitted → server default input files.
     ranges: str | None = None
     domains: str | None = None
@@ -94,6 +96,7 @@ class JobInfo(BaseModel):
     target_counts: dict[str, int] | None = None
     execution: Literal["local", "agent"] = "local"
     assigned_agent_id: str | None = None
+    tenant_id: str = "default"
 
 
 class AgentRegisterRequest(BaseModel):
@@ -121,6 +124,7 @@ class AgentInfo(BaseModel):
     registered_at: str | None = None
     last_seen_at: str | None = None
     online: bool = False
+    tenant_id: str = "default"
 
 
 class AgentClaimResponse(BaseModel):
@@ -132,6 +136,7 @@ class AgentClaimResponse(BaseModel):
     notify: bool = False
     export_defectdojo: bool = False
     inputs: dict[str, str] = Field(default_factory=dict)
+    tenant_id: str = "default"
 
 
 class AgentCompleteRequest(BaseModel):
@@ -139,3 +144,42 @@ class AgentCompleteRequest(BaseModel):
     exit_code: int = 0
     run_id: str | None = None
     error: str | None = None
+
+
+class TenantInfo(BaseModel):
+    tenant_id: str
+    name: str
+    status: Literal["active", "disabled"] = "active"
+    created_at: str | None = None
+
+
+class CreateTenantRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    tenant_id: str | None = Field(default=None, max_length=64)
+
+
+class CreateProvisioningKeyRequest(BaseModel):
+    label: str = Field(default="", max_length=128)
+
+
+class ProvisioningKeyInfo(BaseModel):
+    key_id: str
+    tenant_id: str
+    label: str = ""
+    created_at: str | None = None
+    revoked_at: str | None = None
+    last_used_at: str | None = None
+    # Present only on create (one-time plaintext).
+    key: str | None = None
+
+
+class AgentTokenRequest(BaseModel):
+    provisioning_key: str = Field(min_length=8, max_length=256)
+
+
+class AgentTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    tenant_id: str
+    key_id: str
+    expires_in: int

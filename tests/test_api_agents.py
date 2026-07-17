@@ -54,10 +54,11 @@ def _agent_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-agent-token"}
 
 
-def test_agent_api_disabled_without_token(tmp_path, monkeypatch):
+def test_agent_api_requires_auth_when_legacy_token_unset(tmp_path, monkeypatch):
+    """Without OCTO_AGENT_TOKEN, agent routes still accept provisioning JWTs but require a bearer."""
     client = _client(tmp_path, monkeypatch, agent_token="")
     response = client.post("/api/agent/register", json={"hostname": "a"})
-    assert response.status_code == 503
+    assert response.status_code == 401
 
 
 def test_agent_register_heartbeat_and_list(tmp_path, monkeypatch):

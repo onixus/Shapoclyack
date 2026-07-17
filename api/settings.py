@@ -39,9 +39,11 @@ class Settings:
     allow_scan_start: bool = True
     # local = API pod runs scanner in a thread; agent = remote workers claim jobs.
     job_execution_mode: str = "local"
-    # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables agent API.
+    # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables legacy agent auth.
     agent_token: str = ""
     agent_stale_seconds: int = 120
+    # Short-lived agent JWT lifetime after provisioning-key exchange (Phase 2).
+    agent_jwt_expire_minutes: int = 60
     # NATS JetStream URL (e.g. nats://octo-man-nats-client:4222). Empty disables broker.
     nats_url: str = ""
 
@@ -76,5 +78,6 @@ def load_settings() -> Settings:
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
+        agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "60")),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
     )

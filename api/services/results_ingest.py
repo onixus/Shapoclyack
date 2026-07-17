@@ -82,6 +82,7 @@ def publish_raw_results(
     exit_code: int,
     archive_bytes: bytes,
     error: str | None = None,
+    tenant_id: str = "default",
     include_archive_b64: bool = True,
     max_inline_bytes: int = 4_000_000,
 ) -> dict[str, Any]:
@@ -99,6 +100,7 @@ def publish_raw_results(
         "agent_id": agent_id,
         "exit_code": exit_code,
         "error": error,
+        "tenant_id": tenant_id,
         "archive_sha256": digest,
         "archive_bytes": len(archive_bytes),
     }
@@ -113,9 +115,10 @@ def publish_raw_results(
         published = bus.publish_ingest(payload, msg_id=msg_id)
         if published:
             LOG.info(
-                "Published ingest.raw_results job=%s run=%s msg_id=%s",
+                "Published ingest.raw_results job=%s run=%s tenant=%s msg_id=%s",
                 job_id,
                 run_id,
+                tenant_id,
                 msg_id,
             )
-    return {"msg_id": msg_id, "archive_sha256": digest, "published": published}
+    return {"msg_id": msg_id, "archive_sha256": digest, "published": published, "tenant_id": tenant_id}

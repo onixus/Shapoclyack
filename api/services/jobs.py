@@ -14,6 +14,7 @@ from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
 from api.services import nats_bus
 from api.services import results_ingest
+from api.services import tenants as tenants_service
 from api.services.targets import parse_target_payload
 from api.settings import Settings
 
@@ -193,6 +194,13 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
     if not settings.allow_scan_start:
         raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
 
+    tenant_id = (request.tenant_id or tenants_service.DEFAULT_TENANT_ID).strip()
+    tenant = tenants_service.get_tenant(tenant_id)
+    if tenant is None:
+        raise ValueError(f"Unknown tenant_id: {tenant_id}")
+    if tenant.get("status") != "active":
+        raise ValueError(f"Tenant is not active: {tenant_id}")
+
     job_id = uuid.uuid4().hex[:12]
     execution = "agent" if settings.job_execution_mode == "agent" else "local"
     run_id = request.run_id
@@ -218,6 +226,7 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         "execution": execution,
         "assigned_agent_id": None,
         "queued_at": queued_at,
+        "tenant_id": tenant_id,
         "scan_options": {
             "mode": request.mode,
             "delta": request.delta,
@@ -253,6 +262,7 @@ def _claim_payload(settings: Settings, job: dict[str, Any]) -> dict[str, Any]:
         "notify": bool(opts.get("notify", False)),
         "export_defectdojo": bool(opts.get("export_defectdojo", False)),
         "inputs": _read_job_inputs(settings, job_id),
+        "tenant_id": str(job.get("tenant_id") or tenants_service.DEFAULT_TENANT_ID),
     }
 
 
@@ -291,13 +301,22 @@ def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
     return out
 
 
-def claim_job(settings: Settings, agent_id: str, *, job_id: str | None = None) -> AgentClaimResponse | None:
+def claim_job(
+    settings: Settings,
+    agent_id: str,
+    *,
+    job_id: str | None = None,
+    tenant_id: str | None = None,
+) -> AgentClaimResponse | None:
     """Assign a queued agent job to ``agent_id``, or return None.
 
     When ``job_id`` is set (NATS pull path), assign that specific job if still queued.
+    When ``tenant_id`` is set, only jobs for that tenant are eligible.
     """
-    if agents_service.get_agent(agent_id) is None:
+    agent = agents_service.get_agent(agent_id)
+    if agent is None:
         raise LookupError("Unknown agent_id; register first")
+    effective_tenant = tenant_id or agent.tenant_id
 
     with _LOCK:
         if job_id:
@@ -307,6 +326,7 @@ def claim_job(settings: Settings, agent_id: str, *, job_id: str | None = None) -
                 or job.get("execution") != "agent"
                 or job.get("status") != "queued"
                 or job.get("assigned_agent_id")
+                or str(job.get("tenant_id") or "default") != effective_tenant
             ):
                 return None
             candidates = [job]
@@ -317,6 +337,7 @@ def claim_job(settings: Settings, agent_id: str, *, job_id: str | None = None) -
                 if job.get("execution") == "agent"
                 and job.get("status") == "queued"
                 and not job.get("assigned_agent_id")
+                and str(job.get("tenant_id") or "default") == effective_tenant
             ]
             candidates.sort(key=lambda item: str(item.get("queued_at") or item.get("job_id")))
         if not candidates:
@@ -330,6 +351,7 @@ def claim_job(settings: Settings, agent_id: str, *, job_id: str | None = None) -
         run_id = str(job.get("run_id") or "")
         opts = dict(job.get("scan_options") or {})
         mode = str(job.get("mode") or opts.get("mode") or "balanced")
+        job_tenant = str(job.get("tenant_id") or "default")
 
     if not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -345,6 +367,7 @@ def claim_job(settings: Settings, agent_id: str, *, job_id: str | None = None) -
         notify=bool(opts.get("notify", False)),
         export_defectdojo=bool(opts.get("export_defectdojo", False)),
         inputs=_read_job_inputs(settings, claimed_id),
+        tenant_id=job_tenant,
     )
 
 
@@ -357,6 +380,7 @@ def complete_job(
     error: str | None = None,
     run_id: str | None = None,
     archive_bytes: bytes | None = None,
+    tenant_id: str | None = None,
 ) -> JobInfo:
     with _LOCK:
         job = _JOBS.get(job_id)
@@ -366,6 +390,9 @@ def complete_job(
             raise ValueError("Job is not an agent job")
         if job.get("assigned_agent_id") != agent_id:
             raise PermissionError("Job is assigned to a different agent")
+        job_tenant = str(job.get("tenant_id") or "default")
+        if tenant_id is not None and job_tenant != tenant_id:
+            raise PermissionError("Cross-tenant job access denied")
         if job.get("status") not in {"running", "queued"}:
             raise ValueError(f"Job is already {job.get('status')}")
         resolved_run_id = run_id or job.get("run_id")
@@ -384,6 +411,7 @@ def complete_job(
                     exit_code=exit_code,
                     archive_bytes=archive_bytes,
                     error=error,
+                    tenant_id=job_tenant,
                 )
             except results_ingest.IngestError as exc:
                 raise ValueError(str(exc)) from exc
@@ -391,6 +419,10 @@ def complete_job(
         try:
             results_ingest.extract_run_archive(archive_bytes, dest)
             results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
+            (dest / "tenant.json").write_text(
+                json.dumps({"tenant_id": job_tenant, "job_id": job_id}, indent=2) + "\n",
+                encoding="utf-8",
+            )
         except results_ingest.IngestError as exc:
             raise ValueError(str(exc)) from exc
 
