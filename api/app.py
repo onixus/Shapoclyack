@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -14,7 +17,22 @@ from api.routes import runs as runs_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
 from api.services import jobs as jobs_service
+from api.services import nats_bus
 from api.services import tenants as tenants_service
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    if settings.nats_url:
+        bus = nats_bus.startup_bus(settings.nats_url)
+        if bus is None:
+            # Connection failed — API still serves; ingest publish will no-op/log.
+            pass
+    try:
+        yield
+    finally:
+        nats_bus.shutdown_bus()
 
 
 def create_app() -> FastAPI:
@@ -27,6 +45,7 @@ def create_app() -> FastAPI:
         title="Octo-man API",
         version=__version__,
         description="HTTP API for Octo-man scan runs, jobs, remote agents, and RBAC-protected access.",
+        lifespan=lifespan,
     )
     app.add_middleware(
         CORSMiddleware,

@@ -65,7 +65,8 @@ def load_settings() -> Settings:
         mode = "local"
 
     return Settings(
-        jwt_secret=os.environ.get("OCTO_JWT_SECRET", "octo-man-dev-secret-change-me"),
+        jwt_secret=os.environ.get("API_SECRET_KEY", "").strip()
+        or os.environ.get("OCTO_JWT_SECRET", "octo-man-dev-secret-change-me"),
         jwt_expire_minutes=int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")),
         output_dir=Path(os.environ.get("OCTO_OUTPUT_DIR", "scanner/output")),
         state_dir=Path(os.environ.get("OCTO_STATE_DIR", "scanner/state")),
@@ -78,6 +79,6 @@ def load_settings() -> Settings:
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
-        agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "60")),
+        agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
     )

@@ -21,11 +21,14 @@ from api.auth import (
 from api.schemas import (
     AgentTokenRequest,
     AgentTokenResponse,
+    AuthExchangeRequest,
+    AuthExchangeResponse,
     CreateProvisioningKeyRequest,
     CreateTenantRequest,
     ProvisioningKeyInfo,
     TenantInfo,
 )
+from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
 from api.services import auth as auth_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
@@ -54,10 +57,32 @@ def agent_token(
 ) -> AgentTokenResponse:
     """Exchange a provisioning key for a short-lived agent JWT (tenant_id in claims)."""
     try:
-        result = auth_service.exchange_provisioning_key(settings, body.provisioning_key)
+        result = auth_service.exchange_provisioning_key(
+            settings,
+            body.provisioning_key,
+            agent_id=body.agent_id,
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     return AgentTokenResponse.model_validate(result)
+
+
+@router.post("/v1/auth/exchange", response_model=AuthExchangeResponse)
+def auth_exchange(
+    body: AuthExchangeRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AuthExchangeResponse:
+    """Provisioning key → short-lived JWT (2h) with ``tenant_id`` + ``agent_id``."""
+    try:
+        result = auth_service.exchange_provisioning_key(
+            settings,
+            body.provisioning_key,
+            agent_id=body.agent_id,
+            expires_minutes=DEFAULT_EXCHANGE_TTL_MINUTES,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    return AuthExchangeResponse.model_validate(result)
 
 
 @router.get("/tenants", response_model=list[TenantInfo])

@@ -44,6 +44,7 @@ class AgentPrincipal(BaseModel):
 
     tenant_id: str
     key_id: str | None = None
+    agent_id: str | None = None
     subject: str = "agent"
     auth_mode: str = "jwt"  # jwt | legacy
 
@@ -152,6 +153,7 @@ def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
     return AgentPrincipal(
         tenant_id=str(tenant_id),
         key_id=str(payload["key_id"]) if payload.get("key_id") else None,
+        agent_id=str(payload["agent_id"]) if payload.get("agent_id") else str(payload.get("sub") or ""),
         subject=str(payload.get("sub") or "agent"),
         auth_mode="jwt",
     )

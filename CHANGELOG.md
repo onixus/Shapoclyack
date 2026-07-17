@@ -6,6 +6,12 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **API gateway ingest** — publish validated results to `ingest.results.{tenant_id}`
+  (plus legacy `ingest.raw_results`); NATS bus starts on FastAPI lifespan
+- **`POST /api/v1/auth/exchange`** — provisioning key → 2h agent JWT (`tenant_id` + `agent_id`);
+  `api/core/security.py` (`API_SECRET_KEY` / `OCTO_JWT_SECRET`)
+- **Deps:** `cryptography`, `clickhouse-connect` (ready for Phase 3 queries)
+- **Compose:** optional `clickhouse` profile + local `init-local.sql`
 - **Phase 2 (MSSP tenancy)** — JSON-backed tenants + provisioning keys; agents exchange
   keys for short-lived JWTs (`tenant_id` claims); cross-tenant claim/upload denied;
   NATS messages carry `tenant_id` headers; NetworkPolicy + ExternalSecrets examples

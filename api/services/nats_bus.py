@@ -21,7 +21,8 @@ from typing import Any
 LOG = logging.getLogger("octo-man.nats")
 
 SUBJECT_JOBS_SCAN = "jobs.scan"
-SUBJECT_INGEST_RAW = "ingest.raw_results"
+SUBJECT_INGEST_RAW = "ingest.raw_results"  # legacy alias
+# Per-tenant gateway subject (TASK 4): ingest.results.{tenant_id}
 
 STREAM_JOBS = "JOBS"
 STREAM_INGEST = "INGEST"
@@ -161,8 +162,9 @@ class NatsBus:
         *,
         msg_id: str | None = None,
         headers: dict[str, str] | None = None,
+        retries: int = 3,
     ) -> bool:
-        """Publish JSON; returns False if bus offline. msg_id enables JetStream dedupe."""
+        """Publish JSON with simple retries; returns False if bus offline."""
 
         async def _pub() -> None:
             assert self._js is not None
@@ -171,11 +173,24 @@ class NatsBus:
                 hdrs["Nats-Msg-Id"] = msg_id
             if headers:
                 hdrs.update(headers)
-            await self._js.publish(
-                subject,
-                json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-                headers=hdrs or None,
-            )
+            body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            last_exc: BaseException | None = None
+            for attempt in range(1, max(1, retries) + 1):
+                try:
+                    await self._js.publish(subject, body, headers=hdrs or None)
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    LOG.warning(
+                        "NATS publish attempt %s/%s failed subject=%s: %s",
+                        attempt,
+                        retries,
+                        subject,
+                        exc,
+                    )
+                    await asyncio.sleep(0.2 * attempt)
+            assert last_exc is not None
+            raise last_exc
 
         try:
             self._call(_pub())
@@ -192,23 +207,44 @@ class NatsBus:
         return self.publish_json(SUBJECT_JOBS_SCAN, payload, msg_id=msg_id, headers=extra)
 
     def publish_ingest(self, payload: dict[str, Any], *, msg_id: str) -> bool:
-        tenant_id = str(payload.get("tenant_id") or "")
-        extra = {"tenant_id": tenant_id} if tenant_id else None
-        return self.publish_json(SUBJECT_INGEST_RAW, payload, msg_id=msg_id, headers=extra)
+        """Publish to ``ingest.results.{tenant_id}`` (and legacy ``ingest.raw_results``)."""
+        tenant_id = str(payload.get("tenant_id") or "default")
+        subject = ingest_results_subject(tenant_id)
+        extra = {"tenant_id": tenant_id}
+        ok = self.publish_json(subject, payload, msg_id=msg_id, headers=extra)
+        # Keep legacy subject for older consumers / tests.
+        self.publish_json(
+            SUBJECT_INGEST_RAW,
+            payload,
+            msg_id=f"{msg_id}-legacy" if msg_id else None,
+            headers=extra,
+        )
+        return ok
 
 
 _BUS: NatsBus | None = None
 _BUS_LOCK = threading.Lock()
 
 
+def ingest_results_subject(tenant_id: str) -> str:
+    """NATS subject ``ingest.results.{tenant_id}`` with safe token."""
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (tenant_id or "default"))
+    return f"ingest.results.{safe or 'default'}"
+
+
 def ingest_msg_id(*, job_id: str, run_id: str, archive_sha256: str) -> str:
-    """Stable idempotency key for ingest.raw_results (JetStream Nats-Msg-Id)."""
+    """Stable idempotency key for ingest publish (JetStream Nats-Msg-Id)."""
     raw = f"{job_id}:{run_id}:{archive_sha256}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
 
 
 def archive_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def startup_bus(url: str) -> NatsBus | None:
+    """Initialize global NATS connection (call from FastAPI lifespan/startup)."""
+    return get_bus(url)
 
 
 def get_bus(url: str) -> NatsBus | None:
@@ -226,6 +262,10 @@ def get_bus(url: str) -> NatsBus | None:
         bus.start()
         _BUS = bus if bus._started else None  # noqa: SLF001
         return _BUS
+
+
+def shutdown_bus() -> None:
+    reset_bus_for_tests()
 
 
 def reset_bus_for_tests() -> None:
