@@ -67,9 +67,9 @@ export default function RunDetailPage({ params }: { params: { runId: string } })
   });
 
   const detail = detailQuery.data;
-  const hosts = hostsQuery.data || [];
-  const ports = portsQuery.data || [];
-  const vulns = vulnsQuery.data || [];
+  const hosts = useMemo(() => hostsQuery.data || [], [hostsQuery.data]);
+  const ports = useMemo(() => portsQuery.data || [], [portsQuery.data]);
+  const vulns = useMemo(() => vulnsQuery.data || [], [vulnsQuery.data]);
   const summary = detail?.summary || {};
   const diffCounts = (detail?.diff?.counts || null) as Record<string, number> | null;
 
