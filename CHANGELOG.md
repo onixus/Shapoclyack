@@ -11,6 +11,9 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   (`tests/test_nats_live.py`, CI starts `nats:2.10.24` with JetStream)
 - **Phase 3 ClickHouse compose auto-wire** — `docker-compose.clickhouse.yml` sets
   `OCTO_CLICKHOUSE_URL` + health wait for the NATS→CH ingest worker
+- **Phase 3 risk scoring (mvp-1)** — ClickHouse vuln rows fill `epss_score`,
+  `asset_criticality`, `exploit_active`, `cisa_decision`, `contextual_score` via
+  `api/services/risk_scoring.py` (optional EPSS/KEV JSON overlays; prefers CVSS4)
 - **Phase 6 aio Web UI v2** — `web-next` static export (`output: "export"`) is built into
   `Dockerfile.allinone` / `Dockerfile.api` (`out/` → `/app/web/dist`); FastAPI serves
   `/_next` and directory `index.html` routes; run detail at `/runs/view?runId=`

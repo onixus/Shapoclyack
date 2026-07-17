@@ -12,9 +12,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from api.services.risk_scoring import get_scorer
+
 LOG = logging.getLogger("octo-man.ch-transform")
 
-SCORING_MODEL_VERSION = "mvp-0"
 TENANT_UUID_NS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # URL namespace
 
 
@@ -95,6 +96,7 @@ def vulnerabilities_to_rows(
     if not isinstance(vulns, list):
         return []
 
+    scorer = get_scorer()
     rows: list[list[Any]] = []
     for item in vulns:
         if not isinstance(item, dict):
@@ -103,23 +105,19 @@ def vulnerabilities_to_rows(
         if not host or not _is_ipv4(host):
             continue
         cve = item.get("cve") or item.get("script_id") or ""
-        cvss = item.get("cvss")
-        try:
-            base_cvss = float(cvss) if cvss is not None else 0.0
-        except (TypeError, ValueError):
-            base_cvss = 0.0
+        scored = scorer.score_vulnerability(item)
         rows.append(
             [
                 tenant_uuid,
                 host,
                 str(cve),
-                float(base_cvss),
-                0.0,  # epss_score
-                0,  # asset_criticality
-                0,  # exploit_active
-                "Track",  # cisa_decision
-                0.0,  # contextual_score
-                SCORING_MODEL_VERSION,
+                float(scored["base_cvss"]),
+                float(scored["epss_score"]),
+                int(scored["asset_criticality"]),
+                int(scored["exploit_active"]),
+                str(scored["cisa_decision"]),
+                float(scored["contextual_score"]),
+                str(scored["scoring_model_version"]),
                 ts,
             ]
         )
