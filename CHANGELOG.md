@@ -6,8 +6,13 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
-- **Phase 6 run detail** — `web-next` `/runs/[runId]` with hosts / ports / severity
+- **Phase 6 aio Web UI v2** — `web-next` static export (`output: "export"`) is built into
+  `Dockerfile.allinone` / `Dockerfile.api` (`out/` → `/app/web/dist`); FastAPI serves
+  `/_next` and directory `index.html` routes; run detail at `/runs/view?runId=`
+- **Phase 6 run detail** — `web-next` `/runs/view?runId=` with hosts / ports / severity
   findings + diff counts; Runs table links into detail
+- **Phase 6 live Dashboard / Assets** — KPIs and inventory from latest run API
+  (`runs` / `hosts` / `ports` / `vulnerabilities`)
 - **Phase 6.4 (Web UI v2 API wire)** — `web-next` JWT login + AuthGate; live
   React Query pages for Runs / Agents / Jobs / Tenants (create + provisioning key);
   Axios client helpers; `/api` rewrite proxy for local Next dev

@@ -28,7 +28,7 @@ export default function LoginPage() {
     <div className="login-hero">
       <div className="login-atmosphere" aria-hidden />
       <section className="login-panel">
-        <p className="brand-name hero-brand">Octo-man</p>
+        <p className="brand-name hero-brand">Shapoclyack</p>
         <h1>Network reconnaissance, under control.</h1>
         <p className="lede">
           Sign in to review scan runs, vulnerability findings, and operator jobs.

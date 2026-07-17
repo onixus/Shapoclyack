@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -21,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { fetchJobs, startScan, type JobInfo } from "@/lib/api";
+import { runDetailHref } from "@/lib/run-data";
 import { useAuthStore } from "@/lib/auth-store";
 
 function jobBadge(status: JobInfo["status"]) {
@@ -78,9 +80,18 @@ export default function JobsPage() {
       {
         accessorKey: "run_id",
         header: "Run",
-        cell: ({ getValue }) => {
-          const value = getValue();
-          return value ? <code className="text-xs">{String(value)}</code> : "—";
+        cell: ({ row }) => {
+          const runId = row.original.run_id;
+          if (!runId) return "—";
+          return (
+            <Link
+              href={runDetailHref(runId)}
+              className="font-medium text-sky-700 underline-offset-2 hover:underline"
+              title="Open run report"
+            >
+              <code className="text-xs">{runId}</code>
+            </Link>
+          );
         },
       },
       {

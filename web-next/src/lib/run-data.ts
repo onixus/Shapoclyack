@@ -5,6 +5,11 @@ import type {
   Vulnerability,
 } from "@/lib/api";
 
+/** Static-export friendly run detail URL (no dynamic [runId] segment). */
+export function runDetailHref(runId: string): string {
+  return `/runs/view?runId=${encodeURIComponent(runId)}`;
+}
+
 export const SEVERITIES = ["critical", "high", "medium", "low", "unknown"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 

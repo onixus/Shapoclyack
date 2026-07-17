@@ -15,7 +15,7 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Octo-man Web UI v2",
+  title: "Shapoclyack",
   description: "MSSP and Enterprise Vulnerability Management dashboard",
 };
 

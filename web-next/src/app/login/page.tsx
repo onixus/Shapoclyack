@@ -46,7 +46,7 @@ export default function LoginPage() {
       />
       <section className="relative z-10 w-full max-w-md space-y-6 rounded-xl border border-slate-800 bg-slate-900/80 p-8 text-slate-100 shadow-2xl backdrop-blur">
         <div className="space-y-2">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-400">Octo-man</p>
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-400">Shapoclyack</p>
           <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
           <p className="text-sm text-slate-400">
             Review scan runs, agents, jobs, and MSSP tenants against the live API.

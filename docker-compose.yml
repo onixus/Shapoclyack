@@ -1,4 +1,4 @@
-# Shapoclyack all-in-one (Octo-man product: API + Web UI + scanner tools).
+# Shapoclyack all-in-one (Octo-man product: API + Web UI v2 + scanner tools).
 # Web UI job start is enabled by default (OCTO_ALLOW_SCAN_START=true).
 #
 #   docker compose up --build

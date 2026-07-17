@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -36,8 +37,17 @@ function severityClass(sev: Severity) {
   return "";
 }
 
-export default function RunDetailPage({ params }: { params: { runId: string } }) {
-  const runId = decodeURIComponent(params.runId);
+export default function RunDetailPage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading run…</p>}>
+      <RunDetailInner />
+    </Suspense>
+  );
+}
+
+function RunDetailInner() {
+  const searchParams = useSearchParams();
+  const runId = (searchParams.get("runId") || "").trim();
   const [activeSeverity, setActiveSeverity] = useState<Severity | "all">("all");
   const [activeHost, setActiveHost] = useState<string | null>(null);
   const [activePort, setActivePort] = useState<string | null>(null);
@@ -45,18 +55,22 @@ export default function RunDetailPage({ params }: { params: { runId: string } })
   const detailQuery = useQuery({
     queryKey: ["run", runId],
     queryFn: () => fetchRun(runId),
+    enabled: Boolean(runId),
   });
   const hostsQuery = useQuery({
     queryKey: ["run", runId, "hosts"],
     queryFn: () => fetchHosts(runId),
+    enabled: Boolean(runId),
   });
   const portsQuery = useQuery({
     queryKey: ["run", runId, "ports"],
     queryFn: () => fetchPorts(runId),
+    enabled: Boolean(runId),
   });
   const vulnsQuery = useQuery({
     queryKey: ["run", runId, "vulns"],
     queryFn: () => fetchVulns(runId, 5000),
+    enabled: Boolean(runId),
   });
 
   const detail = detailQuery.data;
@@ -126,6 +140,20 @@ export default function RunDetailPage({ params }: { params: { runId: string } })
     detailQuery.isLoading || hostsQuery.isLoading || portsQuery.isLoading || vulnsQuery.isLoading;
   const error =
     detailQuery.error || hostsQuery.error || portsQuery.error || vulnsQuery.error;
+
+  if (!runId) {
+    return (
+      <div className="space-y-4">
+        <Button asChild variant="ghost" size="sm" className="gap-2 px-0">
+          <Link href="/runs">
+            <ArrowLeft className="h-4 w-4" />
+            Runs
+          </Link>
+        </Button>
+        <p className="text-sm text-rose-600">Missing runId query parameter.</p>
+      </div>
+    );
+  }
 
   if (error) {
     return (
