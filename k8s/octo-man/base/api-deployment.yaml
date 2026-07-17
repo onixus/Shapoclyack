@@ -46,6 +46,12 @@ spec:
             # nats://octo-man-nats-client:4222
             - name: OCTO_NATS_URL
               value: ""
+            # Empty disables ClickHouse client / ingest worker. Enable with:
+            # http://octo-man-clickhouse-client:8123
+            - name: OCTO_CLICKHOUSE_URL
+              value: ""
+            - name: OCTO_CH_INGEST_ENABLED
+              value: "true"
             - name: OCTO_JWT_SECRET
               valueFrom:
                 secretKeyRef:

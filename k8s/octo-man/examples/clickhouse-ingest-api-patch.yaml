@@ -1,0 +1,17 @@
+# Enable NATS + ClickHouse ingest worker on the API Deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: OCTO_NATS_URL
+              value: nats://octo-man-nats-client:4222
+            - name: OCTO_CLICKHOUSE_URL
+              value: http://octo-man-clickhouse-client:8123
+            - name: OCTO_CH_INGEST_ENABLED
+              value: "true"

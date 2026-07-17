@@ -84,12 +84,15 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Handle 50k+ assets and generate analytical diff-reports.
 
-| ID | Task | Dir / surface | Action |
-|----|------|---------------|--------|
-| 3.1 | ClickHouse deployment | `k8s/octo-man/base/` | StatefulSet with `volumeClaimTemplates` on high-IOPS StorageClass |
-| 3.2 | NATS → ClickHouse consumer | `api/services/` (or new worker) | Consume `ingest.raw_results`, transform, bulk-insert into ClickHouse |
-| 3.3 | Schema setup | ClickHouse DDL | Tables with `ReplacingMergeTree`, keys `(tenant_id, target_ip, port)` for state dedup |
-| 3.4 | Diff-report logic | `scanner/pipeline/report_diff.py` | Refactor to query ClickHouse for historical delta (opened/closed ports, new CVEs) |
+**Status:** **In progress** — CH tables + NATS→ClickHouse ingest worker; FS diffs remain default.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 3.1 | ClickHouse deployment | `k8s/octo-man/base/clickhouse/` | StatefulSet + 50Gi PVC + init SQL | **Done** |
+| 3.2 | NATS → ClickHouse consumer | `api/services/ch_ingest_worker.py` | Durable pull on `ingest.>`, bulk insert vulns + ports | **In progress** |
+| 3.3 | Schema setup | init.sql | `shapoclyack_vulnerabilities` + `shapoclyack_open_ports` (`ReplacingMergeTree`) | **In progress** |
+| 3.4 | Diff-report logic | `api/services/ch_diff.py` | CH query helpers for CVE/port deltas (scanner FS diff unchanged) | **In progress** |
+
 
 ### Phase 4 — Kubernetes Hardening & Auto-scaling
 
@@ -164,4 +167,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1, 2, and 6 are **In progress**. Phases 3–5 remain **Planned**.
+Phases 1–3 and 6 are **In progress**. Phases 4–5 remain **Planned**.

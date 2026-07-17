@@ -15,3 +15,13 @@ CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_vulnerabilities (
     timestamp DateTime
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (tenant_id, asset_ip, cve_id);
+
+CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_open_ports (
+    tenant_id UUID,
+    target_ip IPv4,
+    port UInt16,
+    protocol LowCardinality(String),
+    run_id String,
+    timestamp DateTime
+) ENGINE = ReplacingMergeTree()
+ORDER BY (tenant_id, target_ip, port);

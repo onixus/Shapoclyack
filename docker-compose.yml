@@ -56,6 +56,8 @@ services:
       OCTO_WEB_DIST: web/dist
       # Empty = legacy HTTP agent claim. With profile nats: nats://nats:4222
       OCTO_NATS_URL: ${OCTO_NATS_URL:-}
+      OCTO_CLICKHOUSE_URL: ${OCTO_CLICKHOUSE_URL:-}
+      OCTO_CH_INGEST_ENABLED: ${OCTO_CH_INGEST_ENABLED:-true}
     volumes:
       - ./scanner/inputs:/app/scanner/inputs
       - ./scanner/output:/app/scanner/output
