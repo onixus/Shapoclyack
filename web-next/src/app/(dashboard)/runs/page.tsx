@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -33,7 +34,14 @@ export default function RunsPage() {
       {
         accessorKey: "run_id",
         header: "Run ID",
-        cell: ({ row }) => <code className="text-xs">{row.original.run_id}</code>,
+        cell: ({ row }) => (
+          <Link
+            href={`/runs/${encodeURIComponent(row.original.run_id)}`}
+            className="font-medium text-sky-700 underline-offset-2 hover:underline"
+          >
+            <code className="text-xs">{row.original.run_id}</code>
+          </Link>
+        ),
       },
       {
         accessorKey: "profile",
@@ -136,7 +144,7 @@ export default function RunsPage() {
               </TableRow>
             ) : (
               table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id}>
+                <TableRow key={row.id} className="hover:bg-slate-50">
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}

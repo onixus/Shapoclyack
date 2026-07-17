@@ -40,6 +40,7 @@ Demo users (aio defaults): `viewer` / `operator` / `admin` with `*-change-me` pa
 | `/assets` | Inventory mock (no `/api/assets` yet) |
 | `/agents` | Live `GET /api/agents` (5s poll) |
 | `/jobs` | Live `GET/POST /api/jobs` (operator+) |
-| `/runs` | Live `GET /api/runs` (10s poll) |
+| `/runs` | Live `GET /api/runs` (10s poll); links to detail |
+| `/runs/[runId]` | Live run detail: hosts, ports, severity findings, diff |
 
-See [ROADMAP.md](../ROADMAP.md) Phase 6. Keep `web/` (v1) until full parity (run detail, assets inventory API).
+See [ROADMAP.md](../ROADMAP.md) Phase 6. Keep `web/` (v1) until full parity (assets inventory API, live dashboard KPIs).
