@@ -36,11 +36,92 @@ api.interceptors.response.use(
   (error) => {
     if (error?.response?.status === 401 && typeof window !== "undefined") {
       setAccessToken(null);
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
     }
     return Promise.reject(error);
   },
 );
 
+function apiErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail;
+    if (typeof detail === "string") return detail;
+    if (detail != null) return JSON.stringify(detail);
+    return error.message;
+  }
+  if (error instanceof Error) return error.message;
+  return "Request failed";
+}
+
+export type Role = "viewer" | "operator" | "admin";
+
+export type Me = {
+  username: string;
+  role: Role;
+};
+
+export type RunSummary = {
+  run_id: string;
+  profile: string | null;
+  started_at: string | null;
+  alive_hosts: number | null;
+  open_host_port_pairs: number | null;
+  potential_vulnerabilities: number | null;
+  vulnerable_hosts: number | null;
+  has_diff: boolean;
+  has_summary: boolean;
+};
+
+export type JobInfo = {
+  job_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  run_id: string | null;
+  mode: string;
+  started_at: string | null;
+  finished_at: string | null;
+  exit_code: number | null;
+  error: string | null;
+  requested_by: string;
+  target_counts?: Record<string, number> | null;
+  execution?: "local" | "agent";
+  assigned_agent_id?: string | null;
+  tenant_id?: string | null;
+};
+
+export type AgentInfo = {
+  agent_id: string;
+  hostname: string;
+  version: string;
+  labels: Record<string, string>;
+  status: "idle" | "busy" | "error" | "stale";
+  current_job_id: string | null;
+  detail: string | null;
+  registered_at: string | null;
+  last_seen_at: string | null;
+  online: boolean;
+  tenant_id?: string | null;
+};
+
+export type TenantInfo = {
+  tenant_id: string;
+  name: string;
+  status: "active" | "disabled";
+  created_at: string | null;
+};
+
+export type ProvisioningKeyInfo = {
+  key_id: string;
+  tenant_id: string;
+  label: string;
+  created_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  key?: string | null;
+};
+
+/** Mock-shaped tenant row still used by Assets / Dashboard demos. */
 export type Tenant = {
   id: string;
   name: string;
@@ -59,3 +140,103 @@ export type AssetRow = {
   lastScanned: string;
   diff?: { kind: "port" | "cve"; label: string };
 };
+
+export async function login(username: string, password: string) {
+  try {
+    const { data } = await api.post<{
+      access_token: string;
+      role: Role;
+      username: string;
+    }>("/auth/login", { username, password });
+    setAccessToken(data.access_token);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchMe() {
+  try {
+    const { data } = await api.get<Me>("/auth/me");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchRuns() {
+  try {
+    const { data } = await api.get<RunSummary[]>("/runs");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAgents() {
+  try {
+    const { data } = await api.get<AgentInfo[]>("/agents");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchJobs() {
+  try {
+    const { data } = await api.get<JobInfo[]>("/jobs");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function startScan(body: {
+  mode: string;
+  delta: boolean;
+  skip_nse: boolean;
+  notify: boolean;
+  export_defectdojo?: boolean;
+  ranges?: string;
+  domains?: string;
+  ports?: string;
+  ports_udp?: string;
+  tenant_id?: string;
+}) {
+  try {
+    const { data } = await api.post<JobInfo>("/jobs", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchTenants() {
+  try {
+    const { data } = await api.get<TenantInfo[]>("/tenants");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createTenant(body: { name: string; tenant_id?: string }) {
+  try {
+    const { data } = await api.post<TenantInfo>("/tenants", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createProvisioningKey(tenantId: string, label = "") {
+  try {
+    const { data } = await api.post<ProvisioningKeyInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/provisioning-keys`,
+      { label },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}

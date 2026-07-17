@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   flexRender,
   getCoreRowModel,
@@ -31,28 +32,56 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { MOCK_TENANTS, type Tenant } from "@/lib/mock-data";
+import {
+  createProvisioningKey,
+  createTenant,
+  fetchTenants,
+  type TenantInfo,
+} from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
-function statusBadge(status: Tenant["status"]) {
-  if (status === "active") return <Badge className="bg-emerald-600 hover:bg-emerald-600">active</Badge>;
-  if (status === "paused") return <Badge variant="secondary">paused</Badge>;
-  return <Badge variant="outline">provisioning</Badge>;
-}
-
-function makeProvisioningKey(name: string) {
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "tenant";
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `pk_${slug}_${rand}`;
+function statusBadge(status: TenantInfo["status"]) {
+  if (status === "active") {
+    return <Badge className="bg-emerald-600 hover:bg-emerald-600">active</Badge>;
+  }
+  return <Badge variant="secondary">disabled</Badge>;
 }
 
 export default function TenantsPage() {
-  const [tenants, setTenants] = useState(MOCK_TENANTS);
+  const { user, canOperate } = useAuthStore();
+  const isAdmin = user?.role === "admin";
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
+  const [createdTenantId, setCreatedTenantId] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
-  const columns = useMemo<ColumnDef<Tenant>[]>(
+  const { data = [], isLoading, error, isFetching } = useQuery({
+    queryKey: ["tenants"],
+    queryFn: fetchTenants,
+    enabled: canOperate,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (tenantName: string) => {
+      const tenant = await createTenant({ name: tenantName });
+      const key = await createProvisioningKey(tenant.tenant_id, "web-next");
+      return { tenant, key };
+    },
+    onSuccess: async ({ tenant, key }) => {
+      setCreatedTenantId(tenant.tenant_id);
+      setGeneratedKey(key.key || null);
+      setFormError(null);
+      await queryClient.invalidateQueries({ queryKey: ["tenants"] });
+    },
+    onError: (err) => {
+      setFormError(err instanceof Error ? err.message : "Failed to create tenant");
+    },
+  });
+
+  const columns = useMemo<ColumnDef<TenantInfo>[]>(
     () => [
       {
         accessorKey: "name",
@@ -60,7 +89,7 @@ export default function TenantsPage() {
         cell: ({ row }) => (
           <div>
             <p className="font-medium text-slate-900">{row.original.name}</p>
-            <p className="text-xs text-muted-foreground">{row.original.id}</p>
+            <p className="text-xs text-muted-foreground">{row.original.tenant_id}</p>
           </div>
         ),
       },
@@ -70,45 +99,12 @@ export default function TenantsPage() {
         cell: ({ row }) => statusBadge(row.original.status),
       },
       {
-        accessorKey: "agentCount",
-        header: "Agent Count",
-        cell: ({ getValue }) => <span className="tabular-nums">{String(getValue())}</span>,
-      },
-      {
-        accessorKey: "assetCount",
-        header: "Assets",
-        cell: ({ getValue }) => (
-          <span className="tabular-nums">{Number(getValue()).toLocaleString()}</span>
-        ),
-      },
-      {
-        id: "actions",
-        header: "Actions",
-        cell: ({ row }) => (
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm">
-              View
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() =>
-                setTenants((prev) =>
-                  prev.map((t) =>
-                    t.id === row.original.id
-                      ? {
-                          ...t,
-                          status: t.status === "paused" ? "active" : "paused",
-                        }
-                      : t,
-                  ),
-                )
-              }
-            >
-              {row.original.status === "paused" ? "Resume" : "Pause"}
-            </Button>
-          </div>
-        ),
+        accessorKey: "created_at",
+        header: "Created",
+        cell: ({ row }) =>
+          row.original.created_at
+            ? format(new Date(row.original.created_at), "yyyy-MM-dd HH:mm")
+            : "—",
       },
     ],
     [],
@@ -116,11 +112,12 @@ export default function TenantsPage() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return tenants;
-    return tenants.filter(
-      (t) => t.name.toLowerCase().includes(q) || t.id.toLowerCase().includes(q),
+    if (!q) return data;
+    return data.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) || t.tenant_id.toLowerCase().includes(q),
     );
-  }, [tenants, query]);
+  }, [data, query]);
 
   const table = useReactTable({
     data: filtered,
@@ -130,21 +127,15 @@ export default function TenantsPage() {
     getPaginationRowModel: getPaginationRowModel(),
   });
 
-  function createTenant() {
-    const key = makeProvisioningKey(name);
-    const id = `ten_${Date.now().toString(36)}`;
-    setTenants((prev) => [
-      {
-        id,
-        name: name.trim() || "Untitled tenant",
-        status: "provisioning",
-        agentCount: 0,
-        assetCount: 0,
-        createdAt: new Date().toISOString(),
-      },
-      ...prev,
-    ]);
-    setGeneratedKey(key);
+  if (!canOperate) {
+    return (
+      <div className="space-y-2">
+        <h1 className="text-2xl font-semibold tracking-tight">Tenants</h1>
+        <p className="text-sm text-muted-foreground">
+          Operator or admin role required to list tenants.
+        </p>
+      </div>
+    );
   }
 
   return (
@@ -153,73 +144,86 @@ export default function TenantsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Tenants</h1>
           <p className="text-sm text-muted-foreground">
-            MSSP isolation units and provisioning keys (Phase 2 roadmap).
+            Live MSSP tenants from <code className="text-xs">GET /api/tenants</code>
+            {isFetching ? " · refreshing…" : ""}
           </p>
         </div>
-        <Dialog
-          open={open}
-          onOpenChange={(next) => {
-            setOpen(next);
-            if (!next) {
-              setName("");
-              setGeneratedKey(null);
-            }
-          }}
-        >
-          <DialogTrigger asChild>
-            <Button className="gap-2">
-              <Plus className="h-4 w-4" />
-              Create New Tenant
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create New Tenant</DialogTitle>
-              <DialogDescription>
-                Creates a tenant record and generates a one-time Provisioning Key for agent
-                enrollment.
-              </DialogDescription>
-            </DialogHeader>
-            {!generatedKey ? (
-              <div className="space-y-3 py-2">
-                <label className="grid gap-2 text-sm font-medium">
-                  Tenant name
-                  <Input
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder="e.g. Contoso External Attack Surface"
-                  />
-                </label>
-              </div>
-            ) : (
-              <div className="space-y-3 rounded-md border bg-slate-50 p-3 text-sm">
-                <p className="font-medium text-slate-900">Provisioning Key generated</p>
-                <code className="block break-all rounded bg-white p-2 text-xs">{generatedKey}</code>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="gap-2"
-                  onClick={() => void navigator.clipboard.writeText(generatedKey)}
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                  Copy key
-                </Button>
-              </div>
-            )}
-            <DialogFooter>
+        {isAdmin ? (
+          <Dialog
+            open={open}
+            onOpenChange={(next) => {
+              setOpen(next);
+              if (!next) {
+                setName("");
+                setGeneratedKey(null);
+                setCreatedTenantId(null);
+                setFormError(null);
+              }
+            }}
+          >
+            <DialogTrigger asChild>
+              <Button className="gap-2">
+                <Plus className="h-4 w-4" />
+                Create New Tenant
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create New Tenant</DialogTitle>
+                <DialogDescription>
+                  Creates a tenant via the API and issues a one-time provisioning key.
+                </DialogDescription>
+              </DialogHeader>
               {!generatedKey ? (
-                <Button type="button" onClick={createTenant} disabled={!name.trim()}>
-                  Generate Provisioning Key
-                </Button>
+                <div className="space-y-3 py-2">
+                  <label className="grid gap-2 text-sm font-medium">
+                    Tenant name
+                    <Input
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      placeholder="e.g. Contoso External Attack Surface"
+                    />
+                  </label>
+                  {formError ? <p className="text-sm text-rose-600">{formError}</p> : null}
+                </div>
               ) : (
-                <Button type="button" onClick={() => setOpen(false)}>
-                  Done
-                </Button>
+                <div className="space-y-3 rounded-md border bg-slate-50 p-3 text-sm">
+                  <p className="font-medium text-slate-900">
+                    Provisioning key for <code>{createdTenantId}</code>
+                  </p>
+                  <code className="block break-all rounded bg-white p-2 text-xs">
+                    {generatedKey}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => void navigator.clipboard.writeText(generatedKey)}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    Copy key
+                  </Button>
+                </div>
               )}
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter>
+                {!generatedKey ? (
+                  <Button
+                    type="button"
+                    onClick={() => createMutation.mutate(name.trim())}
+                    disabled={!name.trim() || createMutation.isPending}
+                  >
+                    {createMutation.isPending ? "Creating…" : "Generate Provisioning Key"}
+                  </Button>
+                ) : (
+                  <Button type="button" onClick={() => setOpen(false)}>
+                    Done
+                  </Button>
+                )}
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-3">
@@ -231,6 +235,12 @@ export default function TenantsPage() {
         />
         <p className="text-xs text-muted-foreground">{filtered.length} tenants</p>
       </div>
+
+      {error ? (
+        <p className="text-sm text-rose-600">
+          {error instanceof Error ? error.message : "Failed to load tenants"}
+        </p>
+      ) : null}
 
       <div className="rounded-lg border bg-white">
         <Table>
@@ -248,22 +258,37 @@ export default function TenantsPage() {
             ))}
           </TableHeader>
           <TableBody>
-            {table.getRowModel().rows.map((row) => (
-              <TableRow key={row.id}>
-                {row.getVisibleCells().map((cell) => (
-                  <TableCell key={cell.id}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </TableCell>
-                ))}
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="text-muted-foreground">
+                  Loading tenants…
+                </TableCell>
               </TableRow>
-            ))}
+            ) : table.getRowModel().rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="text-muted-foreground">
+                  No tenants yet.
+                </TableCell>
+              </TableRow>
+            ) : (
+              table.getRowModel().rows.map((row) => (
+                <TableRow key={row.id}>
+                  {row.getVisibleCells().map((cell) => (
+                    <TableCell key={cell.id}>
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
+            )}
           </TableBody>
         </Table>
       </div>
-      <p className="text-xs text-muted-foreground">
-        Created sample:{" "}
-        {format(new Date(tenants[0]?.createdAt || Date.now()), "yyyy-MM-dd HH:mm")} UTC
-      </p>
+      {!isAdmin ? (
+        <p className="text-xs text-muted-foreground">
+          Creating tenants and provisioning keys requires the admin role.
+        </p>
+      ) : null}
     </div>
   );
 }

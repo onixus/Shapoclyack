@@ -122,16 +122,16 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Replace the Vite React dashboard with an MSSP / Enterprise Vulnerability Management UI that scales to 50k+ assets (tenants, agents, jobs, runs, asset inventory).
 
-**Status:** **In progress** — Next.js scaffold, shell, and mock Dashboard / Tenants / Assets pages land in this branch (`web-next/`). Keep `web/` (v1) until feature parity.
+**Status:** **In progress** — shell + mock Dashboard/Assets; live API for Tenants / Agents / Jobs / Runs + JWT login.
 
 **Stack:** Next.js 14 (App Router), TypeScript, Tailwind CSS, Shadcn UI (Slate), Tremor (charts), TanStack Table, Lucide React, React Query, Zustand, Axios, date-fns.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 6.1 | Initialization | `web-next/` | `create-next-app` (TS, Tailwind, ESLint, App Router, `src/`, `@/*`); install React Query / Table / Zustand / Axios / date-fns / Tremor; Shadcn (Default/Slate) + button, card, input, table, dialog, dropdown-menu, tabs, badge | **In progress** |
-| 6.2 | Application shell | `web-next/src/components/layout/Sidebar.tsx`, `web-next/src/app/(dashboard)/layout.tsx` | Responsive sidebar (Dashboard, Tenants, Agents, Jobs, Runs, Assets) + top header (profile / logout) wrapping authenticated pages | **In progress** |
-| 6.3 | Core pages | `web-next/src/app/(dashboard)/…` | Dashboard (Tremor cards / AreaChart / DonutChart + mock KPIs); Tenants table + “Create Tenant” dialog (Provisioning Key); Assets inventory table (50k+ mock) with Diff-badges | **In progress** |
-| 6.4 | API integration | `web-next/src/lib/api.ts`, root layout | Axios + JWT interceptor; React Query provider; wire to live FastAPI | Planned (client stub present) |
+| 6.1 | Initialization | `web-next/` | Next.js 14 + React Query / Table / Zustand / Axios / Tremor / Shadcn | **Done** |
+| 6.2 | Application shell | `Sidebar`, `(dashboard)/layout`, `/login` | Sidebar + header + AuthGate JWT session | **Done** |
+| 6.3 | Core pages | `(dashboard)/…` | Dashboard/Assets mock; Tenants/Agents/Jobs/Runs live tables | **In progress** |
+| 6.4 | API integration | `lib/api.ts`, `lib/auth-store.ts` | Axios JWT + React Query wired to FastAPI runs/agents/jobs/tenants | **Done** |
 
 #### Bootstrap notes (Phase 6.1 → 6.2 first)
 
