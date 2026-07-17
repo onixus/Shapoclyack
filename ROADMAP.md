@@ -122,7 +122,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Replace the Vite React dashboard with an MSSP / Enterprise Vulnerability Management UI that scales to 50k+ assets (tenants, agents, jobs, runs, asset inventory).
 
-**Status:** **In progress** — shell + mock Dashboard/Assets; live API for Tenants / Agents / Jobs / Runs + JWT login.
+**Status:** **In progress** — live Tenants/Agents/Jobs/Runs + run detail; Dashboard/Assets still mock.
 
 **Stack:** Next.js 14 (App Router), TypeScript, Tailwind CSS, Shadcn UI (Slate), Tremor (charts), TanStack Table, Lucide React, React Query, Zustand, Axios, date-fns.
 
@@ -130,8 +130,8 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 |----|------|---------------|--------|--------|
 | 6.1 | Initialization | `web-next/` | Next.js 14 + React Query / Table / Zustand / Axios / Tremor / Shadcn | **Done** |
 | 6.2 | Application shell | `Sidebar`, `(dashboard)/layout`, `/login` | Sidebar + header + AuthGate JWT session | **Done** |
-| 6.3 | Core pages | `(dashboard)/…` | Dashboard/Assets mock; Tenants/Agents/Jobs/Runs live tables | **In progress** |
-| 6.4 | API integration | `lib/api.ts`, `lib/auth-store.ts` | Axios JWT + React Query wired to FastAPI runs/agents/jobs/tenants | **Done** |
+| 6.3 | Core pages | `(dashboard)/…` | Dashboard/Assets mock; Tenants/Agents/Jobs/Runs + `/runs/[runId]` detail | **In progress** |
+| 6.4 | API integration | `lib/api.ts`, `lib/auth-store.ts` | Axios JWT + React Query; run hosts/ports/vulns clients | **Done** |
 
 #### Bootstrap notes (Phase 6.1 → 6.2 first)
 

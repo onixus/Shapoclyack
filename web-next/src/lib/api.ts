@@ -74,6 +74,47 @@ export type RunSummary = {
   has_summary: boolean;
 };
 
+export type RunDetail = {
+  run_id: string;
+  meta: Record<string, unknown>;
+  summary: Record<string, unknown> | null;
+  diff: Record<string, unknown> | null;
+  artifacts: string[];
+};
+
+export type Vulnerability = {
+  host: string | null;
+  port: string | null;
+  cve: string | null;
+  cvss: number | null;
+  cvss4: number | null;
+  cvss4_vector: string | null;
+  cvss4_severity: string | null;
+  severity: string | null;
+  script_id: string | null;
+  country: string | null;
+  city: string | null;
+  country_iso: string | null;
+};
+
+export type AliveHost = {
+  host: string;
+  hostname: string | null;
+  names: string[];
+  country: string | null;
+  city: string | null;
+  country_iso: string | null;
+  vulnerability_count: number;
+};
+
+export type PortAggregate = {
+  port: string;
+  protocol: string | null;
+  host_count: number;
+  vulnerability_count: number;
+  hosts: string[];
+};
+
 export type JobInfo = {
   job_id: string;
   status: "queued" | "running" | "succeeded" | "failed";
@@ -167,6 +208,51 @@ export async function fetchMe() {
 export async function fetchRuns() {
   try {
     const { data } = await api.get<RunSummary[]>("/runs");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchRun(runId: string) {
+  try {
+    const { data } = await api.get<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchVulns(runId: string, limit = 5000, host?: string | null, port?: string | null) {
+  try {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (host) params.set("host", host);
+    if (port) params.set("port", port);
+    const { data } = await api.get<Vulnerability[]>(
+      `/runs/${encodeURIComponent(runId)}/vulnerabilities?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchHosts(runId: string, limit = 10000) {
+  try {
+    const { data } = await api.get<AliveHost[]>(
+      `/runs/${encodeURIComponent(runId)}/hosts?limit=${limit}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchPorts(runId: string, limit = 10000) {
+  try {
+    const { data } = await api.get<PortAggregate[]>(
+      `/runs/${encodeURIComponent(runId)}/ports?limit=${limit}`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
