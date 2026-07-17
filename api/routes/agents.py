@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 
-from api.auth import Role, TokenUser, get_settings, require_agent, require_role
+from api.auth import AgentPrincipal, Role, TokenUser, get_settings, require_agent, require_role
 from api.schemas import (
     AgentClaimResponse,
     AgentHeartbeatRequest,
@@ -24,20 +24,24 @@ router = APIRouter(tags=["agents"])
 @router.post("/agent/register", response_model=AgentInfo)
 def register_agent(
     body: AgentRegisterRequest,
-    _: Annotated[str, Depends(require_agent)],
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
 ) -> AgentInfo:
-    return agents_service.register_agent(
-        agent_id=body.agent_id,
-        hostname=body.hostname,
-        version=body.version,
-        labels=body.labels,
-    )
+    try:
+        return agents_service.register_agent(
+            agent_id=body.agent_id,
+            hostname=body.hostname,
+            version=body.version,
+            labels=body.labels,
+            tenant_id=principal.tenant_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 @router.post("/agent/heartbeat", response_model=AgentInfo)
 def heartbeat(
     body: AgentHeartbeatRequest,
-    _: Annotated[str, Depends(require_agent)],
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
 ) -> AgentInfo:
     info = agents_service.heartbeat(
         body.agent_id,
@@ -47,6 +51,8 @@ def heartbeat(
     )
     if info is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if info.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
     return info
 
 
@@ -57,12 +63,22 @@ def heartbeat(
 )
 def claim_job(
     agent_id: str,
-    _: Annotated[str, Depends(require_agent)],
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
     job_id: str | None = None,
 ) -> AgentClaimResponse | Response:
+    agent = agents_service.get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id; register first")
+    if agent.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
     try:
-        claimed = jobs_service.claim_job(settings, agent_id, job_id=job_id)
+        claimed = jobs_service.claim_job(
+            settings,
+            agent_id,
+            job_id=job_id,
+            tenant_id=principal.tenant_id,
+        )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if claimed is None:
@@ -73,7 +89,7 @@ def claim_job(
 @router.post("/agent/jobs/{job_id}/results", response_model=JobInfo)
 async def upload_results(
     job_id: str,
-    _: Annotated[str, Depends(require_agent)],
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
     agent_id: Annotated[str, Form()],
     exit_code: Annotated[int, Form()] = 0,
@@ -81,6 +97,11 @@ async def upload_results(
     run_id: Annotated[str | None, Form()] = None,
     archive: UploadFile | None = File(None),
 ) -> JobInfo:
+    agent = agents_service.get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id")
+    if agent.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
     archive_bytes: bytes | None = None
     if archive is not None:
         archive_bytes = await archive.read()
@@ -95,6 +116,7 @@ async def upload_results(
             error=error,
             run_id=run_id,
             archive_bytes=archive_bytes,
+            tenant_id=principal.tenant_id,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

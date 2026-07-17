@@ -39,6 +39,26 @@ class AgentClient:
         self.token = token
         self.timeout = timeout
 
+    def set_token(self, token: str) -> None:
+        self.token = token
+
+    def exchange_provisioning_key(self, provisioning_key: str) -> dict[str, Any]:
+        """POST /api/auth/agent/token — no bearer required."""
+        url = f"{self.base_url}/api/auth/agent/token"
+        body = json.dumps({"provisioning_key": provisioning_key}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"POST /api/auth/agent/token -> {exc.code}: {detail}") from exc
+
     def _request(
         self,
         method: str,
@@ -337,7 +357,19 @@ def _pull_nats_job(
 
 
 def run_loop(args: argparse.Namespace) -> int:
-    client = AgentClient(args.api_url, args.token, timeout=args.timeout)
+    client = AgentClient(args.api_url, args.token or "pending", timeout=args.timeout)
+    if args.provisioning_key:
+        exchanged = client.exchange_provisioning_key(args.provisioning_key)
+        client.set_token(str(exchanged["access_token"]))
+        LOG.info(
+            "Exchanged provisioning key for agent JWT (tenant=%s expires_in=%ss)",
+            exchanged.get("tenant_id"),
+            exchanged.get("expires_in"),
+        )
+    elif not args.token:
+        LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
+        return 2
+
     labels = {}
     if args.label:
         for item in args.label:
@@ -351,12 +383,26 @@ def run_loop(args: argparse.Namespace) -> int:
         labels=labels,
     )
     agent_id = str(info["agent_id"])
-    LOG.info("Registered agent %s (%s)", agent_id, info.get("hostname"))
+    LOG.info(
+        "Registered agent %s (%s) tenant=%s",
+        agent_id,
+        info.get("hostname"),
+        info.get("tenant_id"),
+    )
     if args.nats_url:
         LOG.info("NATS pull enabled (%s) subject=%s", args.nats_url, SUBJECT_JOBS_SCAN)
 
+    token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))
+
     while True:
         try:
+            if args.provisioning_key and time.time() >= token_refresh_at:
+                exchanged = client.exchange_provisioning_key(args.provisioning_key)
+                client.set_token(str(exchanged["access_token"]))
+                expires = int(exchanged.get("expires_in") or 3600)
+                token_refresh_at = time.time() + max(60, expires // 2)
+                LOG.info("Refreshed agent JWT (tenant=%s)", exchanged.get("tenant_id"))
+
             client.heartbeat(agent_id, status="idle")
             job: dict[str, Any] | None = None
             if args.nats_url:
@@ -399,7 +445,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--token",
         default=os.environ.get("OCTO_AGENT_TOKEN", ""),
-        help="Shared agent bearer token (or OCTO_AGENT_TOKEN)",
+        help="Legacy shared agent bearer token (or OCTO_AGENT_TOKEN)",
+    )
+    parser.add_argument(
+        "--provisioning-key",
+        default=os.environ.get("OCTO_AGENT_PROVISIONING_KEY", ""),
+        help="Phase 2 provisioning key (exchanged for agent JWT); or OCTO_AGENT_PROVISIONING_KEY",
+    )
+    parser.add_argument(
+        "--jwt-refresh-seconds",
+        type=int,
+        default=int(os.environ.get("OCTO_AGENT_JWT_REFRESH_SECONDS", "0")),
+        help="Override JWT refresh interval when using provisioning key (0 = half of expires_in)",
     )
     parser.add_argument(
         "--config",
@@ -440,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    if not args.token:
-        LOG.error("OCTO_AGENT_TOKEN / --token is required")
+    if not args.token and not args.provisioning_key:
+        LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
     return run_loop(args)

@@ -160,16 +160,21 @@ class NatsBus:
         payload: dict[str, Any],
         *,
         msg_id: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> bool:
         """Publish JSON; returns False if bus offline. msg_id enables JetStream dedupe."""
 
         async def _pub() -> None:
             assert self._js is not None
-            headers = {"Nats-Msg-Id": msg_id} if msg_id else None
+            hdrs: dict[str, str] = {}
+            if msg_id:
+                hdrs["Nats-Msg-Id"] = msg_id
+            if headers:
+                hdrs.update(headers)
             await self._js.publish(
                 subject,
                 json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-                headers=headers,
+                headers=hdrs or None,
             )
 
         try:
@@ -182,10 +187,14 @@ class NatsBus:
     def publish_job_offer(self, payload: dict[str, Any]) -> bool:
         job_id = str(payload.get("job_id") or "")
         msg_id = f"job-{job_id}" if job_id else None
-        return self.publish_json(SUBJECT_JOBS_SCAN, payload, msg_id=msg_id)
+        tenant_id = str(payload.get("tenant_id") or "")
+        extra = {"tenant_id": tenant_id} if tenant_id else None
+        return self.publish_json(SUBJECT_JOBS_SCAN, payload, msg_id=msg_id, headers=extra)
 
     def publish_ingest(self, payload: dict[str, Any], *, msg_id: str) -> bool:
-        return self.publish_json(SUBJECT_INGEST_RAW, payload, msg_id=msg_id)
+        tenant_id = str(payload.get("tenant_id") or "")
+        extra = {"tenant_id": tenant_id} if tenant_id else None
+        return self.publish_json(SUBJECT_INGEST_RAW, payload, msg_id=msg_id, headers=extra)
 
 
 _BUS: NatsBus | None = None

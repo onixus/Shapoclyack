@@ -71,12 +71,14 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Secure agent communication and enforce strict tenant isolation.
 
-| ID | Task | Dir / surface | Action |
-|----|------|---------------|--------|
-| 2.1 | Provisioning | `api/routes/auth.py`, `api/services/auth.py` | Endpoints to generate static Provisioning Keys tied to `tenant_id` |
-| 2.2 | JWT exchange | `api/routes/auth.py` | Agents exchange Provisioning Key for a short-lived JWT (`tenant_id` in claims) |
-| 2.3 | Gateway JWT validation | `api/services/results_ingest.py` | Enforce JWT before NATS publish; append `tenant_id` to NATS message headers |
-| 2.4 | Kubernetes hardening | `k8s/octo-man/base/` | `NetworkPolicy` (agent egress only to API Gateway / Caddy Ingress); ExternalSecrets or `api-secrets.example.yaml` for keys via env (no plaintext keys in manifests) |
+**Status:** **In progress** — JSON-backed tenants/provisioning keys + agent JWT; legacy `OCTO_AGENT_TOKEN` still maps to `tenant_id=default`.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 2.1 | Provisioning | `api/services/tenants.py`, `api/routes/auth.py` | Create tenants + provisioning keys (hashed); plaintext returned once | **In progress** |
+| 2.2 | JWT exchange | `POST /api/auth/agent/token`, `api/services/auth.py`, `agent/worker.py` | Exchange key → short-lived agent JWT (`typ=agent`, `tenant_id`) | **In progress** |
+| 2.3 | Gateway JWT validation | `require_agent`, jobs/ingest NATS publish | Enforce agent JWT + tenant match before claim/complete/NATS; `tenant_id` header on messages | **In progress** |
+| 2.4 | Kubernetes hardening | `k8s/octo-man/examples/networkpolicy-*.yaml`, `externalsecret.example.yaml` | Agent egress NetworkPolicy; ExternalSecrets example for keys via env | **In progress** |
 
 ### Phase 3 — ClickHouse Analytics Engine
 
@@ -162,4 +164,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1 and 6 are **In progress**. Phases 2–5 remain **Planned**.
+Phases 1, 2, and 6 are **In progress**. Phases 3–5 remain **Planned**.

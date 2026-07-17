@@ -14,10 +14,12 @@ from api.routes import runs as runs_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
 from api.services import jobs as jobs_service
+from api.services import tenants as tenants_service
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    tenants_service.load_tenants(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
 

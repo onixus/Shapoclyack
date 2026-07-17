@@ -55,7 +55,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`); severity dashboard; click Alive hosts / Open ports to explore and filter findings.
 - **All-in-one** (`shapoclyack-aio` / `docker compose`): Web UI starts local scans by default.
 - **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man` (includes optional NATS JetStream StatefulSet; enable with `OCTO_NATS_URL`).
-- **Remote agents**: HTTP claim/upload by default; set `OCTO_NATS_URL` for JetStream job pull (`jobs.scan`) + ingest publish (`ingest.raw_results`).
+- **Remote agents**: HTTP claim/upload by default; set `OCTO_NATS_URL` for JetStream job pull (`jobs.scan`) + ingest publish (`ingest.raw_results`). Prefer `OCTO_AGENT_PROVISIONING_KEY` (Phase 2 JWT) over legacy `OCTO_AGENT_TOKEN`.
+- **MSSP tenancy (Phase 2)**: `POST /api/tenants` + provisioning keys; agents call `POST /api/auth/agent/token` for a short-lived JWT with `tenant_id`.
 
 ## Project Layout
 

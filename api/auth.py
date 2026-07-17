@@ -16,6 +16,10 @@ from api.settings import Settings, load_settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 
+# Legacy shared-token agents map to this tenant until they migrate to provisioning keys.
+LEGACY_AGENT_TENANT_ID = "default"
+AGENT_TOKEN_TYP = "agent"
+
 
 class Role(str, Enum):
     viewer = "viewer"
@@ -33,6 +37,15 @@ ROLE_RANK = {
 class TokenUser(BaseModel):
     username: str
     role: Role
+
+
+class AgentPrincipal(BaseModel):
+    """Authenticated remote agent (JWT provisioning exchange or legacy shared token)."""
+
+    tenant_id: str
+    key_id: str | None = None
+    subject: str = "agent"
+    auth_mode: str = "jwt"  # jwt | legacy
 
 
 class LoginRequest(BaseModel):
@@ -86,6 +99,7 @@ def create_access_token(settings: Settings, user: TokenUser) -> str:
     payload = {
         "sub": user.username,
         "role": user.role.value,
+        "typ": "user",
         "exp": expire,
         "iat": datetime.now(UTC),
     }
@@ -100,6 +114,11 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         ) from exc
+    if payload.get("typ") == AGENT_TOKEN_TYP:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent token cannot be used for operator APIs",
+        )
     username = payload.get("sub")
     role_raw = payload.get("role")
     if not username or not role_raw:
@@ -109,6 +128,33 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid role") from exc
     return TokenUser(username=str(username), role=role)
+
+
+def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except jwt.PyJWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired agent token",
+        ) from exc
+    if payload.get("typ") != AGENT_TOKEN_TYP:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not an agent token",
+        )
+    tenant_id = payload.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent token missing tenant_id",
+        )
+    return AgentPrincipal(
+        tenant_id=str(tenant_id),
+        key_id=str(payload["key_id"]) if payload.get("key_id") else None,
+        subject=str(payload.get("sub") or "agent"),
+        auth_mode="jwt",
+    )
 
 
 def get_settings() -> Settings:
@@ -139,17 +185,36 @@ def require_role(minimum: Role):
 def require_agent(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> str:
-    """Authenticate a remote scanner agent via shared OCTO_AGENT_TOKEN."""
-    if not settings.agent_token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Agent API disabled (OCTO_AGENT_TOKEN not set)",
-        )
+) -> AgentPrincipal:
+    """Authenticate remote agent via agent JWT, or legacy OCTO_AGENT_TOKEN."""
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    provided = credentials.credentials.encode("utf-8")
-    expected = settings.agent_token.encode("utf-8")
-    if not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent token")
-    return "agent"
+    token = credentials.credentials
+
+    # Prefer agent JWT (typ=agent). Fall back to shared static token for labs.
+    try:
+        unverified = jwt.decode(
+            token,
+            options={"verify_signature": False, "verify_exp": False},
+            algorithms=[settings.jwt_algorithm],
+        )
+    except jwt.PyJWTError:
+        unverified = {}
+
+    if unverified.get("typ") == AGENT_TOKEN_TYP:
+        return decode_agent_token(settings, token)
+
+    if settings.agent_token:
+        provided = token.encode("utf-8")
+        expected = settings.agent_token.encode("utf-8")
+        if hmac.compare_digest(provided, expected):
+            return AgentPrincipal(
+                tenant_id=LEGACY_AGENT_TENANT_ID,
+                key_id=None,
+                subject="agent",
+                auth_mode="legacy",
+            )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid agent token (use provisioning-key JWT or OCTO_AGENT_TOKEN)",
+    )
