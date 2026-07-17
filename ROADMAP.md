@@ -84,7 +84,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Handle 50k+ assets and generate analytical diff-reports.
 
-**Status:** **In progress** — CH tables + NATS→ClickHouse ingest worker; FS diffs remain default.
+**Status:** **In progress** — CH tables + NATS→ClickHouse ingest worker; compose auto-wire; FS diffs remain default.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
