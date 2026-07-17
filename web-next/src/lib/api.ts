@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const TOKEN_KEY = "octo_man_access_token";
+const TOKEN_KEY = "shapoclyack_access_token";
 
 export function getAccessToken(): string | null {
   if (typeof window === "undefined") return null;

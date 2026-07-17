@@ -33,7 +33,7 @@ export function Sidebar() {
     <>
       <div className="flex items-center justify-between border-b bg-white px-4 py-3 lg:hidden">
         <div>
-          <p className="text-sm font-semibold tracking-tight">Octo-man</p>
+          <p className="text-sm font-semibold tracking-tight">Shapoclyack</p>
           <p className="text-xs text-muted-foreground">Web UI v2</p>
         </div>
         <Button
@@ -55,7 +55,7 @@ export function Sidebar() {
       >
         <div className="flex h-full flex-col">
           <div className="border-b border-slate-800 px-5 py-5">
-            <p className="text-lg font-semibold tracking-tight">Octo-man</p>
+            <p className="text-lg font-semibold tracking-tight">Shapoclyack</p>
             <p className="text-xs text-slate-400">MSSP / Enterprise console</p>
           </div>
           <nav className="flex-1 space-y-1 p-3" aria-label="Primary">

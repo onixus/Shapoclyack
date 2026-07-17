@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -21,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { fetchJobs, startScan, type JobInfo } from "@/lib/api";
+import { runDetailHref } from "@/lib/run-data";
 import { useAuthStore } from "@/lib/auth-store";
 
 function jobBadge(status: JobInfo["status"]) {
@@ -39,6 +41,8 @@ export default function JobsPage() {
   const [notify, setNotify] = useState(false);
   const [ranges, setRanges] = useState("");
   const [domains, setDomains] = useState("");
+  const [ports, setPorts] = useState("");
+  const [portsUdp, setPortsUdp] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
   const { data = [], isLoading, error, isFetching } = useQuery({
@@ -78,9 +82,18 @@ export default function JobsPage() {
       {
         accessorKey: "run_id",
         header: "Run",
-        cell: ({ getValue }) => {
-          const value = getValue();
-          return value ? <code className="text-xs">{String(value)}</code> : "—";
+        cell: ({ row }) => {
+          const runId = row.original.run_id;
+          if (!runId) return "—";
+          return (
+            <Link
+              href={runDetailHref(runId)}
+              className="font-medium text-sky-700 underline-offset-2 hover:underline"
+              title="Open run report"
+            >
+              <code className="text-xs">{runId}</code>
+            </Link>
+          );
         },
       },
       {
@@ -131,6 +144,8 @@ export default function JobsPage() {
       notify,
       ranges: ranges.trim() || undefined,
       domains: domains.trim() || undefined,
+      ports: ports.trim() || undefined,
+      ports_udp: portsUdp.trim() || undefined,
     });
   }
 
@@ -200,7 +215,31 @@ export default function JobsPage() {
               spellCheck={false}
             />
           </label>
+          <label className="grid gap-2 text-sm font-medium">
+            TCP ports (optional)
+            <textarea
+              className="min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={ports}
+              onChange={(e) => setPorts(e.target.value)}
+              placeholder={"22,80,443\n8000-8010"}
+              spellCheck={false}
+            />
+          </label>
+          <label className="grid gap-2 text-sm font-medium">
+            UDP ports (optional)
+            <textarea
+              className="min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={portsUdp}
+              onChange={(e) => setPortsUdp(e.target.value)}
+              placeholder={"53,123,161\n500-510"}
+              spellCheck={false}
+            />
+          </label>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Empty fields use server default input files. UDP list applies when{" "}
+          <code>ports.protocol</code> is <code>udp</code> or <code>tcp_udp</code>.
+        </p>
         {formError ? <p className="text-sm text-rose-600">{formError}</p> : null}
         <Button type="submit" disabled={mutation.isPending}>
           {mutation.isPending ? "Starting…" : "Start scan"}

@@ -68,7 +68,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - `scanner/scheduler.py` — optional in-process scheduler (K8s prefers CronJob)
 - `scanner/pipeline/*`
 - `api/` — FastAPI app (`python -m api`)
-- `web/` — React dashboard (Vite); production build served by the API
+- `web-next/` — Web UI v2 (Next.js static export; served by aio/API images)
+- `web/` — legacy React/Vite dashboard (kept for reference)
 - `tests/{e2e,load}/` — CI integration tests
 - `scripts/{smoke.sh,load-test.sh,schedule.sh}` — local helpers
 - `bench/{up,down,run-discovery,run-realistic}.sh` — local discovery benchmark lab
@@ -267,7 +268,7 @@ Local API-only development (no scanner binaries in PATH unless installed):
 
 ```bash
 pip install -r requirements-api.txt
-cd web && npm install && npm run build && cd ..
+cd web-next && npm install && npm run build && cd ..
 OCTO_JWT_SECRET=dev-secret python -m api
 ```
 
@@ -378,7 +379,7 @@ ruff check scanner api tests
 
 - **lint**: `ruff check scanner api tests`
 - **test**: `compileall` + `pytest` on Python 3.11 and 3.12
-- **web**: `npm ci` + production build of the React dashboard
+- **web**: `npm ci` + static export of Web UI v2 (`web-next/`)
 - **kustomize**: `./k8s/scripts/validate-kustomize.sh`
 - **image**: build scanner image, toolchain smoke, e2e scan, light load test via
   `.github/actions/synthetic-load-test` (16 hosts), Trivy gate, SBOM artifact
@@ -491,7 +492,7 @@ Published product images:
 |-------|------------|
 | `ghcr.io/onixus/shapoclyack-aio` | `Dockerfile.allinone` (scanner + API + UI, **default**) |
 | `ghcr.io/onixus/shapoclyack-scanner` | `Dockerfile` (scanner-only) |
-| `ghcr.io/onixus/shapoclyack-api` | `Dockerfile.api` (thin API + dashboard) |
+| `ghcr.io/onixus/shapoclyack-api` | `Dockerfile.api` (thin API + Web UI v2) |
 
 Tagging: tag name as image tag (e.g. `shapoclyack-0.33`), semver patterns when the tag is
 `v*`-shaped, commit `sha-<...>`, and `latest` on tag/release publishes.

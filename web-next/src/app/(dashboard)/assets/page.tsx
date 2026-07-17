@@ -25,7 +25,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { fetchHosts, fetchPorts, fetchRun, fetchRuns, fetchVulns } from "@/lib/api";
-import { buildAssetRows, pickLatestRun, type AssetCriticality, type AssetRow } from "@/lib/run-data";
+import {
+  buildAssetRows,
+  pickLatestRun,
+  runDetailHref,
+  type AssetCriticality,
+  type AssetRow,
+} from "@/lib/run-data";
 
 function criticalityBadge(level: AssetCriticality) {
   const map: Record<AssetCriticality, string> = {
@@ -182,7 +188,7 @@ export default function AssetsPage() {
               {" "}
               (
               <Link
-                href={`/runs/${encodeURIComponent(latest.run_id)}`}
+                href={runDetailHref(latest.run_id)}
                 className="text-sky-700 underline-offset-2 hover:underline"
               >
                 <code className="text-xs">{latest.run_id}</code>

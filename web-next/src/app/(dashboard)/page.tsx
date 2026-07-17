@@ -13,6 +13,7 @@ import {
   countSeverities,
   pickLatestRun,
   recentRunTrend,
+  runDetailHref,
   topVulnerablePorts,
 } from "@/lib/run-data";
 
@@ -72,7 +73,7 @@ export default function DashboardPage() {
                 {" "}
                 (
                 <Link
-                  href={`/runs/${encodeURIComponent(latest.run_id)}`}
+                  href={runDetailHref(latest.run_id)}
                   className="text-sky-700 underline-offset-2 hover:underline"
                 >
                   <code className="text-xs">{latest.run_id}</code>

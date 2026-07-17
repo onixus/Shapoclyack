@@ -10,7 +10,7 @@ export default function Shell() {
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden />
           <div>
-            <p className="brand-name">Octo-man</p>
+            <p className="brand-name">Shapoclyack</p>
             <p className="brand-sub">Scan control surface</p>
           </div>
         </div>

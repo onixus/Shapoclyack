@@ -34,8 +34,8 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | `api/` | FastAPI/Python backend |
 | `agent/` | Remote scanning workers |
 | `scanner/` | Core pipeline (Nmap, CVSS4, GeoIP) |
-| `web/` | React/Vite frontend (**current** dashboard, v1) |
-| `web-next/` | Next.js 14 App Router dashboard (**Web UI v2**, scaffold in progress) |
+| `web/` | React/Vite frontend (**legacy** dashboard, v1) |
+| `web-next/` | Next.js 14 App Router dashboard (**Web UI v2**, served from aio) |
 | `k8s/octo-man/` | Kubernetes deployment manifests |
 
 ---
@@ -122,7 +122,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Replace the Vite React dashboard with an MSSP / Enterprise Vulnerability Management UI that scales to 50k+ assets (tenants, agents, jobs, runs, asset inventory).
 
-**Status:** **In progress** — live Tenants/Agents/Jobs/Runs + run detail; Dashboard/Assets from latest run.
+**Status:** **In progress** — aio/API images serve web-next static export; legacy `web/` retained for reference.
 
 **Stack:** Next.js 14 (App Router), TypeScript, Tailwind CSS, Shadcn UI (Slate), Tremor (charts), TanStack Table, Lucide React, React Query, Zustand, Axios, date-fns.
 
@@ -130,8 +130,9 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 |----|------|---------------|--------|--------|
 | 6.1 | Initialization | `web-next/` | Next.js 14 + React Query / Table / Zustand / Axios / Tremor / Shadcn | **Done** |
 | 6.2 | Application shell | `Sidebar`, `(dashboard)/layout`, `/login` | Sidebar + header + AuthGate JWT session | **Done** |
-| 6.3 | Core pages | `(dashboard)/…` | Dashboard/Assets from latest run; Tenants/Agents/Jobs/Runs + `/runs/[runId]` | **Done** |
+| 6.3 | Core pages | `(dashboard)/…` | Dashboard/Assets from latest run; Tenants/Agents/Jobs/Runs + `/runs/view` | **Done** |
 | 6.4 | API integration | `lib/api.ts`, `lib/auth-store.ts` | Axios JWT + React Query; run hosts/ports/vulns clients | **Done** |
+| 6.5 | Aio static serve | `Dockerfile.allinone`, `api/app.py` | `output: "export"` → `/app/web/dist`; FastAPI mounts `/_next` | **Done** |
 
 #### Bootstrap notes (Phase 6.1 → 6.2 first)
 
@@ -145,8 +146,7 @@ npx shadcn-ui@latest add button card input table dialog dropdown-menu tabs badge
 
 Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining pages.
 
-**Migration note:** Keep `web/` (v1) serving production until `web-next/` reaches feature parity with Runs / Jobs / Agents and tenant-aware views; then switch aio / API static serving to the Next build (or reverse-proxy via Caddy).
-
+**Migration note:** All-in-one and API images serve `web-next` static export (`out/` → `OCTO_WEB_DIST`). Legacy Vite `web/` is kept in-tree until removed in a later cleanup.
 ---
 
 ## Suggested delivery order

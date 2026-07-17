@@ -85,15 +85,30 @@ def create_app() -> FastAPI:
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():
-        assets = web_dist / "assets"
-        if assets.is_dir():
-            app.mount("/assets", StaticFiles(directory=assets), name="assets")
+        next_static = web_dist / "_next"
+        vite_assets = web_dist / "assets"
+        # Next export uses `/_next/*` and also has an `/assets` app route — do not
+        # mount Vite's `/assets` StaticFiles when serving a Next build.
+        if next_static.is_dir():
+            app.mount("/_next", StaticFiles(directory=next_static), name="next_static")
+        elif vite_assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=vite_assets), name="assets")
 
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
-            candidate = web_dist / full_path
-            if full_path and candidate.is_file():
-                return FileResponse(candidate)
+            # Next `output: "export"` emits `runs.html` / `runs/view.html` (and optionally
+            # directory `index.html`). Prefer explicit files before the SPA shell.
+            if full_path:
+                cleaned = full_path.rstrip("/")
+                candidate = web_dist / cleaned
+                if candidate.is_file():
+                    return FileResponse(candidate)
+                html_candidate = web_dist / f"{cleaned}.html"
+                if html_candidate.is_file():
+                    return FileResponse(html_candidate)
+                index_candidate = candidate / "index.html"
+                if index_candidate.is_file():
+                    return FileResponse(index_candidate)
             return FileResponse(web_dist / "index.html")
 
     return app

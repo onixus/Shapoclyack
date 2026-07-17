@@ -20,7 +20,7 @@ type AuthState = {
 };
 
 const AuthContext = createContext<AuthState | null>(null);
-const STORAGE_KEY = "octo_man_token";
+const STORAGE_KEY = "shapoclyack_token";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));

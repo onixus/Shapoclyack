@@ -1,17 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   flexRender,
   getCoreRowModel,
   getPaginationRowModel,
+  getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type SortingState,
 } from "@tanstack/react-table";
 import { format } from "date-fns";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -21,8 +25,19 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { fetchRuns, type RunSummary } from "@/lib/api";
+import { runDetailHref } from "@/lib/run-data";
+
+function SortIcon({ sorted }: { sorted: false | "asc" | "desc" }) {
+  if (sorted === "asc") return <ArrowUp className="h-3.5 w-3.5" aria-hidden />;
+  if (sorted === "desc") return <ArrowDown className="h-3.5 w-3.5" aria-hidden />;
+  return <ArrowUpDown className="h-3.5 w-3.5 opacity-40" aria-hidden />;
+}
 
 export default function RunsPage() {
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: "started_at", desc: true },
+  ]);
+
   const { data = [], isLoading, error, isFetching } = useQuery({
     queryKey: ["runs"],
     queryFn: fetchRuns,
@@ -36,7 +51,7 @@ export default function RunsPage() {
         header: "Run ID",
         cell: ({ row }) => (
           <Link
-            href={`/runs/${encodeURIComponent(row.original.run_id)}`}
+            href={runDetailHref(row.original.run_id)}
             className="font-medium text-sky-700 underline-offset-2 hover:underline"
           >
             <code className="text-xs">{row.original.run_id}</code>
@@ -51,9 +66,10 @@ export default function RunsPage() {
       {
         accessorKey: "started_at",
         header: "Started",
+        sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at
-            ? format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm")
+            ? format(new Date(row.original.started_at), "dd-MM-yyyy HH:mm")
             : "—",
       },
       {
@@ -79,6 +95,7 @@ export default function RunsPage() {
       },
       {
         id: "flags",
+        accessorFn: (row) => `${row.has_diff ? 1 : 0}${row.has_summary ? 1 : 0}`,
         header: "Flags",
         cell: ({ row }) => (
           <div className="flex gap-1">
@@ -94,7 +111,10 @@ export default function RunsPage() {
   const table = useReactTable({
     data,
     columns,
+    state: { sorting },
+    onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
   });
 
@@ -121,9 +141,20 @@ export default function RunsPage() {
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
                   <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
+                    {header.isPlaceholder ? null : header.column.getCanSort() ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="-ml-3 h-8 gap-1 px-2 font-medium"
+                        onClick={header.column.getToggleSortingHandler()}
+                      >
+                        {flexRender(header.column.columnDef.header, header.getContext())}
+                        <SortIcon sorted={header.column.getIsSorted()} />
+                      </Button>
+                    ) : (
+                      flexRender(header.column.columnDef.header, header.getContext())
+                    )}
                   </TableHead>
                 ))}
               </TableRow>
