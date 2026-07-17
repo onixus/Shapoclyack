@@ -1,0 +1,28 @@
+# Example local Maddy SMTP for Phase 5.3 alerts (dev / lab only).
+# Pair with alerts.smtp.enabled + OCTO_SMTP_* (see scanner/config/default.yaml).
+#
+#   docker compose -f docker-compose.yml -f k8s/octo-man/examples/maddy-compose.example.yaml \
+#     --profile maddy up -d maddy
+#
+# Scanner / aio can then use:
+#   OCTO_SMTP_HOST=maddy
+#   OCTO_SMTP_PORT=25
+#   OCTO_SMTP_FROM=alerts@example.test
+#   OCTO_SMTP_TO=ops@example.test
+#
+# Configure real DKIM/PTR in Maddy before setting require_dkim / require_ptr in production.
+services:
+  maddy:
+    profiles: ["maddy"]
+    image: foxcpp/maddy:latest
+    container_name: octo-man-maddy
+    ports:
+      - "2525:25"
+    # Replace with a real maddy.conf ConfigMap/volume for production.
+    # Default image entrypoint expects /data/maddy.conf — mount your own.
+    volumes:
+      - maddy-data:/data
+    restart: unless-stopped
+
+volumes:
+  maddy-data:

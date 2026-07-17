@@ -222,6 +222,11 @@ def test_default_yaml_phase1_sections():
     assert cfg.alerts.min_severity == "high"
     assert cfg.alerts.slack.enabled is False
     assert cfg.alerts.telegram.enabled is False
+    assert cfg.alerts.smtp.enabled is False
+    assert cfg.alerts.smtp.host == "127.0.0.1"
+    assert cfg.discovery.cloudflare.enabled is False
+    assert cfg.discovery.ct.enabled is False
+    assert cfg.discovery.ct.providers == ["crtsh"]
     assert cfg.defectdojo.enabled is False
     assert cfg.defectdojo.product_name == "Octo-man"
     assert cfg.defectdojo.min_severity == "high"

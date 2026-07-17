@@ -98,6 +98,42 @@ class HostnameResolveConfig(BaseModel):
     reverse: bool = True
 
 
+class CloudflareDiscoveryConfig(BaseModel):
+    """Import DNS records from Cloudflare zones (Phase 5.1). Opt-in; token via env preferred."""
+
+    enabled: bool = False
+    # Prefer env OCTO_CLOUDFLARE_API_TOKEN over YAML secrets.
+    api_token: str = ""
+    # Zone names (example.com) and/or zone IDs. Empty = all zones the token can list.
+    zones: list[str] = Field(default_factory=list)
+    include_proxied: bool = True
+    include_unproxied: bool = True
+    # Flag A/AAAA records with proxied=false as potential misconfigurations.
+    flag_unproxied_a: bool = True
+    timeout_seconds: int = Field(default=30, ge=5, le=300)
+
+
+class CertificateTransparencyConfig(BaseModel):
+    """Async CT log subdomain discovery (Phase 5.2). Opt-in."""
+
+    enabled: bool = False
+    # crtsh = crt.sh JSON API; certspotter = Cert Spotter issuances API.
+    providers: list[Literal["crtsh", "certspotter"]] = Field(
+        default_factory=lambda: ["crtsh"]
+    )
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_subdomains: int = Field(default=5000, ge=1, le=100_000)
+    timeout_seconds: int = Field(default=45, ge=5, le=300)
+
+    @field_validator("providers")
+    @classmethod
+    def validate_providers(cls, providers: list[str]) -> list[str]:
+        if not providers:
+            raise ValueError("ct.providers must not be empty when CT is configured")
+        return providers
+
+
 class DeltaDiscoveryConfig(BaseModel):
     enabled: bool = False
     previous_run_dir: str = ""
@@ -122,6 +158,8 @@ class DiscoveryConfig(BaseModel):
     tcp_probe: TcpProbeDiscoveryConfig = Field(default_factory=TcpProbeDiscoveryConfig)
     probe_order: list[ProbeMethod] = Field(default_factory=lambda: list(_DEFAULT_PROBE_ORDER))
     hostnames: HostnameResolveConfig = Field(default_factory=HostnameResolveConfig)
+    cloudflare: CloudflareDiscoveryConfig = Field(default_factory=CloudflareDiscoveryConfig)
+    ct: CertificateTransparencyConfig = Field(default_factory=CertificateTransparencyConfig)
     seed_alive_file: str = ""
     delta: DeltaDiscoveryConfig = Field(default_factory=DeltaDiscoveryConfig)
 
@@ -203,6 +241,28 @@ class TelegramAlertConfig(BaseModel):
     chat_id: str = ""
 
 
+class SmtpAlertConfig(BaseModel):
+    """Outbound SMTP via local Maddy (or any relay). Phase 5.3."""
+
+    enabled: bool = False
+    # Prefer env OCTO_SMTP_HOST / OCTO_SMTP_PORT / OCTO_SMTP_FROM / OCTO_SMTP_TO.
+    host: str = "127.0.0.1"
+    port: int = Field(default=25, ge=1, le=65535)
+    from_addr: str = ""
+    # Comma-separated or list; env OCTO_SMTP_TO overrides as comma-separated.
+    to_addrs: list[str] = Field(default_factory=list)
+    username: str = ""
+    password: str = ""
+    use_starttls: bool = False
+    timeout_seconds: int = Field(default=30, ge=5, le=300)
+    # Deliverability hygiene before send (DKIM TXT + PTR).
+    dkim_selector: str = ""
+    require_dkim: bool = False
+    require_ptr: bool = False
+    # Host/IP whose PTR is checked; empty = SMTP host.
+    ptr_hostname: str = ""
+
+
 class AlertsConfig(BaseModel):
     enabled: bool = False
     min_severity: Literal["critical", "high", "medium", "low", "unknown"] = "high"
@@ -210,6 +270,7 @@ class AlertsConfig(BaseModel):
     on_diff_only: bool = False
     slack: SlackAlertConfig = Field(default_factory=SlackAlertConfig)
     telegram: TelegramAlertConfig = Field(default_factory=TelegramAlertConfig)
+    smtp: SmtpAlertConfig = Field(default_factory=SmtpAlertConfig)
 
 
 class DefectDojoConfig(BaseModel):

@@ -98,7 +98,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Prevent outages during heavy / unpredictable VM scans.
 
-**Status:** **In progress** (this branch).
+**Status:** **Done** (merged).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
@@ -110,11 +110,13 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Autonomous external monitoring.
 
-| ID | Task | Dir / surface | Action |
-|----|------|---------------|--------|
-| 5.1 | Cloudflare integration | `scanner/pipeline/discover.py` | Cloudflare API for DNS zone import and misconfiguration checks (unproxied A-records) |
-| 5.2 | CT logs scanning | `scanner/pipeline/hostnames.py` | Async Certificate Transparency queries for subdomains |
-| 5.3 | SMTP alerts via Maddy | `scanner/pipeline/alerts.py` | Outbound SMTP through local Maddy with DKIM/PTR validation |
+**Status:** **In progress** (this branch).
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 5.1 | Cloudflare integration | `scanner/pipeline/discover.py` | Zone DNS import + unproxied A/AAAA misconfig findings | **Done** |
+| 5.2 | CT logs scanning | `scanner/pipeline/hostnames.py` | Async crt.sh / Cert Spotter subdomain discovery | **Done** |
+| 5.3 | SMTP alerts via Maddy | `scanner/pipeline/alerts.py` | Outbound SMTP + optional DKIM/PTR pre-send checks | **Done** |
 
 ### Phase 6 — Shapoclyack Web UI v2 (`web-next/`)
 
@@ -170,4 +172,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–3, 4, and 6 are **In progress**. Phase 5 remains **Planned**.
+Phases 1–6 are **In progress** / shipped on feature branches; update legend when each merges to `main`.

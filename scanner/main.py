@@ -22,7 +22,13 @@ from scanner.pipeline.discovery_delta import (
     resolve_previous_alive_file,
 )
 from scanner.pipeline.errors import StageFailureError
-from scanner.pipeline.hostnames import enrich_discovery_hostnames
+from scanner.pipeline.discover import import_cloudflare_dns_targets
+from scanner.pipeline.hostnames import (
+    base_domains_from_fqdns,
+    discover_ct_subdomains_sync,
+    enrich_discovery_hostnames,
+    merge_name_lists,
+)
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ports import fast_port_scan
 from scanner.pipeline.alerts import send_alerts
@@ -73,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--notify",
         action="store_true",
-        help="Send Slack/Telegram alerts after reports (requires alerts.* config or env credentials)",
+        help="Send Slack/Telegram/SMTP alerts after reports (requires alerts.* config or env credentials)",
     )
     parser.add_argument(
         "--export-defectdojo",
@@ -193,21 +199,67 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     contract = validate_inputs(Path(args.ranges), Path(args.domains), paths.output_dir)
     checkpoint.mark_done("contract")
-    if not contract.valid_ips_or_cidr and not contract.valid_fqdns:
+    if (
+        not contract.valid_ips_or_cidr
+        and not contract.valid_fqdns
+        and not config.discovery.cloudflare.enabled
+        and not config.discovery.ct.enabled
+    ):
         logging.error("No valid targets after input validation")
         return exit_codes.INPUT_ERROR
+
+    # Phase 5: expand FQDN/IP scope via Cloudflare zone import + CT subdomains (before resolve).
+    scope_fqdns = list(contract.valid_fqdns)
+    scope_ips = list(contract.valid_ips_or_cidr)
+
+    if args.resume and checkpoint.is_done("cloudflare"):
+        cf_result = load_json(
+            paths.output_dir / "cloudflare_dns.json",
+            fallback={"fqdns": [], "ips": []},
+        )
+    else:
+        cf_result = _run_stage(
+            "cloudflare",
+            lambda: import_cloudflare_dns_targets(config.discovery.cloudflare, paths.output_dir),
+        )
+        checkpoint.mark_done("cloudflare")
+    if config.discovery.cloudflare.enabled:
+        scope_fqdns = merge_name_lists(scope_fqdns, cf_result.get("fqdns") or [])
+        scope_ips = sorted(set(scope_ips + list(cf_result.get("ips") or [])))
+
+    if args.resume and checkpoint.is_done("ct"):
+        ct_result = load_json(
+            paths.output_dir / "ct_subdomains.json",
+            fallback={"subdomains": []},
+        )
+    else:
+        ct_domains = config.discovery.ct.domains or base_domains_from_fqdns(scope_fqdns)
+        ct_result = _run_stage(
+            "ct",
+            lambda: discover_ct_subdomains_sync(
+                ct_domains,
+                config.discovery.ct,
+                paths.output_dir,
+            ),
+        )
+        checkpoint.mark_done("ct")
+    if config.discovery.ct.enabled:
+        scope_fqdns = merge_name_lists(scope_fqdns, ct_result.get("subdomains") or [])
 
     if args.resume and checkpoint.is_done("resolve"):
         resolved_ips = read_lines(paths.output_dir / "resolved_ips.txt")
     else:
         resolved_ips = _run_stage(
             "resolve",
-            lambda: resolve_fqdns(contract.valid_fqdns, paths.output_dir, timeout=timeout, retries=retries),
+            lambda: resolve_fqdns(scope_fqdns, paths.output_dir, timeout=timeout, retries=retries),
         )
         checkpoint.mark_done("resolve")
 
-    all_targets = sorted(set(contract.valid_ips_or_cidr + resolved_ips))
+    all_targets = sorted(set(scope_ips + resolved_ips))
     write_lines(paths.output_dir / "all_targets.txt", all_targets)
+    if not all_targets:
+        logging.error("No targets after Cloudflare/CT expansion and DNS resolve")
+        return exit_codes.INPUT_ERROR
 
     batching = config.batching
 
