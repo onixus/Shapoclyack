@@ -259,6 +259,11 @@ docker compose up --build
 # Optional NATS JetStream (auto-wires OCTO_NATS_URL=nats://nats:4222):
 docker compose -f docker-compose.yml -f docker-compose.nats.yml --profile nats up --build
 # expect GET /api/health → "nats": true
+
+# NATS + ClickHouse ingest (also sets OCTO_CLICKHOUSE_URL=http://clickhouse:8123):
+docker compose -f docker-compose.yml -f docker-compose.nats.yml -f docker-compose.clickhouse.yml \
+  --profile nats --profile clickhouse up --build
+# expect GET /api/health → "nats": true, "clickhouse": true, "ch_ingest": {...}
 ```
 
 Image: `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (scanner tools + API + UI).  

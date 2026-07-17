@@ -9,6 +9,8 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 - **Phase 1 NATS harden** — `docker-compose.nats.yml` auto-wires `OCTO_NATS_URL` + NATS
   health wait; agent uses a long-lived JetStream pull session; live broker tests
   (`tests/test_nats_live.py`, CI starts `nats:2.10.24` with JetStream)
+- **Phase 3 ClickHouse compose auto-wire** — `docker-compose.clickhouse.yml` sets
+  `OCTO_CLICKHOUSE_URL` + health wait for the NATS→CH ingest worker
 - **Phase 6 aio Web UI v2** — `web-next` static export (`output: "export"`) is built into
   `Dockerfile.allinone` / `Dockerfile.api` (`out/` → `/app/web/dist`); FastAPI serves
   `/_next` and directory `index.html` routes; run detail at `/runs/view?runId=`
