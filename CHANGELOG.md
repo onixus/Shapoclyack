@@ -6,6 +6,9 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 6.4 (Web UI v2 API wire)** — `web-next` JWT login + AuthGate; live
+  React Query pages for Runs / Agents / Jobs / Tenants (create + provisioning key);
+  Axios client helpers; `/api` rewrite proxy for local Next dev
 - **Phase 5 (advanced discovery & notifications)** —
   - Cloudflare DNS zone import + unproxied A/AAAA misconfig findings
     (`discover.import_cloudflare_dns_targets`, `OCTO_CLOUDFLARE_API_TOKEN`)

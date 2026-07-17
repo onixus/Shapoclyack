@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { LogOut, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,11 +11,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { setAccessToken } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
 export function TopHeader() {
-  function logout() {
-    setAccessToken(null);
+  const router = useRouter();
+  const { user, logout } = useAuthStore();
+
+  function onLogout() {
+    logout();
+    router.replace("/login");
   }
 
   return (
@@ -27,16 +32,16 @@ export function TopHeader() {
         <DropdownMenuTrigger asChild>
           <Button variant="outline" className="gap-2">
             <UserRound className="h-4 w-4" />
-            <span className="hidden sm:inline">operator</span>
+            <span className="hidden sm:inline">{user?.username || "signed out"}</span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
           <DropdownMenuLabel>Signed in</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem className="text-muted-foreground" disabled>
-            Role: operator
+            Role: {user?.role || "—"}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={logout}>
+          <DropdownMenuItem onClick={onLogout}>
             <LogOut className="mr-2 h-4 w-4" />
             Logout
           </DropdownMenuItem>
