@@ -12,6 +12,7 @@ from typing import Any
 
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
+from api.services import nats_bus
 from api.services import results_ingest
 from api.services.targets import parse_target_payload
 from api.settings import Settings
@@ -232,8 +233,50 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
     if execution == "local":
         thread = threading.Thread(target=_run_job, args=(settings, job_id, command), daemon=True)
         thread.start()
+    elif execution == "agent" and settings.nats_url:
+        _publish_job_offer(settings, job_id)
 
     return JobInfo.model_validate(record)
+
+
+def _claim_payload(settings: Settings, job: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    opts = dict(job.get("scan_options") or {})
+    mode = str(job.get("mode") or opts.get("mode") or "balanced")
+    run_id = str(job.get("run_id") or "")
+    return {
+        "job_id": job_id,
+        "run_id": run_id,
+        "mode": mode,
+        "delta": bool(opts.get("delta", False)),
+        "skip_nse": bool(opts.get("skip_nse", False)),
+        "notify": bool(opts.get("notify", False)),
+        "export_defectdojo": bool(opts.get("export_defectdojo", False)),
+        "inputs": _read_job_inputs(settings, job_id),
+    }
+
+
+def _publish_job_offer(settings: Settings, job_id: str) -> None:
+    job = get_job(job_id)
+    if job is None:
+        return
+    with _LOCK:
+        raw = dict(_JOBS.get(job_id) or {})
+    payload = _claim_payload(settings, raw)
+    bus = nats_bus.get_bus(settings.nats_url)
+    if bus is None:
+        logging.getLogger(__name__).warning(
+            "NATS configured but unavailable; job %s stays queued for HTTP claim",
+            job_id,
+        )
+        return
+    if bus.publish_job_offer(payload):
+        logging.getLogger(__name__).info("Published jobs.scan offer for %s", job_id)
+    else:
+        logging.getLogger(__name__).warning(
+            "Failed to publish jobs.scan for %s; HTTP claim still available",
+            job_id,
+        )
 
 
 def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
@@ -248,20 +291,34 @@ def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
     return out
 
 
-def claim_job(settings: Settings, agent_id: str) -> AgentClaimResponse | None:
-    """Assign the oldest queued agent job to ``agent_id``, or return None."""
+def claim_job(settings: Settings, agent_id: str, *, job_id: str | None = None) -> AgentClaimResponse | None:
+    """Assign a queued agent job to ``agent_id``, or return None.
+
+    When ``job_id`` is set (NATS pull path), assign that specific job if still queued.
+    """
     if agents_service.get_agent(agent_id) is None:
         raise LookupError("Unknown agent_id; register first")
 
     with _LOCK:
-        candidates = [
-            job
-            for job in _JOBS.values()
-            if job.get("execution") == "agent"
-            and job.get("status") == "queued"
-            and not job.get("assigned_agent_id")
-        ]
-        candidates.sort(key=lambda item: str(item.get("queued_at") or item.get("job_id")))
+        if job_id:
+            job = _JOBS.get(job_id)
+            if (
+                job is None
+                or job.get("execution") != "agent"
+                or job.get("status") != "queued"
+                or job.get("assigned_agent_id")
+            ):
+                return None
+            candidates = [job]
+        else:
+            candidates = [
+                job
+                for job in _JOBS.values()
+                if job.get("execution") == "agent"
+                and job.get("status") == "queued"
+                and not job.get("assigned_agent_id")
+            ]
+            candidates.sort(key=lambda item: str(item.get("queued_at") or item.get("job_id")))
         if not candidates:
             return None
         job = candidates[0]
@@ -269,25 +326,25 @@ def claim_job(settings: Settings, agent_id: str) -> AgentClaimResponse | None:
         job["assigned_agent_id"] = agent_id
         job["started_at"] = datetime.now(UTC).isoformat()
         _persist(settings)
-        job_id = str(job["job_id"])
+        claimed_id = str(job["job_id"])
         run_id = str(job.get("run_id") or "")
         opts = dict(job.get("scan_options") or {})
         mode = str(job.get("mode") or opts.get("mode") or "balanced")
 
     if not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        _update_job(settings, job_id, run_id=run_id)
+        _update_job(settings, claimed_id, run_id=run_id)
 
-    agents_service.touch_job(agent_id, job_id, status="busy")
+    agents_service.touch_job(agent_id, claimed_id, status="busy")
     return AgentClaimResponse(
-        job_id=job_id,
+        job_id=claimed_id,
         run_id=run_id,
         mode=mode,
         delta=bool(opts.get("delta", False)),
         skip_nse=bool(opts.get("skip_nse", False)),
         notify=bool(opts.get("notify", False)),
         export_defectdojo=bool(opts.get("export_defectdojo", False)),
-        inputs=_read_job_inputs(settings, job_id),
+        inputs=_read_job_inputs(settings, claimed_id),
     )
 
 
@@ -316,6 +373,20 @@ def complete_job(
     if archive_bytes:
         if not resolved_run_id:
             raise ValueError("run_id required when uploading results")
+        # Gateway: validate + publish to ingest.raw_results (idempotent Msg-Id).
+        if settings.nats_url:
+            try:
+                results_ingest.publish_raw_results(
+                    nats_url=settings.nats_url,
+                    job_id=job_id,
+                    run_id=str(resolved_run_id),
+                    agent_id=agent_id,
+                    exit_code=exit_code,
+                    archive_bytes=archive_bytes,
+                    error=error,
+                )
+            except results_ingest.IngestError as exc:
+                raise ValueError(str(exc)) from exc
         dest = settings.output_dir / "runs" / str(resolved_run_id)
         try:
             results_ingest.extract_run_archive(archive_bytes, dest)

@@ -1,8 +1,14 @@
-"""Poll the Octo-man API for agent jobs and run the local scanner."""
+"""Poll the Octo-man API for agent jobs and run the local scanner.
+
+When OCTO_NATS_URL is set, jobs are pulled from JetStream subject ``jobs.scan``
+(durable consumer ``octo-agents``) instead of HTTP claim polling. Register,
+heartbeat, and results upload remain HTTP.
+"""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -21,6 +27,10 @@ from typing import Any
 from agent import __version__
 
 LOG = logging.getLogger("octo-agent")
+
+SUBJECT_JOBS_SCAN = "jobs.scan"
+STREAM_JOBS = "JOBS"
+CONSUMER_AGENTS = "octo-agents"
 
 
 class AgentClient:
@@ -94,8 +104,10 @@ class AgentClient:
             body=json.dumps(payload).encode("utf-8"),
         )
 
-    def claim(self, agent_id: str) -> dict[str, Any] | None:
-        query = urllib.parse.urlencode({"agent_id": agent_id})
+    def claim(self, agent_id: str, *, job_id: str | None = None) -> dict[str, Any] | None:
+        query = urllib.parse.urlencode(
+            {"agent_id": agent_id, **({"job_id": job_id} if job_id else {})}
+        )
         return self._request("POST", f"/api/agent/jobs/claim?{query}")
 
     def upload_results(
@@ -220,6 +232,110 @@ def _run_scan(
     return 0, None, archive_path
 
 
+def _execute_job(
+    client: AgentClient,
+    *,
+    agent_id: str,
+    job: dict[str, Any],
+    config: Path,
+    output_dir: Path,
+) -> None:
+    LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
+    client.heartbeat(agent_id, status="busy", current_job_id=job["job_id"])
+    with tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp:
+        workdir = Path(tmp)
+        exit_code, error, archive = _run_scan(
+            config=config,
+            job=job,
+            workdir=workdir,
+            output_dir=output_dir,
+        )
+        client.upload_results(
+            job["job_id"],
+            agent_id=agent_id,
+            exit_code=exit_code,
+            run_id=str(job["run_id"]),
+            error=error,
+            archive_path=archive,
+        )
+    LOG.info("Job %s finished exit=%s", job["job_id"], exit_code)
+
+
+async def _nats_pull_and_claim(
+    nats_url: str,
+    client: AgentClient,
+    agent_id: str,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any] | None:
+    """Fetch one ``jobs.scan`` offer, HTTP-claim it, then ACK/NAK the JetStream message."""
+    import nats
+    from nats.errors import TimeoutError as NatsTimeout
+    from nats.js.api import AckPolicy, ConsumerConfig
+
+    nc = await nats.connect(nats_url, name="octo-man-agent", connect_timeout=5)
+    try:
+        js = nc.jetstream()
+        try:
+            sub = await js.pull_subscribe(
+                SUBJECT_JOBS_SCAN,
+                durable=CONSUMER_AGENTS,
+                stream=STREAM_JOBS,
+            )
+        except Exception:
+            await js.add_consumer(
+                STREAM_JOBS,
+                ConsumerConfig(
+                    durable_name=CONSUMER_AGENTS,
+                    ack_policy=AckPolicy.EXPLICIT,
+                    filter_subject=SUBJECT_JOBS_SCAN,
+                    max_deliver=5,
+                ),
+            )
+            sub = await js.pull_subscribe(
+                SUBJECT_JOBS_SCAN,
+                durable=CONSUMER_AGENTS,
+                stream=STREAM_JOBS,
+            )
+        try:
+            msgs = await sub.fetch(1, timeout=timeout)
+        except NatsTimeout:
+            return None
+        if not msgs:
+            return None
+        msg = msgs[0]
+        try:
+            payload = json.loads(msg.data.decode("utf-8"))
+        except json.JSONDecodeError:
+            await msg.term()
+            return None
+        if not isinstance(payload, dict) or not payload.get("job_id"):
+            await msg.term()
+            return None
+        job_id = str(payload["job_id"])
+        claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+        if claimed is None:
+            LOG.warning("NATS offer %s not claimable; NAK", job_id)
+            await msg.nak()
+            return None
+        await msg.ack()
+        return claimed
+    finally:
+        await nc.drain()
+
+
+def _pull_nats_job(
+    nats_url: str,
+    client: AgentClient,
+    agent_id: str,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any] | None:
+    return asyncio.run(
+        _nats_pull_and_claim(nats_url, client, agent_id, timeout=timeout)
+    )
+
+
 def run_loop(args: argparse.Namespace) -> int:
     client = AgentClient(args.api_url, args.token, timeout=args.timeout)
     labels = {}
@@ -236,34 +352,35 @@ def run_loop(args: argparse.Namespace) -> int:
     )
     agent_id = str(info["agent_id"])
     LOG.info("Registered agent %s (%s)", agent_id, info.get("hostname"))
+    if args.nats_url:
+        LOG.info("NATS pull enabled (%s) subject=%s", args.nats_url, SUBJECT_JOBS_SCAN)
 
     while True:
         try:
             client.heartbeat(agent_id, status="idle")
-            job = client.claim(agent_id)
+            job: dict[str, Any] | None = None
+            if args.nats_url:
+                job = _pull_nats_job(
+                    args.nats_url,
+                    client,
+                    agent_id,
+                    timeout=max(1.0, args.poll_interval),
+                )
+            else:
+                job = client.claim(agent_id)
+
             if job is None:
-                time.sleep(args.poll_interval)
+                if not args.nats_url:
+                    time.sleep(args.poll_interval)
                 continue
 
-            LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
-            client.heartbeat(agent_id, status="busy", current_job_id=job["job_id"])
-            with tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp:
-                workdir = Path(tmp)
-                exit_code, error, archive = _run_scan(
-                    config=Path(args.config),
-                    job=job,
-                    workdir=workdir,
-                    output_dir=Path(args.output_dir),
-                )
-                client.upload_results(
-                    job["job_id"],
-                    agent_id=agent_id,
-                    exit_code=exit_code,
-                    run_id=str(job["run_id"]),
-                    error=error,
-                    archive_path=archive,
-                )
-            LOG.info("Job %s finished exit=%s", job["job_id"], exit_code)
+            _execute_job(
+                client,
+                agent_id=agent_id,
+                job=job,
+                config=Path(args.config),
+                output_dir=Path(args.output_dir),
+            )
         except KeyboardInterrupt:
             LOG.info("Shutting down")
             return 0
@@ -306,6 +423,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--poll-interval",
         type=float,
         default=float(os.environ.get("OCTO_AGENT_POLL_INTERVAL", "5")),
+    )
+    parser.add_argument(
+        "--nats-url",
+        default=os.environ.get("OCTO_NATS_URL", ""),
+        help="NATS JetStream URL for job pull (or OCTO_NATS_URL); empty = HTTP claim poll",
     )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("-v", "--verbose", action="store_true")

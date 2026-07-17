@@ -4,6 +4,15 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Added
+
+- **Phase 1 (NATS JetStream)** — opt-in via `OCTO_NATS_URL`:
+  - k8s StatefulSet/Services `octo-man-nats` (+ client Service)
+  - API publishes agent jobs to `jobs.scan` and raw archives to `ingest.raw_results`
+    (JetStream `Nats-Msg-Id` idempotency); filesystem extract unchanged for UI
+  - Agent pull consumer (durable `octo-agents`) when NATS URL set; HTTP claim remains default
+  - Compose profile `nats`; example patches under `k8s/octo-man/examples/nats-*.yaml`
+
 ### Changed
 
 - Documented platform evolution roadmap ([ROADMAP.md](ROADMAP.md)): NATS JetStream,

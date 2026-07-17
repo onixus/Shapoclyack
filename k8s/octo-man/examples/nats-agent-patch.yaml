@@ -1,0 +1,13 @@
+# Pair with agent-deployment.example.yaml when using NATS job dispatch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          env:
+            - name: OCTO_NATS_URL
+              value: nats://octo-man-nats-client:4222

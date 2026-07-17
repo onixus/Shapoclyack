@@ -59,11 +59,13 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Decouple agents from DB polling and ensure resilient data ingestion.
 
-| ID | Task | Dir / surface | Action |
-|----|------|---------------|--------|
-| 1.1 | Deploy NATS JetStream | `k8s/octo-man/base/` | Create StatefulSet and Service manifests for NATS JetStream |
-| 1.2 | Refactor API ingest | `api/services/results_ingest.py` | Convert to an API Gateway: validate payload and `publish` to NATS topic `ingest.raw_results` (idempotency for duplicates) |
-| 1.3 | Update agent worker | `agent/worker.py` | Switch from HTTP polling to NATS pull-based consumer for scanning jobs |
+**Status:** **In progress** — JetStream manifests + API publish + agent pull (opt-in via `OCTO_NATS_URL`).
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 1.1 | Deploy NATS JetStream | `k8s/octo-man/base/` | StatefulSet + headless/client Services; compose profile `nats` | **In progress** |
+| 1.2 | Refactor API ingest | `api/services/results_ingest.py`, `nats_bus.py` | Validate archive → publish `ingest.raw_results` (JetStream `Nats-Msg-Id` dedupe); still extract to FS for UI | **In progress** |
+| 1.3 | Update agent worker | `agent/worker.py` | When `OCTO_NATS_URL` set: JetStream pull on `jobs.scan` (durable `octo-agents`); else HTTP claim poll | **In progress** |
 
 ### Phase 2 — MSSP Multi-tenancy & Authentication
 
@@ -160,4 +162,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–5 remain **Planned**. Phase 6 is **In progress** (scaffold + mock pages in `web-next/`).
+Phases 1 and 6 are **In progress**. Phases 2–5 remain **Planned**.

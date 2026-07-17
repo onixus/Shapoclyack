@@ -13,6 +13,9 @@ resources:
   - namespace.yaml
   - serviceaccount.yaml
   - pvc.yaml
+  - nats-statefulset.yaml
+  - nats-service.yaml
+  - nats-service-client.yaml
   - job.yaml
   - cronjob.yaml
   - api-deployment.yaml

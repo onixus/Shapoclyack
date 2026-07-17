@@ -59,9 +59,10 @@ def claim_job(
     agent_id: str,
     _: Annotated[str, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
+    job_id: str | None = None,
 ) -> AgentClaimResponse | Response:
     try:
-        claimed = jobs_service.claim_job(settings, agent_id)
+        claimed = jobs_service.claim_job(settings, agent_id, job_id=job_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if claimed is None:

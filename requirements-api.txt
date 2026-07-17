@@ -6,3 +6,4 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
 python-multipart==0.0.20
 httpx==0.28.1
+nats-py==2.9.0
