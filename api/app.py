@@ -16,6 +16,8 @@ from api.routes import jobs as jobs_routes
 from api.routes import runs as runs_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
+from api.services import ch_ingest_worker
+from api.services import clickhouse_client
 from api.services import jobs as jobs_service
 from api.services import nats_bus
 from api.services import tenants as tenants_service
@@ -25,13 +27,16 @@ from api.services import tenants as tenants_service
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     if settings.nats_url:
-        bus = nats_bus.startup_bus(settings.nats_url)
-        if bus is None:
-            # Connection failed — API still serves; ingest publish will no-op/log.
-            pass
+        nats_bus.startup_bus(settings.nats_url)
+    if settings.ch_ingest_enabled and settings.nats_url and settings.clickhouse_url:
+        ch_ingest_worker.start_worker(
+            nats_url=settings.nats_url,
+            clickhouse_url=settings.clickhouse_url,
+        )
     try:
         yield
     finally:
+        ch_ingest_worker.stop_worker()
         nats_bus.shutdown_bus()
 
 
@@ -57,7 +62,21 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", response_model=HealthResponse, tags=["health"])
     def health() -> HealthResponse:
-        return HealthResponse(status="ok", version=__version__)
+        settings = get_settings()
+        nats_ok = None
+        ch_ok = None
+        if settings.nats_url:
+            bus = nats_bus.get_bus(settings.nats_url)
+            nats_ok = bus is not None and bus._started  # noqa: SLF001
+        if settings.clickhouse_url:
+            ch_ok = clickhouse_client.ping(settings.clickhouse_url)
+        return HealthResponse(
+            status="ok",
+            version=__version__,
+            nats=nats_ok,
+            clickhouse=ch_ok,
+            ch_ingest=ch_ingest_worker.worker_stats(),
+        )
 
     app.include_router(auth_routes.router, prefix="/api")
     app.include_router(runs_routes.router, prefix="/api")

@@ -9,6 +9,9 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
     service: str = "octo-man-api"
+    nats: bool | None = None
+    clickhouse: bool | None = None
+    ch_ingest: dict[str, int] | None = None
 
 
 class RunSummary(BaseModel):

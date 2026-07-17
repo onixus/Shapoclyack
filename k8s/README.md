@@ -46,10 +46,18 @@ Base includes `octo-man-clickhouse` under `base/clickhouse/` (50Gi PVC).
 Client DNS: `octo-man-clickhouse-client:8123` (HTTP) / `:9000` (native).
 
 First-boot schema via `/docker-entrypoint-initdb.d/init.sql` (ConfigMap):
-database `shapoclyack`, table `shapoclyack_vulnerabilities`
-(`ReplacingMergeTree`, ordered by `tenant_id, asset_ip, cve_id`).
+- `shapoclyack.shapoclyack_vulnerabilities` (`ReplacingMergeTree`, ORDER BY `tenant_id, asset_ip, cve_id`)
+- `shapoclyack.shapoclyack_open_ports` (`ReplacingMergeTree`, ORDER BY `tenant_id, target_ip, port`)
 
-Wire-up and NATS→ClickHouse consumer land in Phase 3; manifests are ready for deploy.
+Enable API ingest worker:
+
+```bash
+OCTO_NATS_URL=nats://octo-man-nats-client:4222
+OCTO_CLICKHOUSE_URL=http://octo-man-clickhouse-client:8123
+OCTO_CH_INGEST_ENABLED=true
+```
+
+Example patch: `examples/clickhouse-ingest-api-patch.yaml`.
 
 ### MSSP tenancy (Phase 2)
 

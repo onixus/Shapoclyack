@@ -46,6 +46,10 @@ class Settings:
     agent_jwt_expire_minutes: int = 60
     # NATS JetStream URL (e.g. nats://octo-man-nats-client:4222). Empty disables broker.
     nats_url: str = ""
+    # ClickHouse HTTP URL (e.g. http://octo-man-clickhouse-client:8123). Empty disables CH.
+    clickhouse_url: str = ""
+    # Start NATS→ClickHouse ingest worker when both NATS and CH URLs are set.
+    ch_ingest_enabled: bool = True
 
 
 def load_settings() -> Settings:
@@ -81,4 +85,7 @@ def load_settings() -> Settings:
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
         agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
+        clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
+        ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
     )

@@ -6,6 +6,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 3 (ClickHouse ingest)** — NATS→CH worker (`ch_ingest_worker`), transforms
+  archives into `shapoclyack_vulnerabilities` + `shapoclyack_open_ports`;
+  `OCTO_CLICKHOUSE_URL` / `OCTO_CH_INGEST_ENABLED`; CH diff helpers (`ch_diff.py`);
+  health reports NATS/CH/worker stats
 - **API gateway ingest** — publish validated results to `ingest.results.{tenant_id}`
   (plus legacy `ingest.raw_results`); NATS bus starts on FastAPI lifespan
 - **`POST /api/v1/auth/exchange`** — provisioning key → 2h agent JWT (`tenant_id` + `agent_id`);
