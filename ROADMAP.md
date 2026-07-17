@@ -34,7 +34,8 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | `api/` | FastAPI/Python backend |
 | `agent/` | Remote scanning workers |
 | `scanner/` | Core pipeline (Nmap, CVSS4, GeoIP) |
-| `web/` | React/Vite frontend |
+| `web/` | React/Vite frontend (v1) |
+| `web-next/` | Next.js 14 App Router dashboard (Web UI v2) |
 | `k8s/octo-man/` | Kubernetes deployment manifests |
 
 ---
@@ -104,6 +105,19 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | 5.2 | CT logs scanning | `scanner/pipeline/hostnames.py` | Async Certificate Transparency queries for subdomains |
 | 5.3 | SMTP alerts via Maddy | `scanner/pipeline/alerts.py` | Outbound SMTP through local Maddy with DKIM/PTR validation |
 
+### Phase 6 — Web UI v2 (`web-next/`)
+
+**Goal:** MSSP / Enterprise console on Next.js 14 (App Router) with Tremor charts and TanStack tables. Keep `web/` (v1) until feature parity.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 6.1 | Scaffold | `web-next/` | Next.js 14 + Tailwind + Shadcn (Slate) + Tremor + React Query | **In progress** (this branch) |
+| 6.2 | Shell | `web-next/src/components/layout/` | Sidebar (Dashboard, Tenants, Agents, Jobs, Runs, Assets) + top header | **In progress** |
+| 6.3 | Dashboard | `web-next/src/app/(dashboard)/` | Tremor AreaChart / DonutChart mock KPIs | **In progress** |
+| 6.4 | Tenants | `…/tenants/` | TanStack table + Create Tenant dialog (Provisioning Key) | **In progress** |
+| 6.5 | Assets | `…/assets/` | Inventory table + Diff-badges (50k+ fleet mock) | **In progress** |
+| 6.6 | API client | `web-next/src/lib/api.ts` | Axios + JWT interceptor; wire to live FastAPI | Planned |
+
 ---
 
 ## Suggested delivery order
@@ -114,9 +128,10 @@ Phase 1 (NATS + ingest gateway)
         → Phase 3 (ClickHouse + analytical diffs)
             → Phase 4 (spread / VPA)
                 → Phase 5 (Cloudflare / CT / Maddy SMTP)
+Phase 6 (Web UI v2) can proceed in parallel with 1–3 (mock data first, then live API).
 ```
 
-Phases 1–2 unlock safe multi-tenant agent scale. Phase 3 unlocks 50k-asset analytics. Phases 4–5 harden ops and expand discovery/alerting.
+Phases 1–2 unlock safe multi-tenant agent scale. Phase 3 unlocks 50k-asset analytics. Phases 4–5 harden ops and expand discovery/alerting. Phase 6 replaces the operator console for MSSP workflows.
 
 ---
 
