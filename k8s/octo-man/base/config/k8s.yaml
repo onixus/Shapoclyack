@@ -81,6 +81,20 @@ discovery:
   hostnames:
     forward: true
     reverse: true
+  cloudflare:
+    enabled: false
+    api_token: ""
+    zones: []
+    include_proxied: true
+    include_unproxied: true
+    flag_unproxied_a: true
+    timeout_seconds: 30
+  ct:
+    enabled: false
+    providers: [crtsh]
+    domains: []
+    max_subdomains: 5000
+    timeout_seconds: 45
   seed_alive_file: ""
   delta:
     enabled: false
@@ -143,6 +157,20 @@ alerts:
     enabled: false
     bot_token: ""
     chat_id: ""
+  smtp:
+    enabled: false
+    host: "127.0.0.1"
+    port: 25
+    from_addr: ""
+    to_addrs: []
+    username: ""
+    password: ""
+    use_starttls: false
+    timeout_seconds: 30
+    dkim_selector: ""
+    require_dkim: false
+    require_ptr: false
+    ptr_hostname: ""
 
 scheduler:
   enabled: false

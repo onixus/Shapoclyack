@@ -91,6 +91,22 @@ discovery:
   hostnames:
     forward: true
     reverse: true
+  # Phase 5.1 — Cloudflare DNS zone import (opt-in). Token: OCTO_CLOUDFLARE_API_TOKEN
+  cloudflare:
+    enabled: false
+    api_token: ""
+    zones: []                 # empty = all zones the token can list
+    include_proxied: true
+    include_unproxied: true
+    flag_unproxied_a: true    # flag A/AAAA with proxied=false as misconfig
+    timeout_seconds: 30
+  # Phase 5.2 — Certificate Transparency subdomain discovery (opt-in)
+  ct:
+    enabled: false
+    providers: [crtsh]        # crtsh | certspotter
+    domains: []               # empty = base domains from input FQDNs
+    max_subdomains: 5000
+    timeout_seconds: 45
   seed_alive_file: ""
   delta:
     enabled: false
@@ -156,8 +172,9 @@ enrichment:
     # Fetch MMDB: MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh
     database: scanner/data/geoip/geoip-overlay.json
 
-# Slack / Telegram notifications after reports. Prefer env credentials over YAML secrets:
+# Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
+#   OCTO_SMTP_HOST, OCTO_SMTP_PORT, OCTO_SMTP_FROM, OCTO_SMTP_TO
 # Enable with alerts.enabled: true or CLI --notify.
 alerts:
   enabled: false
@@ -170,6 +187,21 @@ alerts:
     enabled: false
     bot_token: ""
     chat_id: ""
+  # Phase 5.3 — outbound mail via local Maddy (or any SMTP relay)
+  smtp:
+    enabled: false
+    host: "127.0.0.1"
+    port: 25
+    from_addr: ""
+    to_addrs: []
+    username: ""
+    password: ""
+    use_starttls: false
+    timeout_seconds: 30
+    dkim_selector: ""
+    require_dkim: false
+    require_ptr: false
+    ptr_hostname: ""
 
 # DefectDojo export (Generic Findings Import via /api/v2/reimport-scan/).
 # Prefer env credentials: OCTO_DEFECTDOJO_URL, OCTO_DEFECTDOJO_API_KEY

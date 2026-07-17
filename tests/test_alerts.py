@@ -1,7 +1,16 @@
 from __future__ import annotations
 
-from scanner.pipeline.alerts import format_alert_message, send_alerts
-from scanner.pipeline.config_schema import AlertsConfig, SlackAlertConfig, TelegramAlertConfig
+from scanner.pipeline.alerts import (
+    format_alert_message,
+    send_alerts,
+    send_smtp_alert,
+)
+from scanner.pipeline.config_schema import (
+    AlertsConfig,
+    SlackAlertConfig,
+    SmtpAlertConfig,
+    TelegramAlertConfig,
+)
 
 
 def test_format_alert_message_includes_diff_counts():
@@ -78,3 +87,85 @@ def test_send_alerts_reports_missing_credentials():
     assert result["attempted"] is True
     assert "missing" in (result["slack"] or "")
     assert "missing" in (result["telegram"] or "")
+
+
+def test_smtp_missing_recipients(monkeypatch):
+    monkeypatch.delenv("OCTO_SMTP_TO", raising=False)
+    monkeypatch.delenv("OCTO_SMTP_FROM", raising=False)
+    result = send_smtp_alert(
+        SmtpAlertConfig(enabled=True, from_addr="", to_addrs=[]),
+        subject="t",
+        text="body",
+    )
+    assert "missing" in result["status"]
+
+
+def test_smtp_blocked_when_dkim_required(monkeypatch):
+    monkeypatch.setattr(
+        "scanner.pipeline.alerts.check_dkim_record",
+        lambda domain, selector, timeout=10: {"ok": False, "reason": "empty", "records": []},
+    )
+    result = send_smtp_alert(
+        SmtpAlertConfig(
+            enabled=True,
+            from_addr="alerts@example.com",
+            to_addrs=["ops@example.com"],
+            require_dkim=True,
+            dkim_selector="mail",
+        ),
+        subject="t",
+        text="body",
+    )
+    assert "dkim_required" in result["status"]
+
+
+def test_smtp_send_success(monkeypatch):
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            self.sent = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self):
+            return None
+
+        def login(self, user, password):
+            return None
+
+        def send_message(self, message):
+            self.sent = message
+
+    monkeypatch.setattr("scanner.pipeline.alerts.smtplib.SMTP", FakeSMTP)
+    monkeypatch.setattr(
+        "scanner.pipeline.alerts.validate_smtp_deliverability",
+        lambda config, from_addr: {"ok": True, "dkim": None, "ptr": None, "blocked_reason": None},
+    )
+    result = send_smtp_alert(
+        SmtpAlertConfig(
+            enabled=True,
+            host="127.0.0.1",
+            port=25,
+            from_addr="alerts@example.com",
+            to_addrs=["ops@example.com"],
+        ),
+        subject="scan done",
+        text="hello",
+    )
+    assert result["status"] == "ok"
+
+
+def test_send_alerts_includes_smtp(monkeypatch):
+    monkeypatch.setattr(
+        "scanner.pipeline.alerts.send_smtp_alert",
+        lambda config, subject, text: {"status": "ok", "validation": {"ok": True}},
+    )
+    cfg = AlertsConfig(
+        enabled=True,
+        smtp=SmtpAlertConfig(enabled=True, from_addr="a@b.c", to_addrs=["x@y.z"]),
+    )
+    result = send_alerts(cfg, run_id="r1", summary={"alive_hosts": 1}, diff=None)
+    assert result["smtp"] == "ok"

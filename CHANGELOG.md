@@ -6,6 +6,12 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 5 (advanced discovery & notifications)** —
+  - Cloudflare DNS zone import + unproxied A/AAAA misconfig findings
+    (`discover.import_cloudflare_dns_targets`, `OCTO_CLOUDFLARE_API_TOKEN`)
+  - Async CT subdomain discovery via crt.sh / Cert Spotter (`hostnames.discover_ct_subdomains`)
+  - SMTP alerts via local Maddy/relay with optional DKIM TXT + PTR pre-send checks
+    (`alerts.smtp`, `OCTO_SMTP_*`); example `maddy-compose.example.yaml`
 - **Phase 4 (agent topology spread + VPA)** — `base/agents/` Deployment with
   zone + hostname `topologySpreadConstraints`; VPA Auto (`agent-vpa.yaml`);
   opt-in overlay `overlays/agents` (replicas 3, API `OCTO_JOB_EXECUTION_MODE=agent`);
