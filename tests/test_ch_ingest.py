@@ -22,9 +22,14 @@ def _archive(**files: bytes) -> bytes:
     return buf.getvalue()
 
 
-def test_transform_vulnerabilities_and_ports():
+def test_transform_vulnerabilities_and_ports(monkeypatch):
+    from api.services.risk_scoring import RiskScoring, reset_scorer_for_tests
+
+    reset_scorer_for_tests(
+        RiskScoring(epss={"CVE-2020-1": 0.4}, kev=set())
+    )
     vulns = [
-        {"host": "10.0.0.1", "port": "22", "cve": "CVE-2020-1", "cvss": 7.5},
+        {"host": "10.0.0.1", "port": "22", "cve": "CVE-2020-1", "cvss": 7.5, "severity": "high"},
         {"host": "not-an-ip", "port": "80", "cve": "CVE-2020-2", "cvss": 5.0},
         {"host": "10.0.0.2", "port": "443", "cve": None, "script_id": "ssl-enum", "cvss": None},
     ]
@@ -51,6 +56,11 @@ def test_transform_vulnerabilities_and_ports():
     assert len(vuln_rows) == 2  # invalid host skipped
     assert vuln_rows[0][2] == "CVE-2020-1"
     assert vuln_rows[0][3] == 7.5
+    assert vuln_rows[0][4] == 0.4  # epss
+    assert vuln_rows[0][5] >= 3  # asset_criticality high + ssh boost
+    assert vuln_rows[0][7] in ("Attend", "Act", "Immediate")
+    assert vuln_rows[0][8] > 0  # contextual_score
+    assert vuln_rows[0][9] == "mvp-1"
     assert isinstance(vuln_rows[0][10], datetime)
     assert vuln_rows[1][2] == "ssl-enum"
     # ports from findings + open_ports.txt
@@ -58,6 +68,7 @@ def test_transform_vulnerabilities_and_ports():
     ports = {(r[1], r[2], r[3]) for r in port_rows}
     assert ("10.0.0.1", 22, "tcp") in ports
     assert ("10.0.0.2", 443, "tcp") in ports
+    reset_scorer_for_tests(None)
 
 
 def test_tenant_uuid_stable():

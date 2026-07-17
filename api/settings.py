@@ -50,6 +50,9 @@ class Settings:
     clickhouse_url: str = ""
     # Start NATS→ClickHouse ingest worker when both NATS and CH URLs are set.
     ch_ingest_enabled: bool = True
+    # Optional risk-scoring overlays (read by RiskScoring.from_env):
+    #   OCTO_EPSS_DATABASE (default scanner/data/epss/epss-overlay.json)
+    #   OCTO_KEV_DATABASE  (default scanner/data/kev/kev-overlay.json)
 
 
 def load_settings() -> Settings:

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "source": "overlay-seed",
+  "entries": [
+    "CVE-2021-44228",
+    "CVE-2017-0144"
+  ]
+}
