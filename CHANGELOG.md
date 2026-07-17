@@ -15,6 +15,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Changed
 
+- Promoted discovery completeness knobs from `discovery-bench-realistic` into
+  prod configs (`scanner/config/default.yaml`, `k8s/octo-man/base/config/k8s.yaml`):
+  `discovery.verify` on, `adaptive.wave2_rate: 2500`, `batching.ipv4_prefix: 24`,
+  smaller `max_targets_per_batch`; default `balanced.discover_rate` 6000 → 4000
 - Documented platform evolution roadmap ([ROADMAP.md](ROADMAP.md)): NATS JetStream,
   MSSP multi-tenancy, ClickHouse analytics, K8s autoscaling, Cloudflare/CT/Maddy,
   Shapoclyack Web UI v2 (`web-next/` — Next.js 14)
