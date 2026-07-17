@@ -1,0 +1,7 @@
+# Default agent replica count for the agents overlay (spread needs >1).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-agent
+spec:
+  replicas: 3

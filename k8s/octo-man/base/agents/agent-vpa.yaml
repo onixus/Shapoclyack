@@ -1,0 +1,32 @@
+# Vertical Pod Autoscaler for scanner agents (Phase 4.2).
+# Requires the VPA admission controller / recommender in the cluster
+# (e.g. gke addon, or https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler).
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: octo-man-agent
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: agent
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: octo-man-agent
+  updatePolicy:
+    # Auto: recreate pods when recommendations change (avoids OOM on heavy scans).
+    updateMode: Auto
+  resourcePolicy:
+    containerPolicies:
+      - containerName: agent
+        minAllowed:
+          cpu: 250m
+          memory: 256Mi
+        maxAllowed:
+          cpu: "4"
+          memory: 8Gi
+        controlledResources:
+          - cpu
+          - memory
+        # Keep a memory limit headroom so bursts do not immediately OOMKill.
+        controlledValues: RequestsAndLimits

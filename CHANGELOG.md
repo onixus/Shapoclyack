@@ -6,6 +6,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 4 (agent topology spread + VPA)** — `base/agents/` Deployment with
+  zone + hostname `topologySpreadConstraints`; VPA Auto (`agent-vpa.yaml`);
+  opt-in overlay `overlays/agents` (replicas 3, API `OCTO_JOB_EXECUTION_MODE=agent`);
+  example YAML updated; agents stay out of default base apply
 - **Phase 3 (ClickHouse ingest)** — NATS→CH worker (`ch_ingest_worker`), transforms
   archives into `shapoclyack_vulnerabilities` + `shapoclyack_open_ports`;
   `OCTO_CLICKHOUSE_URL` / `OCTO_CH_INGEST_ENABLED`; CH diff helpers (`ch_diff.py`);

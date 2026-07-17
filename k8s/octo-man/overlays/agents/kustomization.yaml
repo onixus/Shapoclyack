@@ -1,0 +1,18 @@
+# Optional overlay: deploy remote agents with topology spread + VPA.
+#
+#   kubectl apply -k k8s/octo-man/overlays/agents
+#
+# Prerequisites:
+#   - Secret octo-man-agent (provisioning key and/or OCTO_AGENT_TOKEN)
+#   - API in agent mode (patched below)
+#   - VPA CRDs installed in the cluster
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - ../../base/agents
+
+patches:
+  - path: agent-mode-api-patch.yaml
+  - path: replicas-patch.yaml
