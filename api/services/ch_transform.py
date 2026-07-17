@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from api.services.risk_scoring import SCORING_MODEL_VERSION, get_scorer
+from api.services.risk_scoring import get_scorer
 
 LOG = logging.getLogger("octo-man.ch-transform")
 
