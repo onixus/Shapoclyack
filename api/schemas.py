@@ -175,6 +175,7 @@ class ProvisioningKeyInfo(BaseModel):
 
 class AgentTokenRequest(BaseModel):
     provisioning_key: str = Field(min_length=8, max_length=256)
+    agent_id: str | None = Field(default=None, max_length=128)
 
 
 class AgentTokenResponse(BaseModel):
@@ -182,4 +183,21 @@ class AgentTokenResponse(BaseModel):
     token_type: str = "bearer"
     tenant_id: str
     key_id: str
+    agent_id: str | None = None
+    expires_in: int
+
+
+class AuthExchangeRequest(BaseModel):
+    """Body for ``POST /api/v1/auth/exchange``."""
+
+    provisioning_key: str = Field(min_length=8, max_length=256)
+    agent_id: str | None = Field(default=None, max_length=128)
+
+
+class AuthExchangeResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    tenant_id: str
+    agent_id: str
+    key_id: str | None = None
     expires_in: int

@@ -1,4 +1,9 @@
-"""Safe extraction of agent-uploaded run archives + NATS ingest gateway (Phase 1)."""
+"""Stateless results ingest gateway: validate → publish to NATS JetStream.
+
+Filesystem extract remains available for the current UI until the ClickHouse
+consumer (Phase 3) is the primary reader. Publish subject:
+``ingest.results.{tenant_id}``.
+"""
 
 from __future__ import annotations
 
@@ -73,6 +78,39 @@ def update_latest_run_pointer(state_dir: Path, run_id: str) -> None:
     )
 
 
+def build_gateway_payload(
+    *,
+    job_id: str,
+    run_id: str,
+    agent_id: str,
+    exit_code: int,
+    archive_bytes: bytes,
+    tenant_id: str,
+    error: str | None = None,
+    include_archive_b64: bool = True,
+    max_inline_bytes: int = 4_000_000,
+) -> dict[str, Any]:
+    """Validate archive and build the JSON payload published to NATS."""
+    validate_archive(archive_bytes)
+    digest = nats_bus.archive_sha256(archive_bytes)
+    payload: dict[str, Any] = {
+        "job_id": job_id,
+        "run_id": run_id,
+        "agent_id": agent_id,
+        "exit_code": exit_code,
+        "error": error,
+        "tenant_id": tenant_id,
+        "archive_sha256": digest,
+        "archive_bytes": len(archive_bytes),
+        "subject": nats_bus.ingest_results_subject(tenant_id),
+    }
+    if include_archive_b64 and len(archive_bytes) <= max_inline_bytes:
+        payload["archive_b64"] = base64.b64encode(archive_bytes).decode("ascii")
+    else:
+        payload["archive_inline"] = False
+    return payload
+
+
 def publish_raw_results(
     *,
     nats_url: str,
@@ -86,28 +124,24 @@ def publish_raw_results(
     include_archive_b64: bool = True,
     max_inline_bytes: int = 4_000_000,
 ) -> dict[str, Any]:
-    """Validate and publish to ``ingest.raw_results`` with JetStream Msg-Id dedupe.
+    """Gateway: validate payload → publish ``ingest.results.{tenant_id}``.
 
-    Returns metadata about the publish attempt. Filesystem extract remains the
-    caller's responsibility until Phase 3 ClickHouse consumer lands.
+    ``tenant_id`` must come from a verified agent JWT (caller responsibility).
     """
-    validate_archive(archive_bytes)
-    digest = nats_bus.archive_sha256(archive_bytes)
+    payload = build_gateway_payload(
+        job_id=job_id,
+        run_id=run_id,
+        agent_id=agent_id,
+        exit_code=exit_code,
+        archive_bytes=archive_bytes,
+        tenant_id=tenant_id,
+        error=error,
+        include_archive_b64=include_archive_b64,
+        max_inline_bytes=max_inline_bytes,
+    )
+    digest = str(payload["archive_sha256"])
     msg_id = nats_bus.ingest_msg_id(job_id=job_id, run_id=run_id, archive_sha256=digest)
-    payload: dict[str, Any] = {
-        "job_id": job_id,
-        "run_id": run_id,
-        "agent_id": agent_id,
-        "exit_code": exit_code,
-        "error": error,
-        "tenant_id": tenant_id,
-        "archive_sha256": digest,
-        "archive_bytes": len(archive_bytes),
-    }
-    if include_archive_b64 and len(archive_bytes) <= max_inline_bytes:
-        payload["archive_b64"] = base64.b64encode(archive_bytes).decode("ascii")
-    else:
-        payload["archive_inline"] = False
+    subject = nats_bus.ingest_results_subject(tenant_id)
 
     bus = nats_bus.get_bus(nats_url)
     published = False
@@ -115,10 +149,26 @@ def publish_raw_results(
         published = bus.publish_ingest(payload, msg_id=msg_id)
         if published:
             LOG.info(
-                "Published ingest.raw_results job=%s run=%s tenant=%s msg_id=%s",
+                "Gateway published %s job=%s run=%s tenant=%s msg_id=%s",
+                subject,
                 job_id,
                 run_id,
                 tenant_id,
                 msg_id,
             )
-    return {"msg_id": msg_id, "archive_sha256": digest, "published": published, "tenant_id": tenant_id}
+        else:
+            LOG.error(
+                "Gateway NATS publish failed subject=%s job=%s (payload validated)",
+                subject,
+                job_id,
+            )
+    else:
+        LOG.warning("NATS bus unavailable; ingest gateway skipped publish for job=%s", job_id)
+
+    return {
+        "msg_id": msg_id,
+        "archive_sha256": digest,
+        "published": published,
+        "tenant_id": tenant_id,
+        "subject": subject,
+    }

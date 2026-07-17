@@ -4,9 +4,9 @@
 #   docker compose up --build
 #   open http://localhost:8080  (operator / operator-change-me)
 #
-# Optional NATS JetStream (Phase 1):
-#   docker compose --profile nats up --build
-#   set OCTO_NATS_URL=nats://nats:4222 and OCTO_JOB_EXECUTION_MODE=agent
+# Optional brokers (Phase 1):
+#   docker compose --profile nats --profile clickhouse up --build
+#   OCTO_NATS_URL=nats://nats:4222
 
 services:
   nats:
@@ -20,6 +20,24 @@ services:
       - nats-data:/data
     restart: unless-stopped
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    profiles: ["clickhouse"]
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: shapoclyack
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./k8s/octo-man/base/clickhouse/init-local.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
   shapoclyack:
     build:
       context: .
@@ -29,6 +47,7 @@ services:
       - "8080:8080"
     environment:
       OCTO_JWT_SECRET: ${OCTO_JWT_SECRET:-octo-man-dev-secret-change-me}
+      API_SECRET_KEY: ${API_SECRET_KEY:-}
       OCTO_ALLOW_SCAN_START: "true"
       OCTO_JOB_EXECUTION_MODE: local
       OCTO_CONFIG: scanner/config/default.yaml
@@ -48,3 +67,4 @@ services:
 
 volumes:
   nats-data:
+  clickhouse-data:
