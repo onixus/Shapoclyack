@@ -55,7 +55,10 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`); severity dashboard; click Alive hosts / Open ports to explore and filter findings.
 - **All-in-one** (`shapoclyack-aio` / `docker compose`): Web UI starts local scans by default.
 - **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man` (includes optional NATS JetStream StatefulSet; enable with `OCTO_NATS_URL`).
-- **Remote agents**: HTTP claim/upload by default; set `OCTO_NATS_URL` for JetStream job pull (`jobs.scan`) + ingest publish (`ingest.raw_results`). Prefer `OCTO_AGENT_PROVISIONING_KEY` (Phase 2 JWT) over legacy `OCTO_AGENT_TOKEN`.
+- **Remote agents**: HTTP claim/upload by default; set `OCTO_NATS_URL` for a long-lived
+  JetStream pull on `jobs.scan` + ingest publish (`ingest.results.{tenant}` /
+  legacy `ingest.raw_results`). Prefer `OCTO_AGENT_PROVISIONING_KEY` (Phase 2 JWT)
+  over legacy `OCTO_AGENT_TOKEN`. Compose helper: `docker-compose.nats.yml`.
 - **MSSP tenancy (Phase 2)**: `POST /api/tenants` + provisioning keys; agents call `POST /api/auth/agent/token` for a short-lived JWT with `tenant_id`.
 
 ## Project Layout
@@ -252,6 +255,10 @@ HTTP control plane for reviewing runs and (optionally) launching scans.
 ```bash
 docker compose up --build
 # open http://localhost:8080  — operator / operator-change-me
+
+# Optional NATS JetStream (auto-wires OCTO_NATS_URL=nats://nats:4222):
+docker compose -f docker-compose.yml -f docker-compose.nats.yml --profile nats up --build
+# expect GET /api/health → "nats": true
 ```
 
 Image: `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (scanner tools + API + UI).  

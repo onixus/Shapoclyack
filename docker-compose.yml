@@ -5,8 +5,10 @@
 #   open http://localhost:8080  (operator / operator-change-me)
 #
 # Optional brokers (Phase 1):
-#   docker compose --profile nats --profile clickhouse up --build
-#   OCTO_NATS_URL=nats://nats:4222
+#   # NATS with auto-wired OCTO_NATS_URL + health wait:
+#   docker compose -f docker-compose.yml -f docker-compose.nats.yml --profile nats up --build
+#   # ClickHouse (set OCTO_CLICKHOUSE_URL=http://clickhouse:8123):
+#   docker compose --profile clickhouse up --build
 
 services:
   nats:
@@ -18,6 +20,12 @@ services:
       - "8222:8222"
     volumes:
       - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
     restart: unless-stopped
 
   clickhouse:
@@ -54,7 +62,7 @@ services:
       OCTO_OUTPUT_DIR: scanner/output
       OCTO_STATE_DIR: scanner/state
       OCTO_WEB_DIST: web/dist
-      # Empty = legacy HTTP agent claim. With profile nats: nats://nats:4222
+      # Empty = HTTP-only. Auto-wire with docker-compose.nats.yml → nats://nats:4222
       OCTO_NATS_URL: ${OCTO_NATS_URL:-}
       OCTO_CLICKHOUSE_URL: ${OCTO_CLICKHOUSE_URL:-}
       OCTO_CH_INGEST_ENABLED: ${OCTO_CH_INGEST_ENABLED:-true}
