@@ -98,10 +98,13 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Prevent outages during heavy / unpredictable VM scans.
 
-| ID | Task | Dir / surface | Action |
-|----|------|---------------|--------|
-| 4.1 | Agent distribution | `k8s/octo-man/base/agent-deployment.yaml` (from example) | `topologySpreadConstraints` on `topology.kubernetes.io/zone` and `kubernetes.io/hostname` |
-| 4.2 | Vertical Pod Autoscaling | `k8s/octo-man/base/` | VPA manifests for agent pods (memory limits on OOM) |
+**Status:** **In progress** (this branch).
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 4.1 | Agent distribution | `k8s/octo-man/base/agents/agent-deployment.yaml` | `topologySpreadConstraints` on zone + hostname | **Done** |
+| 4.2 | Vertical Pod Autoscaling | `k8s/octo-man/base/agents/agent-vpa.yaml` | VPA Auto (CPU/RAM min-max) for agent pods | **Done** |
+| 4.3 | Opt-in overlay | `k8s/octo-man/overlays/agents` | replicas=3 + API agent-mode; not in default base | **Done** |
 
 ### Phase 5 — Advanced Discovery & Notifications
 
@@ -167,4 +170,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–3 and 6 are **In progress**. Phases 4–5 remain **Planned**.
+Phases 1–3, 4, and 6 are **In progress**. Phase 5 remains **Planned**.

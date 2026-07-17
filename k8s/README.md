@@ -21,9 +21,11 @@ k8s/octo-man/
 ├── base/nats/            # JetStream StatefulSet + Services + ConfigMap
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
 ├── base/config/k8s.yaml  # scanner ConfigMap source
+├── base/agents/          # optional agent Deployment + VPA (not in default base)
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
 ├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false
+├── overlays/agents/      # remote agents (topology spread + VPA) + API agent-mode
 └── examples/             # Secrets / Ingress / agent / NATS enable patches
 ```
 
@@ -134,7 +136,25 @@ Default RBAC:
 
 Default aio Deployment sets **`OCTO_ALLOW_SCAN_START=true`** so operators start scans from
 the Jobs page. Scheduled scans can still use `Job` / `CronJob`. Remote agents remain optional
-(`examples/agent-mode-api-patch.yaml`, `agent-deployment.example.yaml`).
+(see **overlays/agents** below, or `examples/agent-*.yaml`).
+
+### Optional: scanner agents (topology spread + VPA)
+
+Agents are **not** in the default `base` kustomization (they need an agent token and
+usually `OCTO_JOB_EXECUTION_MODE=agent`). Enable with:
+
+```bash
+# Requires: Secret octo-man-agent, VPA CRDs, and preferably NATS
+kubectl apply -k k8s/octo-man/overlays/agents
+```
+
+| Manifest | Behavior |
+|----------|----------|
+| `base/agents/agent-deployment.yaml` | Replicas 2 (overlay → 3); zone + hostname `topologySpreadConstraints`; NATS URL wired |
+| `base/agents/agent-vpa.yaml` | VPA `updateMode: Auto` for CPU/RAM under burst scan load |
+| Overlay patches | API `OCTO_JOB_EXECUTION_MODE=agent` + NATS URL |
+
+Standalone example: `octo-man/examples/agent-deployment.example.yaml`.
 
 ### 5. Observe / resume
 

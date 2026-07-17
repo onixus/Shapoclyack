@@ -1,0 +1,8 @@
+# Optional agent Deployment + VPA (not part of default base).
+# Enable via: kubectl apply -k k8s/octo-man/overlays/agents
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - agent-deployment.yaml
+  - agent-vpa.yaml
