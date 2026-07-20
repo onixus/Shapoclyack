@@ -149,6 +149,69 @@ npx shadcn-ui@latest add button card input table dialog dropdown-menu tabs badge
 Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining pages.
 
 **Migration note:** All-in-one and API images serve `web-next` static export (`out/` → `OCTO_WEB_DIST`). Legacy Vite `web/` is kept in-tree until removed in a later cleanup.
+
+---
+
+## EASM evolution (Phases 7–11)
+
+**Goal:** evolve Octo-man from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
+
+**Status:** **Planned** — not started.
+
+### Phase 7 — Asset Inventory & Identity Graph
+
+**Goal:** replace per-run snapshots (`RunSummary`, `AliveHostItem`, `PortAggregateItem`) with a persistent asset registry — the core missing piece for EASM.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 7.1 | Postgres as PRIMARY_DB | `api/db/` (new), `api/services/` | SQLAlchemy/Alembic; `assets`, `asset_identifiers` (IP/domain/cert-hash), `asset_tags`, `ownership` tables | **Planned** |
+| 7.2 | Asset dedup / fingerprint | `scanner/pipeline/asset_identity.py` (new) | Stable `asset_id` from (IP+port) / FQDN / cert SHA256 to avoid duplicates across runs | **Planned** |
+| 7.3 | Lifecycle tracking | `api/services/results_ingest.py`, `ch_ingest_worker.py` | `first_seen` / `last_seen` / `status` (active/stale/decommissioned) per asset | **Planned** |
+| 7.4 | Migrate tenants/keys off JSON | `api/services/tenants.py` | Move JSON-backed tenants/provisioning keys to Postgres; completes Phase 2 | **Planned** |
+
+### Phase 8 — Outside-In Continuous Discovery
+
+**Goal:** surface assets the customer never declared — the defining trait of EASM vs. seed-list scanning.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 8.1 | ASN / WHOIS / BGP org mapping | `scanner/pipeline/asn_discovery.py` (new) | Root domain / org name → ASN → IP ranges via RDAP/BGP data | **Planned** |
+| 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py` | Add permutation/brute-force wordlists and passive-DNS sources alongside existing CT logs | **Planned** |
+| 8.3 | Cloud resource discovery | `scanner/pipeline/cloud_discovery.py` (new) | S3/GCS/Azure Blob bucket enumeration; public cloud ranges by org tag | **Planned** |
+| 8.4 | Typosquat / domain monitoring | `scanner/pipeline/domain_monitor.py` (new) | Look-alike domains; dangling-CNAME subdomain-takeover checks | **Planned** |
+| 8.5 | Continuous org-level scheduling | `scanner/scheduler.py`, K8s CronJob | Move from one-shot scans to a recurring discovery loop with delta output | **Planned** |
+
+### Phase 9 — Exposure Fingerprinting
+
+**Goal:** enrich each asset with context beyond ports/CVEs, needed for real prioritization.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 9.1 | Tech stack fingerprinting | `scanner/pipeline/fingerprint.py` (new) | HTTP headers/banners → CMS/framework/CDN/WAF detection | **Planned** |
+| 9.2 | TLS / certificate posture | `scanner/pipeline/nse.py` | Expiry, weak cipher/protocol, self-signed, issuer checks | **Planned** |
+| 9.3 | Web asset screenshots | new worker (optional) | Visual inventory for UI review | **Planned** |
+| 9.4 | Business-context criticality | `api/services/risk_scoring.py` | Replace port-based criticality heuristic with `asset_criticality` sourced from inventory owner/business-unit tags (Phase 7) | **Planned** |
+
+### Phase 10 — Change Detection & Alerting at Asset Level
+
+**Goal:** EASM value comes from tracking change, not one-off reports.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 10.1 | Asset-level diff events | `scanner/pipeline/report_diff.py`, `api/services/ch_diff.py` | Emit new-asset / new-open-port / cert-expiring / new-CVE / decommissioned-host events | **Planned** |
+| 10.2 | Event bus for alerts | `scanner/pipeline/alerts.py` + NATS | Publish to `events.asset.*` instead of only post-scan summaries | **Planned** |
+| 10.3 | Workflow integrations | `api/services/integrations/` (new) | Webhooks, Jira/ServiceNow ticket creation on new critical exposure; extend existing DefectDojo export | **Planned** |
+
+### Phase 11 — Web UI v2: Attack Surface View
+
+**Goal:** visualize the attack surface, not just per-run tables.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 11.1 | Asset inventory page | `web-next/src/app/(dashboard)/assets` | Cross-run asset list/filter with first/last seen, criticality, owner | **Planned** |
+| 11.2 | Attack surface graph | new component in `web-next/` | Domains → subdomains → IPs → ports → services, clustered by ASN/org | **Planned** |
+| 11.3 | Exposure trend & exec dashboard | Tremor charts in `web-next/` | Exposure score over time, top critical findings | **Planned** |
+
 ---
 
 ## Suggested delivery order
@@ -160,9 +223,14 @@ Phase 1 (NATS + ingest gateway)
         → Phase 3 (ClickHouse + analytical diffs)
             → Phase 4 (spread / VPA)
                 → Phase 5 (Cloudflare / CT / Maddy SMTP)
+                    → Phase 7 (Postgres asset inventory)   # foundation for EASM; depends on tenant isolation from Phase 2
+                        → Phase 8 (outside-in discovery)   # can run in parallel with Phase 7
+                        → Phase 9 (exposure fingerprinting)   # can run in parallel with Phase 7/8, enriches same asset records
+                            → Phase 10 (change detection / alerting)   # depends on 7 + 8 + 9
+                                → Phase 11 (attack surface UI)   # depends on 7; UI shell can start earlier on mocks
 ```
 
-Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP console (can bootstrap UI early with mocks, wire JWT after 2.x). Phase 3 unlocks 50k-asset analytics. Phases 4–5 harden ops and expand discovery/alerting.
+Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP console (can bootstrap UI early with mocks, wire JWT after 2.x). Phase 3 unlocks 50k-asset analytics. Phases 4–5 harden ops and expand discovery/alerting. Phases 7–11 turn the platform into full EASM: a persistent asset inventory, continuous outside-in discovery, exposure fingerprinting, and asset-level change alerting.
 
 ---
 
