@@ -26,9 +26,11 @@ import { runDetailHref } from "@/lib/run-data";
 import { useAuthStore } from "@/lib/auth-store";
 
 function jobBadge(status: JobInfo["status"]) {
-  if (status === "succeeded") return <Badge className="bg-emerald-600 hover:bg-emerald-600">succeeded</Badge>;
+  if (status === "succeeded")
+    return <Badge className="bg-emerald-600 hover:bg-emerald-600">succeeded</Badge>;
   if (status === "failed") return <Badge variant="destructive">failed</Badge>;
-  if (status === "running") return <Badge className="bg-amber-600 hover:bg-amber-600">running</Badge>;
+  if (status === "running")
+    return <Badge className="bg-amber-600 hover:bg-amber-600">running</Badge>;
   return <Badge variant="secondary">queued</Badge>;
 }
 
@@ -45,7 +47,12 @@ export default function JobsPage() {
   const [portsUdp, setPortsUdp] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
-  const { data = [], isLoading, error, isFetching } = useQuery({
+  const {
+    data = [],
+    isLoading,
+    error,
+    isFetching,
+  } = useQuery({
     queryKey: ["jobs"],
     queryFn: fetchJobs,
     refetchInterval: 4_000,

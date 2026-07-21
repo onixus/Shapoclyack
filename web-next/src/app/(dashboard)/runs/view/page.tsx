@@ -138,8 +138,7 @@ function RunDetailInner() {
 
   const loading =
     detailQuery.isLoading || hostsQuery.isLoading || portsQuery.isLoading || vulnsQuery.isLoading;
-  const error =
-    detailQuery.error || hostsQuery.error || portsQuery.error || vulnsQuery.error;
+  const error = detailQuery.error || hostsQuery.error || portsQuery.error || vulnsQuery.error;
 
   if (!runId) {
     return (
@@ -219,9 +218,7 @@ function RunDetailInner() {
         <Metric
           label="Open ports"
           value={String(
-            summary.open_host_port_pairs ??
-              ports.reduce((n, p) => n + p.host_count, 0) ??
-              "—",
+            summary.open_host_port_pairs ?? ports.reduce((n, p) => n + p.host_count, 0) ?? "—",
           )}
           hint={`${ports.length} distinct`}
         />
@@ -280,15 +277,23 @@ function RunDetailInner() {
             <section key={sev} className="rounded-lg border bg-white">
               <div className="flex items-center justify-between border-b px-4 py-3">
                 <div className="flex items-center gap-2">
-                  <Badge className={severityClass(sev)} variant={sev === "unknown" ? "secondary" : "default"}>
+                  <Badge
+                    className={severityClass(sev)}
+                    variant={sev === "unknown" ? "secondary" : "default"}
+                  >
                     {sev}
                   </Badge>
-                  <span className="text-sm text-muted-foreground">{grouped[sev].length} findings</span>
+                  <span className="text-sm text-muted-foreground">
+                    {grouped[sev].length} findings
+                  </span>
                 </div>
               </div>
               <ul className="divide-y">
                 {grouped[sev].slice(0, 200).map((item, index) => (
-                  <li key={`${item.host}-${item.port}-${item.cve}-${index}`} className="px-4 py-3 text-sm">
+                  <li
+                    key={`${item.host}-${item.port}-${item.cve}-${index}`}
+                    className="px-4 py-3 text-sm"
+                  >
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
                         <p className="font-medium text-slate-900">
@@ -358,15 +363,7 @@ function RunDetailInner() {
   );
 }
 
-function Metric({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-}) {
+function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="rounded-lg border bg-white p-4">
       <p className="text-2xl font-semibold tabular-nums text-slate-900">{value}</p>

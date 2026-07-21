@@ -231,7 +231,12 @@ export async function fetchRun(runId: string) {
   }
 }
 
-export async function fetchVulns(runId: string, limit = 5000, host?: string | null, port?: string | null) {
+export async function fetchVulns(
+  runId: string,
+  limit = 5000,
+  host?: string | null,
+  port?: string | null,
+) {
   try {
     const params = new URLSearchParams({ limit: String(limit) });
     if (host) params.set("host", host);
@@ -327,9 +332,7 @@ export async function fetchAssets(opts?: {
 export async function fetchAsset(assetId: string, tenantId = "default") {
   try {
     const params = new URLSearchParams({ tenant_id: tenantId });
-    const { data } = await api.get<AssetDetail>(
-      `/assets/${encodeURIComponent(assetId)}?${params}`,
-    );
+    const { data } = await api.get<AssetDetail>(`/assets/${encodeURIComponent(assetId)}?${params}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

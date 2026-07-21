@@ -34,11 +34,14 @@ function SortIcon({ sorted }: { sorted: false | "asc" | "desc" }) {
 }
 
 export default function RunsPage() {
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "started_at", desc: true },
-  ]);
+  const [sorting, setSorting] = useState<SortingState>([{ id: "started_at", desc: true }]);
 
-  const { data = [], isLoading, error, isFetching } = useQuery({
+  const {
+    data = [],
+    isLoading,
+    error,
+    isFetching,
+  } = useQuery({
     queryKey: ["runs"],
     queryFn: fetchRuns,
     refetchInterval: 10_000,

@@ -4,11 +4,7 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AreaChart, Card, DonutChart, Metric, Text, Title } from "@tremor/react";
-import {
-  fetchPorts,
-  fetchRuns,
-  fetchVulns,
-} from "@/lib/api";
+import { fetchPorts, fetchRuns, fetchVulns } from "@/lib/api";
 import {
   countSeverities,
   pickLatestRun,
@@ -24,10 +20,7 @@ export default function DashboardPage() {
     refetchInterval: 15_000,
   });
 
-  const latest = useMemo(
-    () => pickLatestRun(runsQuery.data || []),
-    [runsQuery.data],
-  );
+  const latest = useMemo(() => pickLatestRun(runsQuery.data || []), [runsQuery.data]);
   const runId = latest?.run_id;
 
   const vulnsQuery = useQuery({
@@ -42,23 +35,15 @@ export default function DashboardPage() {
     enabled: Boolean(runId),
   });
 
-  const severityCounts = useMemo(
-    () => countSeverities(vulnsQuery.data || []),
-    [vulnsQuery.data],
-  );
-  const trend = useMemo(
-    () => recentRunTrend(runsQuery.data || [], 15),
-    [runsQuery.data],
-  );
-  const topPorts = useMemo(
-    () => topVulnerablePorts(portsQuery.data || [], 5),
-    [portsQuery.data],
-  );
+  const severityCounts = useMemo(() => countSeverities(vulnsQuery.data || []), [vulnsQuery.data]);
+  const trend = useMemo(() => recentRunTrend(runsQuery.data || [], 15), [runsQuery.data]);
+  const topPorts = useMemo(() => topVulnerablePorts(portsQuery.data || [], 5), [portsQuery.data]);
 
-  const isLoading = runsQuery.isLoading || (Boolean(runId) && (vulnsQuery.isLoading || portsQuery.isLoading));
+  const isLoading =
+    runsQuery.isLoading || (Boolean(runId) && (vulnsQuery.isLoading || portsQuery.isLoading));
   const error =
     runsQuery.error || vulnsQuery.error || portsQuery.error
-      ? (runsQuery.error || vulnsQuery.error || portsQuery.error) as Error
+      ? ((runsQuery.error || vulnsQuery.error || portsQuery.error) as Error)
       : null;
 
   return (
@@ -84,9 +69,7 @@ export default function DashboardPage() {
             .
           </p>
         </div>
-        {runsQuery.isFetching ? (
-          <p className="text-xs text-muted-foreground">Refreshing…</p>
-        ) : null}
+        {runsQuery.isFetching ? <p className="text-xs text-muted-foreground">Refreshing…</p> : null}
       </div>
 
       {error ? (
@@ -104,21 +87,15 @@ export default function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-3">
         <Card decoration="top" decorationColor="blue">
           <Text>Alive hosts (latest)</Text>
-          <Metric>
-            {isLoading ? "…" : (latest?.alive_hosts ?? 0).toLocaleString()}
-          </Metric>
+          <Metric>{isLoading ? "…" : (latest?.alive_hosts ?? 0).toLocaleString()}</Metric>
         </Card>
         <Card decoration="top" decorationColor="rose">
           <Text>Critical findings</Text>
-          <Metric>
-            {isLoading ? "…" : severityCounts.critical.toLocaleString()}
-          </Metric>
+          <Metric>{isLoading ? "…" : severityCounts.critical.toLocaleString()}</Metric>
         </Card>
         <Card decoration="top" decorationColor="amber">
           <Text>High findings</Text>
-          <Metric>
-            {isLoading ? "…" : severityCounts.high.toLocaleString()}
-          </Metric>
+          <Metric>{isLoading ? "…" : severityCounts.high.toLocaleString()}</Metric>
         </Card>
       </div>
 
@@ -155,7 +132,10 @@ export default function DashboardPage() {
               />
               <ul className="mt-4 space-y-2 text-sm text-slate-600">
                 {topPorts.map((port) => (
-                  <li key={port.name} className="flex justify-between border-b border-slate-100 py-1">
+                  <li
+                    key={port.name}
+                    className="flex justify-between border-b border-slate-100 py-1"
+                  >
                     <span>{port.name}</span>
                     <span className="font-medium tabular-nums">{port.value.toLocaleString()}</span>
                   </li>

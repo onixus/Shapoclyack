@@ -2,11 +2,7 @@ import { AuthGate } from "@/components/auth-gate";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopHeader } from "@/components/layout/TopHeader";
 
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGate>
       <div className="min-h-screen bg-slate-50 lg:flex">

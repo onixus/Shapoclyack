@@ -13,12 +13,7 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -111,7 +106,11 @@ export default function AssetsPage() {
         id: "actions",
         header: "",
         cell: ({ row }) => (
-          <Button variant="outline" size="sm" onClick={() => setSelectedAssetId(row.original.asset_id)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSelectedAssetId(row.original.asset_id)}
+          >
             View
           </Button>
         ),
@@ -192,7 +191,10 @@ export default function AssetsPage() {
           <TableBody>
             {!assetsQuery.isLoading && table.getRowModel().rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columns.length} className="py-8 text-center text-sm text-muted-foreground">
+                <TableCell
+                  colSpan={columns.length}
+                  className="py-8 text-center text-sm text-muted-foreground"
+                >
                   No assets recorded yet — assets are upserted here after a scan completes.
                 </TableCell>
               </TableRow>
@@ -230,7 +232,10 @@ export default function AssetsPage() {
         </Button>
       </div>
 
-      <Dialog open={Boolean(selectedAssetId)} onOpenChange={(open) => !open && setSelectedAssetId(null)}>
+      <Dialog
+        open={Boolean(selectedAssetId)}
+        onOpenChange={(open) => !open && setSelectedAssetId(null)}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Asset detail</DialogTitle>

@@ -2,16 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  CalendarDays,
-  Database,
-  Home,
-  Menu,
-  Play,
-  Server,
-  Users,
-  X,
-} from "lucide-react";
+import { CalendarDays, Database, Home, Menu, Play, Server, Users, X } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -60,10 +51,7 @@ export function Sidebar() {
           </div>
           <nav className="flex-1 space-y-1 p-3" aria-label="Primary">
             {NAV.map((item) => {
-              const active =
-                item.href === "/"
-                  ? pathname === "/"
-                  : pathname.startsWith(item.href);
+              const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               const Icon = item.icon;
               return (
                 <Link

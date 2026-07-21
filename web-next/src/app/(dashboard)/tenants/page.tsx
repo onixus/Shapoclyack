@@ -32,12 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  createProvisioningKey,
-  createTenant,
-  fetchTenants,
-  type TenantInfo,
-} from "@/lib/api";
+import { createProvisioningKey, createTenant, fetchTenants, type TenantInfo } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 function statusBadge(status: TenantInfo["status"]) {
@@ -58,7 +53,12 @@ export default function TenantsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
-  const { data = [], isLoading, error, isFetching } = useQuery({
+  const {
+    data = [],
+    isLoading,
+    error,
+    isFetching,
+  } = useQuery({
     queryKey: ["tenants"],
     queryFn: fetchTenants,
     enabled: canOperate,
@@ -114,8 +114,7 @@ export default function TenantsPage() {
     const q = query.trim().toLowerCase();
     if (!q) return data;
     return data.filter(
-      (t) =>
-        t.name.toLowerCase().includes(q) || t.tenant_id.toLowerCase().includes(q),
+      (t) => t.name.toLowerCase().includes(q) || t.tenant_id.toLowerCase().includes(q),
     );
   }, [data, query]);
 

@@ -68,4 +68,3 @@ export function topVulnerablePorts(ports: PortAggregate[], limit = 5) {
     .sort((a, b) => b.value - a.value)
     .slice(0, limit);
 }
-

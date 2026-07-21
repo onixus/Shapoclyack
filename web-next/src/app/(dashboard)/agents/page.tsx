@@ -23,14 +23,20 @@ import { fetchAgents, type AgentInfo } from "@/lib/api";
 
 function statusBadge(agent: AgentInfo) {
   if (!agent.online) return <Badge variant="secondary">offline</Badge>;
-  if (agent.status === "busy") return <Badge className="bg-amber-600 hover:bg-amber-600">busy</Badge>;
+  if (agent.status === "busy")
+    return <Badge className="bg-amber-600 hover:bg-amber-600">busy</Badge>;
   if (agent.status === "error") return <Badge variant="destructive">error</Badge>;
   if (agent.status === "stale") return <Badge variant="outline">stale</Badge>;
   return <Badge className="bg-emerald-600 hover:bg-emerald-600">idle</Badge>;
 }
 
 export default function AgentsPage() {
-  const { data = [], isLoading, error, isFetching } = useQuery({
+  const {
+    data = [],
+    isLoading,
+    error,
+    isFetching,
+  } = useQuery({
     queryKey: ["agents"],
     queryFn: fetchAgents,
     refetchInterval: 5_000,
