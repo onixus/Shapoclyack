@@ -31,11 +31,18 @@ spec:
             - "/etc/nats/nats.conf"
             - "--jetstream"
             - "--store_dir=/data"
+          env:
+            - name: SERVER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           ports:
             - name: client
               containerPort: 4222
             - name: monitor
               containerPort: 8222
+            - name: cluster
+              containerPort: 6222
           readinessProbe:
             httpGet:
               path: /healthz

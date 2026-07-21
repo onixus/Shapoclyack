@@ -42,6 +42,19 @@ Example patches: `examples/nats-api-patch.yaml`, `examples/nats-agent-patch.yaml
 
 Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream `INGEST`).
 
+**Retention:** streams are bounded by default (`JOBS` max age 24h, `INGEST` max
+age 7d / max bytes 10GiB) so a stalled agent or disabled ClickHouse worker
+can't grow JetStream storage without limit. Override on the API deployment:
+`OCTO_NATS_JOBS_MAX_AGE_SECONDS`, `OCTO_NATS_INGEST_MAX_AGE_SECONDS`,
+`OCTO_NATS_INGEST_MAX_BYTES`. Limits apply to existing streams on API restart
+(via JetStream `update_stream`), not just first creation.
+
+**HA:** base runs a single NATS pod (fine for dev/lab). The cluster config is
+already in `base/nats/configmap.yaml` — apply `examples/nats-ha-patch.yaml`
+to scale to 3 replicas for a real quorum, and set `OCTO_NATS_STREAM_REPLICAS=3`
+on the API so streams replicate R3 instead of staying single-copy. Each
+replica requests its own 5Gi PVC (3 nodes = 15Gi total, not shared).
+
 ### ClickHouse
 
 Base includes `octo-man-clickhouse` under `base/clickhouse/` (50Gi PVC).

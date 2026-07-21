@@ -16,4 +16,20 @@ data:
       max_file: 4G
     }
 
-    server_name: octo-man-nats
+    # $SERVER_NAME (pod name, e.g. octo-man-nats-0) keeps cluster peers
+    # distinct; set via downward API in statefulset.yaml.
+    server_name: $SERVER_NAME
+
+    # Cluster block is safe at replicas=1 (no peers to route to — a single
+    # node just runs standalone). Bump `spec.replicas` to 3 (see
+    # examples/nats-ha-patch.yaml) to form a real JetStream cluster; also set
+    # OCTO_NATS_STREAM_REPLICAS=3 on the API so streams replicate R3.
+    cluster {
+      name: octo-man-nats
+      port: 6222
+      routes: [
+        nats://octo-man-nats-0.octo-man-nats:6222
+        nats://octo-man-nats-1.octo-man-nats:6222
+        nats://octo-man-nats-2.octo-man-nats:6222
+      ]
+    }

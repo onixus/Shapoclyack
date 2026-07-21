@@ -19,6 +19,9 @@ spec:
     - name: monitor
       port: 8222
       targetPort: monitor
+    - name: cluster
+      port: 6222
+      targetPort: cluster
 ---
 # Stable ClusterIP for API / agents: nats://octo-man-nats-client:4222
 apiVersion: v1

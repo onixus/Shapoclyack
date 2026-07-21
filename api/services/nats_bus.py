@@ -5,6 +5,13 @@ Subjects (streams created on connect when missing):
   - ingest.raw_results → stream INGEST
 
 Set OCTO_NATS_URL to enable. Empty URL keeps legacy HTTP-only agent flow.
+
+Retention / HA overrides (all optional, applied on every connect via
+JetStream ``update_stream``, so changing them takes effect on redeploy):
+  - OCTO_NATS_JOBS_MAX_AGE_SECONDS   (default 86400 / 24h)
+  - OCTO_NATS_INGEST_MAX_AGE_SECONDS (default 604800 / 7d)
+  - OCTO_NATS_INGEST_MAX_BYTES       (default 10GiB)
+  - OCTO_NATS_STREAM_REPLICAS        (default 1; set 3 on a 3-node cluster)
 """
 
 from __future__ import annotations
@@ -14,6 +21,7 @@ import atexit
 import hashlib
 import json
 import logging
+import os
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +37,26 @@ STREAM_INGEST = "INGEST"
 
 # Durable pull consumer for remote agents (queue group = fair dispatch).
 CONSUMER_AGENTS = "octo-agents"
+
+# Retention bounds so a stalled consumer / unreachable ClickHouse worker can't
+# grow JetStream storage without limit. Overridable per environment.
+_DEFAULT_JOBS_MAX_AGE_SECONDS = 24 * 3600
+_DEFAULT_INGEST_MAX_AGE_SECONDS = 7 * 24 * 3600
+_DEFAULT_INGEST_MAX_BYTES = 10 * 1024 * 1024 * 1024  # 10GB
+# JetStream replication factor (R). 1 = single node (default/dev). Set to 3 on
+# a 3+ node NATS cluster (e.g. prod overlay) for stream-level HA.
+_DEFAULT_STREAM_REPLICAS = 1
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        LOG.warning("Invalid int for %s=%r; using default %s", name, raw, default)
+        return default
 
 
 @dataclass(frozen=True)
@@ -91,6 +119,16 @@ class NatsBus:
             name="octo-man-api",
         )
         self._js = self._nc.jetstream()
+
+        stream_replicas = _int_env("OCTO_NATS_STREAM_REPLICAS", _DEFAULT_STREAM_REPLICAS)
+        jobs_max_age = _int_env("OCTO_NATS_JOBS_MAX_AGE_SECONDS", _DEFAULT_JOBS_MAX_AGE_SECONDS)
+        ingest_max_age = _int_env(
+            "OCTO_NATS_INGEST_MAX_AGE_SECONDS", _DEFAULT_INGEST_MAX_AGE_SECONDS
+        )
+        ingest_max_bytes = _int_env(
+            "OCTO_NATS_INGEST_MAX_BYTES", _DEFAULT_INGEST_MAX_BYTES
+        )
+
         await self._ensure_stream(
             StreamConfig(
                 name=STREAM_JOBS,
@@ -98,6 +136,10 @@ class NatsBus:
                 retention=RetentionPolicy.WORK_QUEUE,
                 storage=StorageType.FILE,
                 max_msgs=100_000,
+                # Unclaimed/unacked job offers older than this are dropped —
+                # bounds storage if agents stay offline indefinitely.
+                max_age=float(jobs_max_age),
+                num_replicas=stream_replicas,
             )
         )
         await self._ensure_stream(
@@ -107,6 +149,11 @@ class NatsBus:
                 retention=RetentionPolicy.LIMITS,
                 storage=StorageType.FILE,
                 max_msgs=500_000,
+                # Bounds storage if the ClickHouse ingest worker falls behind
+                # or is disabled; oldest raw results are discarded past this.
+                max_age=float(ingest_max_age),
+                max_bytes=ingest_max_bytes,
+                num_replicas=stream_replicas,
             )
         )
         # Prefetch pull consumer for agents (created by API so agents can bind).
@@ -133,7 +180,15 @@ class NatsBus:
                 return
             except Exception as add_exc:  # noqa: BLE001
                 last_exc = add_exc
-                # Already present (or raced with another API replica) — treat as success.
+                # Already present (or raced with another API replica). Push our
+                # retention/replica config onto it so limit changes (e.g. a new
+                # OCTO_NATS_*_MAX_AGE_SECONDS) take effect on redeploy, not only
+                # on first stream creation.
+                try:
+                    await self._js.update_stream(config=config)
+                    return
+                except Exception:  # noqa: BLE001
+                    pass
                 try:
                     await self._js.stream_info(config.name)
                     return
