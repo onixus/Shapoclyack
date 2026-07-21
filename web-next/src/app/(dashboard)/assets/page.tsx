@@ -1,71 +1,39 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import {
-  flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  useReactTable,
-  type ColumnDef,
-} from "@tanstack/react-table";
+import { type ColumnDef } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { fetchAsset, fetchAssets, type AssetStatus, type AssetSummary } from "@/lib/api";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { DataTable } from "@/components/data-table";
+import { StatusBadge } from "@/components/status-badge";
+import { useAssetDetail, useAssets } from "@/hooks/use-assets";
+import { type AssetStatus, type AssetSummary } from "@/lib/api";
+import { ASSET_STATUS } from "@/lib/config/statuses";
 
-function statusBadge(status: AssetStatus) {
-  const map: Record<AssetStatus, string> = {
-    active: "bg-emerald-600 hover:bg-emerald-600",
-    stale: "bg-amber-500 hover:bg-amber-500 text-slate-900",
-    decommissioned: "bg-slate-400 hover:bg-slate-400",
-  };
-  return <Badge className={map[status]}>{status}</Badge>;
-}
+const STATUS_FILTER_ALL = "all";
 
 export default function AssetsPage() {
-  const [query, setQuery] = useState("");
   const [status, setStatus] = useState<AssetStatus | "">("");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
 
-  const assetsQuery = useQuery({
-    queryKey: ["assets", { status }],
-    queryFn: () => fetchAssets({ status }),
-    refetchInterval: 30_000,
-  });
-
-  const detailQuery = useQuery({
-    queryKey: ["asset", selectedAssetId],
-    queryFn: () => fetchAsset(selectedAssetId!),
-    enabled: Boolean(selectedAssetId),
-  });
-
-  const data = useMemo(() => {
-    const rows = assetsQuery.data || [];
-    const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
-      (row) =>
-        (row.primary_identifier || "").toLowerCase().includes(q) ||
-        row.asset_id.toLowerCase().includes(q),
-    );
-  }, [assetsQuery.data, query]);
+  const assetsQuery = useAssets({ status });
+  const detailQuery = useAssetDetail(selectedAssetId);
+  const data = assetsQuery.data || [];
 
   const columns = useMemo<ColumnDef<AssetSummary>[]>(
     () => [
       {
-        accessorKey: "primary_identifier",
+        id: "asset",
+        accessorFn: (row) => `${row.primary_identifier || ""} ${row.asset_id}`,
         header: "Asset",
         cell: ({ row }) => (
           <div className="space-y-1">
@@ -82,11 +50,12 @@ export default function AssetsPage() {
       {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => statusBadge(row.original.status),
+        cell: ({ row }) => <StatusBadge value={row.original.status} map={ASSET_STATUS} />,
       },
       {
         accessorKey: "first_seen",
         header: "First Seen",
+        sortingFn: "datetime",
         cell: ({ getValue }) => (
           <span className="text-sm text-muted-foreground">
             {formatDistanceToNow(new Date(String(getValue())), { addSuffix: true })}
@@ -96,6 +65,7 @@ export default function AssetsPage() {
       {
         accessorKey: "last_seen",
         header: "Last Seen",
+        sortingFn: "datetime",
         cell: ({ getValue }) => (
           <span className="text-sm text-muted-foreground">
             {formatDistanceToNow(new Date(String(getValue())), { addSuffix: true })}
@@ -105,6 +75,7 @@ export default function AssetsPage() {
       {
         id: "actions",
         header: "",
+        enableSorting: false,
         cell: ({ row }) => (
           <Button
             variant="outline"
@@ -119,17 +90,6 @@ export default function AssetsPage() {
     [],
   );
 
-  const table = useReactTable({
-    data,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    initialState: {
-      pagination: { pageSize: 15 },
-    },
-  });
-
   return (
     <div className="space-y-6">
       <div>
@@ -141,96 +101,35 @@ export default function AssetsPage() {
         </p>
       </div>
 
-      {assetsQuery.error ? (
-        <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
-          {(assetsQuery.error as Error).message}
-        </p>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Input
-          className="max-w-md"
-          placeholder="Filter by IP or hostname…"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <select
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-          value={status}
-          onChange={(event) => setStatus(event.target.value as AssetStatus | "")}
-        >
-          <option value="">All statuses</option>
-          <option value="active">Active</option>
-          <option value="stale">Stale</option>
-          <option value="decommissioned">Decommissioned</option>
-        </select>
-        <p className="text-xs text-muted-foreground">
-          {assetsQuery.isLoading
-            ? "Loading…"
-            : `${data.length.toLocaleString()} asset${data.length === 1 ? "" : "s"} · page ${
-                table.getState().pagination.pageIndex + 1
-              } / ${Math.max(table.getPageCount(), 1)}`}
-        </p>
-      </div>
-
-      <div className="rounded-lg border bg-white">
-        <Table>
-          <TableHeader>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
-                  </TableHead>
-                ))}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {!assetsQuery.isLoading && table.getRowModel().rows.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={columns.length}
-                  className="py-8 text-center text-sm text-muted-foreground"
-                >
-                  No assets recorded yet — assets are upserted here after a scan completes.
-                </TableCell>
-              </TableRow>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id}>
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => table.previousPage()}
-          disabled={!table.getCanPreviousPage()}
-        >
-          Previous
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => table.nextPage()}
-          disabled={!table.getCanNextPage()}
-        >
-          Next
-        </Button>
-      </div>
+      <DataTable
+        columns={columns}
+        data={data}
+        isLoading={assetsQuery.isLoading}
+        error={assetsQuery.error}
+        initialSorting={[{ id: "last_seen", desc: true }]}
+        searchPlaceholder="Filter by IP or hostname…"
+        toolbar={
+          <Select
+            value={status || STATUS_FILTER_ALL}
+            onValueChange={(value) =>
+              setStatus(value === STATUS_FILTER_ALL ? "" : (value as AssetStatus))
+            }
+          >
+            <SelectTrigger className="w-48">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={STATUS_FILTER_ALL}>All statuses</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="stale">Stale</SelectItem>
+              <SelectItem value="decommissioned">Decommissioned</SelectItem>
+            </SelectContent>
+          </Select>
+        }
+        meta={`${data.length.toLocaleString()} asset${data.length === 1 ? "" : "s"}`}
+        loadingMessage="Loading assets…"
+        emptyMessage="No assets recorded yet — assets are upserted here after a scan completes."
+      />
 
       <Dialog
         open={Boolean(selectedAssetId)}
@@ -248,7 +147,7 @@ export default function AssetsPage() {
             <div className="space-y-4 text-sm">
               <div className="flex items-center justify-between">
                 <code className="text-xs text-muted-foreground">{detailQuery.data.asset_id}</code>
-                {statusBadge(detailQuery.data.status)}
+                <StatusBadge value={detailQuery.data.status} map={ASSET_STATUS} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>

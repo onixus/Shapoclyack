@@ -2,41 +2,39 @@
 
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  flexRender,
-  getCoreRowModel,
-  getPaginationRowModel,
-  useReactTable,
-  type ColumnDef,
-} from "@tanstack/react-table";
+import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { fetchJobs, startScan, type JobInfo } from "@/lib/api";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { DataTable } from "@/components/data-table";
+import { StatusBadge } from "@/components/status-badge";
+import { useJobs, useStartScan } from "@/hooks/use-jobs";
+import { type JobInfo } from "@/lib/api";
+import { JOB_STATUS } from "@/lib/config/statuses";
 import { runDetailHref } from "@/lib/run-data";
 import { useAuthStore } from "@/lib/auth-store";
 
-function jobBadge(status: JobInfo["status"]) {
-  if (status === "succeeded")
-    return <Badge className="bg-emerald-600 hover:bg-emerald-600">succeeded</Badge>;
-  if (status === "failed") return <Badge variant="destructive">failed</Badge>;
-  if (status === "running")
-    return <Badge className="bg-amber-600 hover:bg-amber-600">running</Badge>;
-  return <Badge variant="secondary">queued</Badge>;
-}
-
 export default function JobsPage() {
   const { canOperate } = useAuthStore();
-  const queryClient = useQueryClient();
   const [mode, setMode] = useState("balanced");
   const [delta, setDelta] = useState(false);
   const [skipNse, setSkipNse] = useState(false);
@@ -45,30 +43,10 @@ export default function JobsPage() {
   const [domains, setDomains] = useState("");
   const [ports, setPorts] = useState("");
   const [portsUdp, setPortsUdp] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const {
-    data = [],
-    isLoading,
-    error,
-    isFetching,
-  } = useQuery({
-    queryKey: ["jobs"],
-    queryFn: fetchJobs,
-    refetchInterval: 4_000,
-    enabled: canOperate,
-  });
-
-  const mutation = useMutation({
-    mutationFn: startScan,
-    onSuccess: async () => {
-      setFormError(null);
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
-    onError: (err) => {
-      setFormError(err instanceof Error ? err.message : "Failed to start scan");
-    },
-  });
+  const { data = [], isLoading, error, isFetching } = useJobs(canOperate);
+  const mutation = useStartScan();
 
   const columns = useMemo<ColumnDef<JobInfo>[]>(
     () => [
@@ -80,7 +58,7 @@ export default function JobsPage() {
       {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => jobBadge(row.original.status),
+        cell: ({ row }) => <StatusBadge value={row.original.status} map={JOB_STATUS} />,
       },
       {
         accessorKey: "mode",
@@ -89,6 +67,7 @@ export default function JobsPage() {
       {
         accessorKey: "run_id",
         header: "Run",
+        enableSorting: false,
         cell: ({ row }) => {
           const runId = row.original.run_id;
           if (!runId) return "—";
@@ -111,6 +90,7 @@ export default function JobsPage() {
       {
         accessorKey: "started_at",
         header: "Started",
+        sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at
             ? format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm:ss")
@@ -124,13 +104,6 @@ export default function JobsPage() {
     [],
   );
 
-  const table = useReactTable({
-    data,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-  });
-
   if (!canOperate) {
     return (
       <div className="space-y-2">
@@ -142,8 +115,14 @@ export default function JobsPage() {
     );
   }
 
-  function onStart(event: FormEvent) {
+  const noTargets = !ranges.trim() && !domains.trim();
+
+  function onSubmit(event: FormEvent) {
     event.preventDefault();
+    setConfirmOpen(true);
+  }
+
+  function startConfirmed() {
     mutation.mutate({
       mode,
       delta,
@@ -166,141 +145,122 @@ export default function JobsPage() {
         </p>
       </div>
 
-      <form onSubmit={onStart} className="space-y-4 rounded-lg border bg-white p-4">
+      <form onSubmit={onSubmit} className="space-y-4 rounded-lg border bg-white p-4">
         <div className="grid gap-4 md:grid-cols-2">
-          <label className="grid gap-2 text-sm font-medium">
-            Mode
-            <select
-              className="flex h-10 rounded-md border border-input bg-background px-3 text-sm"
-              value={mode}
-              onChange={(e) => setMode(e.target.value)}
-            >
-              <option value="safe">safe</option>
-              <option value="balanced">balanced</option>
-              <option value="fast">fast</option>
-            </select>
-          </label>
+          <div className="grid gap-2">
+            <Label htmlFor="scan-mode">Mode</Label>
+            <Select value={mode} onValueChange={setMode}>
+              <SelectTrigger id="scan-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="safe">safe</SelectItem>
+                <SelectItem value="balanced">balanced</SelectItem>
+                <SelectItem value="fast">fast</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex flex-wrap items-end gap-4 text-sm">
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={delta} onChange={(e) => setDelta(e.target.checked)} />
+            <Label className="flex items-center gap-2 font-normal">
+              <Checkbox checked={delta} onCheckedChange={(checked) => setDelta(checked === true)} />
               Delta
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
+            </Label>
+            <Label className="flex items-center gap-2 font-normal">
+              <Checkbox
                 checked={skipNse}
-                onChange={(e) => setSkipNse(e.target.checked)}
+                onCheckedChange={(checked) => setSkipNse(checked === true)}
               />
               Skip NSE
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
+            </Label>
+            <Label className="flex items-center gap-2 font-normal">
+              <Checkbox
                 checked={notify}
-                onChange={(e) => setNotify(e.target.checked)}
+                onCheckedChange={(checked) => setNotify(checked === true)}
               />
               Notify
-            </label>
+            </Label>
           </div>
-          <label className="grid gap-2 text-sm font-medium md:col-span-1">
-            Ranges (optional)
-            <textarea
-              className="min-h-[96px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+          <div className="grid gap-2">
+            <Label htmlFor="scan-ranges">Ranges (optional)</Label>
+            <Textarea
+              id="scan-ranges"
+              className="min-h-[96px]"
               value={ranges}
               onChange={(e) => setRanges(e.target.value)}
               placeholder={"10.0.0.0/24"}
               spellCheck={false}
             />
-          </label>
-          <label className="grid gap-2 text-sm font-medium">
-            Domains (optional)
-            <textarea
-              className="min-h-[96px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="scan-domains">Domains (optional)</Label>
+            <Textarea
+              id="scan-domains"
+              className="min-h-[96px]"
               value={domains}
               onChange={(e) => setDomains(e.target.value)}
               placeholder={"example.com"}
               spellCheck={false}
             />
-          </label>
-          <label className="grid gap-2 text-sm font-medium">
-            TCP ports (optional)
-            <textarea
-              className="min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="scan-ports">TCP ports (optional)</Label>
+            <Textarea
+              id="scan-ports"
+              className="min-h-[72px]"
               value={ports}
               onChange={(e) => setPorts(e.target.value)}
               placeholder={"22,80,443\n8000-8010"}
               spellCheck={false}
             />
-          </label>
-          <label className="grid gap-2 text-sm font-medium">
-            UDP ports (optional)
-            <textarea
-              className="min-h-[72px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="scan-ports-udp">UDP ports (optional)</Label>
+            <Textarea
+              id="scan-ports-udp"
+              className="min-h-[72px]"
               value={portsUdp}
               onChange={(e) => setPortsUdp(e.target.value)}
               placeholder={"53,123,161\n500-510"}
               spellCheck={false}
             />
-          </label>
+          </div>
         </div>
         <p className="text-xs text-muted-foreground">
           Empty fields use server default input files. UDP list applies when{" "}
           <code>ports.protocol</code> is <code>udp</code> or <code>tcp_udp</code>.
         </p>
-        {formError ? <p className="text-sm text-rose-600">{formError}</p> : null}
         <Button type="submit" disabled={mutation.isPending}>
           {mutation.isPending ? "Starting…" : "Start scan"}
         </Button>
       </form>
 
-      {error ? (
-        <p className="text-sm text-rose-600">
-          {error instanceof Error ? error.message : "Failed to load jobs"}
-        </p>
-      ) : null}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Start a {mode} scan?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {noTargets
+                ? "No targets specified — the server default input files will be scanned. Active scanning will begin immediately after confirmation."
+                : "Active scanning of the specified targets will begin immediately after confirmation."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={startConfirmed}>Start scan</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-      <div className="rounded-lg border bg-white">
-        <Table>
-          <TableHeader>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
-                  </TableHead>
-                ))}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="text-muted-foreground">
-                  Loading jobs…
-                </TableCell>
-              </TableRow>
-            ) : table.getRowModel().rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="text-muted-foreground">
-                  No jobs yet.
-                </TableCell>
-              </TableRow>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id}>
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
+      <DataTable
+        columns={columns}
+        data={data}
+        isLoading={isLoading}
+        error={error}
+        initialSorting={[{ id: "started_at", desc: true }]}
+        searchPlaceholder="Filter jobs…"
+        loadingMessage="Loading jobs…"
+        emptyMessage="No jobs yet."
+      />
     </div>
   );
 }

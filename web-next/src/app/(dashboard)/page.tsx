@@ -2,9 +2,12 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { AreaChart, Card, DonutChart, Metric, Text, Title } from "@tremor/react";
-import { fetchPorts, fetchRuns, fetchVulns } from "@/lib/api";
+import { AreaChart, Card, DonutChart, Title } from "@tremor/react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { KpiCard } from "@/components/kpi-card";
+import { useRunPorts, useRuns, useRunVulns } from "@/hooks/use-runs";
+import { POLL_INTERVALS } from "@/lib/config/constants";
+import { SEVERITY_STATUS } from "@/lib/config/statuses";
 import {
   countSeverities,
   pickLatestRun,
@@ -14,26 +17,13 @@ import {
 } from "@/lib/run-data";
 
 export default function DashboardPage() {
-  const runsQuery = useQuery({
-    queryKey: ["runs"],
-    queryFn: fetchRuns,
-    refetchInterval: 15_000,
-  });
+  const runsQuery = useRuns(POLL_INTERVALS.dashboard);
 
   const latest = useMemo(() => pickLatestRun(runsQuery.data || []), [runsQuery.data]);
-  const runId = latest?.run_id;
+  const runId = latest?.run_id ?? "";
 
-  const vulnsQuery = useQuery({
-    queryKey: ["run", runId, "vulns", "dashboard"],
-    queryFn: () => fetchVulns(runId!, 5000),
-    enabled: Boolean(runId),
-  });
-
-  const portsQuery = useQuery({
-    queryKey: ["run", runId, "ports", "dashboard"],
-    queryFn: () => fetchPorts(runId!),
-    enabled: Boolean(runId),
-  });
+  const vulnsQuery = useRunVulns(runId);
+  const portsQuery = useRunPorts(runId);
 
   const severityCounts = useMemo(() => countSeverities(vulnsQuery.data || []), [vulnsQuery.data]);
   const trend = useMemo(() => recentRunTrend(runsQuery.data || [], 15), [runsQuery.data]);
@@ -73,9 +63,9 @@ export default function DashboardPage() {
       </div>
 
       {error ? (
-        <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
-          {error.message}
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
       ) : null}
 
       {!isLoading && !latest ? (
@@ -85,18 +75,21 @@ export default function DashboardPage() {
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-3">
-        <Card decoration="top" decorationColor="blue">
-          <Text>Alive hosts (latest)</Text>
-          <Metric>{isLoading ? "…" : (latest?.alive_hosts ?? 0).toLocaleString()}</Metric>
-        </Card>
-        <Card decoration="top" decorationColor="rose">
-          <Text>Critical findings</Text>
-          <Metric>{isLoading ? "…" : severityCounts.critical.toLocaleString()}</Metric>
-        </Card>
-        <Card decoration="top" decorationColor="amber">
-          <Text>High findings</Text>
-          <Metric>{isLoading ? "…" : severityCounts.high.toLocaleString()}</Metric>
-        </Card>
+        <KpiCard
+          label="Alive hosts (latest)"
+          value={isLoading ? "…" : (latest?.alive_hosts ?? 0)}
+          decorationColor="blue"
+        />
+        <KpiCard
+          label="Critical findings"
+          value={isLoading ? "…" : severityCounts.critical}
+          decorationColor={SEVERITY_STATUS.critical.tremorColor}
+        />
+        <KpiCard
+          label="High findings"
+          value={isLoading ? "…" : severityCounts.high}
+          decorationColor={SEVERITY_STATUS.high.tremorColor}
+        />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
