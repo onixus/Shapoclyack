@@ -59,6 +59,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
   JetStream pull on `jobs.scan` + ingest publish (`ingest.results.{tenant}` /
   legacy `ingest.raw_results`). Prefer `OCTO_AGENT_PROVISIONING_KEY` (Phase 2 JWT)
   over legacy `OCTO_AGENT_TOKEN`. Compose helper: `docker-compose.nats.yml`.
+- **Cloudflare DNS import** (`discovery.cloudflare`, Phase 5.1): import A/AAAA/CNAME records from Cloudflare zones as scan targets; flags unproxied A/AAAA records as potential misconfigurations.
+- **Certificate Transparency subdomain discovery** (`discovery.ct`, Phase 5.2): async crt.sh / Cert Spotter subdomain discovery, merged into scan scope.
 - **MSSP tenancy (Phase 2)**: `POST /api/tenants` + provisioning keys; agents call `POST /api/auth/agent/token` for a short-lived JWT with `tenant_id`.
 - **Asset inventory (Phase 7)**: Postgres-backed cross-run asset registry (`GET /api/assets`, `GET /api/assets/{id}`) with stable identity, `first_seen`/`last_seen`/`status` lifecycle. `OCTO_POSTGRES_URL` is required — see [k8s/README.md](k8s/README.md#postgres-primary-db--phase-7).
 - **Outside-in discovery (Phase 8.1–8.2)**: ASN/BGP org mapping (`discovery.asn`, seed domain → ASN → announced prefixes via RIPEstat, capped scope expansion) and expanded subdomain enum (`discovery.ct` gains an `otx` passive-DNS provider + opt-in wordlist brute force) alongside existing Cloudflare/CT-log discovery — all opt-in, disabled by default.
@@ -650,6 +652,47 @@ batches force sequential discover with `skip_known_alive` to avoid duplicate pro
 wave-2 rescans hosts in the scope that wave-1 missed. Delta refresh uses checkpoint stage
 `discover-refresh`. Checkpoints: `discover`, `discover-wave2`, `discover-refresh`, and
 `discover-hostnames` batch/stage ids.
+
+### Outside-in discovery (Cloudflare / CT logs / ASN)
+
+Expands scan scope *before* the resolve stage, from sources beyond the input `ranges.txt`/`domains.txt` files. All opt-in (`enabled: false` by default) and checkpointed as their own pipeline stages (`cloudflare`, `ct`, `asn`) so `--resume` skips them once done.
+
+```yaml
+discovery:
+  # Phase 5.1 — Cloudflare DNS zone import. Token: OCTO_CLOUDFLARE_API_TOKEN (preferred over YAML)
+  cloudflare:
+    enabled: false
+    api_token: ""
+    zones: []                 # empty = all zones the token can list
+    include_proxied: true
+    include_unproxied: true
+    flag_unproxied_a: true    # flag A/AAAA with proxied=false as a misconfig finding
+    timeout_seconds: 30
+  # Phase 5.2 + 8.2 — subdomain discovery: CT logs + passive DNS + brute force
+  ct:
+    enabled: false
+    providers: [crtsh]        # crtsh | certspotter | otx (AlienVault OTX passive DNS, keyless)
+    domains: []               # empty = base domains derived from validated FQDN inputs
+    max_subdomains: 5000
+    timeout_seconds: 45
+    brute_force:
+      enabled: false
+      wordlist_file: ""       # empty = built-in scanner/data/wordlists/subdomains-small.txt
+      concurrency: 20         # concurrent DNS resolutions
+      max_candidates: 2000    # hard cap so this stays a bounded query burst, not a flood
+      timeout_seconds: 5
+  # Phase 8.1 — ASN/BGP org mapping via RIPEstat (free, keyless)
+  asn:
+    enabled: false
+    domains: []               # empty = base domains derived from validated FQDN inputs
+    max_total_ips: 4096       # hard cap: an ASN can span far more than one org's infra
+    timeout_seconds: 15
+```
+
+- **Cloudflare**: imports DNS records from the configured (or all) zones the token can list; unproxied A/AAAA records are flagged as `discovery.cloudflare.flag_unproxied_a` misconfiguration findings when enabled.
+- **CT / passive DNS / brute force** (`discovery.ct`): `providers` fans out concurrently per domain; `otx` queries AlienVault's keyless passive-DNS API. `brute_force` additionally generates `{word}.{domain}` candidates from the wordlist and keeps only names that resolve — `concurrency`/`max_candidates` bound it to a well-behaved DNS query burst rather than a flood against the target's resolvers.
+- **ASN** (`discovery.asn`): resolves each seed domain, looks up the announcing ASN, then that ASN's announced prefixes — all via RIPEstat's public API, no API key needed. `max_total_ips` truncates before scope explodes (a shared-hosting or CDN ASN can span way more than one organization); a truncated run is flagged `truncated: true` in `asn_discovery.json` rather than silently scoping up.
+- All three merge their findings into `scope_fqdns`/`scope_ips` only when `enabled: true`; artifacts (`cloudflare_dns.json`, `ct_subdomains.json`, `asn_discovery.json` + matching `.txt` target lists) are written regardless, so a dry run with `enabled: false` still shows `skipped_reason`.
 
 ### Scan protocol (TCP / UDP / TCP+UDP)
 

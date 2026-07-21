@@ -59,41 +59,41 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Decouple agents from DB polling and ensure resilient data ingestion.
 
-**Status:** **In progress** — JetStream manifests + compose auto-wire + long-lived agent pull + live broker tests.
+**Status:** **Done** — JetStream manifests (cluster-ready, safe at `replicas=1`) + compose auto-wire + long-lived agent pull + live broker tests + bounded retention (`OCTO_NATS_*_MAX_AGE_SECONDS`/`MAX_BYTES`) + opt-in HA (`OCTO_NATS_STREAM_REPLICAS`, `examples/nats-ha-patch.yaml`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 1.1 | Deploy NATS JetStream | `k8s/octo-man/base/` | StatefulSet + headless/client Services; compose profile `nats` | **In progress** |
-| 1.2 | Refactor API ingest | `api/services/results_ingest.py`, `nats_bus.py` | Validate archive → publish `ingest.raw_results` (JetStream `Nats-Msg-Id` dedupe); still extract to FS for UI | **In progress** |
-| 1.3 | Update agent worker | `agent/worker.py` | When `OCTO_NATS_URL` set: JetStream pull on `jobs.scan` (durable `octo-agents`); else HTTP claim poll | **In progress** |
+| 1.1 | Deploy NATS JetStream | `k8s/octo-man/base/` | StatefulSet + headless/client Services; compose profile `nats` | **Done** |
+| 1.2 | Refactor API ingest | `api/services/results_ingest.py`, `nats_bus.py` | Validate archive → publish `ingest.raw_results` (JetStream `Nats-Msg-Id` dedupe); still extract to FS for UI | **Done** |
+| 1.3 | Update agent worker | `agent/worker.py` | When `OCTO_NATS_URL` set: JetStream pull on `jobs.scan` (durable `octo-agents`); else HTTP claim poll | **Done** |
 
 ### Phase 2 — MSSP Multi-tenancy & Authentication
 
 **Goal:** Secure agent communication and enforce strict tenant isolation.
 
-**Status:** **In progress** — JSON-backed tenants/provisioning keys + agent JWT; legacy `OCTO_AGENT_TOKEN` still maps to `tenant_id=default`.
+**Status:** **Done** — tenants/provisioning keys are Postgres-backed (migrated off JSON in Phase 7.4) + agent JWT; legacy `OCTO_AGENT_TOKEN` still maps to `tenant_id=default`.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 2.1 | Provisioning | `api/services/tenants.py`, `api/routes/auth.py` | Create tenants + provisioning keys (hashed); plaintext returned once | **In progress** |
-| 2.2 | JWT exchange | `POST /api/auth/agent/token`, `api/services/auth.py`, `agent/worker.py` | Exchange key → short-lived agent JWT (`typ=agent`, `tenant_id`) | **In progress** |
-| 2.3 | Gateway JWT validation | `require_agent`, jobs/ingest NATS publish | Enforce agent JWT + tenant match before claim/complete/NATS; `tenant_id` header on messages | **In progress** |
-| 2.4 | Kubernetes hardening | `k8s/octo-man/examples/networkpolicy-*.yaml`, `externalsecret.example.yaml` | Agent egress NetworkPolicy; ExternalSecrets example for keys via env | **In progress** |
+| 2.1 | Provisioning | `api/services/tenants.py`, `api/routes/auth.py` | Create tenants + provisioning keys (hashed); plaintext returned once | **Done** |
+| 2.2 | JWT exchange | `POST /api/auth/agent/token`, `api/services/auth.py`, `agent/worker.py` | Exchange key → short-lived agent JWT (`typ=agent`, `tenant_id`) | **Done** |
+| 2.3 | Gateway JWT validation | `require_agent`, jobs/ingest NATS publish | Enforce agent JWT + tenant match before claim/complete/NATS; `tenant_id` header on messages | **Done** |
+| 2.4 | Kubernetes hardening | `k8s/octo-man/examples/networkpolicy-*.yaml`, `externalsecret.example.yaml` | Agent egress NetworkPolicy; ExternalSecrets example for keys via env | **Done** |
 
 ### Phase 3 — ClickHouse Analytics Engine
 
 **Goal:** Handle 50k+ assets and generate analytical diff-reports.
 
-**Status:** **In progress** — CH tables + NATS→ClickHouse ingest worker; compose auto-wire;
+**Status:** **Done** — CH tables + NATS→ClickHouse ingest worker; compose auto-wire;
 risk scoring model ``mvp-1`` (CVSS4/EPSS/KEV overlays → contextual_score / cisa_decision);
-FS diffs remain default.
+FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 3.1 | ClickHouse deployment | `k8s/octo-man/base/clickhouse/` | StatefulSet + 50Gi PVC + init SQL | **Done** |
-| 3.2 | NATS → ClickHouse consumer | `api/services/ch_ingest_worker.py` | Durable pull on `ingest.>`, bulk insert vulns + ports | **In progress** |
-| 3.3 | Schema setup | init.sql | `shapoclyack_vulnerabilities` + `shapoclyack_open_ports` (`ReplacingMergeTree`) | **In progress** |
-| 3.4 | Diff-report logic | `api/services/ch_diff.py` | CH query helpers for CVE/port deltas (scanner FS diff unchanged) | **In progress** |
+| 3.2 | NATS → ClickHouse consumer | `api/services/ch_ingest_worker.py` | Durable pull on `ingest.>`, bulk insert vulns + ports | **Done** |
+| 3.3 | Schema setup | init.sql | `shapoclyack_vulnerabilities` + `shapoclyack_open_ports` (`ReplacingMergeTree`) | **Done** |
+| 3.4 | Diff-report logic | `api/services/ch_diff.py` | CH query helpers for CVE/port deltas (scanner FS diff unchanged) | **Done** |
 
 
 ### Phase 4 — Kubernetes Hardening & Auto-scaling
@@ -112,7 +112,7 @@ FS diffs remain default.
 
 **Goal:** Autonomous external monitoring.
 
-**Status:** **In progress** (this branch).
+**Status:** **Done**.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
@@ -124,7 +124,7 @@ FS diffs remain default.
 
 **Goal:** Replace the Vite React dashboard with an MSSP / Enterprise Vulnerability Management UI that scales to 50k+ assets (tenants, agents, jobs, runs, asset inventory).
 
-**Status:** **In progress** — aio/API images serve web-next static export; legacy `web/` retained for reference.
+**Status:** **Done** — aio/API images serve web-next static export; legacy `web/` retained for reference.
 
 **Stack:** Next.js 14 (App Router), TypeScript, Tailwind CSS, Shadcn UI (Slate), Tremor (charts), TanStack Table, Lucide React, React Query, Zustand, Axios, date-fns.
 
@@ -242,8 +242,8 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 
 | Status | Meaning |
 |--------|---------|
-| **Done** | Shipped in current `main` / shapoclyack-0.33 |
+| **Done** | Merged to `main` (may be ahead of the last tagged release — see [CHANGELOG.md](CHANGELOG.md) `## Unreleased` for what hasn't shipped in a tag yet) |
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–6 are **In progress** / shipped on feature branches; update legend when each merges to `main`.
+Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.2); Phases 9–11 are **Planned**.
