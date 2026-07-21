@@ -6,6 +6,21 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 8.3 cloud resource discovery** — `scanner/pipeline/cloud_discovery.py`
+  (new): org tokens derived from scan domains × a built-in wordlist
+  (`scanner/data/wordlists/bucket-names-small.txt`) → candidate bucket/container
+  names, checked via unauthenticated HEAD/GET against S3, GCS, and Azure Blob's
+  public REST endpoints (`discovery.cloud`, opt-in; `azure` excluded from the
+  default `providers` list — its two-level namespace and GET-only list API make
+  it the least reliable of the three). Hard-capped at `max_candidates` (default
+  500) and `concurrency` (default 10), more conservative than
+  `ct.brute_force`'s DNS-query defaults since this hits shared third-party
+  cloud infrastructure. Findings are reported (`cloud_discovery.json` /
+  `cloud_discovery_public.txt`) and never merged into scan scope — a
+  discovered bucket is a finding, not a port-scan target. The original
+  roadmap line's "public cloud ranges by org tag" half was dropped: AWS/GCP
+  publish IP ranges by service+region, not by customer org, so there's no
+  honest way to attribute a cloud IP to a specific organization.
 - **Web UI v2 full cutover (Phase 6.6)** — legacy Vite dashboard (`web/`) removed
   from the repo; `web-next/` is now the only web UI. CI's `web` job was still
   building/caching `web/` and never built `web-next/` at all — fixed to

@@ -123,6 +123,20 @@ discovery:
     domains: []               # empty = base domains from input FQDNs
     max_total_ips: 4096
     timeout_seconds: 15
+  # Phase 8.3 — Cloud storage bucket enumeration (opt-in). Seed org token(s)
+  # (derived from domains) -> candidate bucket/container names -> unauthenticated
+  # HEAD/GET checks against S3, GCS, and Azure Blob's public REST endpoints.
+  # Reported as findings only -- never merged into scan scope. max_candidates
+  # and concurrency cap the probe burst against third-party cloud infra.
+  cloud:
+    enabled: false
+    domains: []               # empty = base domains from input FQDNs
+    providers: [s3, gcs]      # s3 | gcs | azure (azure is best-effort -- two-level namespace)
+    wordlist_file: ""         # empty = built-in scanner/data/wordlists/bucket-names-small.txt
+    concurrency: 10
+    max_candidates: 500
+    timeout_seconds: 8
+    azure_container_probes: 10
   seed_alive_file: ""
   delta:
     enabled: false

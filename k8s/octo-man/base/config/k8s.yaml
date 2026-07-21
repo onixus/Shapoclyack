@@ -106,6 +106,15 @@ discovery:
     domains: []
     max_total_ips: 4096
     timeout_seconds: 15
+  cloud:
+    enabled: false
+    domains: []
+    providers: [s3, gcs]
+    wordlist_file: ""
+    concurrency: 10
+    max_candidates: 500
+    timeout_seconds: 8
+    azure_container_probes: 10
   seed_alive_file: ""
   delta:
     enabled: false
