@@ -50,6 +50,24 @@ kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 `python -m agent`. Подробности и примеры k8s — в README (EN) и
 `k8s/octo-man/examples/agent-*.yaml`.
 
+## Phase 7: Postgres и инвентарь активов
+
+**Важно (breaking):** начиная с фазы 7 Postgres — **обязательная** зависимость API, а не
+опциональный сайдкар как NATS/ClickHouse. Хранилище тенантов и ключей провижининга
+(`api/services/tenants.py`) переехало в Postgres — API **не стартует** без валидного
+`OCTO_POSTGRES_URL` (миграции применяются через `alembic -c api/db/alembic.ini upgrade head`).
+
+- В k8s база уже включает `octo-man-postgres` (`base/postgres/`, 10Gi PVC); `initContainer`
+  на API Deployment прогоняет миграции перед стартом реплик. Дев-пароль
+  `octo-man-dev-postgres-change-me` — замените перед боевым деплоем.
+- Локально: `docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build`.
+- Новый сквозной реестр активов (не привязан к одному прогону): `GET /api/assets`,
+  `GET /api/assets/{asset_id}` — стабильная идентичность по IP/FQDN,
+  `first_seen`/`last_seen`/`status` (`active`/`stale`/`decommissioned`, порог `OCTO_ASSET_STALE_DAYS`,
+  по умолчанию 14 дней). Эндпоинты `/api/runs/*` (по одному прогону) не затронуты.
+
+Подробности — [k8s/README.md](k8s/README.md#postgres-primary-db--phase-7).
+
 ## Быстрый старт
 
 ### 1) Сборка образов
@@ -276,6 +294,58 @@ discovery:
 
 **Disjoint** батчи (напр. `/22` → четыре `/24`) идут параллельно с `discover_concurrency`.
 Пересекающиеся батчи — последовательно с `skip_known_alive`.
+
+### Outside-in discovery (Cloudflare / CT-логи / ASN)
+
+Расширяют scope сканирования **до** этапа resolve, источниками помимо `ranges.txt`/`domains.txt`.
+Всё опционально (`enabled: false` по умолчанию) и чекпойнтится как отдельные стадии
+(`cloudflare`, `ct`, `asn`) — `--resume` пропускает уже выполненные.
+
+```yaml
+discovery:
+  # Фаза 5.1 — импорт DNS-записей из зон Cloudflare. Токен: OCTO_CLOUDFLARE_API_TOKEN
+  cloudflare:
+    enabled: false
+    api_token: ""
+    zones: []                 # пусто = все зоны, доступные токену
+    include_proxied: true
+    include_unproxied: true
+    flag_unproxied_a: true    # пометить A/AAAA с proxied=false как misconfig
+    timeout_seconds: 30
+  # Фаза 5.2 + 8.2 — поиск поддоменов: CT-логи + passive DNS + brute force
+  ct:
+    enabled: false
+    providers: [crtsh]        # crtsh | certspotter | otx (AlienVault OTX passive DNS, без ключа)
+    domains: []               # пусто = базовые домены из валидных FQDN-входов
+    max_subdomains: 5000
+    timeout_seconds: 45
+    brute_force:
+      enabled: false
+      wordlist_file: ""       # пусто = встроенный scanner/data/wordlists/subdomains-small.txt
+      concurrency: 20         # параллельных DNS-резолвов
+      max_candidates: 2000    # жёсткий кап, чтобы не превратиться в DNS-флуд
+      timeout_seconds: 5
+  # Фаза 8.1 — сопоставление ASN/BGP через RIPEstat (бесплатно, без ключа)
+  asn:
+    enabled: false
+    domains: []               # пусто = базовые домены из валидных FQDN-входов
+    max_total_ips: 4096       # жёсткий кап: один ASN может покрывать чужую инфраструктуру
+    timeout_seconds: 15
+```
+
+- **Cloudflare** — импортирует DNS-записи из указанных (или всех доступных токену) зон;
+  непроксированные A/AAAA при `flag_unproxied_a: true` попадают в находки как misconfiguration.
+- **CT / passive DNS / brute force** (`discovery.ct`) — `providers` опрашиваются параллельно
+  по каждому домену; `otx` — passive DNS AlienVault без ключа. `brute_force` дополнительно
+  генерирует кандидатов `{слово}.{домен}` из словаря и оставляет только резолвящиеся —
+  `concurrency`/`max_candidates` держат это в рамках предсказуемого DNS-всплеска, а не флуда.
+- **ASN** (`discovery.asn`) — резолвит seed-домен, находит анонсирующий ASN, затем его
+  announced prefixes через публичный API RIPEstat (без ключа). `max_total_ips` обрезает scope
+  до того, как он взорвётся (ASN шеринг-хостинга/CDN может покрывать чужую инфраструктуру);
+  обрезанный прогон помечается `truncated: true` в `asn_discovery.json`, а не молча расширяет scope.
+- Результаты сливаются в `scope_fqdns`/`scope_ips` только при `enabled: true`; артефакты
+  (`cloudflare_dns.json`, `ct_subdomains.json`, `asn_discovery.json` + `.txt`-списки целей)
+  пишутся всегда — при `enabled: false` там будет `skipped_reason`.
 
 ## Протокол сканирования (TCP / UDP / TCP+UDP)
 
