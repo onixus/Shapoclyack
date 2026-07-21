@@ -79,11 +79,12 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Install and build
-        working-directory: web
+          cache-dependency-path: web-next/package-lock.json
+      - name: Install, lint, and build
+        working-directory: web-next
         run: |
           npm ci
+          npm run lint
           npm run build
 
   kustomize:

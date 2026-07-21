@@ -1,9 +1,4 @@
-import type {
-  AliveHost,
-  PortAggregate,
-  RunSummary,
-  Vulnerability,
-} from "@/lib/api";
+import type { PortAggregate, RunSummary, Vulnerability } from "@/lib/api";
 
 /** Static-export friendly run detail URL (no dynamic [runId] segment). */
 export function runDetailHref(runId: string): string {
@@ -13,35 +8,9 @@ export function runDetailHref(runId: string): string {
 export const SEVERITIES = ["critical", "high", "medium", "low", "unknown"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
-export type AssetCriticality = "critical" | "high" | "medium" | "low" | "info";
-
-export type AssetRow = {
-  id: string;
-  host: string;
-  hostname: string | null;
-  tenant: string;
-  openPorts: number;
-  criticality: AssetCriticality;
-  lastScanned: string;
-  vulnerabilityCount: number;
-  diff?: { kind: "port" | "cve"; label: string };
-};
-
-const SEVERITY_RANK: Record<Severity, number> = {
-  critical: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-  unknown: 4,
-};
-
 export function normalizeSeverity(value: string | null | undefined): Severity {
   const key = (value || "unknown").toLowerCase();
   return (SEVERITIES as readonly string[]).includes(key) ? (key as Severity) : "unknown";
-}
-
-export function severityToCriticality(sev: Severity): AssetCriticality {
-  return sev === "unknown" ? "info" : sev;
 }
 
 /** Prefer a completed summary run; otherwise newest by started_at. */
@@ -100,84 +69,3 @@ export function topVulnerablePorts(ports: PortAggregate[], limit = 5) {
     .slice(0, limit);
 }
 
-function maxHostSeverity(vulns: Vulnerability[]): Map<string, Severity> {
-  const map = new Map<string, Severity>();
-  for (const item of vulns) {
-    if (!item.host) continue;
-    const sev = normalizeSeverity(item.severity);
-    const prev = map.get(item.host);
-    if (!prev || SEVERITY_RANK[sev] < SEVERITY_RANK[prev]) {
-      map.set(item.host, sev);
-    }
-  }
-  return map;
-}
-
-function openPortCounts(ports: PortAggregate[]): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const port of ports) {
-    for (const host of port.hosts || []) {
-      map.set(host, (map.get(host) || 0) + 1);
-    }
-  }
-  return map;
-}
-
-function hostDiffBadges(diff: Record<string, unknown> | null | undefined) {
-  const badges = new Map<string, { kind: "port" | "cve"; label: string }>();
-  if (!diff || typeof diff !== "object") return badges;
-
-  const ports = (diff.ports as { added?: unknown } | undefined)?.added;
-  if (Array.isArray(ports)) {
-    for (const entry of ports) {
-      if (typeof entry !== "string") continue;
-      const host = entry.split(":")[0];
-      if (!host || badges.has(host)) continue;
-      badges.set(host, { kind: "port", label: "+1 new port" });
-    }
-  }
-
-  const vulns = (diff.vulnerabilities as { added?: unknown } | undefined)?.added;
-  if (Array.isArray(vulns)) {
-    for (const entry of vulns) {
-      const host =
-        entry && typeof entry === "object" && "host" in entry
-          ? String((entry as { host?: unknown }).host || "")
-          : "";
-      if (!host) continue;
-      badges.set(host, { kind: "cve", label: "CVE detected" });
-    }
-  }
-
-  return badges;
-}
-
-export function buildAssetRows(opts: {
-  hosts: AliveHost[];
-  ports: PortAggregate[];
-  vulns: Vulnerability[];
-  lastScanned: string | null;
-  diff?: Record<string, unknown> | null;
-  tenant?: string;
-}): AssetRow[] {
-  const openPorts = openPortCounts(opts.ports);
-  const severities = maxHostSeverity(opts.vulns);
-  const diffs = hostDiffBadges(opts.diff);
-  const scanned = opts.lastScanned || new Date().toISOString();
-  const tenant = opts.tenant || "—";
-
-  return opts.hosts.map((host) => {
-    const sev = severities.get(host.host) || "unknown";
-    return {
-      id: host.host,
-      host: host.host,
-      hostname: host.hostname,
-      tenant,
-      openPorts: openPorts.get(host.host) || 0,
-      criticality: severityToCriticality(sev),
-      lastScanned: scanned,
-      vulnerabilityCount: host.vulnerability_count,
-      diff: diffs.get(host.host),
-    };
-  });
-}

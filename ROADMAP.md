@@ -34,8 +34,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | `api/` | FastAPI/Python backend |
 | `agent/` | Remote scanning workers |
 | `scanner/` | Core pipeline (Nmap, CVSS4, GeoIP) |
-| `web/` | React/Vite frontend (**legacy** dashboard, v1) |
-| `web-next/` | Next.js 14 App Router dashboard (**Web UI v2**, served from aio) |
+| `web-next/` | Next.js 14 App Router dashboard (**Web UI v2**, served from aio) — the only web UI; legacy Vite `web/` was removed after the cutover |
 | `k8s/octo-man/` | Kubernetes deployment manifests |
 
 ---
@@ -124,7 +123,7 @@ FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
 **Goal:** Replace the Vite React dashboard with an MSSP / Enterprise Vulnerability Management UI that scales to 50k+ assets (tenants, agents, jobs, runs, asset inventory).
 
-**Status:** **Done** — aio/API images serve web-next static export; legacy `web/` retained for reference.
+**Status:** **Done** — full cutover complete: aio/API images serve web-next static export, CI builds/lints `web-next/`, and legacy `web/` has been removed from the repo.
 
 **Stack:** Next.js 14 (App Router), TypeScript, Tailwind CSS, Shadcn UI (Slate), Tremor (charts), TanStack Table, Lucide React, React Query, Zustand, Axios, date-fns.
 
@@ -135,6 +134,7 @@ FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 | 6.3 | Core pages | `(dashboard)/…` | Dashboard/Assets from latest run; Tenants/Agents/Jobs/Runs + `/runs/view` | **Done** |
 | 6.4 | API integration | `lib/api.ts`, `lib/auth-store.ts` | Axios JWT + React Query; run hosts/ports/vulns clients | **Done** |
 | 6.5 | Aio static serve | `Dockerfile.allinone`, `api/app.py` | `output: "export"` → `/app/web/dist`; FastAPI mounts `/_next` | **Done** |
+| 6.6 | Full cutover | `.github/workflows/ci.yml`, `web/` (removed) | CI now builds/lints `web-next/` (was still building legacy `web/`); Assets page rewired from latest-run aggregation to the real Phase 7 `GET /api/assets` registry; `web/` deleted | **Done** |
 
 #### Bootstrap notes (Phase 6.1 → 6.2 first)
 
@@ -148,7 +148,7 @@ npx shadcn-ui@latest add button card input table dialog dropdown-menu tabs badge
 
 Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining pages.
 
-**Migration note:** All-in-one and API images serve `web-next` static export (`out/` → `OCTO_WEB_DIST`). Legacy Vite `web/` is kept in-tree until removed in a later cleanup.
+**Migration note:** All-in-one and API images serve `web-next` static export (`out/` → `OCTO_WEB_DIST`). Legacy Vite `web/` has been removed from the repo (6.6) — `web-next/` is the only web UI.
 
 ---
 
