@@ -175,13 +175,13 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** surface assets the customer never declared — the defining trait of EASM vs. seed-list scanning.
 
-**Status:** **8.1–8.2 done** (MVP); **8.3–8.5 deferred** to a follow-up phase (cloud bucket discovery, typosquat/domain monitoring, continuous org-level scheduling — each is independent new surface, not an extension of 8.1/8.2's code).
+**Status:** **8.1–8.3 done** (MVP); **8.4–8.5 deferred** to a follow-up phase (typosquat/domain monitoring, continuous org-level scheduling — each is independent new surface, not an extension of 8.1–8.3's code). 8.3's original "public cloud ranges by org tag" half was dropped as not honestly implementable — AWS/GCP publish IP ranges tagged by service+region, not by customer organization; there is no public API that attributes a cloud IP to a specific org.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 8.1 | ASN / WHOIS / BGP org mapping | `scanner/pipeline/asn_discovery.py` (new) | Seed domain → resolved IP → ASN → announced prefixes via RIPEstat's free keyless API; hard-capped at `max_total_ips` (default 4096) since one ASN can span far more than one org's infra | **Done** |
 | 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py` | Adds an `otx` (AlienVault OTX passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in wordlist brute-force pass (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`, concurrency/candidate-capped) | **Done** |
-| 8.3 | Cloud resource discovery | `scanner/pipeline/cloud_discovery.py` (new) | S3/GCS/Azure Blob bucket enumeration; public cloud ranges by org tag | **Planned** |
+| 8.3 | Cloud resource discovery | `scanner/pipeline/cloud_discovery.py` (new) | S3/GCS/Azure Blob bucket + container enumeration via unauthenticated HEAD/GET against public provider endpoints; org tokens × wordlist candidates, hard-capped at `max_candidates` (default 500) and `concurrency` (default 10) since checks hit shared third-party cloud infrastructure, not the target's own hosts; findings reported, never merged into scan scope | **Done** |
 | 8.4 | Typosquat / domain monitoring | `scanner/pipeline/domain_monitor.py` (new) | Look-alike domains; dangling-CNAME subdomain-takeover checks | **Planned** |
 | 8.5 | Continuous org-level scheduling | `scanner/scheduler.py`, K8s CronJob | Move from one-shot scans to a recurring discovery loop with delta output | **Planned** |
 
@@ -246,4 +246,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.2); Phases 9–11 are **Planned**.
+Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.3); Phases 9–11 are **Planned**.

@@ -23,6 +23,7 @@ from scanner.pipeline.discovery_delta import (
 )
 from scanner.pipeline.errors import StageFailureError
 from scanner.pipeline.asn_discovery import discover_asn_ranges
+from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
 from scanner.pipeline.hostnames import (
     base_domains_from_fqdns,
@@ -206,6 +207,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         and not config.discovery.cloudflare.enabled
         and not config.discovery.ct.enabled
         and not config.discovery.asn.enabled
+        and not config.discovery.cloud.enabled
     ):
         logging.error("No valid targets after input validation")
         return exit_codes.INPUT_ERROR
@@ -264,6 +266,17 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         checkpoint.mark_done("asn")
     if config.discovery.asn.enabled:
         scope_ips = sorted(set(scope_ips + list(asn_result.get("ip_ranges") or [])))
+
+    # Phase 8.3: cloud storage bucket enumeration (asset-inventory finding,
+    # not scope-expanding -- see module docstring). Domains only; no merge
+    # into scope_ips/scope_fqdns, so --resume just needs to skip re-running.
+    if not (args.resume and checkpoint.is_done("cloud")):
+        cloud_domains = config.discovery.cloud.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "cloud",
+            lambda: discover_cloud_buckets_sync(cloud_domains, config.discovery.cloud, paths.output_dir),
+        )
+        checkpoint.mark_done("cloud")
 
     if args.resume and checkpoint.is_done("resolve"):
         resolved_ips = read_lines(paths.output_dir / "resolved_ips.txt")

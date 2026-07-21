@@ -168,6 +168,40 @@ class AsnDiscoveryConfig(BaseModel):
     timeout_seconds: int = Field(default=15, ge=5, le=120)
 
 
+class CloudDiscoveryConfig(BaseModel):
+    """Cloud storage bucket enumeration (Phase 8.3). Opt-in.
+
+    SAFETY: hits live third-party cloud infrastructure (AWS/Google/Microsoft
+    endpoints, not the target's own hosts) once per generated candidate x
+    provider. max_candidates and concurrency are deliberately more
+    conservative than ct.brute_force's DNS-query defaults, since shared
+    cloud-provider endpoints may rate-limit or flag abuse. Findings are
+    reported only -- never merged into scan scope (a discovered bucket is a
+    finding, not a port-scan target).
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    # azure is best-effort (two-level namespace, GET-only list API) -- opt-in-within-opt-in.
+    providers: list[Literal["s3", "gcs", "azure"]] = Field(default_factory=lambda: ["s3", "gcs"])
+    # Empty = built-in scanner/data/wordlists/bucket-names-small.txt.
+    wordlist_file: str = ""
+    concurrency: int = Field(default=10, ge=1, le=50)
+    max_candidates: int = Field(default=500, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=8, ge=1, le=30)
+    # Azure only: container-name guesses per resolved storage account (kept
+    # small -- account x container is a compounding candidate space).
+    azure_container_probes: int = Field(default=10, ge=1, le=50)
+
+    @field_validator("providers")
+    @classmethod
+    def validate_providers(cls, providers: list[str]) -> list[str]:
+        if not providers:
+            raise ValueError("cloud.providers must not be empty when cloud discovery is configured")
+        return providers
+
+
 class DeltaDiscoveryConfig(BaseModel):
     enabled: bool = False
     previous_run_dir: str = ""
@@ -195,6 +229,7 @@ class DiscoveryConfig(BaseModel):
     cloudflare: CloudflareDiscoveryConfig = Field(default_factory=CloudflareDiscoveryConfig)
     ct: CertificateTransparencyConfig = Field(default_factory=CertificateTransparencyConfig)
     asn: AsnDiscoveryConfig = Field(default_factory=AsnDiscoveryConfig)
+    cloud: CloudDiscoveryConfig = Field(default_factory=CloudDiscoveryConfig)
     seed_alive_file: str = ""
     delta: DeltaDiscoveryConfig = Field(default_factory=DeltaDiscoveryConfig)
 
