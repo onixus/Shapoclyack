@@ -43,7 +43,7 @@ We aim to acknowledge reports within **5 business days** and to provide a remedi
 ### In scope
 
 - Python code under `scanner/` and `api/`
-- React dashboard under `web/`
+- Next.js dashboard (Web UI v2) under `web-next/`
 - Shell helpers under `scripts/` and `bench/` that ship with the repo
 - `Dockerfile`, `Dockerfile.api`, `k8s/` manifests, and GitHub Actions workflows that build or publish images
 - Misconfiguration or unsafe defaults in shipped YAML configs / demo credentials that lead to unintended exposure **of the scanner host or operator data**

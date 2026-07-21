@@ -73,8 +73,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - `scanner/pipeline/*`
 - `api/` — FastAPI app (`python -m api`)
 - `api/db/` — Postgres PRIMARY_DB: SQLAlchemy models + Alembic migrations (tenants, provisioning keys, asset inventory — required, see [k8s/README.md](k8s/README.md))
-- `web-next/` — Web UI v2 (Next.js static export; served by aio/API images)
-- `web/` — legacy React/Vite dashboard (kept for reference)
+- `web-next/` — Web UI v2 (Next.js static export; served by aio/API images) — the only web UI; legacy Vite `web/` was removed after the cutover
 - `tests/{e2e,load}/` — CI integration tests
 - `scripts/{smoke.sh,load-test.sh,schedule.sh}` — local helpers
 - `bench/{up,down,run-discovery,run-realistic}.sh` — local discovery benchmark lab
@@ -792,7 +791,7 @@ Paths below assume `runtime.per_run_output: true` (default); artifacts live unde
 
 ## Licenses
 
-This project's own source code (`scanner/`, `api/`, `web/`, `k8s/`, `scripts/`, configs and docs)
+This project's own source code (`scanner/`, `api/`, `web-next/`, `k8s/`, `scripts/`, configs and docs)
 has **no license declared yet**. Until a license is added, default copyright applies and
 others have no redistribution rights — add a license (e.g. `MIT` or `Apache-2.0`) at the
 repository root before publishing.

@@ -152,6 +152,34 @@ export type TenantInfo = {
   created_at: string | null;
 };
 
+export type AssetStatus = "active" | "stale" | "decommissioned";
+
+export type AssetIdentifier = {
+  identifier_type: string;
+  identifier_value: string;
+};
+
+export type AssetSummary = {
+  asset_id: string;
+  status: AssetStatus;
+  first_seen: string;
+  last_seen: string;
+  primary_identifier: string | null;
+  identifier_count: number;
+};
+
+export type AssetDetail = {
+  asset_id: string;
+  tenant_id: string;
+  status: AssetStatus;
+  first_seen: string;
+  last_seen: string;
+  owner_email: string | null;
+  business_unit: string | null;
+  identifiers: AssetIdentifier[];
+  tags: Record<string, string>;
+};
+
 export type ProvisioningKeyInfo = {
   key_id: string;
   tenant_id: string;
@@ -271,6 +299,37 @@ export async function startScan(body: {
 }) {
   try {
     const { data } = await api.post<JobInfo>("/jobs", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Cross-run asset inventory (Phase 7) — distinct from the per-run hosts/ports/vulns above. */
+export async function fetchAssets(opts?: {
+  tenantId?: string;
+  status?: AssetStatus | "";
+  q?: string;
+  limit?: number;
+}) {
+  try {
+    const params = new URLSearchParams({ tenant_id: opts?.tenantId || "default" });
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.q) params.set("q", opts.q);
+    params.set("limit", String(opts?.limit ?? 500));
+    const { data } = await api.get<AssetSummary[]>(`/assets?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAsset(assetId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams({ tenant_id: tenantId });
+    const { data } = await api.get<AssetDetail>(
+      `/assets/${encodeURIComponent(assetId)}?${params}`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

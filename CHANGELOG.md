@@ -6,6 +6,18 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Web UI v2 full cutover (Phase 6.6)** — legacy Vite dashboard (`web/`) removed
+  from the repo; `web-next/` is now the only web UI. CI's `web` job was still
+  building/caching `web/` and never built `web-next/` at all — fixed to
+  `npm ci && npm run lint && npm run build` inside `web-next/`. The Assets page
+  (`web-next/src/app/(dashboard)/assets/`) previously aggregated the *latest
+  run's* hosts/ports/vulns client-side (leftover Phase 6 code) despite being
+  named "Assets" — it now calls the real Phase 7 cross-run registry
+  (`GET /api/assets`, `GET /api/assets/{id}`) with status filtering and an
+  identifier/tags detail view. Removed now-dead `buildAssetRows` and friends
+  from `lib/run-data.ts`, plus the unused `diff-badge.tsx` and `mock-data.ts`.
+  `Dockerfile.api`/`Dockerfile.allinone` already built `web-next/` exclusively
+  before this change — only CI and the repo tree were still lagging.
 - **Phase 8.1–8.2 outside-in discovery** — `scanner/pipeline/asn_discovery.py`
   (new): seed domain → resolved IP → ASN → announced prefixes via RIPEstat's
   free keyless API (`discovery.asn`, opt-in), hard-capped at `max_total_ips`
