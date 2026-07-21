@@ -6,6 +6,12 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 1 NATS retention + HA** — JetStream `JOBS`/`INGEST` streams now bound
+  storage by default (`OCTO_NATS_JOBS_MAX_AGE_SECONDS`,
+  `OCTO_NATS_INGEST_MAX_AGE_SECONDS`, `OCTO_NATS_INGEST_MAX_BYTES`; applied on
+  redeploy via `update_stream`, not just first creation); `k8s/octo-man/base/nats/`
+  ships a cluster-ready config (safe at `replicas=1`) — scale to 3 nodes with
+  `examples/nats-ha-patch.yaml` + `OCTO_NATS_STREAM_REPLICAS=3` for JetStream R3
 - **Phase 1 NATS harden** — `docker-compose.nats.yml` auto-wires `OCTO_NATS_URL` + NATS
   health wait; agent uses a long-lived JetStream pull session; live broker tests
   (`tests/test_nats_live.py`, CI starts `nats:2.10.24` with JetStream)

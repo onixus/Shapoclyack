@@ -1,0 +1,23 @@
+# Scale NATS JetStream to a 3-node cluster for production HA.
+#
+# Base ships the cluster{} block already (safe at replicas=1 — a lone pod
+# just runs standalone since its peer routes are unreachable). This patch
+# only bumps replica count once you want real quorum/replication.
+#
+# Apply via kustomize patches (see overlays/prod/kustomization.yaml) or:
+#   kubectl patch statefulset octo-man-nats -n network-scan --type=merge \
+#     -p '{"spec":{"replicas":3}}'
+#
+# Pair with the API-side env below so JetStream streams replicate R3 instead
+# of staying single-copy (see examples/nats-api-patch.yaml for enabling NATS
+# itself):
+#   OCTO_NATS_STREAM_REPLICAS=3
+#
+# Note: PVC storage (5Gi per pod, base/nats/statefulset.yaml) is requested
+# per replica — a 3-node cluster requests 15Gi total, not 5Gi shared.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: octo-man-nats
+spec:
+  replicas: 3
