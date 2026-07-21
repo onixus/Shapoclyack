@@ -51,9 +51,23 @@ jobs:
             curl -fsS http://127.0.0.1:8222/healthz >/dev/null && break
             sleep 0.5
           done
+      - name: Start Postgres (PRIMARY_DB — tenants + asset inventory, Phase 7)
+        run: |
+          docker run -d --name ci-postgres -p 5432:5432 \
+            -e POSTGRES_DB=octo_man -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret \
+            postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec ci-postgres pg_isready -U octo -d octo_man >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+      - name: Apply Alembic migrations
+        env:
+          OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/octo_man
+        run: alembic -c api/db/alembic.ini upgrade head
       - name: Run tests
         env:
           OCTO_NATS_URL: nats://127.0.0.1:4222
+          OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/octo_man
         run: python -m pytest -q
 
   web:

@@ -6,6 +6,9 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.schemas import JobInfo
+from tests.conftest import requires_postgres
+
+pytestmark = requires_postgres
 
 
 def _client() -> TestClient:

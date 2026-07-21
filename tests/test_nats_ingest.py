@@ -8,6 +8,7 @@ import tarfile
 import pytest
 
 from api.services import nats_bus, results_ingest
+from tests.conftest import POSTGRES_URL, requires_postgres
 
 
 def _archive(name: str = "findings.json", data: bytes = b'{"ok":true}\n') -> bytes:
@@ -54,6 +55,7 @@ def test_publish_raw_results_without_nats(monkeypatch):
     assert meta["archive_sha256"] == nats_bus.archive_sha256(archive)
 
 
+@requires_postgres
 def test_claim_specific_job_id(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -61,6 +63,7 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
     from api.settings import Settings
     from api.services import agents as agents_service
     from api.services import jobs as jobs_service
+    from api.services import tenants as tenants_service
 
     settings = Settings(
         output_dir=tmp_path / "output",
@@ -70,6 +73,7 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
         agent_token="test-agent-token",
         jwt_secret="test-secret",
         nats_url="",
+        postgres_url=POSTGRES_URL,
     )
     settings.output_dir.mkdir(parents=True)
     settings.state_dir.mkdir(parents=True)
@@ -77,6 +81,8 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
     monkeypatch.setattr("api.app.get_settings", lambda: settings)
     jobs_service._JOBS.clear()  # noqa: SLF001
     agents_service._agents.clear()  # noqa: SLF001
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()
     client = TestClient(create_app())
 
     reg = client.post(

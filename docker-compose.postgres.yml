@@ -1,0 +1,43 @@
+# Postgres auto-wire overlay for Shapoclyack compose (Phase 7 PRIMARY_DB).
+#
+# Unlike docker-compose.nats.yml / docker-compose.clickhouse.yml, this is not
+# an optional add-on: the tenant store is Postgres-backed, so the shapoclyack
+# service needs this compose file (or an equivalent OCTO_POSTGRES_URL) to
+# start at all.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build
+#
+# Sets OCTO_POSTGRES_URL, waits for pg_isready, and runs Alembic migrations
+# before the aio API starts.
+
+services:
+  postgres:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U octo -d octo_man"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.allinone
+    image: ghcr.io/onixus/shapoclyack-aio:0.3.2.1
+    profiles: ["postgres"]
+    entrypoint: ["alembic", "-c", "api/db/alembic.ini", "upgrade", "head"]
+    environment:
+      OCTO_POSTGRES_URL: ${OCTO_POSTGRES_URL:-postgresql+psycopg://octo:octo-dev-change-me@postgres:5432/octo_man}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  shapoclyack:
+    environment:
+      OCTO_POSTGRES_URL: ${OCTO_POSTGRES_URL:-postgresql+psycopg://octo:octo-dev-change-me@postgres:5432/octo_man}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully

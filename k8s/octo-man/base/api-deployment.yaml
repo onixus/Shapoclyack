@@ -22,6 +22,28 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+      # Runs Alembic migrations before any API replica starts — Postgres is a
+      # hard dependency (tenant store lives there), and migrations aren't
+      # safely idempotent across N replicas starting concurrently the way
+      # ClickHouse's CREATE TABLE IF NOT EXISTS init-SQL is.
+      initContainers:
+        - name: migrate
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "-c", "api/db/alembic.ini", "upgrade", "head"]
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: octo-man-postgres
+                  key: password
+            - name: OCTO_POSTGRES_URL
+              value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@octo-man-postgres-client:5432/octo_man
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
       containers:
         - name: api
           image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
@@ -52,6 +74,15 @@ spec:
               value: ""
             - name: OCTO_CH_INGEST_ENABLED
               value: "true"
+            # Required — the tenant store is Postgres-backed (Phase 7), unlike
+            # the opt-in NATS/ClickHouse sidecars above.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: octo-man-postgres
+                  key: password
+            - name: OCTO_POSTGRES_URL
+              value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@octo-man-postgres-client:5432/octo_man
             - name: OCTO_JWT_SECRET
               valueFrom:
                 secretKeyRef:

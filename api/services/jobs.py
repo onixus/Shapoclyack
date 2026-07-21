@@ -12,6 +12,7 @@ from typing import Any
 
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
+from api.services import assets as assets_service
 from api.services import nats_bus
 from api.services import results_ingest
 from api.services import tenants as tenants_service
@@ -154,6 +155,20 @@ def _build_command(
     return command
 
 
+def _upsert_assets_best_effort(settings: Settings, *, tenant_id: str, run_id: str | None) -> None:
+    """Best-effort asset-registry upsert (Phase 7) — never fails the scan/upload.
+
+    Covers both execution paths: local-mode scans land here from _run_job,
+    agent-uploaded results land here from complete_job.
+    """
+    if not run_id:
+        return
+    try:
+        assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        logging.exception("Asset upsert failed for run %s (tenant=%s)", run_id, tenant_id)
+
+
 def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
     _update_job(settings, job_id, status="running", started_at=datetime.now(UTC).isoformat())
     try:
@@ -179,6 +194,10 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             run_id=str(run_id) if run_id else None,
             error=error,
         )
+        if status == "succeeded":
+            job = get_job(job_id)
+            tenant_id = job.tenant_id if job else tenants_service.DEFAULT_TENANT_ID
+            _upsert_assets_best_effort(settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None)
     except Exception as exc:  # noqa: BLE001
         logging.exception("Scan job %s failed", job_id)
         _update_job(
@@ -425,6 +444,7 @@ def complete_job(
             )
         except results_ingest.IngestError as exc:
             raise ValueError(str(exc)) from exc
+        _upsert_assets_best_effort(settings, tenant_id=job_tenant, run_id=str(resolved_run_id))
 
     status = "succeeded" if exit_code == 0 else "failed"
     _update_job(

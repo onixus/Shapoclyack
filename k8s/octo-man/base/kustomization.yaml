@@ -21,6 +21,9 @@ resources:
   - clickhouse/configmap.yaml
   - clickhouse/statefulset.yaml
   - clickhouse/service.yaml
+  # Postgres (PRIMARY_DB — tenants + asset inventory, Phase 7)
+  - postgres/statefulset.yaml
+  - postgres/service.yaml
   - job.yaml
   - cronjob.yaml
   - api-deployment.yaml
@@ -35,6 +38,9 @@ secretGenerator:
   - name: octo-man-api
     literals:
       - jwt_secret=octo-man-dev-secret-change-me
+  - name: octo-man-postgres
+    literals:
+      - password=octo-man-dev-postgres-change-me
 
 generatorOptions:
   disableNameSuffixHash: true

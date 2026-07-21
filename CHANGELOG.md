@@ -6,6 +6,21 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 7 asset inventory (Postgres PRIMARY_DB)** — first SQL database in the
+  repo (SQLAlchemy + Alembic, `api/db/`). `tenants`/`provisioning_keys` moved
+  off JSON files onto Postgres behind the same `api/services/tenants.py`
+  function signatures (zero caller changes); `resolve_provisioning_key` is now
+  O(1) via an indexed `key_lookup` prefix instead of scan-and-bcrypt-verify-all.
+  New cross-run asset registry (`assets`/`asset_identifiers`/`asset_tags`) with
+  stable identity via `scanner/pipeline/asset_identity.py` (tenant+IP or
+  tenant+FQDN sha256 keys), `first_seen`/`last_seen`/`status` lifecycle
+  (`OCTO_ASSET_STALE_DAYS`), and new `GET /api/assets` / `GET /api/assets/{id}`
+  endpoints — hooked from both local-mode and agent-upload scan completion in
+  `api/services/jobs.py`. **Postgres is a hard dependency, not opt-in** like
+  NATS/ClickHouse — API startup fails fast if `OCTO_POSTGRES_URL` is empty.
+  `k8s/octo-man/base/postgres/` + `docker-compose.postgres.yml` mirror the
+  ClickHouse deployment pattern; an `initContainer` runs `alembic upgrade head`
+  before API replicas start.
 - **Phase 1 NATS retention + HA** — JetStream `JOBS`/`INGEST` streams now bound
   storage by default (`OCTO_NATS_JOBS_MAX_AGE_SECONDS`,
   `OCTO_NATS_INGEST_MAX_AGE_SECONDS`, `OCTO_NATS_INGEST_MAX_BYTES`; applied on
