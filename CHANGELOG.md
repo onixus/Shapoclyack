@@ -6,6 +6,25 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 8.1–8.2 outside-in discovery** — `scanner/pipeline/asn_discovery.py`
+  (new): seed domain → resolved IP → ASN → announced prefixes via RIPEstat's
+  free keyless API (`discovery.asn`, opt-in), hard-capped at `max_total_ips`
+  (default 4096) since a single ASN can span far more than one org's
+  infrastructure — results are flagged `truncated` rather than silently
+  scoping up. `scanner/pipeline/hostnames.py` gains an `otx` (AlienVault OTX
+  passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in
+  concurrency/candidate-capped wordlist brute-force pass
+  (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`).
+  Both stages are checkpoint/resume-aware and merge into scan scope only when
+  explicitly enabled. Adds `httpx` as a scanner-side dependency (previously
+  API-only) for RDAP/BGP calls.
+- **`api/app.py` lazy app construction** — the module-level `app` singleton is
+  now built on first attribute access (PEP 562 `__getattr__`) instead of at
+  import time. Phase 7 made `create_app()` fail fast without a reachable
+  Postgres; building `app` eagerly meant a bare `from api.app import
+  create_app` (every API test file) required Postgres just to import the
+  module. `uvicorn.run("api.app:app", ...)` / `python -m api` are unaffected —
+  they still resolve `app` (and its fail-fast check) the same way.
 - **Phase 7 asset inventory (Postgres PRIMARY_DB)** — first SQL database in the
   repo (SQLAlchemy + Alembic, `api/db/`). `tenants`/`provisioning_keys` moved
   off JSON files onto Postgres behind the same `api/services/tenants.py`

@@ -113,18 +113,35 @@ class CloudflareDiscoveryConfig(BaseModel):
     timeout_seconds: int = Field(default=30, ge=5, le=300)
 
 
-class CertificateTransparencyConfig(BaseModel):
-    """Async CT log subdomain discovery (Phase 5.2). Opt-in."""
+class BruteForceSubdomainConfig(BaseModel):
+    """Wordlist-based subdomain brute force (Phase 8.2). Opt-in, nested under ct.
+
+    Candidates are generated as ``{word}.{domain}`` and kept only if they
+    resolve. Concurrency/candidate caps exist so this stays a good citizen
+    against target DNS resolvers rather than a query flood.
+    """
 
     enabled: bool = False
-    # crtsh = crt.sh JSON API; certspotter = Cert Spotter issuances API.
-    providers: list[Literal["crtsh", "certspotter"]] = Field(
+    # Empty = built-in scanner/data/wordlists/subdomains-small.txt.
+    wordlist_file: str = ""
+    concurrency: int = Field(default=20, ge=1, le=200)
+    max_candidates: int = Field(default=2000, ge=1, le=50_000)
+    timeout_seconds: int = Field(default=5, ge=1, le=60)
+
+
+class CertificateTransparencyConfig(BaseModel):
+    """Async subdomain discovery: CT logs (Phase 5.2) + passive DNS + brute force (Phase 8.2). Opt-in."""
+
+    enabled: bool = False
+    # crtsh/certspotter = CT log APIs; otx = AlienVault OTX passive DNS (keyless).
+    providers: list[Literal["crtsh", "certspotter", "otx"]] = Field(
         default_factory=lambda: ["crtsh"]
     )
     # Empty domains = use validated FQDN inputs (base domains / registered names).
     domains: list[str] = Field(default_factory=list)
     max_subdomains: int = Field(default=5000, ge=1, le=100_000)
     timeout_seconds: int = Field(default=45, ge=5, le=300)
+    brute_force: BruteForceSubdomainConfig = Field(default_factory=BruteForceSubdomainConfig)
 
     @field_validator("providers")
     @classmethod
@@ -132,6 +149,23 @@ class CertificateTransparencyConfig(BaseModel):
         if not providers:
             raise ValueError("ct.providers must not be empty when CT is configured")
         return providers
+
+
+class AsnDiscoveryConfig(BaseModel):
+    """ASN / BGP org mapping (Phase 8.1): seed domain -> resolved IP -> ASN ->
+    announced prefixes, via RIPEstat's free keyless API. Opt-in.
+
+    SAFETY: an ASN can cover far more than one organization's infrastructure
+    (shared hosting, CDNs). max_total_ips hard-caps how many IPs from
+    announced prefixes get merged into scan scope; results past the cap are
+    dropped and the run is flagged "truncated" rather than silently scoped up.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_total_ips: int = Field(default=4096, ge=1, le=1_000_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
 
 
 class DeltaDiscoveryConfig(BaseModel):
@@ -160,6 +194,7 @@ class DiscoveryConfig(BaseModel):
     hostnames: HostnameResolveConfig = Field(default_factory=HostnameResolveConfig)
     cloudflare: CloudflareDiscoveryConfig = Field(default_factory=CloudflareDiscoveryConfig)
     ct: CertificateTransparencyConfig = Field(default_factory=CertificateTransparencyConfig)
+    asn: AsnDiscoveryConfig = Field(default_factory=AsnDiscoveryConfig)
     seed_alive_file: str = ""
     delta: DeltaDiscoveryConfig = Field(default_factory=DeltaDiscoveryConfig)
 

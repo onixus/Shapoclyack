@@ -101,12 +101,28 @@ discovery:
     flag_unproxied_a: true    # flag A/AAAA with proxied=false as misconfig
     timeout_seconds: 30
   # Phase 5.2 — Certificate Transparency subdomain discovery (opt-in)
+  # Phase 8.2 extends this stage with an "otx" passive-DNS provider and a
+  # wordlist brute-force pass — same subdomain-discovery stage, more sources.
   ct:
     enabled: false
-    providers: [crtsh]        # crtsh | certspotter
+    providers: [crtsh]        # crtsh | certspotter | otx (AlienVault OTX passive DNS, keyless)
     domains: []               # empty = base domains from input FQDNs
     max_subdomains: 5000
     timeout_seconds: 45
+    brute_force:
+      enabled: false
+      wordlist_file: ""       # empty = built-in scanner/data/wordlists/subdomains-small.txt
+      concurrency: 20
+      max_candidates: 2000
+      timeout_seconds: 5
+  # Phase 8.1 — ASN/BGP org mapping (opt-in). Seed domain -> IP -> ASN ->
+  # announced prefixes (RIPEstat, keyless). max_total_ips caps scope expansion
+  # since one ASN can span far more than one org's infrastructure.
+  asn:
+    enabled: false
+    domains: []               # empty = base domains from input FQDNs
+    max_total_ips: 4096
+    timeout_seconds: 15
   seed_alive_file: ""
   delta:
     enabled: false

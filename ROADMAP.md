@@ -175,10 +175,12 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** surface assets the customer never declared — the defining trait of EASM vs. seed-list scanning.
 
+**Status:** **8.1–8.2 done** (MVP); **8.3–8.5 deferred** to a follow-up phase (cloud bucket discovery, typosquat/domain monitoring, continuous org-level scheduling — each is independent new surface, not an extension of 8.1/8.2's code).
+
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 8.1 | ASN / WHOIS / BGP org mapping | `scanner/pipeline/asn_discovery.py` (new) | Root domain / org name → ASN → IP ranges via RDAP/BGP data | **Planned** |
-| 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py` | Add permutation/brute-force wordlists and passive-DNS sources alongside existing CT logs | **Planned** |
+| 8.1 | ASN / WHOIS / BGP org mapping | `scanner/pipeline/asn_discovery.py` (new) | Seed domain → resolved IP → ASN → announced prefixes via RIPEstat's free keyless API; hard-capped at `max_total_ips` (default 4096) since one ASN can span far more than one org's infra | **Done** |
+| 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py` | Adds an `otx` (AlienVault OTX passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in wordlist brute-force pass (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`, concurrency/candidate-capped) | **Done** |
 | 8.3 | Cloud resource discovery | `scanner/pipeline/cloud_discovery.py` (new) | S3/GCS/Azure Blob bucket enumeration; public cloud ranges by org tag | **Planned** |
 | 8.4 | Typosquat / domain monitoring | `scanner/pipeline/domain_monitor.py` (new) | Look-alike domains; dangling-CNAME subdomain-takeover checks | **Planned** |
 | 8.5 | Continuous org-level scheduling | `scanner/scheduler.py`, K8s CronJob | Move from one-shot scans to a recurring discovery loop with delta output | **Planned** |
