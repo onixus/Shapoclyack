@@ -1,12 +1,9 @@
-# Octo-man
+# Shapoclyack
 
 [![CI](https://github.com/onixus/Shapoclyack/actions/workflows/ci.yml/badge.svg)](https://github.com/onixus/Shapoclyack/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/onixus/Shapoclyack)](https://github.com/onixus/Shapoclyack/releases/latest)
 
 Containerized network reconnaissance pipeline with a Kubernetes control plane, HTTP API, and dashboard.
-
-**Product:** Octo-man · **Repository / container registry:** Shapoclyack  
-(`ghcr.io/onixus/shapoclyack-{aio,scanner,api}` — not the legacy `octo-man` GHCR packages).
 
 English is the primary documentation language.  
 Russian ops notes: [README.ru.md](README.ru.md).
