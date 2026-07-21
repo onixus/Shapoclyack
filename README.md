@@ -60,6 +60,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
   legacy `ingest.raw_results`). Prefer `OCTO_AGENT_PROVISIONING_KEY` (Phase 2 JWT)
   over legacy `OCTO_AGENT_TOKEN`. Compose helper: `docker-compose.nats.yml`.
 - **MSSP tenancy (Phase 2)**: `POST /api/tenants` + provisioning keys; agents call `POST /api/auth/agent/token` for a short-lived JWT with `tenant_id`.
+- **Asset inventory (Phase 7)**: Postgres-backed cross-run asset registry (`GET /api/assets`, `GET /api/assets/{id}`) with stable identity, `first_seen`/`last_seen`/`status` lifecycle. `OCTO_POSTGRES_URL` is required — see [k8s/README.md](k8s/README.md#postgres-primary-db--phase-7).
 
 ## Project Layout
 
@@ -71,6 +72,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - `scanner/scheduler.py` — optional in-process scheduler (K8s prefers CronJob)
 - `scanner/pipeline/*`
 - `api/` — FastAPI app (`python -m api`)
+- `api/db/` — Postgres PRIMARY_DB: SQLAlchemy models + Alembic migrations (tenants, provisioning keys, asset inventory — required, see [k8s/README.md](k8s/README.md))
 - `web-next/` — Web UI v2 (Next.js static export; served by aio/API images)
 - `web/` — legacy React/Vite dashboard (kept for reference)
 - `tests/{e2e,load}/` — CI integration tests

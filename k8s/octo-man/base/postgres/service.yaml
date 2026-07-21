@@ -1,0 +1,36 @@
+# Headless Service for StatefulSet peer DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: octo-man-postgres
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: postgres
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: client
+      port: 5432
+      targetPort: client
+---
+# Stable ClusterIP for API: postgresql://octo-man-postgres-client:5432/octo_man
+apiVersion: v1
+kind: Service
+metadata:
+  name: octo-man-postgres-client
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: client
+      port: 5432
+      targetPort: client

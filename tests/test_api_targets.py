@@ -10,9 +10,11 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.schemas import StartScanRequest
+from api.services import tenants as tenants_service
 from api.services.jobs import start_scan
 from api.services.targets import parse_target_payload
 from api.settings import Settings
+from tests.conftest import POSTGRES_URL, requires_postgres
 
 
 def test_parse_target_payload_none_when_empty():
@@ -59,13 +61,16 @@ def test_parse_target_payload_rejects_invalid():
         parse_target_payload(ranges_text="not-a-cidr", domains_text=None, ports_text=None)
 
 
+@requires_postgres
 def test_start_scan_writes_job_inputs_and_cli_flags(tmp_path: Path):
     settings = Settings(
         output_dir=tmp_path / "out",
         state_dir=tmp_path / "state",
         config_path=Path("scanner/config/default.yaml"),
         allow_scan_start=True,
+        postgres_url=POSTGRES_URL,
     )
+    tenants_service.load_tenants(settings)
     request = StartScanRequest(
         mode="safe",
         skip_nse=True,
@@ -101,6 +106,7 @@ def test_start_scan_writes_job_inputs_and_cli_flags(tmp_path: Path):
     assert "123" in ports_udp_path.read_text(encoding="utf-8")
 
 
+@requires_postgres
 def test_api_rejects_invalid_targets_with_422():
     client = TestClient(create_app())
     login = client.post(

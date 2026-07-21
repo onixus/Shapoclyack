@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -67,6 +68,32 @@ class PortAggregateItem(BaseModel):
     host_count: int = 0
     vulnerability_count: int = 0
     hosts: list[str] = Field(default_factory=list)
+
+
+class AssetIdentifier(BaseModel):
+    identifier_type: str
+    identifier_value: str
+
+
+class AssetSummary(BaseModel):
+    asset_id: str
+    status: str
+    first_seen: datetime
+    last_seen: datetime
+    primary_identifier: str | None = None
+    identifier_count: int = 0
+
+
+class AssetDetail(BaseModel):
+    asset_id: str
+    tenant_id: str
+    status: str
+    first_seen: datetime
+    last_seen: datetime
+    owner_email: str | None = None
+    business_unit: str | None = None
+    identifiers: list[AssetIdentifier] = Field(default_factory=list)
+    tags: dict[str, str] = Field(default_factory=dict)
 
 
 class StartScanRequest(BaseModel):

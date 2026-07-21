@@ -156,18 +156,20 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** evolve Octo-man from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
 
-**Status:** **Planned** — not started.
+**Status:** Phase 7 **done** (MVP) — Phases 8–11 **Planned**.
 
 ### Phase 7 — Asset Inventory & Identity Graph
 
 **Goal:** replace per-run snapshots (`RunSummary`, `AliveHostItem`, `PortAggregateItem`) with a persistent asset registry — the core missing piece for EASM.
 
+**Status:** **Done** (MVP). Postgres is a hard dependency once this ships (unlike NATS/ClickHouse) since the tenant store lives there — see `k8s/README.md` Postgres section. No IP↔FQDN↔cert-hash cross-identifier correlation yet (one asset per host record per run); no ownership-graph UI; `decommissioned` status is operator-only, never automatic. Deferred to Phase 9/11.
+
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 7.1 | Postgres as PRIMARY_DB | `api/db/` (new), `api/services/` | SQLAlchemy/Alembic; `assets`, `asset_identifiers` (IP/domain/cert-hash), `asset_tags`, `ownership` tables | **Planned** |
-| 7.2 | Asset dedup / fingerprint | `scanner/pipeline/asset_identity.py` (new) | Stable `asset_id` from (IP+port) / FQDN / cert SHA256 to avoid duplicates across runs | **Planned** |
-| 7.3 | Lifecycle tracking | `api/services/results_ingest.py`, `ch_ingest_worker.py` | `first_seen` / `last_seen` / `status` (active/stale/decommissioned) per asset | **Planned** |
-| 7.4 | Migrate tenants/keys off JSON | `api/services/tenants.py` | Move JSON-backed tenants/provisioning keys to Postgres; completes Phase 2 | **Planned** |
+| 7.1 | Postgres as PRIMARY_DB | `api/db/` (new), `api/services/` | SQLAlchemy/Alembic; `tenants`, `provisioning_keys`, `assets`, `asset_identifiers` (IP/domain/cert-hash), `asset_tags` tables | **Done** |
+| 7.2 | Asset dedup / fingerprint | `scanner/pipeline/asset_identity.py` (new) | Stable `asset_id` keyed by tenant+IP or tenant+FQDN sha256 hash, to avoid duplicates across runs | **Done** |
+| 7.3 | Lifecycle tracking | `api/services/assets.py`, hooked from `api/services/jobs.py` (`_run_job` + `complete_job`, covering both local-mode and agent-upload execution paths) | `first_seen` / `last_seen` / `status` (active/stale/decommissioned) per asset; staleness is a `last_seen` age threshold (`OCTO_ASSET_STALE_DAYS`, default 14d) | **Done** |
+| 7.4 | Migrate tenants/keys off JSON | `api/services/tenants.py` | Postgres-backed behind the same public function signatures; `resolve_provisioning_key` now O(1) via an indexed `key_lookup` prefix instead of scan-and-bcrypt-verify-all | **Done** |
 
 ### Phase 8 — Outside-In Continuous Discovery
 

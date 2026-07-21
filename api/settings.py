@@ -53,6 +53,15 @@ class Settings:
     # Optional risk-scoring overlays (read by RiskScoring.from_env):
     #   OCTO_EPSS_DATABASE (default scanner/data/epss/epss-overlay.json)
     #   OCTO_KEV_DATABASE  (default scanner/data/kev/kev-overlay.json)
+    # Postgres PRIMARY_DB (Phase 7 — asset inventory + tenants/provisioning keys).
+    # UNLIKE nats_url/clickhouse_url, this is NOT an opt-in sidecar: the tenant
+    # store lives here, so an empty value makes API startup fail fast (see
+    # api/services/tenants.py:load_tenants) rather than silently disabling a
+    # feature. Empty-string default is kept only for config-shape consistency.
+    postgres_url: str = ""
+    # Asset lifecycle: active assets not re-observed within this many days flip
+    # to "stale" at the end of every ingest (api/services/assets.py).
+    asset_stale_days: int = 14
 
 
 def load_settings() -> Settings:
@@ -91,4 +100,6 @@ def load_settings() -> Settings:
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
+        postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip(),
+        asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
     )

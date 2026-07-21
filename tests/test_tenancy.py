@@ -11,6 +11,9 @@ from api.services import agents as agents_service
 from api.services import jobs as jobs_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
+from tests.conftest import POSTGRES_URL, requires_postgres
+
+pytestmark = requires_postgres
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -24,6 +27,7 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
         agent_stale_seconds=120,
         agent_jwt_expire_minutes=30,
         jwt_secret="test-secret",
+        postgres_url=POSTGRES_URL,
     )
     for key, value in overrides.items():
         setattr(base, key, value)
@@ -38,6 +42,7 @@ def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
     monkeypatch.setattr("api.app.get_settings", lambda: settings)
     jobs_service._JOBS.clear()  # noqa: SLF001
     agents_service._agents.clear()  # noqa: SLF001
+    tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     return TestClient(create_app())
 

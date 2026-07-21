@@ -7,6 +7,9 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.settings import Settings
+from tests.conftest import requires_postgres
+
+pytestmark = requires_postgres
 
 
 def _write_run(root: Path, run_id: str) -> None:

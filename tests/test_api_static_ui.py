@@ -5,6 +5,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from tests.conftest import requires_postgres
+
+pytestmark = requires_postgres
 
 
 def _client(web_dist: Path, monkeypatch) -> TestClient:

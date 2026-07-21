@@ -29,6 +29,19 @@ services:
       start_period: 2s
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: octo_man
+      POSTGRES_USER: octo
+      POSTGRES_PASSWORD: octo-dev-change-me
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   clickhouse:
     image: clickhouse/clickhouse-server:24.8-alpine
     profiles: ["clickhouse"]
@@ -73,6 +86,9 @@ services:
       OCTO_NATS_URL: ${OCTO_NATS_URL:-}
       OCTO_CLICKHOUSE_URL: ${OCTO_CLICKHOUSE_URL:-}
       OCTO_CH_INGEST_ENABLED: ${OCTO_CH_INGEST_ENABLED:-true}
+      # Required (tenant store is Postgres-backed, Phase 7) — auto-wire with
+      # docker-compose.postgres.yml --profile postgres.
+      OCTO_POSTGRES_URL: ${OCTO_POSTGRES_URL:-}
     volumes:
       - ./scanner/inputs:/app/scanner/inputs
       - ./scanner/output:/app/scanner/output
@@ -85,3 +101,4 @@ services:
 volumes:
   nats-data:
   clickhouse-data:
+  postgres-data:
