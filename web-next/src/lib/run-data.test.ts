@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PortAggregate, RunSummary, Vulnerability } from "@/lib/api";
 import {
   countSeverities,
+  formatLocation,
   normalizeSeverity,
   pickLatestRun,
   recentRunTrend,
@@ -44,6 +45,20 @@ function makeVuln(severity: string | null): Vulnerability {
 describe("runDetailHref", () => {
   it("URL-encodes the run id into a static-export friendly query URL", () => {
     expect(runDetailHref("run/1 x")).toBe("/runs/view?runId=run%2F1%20x");
+  });
+});
+
+describe("formatLocation", () => {
+  it("joins city and country", () => {
+    expect(formatLocation({ city: "Berlin", country: "Germany" })).toBe("Berlin, Germany");
+  });
+
+  it("falls back to the ISO code when city/country are missing", () => {
+    expect(formatLocation({ country_iso: "DE" })).toBe("DE");
+  });
+
+  it("returns an empty string when nothing is known", () => {
+    expect(formatLocation({})).toBe("");
   });
 });
 
