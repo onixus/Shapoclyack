@@ -3,3 +3,4 @@ pydantic==2.10.6
 fpdf2==2.8.7
 geoip2==4.8.1
 nats-py==2.9.0
+httpx==0.28.1

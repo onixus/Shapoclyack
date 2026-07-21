@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .config_schema import CertificateTransparencyConfig, DiscoveryConfig
+from .config_schema import BruteForceSubdomainConfig, CertificateTransparencyConfig, DiscoveryConfig
 from .utils import load_json, run_command, save_json, write_lines
+
+DEFAULT_WORDLIST_PATH = Path(__file__).resolve().parents[2] / "scanner" / "data" / "wordlists" / "subdomains-small.txt"
 
 
 def forward_map_from_resolution(output_dir: Path) -> dict[str, list[str]]:
@@ -244,6 +247,78 @@ def query_certspotter(domain: str, timeout: int) -> list[str]:
     return names
 
 
+def query_otx_passive_dns(domain: str, timeout: int) -> list[str]:
+    """Query AlienVault OTX passive DNS (keyless read access) for ``domain``."""
+    url = f"https://otx.alienvault.com/api/v1/indicators/hostname/{urllib.parse.quote(domain)}/passive_dns"
+    try:
+        payload = _http_get_json(url, timeout, headers={"Accept": "application/json"})
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+        logging.warning("OTX passive DNS query failed for %s: %s", domain, exc)
+        return []
+    names: list[str] = []
+    if not isinstance(payload, dict):
+        return names
+    for row in payload.get("passive_dns") or []:
+        if not isinstance(row, dict):
+            continue
+        name = _normalize_name(str(row.get("hostname") or ""))
+        if not name or "*" in name:
+            continue
+        if name == domain or name.endswith(f".{domain}"):
+            names.append(name)
+    return names
+
+
+def _load_wordlist(wordlist_file: str) -> list[str]:
+    path = Path(wordlist_file) if wordlist_file else DEFAULT_WORDLIST_PATH
+    if not path.is_file():
+        logging.warning("brute_force: wordlist not found at %s", path)
+        return []
+    words: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        word = line.strip().lower()
+        if word and not word.startswith("#"):
+            words.append(word)
+    return words
+
+
+def _resolves(candidate: str, timeout: int) -> bool:
+    original_timeout = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.getaddrinfo(candidate, None)
+        return True
+    except (socket.gaierror, OSError):
+        return False
+    finally:
+        socket.setdefaulttimeout(original_timeout)
+
+
+async def brute_force_subdomains(domain: str, config: BruteForceSubdomainConfig) -> list[str]:
+    """Generate ``{word}.{domain}`` candidates and keep only those that resolve.
+
+    Concurrency and candidate-count are capped (config.concurrency /
+    config.max_candidates) so this stays a bounded, well-behaved DNS query
+    burst rather than an unbounded flood against the target's resolvers.
+    """
+    if not config.enabled:
+        return []
+    wordlist = _load_wordlist(config.wordlist_file)
+    if not wordlist:
+        return []
+    candidates = [f"{word}.{domain}" for word in wordlist][: config.max_candidates]
+
+    semaphore = asyncio.Semaphore(config.concurrency)
+
+    async def _check(candidate: str) -> str | None:
+        async with semaphore:
+            ok = await asyncio.to_thread(_resolves, candidate, config.timeout_seconds)
+        return candidate if ok else None
+
+    results = await asyncio.gather(*(_check(c) for c in candidates))
+    return sorted({name for name in results if name})
+
+
 def base_domains_from_fqdns(fqdns: list[str]) -> list[str]:
     """Reduce FQDNs to registrable-ish base domains (last two labels)."""
     bases: list[str] = []
@@ -293,6 +368,8 @@ async def discover_ct_subdomains(
             names = await asyncio.to_thread(query_crtsh, domain, config.timeout_seconds)
         elif provider == "certspotter":
             names = await asyncio.to_thread(query_certspotter, domain, config.timeout_seconds)
+        elif provider == "otx":
+            names = await asyncio.to_thread(query_otx_passive_dns, domain, config.timeout_seconds)
         else:
             names = []
         cleaned: list[str] = []
@@ -313,6 +390,14 @@ async def discover_ct_subdomains(
         key = f"{provider}:{domain}"
         by_provider[key] = sorted(set(names))
         collected.extend(names)
+
+    if config.brute_force.enabled:
+        bf_results = await asyncio.gather(
+            *(brute_force_subdomains(domain, config.brute_force) for domain in targets)
+        )
+        for domain, names in zip(targets, bf_results):
+            by_provider[f"brute_force:{domain}"] = names
+            collected.extend(names)
 
     unique = merge_name_lists(collected)
     if len(unique) > config.max_subdomains:

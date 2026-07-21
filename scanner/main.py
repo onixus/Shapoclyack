@@ -22,6 +22,7 @@ from scanner.pipeline.discovery_delta import (
     resolve_previous_alive_file,
 )
 from scanner.pipeline.errors import StageFailureError
+from scanner.pipeline.asn_discovery import discover_asn_ranges
 from scanner.pipeline.discover import import_cloudflare_dns_targets
 from scanner.pipeline.hostnames import (
     base_domains_from_fqdns,
@@ -204,6 +205,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         and not contract.valid_fqdns
         and not config.discovery.cloudflare.enabled
         and not config.discovery.ct.enabled
+        and not config.discovery.asn.enabled
     ):
         logging.error("No valid targets after input validation")
         return exit_codes.INPUT_ERROR
@@ -245,6 +247,23 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         checkpoint.mark_done("ct")
     if config.discovery.ct.enabled:
         scope_fqdns = merge_name_lists(scope_fqdns, ct_result.get("subdomains") or [])
+
+    # Phase 8.1: ASN/BGP org mapping (after CT so it can also see CT-expanded
+    # domains via base_domains_from_fqdns). Adds IP ranges, not FQDNs.
+    if args.resume and checkpoint.is_done("asn"):
+        asn_result = load_json(
+            paths.output_dir / "asn_discovery.json",
+            fallback={"ip_ranges": []},
+        )
+    else:
+        asn_domains = config.discovery.asn.domains or base_domains_from_fqdns(scope_fqdns)
+        asn_result = _run_stage(
+            "asn",
+            lambda: discover_asn_ranges(asn_domains, config.discovery.asn, paths.output_dir),
+        )
+        checkpoint.mark_done("asn")
+    if config.discovery.asn.enabled:
+        scope_ips = sorted(set(scope_ips + list(asn_result.get("ip_ranges") or [])))
 
     if args.resume and checkpoint.is_done("resolve"):
         resolved_ips = read_lines(paths.output_dir / "resolved_ips.txt")

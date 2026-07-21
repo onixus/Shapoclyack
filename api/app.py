@@ -116,4 +116,25 @@ def create_app() -> FastAPI:
     return app
 
 
-app = create_app()
+_app: FastAPI | None = None
+
+
+def __getattr__(name: str) -> FastAPI:
+    """Lazily build the module-level ``app`` singleton (PEP 562).
+
+    Postgres is a hard dependency for create_app() (tenants_service.load_tenants
+    fails fast without it — Phase 7). Building `app` eagerly at import time meant
+    a bare `from api.app import create_app` — which every API test file does —
+    executed create_app() as a side effect of importing the module, requiring a
+    reachable Postgres just to collect tests that don't even touch tenants.
+    Deferring construction to first access of the `app` attribute keeps
+    `uvicorn.run("api.app:app", ...)` / `api.__main__` working identically
+    (uvicorn imports the module then getattrs "app"), while plain imports and
+    explicit create_app() calls (what tests already do) are unaffected.
+    """
+    if name == "app":
+        global _app
+        if _app is None:
+            _app = create_app()
+        return _app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

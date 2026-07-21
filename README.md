@@ -61,6 +61,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
   over legacy `OCTO_AGENT_TOKEN`. Compose helper: `docker-compose.nats.yml`.
 - **MSSP tenancy (Phase 2)**: `POST /api/tenants` + provisioning keys; agents call `POST /api/auth/agent/token` for a short-lived JWT with `tenant_id`.
 - **Asset inventory (Phase 7)**: Postgres-backed cross-run asset registry (`GET /api/assets`, `GET /api/assets/{id}`) with stable identity, `first_seen`/`last_seen`/`status` lifecycle. `OCTO_POSTGRES_URL` is required — see [k8s/README.md](k8s/README.md#postgres-primary-db--phase-7).
+- **Outside-in discovery (Phase 8.1–8.2)**: ASN/BGP org mapping (`discovery.asn`, seed domain → ASN → announced prefixes via RIPEstat, capped scope expansion) and expanded subdomain enum (`discovery.ct` gains an `otx` passive-DNS provider + opt-in wordlist brute force) alongside existing Cloudflare/CT-log discovery — all opt-in, disabled by default.
 
 ## Project Layout
 

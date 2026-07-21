@@ -95,6 +95,17 @@ discovery:
     domains: []
     max_subdomains: 5000
     timeout_seconds: 45
+    brute_force:
+      enabled: false
+      wordlist_file: ""
+      concurrency: 20
+      max_candidates: 2000
+      timeout_seconds: 5
+  asn:
+    enabled: false
+    domains: []
+    max_total_ips: 4096
+    timeout_seconds: 15
   seed_alive_file: ""
   delta:
     enabled: false
