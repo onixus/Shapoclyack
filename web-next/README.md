@@ -46,10 +46,30 @@ Demo users (aio defaults): `viewer` / `operator` / `admin` with `*-change-me` pa
 | `/login` | JWT login against `POST /api/auth/login` |
 | `/` Dashboard | Live KPIs/charts from latest run |
 | `/tenants` | Live `GET/POST /api/tenants` + provisioning key (admin) |
-| `/assets` | Live inventory from latest-run hosts/ports/vulns |
+| `/assets` | Cross-run asset inventory from `GET /api/assets` (first/last seen, status) |
 | `/agents` | Live `GET /api/agents` (5s poll) |
 | `/jobs` | Live `GET/POST /api/jobs` (operator+) |
 | `/runs` | Live `GET /api/runs` (10s poll); links to detail |
 | `/runs/view?runId=` | Live run detail (static-export friendly query URL) |
 
-See [ROADMAP.md](../ROADMAP.md) Phase 6. Legacy Vite UI remains in `web/` for reference.
+See [ROADMAP.md](../ROADMAP.md) Phase 6.
+
+## Scripts
+
+| Command | Purpose |
+|---------|---------|
+| `npm run dev` | Dev server with `/api/*` proxy |
+| `npm run build` | Static export to `out/` (includes typecheck + ESLint) |
+| `npm run lint` | ESLint (`next lint`) |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run test` | Vitest (unit + component tests, jsdom) |
+| `npm run format` / `format:check` | Prettier over `src/` |
+
+## Conventions
+
+- Shared table UI: `src/components/data-table.tsx` (sorting, search, pagination).
+- Status/severity colors: `src/lib/config/statuses.ts` + `StatusBadge` — do not
+  hardcode badge colors in pages.
+- Data fetching: hooks in `src/hooks/` with keys from `src/lib/query-keys.ts`
+  and intervals from `src/lib/config/constants.ts`; pages stay presentational.
+- Mutation feedback: sonner toasts (`Toaster` is mounted in the dashboard layout).

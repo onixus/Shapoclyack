@@ -5,6 +5,17 @@ export function runDetailHref(runId: string): string {
   return `/runs/view?runId=${encodeURIComponent(runId)}`;
 }
 
+/** "City, Country" when available, falling back to the ISO code. */
+export function formatLocation(item: {
+  city?: string | null;
+  country?: string | null;
+  country_iso?: string | null;
+}): string {
+  const bits = [item.city, item.country].filter(Boolean);
+  if (bits.length === 0 && item.country_iso) return item.country_iso;
+  return bits.join(", ");
+}
+
 export const SEVERITIES = ["critical", "high", "medium", "low", "unknown"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
@@ -68,4 +79,3 @@ export function topVulnerablePorts(ports: PortAggregate[], limit = 5) {
     .sort((a, b) => b.value - a.value)
     .slice(0, limit);
 }
-

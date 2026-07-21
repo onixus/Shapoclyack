@@ -1,45 +1,22 @@
 "use client";
 
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import {
-  flexRender,
-  getCoreRowModel,
-  getPaginationRowModel,
-  useReactTable,
-  type ColumnDef,
-} from "@tanstack/react-table";
+import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { fetchAgents, type AgentInfo } from "@/lib/api";
-
-function statusBadge(agent: AgentInfo) {
-  if (!agent.online) return <Badge variant="secondary">offline</Badge>;
-  if (agent.status === "busy") return <Badge className="bg-amber-600 hover:bg-amber-600">busy</Badge>;
-  if (agent.status === "error") return <Badge variant="destructive">error</Badge>;
-  if (agent.status === "stale") return <Badge variant="outline">stale</Badge>;
-  return <Badge className="bg-emerald-600 hover:bg-emerald-600">idle</Badge>;
-}
+import { DataTable } from "@/components/data-table";
+import { StatusBadge } from "@/components/status-badge";
+import { useAgents } from "@/hooks/use-agents";
+import { type AgentInfo } from "@/lib/api";
+import { AGENT_STATUS, agentEffectiveStatus } from "@/lib/config/statuses";
 
 export default function AgentsPage() {
-  const { data = [], isLoading, error, isFetching } = useQuery({
-    queryKey: ["agents"],
-    queryFn: fetchAgents,
-    refetchInterval: 5_000,
-  });
+  const { data = [], isLoading, error, isFetching } = useAgents();
 
   const columns = useMemo<ColumnDef<AgentInfo>[]>(
     () => [
       {
-        accessorKey: "hostname",
+        id: "agent",
+        accessorFn: (agent) => `${agent.hostname} ${agent.agent_id}`,
         header: "Agent",
         cell: ({ row }) => (
           <div>
@@ -50,8 +27,11 @@ export default function AgentsPage() {
       },
       {
         id: "status",
+        accessorFn: (agent) => agentEffectiveStatus(agent),
         header: "Status",
-        cell: ({ row }) => statusBadge(row.original),
+        cell: ({ row }) => (
+          <StatusBadge value={agentEffectiveStatus(row.original)} map={AGENT_STATUS} />
+        ),
       },
       {
         accessorKey: "tenant_id",
@@ -65,6 +45,7 @@ export default function AgentsPage() {
       {
         accessorKey: "current_job_id",
         header: "Job",
+        enableSorting: false,
         cell: ({ getValue }) => {
           const value = getValue();
           return value ? <code className="text-xs">{String(value)}</code> : "—";
@@ -73,6 +54,7 @@ export default function AgentsPage() {
       {
         accessorKey: "last_seen_at",
         header: "Last seen",
+        sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.last_seen_at
             ? format(new Date(row.original.last_seen_at), "yyyy-MM-dd HH:mm:ss")
@@ -81,13 +63,6 @@ export default function AgentsPage() {
     ],
     [],
   );
-
-  const table = useReactTable({
-    data,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-  });
 
   return (
     <div className="space-y-6">
@@ -99,54 +74,15 @@ export default function AgentsPage() {
         </p>
       </div>
 
-      {error ? (
-        <p className="text-sm text-rose-600">
-          {error instanceof Error ? error.message : "Failed to load agents"}
-        </p>
-      ) : null}
-
-      <div className="rounded-lg border bg-white">
-        <Table>
-          <TableHeader>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
-                  </TableHead>
-                ))}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="text-muted-foreground">
-                  Loading agents…
-                </TableCell>
-              </TableRow>
-            ) : table.getRowModel().rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="text-muted-foreground">
-                  No agents registered.
-                </TableCell>
-              </TableRow>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id}>
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
+      <DataTable
+        columns={columns}
+        data={data}
+        isLoading={isLoading}
+        error={error}
+        searchPlaceholder="Filter agents…"
+        loadingMessage="Loading agents…"
+        emptyMessage="No agents registered."
+      />
     </div>
   );
 }
