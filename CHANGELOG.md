@@ -6,21 +6,25 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Fixed
 
-- **`allowPrivilegeEscalation: false` silently blocking `nmap`/`naabu`'s raw-socket
-  capability as a non-root user** — `k8s/octo-man/base/api-deployment.yaml`'s
-  `api` container and `k8s/octo-man/base/agents/agent-deployment.yaml` set
-  `allowPrivilegeEscalation: false`, which sets Linux's `no_new_privs` flag;
-  this blocks the `setcap` file-capability grant on `nmap`/`naabu` outright
-  regardless of what's listed under `capabilities.add`, silently degrading
-  scans as the non-root container user. Brought both in line with
-  `job.yaml`/`cronjob.yaml`'s already-working `allowPrivilegeEscalation: true`.
-  (An earlier version of this fix also added `cap_net_admin` to the file
-  capabilities and container `capabilities.add`/`cap_add` lists, but that broke
-  a plain `docker run` with zero `--cap-add` flags entirely — a file capability
-  outside the container's bounding set fails the whole `execve()` with `EPERM`
-  rather than being silently dropped, and Docker's default bounding set
-  excludes `NET_ADMIN`. Reverted; `cap_net_raw` alone remains the correct,
-  zero-flags-required grant.)
+- **OS detection (`nmap -O`) silently failing as the non-root container user**
+  — `docker-compose.yml`'s `shapoclyack` service only granted `NET_RAW`
+  (missing `NET_ADMIN`, which nmap's libcap-ng-based privilege drop needs
+  alongside `NET_RAW` for `-O`), and `k8s/octo-man/base/api-deployment.yaml`'s
+  `api` container plus `k8s/octo-man/base/agents/agent-deployment.yaml` set
+  `allowPrivilegeEscalation: false`, which sets Linux's `no_new_privs` flag —
+  this blocks the `setcap` file-capability grant on `nmap`/`naabu` outright,
+  regardless of what's listed under `capabilities.add`. Brought all three in
+  line with `job.yaml`/`cronjob.yaml`'s already-working
+  `allowPrivilegeEscalation: true` + `capabilities.add: [NET_RAW, NET_ADMIN]`,
+  and `Dockerfile`/`Dockerfile.allinone`'s `setcap` step now grants
+  `cap_net_admin` in addition to `cap_net_raw` on both binaries. Every place
+  this image actually runs scans (`docker-compose.yml`, `tests/e2e/run.sh`,
+  the k8s manifests) already grants `NET_ADMIN` at the container level to
+  match — `ci.yml`'s image smoke-check was the only place still invoking the
+  image with zero `--cap-add`, which broke outright once the binaries carried
+  a file capability outside that empty bounding set (a file capability beyond
+  the runtime bounding set fails the whole `execve()` with `EPERM` rather than
+  being silently dropped); fixed by adding the same `--cap-add` flags there.
 - **Stale `shapoclyack-0.33` image tags across every k8s manifest** —
   `api-deployment.yaml`, `agent-deployment.yaml`, `cronjob.yaml`, `job.yaml`,
   `job-resume.yaml`, `enrichment/cronjob.yaml`, both overlay patches, and the

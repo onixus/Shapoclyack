@@ -93,15 +93,15 @@ RUN set -eux; \
     git -C /usr/share/nuclei-templates checkout "${NUCLEI_TEMPLATES_REF}"; \
     rm -rf /usr/share/nuclei-templates/.git
 
-# See Dockerfile's matching step for why only cap_net_raw is set here: a file
-# capability outside the runtime bounding set fails the whole execve() with
-# EPERM rather than being silently dropped, and Docker's default bounding set
-# excludes NET_ADMIN — so baking it in would break `docker run` with no
-# --cap-add for every user (verified via a CI regression).
+# See Dockerfile's matching step for why both capabilities are set here (nmap
+# -O needs cap_net_admin as well as cap_net_raw to work non-root; every place
+# this image actually runs scans — docker-compose.yml, tests/e2e/run.sh, the
+# k8s api/agent/job/cronjob manifests — already grants NET_ADMIN at the
+# container level to match).
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
-    setcap cap_net_raw+eip /usr/local/bin/naabu; \
-    setcap cap_net_raw+eip /usr/bin/nmap; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     apt-get purge -y libcap2-bin && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

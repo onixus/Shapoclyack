@@ -70,18 +70,18 @@ spec:
             #   value: nats://octo-man-nats-client:4222
           securityContext:
             # This worker runs the full scanner pipeline (nmap -O / naabu need
-            # the NET_RAW file capability, set at build time via Dockerfile
-            # setcap, to take effect for the non-root user);
+            # NET_RAW+NET_ADMIN file capabilities, set at build time via
+            # Dockerfile setcap, to take effect for the non-root user);
             # allowPrivilegeEscalation:false sets no_new_privs, which blocks
-            # that file-capability grant on exec entirely regardless of
-            # what's listed below (matches job.yaml/cronjob.yaml's working
-            # config).
+            # that file-capability grant on exec regardless of what's listed
+            # below (matches job.yaml/cronjob.yaml's working config).
             allowPrivilegeEscalation: true
             capabilities:
               drop:
                 - ALL
               add:
                 - NET_RAW
+                - NET_ADMIN
           resources:
             requests:
               cpu: "500m"

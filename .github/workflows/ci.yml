@@ -111,8 +111,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke-check toolchain in image
+        # naabu/nmap carry cap_net_raw+cap_net_admin as file capabilities (see
+        # Dockerfile); a capability requested by the binary but missing from
+        # the container's bounding set fails the whole exec with EPERM rather
+        # than being silently dropped, so --cap-add here must match what
+        # docker-compose.yml / tests/e2e/run.sh / the k8s manifests grant.
         run: |
-          docker run --rm --entrypoint sh network-scan-cli:ci -c '
+          docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh network-scan-cli:ci -c '
             set -e
             naabu -version
             dnsx -version
