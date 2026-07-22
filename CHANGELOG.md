@@ -4,6 +4,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Added
+
+## [0.35-0722] — 2026-07-22
+
 ### Changed
 
 - **Node.js 22 → 24** across the project: `Dockerfile.allinone`/`Dockerfile.api`'s
