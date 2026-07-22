@@ -22,10 +22,12 @@ k8s/octo-man/
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
 ├── base/config/k8s.yaml  # scanner ConfigMap source
 ├── base/agents/          # optional agent Deployment + VPA (not in default base)
+├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 RWX PVC + daily refresh CronJob
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
 ├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false
 ├── overlays/agents/      # remote agents (topology spread + VPA) + API agent-mode
+├── overlays/enrichment/  # real GeoIP/EPSS/KEV/CVSS4 data, hot-reloaded, no restart needed
 └── examples/             # Secrets / Ingress / agent / NATS enable patches
 ```
 
@@ -186,6 +188,30 @@ kubectl apply -k k8s/octo-man/overlays/agents
 | Overlay patches | API `OCTO_JOB_EXECUTION_MODE=agent` + NATS URL |
 
 Standalone example: `octo-man/examples/agent-deployment.example.yaml`.
+
+### Optional: real GeoIP / EPSS / KEV / CVSS4 data
+
+The committed enrichment files (`scanner/data/{geoip,epss,kev,cvss4}/`) are tiny seed
+stubs baked into every image, not production feeds — without this overlay, EPSS/KEV
+score only a handful of hardcoded CVEs and GeoIP only resolves 5 hardcoded IPs. Enable
+with:
+
+```bash
+# Requires a StorageClass supporting ReadWriteMany (see pvc.yaml)
+kubectl apply -k k8s/octo-man/overlays/enrichment
+```
+
+| Manifest | Behavior |
+|----------|----------|
+| `base/enrichment/pvc.yaml` | `enrichment-data` RWX PVC (2Gi) shared by every replica |
+| `base/enrichment/cronjob.yaml` | Daily 03:00 UTC `scripts/fetch-enrichment.sh` refresh into the PVC |
+| Overlay patches | API gets a cold-start `fetch-enrichment` initContainer + read-only volume mount + `OCTO_EPSS_DATABASE`/`OCTO_KEV_DATABASE`/`OCTO_GEOIP_DATABASE`/`OCTO_CVSS4_DATABASE`/`OCTO_ENRICHMENT_RELOAD_SECONDS`; the weekly scan CronJob gets the volume + GeoIP/CVSS4 env |
+
+The API re-checks the EPSS/KEV files' mtimes at most once per
+`OCTO_ENRICHMENT_RELOAD_SECONDS` (default 60s) and reloads in place when the daily
+CronJob rewrites them — no pod restart needed. GeoIP source is automatic: MaxMind
+GeoLite2-City if `Secret octo-man-geoip` / key `maxmind_license_key` is set, else
+keyless DB-IP City Lite.
 
 ### 5. Observe / resume
 

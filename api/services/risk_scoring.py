@@ -13,6 +13,11 @@ Overlays (JSON) are opt-in so the image stays redistributable:
 
 * ``OCTO_EPSS_DATABASE`` / default ``scanner/data/epss/epss-overlay.json``
 * ``OCTO_KEV_DATABASE`` / default ``scanner/data/kev/kev-overlay.json``
+
+The committed defaults are tiny seed stubs; a refresh job (``scripts/fetch-epss-db.sh``
+/ ``scripts/fetch-kev-db.sh``) rewrites them with the real feeds on a shared
+volume, and ``get_scorer`` hot-reloads changed overlays without a restart
+(``OCTO_ENRICHMENT_RELOAD_SECONDS``, default 60).
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -224,15 +230,70 @@ class RiskScoring:
 
 
 _SCORER: RiskScoring | None = None
+_SCORER_MTIMES: tuple[float, float] | None = None
+_SCORER_CHECKED_AT: float = 0.0
+_SCORER_PINNED: bool = False
+
+
+def _overlay_paths() -> tuple[Path, Path]:
+    epss = Path(os.environ.get("OCTO_EPSS_DATABASE", "scanner/data/epss/epss-overlay.json"))
+    kev = Path(os.environ.get("OCTO_KEV_DATABASE", "scanner/data/kev/kev-overlay.json"))
+    return epss, kev
+
+
+def _mtimes(paths: tuple[Path, Path]) -> tuple[float, float]:
+    stamps: list[float] = []
+    for path in paths:
+        try:
+            stamps.append(path.stat().st_mtime)
+        except OSError:
+            stamps.append(0.0)
+    return stamps[0], stamps[1]
+
+
+def _reload_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("OCTO_ENRICHMENT_RELOAD_SECONDS", "60")))
+    except (TypeError, ValueError):
+        return 60.0
 
 
 def get_scorer() -> RiskScoring:
-    global _SCORER
+    """Return the process-wide scorer, hot-reloading when the EPSS/KEV overlay
+    files change on disk.
+
+    The overlay files' mtimes are re-checked at most once per
+    ``OCTO_ENRICHMENT_RELOAD_SECONDS`` (default 60; set 0 to check every call).
+    This lets a refresh CronJob rewrite the overlays on a shared volume and have
+    every running API/ingest replica pick up fresh EPSS/KEV data without a
+    process restart — the key requirement for staying fresh under load. The TTL
+    gate keeps the steady-state cost at a cached attribute read (no per-call
+    ``stat``). A scorer injected via ``reset_scorer_for_tests`` is pinned and
+    never auto-reloaded.
+    """
+    global _SCORER, _SCORER_MTIMES, _SCORER_CHECKED_AT
+    if _SCORER is not None and _SCORER_PINNED:
+        return _SCORER
     if _SCORER is None:
         _SCORER = RiskScoring.from_env()
+        _SCORER_MTIMES = _mtimes(_overlay_paths())
+        _SCORER_CHECKED_AT = time.monotonic()
+        return _SCORER
+    now = time.monotonic()
+    if now - _SCORER_CHECKED_AT < _reload_seconds():
+        return _SCORER
+    _SCORER_CHECKED_AT = now
+    current = _mtimes(_overlay_paths())
+    if current != _SCORER_MTIMES:
+        LOG.info("Enrichment overlays changed on disk — reloading risk scorer")
+        _SCORER = RiskScoring.from_env()
+        _SCORER_MTIMES = current
     return _SCORER
 
 
 def reset_scorer_for_tests(scorer: RiskScoring | None = None) -> None:
-    global _SCORER
+    global _SCORER, _SCORER_MTIMES, _SCORER_CHECKED_AT, _SCORER_PINNED
     _SCORER = scorer
+    _SCORER_PINNED = scorer is not None
+    _SCORER_MTIMES = None
+    _SCORER_CHECKED_AT = 0.0

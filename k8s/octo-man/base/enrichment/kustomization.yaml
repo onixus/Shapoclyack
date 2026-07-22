@@ -1,0 +1,16 @@
+# Optional enrichment-data component (not part of default base).
+# Enable via: kubectl apply -k k8s/octo-man/overlays/enrichment
+#
+# Sets its own namespace transformer (unlike base/agents/) since this
+# component's PVC/CronJob must land in the same namespace as the API pods
+# that mount enrichment-data by claimName — the overlay's own kustomization
+# has no namespace transformer, so without this the resources here would
+# default to "default" and the claimName reference would never resolve.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: network-scan
+
+resources:
+  - pvc.yaml
+  - cronjob.yaml

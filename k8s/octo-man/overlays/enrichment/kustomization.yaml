@@ -1,0 +1,23 @@
+# Optional overlay: real GeoIP/EPSS/KEV/CVSS4 data on a shared RWX volume,
+# refreshed daily by a CronJob, hot-reloaded by every API replica.
+#
+#   kubectl apply -k k8s/octo-man/overlays/enrichment
+#
+# Prerequisites:
+#   - A StorageClass that supports ReadWriteMany (pvc.yaml has a commented
+#     storageClassName field — set it to yours if the default class is RWO-only)
+#   - Optional: Secret octo-man-geoip / key maxmind_license_key for the more
+#     accurate MaxMind GeoLite2-City feed. Without it, GeoIP falls back
+#     automatically to keyless DB-IP City Lite — no secret required to work.
+#       kubectl create secret generic octo-man-geoip \
+#         --from-literal=maxmind_license_key=<your-key> -n network-scan
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - ../../base/enrichment
+
+patches:
+  - path: api-enrichment-patch.yaml
+  - path: cronjob-enrichment-patch.yaml

@@ -2,6 +2,29 @@
 
 All notable changes to the Octo-man product (hosted in Shapoclyack) are documented in this file.
 
+## Unreleased
+
+### Added
+
+- **Production enrichment data pipeline (GeoIP / EPSS / KEV / CVSS4)** — the
+  `shapoclyack-0.33-0507` release shipped with only tiny seed stubs for these
+  four datasets (5 hardcoded IPs for GeoIP, 2–3 CVEs for EPSS/KEV) and no way
+  to get real data into a running deployment. Added `scripts/fetch-epss-db.sh`
+  (FIRST.org, keyless, ~350k CVEs) and `scripts/fetch-kev-db.sh` (CISA KEV,
+  keyless, ~1.6k CVEs), plus `scripts/fetch-enrichment.sh` orchestrating all
+  four sources (GeoIP auto-selects MaxMind GeoLite2-City when
+  `MAXMIND_LICENSE_KEY` is set, else keyless DB-IP City Lite) with per-source
+  non-fatal failure handling. `k8s/octo-man/overlays/enrichment` adds a shared
+  ReadWriteMany PVC refreshed by a daily CronJob and mounted read-only into
+  API/scan pods (plus a cold-start initContainer); `docker-compose.enrichment.yml`
+  mirrors this for compose. `api/services/risk_scoring.py`'s EPSS/KEV scorer —
+  previously a process-global singleton loaded once at startup with no reload
+  path — now hot-reloads when the overlay files' mtimes change on disk,
+  gated by `OCTO_ENRICHMENT_RELOAD_SECONDS` (default 60s) so replicas pick up
+  the CronJob's refresh without a restart or per-request stat() overhead.
+  `scanner/main.py` gained `OCTO_GEOIP_DATABASE` / `OCTO_CVSS4_DATABASE` env
+  overrides so the shared-volume path can win over the baked-in config default.
+
 ## [0.33-0507] — 2026-07-21
 
 ### Added

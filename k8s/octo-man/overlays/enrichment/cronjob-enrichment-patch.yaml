@@ -1,0 +1,28 @@
+# Mount the shared enrichment volume read-only into the weekly scan CronJob
+# and point GeoIP/CVSS4 at the refreshed paths (scanner/main.py reads
+# OCTO_GEOIP_DATABASE / OCTO_CVSS4_DATABASE as overrides over the YAML config
+# default). EPSS/KEV are API-side only (risk_scoring.py), not needed here.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: network-scan-scheduled
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: scanner
+              env:
+                - name: OCTO_GEOIP_DATABASE
+                  value: /app/scanner/data/geoip/geoip.mmdb
+                - name: OCTO_CVSS4_DATABASE
+                  value: /app/scanner/data/cvss4/cvss4.json
+              volumeMounts:
+                - name: enrichment-data
+                  mountPath: /app/scanner/data
+                  readOnly: true
+          volumes:
+            - name: enrichment-data
+              persistentVolumeClaim:
+                claimName: enrichment-data
