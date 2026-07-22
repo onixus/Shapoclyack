@@ -298,6 +298,41 @@ class EnrichmentConfig(BaseModel):
     geoip: GeoIpConfig = Field(default_factory=GeoIpConfig)
 
 
+class FingerprintConfig(BaseModel):
+    """Tech stack fingerprinting (Phase 9.1). Opt-in.
+
+    Runs against already-discovered open TCP ports (``open_ports.txt``) that
+    look like web ports -- no new port scan happens here. One GET per
+    candidate endpoint is issued and classified against a small built-in
+    CDN/WAF and CMS/framework signature set (see ``fingerprint.py`` module
+    docstring for the honesty note on scope). ``body_max_bytes`` caps how
+    much of each response is read (streamed, not buffered fully) and
+    ``max_targets`` caps how many endpoints get probed per run -- past the
+    cap, remaining endpoints are skipped and the run is flagged "truncated".
+    Findings are reported only (``fingerprint.json``) -- never merged into
+    scan scope or asset identity.
+    """
+
+    enabled: bool = False
+    concurrency: int = Field(default=10, ge=1, le=50)
+    max_targets: int = Field(default=1000, ge=1, le=50_000)
+    timeout_seconds: int = Field(default=10, ge=1, le=60)
+    body_max_bytes: int = Field(default=65_536, ge=1024, le=1_048_576)
+    http_ports: list[int] = Field(default_factory=lambda: [80, 8080, 8000, 8008, 8888])
+    https_ports: list[int] = Field(default_factory=lambda: [443, 8443])
+    # Self-signed/internal certs are common on scanned hosts; TLS posture
+    # itself is Phase 9.2's job, not this module's.
+    verify_tls: bool = False
+
+    @field_validator("http_ports", "https_ports")
+    @classmethod
+    def validate_ports(cls, ports: list[int]) -> list[int]:
+        for port in ports:
+            if port < 1 or port > 65535:
+                raise ValueError(f"invalid fingerprint port: {port}")
+        return ports
+
+
 class SlackAlertConfig(BaseModel):
     enabled: bool = False
     # Prefer env OCTO_SLACK_WEBHOOK over committing secrets to YAML.
@@ -398,6 +433,7 @@ class AppConfig(BaseModel):
     nse_profiles: dict[str, NseProfileConfig]
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
+    fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)

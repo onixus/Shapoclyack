@@ -156,7 +156,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** evolve Octo-man from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
 
-**Status:** Phase 7 **done** (MVP) — Phases 8–11 **Planned**.
+**Status:** Phase 7 **done** (MVP); Phase 8 partially done (8.1–8.3); Phase 9 partially done (9.1) — remainder **Planned**.
 
 ### Phase 7 — Asset Inventory & Identity Graph
 
@@ -189,9 +189,11 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** enrich each asset with context beyond ports/CVEs, needed for real prioritization.
 
+**Status:** 9.1 **done**; 9.2–9.4 **Planned**.
+
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 9.1 | Tech stack fingerprinting | `scanner/pipeline/fingerprint.py` (new) | HTTP headers/banners → CMS/framework/CDN/WAF detection | **Planned** |
+| 9.1 | Tech stack fingerprinting | `scanner/pipeline/fingerprint.py` (new) | One HTTP GET per already-open web port (reuses `open_ports.txt`, no new port scan) → small built-in CDN/WAF header signature set (Cloudflare, Akamai, Sucuri, Imperva/Incapsula, CloudFront, Fastly) + CMS/framework header/body markers (WordPress, Drupal, Joomla, Next.js, generic PHP); opt-in (`fingerprint.enabled`), capped by `max_targets`/`concurrency`/`body_max_bytes` (streamed read); findings reported to `fingerprint.json`/`fingerprint_matches.txt`, never merged into scan scope | **Done** |
 | 9.2 | TLS / certificate posture | `scanner/pipeline/nse.py` | Expiry, weak cipher/protocol, self-signed, issuer checks | **Planned** |
 | 9.3 | Web asset screenshots | new worker (optional) | Visual inventory for UI review | **Planned** |
 | 9.4 | Business-context criticality | `api/services/risk_scoring.py` | Replace port-based criticality heuristic with `asset_criticality` sourced from inventory owner/business-unit tags (Phase 7) | **Planned** |
@@ -246,4 +248,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.3); Phases 9–11 are **Planned**.
+Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.3); Phase 9 is partially done (9.1); Phases 10–11 are **Planned**.

@@ -202,6 +202,19 @@ enrichment:
     # Fetch MMDB: MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh
     database: scanner/data/geoip/geoip-overlay.json
 
+# Tech stack fingerprinting (Phase 9.1): one HTTP GET per already-open web
+# port -> CDN/WAF + CMS/framework signatures. Opt-in; findings only, never
+# merged into scan scope.
+fingerprint:
+  enabled: false
+  concurrency: 10
+  max_targets: 1000
+  timeout_seconds: 10
+  body_max_bytes: 65536
+  http_ports: [80, 8080, 8000, 8008, 8888]
+  https_ports: [443, 8443]
+  verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
+
 # Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
 #   OCTO_SMTP_HOST, OCTO_SMTP_PORT, OCTO_SMTP_FROM, OCTO_SMTP_TO
