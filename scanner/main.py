@@ -26,6 +26,7 @@ from scanner.pipeline.errors import StageFailureError
 from scanner.pipeline.asn_discovery import discover_asn_ranges
 from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
+from scanner.pipeline.fingerprint import fingerprint_hosts_sync
 from scanner.pipeline.hostnames import (
     base_domains_from_fqdns,
     discover_ct_subdomains_sync,
@@ -422,6 +423,17 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             ),
         )
         checkpoint.mark_done("nse")
+
+    # Phase 9.1: tech stack fingerprinting (asset-inventory finding, not
+    # scope-expanding -- see fingerprint.py module docstring). Runs against
+    # already-open web ports from the ports stage; --resume just skips
+    # re-running.
+    if not (args.resume and checkpoint.is_done("fingerprint")):
+        _run_stage(
+            "fingerprint",
+            lambda: fingerprint_hosts_sync(open_ports, config.fingerprint, paths.output_dir),
+        )
+        checkpoint.mark_done("fingerprint")
 
     reporting = config.reporting
     enrichment = config.enrichment

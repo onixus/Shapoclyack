@@ -24,6 +24,29 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   the CronJob's refresh without a restart or per-request stat() overhead.
   `scanner/main.py` gained `OCTO_GEOIP_DATABASE` / `OCTO_CVSS4_DATABASE` env
   overrides so the shared-volume path can win over the baked-in config default.
+- **Phase 9.1 tech stack fingerprinting** — `scanner/pipeline/fingerprint.py`
+  (new): runs after the ports/NSE stages against endpoints already found open
+  in `open_ports.txt` filtered to configurable web ports (`http_ports` /
+  `https_ports`, default 80/8080/8000/8008/8888 and 443/8443) — no new port
+  scan happens here, and unlike a naive add-on this issues exactly one
+  streamed, size-capped (`body_max_bytes`, default 64 KiB) GET per endpoint
+  rather than a second independent HTTP pass duplicating NSE's own
+  `-sV`/script checks (NSE doesn't currently emit structured, parseable
+  header/body data this module could reuse). That single response is
+  classified against a small, intentionally non-exhaustive signature set:
+  CDN/WAF detection from headers (`cf-ray` → Cloudflare, `x-akamai-*` →
+  Akamai, `x-sucuri-id`/`x-sucuri-cache` → Sucuri, `x-iinfo`/`incap_ses`
+  cookies → Imperva/Incapsula, `x-amz-cf-id`/`via` → CloudFront,
+  `x-served-by`/`x-fastly-request-id` → Fastly) and CMS/framework detection
+  from header + lightweight body/meta-tag markers (WordPress, Drupal,
+  Joomla, Next.js, generic PHP). New `fingerprint.*` config block
+  (`FingerprintConfig` in `config_schema.py`), opt-in and disabled by
+  default like `discovery.cloud`/`discovery.asn`, with `concurrency` and
+  `max_targets` hard caps — past the cap the run is flagged `truncated`
+  rather than silently fingerprinting every open port. Findings are written
+  to `fingerprint.json` / `fingerprint_matches.txt` and, matching
+  `cloud_discovery.py`'s non-escalation principle, are never merged into
+  scan scope or asset identity.
 
 ## [0.33-0507] — 2026-07-21
 
