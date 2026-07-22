@@ -104,3 +104,96 @@ def test_upsert_assets_from_run_idempotent_and_stale(tmp_path):
     assert marked == 2
     stale = assets_service.list_assets(settings, tenant_id, status="stale")
     assert len(stale) == 2
+
+
+def _settings_with_tenant(tmp_path: Path):
+    from api.services import tenants as tenants_service
+    from api.settings import Settings
+
+    settings = Settings(
+        output_dir=tmp_path / "output",
+        state_dir=tmp_path / "state",
+        postgres_url=POSTGRES_URL,
+        asset_stale_days=14,
+    )
+    settings.output_dir.mkdir(parents=True)
+    settings.state_dir.mkdir(parents=True)
+    tenants_service.load_tenants(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+    return settings, tenants_service.DEFAULT_TENANT_ID
+
+
+@requires_postgres
+def test_get_asset_criticality_by_ip_unset_then_set(tmp_path):
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(settings.output_dir, "run-1", [{"host": "10.0.1.5"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+
+    assert assets_service.get_asset_criticality_by_ip(settings, tenant_id, "10.0.1.5") is None
+
+    asset_id = ip_identity_key(tenant_id, "10.0.1.5")
+    assets_service.update_asset(settings, tenant_id, asset_id, {"asset_criticality": 3})
+    assert assets_service.get_asset_criticality_by_ip(settings, tenant_id, "10.0.1.5") == 3
+
+
+@requires_postgres
+def test_get_asset_criticality_by_ip_missing_asset_or_wrong_tenant(tmp_path):
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    assert assets_service.get_asset_criticality_by_ip(settings, tenant_id, "10.9.9.9") is None
+    assert assets_service.get_asset_criticality_by_ip(settings, "ten_other", "10.9.9.9") is None
+
+
+@requires_postgres
+def test_update_asset_partial_update_does_not_clobber_other_fields(tmp_path):
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(settings.output_dir, "run-1", [{"host": "10.0.1.6"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    asset_id = ip_identity_key(tenant_id, "10.0.1.6")
+
+    updated = assets_service.update_asset(
+        settings, tenant_id, asset_id, {"owner_email": "owner@example.com", "asset_criticality": 2}
+    )
+    assert updated["owner_email"] == "owner@example.com"
+    assert updated["asset_criticality"] == 2
+
+    updated_again = assets_service.update_asset(
+        settings, tenant_id, asset_id, {"business_unit": "finance"}
+    )
+    assert updated_again["business_unit"] == "finance"
+    assert updated_again["owner_email"] == "owner@example.com"
+    assert updated_again["asset_criticality"] == 2
+
+
+@requires_postgres
+def test_update_asset_rejects_out_of_range_criticality(tmp_path):
+    import pytest
+
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(settings.output_dir, "run-1", [{"host": "10.0.1.7"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    asset_id = ip_identity_key(tenant_id, "10.0.1.7")
+
+    with pytest.raises(ValueError):
+        assets_service.update_asset(settings, tenant_id, asset_id, {"asset_criticality": 9})
+
+
+@requires_postgres
+def test_update_asset_returns_none_for_unknown_or_cross_tenant_asset(tmp_path):
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(settings.output_dir, "run-1", [{"host": "10.0.1.8"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    asset_id = ip_identity_key(tenant_id, "10.0.1.8")
+
+    assert assets_service.update_asset(settings, tenant_id, "no-such-asset", {"asset_criticality": 1}) is None
+    assert assets_service.update_asset(settings, "ten_other", asset_id, {"asset_criticality": 1}) is None

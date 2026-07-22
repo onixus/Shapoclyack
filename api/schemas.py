@@ -82,6 +82,7 @@ class AssetSummary(BaseModel):
     last_seen: datetime
     primary_identifier: str | None = None
     identifier_count: int = 0
+    asset_criticality: int | None = None
 
 
 class AssetDetail(BaseModel):
@@ -92,8 +93,15 @@ class AssetDetail(BaseModel):
     last_seen: datetime
     owner_email: str | None = None
     business_unit: str | None = None
+    asset_criticality: int | None = None
     identifiers: list[AssetIdentifier] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
+
+
+class UpdateAssetRequest(BaseModel):
+    owner_email: str | None = None
+    business_unit: str | None = None
+    asset_criticality: int | None = Field(default=None, ge=0, le=4)
 
 
 class StartScanRequest(BaseModel):

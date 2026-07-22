@@ -4,7 +4,9 @@ Model ``mvp-1`` fills the enrichment columns that were stubs in ``mvp-0``:
 
 * ``base_cvss`` — prefer CVSS4, else legacy CVSS
 * ``epss_score`` — optional local CVE→EPSS overlay (else 0)
-* ``asset_criticality`` — 0–4 from severity / CVSS bands
+* ``asset_criticality`` — operator-set value from the Phase 7 asset inventory
+  when available (``Asset.asset_criticality``), else 0–4 from severity / CVSS
+  bands and high-value ports (Phase 9.4)
 * ``exploit_active`` — 1 if CVE is in optional CISA KEV overlay
 * ``cisa_decision`` — SSVC-lite Track / Attend / Act / Immediate
 * ``contextual_score`` — 0–10 blend of CVSS, EPSS, exploit, criticality
@@ -152,7 +154,14 @@ class RiskScoring:
             return "low"
         return "unknown"
 
-    def asset_criticality(self, item: dict[str, Any], base_cvss: float) -> int:
+    def asset_criticality(
+        self, item: dict[str, Any], base_cvss: float, *, override: int | None = None
+    ) -> int:
+        """0-4 criticality. When ``override`` is given (a Phase 7 asset's
+        operator-set ``asset_criticality``), it wins outright; otherwise falls
+        back to the severity/high-value-port heuristic below."""
+        if override is not None:
+            return max(0, min(4, int(override)))
         sev = self._severity(item, base_cvss)
         level = _SEVERITY_CRITICALITY.get(sev, 0)
         try:
@@ -205,12 +214,14 @@ class RiskScoring:
         )
         return round(max(0.0, min(10.0, score)), 2)
 
-    def score_vulnerability(self, item: dict[str, Any]) -> dict[str, Any]:
+    def score_vulnerability(
+        self, item: dict[str, Any], *, asset_criticality_override: int | None = None
+    ) -> dict[str, Any]:
         cve = str(item.get("cve") or item.get("script_id") or "")
         base = self.base_cvss(item)
         epss = self.epss_score(cve) if cve.upper().startswith("CVE-") else 0.0
         exploit = self.exploit_active(cve) if cve.upper().startswith("CVE-") else 0
-        criticality = self.asset_criticality(item, base)
+        criticality = self.asset_criticality(item, base, override=asset_criticality_override)
         decision = self.cisa_decision(base_cvss=base, epss=epss, exploit_active=exploit)
         contextual = self.contextual_score(
             base_cvss=base,
