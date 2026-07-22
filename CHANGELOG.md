@@ -21,6 +21,14 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   points at the baked-in `.mmdb` path instead of the JSON demo overlay (which
   remains in the repo for hand-editable lab/test use via an explicit config
   override).
+- **vulscan offline CVE databases refreshed at build time** — new
+  `scripts/fetch-vulscan-db.sh` (mirrors vulscan's own `update.sh`, fetching
+  the same computec.ch-published CSVs with per-database non-fatal error
+  handling). `Dockerfile`/`Dockerfile.allinone` clone `scipag/vulscan` pinned
+  to a specific commit for reproducible builds, which also freezes its
+  bundled CVE/exploit-db/openvas/etc. CSVs at that commit's snapshot; this
+  script refreshes them in place as a best-effort build step (never fails
+  the build) so the `vuln-offline` NSE profile matches against current data.
 
 ### Added
 

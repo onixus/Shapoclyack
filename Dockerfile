@@ -89,6 +89,13 @@ COPY scripts /app/scripts
 # offline/network-restricted build just keeps the seed data, same as today.
 RUN bash scripts/fetch-enrichment.sh || true
 
+# Best-effort: refresh vulscan's offline CVE databases beyond whatever was
+# bundled at the pinned VULSCAN_REF commit above, so "vuln-offline" scans use
+# current data without needing a full image rebuild each time. Never fails
+# the build — an offline/network-restricted build just keeps the
+# pinned-commit CSVs, same as today.
+RUN bash scripts/fetch-vulscan-db.sh -o /usr/share/nmap/scripts/vulscan || true
+
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin scanner && \
     mkdir -p /app/scanner/output /app/scanner/state && \
     chown -R scanner:scanner /app
