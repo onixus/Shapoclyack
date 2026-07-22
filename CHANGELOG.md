@@ -6,6 +6,25 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 10.1 asset-level diff events** — `scanner/pipeline/report_diff.py`
+  already diffed hosts/ports/vulnerabilities between two runs but only as
+  three separate added/removed lists, with no cert-expiry or asset-lifecycle
+  awareness and no shape a generic event bus could consume. Added a
+  normalized `events: [{"kind": ...}]` list to its output: `new_asset` (from
+  the existing host-added set), `new_open_port` (host/port/protocol, parsed
+  via the existing `parse_endpoint` helper), and `new_cve` (the existing
+  added-vulnerability dicts, tagged with a `kind`) — plus a genuinely new
+  `cert_expiring` event, fired the run a host:port's `tls_posture.json`
+  *first* shows a `cert_expired`/`cert_expiring_soon` issue (not on every run
+  it's still present). `diff.md` gained a matching `## Events` section.
+  `api/services/ch_diff.py`'s tenant-wide ClickHouse diff path (Phase 3.4,
+  previously unused/dead code) gets the same `new_cve`/`new_open_port` event
+  shape. `decommissioned_host` is handled separately since it's Postgres
+  `Asset.status` data the scanner package can't see: `PATCH /api/assets/{id}`
+  now accepts `status: "decommissioned"` (the only status an operator may set
+  manually — active/stale stay system-managed) and logs the transition once,
+  not on a repeat PATCH. No NATS/alerting wiring yet — event *publishing* is
+  Phase 10.2.
 - **Phase 9.4 business-context criticality** — `api/services/risk_scoring.py`'s
   `asset_criticality` was purely a per-vulnerability heuristic (severity/CVSS
   band, bumped for a hardcoded high-value-port set) with no awareness of

@@ -202,9 +202,11 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** EASM value comes from tracking change, not one-off reports.
 
+**Status:** 10.1 done; 10.2–10.3 Planned.
+
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 10.1 | Asset-level diff events | `scanner/pipeline/report_diff.py`, `api/services/ch_diff.py` | Emit new-asset / new-open-port / cert-expiring / new-CVE / decommissioned-host events | **Planned** |
+| 10.1 | Asset-level diff events | `scanner/pipeline/report_diff.py`, `api/services/ch_diff.py`, `api/services/assets.py` | `report_diff.py` emits a normalized `events: [{"kind": ...}]` list (`new_asset`/`new_open_port`/`new_cve` from the existing added-sets, plus a new `cert_expiring` event on a host:port's *first* cert_expired/cert_expiring_soon occurrence across the two most recent runs' `tls_posture.json`); `ch_diff.py`'s tenant-wide ClickHouse path gets the same `new_cve`/`new_open_port` events; `decommissioned_host` is logged when an operator manually transitions an asset via `PATCH /assets/{asset_id}` (`status: "decommissioned"`, the only status an operator may set — active/stale stay system-managed). No NATS/alerting wiring yet — that's 10.2. | **Done** |
 | 10.2 | Event bus for alerts | `scanner/pipeline/alerts.py` + NATS | Publish to `events.asset.*` instead of only post-scan summaries | **Planned** |
 | 10.3 | Workflow integrations | `api/services/integrations/` (new) | Webhooks, Jira/ServiceNow ticket creation on new critical exposure; extend existing DefectDojo export | **Planned** |
 
@@ -248,4 +250,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.4); Phase 9 is partially done (9.1, 9.2, 9.4); Phases 10–11 are **Planned**.
+Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.4); Phase 9 is partially done (9.1, 9.2, 9.4); Phase 10 is partially done (10.1); Phase 11 is **Planned**.

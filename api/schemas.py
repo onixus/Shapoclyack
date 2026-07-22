@@ -102,6 +102,9 @@ class UpdateAssetRequest(BaseModel):
     owner_email: str | None = None
     business_unit: str | None = None
     asset_criticality: int | None = Field(default=None, ge=0, le=4)
+    # Manual decommission only — "active"/"stale" stay system-managed
+    # (upsert_assets_from_run / mark_stale_assets), never operator-set.
+    status: Literal["decommissioned"] | None = None
 
 
 class StartScanRequest(BaseModel):

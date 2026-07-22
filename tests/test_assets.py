@@ -197,3 +197,42 @@ def test_update_asset_returns_none_for_unknown_or_cross_tenant_asset(tmp_path):
 
     assert assets_service.update_asset(settings, tenant_id, "no-such-asset", {"asset_criticality": 1}) is None
     assert assets_service.update_asset(settings, "ten_other", asset_id, {"asset_criticality": 1}) is None
+
+
+@requires_postgres
+def test_update_asset_decommission_transition_logs_event(tmp_path, caplog):
+    import logging
+
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(settings.output_dir, "run-1", [{"host": "10.0.1.9"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    asset_id = ip_identity_key(tenant_id, "10.0.1.9")
+
+    with caplog.at_level(logging.INFO, logger="octo-man.assets"):
+        updated = assets_service.update_asset(settings, tenant_id, asset_id, {"status": "decommissioned"})
+    assert updated["status"] == "decommissioned"
+    assert any("decommissioned_host" in record.message for record in caplog.records)
+
+    # A repeat PATCH once already decommissioned is a no-op, not a new event.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="octo-man.assets"):
+        updated_again = assets_service.update_asset(settings, tenant_id, asset_id, {"status": "decommissioned"})
+    assert updated_again["status"] == "decommissioned"
+    assert not any("decommissioned_host" in record.message for record in caplog.records)
+
+
+@requires_postgres
+def test_update_asset_rejects_non_decommissioned_status(tmp_path):
+    import pytest
+
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(settings.output_dir, "run-1", [{"host": "10.0.1.10"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    asset_id = ip_identity_key(tenant_id, "10.0.1.10")
+
+    with pytest.raises(ValueError):
+        assets_service.update_asset(settings, tenant_id, asset_id, {"status": "active"})
