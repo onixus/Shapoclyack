@@ -5,8 +5,8 @@
 
 | | |
 |---|---|
-| **Релиз** | **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33)** |
-| **Образы** | `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
+| **Релиз** | **[shapoclyack-0.35-0722](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.35-0722)** |
+| **Образы** | `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 | **Runtime** | All-in-one (`docker compose`) или Kubernetes ([k8s/README.md](k8s/README.md)) |
 | **История** | [CHANGELOG.md](CHANGELOG.md) |
 | **Roadmap** | [ROADMAP.md](ROADMAP.md) — MSSP / Enterprise (NATS, tenancy, ClickHouse, Web UI v2, …) |
@@ -65,6 +65,13 @@ kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
   `GET /api/assets/{asset_id}` — стабильная идентичность по IP/FQDN,
   `first_seen`/`last_seen`/`status` (`active`/`stale`/`decommissioned`, порог `OCTO_ASSET_STALE_DAYS`,
   по умолчанию 14 дней). Эндпоинты `/api/runs/*` (по одному прогону) не затронуты.
+- **Бизнес-критичность (фаза 9.4)**: `PATCH /api/assets/{asset_id}` (роль `operator`) — оператор
+  может выставить `asset_criticality` (0–4), `owner_email`, `business_unit` или вручную перевести
+  актив в `decommissioned`. Если критичность задана, скоринг уязвимостей использует её вместо
+  эвристики по портам.
+- **События уровня активов (фаза 10.1)**: `diff.json` теперь содержит нормализованный список
+  `events` (`new_asset`/`new_open_port`/`new_cve`/`cert_expiring`) — задел под будущую публикацию
+  в NATS (фаза 10.2); `decommissioned_host` логируется отдельно при ручном переводе актива.
 
 Подробности — [k8s/README.md](k8s/README.md#postgres-primary-db--phase-7).
 
@@ -390,7 +397,7 @@ Checkpoint NSE: ключи `host/tcp` и `host/udp`. XML — в `nmap/tcp/` и `
 - `service_specific` — точечные скрипты (`http-*`, `ssl-cert`, `smb-*`, `ssh-*`, `dns-*`) без OS detection.
 - `baseline` — только неинтрузивные `default,safe` (используется в `safe`).
 
-Скрипты `nmap-vulners` и `vulscan` ставятся в образ на этапе сборки (`Dockerfile`, версии пинуются через build-args `NMAP_VULNERS_REF` / `VULSCAN_REF`).
+Скрипты `nmap-vulners` и `vulscan` ставятся в образ на этапе сборки (`Dockerfile`, версии пинуются через build-args `NMAP_VULNERS_REF` / `VULSCAN_REF`). Локальные CVE-базы vulscan при этом замораживаются на момент этого пина — `scripts/fetch-vulscan-db.sh` обновляет их в образе как best-effort шаг сборки (сеть недоступна — сборка не падает, просто остаются прежние базы).
 
 Находки структурируются: для каждого `CVE` извлекается `cvss` и вычисляется `severity` (`critical >= 9.0`, `high >= 7.0`, `medium >= 4.0`, `low > 0`, иначе `unknown`). Скрипты со `State: VULNERABLE` без CVE тоже фиксируются (severity `unknown`). Список отсортирован по убыванию критичности.
 
@@ -475,9 +482,9 @@ ruff check scanner api tests
 - Образы: `shapoclyack-aio` (по умолчанию), `shapoclyack-scanner`, `shapoclyack-api`.
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
-docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.33
-docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.33
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.35-0722
+docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.35-0722
 ```
 
 Подробности и полный пример запуска — в [README.md](README.md#container-image-ghcr).
@@ -501,7 +508,7 @@ docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.33
 При `runtime.per_run_output: true` (по умолчанию) файлы лежат в `scanner/output/runs/<run_id>/`:
 
 - `run_meta.json`, `hostnames.json`, `discovery_stats.json`, `discovery_delta.json` (при `--delta`)
-- `alive_ips.txt`, `alive_hosts.json` (alive + hostname)
+- `alive_ips.txt`, `alive_hosts.json` (alive + hostname, GeoIP, лучший `os_name`/`os_accuracy`; отдаётся через `GET /api/runs/{id}/hosts` и вкладку Hosts в Web UI)
 - `open_ports.txt`, `findings.*`, `summary.{json,md,html}`
 - `vulnerabilities.json`, `os_findings.json`, `script_findings.json`
 - `nmap/*`, `logs/pipeline.log`

@@ -1,13 +1,13 @@
 # Octo-man — Kubernetes
 
-Primary cluster runtime for **shapoclyack-0.33+**. Default control plane is the **all-in-one**
+Primary cluster runtime for **shapoclyack-0.35-0722+**. Default control plane is the **all-in-one**
 image with Web UI scan start enabled.
 
 | Image | Tag | Role |
 |-------|-----|------|
-| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.33` | API + UI + scanner (**default** Deployment / Job / CronJob) |
-| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.33` | Scanner-only (lighter Job/CronJob alternative) |
-| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.33` | Thin API + UI (results-only overlay) |
+| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.35-0722` | API + UI + scanner (**default** Deployment / Job / CronJob) |
+| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.35-0722` | Scanner-only (lighter Job/CronJob alternative) |
+| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.35-0722` | Thin API + UI (results-only overlay) |
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 

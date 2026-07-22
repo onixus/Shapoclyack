@@ -14,7 +14,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 | **Inputs** | CIDR / IP / FQDN |
 | **Outputs** | JSON / JSONL / CSV + Markdown / HTML (+ diffs, alerts) |
 | **Runtime** | All-in-one (`docker compose`) or Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
-| **Release** | **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33)** — `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
+| **Release** | **[shapoclyack-0.35-0722](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.35-0722)** — `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 
 ### Docs map
 
@@ -45,8 +45,8 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **CVSS v4 enrichment** (`enrichment.cvss4`): local CVE → CVSS 4.0 JSON map (`scanner/data/cvss4/`); refresh via `scripts/fetch-cvss4-db.py`.
 - **GeoIP enrichment** (`enrichment.geoip`): country/city per host via MaxMind GeoLite2 `.mmdb` or JSON overlay; Web UI shows location on Alive hosts / findings. Fetch MMDB with `scripts/fetch-geoip-db.sh` (do not redistribute MaxMind DB files in the image).
 - **EPSS / KEV risk scoring** (`api/services/risk_scoring.py`): CVE → exploit-probability (EPSS) and CISA Known Exploited Vulnerabilities overlays feed `epss_score` / `exploit_active` / `cisa_decision`. Refresh via `scripts/fetch-epss-db.sh` / `scripts/fetch-kev-db.sh` (both keyless).
-- **Enrichment refresh pipeline**: the committed EPSS/KEV/GeoIP/CVSS4 files are tiny seed stubs, not production feeds — run `scripts/fetch-enrichment.sh` to pull real data for all four in one pass (set `MAXMIND_LICENSE_KEY` for MaxMind GeoIP, otherwise it falls back to keyless DB-IP). The API hot-reloads EPSS/KEV changes on disk (`OCTO_ENRICHMENT_RELOAD_SECONDS`, default 60s) without a restart. For production, apply `k8s/octo-man/overlays/enrichment` (shared RWX volume + daily CronJob) or compose with `docker-compose.enrichment.yml --profile enrichment` — see those files' headers for details.
-- **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`.
+- **Enrichment refresh pipeline**: the committed EPSS/KEV/GeoIP/CVSS4 files are tiny seed stubs, not production feeds — run `scripts/fetch-enrichment.sh` to pull real data for all four in one pass (set `MAXMIND_LICENSE_KEY` for MaxMind GeoIP, otherwise it falls back to keyless DB-IP). `Dockerfile`/`Dockerfile.allinone` now run this (and `scripts/fetch-vulscan-db.sh` for vulscan's offline CVE databases) as a best-effort build step, so a fresh image ships with real data instead of only the seed stubs. The API hot-reloads EPSS/KEV changes on disk (`OCTO_ENRICHMENT_RELOAD_SECONDS`, default 60s) without a restart. For production, apply `k8s/octo-man/overlays/enrichment` (shared RWX volume + daily CronJob) or compose with `docker-compose.enrichment.yml --profile enrichment` — see those files' headers for details.
+- **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`. Also emits a normalized `events` list (`new_asset`/`new_open_port`/`new_cve`/`cert_expiring`, Phase 10.1) for a future event bus; `decommissioned_host` is logged when an operator manually decommissions an asset via `PATCH /api/assets/{id}`.
 - **Slack / Telegram alerts** (`alerts` / `--notify`): optional post-scan notifications (credentials via env preferred).
 - **DefectDojo export** (`defectdojo` / `--export-defectdojo`): Generic Findings Import via API v2 reimport (Phase 3).
 - **Business PDF reports** (`reporting.pdf_summary`): executive `summary.pdf` with severity KPIs and priority findings (Phase 3).
@@ -62,6 +62,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **Certificate Transparency subdomain discovery** (`discovery.ct`, Phase 5.2): async crt.sh / Cert Spotter subdomain discovery, merged into scan scope.
 - **MSSP tenancy (Phase 2)**: `POST /api/tenants` + provisioning keys; agents call `POST /api/auth/agent/token` for a short-lived JWT with `tenant_id`.
 - **Asset inventory (Phase 7)**: Postgres-backed cross-run asset registry (`GET /api/assets`, `GET /api/assets/{id}`) with stable identity, `first_seen`/`last_seen`/`status` lifecycle. `OCTO_POSTGRES_URL` is required — see [k8s/README.md](k8s/README.md#postgres-primary-db--phase-7).
+- **Business-context criticality (Phase 9.4)**: `PATCH /api/assets/{id}` (operator role) lets an operator set `asset_criticality` (0–4), `owner_email`, `business_unit` on an asset; risk scoring uses it when set, falling back to the port/severity heuristic otherwise.
 - **Outside-in discovery (Phase 8.1–8.2)**: ASN/BGP org mapping (`discovery.asn`, seed domain → ASN → announced prefixes via RIPEstat, capped scope expansion) and expanded subdomain enum (`discovery.ct` gains an `otx` passive-DNS provider + opt-in wordlist brute force) alongside existing Cloudflare/CT-log discovery — all opt-in, disabled by default.
 
 ## Project Layout
@@ -269,7 +270,7 @@ docker compose -f docker-compose.yml -f docker-compose.nats.yml -f docker-compos
 # expect GET /api/health → "nats": true, "clickhouse": true, "ch_ingest": {...}
 ```
 
-Image: `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33` (scanner tools + API + UI).  
+Image: `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722` (scanner tools + API + UI).  
 `OCTO_ALLOW_SCAN_START=true` and `OCTO_JOB_EXECUTION_MODE=local` are baked in.
 
 Kubernetes (aio Deployment, UI can start scans):
@@ -509,35 +510,35 @@ Published product images:
 | `ghcr.io/onixus/shapoclyack-scanner` | `Dockerfile` (scanner-only) |
 | `ghcr.io/onixus/shapoclyack-api` | `Dockerfile.api` (thin API + Web UI v2) |
 
-Tagging: tag name as image tag (e.g. `shapoclyack-0.33`), semver patterns when the tag is
+Tagging: tag name as image tag (e.g. `shapoclyack-0.35-0722`), semver patterns when the tag is
 `v*`-shaped, commit `sha-<...>`, and `latest` on tag/release publishes.
 `workflow_dispatch` can publish an extra ad-hoc tag.
 
 Pull and run all-in-one:
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
 docker compose up
 ```
 
 Scanner-only:
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.33
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.35-0722
 docker run --rm \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/inputs:/app/scanner/inputs" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.33 --config scanner/config/default.yaml --mode balanced
+  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.35-0722 --config scanner/config/default.yaml --mode balanced
 ```
 
 To cut a release build, push a version tag and/or publish a GitHub Release (triggers GHCR publish):
 
 ```bash
-git tag shapoclyack-0.33 && git push origin shapoclyack-0.33
-# or: gh release create shapoclyack-0.33 --generate-notes
+git tag shapoclyack-0.35-0722 && git push origin shapoclyack-0.35-0722
+# or: gh release create shapoclyack-0.35-0722 --generate-notes
 ```
 
 > The GHCR package may be **private** by default; make it public (or authenticate
@@ -771,8 +772,8 @@ Paths below assume `runtime.per_run_output: true` (default); artifacts live unde
 - `nse_targets.txt`
 - `nmap/*` (`.nmap`, `.gnmap`, `.xml`; `nmap/tcp/` and `nmap/udp/` when applicable)
 - `findings.{json,jsonl,csv}`
-- `alive_hosts.json` (alive list with primary hostname, when hostnames enabled)
-- `os_findings.json` (parsed Nmap OS matches)
+- `alive_hosts.json` (alive list with primary hostname, GeoIP `country`/`city`, and best-match `os_name`/`os_accuracy`, when enabled) — surfaced via `GET /api/runs/{id}/hosts` and the Hosts tab in the Web UI.
+- `os_findings.json` (all parsed Nmap OS matches, not just the per-host best match in `alive_hosts.json`)
 - `script_findings.json` (all NSE script output)
 - `vulnerabilities.json` (structured CVE findings with `cvss`/`severity`, severity-ranked)
 - `vulnerabilities.csv` (same findings, flat CSV)
