@@ -137,6 +137,22 @@ discovery:
     max_candidates: 500
     timeout_seconds: 8
     azure_container_probes: 10
+  # Phase 8.4 — Typosquat / domain monitoring (opt-in). Two independent
+  # sub-checks: (1) generate look-alike candidates of the seed domains and
+  # DNS-resolve them (A/AAAA only, passive) -- a resolving candidate is
+  # reported as a finding, never merged into scan scope; (2) for the org's
+  # own in-scope FQDNs, resolve CNAME chains and flag targets matching a
+  # known vulnerable-service suffix with no A/AAAA of their own (heuristic
+  # pattern + non-resolution only -- never confirms an actual takeover).
+  domain_monitor:
+    enabled: false
+    domains: []               # empty = base domains from input FQDNs
+    typosquat_enabled: true
+    dangling_cname_enabled: true
+    max_candidates: 150
+    concurrency: 10
+    timeout_seconds: 15
+    retries: 1
   seed_alive_file: ""
   delta:
     enabled: false

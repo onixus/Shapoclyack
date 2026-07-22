@@ -202,6 +202,38 @@ class CloudDiscoveryConfig(BaseModel):
         return providers
 
 
+class DomainMonitorConfig(BaseModel):
+    """Typosquat / domain monitoring (Phase 8.4). Opt-in.
+
+    Two independent sub-checks, each individually toggleable:
+
+    - typosquat_enabled: generate look-alike candidates of the seed domains
+      (omission, transposition, keyboard-adjacent substitution, doubling,
+      homoglyph substitution, TLD swap) and DNS-resolve them (A/AAAA only,
+      passive -- same risk class as ct.brute_force). A candidate that
+      resolves is reported as a finding; it is never merged into scan scope.
+    - dangling_cname_enabled: for the org's own in-scope FQDNs, resolve the
+      CNAME chain and flag targets matching a known vulnerable-service
+      suffix with no A/AAAA record of their own. This is a heuristic
+      pattern + non-resolution signal only -- it never confirms an actual
+      takeover is possible.
+
+    max_candidates caps typosquat candidates generated per seed domain
+    (round-robin across generator classes, like cloud_discovery's
+    max_candidates).
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    typosquat_enabled: bool = True
+    dangling_cname_enabled: bool = True
+    max_candidates: int = Field(default=150, ge=1, le=2_000)
+    concurrency: int = Field(default=10, ge=1, le=50)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    retries: int = Field(default=1, ge=0, le=5)
+
+
 class DeltaDiscoveryConfig(BaseModel):
     enabled: bool = False
     previous_run_dir: str = ""
@@ -230,6 +262,7 @@ class DiscoveryConfig(BaseModel):
     ct: CertificateTransparencyConfig = Field(default_factory=CertificateTransparencyConfig)
     asn: AsnDiscoveryConfig = Field(default_factory=AsnDiscoveryConfig)
     cloud: CloudDiscoveryConfig = Field(default_factory=CloudDiscoveryConfig)
+    domain_monitor: DomainMonitorConfig = Field(default_factory=DomainMonitorConfig)
     seed_alive_file: str = ""
     delta: DeltaDiscoveryConfig = Field(default_factory=DeltaDiscoveryConfig)
 

@@ -26,6 +26,7 @@ from scanner.pipeline.errors import StageFailureError
 from scanner.pipeline.asn_discovery import discover_asn_ranges
 from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
+from scanner.pipeline.domain_monitor import monitor_domains
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
 from scanner.pipeline.tls_posture import check_tls_posture
 from scanner.pipeline.hostnames import (
@@ -289,6 +290,18 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             lambda: resolve_fqdns(scope_fqdns, paths.output_dir, timeout=timeout, retries=retries),
         )
         checkpoint.mark_done("resolve")
+
+    # Phase 8.4: typosquat / dangling-CNAME domain monitoring (findings-only,
+    # non-escalating -- see domain_monitor.py module docstring). Runs after
+    # resolve so the dangling-CNAME check sees the final in-scope FQDN list.
+    if not (args.resume and checkpoint.is_done("domain_monitor")):
+        dm_config = config.discovery.domain_monitor
+        dm_domains = dm_config.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "domain_monitor",
+            lambda: monitor_domains(dm_domains, scope_fqdns, dm_config, paths.output_dir),
+        )
+        checkpoint.mark_done("domain_monitor")
 
     all_targets = sorted(set(scope_ips + resolved_ips))
     write_lines(paths.output_dir / "all_targets.txt", all_targets)
