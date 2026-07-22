@@ -1,0 +1,63 @@
+# Hydrate + mount the shared enrichment volume for the API deployment.
+#
+# The initContainer does a best-effort refresh before the API starts (so a
+# cold pod on an empty PVC still gets same-day data when there's network
+# egress); the enrichment-refresh CronJob then keeps it fresh afterwards.
+# Unlike the "migrate" initContainer, a failed fetch here must NOT block API
+# startup — scripts/fetch-enrichment.sh already treats each source as
+# non-fatal internally, but pin it further with `|| true` since even a total
+# failure should fall back to whatever seed/last-good data already exists on
+# the volume (or the baked-in image seed, on the very first pod ever).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-api
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: fetch-enrichment
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "scripts/fetch-enrichment.sh || true"]
+          env:
+            - name: OCTO_ENRICHMENT_DIR
+              value: /app/scanner/data
+            - name: MAXMIND_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: octo-man-geoip
+                  key: maxmind_license_key
+                  optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: enrichment-data
+              mountPath: /app/scanner/data
+      containers:
+        - name: api
+          env:
+            - name: OCTO_EPSS_DATABASE
+              value: /app/scanner/data/epss/epss-overlay.json
+            - name: OCTO_KEV_DATABASE
+              value: /app/scanner/data/kev/kev-overlay.json
+            - name: OCTO_GEOIP_DATABASE
+              value: /app/scanner/data/geoip/geoip.mmdb
+            - name: OCTO_CVSS4_DATABASE
+              value: /app/scanner/data/cvss4/cvss4.json
+            # Re-check overlay mtimes at most once per minute — cheap stat,
+            # keeps replicas in sync with the CronJob's daily refresh without
+            # a restart.
+            - name: OCTO_ENRICHMENT_RELOAD_SECONDS
+              value: "60"
+          volumeMounts:
+            - name: enrichment-data
+              mountPath: /app/scanner/data
+              readOnly: true
+      volumes:
+        - name: enrichment-data
+          persistentVolumeClaim:
+            claimName: enrichment-data

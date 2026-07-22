@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -424,6 +425,11 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     reporting = config.reporting
     enrichment = config.enrichment
+    # Env overrides let a shared-volume deployment (k8s enrichment overlay) point
+    # GeoIP/CVSS4 at a refreshed data path without shipping a separate config,
+    # mirroring the env-or-config pattern used for alerts/DefectDojo secrets.
+    cvss4_database = os.environ.get("OCTO_CVSS4_DATABASE", "").strip() or enrichment.cvss4.database
+    geoip_database = os.environ.get("OCTO_GEOIP_DATABASE", "").strip() or enrichment.geoip.database
     build_reports(
         output_dir=paths.output_dir,
         total_targets=len(all_targets),
@@ -436,9 +442,9 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         csv_export=reporting.csv_export,
         json_export=reporting.json_export,
         cvss4_enabled=enrichment.cvss4.enabled,
-        cvss4_database=enrichment.cvss4.database,
+        cvss4_database=cvss4_database,
         geoip_enabled=enrichment.geoip.enabled,
-        geoip_database=enrichment.geoip.database,
+        geoip_database=geoip_database,
     )
     checkpoint.mark_done("report")
 

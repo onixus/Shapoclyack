@@ -53,6 +53,9 @@ class Settings:
     # Optional risk-scoring overlays (read by RiskScoring.from_env):
     #   OCTO_EPSS_DATABASE (default scanner/data/epss/epss-overlay.json)
     #   OCTO_KEV_DATABASE  (default scanner/data/kev/kev-overlay.json)
+    # get_scorer() hot-reloads these when they change on disk, re-checking mtimes
+    # at most once per OCTO_ENRICHMENT_RELOAD_SECONDS (default 60) so a refresh
+    # CronJob's new feeds reach every replica without a restart.
     # Postgres PRIMARY_DB (Phase 7 — asset inventory + tenants/provisioning keys).
     # UNLIKE nats_url/clickhouse_url, this is NOT an opt-in sidecar: the tenant
     # store lives here, so an empty value makes API startup fail fast (see

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 from api.services.risk_scoring import RiskScoring, reset_scorer_for_tests
@@ -68,3 +70,50 @@ def test_overlay_loaders(tmp_path: Path):
     assert scorer.epss_score("cve-1") == 0.5
     assert scorer.exploit_active("CVE-1") == 1
     reset_scorer_for_tests(None)
+
+
+def test_get_scorer_hot_reloads_on_mtime_change(tmp_path: Path, monkeypatch):
+    """A refresh CronJob rewrites the overlay files on a shared volume; every
+    replica's in-process scorer must pick up the change without a restart,
+    but only after the TTL elapses (not on every call)."""
+    from api.services import risk_scoring as rs
+
+    # Set mtimes explicitly rather than relying on wall-clock deltas — some
+    # filesystems (seen on CI) round mtime to whole seconds, so two writes a
+    # few milliseconds apart can hash to the identical stat and never trip
+    # the "did it change" check.
+    base_time = 1_700_000_000.0
+    reload_seconds = 1000
+    epss = tmp_path / "epss.json"
+    kev = tmp_path / "kev.json"
+    epss.write_text(json.dumps({"entries": {"CVE-1": 0.1}}), encoding="utf-8")
+    kev.write_text(json.dumps({"entries": []}), encoding="utf-8")
+    os.utime(epss, (base_time, base_time))
+    os.utime(kev, (base_time, base_time))
+    monkeypatch.setenv("OCTO_EPSS_DATABASE", str(epss))
+    monkeypatch.setenv("OCTO_KEV_DATABASE", str(kev))
+    monkeypatch.setenv("OCTO_ENRICHMENT_RELOAD_SECONDS", str(reload_seconds))
+    reset_scorer_for_tests(None)
+    try:
+        first = rs.get_scorer()
+        assert first.epss_score("CVE-1") == 0.1
+
+        epss.write_text(json.dumps({"entries": {"CVE-1": 0.9}}), encoding="utf-8")
+        os.utime(epss, (base_time + 10, base_time + 10))
+
+        # Still within the TTL window — must not re-read the file yet.
+        assert rs.get_scorer().epss_score("CVE-1") == 0.1
+
+        # Force the TTL gate open, relative to time.monotonic()'s own (platform-
+        # defined, possibly small) epoch — NOT an absolute 0.0. monotonic()'s
+        # reference point is arbitrary (e.g. CLOCK_MONOTONIC since boot on
+        # Linux), so on a freshly booted CI container "now" itself can be
+        # smaller than reload_seconds, making `now - 0.0 < reload_seconds`
+        # true and leaving the gate closed — exactly what broke this test on
+        # GitHub Actions after it passed locally.
+        rs._SCORER_CHECKED_AT = time.monotonic() - (reload_seconds + 10)
+        reloaded = rs.get_scorer()
+        assert reloaded.epss_score("CVE-1") == 0.9
+        assert reloaded is not first
+    finally:
+        reset_scorer_for_tests(None)

@@ -1,0 +1,47 @@
+# Real GeoIP/EPSS/KEV/CVSS4 enrichment data overlay for Shapoclyack compose.
+#
+# Without this file, `shapoclyack` only has the tiny seed overlays baked into
+# the image (5 IPs for GeoIP, 2-3 CVEs for EPSS/KEV) — see CHANGELOG. This
+# overlay runs scripts/fetch-enrichment.sh once into a host-mounted
+# ./enrichment-data directory shared with the main service, then mounts it
+# read-only into `shapoclyack` so the app picks up the real feeds.
+#
+# Usage (initial fetch + start):
+#   docker compose -f docker-compose.yml -f docker-compose.enrichment.yml --profile enrichment up --build
+#
+# Compose has no built-in scheduler (unlike the k8s enrichment-refresh
+# CronJob) — refresh periodically with a host cron entry re-running the
+# one-shot service, e.g. nightly:
+#   0 3 * * * docker compose -f <...> -f docker-compose.enrichment.yml --profile enrichment run --rm fetch-enrichment
+# The API hot-reloads changed files within OCTO_ENRICHMENT_RELOAD_SECONDS (60s
+# default) — no restart needed after a refresh.
+#
+# Optional MAXMIND_LICENSE_KEY env for the more accurate MaxMind GeoLite2-City
+# feed; unset falls back automatically to keyless DB-IP City Lite.
+
+services:
+  fetch-enrichment:
+    build:
+      context: .
+      dockerfile: Dockerfile.allinone
+    image: ghcr.io/onixus/shapoclyack-aio:0.3.2.1
+    profiles: ["enrichment"]
+    entrypoint: ["scripts/fetch-enrichment.sh"]
+    environment:
+      OCTO_ENRICHMENT_DIR: /app/scanner/data
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+    volumes:
+      - ./enrichment-data:/app/scanner/data
+
+  shapoclyack:
+    environment:
+      OCTO_EPSS_DATABASE: /app/scanner/data/epss/epss-overlay.json
+      OCTO_KEV_DATABASE: /app/scanner/data/kev/kev-overlay.json
+      OCTO_GEOIP_DATABASE: /app/scanner/data/geoip/geoip.mmdb
+      OCTO_CVSS4_DATABASE: /app/scanner/data/cvss4/cvss4.json
+      OCTO_ENRICHMENT_RELOAD_SECONDS: "60"
+    volumes:
+      - ./enrichment-data:/app/scanner/data:ro
+    depends_on:
+      fetch-enrichment:
+        condition: service_completed_successfully

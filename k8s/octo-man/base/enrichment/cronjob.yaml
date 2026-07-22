@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: enrichment-refresh
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: enrichment-cronjob
+spec:
+  # Daily 03:00 UTC — ahead of the weekly Sunday 02:00 scan (cronjob.yaml) so a
+  # fresh scan always has same-day-or-newer EPSS/KEV/GeoIP/CVSS4 data.
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: octo-man
+            app.kubernetes.io/component: enrichment-cronjob
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+            - name: fetch-enrichment
+              image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+              imagePullPolicy: IfNotPresent
+              command: ["scripts/fetch-enrichment.sh"]
+              env:
+                - name: OCTO_ENRICHMENT_DIR
+                  value: /app/scanner/data
+                # Optional — falls back to keyless DB-IP City Lite when unset.
+                - name: MAXMIND_LICENSE_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: octo-man-geoip
+                      key: maxmind_license_key
+                      optional: true
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: enrichment-data
+                  mountPath: /app/scanner/data
+          volumes:
+            - name: enrichment-data
+              persistentVolumeClaim:
+                claimName: enrichment-data

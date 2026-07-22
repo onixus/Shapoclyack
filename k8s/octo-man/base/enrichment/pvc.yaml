@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: enrichment-data
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: enrichment-storage
+spec:
+  accessModes:
+    # ReadWriteMany so every api/agent/scanner replica can mount the same
+    # refreshed GeoIP/EPSS/KEV/CVSS4 data read-only across nodes — unlike
+    # scanner-data (RWO is acceptable there since only one job runs at a
+    # time), this volume is read by N concurrent replicas.
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: <your-RWX-capable-class>  # e.g. efs-sc, nfs-client, cephfs
