@@ -17,7 +17,7 @@ spec:
     spec:
       initContainers:
         - name: fetch-enrichment
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c", "scripts/fetch-enrichment.sh || true"]
           env:

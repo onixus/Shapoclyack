@@ -28,7 +28,7 @@ spec:
       # ClickHouse's CREATE TABLE IF NOT EXISTS init-SQL is.
       initContainers:
         - name: migrate
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
           imagePullPolicy: IfNotPresent
           command: ["alembic", "-c", "api/db/alembic.ini", "upgrade", "head"]
           env:
@@ -46,7 +46,7 @@ spec:
                 - ALL
       containers:
         - name: api
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -112,12 +112,20 @@ spec:
               cpu: "4"
               memory: 4Gi
           securityContext:
-            allowPrivilegeEscalation: false
+            # Local scans run inside this container by default
+            # (OCTO_ALLOW_SCAN_START=true) — nmap -O / naabu need the
+            # NET_RAW+NET_ADMIN file capabilities set on them at build time
+            # (Dockerfile setcap) to actually take effect for the non-root
+            # user; allowPrivilegeEscalation:false sets no_new_privs, which
+            # blocks that file-capability grant on exec regardless of what's
+            # listed below (matches job.yaml/cronjob.yaml's working config).
+            allowPrivilegeEscalation: true
             capabilities:
               drop:
                 - ALL
               add:
                 - NET_RAW
+                - NET_ADMIN
           volumeMounts:
             - name: data
               mountPath: /app/scanner/output

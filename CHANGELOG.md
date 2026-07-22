@@ -4,6 +4,27 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Fixed
+
+- **OS detection / NET_ADMIN capability gaps that silently dropped nmap `-O`
+  results without needing any extra flags** — `docker-compose.yml`'s
+  `shapoclyack` service, `k8s/octo-man/base/api-deployment.yaml`'s `api`
+  container, and `k8s/octo-man/base/agents/agent-deployment.yaml` all either
+  granted only `NET_RAW` or set `allowPrivilegeEscalation: false` (which sets
+  `no_new_privs`, blocking the `setcap` file-capability grant on `nmap`/`naabu`
+  outright regardless of what's listed under `capabilities.add`). Brought all
+  three in line with `job.yaml`/`cronjob.yaml`'s already-working
+  `allowPrivilegeEscalation: true` + `capabilities.add: [NET_RAW, NET_ADMIN]`,
+  and updated `Dockerfile`/`Dockerfile.allinone`'s `setcap` step to grant
+  `cap_net_admin` (previously only `cap_net_raw`) on both binaries so the
+  container-level grant has something to attach to.
+- **Stale `shapoclyack-0.33` image tags across every k8s manifest** —
+  `api-deployment.yaml`, `agent-deployment.yaml`, `cronjob.yaml`, `job.yaml`,
+  `job-resume.yaml`, `enrichment/cronjob.yaml`, both overlay patches, and the
+  agent example manifest all still pointed at the pre-fix `0.33` image, so
+  `kubectl apply -k` deployments silently ran stale code even after pulling
+  the latest release. Bumped all references to `shapoclyack-0.35-0722`.
+
 ### Added
 
 - **Nuclei template-based vulnerability/misconfig scanning** — a new opt-in

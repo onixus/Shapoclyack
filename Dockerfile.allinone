@@ -93,10 +93,14 @@ RUN set -eux; \
     git -C /usr/share/nuclei-templates checkout "${NUCLEI_TEMPLATES_REF}"; \
     rm -rf /usr/share/nuclei-templates/.git
 
+# See Dockerfile's matching step for why both capabilities are set here (in
+# short: cap_net_raw alone covers naabu/basic scans out of the box, but nmap
+# -O OS detection needs cap_net_admin too where the container also grants it
+# via --cap-add — docker-compose.yml and the k8s api/agent/job manifests all do).
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
-    setcap cap_net_raw+eip /usr/local/bin/naabu; \
-    setcap cap_net_raw+eip /usr/bin/nmap; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     apt-get purge -y libcap2-bin && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

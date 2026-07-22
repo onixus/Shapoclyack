@@ -82,15 +82,20 @@ RUN set -eux; \
     git -C /usr/share/nuclei-templates checkout "${NUCLEI_TEMPLATES_REF}"; \
     rm -rf /usr/share/nuclei-templates/.git
 
-# Grant the raw-socket capability to the scanner binaries via file capabilities so
+# Grant raw-socket capabilities to the scanner binaries via file capabilities so
 # host discovery / SYN scans / OS detection work as the non-root 'scanner' user.
-# (A container-level --cap-add is NOT inherited by a non-root process on its own.)
-# Only cap_net_raw is used: it is in Docker's default bounding set (so the binaries
-# still exec when run without extra --cap-add), and is sufficient for scanning.
+# (A container-level --cap-add alone is NOT inherited by a non-root process on
+# exec without this — the binary needs the file capability bit set too.)
+# cap_net_raw alone is in Docker's default bounding set (so naabu/nmap still
+# exec fine with zero extra flags for basic scanning), but nmap -O OS detection
+# additionally needs cap_net_admin in some kernel/nmap configurations — that one
+# is NOT in Docker's default bounding set, so it only takes effect where the
+# *container* is also started with --cap-add NET_ADMIN (docker-compose.yml,
+# k8s job/cronjob/api/agent manifests all grant both; see their comments).
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
-    setcap cap_net_raw+eip /usr/local/bin/naabu; \
-    setcap cap_net_raw+eip /usr/bin/nmap; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     apt-get purge -y libcap2-bin && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
