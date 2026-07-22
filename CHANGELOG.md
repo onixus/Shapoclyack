@@ -10,8 +10,36 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   `web-build` stage base image, `.github/workflows/ci.yml`'s `actions/setup-node`
   step, and a new `engines.node: ">=24"` in `web-next/package.json` (Node 24
   is the current Active LTS; Node 22 moves to Maintenance).
+- **Enrichment data baked into Docker builds** — `Dockerfile`/`Dockerfile.allinone`
+  now run `scripts/fetch-enrichment.sh` (GeoIP via the keyless DB-IP provider,
+  CVSS4, EPSS, KEV) as a best-effort build step, and `Dockerfile.api` runs the
+  EPSS/KEV fetches it actually uses; a fresh image now ships with real
+  enrichment data instead of only the committed seed stubs (a 5-IP GeoIP demo
+  overlay, a handful of seed CVEs). Never fails the build — an
+  offline/network-restricted build just keeps the seed data, same as before.
+  `scanner/config/default.yaml`'s `enrichment.geoip.database` default now
+  points at the baked-in `.mmdb` path instead of the JSON demo overlay (which
+  remains in the repo for hand-editable lab/test use via an explicit config
+  override).
+- **vulscan offline CVE databases refreshed at build time** — new
+  `scripts/fetch-vulscan-db.sh` (mirrors vulscan's own `update.sh`, fetching
+  the same computec.ch-published CSVs with per-database non-fatal error
+  handling). `Dockerfile`/`Dockerfile.allinone` clone `scipag/vulscan` pinned
+  to a specific commit for reproducible builds, which also freezes its
+  bundled CVE/exploit-db/openvas/etc. CSVs at that commit's snapshot; this
+  script refreshes them in place as a best-effort build step (never fails
+  the build) so the `vuln-offline` NSE profile matches against current data.
 
 ### Added
+
+- **OS fingerprint surfaced in the API/UI** — nmap's `-O` OS detection already
+  ran on every scan and `os_findings.json` was already written per run, but
+  the best-match-by-accuracy result was only ever counted
+  (`summary.json`'s `os_detected_hosts`), never attached to a host record.
+  `scanner/pipeline/report.py` now stamps `os_name`/`os_accuracy` onto each
+  `alive_hosts.json` entry (same pattern as the existing GeoIP `country`/`city`
+  fields); `AliveHostItem` (`api/schemas.py`) and `GET /runs/{id}/hosts` expose
+  it, and the Hosts tab in `web-next`'s run view shows it inline.
 
 - **Phase 10.1 asset-level diff events** — `scanner/pipeline/report_diff.py`
   already diffed hosts/ports/vulnerabilities between two runs but only as

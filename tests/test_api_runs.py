@@ -90,6 +90,8 @@ def _write_run(root: Path, run_id: str) -> None:
                     "country": "United States",
                     "city": "Ashburn",
                     "country_iso": "US",
+                    "os_name": "Linux 5.x",
+                    "os_accuracy": 95,
                 },
                 {
                     "host": "10.0.0.2",
@@ -176,6 +178,11 @@ def test_list_and_get_run(tmp_path: Path):
     assert ashburn["city"] == "Ashburn"
     assert ashburn["country"] == "United States"
     assert ashburn["vulnerability_count"] == 1
+    assert ashburn["os_name"] == "Linux 5.x"
+    assert ashburn["os_accuracy"] == 95
+    berlin = next(row for row in host_payload if row["host"] == "10.0.0.2")
+    assert berlin["os_name"] is None
+    assert berlin["os_accuracy"] is None
 
     ports = client.get("/api/runs/run-a/ports", headers=headers)
     assert ports.status_code == 200

@@ -218,9 +218,14 @@ enrichment:
     database: scanner/data/cvss4/cvss4.json
   geoip:
     enabled: true
-    # JSON overlay for labs/tests, or MaxMind GeoLite2-City.mmdb in production.
-    # Fetch MMDB: MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh
-    database: scanner/data/geoip/geoip-overlay.json
+    # Docker builds bake a real DB-IP City Lite .mmdb here (scripts/fetch-enrichment.sh,
+    # best-effort at build time — see Dockerfile/Dockerfile.allinone); falls back to no
+    # GeoIP data (still labels private/loopback IPs) if that file isn't present, e.g. a
+    # bare git checkout run directly without ever building/fetching. For a small
+    # hand-editable lab/test overlay instead, point this at
+    # scanner/data/geoip/geoip-overlay.json or set OCTO_GEOIP_DATABASE. For MaxMind's
+    # (more accurate, needs a free account) GeoLite2-City: MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh
+    database: scanner/data/geoip/geoip.mmdb
 
 # Tech stack fingerprinting (Phase 9.1): one HTTP GET per already-open web
 # port -> CDN/WAF + CMS/framework signatures. Opt-in; findings only, never
