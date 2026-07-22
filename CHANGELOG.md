@@ -76,6 +76,34 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   `fingerprint.py`'s non-escalation principle, are never merged into scan
   scope or asset identity. Hostname/SAN-CN mismatch checking is out of scope
   for this module.
+- **Phase 8.4 typosquat / domain monitoring** — `scanner/pipeline/domain_monitor.py`
+  (new): two independent, opt-in sub-checks. (1) Typosquat/look-alike domain
+  detection generates candidates of the org's seed domains across six
+  generator classes (character omission, adjacent transposition,
+  keyboard-adjacent substitution, doubling/de-doubling, homoglyph
+  substitution, TLD swap), interleaved round-robin across classes and capped
+  at `max_candidates` (default 150) per seed, then resolves each candidate's
+  A/AAAA records via the already-vendored `dnsx` binary (no new dependency) —
+  passive DNS only, same risk class as `ct.brute_force`'s wordlist brute
+  force. A candidate that resolves is reported as a `typosquat_registered`
+  finding (someone else has registered it); these domains are never owned by
+  the org and are never merged into scan scope. (2) A dangling-CNAME /
+  subdomain-takeover heuristic resolves the CNAME chain for the org's own
+  already-in-scope FQDNs and flags targets whose CNAME matches a curated,
+  non-exhaustive list of commonly-abused service suffixes (`github.io`,
+  `herokuapp.com`, `s3.amazonaws.com`, `azurewebsites.net`, `cloudfront.net`,
+  etc.) AND have no A/AAAA record of their own — a conservative "looks
+  abandoned" gate. This only flags the heuristic pattern match plus
+  non-resolution; it never attempts to confirm an actual takeover (no
+  requests to the third-party service, no claiming/registering anything),
+  matching `cloud_discovery.py`'s findings-only, non-escalating posture. New
+  `discovery.domain_monitor.*` config block (`DomainMonitorConfig` in
+  `config_schema.py`: `enabled`, `domains`, `typosquat_enabled`,
+  `dangling_cname_enabled`, `max_candidates`, `concurrency`,
+  `timeout_seconds`, `retries`), disabled by default, runs as its own
+  `domain_monitor` pipeline stage right after `resolve` so the dangling-CNAME
+  check sees the final in-scope FQDN list. Findings are written to
+  `domain_monitor.json` / `domain_monitor_findings.txt`.
 
 ## [0.33-0507] — 2026-07-21
 
