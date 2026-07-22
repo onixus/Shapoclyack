@@ -59,6 +59,25 @@ def test_high_value_port_raises_criticality():
     assert scored["asset_criticality"] >= 2
 
 
+def test_asset_criticality_override_wins_over_heuristic():
+    scorer = RiskScoring()
+    item = {"cve": "CVE-2018-15473", "cvss": 5.3, "severity": "medium", "port": "22"}
+    # Without an override, the high-value-port heuristic would score >= 2.
+    heuristic_only = scorer.score_vulnerability(item)
+    assert heuristic_only["asset_criticality"] >= 2
+
+    # An explicit business-context override of 0 wins outright.
+    overridden = scorer.score_vulnerability(item, asset_criticality_override=0)
+    assert overridden["asset_criticality"] == 0
+
+
+def test_asset_criticality_override_clamped_to_0_4():
+    scorer = RiskScoring()
+    assert scorer.asset_criticality({}, 0.0, override=7) == 4
+    assert scorer.asset_criticality({}, 0.0, override=-3) == 0
+    assert scorer.asset_criticality({}, 0.0, override=2) == 2
+
+
 def test_overlay_loaders(tmp_path: Path):
     epss = tmp_path / "epss.json"
     epss.write_text(json.dumps({"entries": {"CVE-1": 0.5}}), encoding="utf-8")

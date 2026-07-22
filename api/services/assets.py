@@ -6,9 +6,11 @@ registry.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 
@@ -16,7 +18,13 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import runs as runs_service
 from api.settings import Settings
-from scanner.pipeline.asset_identity import IdentityCandidate, identity_candidates_for_host
+from scanner.pipeline.asset_identity import (
+    IdentityCandidate,
+    identity_candidates_for_host,
+    ip_identity_key,
+)
+
+LOG = logging.getLogger("octo-man.assets")
 
 
 @dataclass(frozen=True)
@@ -189,6 +197,7 @@ def list_assets(
                     "last_seen": asset.last_seen,
                     "primary_identifier": primary or (identifiers[0].identifier_value if identifiers else None),
                     "identifier_count": len(identifiers),
+                    "asset_criticality": asset.asset_criticality,
                 }
             )
         return results
@@ -213,9 +222,51 @@ def get_asset(settings: Settings, tenant_id: str, asset_id: str) -> dict | None:
             "last_seen": asset.last_seen,
             "owner_email": asset.owner_email,
             "business_unit": asset.business_unit,
+            "asset_criticality": asset.asset_criticality,
             "identifiers": [
                 {"identifier_type": i.identifier_type, "identifier_value": i.identifier_value}
                 for i in identifiers
             ],
             "tags": {t.key: t.value for t in tags},
         }
+
+
+def get_asset_criticality_by_ip(settings: Settings, tenant_id: str, host_ip: str) -> int | None:
+    """Single PK read: tenant+IP -> operator-set ``asset_criticality``, or
+    ``None`` if unset/missing. Never raises — callers (risk scoring) treat
+    any failure the same as "no override, fall back to the heuristic"."""
+    asset_id = ip_identity_key(tenant_id, host_ip)
+    try:
+        with get_session(settings.postgres_url) as session:
+            asset = session.get(models.Asset, asset_id)
+            if asset is None or asset.tenant_id != tenant_id:
+                return None
+            return asset.asset_criticality
+    except Exception:  # noqa: BLE001
+        LOG.warning("asset_criticality lookup failed tenant=%s host=%s", tenant_id, host_ip)
+        return None
+
+
+def update_asset(
+    settings: Settings, tenant_id: str, asset_id: str, updates: dict[str, Any]
+) -> dict | None:
+    """Partial update of operator-settable Asset fields (``owner_email``,
+    ``business_unit``, ``asset_criticality``). Only keys present in
+    ``updates`` are touched, so an explicit ``None`` clears a field while an
+    omitted key leaves it untouched. Returns the updated asset (same shape as
+    ``get_asset``), or ``None`` if the asset doesn't exist for this tenant.
+    Raises ``ValueError`` if ``asset_criticality`` is present and not an int
+    0-4.
+    """
+    if "asset_criticality" in updates and updates["asset_criticality"] is not None:
+        val = updates["asset_criticality"]
+        if not isinstance(val, int) or isinstance(val, bool) or not (0 <= val <= 4):
+            raise ValueError("asset_criticality must be an integer 0-4")
+    with get_session(settings.postgres_url) as session:
+        asset = session.get(models.Asset, asset_id)
+        if asset is None or asset.tenant_id != tenant_id:
+            return None
+        for field in ("owner_email", "business_unit", "asset_criticality"):
+            if field in updates:
+                setattr(asset, field, updates[field])
+    return get_asset(settings, tenant_id, asset_id)

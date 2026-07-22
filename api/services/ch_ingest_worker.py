@@ -16,6 +16,7 @@ from typing import Any
 from api.services import ch_transform
 from api.services import clickhouse_client as ch
 from api.services.nats_bus import STREAM_INGEST
+from api.settings import Settings
 
 LOG = logging.getLogger("octo-man.ch-ingest")
 
@@ -30,10 +31,12 @@ class ClickHouseIngestWorker:
         nats_url: str,
         clickhouse_url: str,
         fetch_timeout: float = 5.0,
+        settings: Settings | None = None,
     ) -> None:
         self._nats_url = nats_url
         self._clickhouse_url = clickhouse_url
         self._fetch_timeout = fetch_timeout
+        self._settings = settings
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._stats = {"messages": 0, "vuln_rows": 0, "port_rows": 0, "errors": 0}
@@ -124,6 +127,7 @@ class ClickHouseIngestWorker:
             vuln_rows, port_rows = await asyncio.to_thread(
                 ch_transform.transform_ingest_payload,
                 payload,
+                settings=self._settings,
             )
             inserted_v = await asyncio.to_thread(
                 ch.insert_rows,
@@ -162,13 +166,17 @@ class ClickHouseIngestWorker:
 _WORKER: ClickHouseIngestWorker | None = None
 
 
-def start_worker(*, nats_url: str, clickhouse_url: str) -> ClickHouseIngestWorker | None:
+def start_worker(
+    *, nats_url: str, clickhouse_url: str, settings: Settings | None = None
+) -> ClickHouseIngestWorker | None:
     global _WORKER
     if not nats_url.strip() or not clickhouse_url.strip():
         return None
     if _WORKER is not None:
         return _WORKER
-    worker = ClickHouseIngestWorker(nats_url=nats_url, clickhouse_url=clickhouse_url)
+    worker = ClickHouseIngestWorker(
+        nats_url=nats_url, clickhouse_url=clickhouse_url, settings=settings
+    )
     worker.start()
     _WORKER = worker
     return worker

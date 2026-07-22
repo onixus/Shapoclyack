@@ -156,7 +156,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** evolve Octo-man from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
 
-**Status:** Phase 7 **done** (MVP); Phase 8 partially done (8.1–8.4); Phase 9 partially done (9.1–9.2) — remainder **Planned**.
+**Status:** Phase 7 **done** (MVP); Phase 8 partially done (8.1–8.4); Phase 9 partially done (9.1, 9.2, 9.4) — remainder **Planned**.
 
 ### Phase 7 — Asset Inventory & Identity Graph
 
@@ -189,14 +189,14 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** enrich each asset with context beyond ports/CVEs, needed for real prioritization.
 
-**Status:** 9.1–9.2 done; 9.3–9.4 Planned.
+**Status:** 9.1, 9.2, 9.4 done; 9.3 Planned.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 9.1 | Tech stack fingerprinting | `scanner/pipeline/fingerprint.py` (new) | One HTTP GET per already-open web port (reuses `open_ports.txt`, no new port scan) → small built-in CDN/WAF header signature set (Cloudflare, Akamai, Sucuri, Imperva/Incapsula, CloudFront, Fastly) + CMS/framework header/body markers (WordPress, Drupal, Joomla, Next.js, generic PHP); opt-in (`fingerprint.enabled`), capped by `max_targets`/`concurrency`/`body_max_bytes` (streamed read); findings reported to `fingerprint.json`/`fingerprint_matches.txt`, never merged into scan scope | **Done** |
 | 9.2 | TLS / certificate posture | `scanner/pipeline/tls_posture.py` (new) | Parses the free-text `output` of nmap's own `ssl-cert`/`ssl-enum-ciphers` NSE scripts (already written to `nmap/tcp/*.xml` by the `nse` stage) — no new scan, no TLS-handshake dependency. Findings: `cert_expired`/`cert_expiring_soon` (validity window vs. `expiring_soon_days`), `self_signed` (subject/issuer commonName heuristic, tagged `heuristic`, not certain), `weak_protocol`/`weak_cipher_grade`/`weak_cipher_name` (from `ssl-enum-ciphers`, now added to the `vuln`/`service_specific` NSE profiles). Opt-in (`tls_posture.enabled`), capped by `max_targets`; findings reported to `tls_posture.json`/`tls_posture_findings.txt`, never merged into scan scope. Since nmap's script output is free text rather than a stable schema, parsing is fail-soft (unparseable fields/lines are skipped, never raise). Hostname/SAN-CN mismatch checking is deferred/out of scope. | **Done** |
 | 9.3 | Web asset screenshots | new worker (optional) | Visual inventory for UI review | **Planned** |
-| 9.4 | Business-context criticality | `api/services/risk_scoring.py` | Replace port-based criticality heuristic with `asset_criticality` sourced from inventory owner/business-unit tags (Phase 7) | **Planned** |
+| 9.4 | Business-context criticality | `api/services/risk_scoring.py`, `api/services/assets.py`, `api/routes/assets.py` | Operator-set `asset_criticality` (0–4) via new `PATCH /assets/{asset_id}`; `ch_transform.vulnerabilities_to_rows` looks it up per host (batched, one query per distinct host per ingest batch) and it wins outright over the port/severity heuristic in `risk_scoring.py` when set; falls back to the existing heuristic when unset or when Postgres/tenant context isn't available (e.g. unit tests, no-DB deployments) | **Done** |
 
 ### Phase 10 — Change Detection & Alerting at Asset Level
 
@@ -248,4 +248,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.4); Phase 9 is partially done (9.1–9.2); Phases 10–11 are **Planned**.
+Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.4); Phase 9 is partially done (9.1, 9.2, 9.4); Phases 10–11 are **Planned**.

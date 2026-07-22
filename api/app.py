@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ch_ingest_worker.start_worker(
             nats_url=settings.nats_url,
             clickhouse_url=settings.clickhouse_url,
+            settings=settings,
         )
     try:
         yield

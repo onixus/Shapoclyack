@@ -6,6 +6,22 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Phase 9.4 business-context criticality** — `api/services/risk_scoring.py`'s
+  `asset_criticality` was purely a per-vulnerability heuristic (severity/CVSS
+  band, bumped for a hardcoded high-value-port set) with no awareness of
+  which asset actually matters to the business. The Phase 7 `Asset` table
+  already had an `asset_criticality` column scaffolded for exactly this but
+  nothing wrote to it. Added `PATCH /api/assets/{asset_id}` (operator role)
+  so an operator can set `asset_criticality` (0–4), `owner_email`, and
+  `business_unit` directly on an asset; `api/services/ch_transform.py`'s
+  `vulnerabilities_to_rows` now looks up the stored criticality per host
+  (one DB read per distinct host per ingest batch, not per vulnerability row)
+  and passes it into `RiskScoring.score_vulnerability` as an override that
+  wins outright over the heuristic. Falls back to the existing heuristic
+  unchanged whenever an asset has no criticality set, or when Postgres/tenant
+  context isn't available (e.g. unit tests, no-DB deployments) — non-breaking
+  by construction.
+
 ## [0.34-0722] — 2026-07-22
 
 ### Added

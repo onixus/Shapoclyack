@@ -12,7 +12,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from api.services import assets as assets_service
 from api.services.risk_scoring import get_scorer
+from api.settings import Settings
 
 LOG = logging.getLogger("octo-man.ch-transform")
 
@@ -86,6 +88,8 @@ def _load_json_member(members: dict[str, bytes], name: str) -> Any:
 def vulnerabilities_to_rows(
     payload: dict[str, Any],
     members: dict[str, bytes],
+    *,
+    settings: Settings | None = None,
 ) -> list[list[Any]]:
     """Map vulnerabilities.json → shapoclyack_vulnerabilities rows."""
     tenant_id = str(payload.get("tenant_id") or "default")
@@ -97,6 +101,16 @@ def vulnerabilities_to_rows(
         return []
 
     scorer = get_scorer()
+    db_enabled = settings is not None and bool(settings.postgres_url.strip())
+    criticality_cache: dict[str, int | None] = {}
+
+    def _criticality_override(host_ip: str) -> int | None:
+        if host_ip not in criticality_cache:
+            criticality_cache[host_ip] = assets_service.get_asset_criticality_by_ip(
+                settings, tenant_id, host_ip
+            )
+        return criticality_cache[host_ip]
+
     rows: list[list[Any]] = []
     for item in vulns:
         if not isinstance(item, dict):
@@ -105,7 +119,8 @@ def vulnerabilities_to_rows(
         if not host or not _is_ipv4(host):
             continue
         cve = item.get("cve") or item.get("script_id") or ""
-        scored = scorer.score_vulnerability(item)
+        override = _criticality_override(host) if db_enabled else None
+        scored = scorer.score_vulnerability(item, asset_criticality_override=override)
         rows.append(
             [
                 tenant_uuid,
@@ -185,7 +200,9 @@ def open_ports_to_rows(
     return rows
 
 
-def transform_ingest_payload(payload: dict[str, Any]) -> tuple[list[list[Any]], list[list[Any]]]:
+def transform_ingest_payload(
+    payload: dict[str, Any], *, settings: Settings | None = None
+) -> tuple[list[list[Any]], list[list[Any]]]:
     """Return (vuln_rows, port_rows) from a NATS ingest message body."""
     archive = archive_bytes_from_payload(payload)
     if archive is None:
@@ -201,4 +218,7 @@ def transform_ingest_payload(payload: dict[str, Any]) -> tuple[list[list[Any]], 
     except Exception:  # noqa: BLE001
         LOG.exception("Failed to extract ingest archive job=%s", payload.get("job_id"))
         return [], []
-    return vulnerabilities_to_rows(payload, members), open_ports_to_rows(payload, members)
+    return (
+        vulnerabilities_to_rows(payload, members, settings=settings),
+        open_ports_to_rows(payload, members),
+    )
