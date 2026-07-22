@@ -4,6 +4,13 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Changed
+
+- **Node.js 22 → 24** across the project: `Dockerfile.allinone`/`Dockerfile.api`'s
+  `web-build` stage base image, `.github/workflows/ci.yml`'s `actions/setup-node`
+  step, and a new `engines.node: ">=24"` in `web-next/package.json` (Node 24
+  is the current Active LTS; Node 22 moves to Maintenance).
+
 ### Added
 
 - **Phase 10.1 asset-level diff events** — `scanner/pipeline/report_diff.py`
