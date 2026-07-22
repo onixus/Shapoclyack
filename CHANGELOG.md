@@ -47,6 +47,35 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   to `fingerprint.json` / `fingerprint_matches.txt` and, matching
   `cloud_discovery.py`'s non-escalation principle, are never merged into
   scan scope or asset identity.
+- **Phase 9.2 TLS / certificate posture** — `scanner/pipeline/tls_posture.py`
+  (new): rather than adding a second scan pass or a Python TLS-handshake
+  dependency (`cryptography`/`pyopenssl`), this parses the free-text `output`
+  nmap's own `ssl-cert` / `ssl-enum-ciphers` NSE scripts already write into
+  `nmap/tcp/*.xml` via the `nse` stage — the same XML `report.py`'s
+  `_parse_nmap_xml`/`_script_record` already walk generically. `ssl-cert`
+  output yields subject/issuer/SAN/signature algorithm/public key
+  size/validity window, driving `cert_expired` (critical) and
+  `cert_expiring_soon` (medium, within `expiring_soon_days`, default 30)
+  findings, plus a `self_signed` (medium) heuristic — subject/issuer
+  commonName match, case-insensitive, always tagged `heuristic` since it is
+  a signal and not chain verification. `ssl-enum-ciphers` output yields
+  per-TLS-version cipher lists and nmap's own letter grade, driving
+  `weak_protocol` (high; SSLv2/SSLv3/TLSv1.0/TLSv1.1), `weak_cipher_grade`
+  (medium; nmap grade C/D/E/F), and `weak_cipher_name` (medium; RC4/DES/3DES/
+  NULL/EXPORT/anon/MD5 substrings) findings. `ssl-enum-ciphers` was added by
+  name to the `vuln` and `service_specific` NSE profiles' `scripts` in
+  `scanner/config/default.yaml` (cert expiry/self-signed already work off
+  `ssl-cert` alone via nmap's default/safe categories; `baseline` and
+  `vuln-offline` are untouched). New `tls_posture.*` config block
+  (`TlsPostureConfig` in `config_schema.py`), opt-in and disabled by default,
+  capped by `max_targets` (default 2000) with the run flagged `truncated`
+  past the cap. Since nmap's script output is free text rather than a
+  stable, versioned schema, all parsing is fail-soft (unparseable
+  fields/lines are skipped or `None`, never raise). Findings are written to
+  `tls_posture.json` / `tls_posture_findings.txt` and, matching
+  `fingerprint.py`'s non-escalation principle, are never merged into scan
+  scope or asset identity. Hostname/SAN-CN mismatch checking is out of scope
+  for this module.
 
 ## [0.33-0507] — 2026-07-21
 

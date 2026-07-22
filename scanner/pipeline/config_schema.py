@@ -333,6 +333,29 @@ class FingerprintConfig(BaseModel):
         return ports
 
 
+class TlsPostureConfig(BaseModel):
+    """TLS / certificate posture (Phase 9.2). Opt-in.
+
+    Parses the free-text ``output`` of nmap's own ``ssl-cert`` /
+    ``ssl-enum-ciphers`` NSE scripts, already written to ``nmap/tcp/*.xml`` by
+    the ``nse`` stage -- no new scan or TLS-handshake dependency is added
+    here (see ``tls_posture.py`` module docstring for the honesty note on
+    parsing free text, not a stable schema). ``ssl-enum-ciphers`` must be
+    present in the active NSE profile's ``scripts`` for weak-cipher/protocol
+    findings to populate; cert expiry/self-signed detection works off
+    ``ssl-cert`` alone. ``max_targets`` caps how many host:port endpoints get
+    inspected per run -- past the cap, remaining endpoints are skipped and
+    the run is flagged "truncated". ``expiring_soon_days`` is the lookahead
+    window for the ``cert_expiring_soon`` finding. Findings are reported only
+    (``tls_posture.json``) -- never merged into scan scope or asset identity.
+    Hostname/SAN-CN mismatch checking is out of scope for this module.
+    """
+
+    enabled: bool = False
+    max_targets: int = Field(default=2000, ge=1, le=50_000)
+    expiring_soon_days: int = Field(default=30, ge=1, le=365)
+
+
 class SlackAlertConfig(BaseModel):
     enabled: bool = False
     # Prefer env OCTO_SLACK_WEBHOOK over committing secrets to YAML.
@@ -434,6 +457,7 @@ class AppConfig(BaseModel):
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
+    tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)

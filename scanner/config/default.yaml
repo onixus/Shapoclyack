@@ -153,6 +153,10 @@ ports:
   top_udp_ports: 100
   udp_probes: true
 
+# ssl-enum-ciphers must be present in the active profile's `scripts` for
+# weak-cipher/protocol TLS posture findings (Phase 9.2) to populate; cert
+# expiry/self-signed findings work off ssl-cert alone, already covered by
+# nmap's default/safe categories.
 nse_profiles:
   baseline:
     scripts: "default,safe"
@@ -161,7 +165,7 @@ nse_profiles:
   vuln:
     # Nmap "vuln" category + vulners CVE lookup by service version.
     # vulners queries the vulners.com API and needs outbound internet access.
-    scripts: "default,safe,vuln,vulners"
+    scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
     version_detection: true
     os_detection: true
   vuln-offline:
@@ -170,7 +174,7 @@ nse_profiles:
     version_detection: true
     os_detection: true
   service_specific:
-    scripts: "http-*,ssl-cert,smb-*,ssh-*,dns-*"
+    scripts: "http-*,ssl-cert,ssl-enum-ciphers,smb-*,ssh-*,dns-*"
     version_detection: true
     os_detection: false
 
@@ -214,6 +218,16 @@ fingerprint:
   http_ports: [80, 8080, 8000, 8008, 8888]
   https_ports: [443, 8443]
   verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
+
+# TLS / certificate posture (Phase 9.2): parses ssl-cert / ssl-enum-ciphers
+# NSE script output already written by the nse stage -> cert expiry,
+# self-signed heuristic, weak protocol/cipher findings. Opt-in; findings
+# only, never merged into scan scope. Hostname/SAN-CN mismatch is out of
+# scope (see tls_posture.py module docstring).
+tls_posture:
+  enabled: false
+  max_targets: 2000
+  expiring_soon_days: 30
 
 # Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
