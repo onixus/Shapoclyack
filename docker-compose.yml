@@ -96,7 +96,6 @@ services:
       - ./scanner/config:/app/scanner/config:ro
     cap_add:
       - NET_RAW
-      - NET_ADMIN
     restart: unless-stopped
 
 volumes:

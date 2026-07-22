@@ -6,18 +6,21 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Fixed
 
-- **OS detection / NET_ADMIN capability gaps that silently dropped nmap `-O`
-  results without needing any extra flags** — `docker-compose.yml`'s
-  `shapoclyack` service, `k8s/octo-man/base/api-deployment.yaml`'s `api`
-  container, and `k8s/octo-man/base/agents/agent-deployment.yaml` all either
-  granted only `NET_RAW` or set `allowPrivilegeEscalation: false` (which sets
-  `no_new_privs`, blocking the `setcap` file-capability grant on `nmap`/`naabu`
-  outright regardless of what's listed under `capabilities.add`). Brought all
-  three in line with `job.yaml`/`cronjob.yaml`'s already-working
-  `allowPrivilegeEscalation: true` + `capabilities.add: [NET_RAW, NET_ADMIN]`,
-  and updated `Dockerfile`/`Dockerfile.allinone`'s `setcap` step to grant
-  `cap_net_admin` (previously only `cap_net_raw`) on both binaries so the
-  container-level grant has something to attach to.
+- **`allowPrivilegeEscalation: false` silently blocking `nmap`/`naabu`'s raw-socket
+  capability as a non-root user** — `k8s/octo-man/base/api-deployment.yaml`'s
+  `api` container and `k8s/octo-man/base/agents/agent-deployment.yaml` set
+  `allowPrivilegeEscalation: false`, which sets Linux's `no_new_privs` flag;
+  this blocks the `setcap` file-capability grant on `nmap`/`naabu` outright
+  regardless of what's listed under `capabilities.add`, silently degrading
+  scans as the non-root container user. Brought both in line with
+  `job.yaml`/`cronjob.yaml`'s already-working `allowPrivilegeEscalation: true`.
+  (An earlier version of this fix also added `cap_net_admin` to the file
+  capabilities and container `capabilities.add`/`cap_add` lists, but that broke
+  a plain `docker run` with zero `--cap-add` flags entirely — a file capability
+  outside the container's bounding set fails the whole `execve()` with `EPERM`
+  rather than being silently dropped, and Docker's default bounding set
+  excludes `NET_ADMIN`. Reverted; `cap_net_raw` alone remains the correct,
+  zero-flags-required grant.)
 - **Stale `shapoclyack-0.33` image tags across every k8s manifest** —
   `api-deployment.yaml`, `agent-deployment.yaml`, `cronjob.yaml`, `job.yaml`,
   `job-resume.yaml`, `enrichment/cronjob.yaml`, both overlay patches, and the
