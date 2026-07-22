@@ -6,6 +6,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+## [0.34-0722] — 2026-07-22
+
+### Added
+
 - **Production enrichment data pipeline (GeoIP / EPSS / KEV / CVSS4)** — the
   `shapoclyack-0.33-0507` release shipped with only tiny seed stubs for these
   four datasets (5 hardcoded IPs for GeoIP, 2–3 CVEs for EPSS/KEV) and no way
@@ -104,6 +108,45 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   `domain_monitor` pipeline stage right after `resolve` so the dangling-CNAME
   check sees the final in-scope FQDN list. Findings are written to
   `domain_monitor.json` / `domain_monitor_findings.txt`.
+- **Routine dependency/image maintenance bump.** Python pins: `PyYAML`
+  6.0.2→6.0.3, `pydantic` 2.10.6→2.13.4, `nats-py` 2.9.0→2.15.0 (all in
+  `requirements.txt`); `fastapi` 0.115.12→0.139.2, `uvicorn` 0.34.2→0.51.0,
+  `PyJWT` 2.10.1→2.13.0, `cryptography` 44.0.2→49.0.0, `python-multipart`
+  0.0.20→0.0.32, `clickhouse-connect` 0.8.17→1.5.0, `SQLAlchemy`
+  2.0.36→2.0.51, `alembic` 1.14.0→1.18.5, `psycopg` 3.2.3→3.3.4 (all in
+  `requirements-api.txt`); `pytest` 9.0.3→9.1.1, `ruff` 0.15.20→0.15.22 (in
+  `requirements-dev.txt`). `fpdf2` and `httpx` were already at PyPI latest
+  (2.8.7 / 0.28.1) and left as-is. `geoip2` (4.8.1) and `bcrypt` (4.2.1) were
+  left pinned: their latest releases (5.3.0 and 5.0.0 respectively) cross a
+  major version boundary, which is out of scope for a routine maintenance
+  bump. Full suite re-verified at 224 passed / 28 skipped after the bump
+  (unchanged from the pre-bump baseline), plus a clean `ruff check` and
+  `compileall` pass. `clickhouse-connect` 1.x is a major bump from the
+  previous 0.8.17 pin; it installed and the full test suite passed against
+  it, so it was kept — no clickhouse-connect-specific behavior surfaced in
+  tests, but this is worth a closer look at the next opportunity given it
+  crosses a major version.
+- **web-next npm dependencies** — ran `npm update`, which bumped several
+  `@radix-ui/*` packages, `@tanstack/react-query`, and their transitive
+  dependencies to the latest versions satisfying their existing `package.json`
+  semver ranges (only `package-lock.json` changed; no `package.json` ranges
+  needed adjusting). Left `next` (14.2.35), `react`/`react-dom` (18.x),
+  `date-fns` (3.6.0), `eslint` (8.x), `tailwindcss` (3.x), and `typescript`
+  (5.x) pinned as-is: their available updates (`next`/`react`/`react-dom` 16.x
+  / 19.x, `date-fns` 4.x, `eslint` 10.x, `tailwindcss` 4.x, `typescript` 7.x)
+  are all major-version jumps, out of scope for this routine bump. `npm run
+  lint` and `npm run build` both pass clean after the update.
+- **Docker image / tool pins left unchanged.** Attempted to verify newer
+  `dnsx`/`naabu` releases (projectdiscovery) and a newer `python:3.12-slim`
+  digest, but this environment's egress policy blocks `github.com` /
+  `api.github.com` (403 from the pre-configured agent proxy) and the Docker
+  Hub CDN blob host used by `docker manifest inspect` (also 403), and no
+  Docker daemon is available to `docker pull`/`docker build` for an
+  independent check. Per the "never fabricate a checksum/digest" rule, the
+  `DNSX_VERSION`/`NAABU_VERSION` pins, their per-arch sha256 checksums, the
+  `python:3.12-slim` base image digest, and the `NMAP_VULNERS_REF`/
+  `VULSCAN_REF` NSE script commit pins are all left untouched in `Dockerfile`,
+  `Dockerfile.api`, and `Dockerfile.allinone`.
 
 ## [0.33-0507] — 2026-07-21
 

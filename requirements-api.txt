@@ -1,13 +1,13 @@
 -r requirements.txt
-fastapi==0.115.12
-uvicorn[standard]==0.34.2
-PyJWT==2.10.1
-cryptography==44.0.2
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+PyJWT==2.13.0
+cryptography==49.0.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
-python-multipart==0.0.20
-nats-py==2.9.0
-clickhouse-connect==0.8.17
-SQLAlchemy==2.0.36
-alembic==1.14.0
-psycopg[binary]==3.2.3
+python-multipart==0.0.32
+nats-py==2.15.0
+clickhouse-connect==1.5.0
+SQLAlchemy==2.0.51
+alembic==1.18.5
+psycopg[binary]==3.3.4
