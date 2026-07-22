@@ -24,7 +24,15 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 
 COPY scanner /app/scanner
 COPY api /app/api
+COPY scripts /app/scripts
 COPY --from=web-build /web/out /app/web/dist
+
+# Best-effort: bake real EPSS/KEV data into the image (used by
+# api/services/risk_scoring.py's contextual scoring) so a fresh deployment
+# isn't limited to the committed seed stubs. This image has no scanner
+# tools, so GeoIP/CVSS4 (scanner-side enrichment) don't apply here. Never
+# fails the build — offline/network-restricted builds just keep the seed data.
+RUN bash scripts/fetch-epss-db.sh || true; bash scripts/fetch-kev-db.sh || true
 
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
     mkdir -p /app/scanner/output /app/scanner/state && \

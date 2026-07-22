@@ -259,6 +259,14 @@ def build_reports(
     }
     save_json(output_dir / "summary.json", summary)
 
+    def _os_accuracy(match: dict | None) -> int | None:
+        if not match:
+            return None
+        try:
+            return int(match.get("accuracy") or 0)
+        except (TypeError, ValueError):
+            return None
+
     alive_rows = [
         {
             "host": host,
@@ -267,6 +275,8 @@ def build_reports(
             "country": (geo_map.get(host) or {}).get("country") or None,
             "city": (geo_map.get(host) or {}).get("city") or None,
             "country_iso": (geo_map.get(host) or {}).get("country_iso") or None,
+            "os_name": (best_os_by_host.get(host) or {}).get("name") or None,
+            "os_accuracy": _os_accuracy(best_os_by_host.get(host)),
         }
         for host in sorted(set(alive_hosts))
     ]

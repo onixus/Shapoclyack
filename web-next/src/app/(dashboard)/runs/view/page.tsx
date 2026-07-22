@@ -126,7 +126,7 @@ function RunDetailInner() {
               title: host.host,
               subtitle: `${host.hostname || host.names[0] || "no hostname"}${
                 host.vulnerability_count ? ` · ${host.vulnerability_count} vulns` : " · no vulns"
-              }`,
+              }${host.os_name ? ` · ${host.os_name}${host.os_accuracy ? ` (${host.os_accuracy}%)` : ""}` : ""}`,
               meta: formatLocation(host) || "No GeoIP",
             }))}
             activeKey={filters.host}

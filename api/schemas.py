@@ -59,6 +59,8 @@ class AliveHostItem(BaseModel):
     country: str | None = None
     city: str | None = None
     country_iso: str | None = None
+    os_name: str | None = None
+    os_accuracy: int | None = None
     vulnerability_count: int = 0
 
 
