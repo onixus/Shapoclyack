@@ -77,10 +77,17 @@ def test_get_scorer_hot_reloads_on_mtime_change(tmp_path: Path, monkeypatch):
     but only after the TTL elapses (not on every call)."""
     from api.services import risk_scoring as rs
 
+    # Set mtimes explicitly rather than relying on wall-clock deltas — some
+    # filesystems (seen on CI) round mtime to whole seconds, so two writes a
+    # few milliseconds apart can hash to the identical stat and never trip
+    # the "did it change" check.
+    base_time = 1_700_000_000.0
     epss = tmp_path / "epss.json"
     kev = tmp_path / "kev.json"
     epss.write_text(json.dumps({"entries": {"CVE-1": 0.1}}), encoding="utf-8")
     kev.write_text(json.dumps({"entries": []}), encoding="utf-8")
+    os.utime(epss, (base_time, base_time))
+    os.utime(kev, (base_time, base_time))
     monkeypatch.setenv("OCTO_EPSS_DATABASE", str(epss))
     monkeypatch.setenv("OCTO_KEV_DATABASE", str(kev))
     monkeypatch.setenv("OCTO_ENRICHMENT_RELOAD_SECONDS", "1000")
@@ -90,7 +97,7 @@ def test_get_scorer_hot_reloads_on_mtime_change(tmp_path: Path, monkeypatch):
         assert first.epss_score("CVE-1") == 0.1
 
         epss.write_text(json.dumps({"entries": {"CVE-1": 0.9}}), encoding="utf-8")
-        os.utime(epss, None)
+        os.utime(epss, (base_time + 10, base_time + 10))
 
         # Still within the TTL window — must not re-read the file yet.
         assert rs.get_scorer().epss_score("CVE-1") == 0.1
