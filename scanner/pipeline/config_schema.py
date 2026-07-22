@@ -366,6 +366,52 @@ class FingerprintConfig(BaseModel):
         return ports
 
 
+class NucleiConfig(BaseModel):
+    """Nuclei template-based vulnerability/misconfig scanning. Opt-in.
+
+    Runs against already-discovered open web ports (``open_ports.txt``) --
+    same candidate-endpoint selection as ``fingerprint.py``, no new port scan.
+    Conservative by default: ``severities`` floors matches to
+    critical/high/medium, and ``exclude_tags`` drops nuclei's more intrusive
+    template categories (active SQLi/RCE-style payloads, fuzzing, DoS) so this
+    stays in line with the rest of the pipeline's non-destructive posture --
+    widen either list explicitly if a more aggressive scan is wanted.
+    CVE-tagged matches (``info.classification.cve-id``) are merged into
+    ``vulnerabilities.json`` (feeding CVSS4/EPSS/KEV enrichment, risk scoring,
+    and report diffs, tagged ``source: "nuclei"``); non-CVE matches (exposed
+    panels, misconfig, tech detection) are reported separately in
+    ``nuclei.json`` only. ``max_targets`` caps how many endpoints get probed
+    per run -- past the cap, remaining endpoints are skipped and the run is
+    flagged "truncated". ``templates_dir`` must exist (populated at image
+    build time, see ``Dockerfile``/``scripts/fetch-nuclei-templates.sh``) --
+    if missing, the stage skips cleanly rather than failing the scan.
+    """
+
+    enabled: bool = False
+    templates_dir: str = "/usr/share/nuclei-templates"
+    severities: list[str] = Field(default_factory=lambda: ["critical", "high", "medium"])
+    exclude_tags: list[str] = Field(default_factory=lambda: ["intrusive", "fuzz", "dos"])
+    max_targets: int = Field(default=1000, ge=1, le=50_000)
+    concurrency: int = Field(default=10, ge=1, le=100)
+    rate_limit: int = Field(default=150, ge=1, le=10_000)
+    timeout_seconds: int = Field(default=10, ge=1, le=60)
+    retries: int = Field(default=1, ge=0, le=5)
+    # Hard cap on the whole nuclei subprocess invocation, independent of
+    # per-request timeout_seconds -- mirrors runtime.nse_timeout_seconds'
+    # role of bounding one external-tool call regardless of target count.
+    overall_timeout_seconds: int = Field(default=1800, ge=60, le=7200)
+    http_ports: list[int] = Field(default_factory=lambda: [80, 8080, 8000, 8008, 8888])
+    https_ports: list[int] = Field(default_factory=lambda: [443, 8443])
+
+    @field_validator("http_ports", "https_ports")
+    @classmethod
+    def validate_ports(cls, ports: list[int]) -> list[int]:
+        for port in ports:
+            if port < 1 or port > 65535:
+                raise ValueError(f"invalid nuclei port: {port}")
+        return ports
+
+
 class TlsPostureConfig(BaseModel):
     """TLS / certificate posture (Phase 9.2). Opt-in.
 
@@ -490,6 +536,7 @@ class AppConfig(BaseModel):
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
+    nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)

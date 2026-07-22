@@ -37,6 +37,10 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **Disjoint-batch parallelism**: non-overlapping CIDR batches run discover in parallel; overlapping batches stay sequential with `skip_known_alive`.
 - **Deferred NSE** (`runtime.skip_nse` / `--skip-nse`): L1 run (discover + ports + reports), then `--resume` for enrichment.
 - Enrichment with Nmap `-sV`, OS detection (`-O`) and NSE profiles (incl. `vuln`).
+- **Nuclei template-based scanning** (`nuclei`, opt-in): HTTP-specific CVE/misconfig/exposed-panel
+  detection against already-open web ports, complementing NSE's version-detection-driven
+  `vulners`/`vulscan`. Conservative severity/tag scope by default; CVE matches merge into
+  `vulnerabilities.json` (see "Vulnerability checking" below).
 - Parallel NSE/OS stage (configurable `nse_concurrency`) for faster large scans.
 - Parallel discovery/port batches (`discover_concurrency`, `ports_concurrency`) for faster naabu stages.
 - Retry + timeout handling per external command (with a separate per-host `nse_timeout_seconds`).
@@ -554,6 +558,10 @@ upstream/MITM tampering:
   build args); the downloaded archive is verified with `sha256sum -c` during build.
 - **nmap-vulners / vulscan** pinned to specific **commit SHAs** (`NMAP_VULNERS_REF`,
   `VULSCAN_REF`).
+- **nuclei** pinned by version tag (`NUCLEI_VERSION`), built from source via `go install` in
+  a dedicated builder stage — verified by Go's own module checksum database (GOSUMDB) rather
+  than a hand-copied release sha256, since nuclei has no per-arch prebuilt archive to pin the
+  dnsx/naabu way. **nuclei-templates** pinned to a release tag (`NUCLEI_TEMPLATES_REF`).
 
 Upgrading a pin:
 
@@ -593,6 +601,19 @@ Findings are parsed into structured results: each `CVE` gets a `cvss` score and 
 Scripts reporting `State: VULNERABLE` without a CVE are also captured (severity `unknown`).
 
 Tune profile parameters in `scanner/config/default.yaml`.
+
+**Nuclei** (`nuclei` config key, `scanner/pipeline/nuclei_scan.py`) is a separate, opt-in
+template-based scanner that runs after NSE, against the same already-open web ports as
+`fingerprint` — no new port scan. It covers HTTP-specific CVEs/misconfigs/exposed panels
+that `nmap-vulners`/`vulscan` (version-detection-driven) don't reach. Conservative by
+default: `severities: [critical, high, medium]` and `exclude_tags: [intrusive, fuzz, dos]`
+keep nuclei's more aggressive template categories (active SQLi/RCE-style payloads) off
+unless explicitly widened. CVE-tagged matches merge into `vulnerabilities.json`
+(`source: "nuclei"`, feeding CVSS4/EPSS/KEV enrichment and risk scoring); everything else
+(exposed panels, misconfig, tech detection) is findings-only in `nuclei.json`. The
+`nuclei` binary (built from source, pinned version — see `Dockerfile`'s `nuclei-build`
+stage) and `nuclei-templates` (pinned tag, refreshed best-effort at build time via
+`scripts/fetch-nuclei-templates.sh`) both ship in the scanner/all-in-one images.
 
 ### Discovery tuning
 
@@ -813,6 +834,8 @@ with every license below.
 | dnsx | `1.2.3` | MIT | ProjectDiscovery |
 | nmap-vulners | `NMAP_VULNERS_REF` | GPL-3.0 | NSE CVE-lookup script |
 | vulscan | `VULSCAN_REF` | GPL-3.0 | NSE script + local CVE databases |
+| nuclei | `NUCLEI_VERSION` | MIT | ProjectDiscovery |
+| nuclei-templates | `NUCLEI_TEMPLATES_REF` | MIT | ProjectDiscovery |
 
 ### Base image & OS packages (`python:3.12-slim`, Debian)
 

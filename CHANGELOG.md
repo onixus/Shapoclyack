@@ -6,6 +6,29 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Nuclei template-based vulnerability/misconfig scanning** — a new opt-in
+  stage (`scanner/pipeline/nuclei_scan.py`, `nuclei` config key) runs the
+  `nuclei` engine against the same already-open web ports as `fingerprint`
+  (no new port scan), covering HTTP-specific CVEs/misconfigs/exposed panels
+  that `nmap-vulners`/`vulscan` (version-detection-driven) don't reach.
+  Conservative by default: `severities: [critical, high, medium]` and
+  `exclude_tags: [intrusive, fuzz, dos]` keep nuclei's more aggressive
+  template categories (active SQLi/RCE-style payloads) off unless explicitly
+  widened. CVE-tagged matches merge into `vulnerabilities.json`
+  (`source: "nuclei"`, feeding CVSS4/EPSS/KEV enrichment, risk scoring, and
+  report diffs via `report.py`'s new `extra_vulnerabilities` parameter);
+  everything else (exposed panels, misconfig, tech detection) is
+  findings-only in `nuclei.json`. Never fails the scan: a missing
+  `templates_dir`, missing `nuclei` binary, or a failed/timed-out invocation
+  all degrade to a clean `skipped_reason`.
+  `Dockerfile`/`Dockerfile.allinone` build the `nuclei` binary from source in
+  a dedicated `golang` stage (`go install` at a pinned version tag — verified
+  by Go's own module checksum database rather than a hand-copied release
+  sha256, since nuclei has no per-arch prebuilt archive to pin the
+  dnsx/naabu way) and clone `nuclei-templates` pinned to a release tag, with
+  a new `scripts/fetch-nuclei-templates.sh` best-effort refresh step
+  matching the vulscan/enrichment fetch scripts' fail-soft philosophy.
+
 ## [0.35-0722] — 2026-07-22
 
 ### Changed

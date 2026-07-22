@@ -28,6 +28,7 @@ from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
 from scanner.pipeline.domain_monitor import monitor_domains
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
+from scanner.pipeline.nuclei_scan import run_nuclei_scan
 from scanner.pipeline.tls_posture import check_tls_posture
 from scanner.pipeline.hostnames import (
     base_domains_from_fqdns,
@@ -460,6 +461,25 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         )
         checkpoint.mark_done("fingerprint")
 
+    # Nuclei template-based vulnerability/misconfig scanning (opt-in, see
+    # nuclei_scan.py module docstring). Runs against already-open web ports;
+    # CVE-tagged matches feed into build_reports below alongside NSE-derived
+    # vulnerabilities. Under --resume, reload the prior result from disk
+    # (same pattern as cloudflare/ct/asn above) since reports regenerate
+    # every run even when this stage itself is skipped.
+    if args.resume and checkpoint.is_done("nuclei"):
+        nuclei_result = load_json(
+            paths.output_dir / "nuclei.json",
+            fallback={"cve_findings": []},
+        )
+    else:
+        nuclei_result = _run_stage(
+            "nuclei",
+            lambda: run_nuclei_scan(open_ports, config.nuclei, paths.output_dir),
+        )
+        checkpoint.mark_done("nuclei")
+    nuclei_cve_findings = nuclei_result.get("cve_findings") or []
+
     reporting = config.reporting
     enrichment = config.enrichment
     # Env overrides let a shared-volume deployment (k8s enrichment overlay) point
@@ -482,6 +502,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         cvss4_database=cvss4_database,
         geoip_enabled=enrichment.geoip.enabled,
         geoip_database=geoip_database,
+        extra_vulnerabilities=nuclei_cve_findings,
     )
     checkpoint.mark_done("report")
 
