@@ -27,6 +27,7 @@ from scanner.pipeline.asn_discovery import discover_asn_ranges
 from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
+from scanner.pipeline.tls_posture import check_tls_posture
 from scanner.pipeline.hostnames import (
     base_domains_from_fqdns,
     discover_ct_subdomains_sync,
@@ -423,6 +424,17 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             ),
         )
         checkpoint.mark_done("nse")
+
+    # Phase 9.2: TLS/certificate posture (findings-only, non-escalating --
+    # see tls_posture.py module docstring). Reads ssl-cert/ssl-enum-ciphers
+    # output already present in nmap_dir from the nse stage above; runs even
+    # under --resume or --skip-nse (reports skipped_reason="no_tls_endpoints").
+    if not (args.resume and checkpoint.is_done("tls_posture")):
+        _run_stage(
+            "tls_posture",
+            lambda: check_tls_posture(nmap_dir, config.tls_posture, paths.output_dir),
+        )
+        checkpoint.mark_done("tls_posture")
 
     # Phase 9.1: tech stack fingerprinting (asset-inventory finding, not
     # scope-expanding -- see fingerprint.py module docstring). Runs against
