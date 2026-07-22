@@ -240,6 +240,27 @@ fingerprint:
   https_ports: [443, 8443]
   verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
 
+# Nuclei template-based vulnerability/misconfig scanning: runs against the
+# same already-open web ports as fingerprint above -- no new port scan.
+# Conservative by default (severities floor + excluded intrusive/fuzz/dos
+# tags); widen explicitly for a more aggressive scan. Opt-in. CVE-tagged
+# matches merge into vulnerabilities.json (source: "nuclei"); everything
+# else is findings-only in nuclei.json. Requires templates_dir to exist
+# (baked at image build time — see Dockerfile / scripts/fetch-nuclei-templates.sh).
+nuclei:
+  enabled: false
+  templates_dir: /usr/share/nuclei-templates
+  severities: [critical, high, medium]
+  exclude_tags: [intrusive, fuzz, dos]
+  max_targets: 1000
+  concurrency: 10
+  rate_limit: 150
+  timeout_seconds: 10
+  retries: 1
+  overall_timeout_seconds: 1800
+  http_ports: [80, 8080, 8000, 8008, 8888]
+  https_ports: [443, 8443]
+
 # TLS / certificate posture (Phase 9.2): parses ssl-cert / ssl-enum-ciphers
 # NSE script output already written by the nse stage -> cert expiry,
 # self-signed heuristic, weak protocol/cipher findings. Opt-in; findings

@@ -180,6 +180,7 @@ def build_reports(
     cvss4_database: Path | str | None = None,
     geoip_enabled: bool = True,
     geoip_database: Path | str | None = None,
+    extra_vulnerabilities: list[dict] | None = None,
 ) -> None:
     hostnames = hostnames_map or {}
     findings, os_matches, script_findings = _parse_nmap_xml(nmap_dir)
@@ -192,6 +193,15 @@ def build_reports(
             item["hostname"] = _lookup_hostname(hostnames, item["host"])
     service_counter = Counter(item["service"] for item in findings)
     vulnerabilities = _build_vulnerabilities(script_findings)
+    # External-tool findings (e.g. nuclei_scan.py's CVE-tagged matches) that
+    # should participate in the same CVSS4/GeoIP enrichment, severity
+    # counting, and export as NSE-derived vulnerabilities below.
+    if extra_vulnerabilities:
+        vulnerabilities.extend(extra_vulnerabilities)
+        vulnerabilities.sort(
+            key=lambda item: (SEVERITY_ORDER.get(item["severity"], 0), item["cvss"] or 0.0),
+            reverse=True,
+        )
 
     if cvss4_enabled:
         cvss4_path = Path(cvss4_database) if cvss4_database else None

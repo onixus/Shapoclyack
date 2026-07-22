@@ -1,3 +1,12 @@
+# nuclei has no arch-specific prebuilt zip we can sha256-pin the way dnsx/naabu
+# are below (see nuclei-build stage note); `go install` at a pinned version tag
+# instead relies on Go's own module checksum database (GOSUMDB, on by default)
+# to verify every downloaded module cryptographically — arguably stronger than
+# a hand-copied release sha256, and needs no manual checksum bookkeeping here.
+FROM golang:1.25-bookworm AS nuclei-build
+ARG NUCLEI_VERSION=v3.9.0
+RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
+
 # Shapoclyack scanner image (Octo-man product pipeline).
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
@@ -62,6 +71,17 @@ RUN set -eux; \
     rm -rf /usr/share/nmap/scripts/nmap-vulners/.git /usr/share/nmap/scripts/vulscan/.git; \
     nmap --script-updatedb
 
+# Nuclei: template-based HTTP vulnerability/misconfig scanning (opt-in, see
+# scanner/pipeline/nuclei_scan.py). Binary built in the nuclei-build stage
+# above; templates pinned to a release tag for the same reproducible-build
+# reason as NMAP_VULNERS_REF/VULSCAN_REF above.
+COPY --from=nuclei-build /out/nuclei /usr/local/bin/nuclei
+ARG NUCLEI_TEMPLATES_REF=v9.9.4
+RUN set -eux; \
+    git clone https://github.com/projectdiscovery/nuclei-templates.git /usr/share/nuclei-templates; \
+    git -C /usr/share/nuclei-templates checkout "${NUCLEI_TEMPLATES_REF}"; \
+    rm -rf /usr/share/nuclei-templates/.git
+
 # Grant the raw-socket capability to the scanner binaries via file capabilities so
 # host discovery / SYN scans / OS detection work as the non-root 'scanner' user.
 # (A container-level --cap-add is NOT inherited by a non-root process on its own.)
@@ -95,6 +115,11 @@ RUN bash scripts/fetch-enrichment.sh || true
 # the build — an offline/network-restricted build just keeps the
 # pinned-commit CSVs, same as today.
 RUN bash scripts/fetch-vulscan-db.sh -o /usr/share/nmap/scripts/vulscan || true
+
+# Best-effort: refresh nuclei-templates beyond whatever was bundled at the
+# pinned NUCLEI_TEMPLATES_REF above (nuclei's own -update-templates flag,
+# same non-fatal build-step philosophy as the fetches above).
+RUN bash scripts/fetch-nuclei-templates.sh /usr/share/nuclei-templates || true
 
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin scanner && \
     mkdir -p /app/scanner/output /app/scanner/state && \

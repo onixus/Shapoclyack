@@ -116,6 +116,50 @@ def test_build_reports_writes_vuln_and_os_artifacts(tmp_path: Path):
     assert alive[0]["os_name"] == "Linux 5.x"
     assert alive[0]["os_accuracy"] == 95
 
+
+def test_build_reports_merges_extra_vulnerabilities(tmp_path: Path):
+    """External-tool findings (e.g. nuclei_scan.py) merge into vulnerabilities.json
+    and participate in the same severity-ranked sort/counts as NSE findings."""
+    nmap_dir = _setup(tmp_path)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    extra = [
+        {
+            "host": "10.0.0.9",
+            "port": "8080",
+            "cve": "CVE-2021-44228",
+            "cvss": 10.0,
+            "severity": "critical",
+            "script_id": "nuclei:cve-2021-44228",
+            "source": "nuclei",
+        }
+    ]
+    build_reports(
+        output_dir=output_dir,
+        total_targets=10,
+        alive_hosts=["10.0.0.5", "10.0.0.9"],
+        open_ports=["10.0.0.5:22", "10.0.0.5:445", "10.0.0.9:8080"],
+        nmap_dir=nmap_dir,
+        markdown_summary=True,
+        html_summary=True,
+        csv_export=True,
+        json_export=True,
+        extra_vulnerabilities=extra,
+    )
+
+    vulns = json.loads((output_dir / "vulnerabilities.json").read_text(encoding="utf-8"))
+    nuclei_vulns = [v for v in vulns if v.get("source") == "nuclei"]
+    assert len(nuclei_vulns) == 1
+    assert nuclei_vulns[0]["cve"] == "CVE-2021-44228"
+    # Tied top severity (both critical, cvss 9.8 vs 10.0) -> nuclei's higher-cvss
+    # entry sorts first, proving the post-merge re-sort actually ran.
+    assert vulns[0]["source"] == "nuclei"
+
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["vulnerabilities_by_severity"]["critical"] == 2
+    assert summary["vulnerable_hosts"] == 2
+
     md = (output_dir / "summary.md").read_text(encoding="utf-8")
     assert "Vulnerabilities" in md
     assert "CRITICAL" in md

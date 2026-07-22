@@ -399,6 +399,8 @@ Checkpoint NSE: ключи `host/tcp` и `host/udp`. XML — в `nmap/tcp/` и `
 
 Скрипты `nmap-vulners` и `vulscan` ставятся в образ на этапе сборки (`Dockerfile`, версии пинуются через build-args `NMAP_VULNERS_REF` / `VULSCAN_REF`). Локальные CVE-базы vulscan при этом замораживаются на момент этого пина — `scripts/fetch-vulscan-db.sh` обновляет их в образе как best-effort шаг сборки (сеть недоступна — сборка не падает, просто остаются прежние базы).
 
+**Nuclei** (`nuclei` в конфиге, `scanner/pipeline/nuclei_scan.py`) — отдельный opt-in движок на базе шаблонов, который запускается после NSE по уже открытым веб-портам (без нового скана портов). Закрывает HTTP-специфичные CVE/misconfig/exposed-panels, которые `nmap-vulners`/`vulscan` (завязанные на версии сервисов) не видят. По умолчанию консервативно: `severities: [critical, high, medium]`, `exclude_tags: [intrusive, fuzz, dos]` — более агрессивные категории шаблонов (активные SQLi/RCE-payload'ы) отключены, пока явно не расширить список. Находки с CVE сливаются в `vulnerabilities.json` (`source: "nuclei"`, участвуют в CVSS4/EPSS/KEV-обогащении и скоринге); остальное — только в `nuclei.json`. Бинарь собирается из исходников (`go install`, пин по версии `NUCLEI_VERSION`), шаблоны — пиненный тег `NUCLEI_TEMPLATES_REF`, обновляемый best-effort через `scripts/fetch-nuclei-templates.sh`.
+
 Находки структурируются: для каждого `CVE` извлекается `cvss` и вычисляется `severity` (`critical >= 9.0`, `high >= 7.0`, `medium >= 4.0`, `low > 0`, иначе `unknown`). Скрипты со `State: VULNERABLE` без CVE тоже фиксируются (severity `unknown`). Список отсортирован по убыванию критичности.
 
 ## Когда выбирать `safe` / `balanced` / `fast`
@@ -543,6 +545,8 @@ docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.35-0722
 | dnsx | `1.2.3` | MIT | ProjectDiscovery |
 | nmap-vulners | `NMAP_VULNERS_REF` | GPL-3.0 | NSE-скрипт поиска CVE |
 | vulscan | `VULSCAN_REF` | GPL-3.0 | NSE-скрипт + локальные базы CVE |
+| nuclei | `NUCLEI_VERSION` | MIT | ProjectDiscovery |
+| nuclei-templates | `NUCLEI_TEMPLATES_REF` | MIT | ProjectDiscovery |
 
 ### Базовый образ и пакеты ОС (`python:3.12-slim`, Debian)
 
