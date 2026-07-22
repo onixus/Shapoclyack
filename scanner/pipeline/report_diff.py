@@ -4,8 +4,11 @@ import json
 import logging
 from pathlib import Path
 
+from .protocol import parse_endpoint
 from .report import SEVERITY_ORDER
 from .utils import load_json, read_lines, save_json
+
+_CERT_ISSUE_KINDS = ("cert_expired", "cert_expiring_soon")
 
 
 def resolve_previous_run_dir(
@@ -63,6 +66,49 @@ def _set_diff(current: set[str], previous: set[str]) -> dict[str, list[str]]:
     }
 
 
+def _load_tls_findings(run_dir: Path) -> dict[tuple[str, str], dict]:
+    raw = load_json(run_dir / "tls_posture.json", fallback={})
+    findings = raw.get("findings") if isinstance(raw, dict) else None
+    if not isinstance(findings, list):
+        return {}
+    return {
+        (str(item.get("host")), str(item.get("port"))): item
+        for item in findings
+        if isinstance(item, dict)
+    }
+
+
+def _diff_cert_expiring(current_dir: Path, previous_dir: Path) -> list[dict]:
+    """A cert_expiring event fires the run a host:port's TLS posture *first*
+    shows a cert_expired/cert_expiring_soon issue — not on every run it's
+    still present, since tls_posture.py re-evaluates from scratch each time
+    (no cross-run memory of its own)."""
+    current = _load_tls_findings(current_dir)
+    previous = _load_tls_findings(previous_dir)
+    events: list[dict] = []
+    for host, port in sorted(current):
+        finding = current[(host, port)]
+        issues = {issue.get("kind"): issue for issue in (finding.get("issues") or [])}
+        prev_finding = previous.get((host, port))
+        prev_kinds = (
+            {issue.get("kind") for issue in (prev_finding.get("issues") or [])} if prev_finding else set()
+        )
+        for issue_kind in _CERT_ISSUE_KINDS:
+            if issue_kind not in issues or issue_kind in prev_kinds:
+                continue
+            events.append(
+                {
+                    "kind": "cert_expiring",
+                    "issue_kind": issue_kind,
+                    "host": host,
+                    "port": port,
+                    "days": issues[issue_kind].get("days"),
+                    "not_after": (finding.get("cert") or {}).get("not_after"),
+                }
+            )
+    return events
+
+
 def compute_report_diff(current_dir: Path, previous_dir: Path) -> dict:
     """Compare key artifacts between two run directories."""
     current_alive = set(read_lines(current_dir / "alive_ips.txt"))
@@ -100,14 +146,33 @@ def compute_report_diff(current_dir: Path, previous_dir: Path) -> dict:
         prev = int(previous_summary.get(key, 0) or 0) if isinstance(previous_summary, dict) else 0
         summary_delta[key] = {"current": cur, "previous": prev, "delta": cur - prev}
 
-    has_changes = bool(
-        hosts["added"]
-        or hosts["removed"]
-        or ports["added"]
-        or ports["removed"]
-        or added_vulns
-        or removed_vulns
-    )
+    # Normalized asset-level events (Phase 10.1): one {"kind": ..., "host": ...}
+    # dict per new_asset/new_open_port/new_cve/cert_expiring occurrence, so a
+    # future event bus (Phase 10.2) can publish each verbatim to
+    # events.asset.{kind} without per-field-type translation. Removals don't
+    # get an event kind here — only new/positive occurrences do, matching the
+    # five kinds ROADMAP Phase 10.1 names (decommissioned_host is emitted
+    # separately, at PATCH /assets/{id} write-time — see api/services/assets.py).
+    events: list[dict] = []
+    for ip in hosts["added"]:
+        events.append({"kind": "new_asset", "host": ip})
+    for line in ports["added"]:
+        parsed = parse_endpoint(line)
+        if parsed is None:
+            continue
+        events.append(
+            {
+                "kind": "new_open_port",
+                "host": parsed.host,
+                "port": parsed.port,
+                "protocol": parsed.protocol,
+            }
+        )
+    for vuln in added_vulns:
+        events.append({**vuln, "kind": "new_cve"})
+    events.extend(_diff_cert_expiring(current_dir, previous_dir))
+
+    has_changes = bool(events or hosts["removed"] or ports["removed"] or removed_vulns)
 
     return {
         "current_run_dir": str(current_dir),
@@ -121,6 +186,7 @@ def compute_report_diff(current_dir: Path, previous_dir: Path) -> dict:
             "added_count": len(added_vulns),
             "removed_count": len(removed_vulns),
         },
+        "events": events,
         "summary_delta": summary_delta,
         "counts": {
             "hosts_added": len(hosts["added"]),
@@ -129,6 +195,7 @@ def compute_report_diff(current_dir: Path, previous_dir: Path) -> dict:
             "ports_removed": len(ports["removed"]),
             "vulns_added": len(added_vulns),
             "vulns_removed": len(removed_vulns),
+            "events": len(events),
         },
     }
 
@@ -139,6 +206,18 @@ def _format_vuln_line(item: dict) -> str:
     severity = str(item.get("severity") or "unknown").upper()
     cvss = f" CVSS {item['cvss']}" if item.get("cvss") is not None else ""
     return f"- [{severity}] {location} {cve}{cvss}"
+
+
+def _format_event_line(event: dict) -> str:
+    kind = event.get("kind", "unknown")
+    host = str(event.get("host") or "")
+    if kind == "new_open_port":
+        return f"- [{kind}] {host}:{event.get('port')}/{event.get('protocol')}"
+    if kind == "cert_expiring":
+        return f"- [{kind}] {host}:{event.get('port')} {event.get('issue_kind')} (days={event.get('days')})"
+    if kind == "new_cve":
+        return _format_vuln_line(event)
+    return f"- [{kind}] {host}"
 
 
 def render_diff_markdown(diff: dict) -> str:
@@ -213,6 +292,15 @@ def render_diff_markdown(diff: dict) -> str:
     else:
         lines.append("- none")
 
+    lines += ["", "## Events"]
+    events = diff.get("events") or []
+    if events:
+        lines.extend(_format_event_line(event) for event in events[:100])
+        if len(events) > 100:
+            lines.append(f"- ... and {len(events) - 100} more")
+    else:
+        lines.append("- none")
+
     return "\n".join(lines) + "\n"
 
 
@@ -227,7 +315,7 @@ def write_report_diff(
     if markdown:
         (current_dir / "diff.md").write_text(render_diff_markdown(diff), encoding="utf-8")
     logging.info(
-        "Report diff vs %s: hosts +%s/-%s, ports +%s/-%s, vulns +%s/-%s",
+        "Report diff vs %s: hosts +%s/-%s, ports +%s/-%s, vulns +%s/-%s, events %s",
         previous_dir,
         diff["counts"]["hosts_added"],
         diff["counts"]["hosts_removed"],
@@ -235,5 +323,6 @@ def write_report_diff(
         diff["counts"]["ports_removed"],
         diff["counts"]["vulns_added"],
         diff["counts"]["vulns_removed"],
+        diff["counts"]["events"],
     )
     return diff

@@ -99,6 +99,31 @@ def test_update_asset_out_of_range_criticality_is_422():
     assert response.status_code == 422
 
 
+def test_operator_can_decommission_asset():
+    asset_id = _seed_asset("10.0.9.4")
+    client = _client()
+    token = _token(client, "operator", "operator-change-me")
+    response = client.patch(
+        f"/api/assets/{asset_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": "decommissioned"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "decommissioned"
+
+
+def test_update_asset_rejects_non_decommissioned_status():
+    asset_id = _seed_asset("10.0.9.5")
+    client = _client()
+    token = _token(client, "operator", "operator-change-me")
+    response = client.patch(
+        f"/api/assets/{asset_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": "active"},
+    )
+    assert response.status_code == 422
+
+
 def test_update_asset_unknown_id_is_404():
     client = _client()
     token = _token(client, "operator", "operator-change-me")

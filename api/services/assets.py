@@ -247,26 +247,46 @@ def get_asset_criticality_by_ip(settings: Settings, tenant_id: str, host_ip: str
         return None
 
 
+_MANUAL_STATUS = "decommissioned"
+
+
 def update_asset(
     settings: Settings, tenant_id: str, asset_id: str, updates: dict[str, Any]
 ) -> dict | None:
     """Partial update of operator-settable Asset fields (``owner_email``,
-    ``business_unit``, ``asset_criticality``). Only keys present in
-    ``updates`` are touched, so an explicit ``None`` clears a field while an
-    omitted key leaves it untouched. Returns the updated asset (same shape as
-    ``get_asset``), or ``None`` if the asset doesn't exist for this tenant.
+    ``business_unit``, ``asset_criticality``, ``status``). Only keys present
+    in ``updates`` are touched, so an explicit ``None`` clears a field while
+    an omitted key leaves it untouched. Returns the updated asset (same shape
+    as ``get_asset``), or ``None`` if the asset doesn't exist for this tenant.
     Raises ``ValueError`` if ``asset_criticality`` is present and not an int
-    0-4.
+    0-4, or if ``status`` is present and not ``"decommissioned"`` — "active"/
+    "stale" stay system-managed (``upsert_assets_from_run``/
+    ``mark_stale_assets``), never operator-set.
+
+    A decommission (Phase 10.1 ``decommissioned_host`` event) is logged the
+    run an asset actually transitions into that status — not on a repeat
+    PATCH once it's already decommissioned.
     """
     if "asset_criticality" in updates and updates["asset_criticality"] is not None:
         val = updates["asset_criticality"]
         if not isinstance(val, int) or isinstance(val, bool) or not (0 <= val <= 4):
             raise ValueError("asset_criticality must be an integer 0-4")
+    if "status" in updates and updates["status"] not in (None, _MANUAL_STATUS):
+        raise ValueError(f"status may only be manually set to {_MANUAL_STATUS!r}")
     with get_session(settings.postgres_url) as session:
         asset = session.get(models.Asset, asset_id)
         if asset is None or asset.tenant_id != tenant_id:
             return None
+        previous_status = asset.status
         for field in ("owner_email", "business_unit", "asset_criticality"):
             if field in updates:
                 setattr(asset, field, updates[field])
+        if updates.get("status") == _MANUAL_STATUS and previous_status != _MANUAL_STATUS:
+            asset.status = _MANUAL_STATUS
+            LOG.info(
+                "asset_event kind=decommissioned_host tenant_id=%s asset_id=%s previous_status=%s",
+                tenant_id,
+                asset_id,
+                previous_status,
+            )
     return get_asset(settings, tenant_id, asset_id)
