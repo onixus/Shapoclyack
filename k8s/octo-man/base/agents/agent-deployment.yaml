@@ -38,7 +38,7 @@ spec:
               app.kubernetes.io/component: agent
       containers:
         - name: agent
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.33
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "agent"]
           args:
@@ -68,12 +68,19 @@ spec:
             - name: OCTO_NATS_URL
               value: nats://octo-man-nats-client:4222
           securityContext:
-            allowPrivilegeEscalation: false
+            # This worker runs the full scanner pipeline (nmap -O / naabu need
+            # NET_RAW+NET_ADMIN file capabilities, set at build time via
+            # Dockerfile setcap, to take effect for the non-root user);
+            # allowPrivilegeEscalation:false sets no_new_privs, which blocks
+            # that file-capability grant on exec regardless of what's listed
+            # below (matches job.yaml/cronjob.yaml's working config).
+            allowPrivilegeEscalation: true
             capabilities:
               drop:
                 - ALL
               add:
                 - NET_RAW
+                - NET_ADMIN
           # Requests are a floor for scheduling; VPA may raise them (Phase 4.2).
           resources:
             requests:
