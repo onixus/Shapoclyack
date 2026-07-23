@@ -115,7 +115,18 @@ class ClickHouseIngestWorker:
                 for msg in msgs:
                     await self._handle_msg(client, msg)
         finally:
-            await nc.drain()
+            if nc is not None:
+                try:
+                    if not nc.is_closed:
+                        await nc.drain()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    if not nc.is_closed:
+                        await nc.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                await asyncio.sleep(0.05)
 
     async def _handle_msg(self, client: Any, msg: Any) -> None:
         try:

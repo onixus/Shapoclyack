@@ -205,14 +205,30 @@ class NatsBus:
 
     def close(self) -> None:
         if self._nc is not None and self._loop.is_running():
+            async def _shutdown() -> None:
+                if self._nc is not None:
+                    try:
+                        if not self._nc.is_closed:
+                            await self._nc.drain()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        if not self._nc.is_closed:
+                            await self._nc.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await asyncio.sleep(0.05)
+                asyncio.get_running_loop().stop()
+
             try:
-                fut = asyncio.run_coroutine_threadsafe(self._nc.drain(), self._loop)
+                fut = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
                 fut.result(timeout=5)
             except Exception:  # noqa: BLE001
-                pass
+                if self._loop.is_running():
+                    self._loop.call_soon_threadsafe(self._loop.stop)
             self._nc = None
             self._js = None
-        if self._loop.is_running():
+        elif self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
         self._started = False
 
