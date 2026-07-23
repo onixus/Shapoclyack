@@ -34,6 +34,13 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Executive dashboard** — the home dashboard is now an exec-level exposure
+  view: added a findings-by-severity donut, a "top critical & high findings"
+  table (sorted by CVSS v4/v3) for the latest run, an **asset posture** panel
+  (business-criticality distribution + active/stale/decommissioned counts from
+  the asset inventory), and a "vulnerable hosts" KPI, alongside the existing
+  exposure trend and top-ports charts. All derived from existing endpoints
+  (runs, latest-run findings/ports, assets) — no new backend.
 - **Asset detail card** — a full asset page (`/assets/view`) replaces the cramped
   dialog: it shows the cross-run asset (status, business criticality, owner,
   business unit, identifiers, tags) alongside its most recent per-run

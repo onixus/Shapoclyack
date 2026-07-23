@@ -68,6 +68,23 @@ export function recentRunTrend(runs: RunSummary[], limit = 15) {
     }));
 }
 
+/** Highest-scoring critical/high findings for the exec dashboard "top risks"
+ * table — sorted by CVSS v4 (falling back to v3), most severe first. */
+export function topCriticalFindings(vulns: Vulnerability[], limit = 10) {
+  return vulns
+    .map((v) => ({
+      host: v.host,
+      port: v.port,
+      cve: v.cve,
+      script_id: v.script_id,
+      score: v.cvss4 ?? v.cvss ?? 0,
+      severity: normalizeSeverity(v.severity),
+    }))
+    .filter((v) => v.severity === "critical" || v.severity === "high")
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
 export function topVulnerablePorts(ports: PortAggregate[], limit = 5) {
   return [...ports]
     .map((port) => ({
