@@ -103,6 +103,6 @@ def load_settings() -> Settings:
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
-        postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip(),
+        postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip() or "sqlite:///scanner/state/octo_man.db",
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
     )

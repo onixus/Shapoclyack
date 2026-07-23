@@ -18,7 +18,12 @@ import { formatLocation } from "@/lib/run-data";
 
 export default function RunDetailPage() {
   return (
-    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading run…</p>}>
+    <Suspense fallback={
+      <div className="flex items-center justify-center py-16 text-slate-400 gap-2">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+        <span className="text-sm">Loading run telemetry…</span>
+      </div>
+    }>
       <RunDetailInner />
     </Suspense>
   );
@@ -26,10 +31,10 @@ export default function RunDetailPage() {
 
 function BackToRuns() {
   return (
-    <Button asChild variant="ghost" size="sm" className="gap-2 px-0">
+    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-slate-400 hover:text-slate-100 hover:bg-transparent">
       <Link href="/runs">
         <ArrowLeft className="h-4 w-4" />
-        Runs
+        Back to Runs Catalog
       </Link>
     </Button>
   );
@@ -46,7 +51,7 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
           <AlertDescription>Missing runId query parameter.</AlertDescription>
         </Alert>
       </div>
@@ -57,7 +62,7 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
           <AlertDescription>
             {report.error instanceof Error ? report.error.message : "Failed to load run"}
           </AlertDescription>
@@ -67,27 +72,32 @@ function RunDetailInner() {
   }
 
   if (report.isLoading || !report.detail) {
-    return <p className="text-sm text-muted-foreground">Loading run…</p>;
+    return (
+      <div className="flex items-center justify-center py-16 text-slate-400 gap-2">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+        <span className="text-sm">Retrieving run telemetry artifacts…</span>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
+      <div className="space-y-2 border-b border-slate-800/80 pb-4">
         <BackToRuns />
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-          <code className="text-xl">{report.detail.run_id}</code>
+        <h1 className="text-2xl font-extrabold tracking-tight text-slate-100 font-mono">
+          Run <span className="text-sky-400">{report.detail.run_id}</span>
         </h1>
-        <p className="text-sm text-muted-foreground">
-          Explore hosts, open ports, and severity-grouped findings for this run.
+        <p className="text-xs text-slate-400">
+          Explored hosts, open ports, and security findings for this execution.
           {(filters.host || filters.port) && (
             <>
               {" "}
-              Filter active
+              Active Filters
               {filters.host ? ` · host ${filters.host}` : ""}
               {filters.port ? ` · port ${filters.port}` : ""}
               {report.isFilterFetching ? " · updating…" : ""}.{" "}
-              <button type="button" className="underline" onClick={report.clearFilters}>
-                Clear
+              <button type="button" className="text-sky-400 hover:text-sky-300 font-semibold underline" onClick={report.clearFilters}>
+                Clear Filter
               </button>
             </>
           )}
@@ -110,12 +120,12 @@ function RunDetailInner() {
         onChange={report.setSeverity}
       />
 
-      <Tabs defaultValue={initialTab}>
-        <TabsList>
-          <TabsTrigger value="vulns">Findings</TabsTrigger>
-          <TabsTrigger value="hosts">Hosts ({report.hosts.length})</TabsTrigger>
-          <TabsTrigger value="ports">Ports ({report.ports.length})</TabsTrigger>
-          <TabsTrigger value="reports">Reports ({report.detail.artifacts.length})</TabsTrigger>
+      <Tabs defaultValue={initialTab} className="space-y-4">
+        <TabsList className="bg-slate-900 border border-slate-800 p-1">
+          <TabsTrigger value="vulns" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Findings ({report.vulns.length})</TabsTrigger>
+          <TabsTrigger value="hosts" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Hosts ({report.hosts.length})</TabsTrigger>
+          <TabsTrigger value="ports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Ports ({report.ports.length})</TabsTrigger>
+          <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
         </TabsList>
 
         <TabsContent value="vulns" className="space-y-4">
@@ -137,12 +147,12 @@ function RunDetailInner() {
             emptyMessage="No alive hosts recorded for this run."
           />
           {report.hosts.some((h) => h.country || h.city) ? (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-slate-500">
               <a
                 href="https://db-ip.com"
                 target="_blank"
                 rel="noreferrer"
-                className="underline-offset-2 hover:underline"
+                className="underline-offset-2 hover:underline hover:text-slate-400"
               >
                 IP Geolocation by DB-IP
               </a>
@@ -159,7 +169,7 @@ function RunDetailInner() {
               subtitle: `${row.host_count} hosts${
                 row.vulnerability_count ? ` · ${row.vulnerability_count} vulns` : ""
               }`,
-              meta: <span className="tabular-nums">{row.host_count}</span>,
+              meta: <span className="font-mono font-bold text-slate-200">{row.host_count}</span>,
             }))}
             activeKey={filters.port}
             onSelect={report.togglePort}
@@ -174,3 +184,4 @@ function RunDetailInner() {
     </div>
   );
 }
+
