@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
+import { Server, ArrowUpRight, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -35,13 +36,14 @@ export default function AssetsPage() {
       {
         id: "asset",
         accessorFn: (row) => `${row.primary_identifier || ""} ${row.asset_id}`,
-        header: "Asset",
+        header: "Asset Identifier",
         cell: ({ row }) => (
-          <Link href={assetDetailHref(row.original.asset_id)} className="block space-y-1">
-            <span className="block font-medium text-sky-700 underline-offset-2 hover:underline">
-              {row.original.primary_identifier || row.original.asset_id}
-            </span>
-            <span className="block text-xs text-muted-foreground">
+          <Link href={assetDetailHref(row.original.asset_id)} className="group space-y-0.5">
+            <div className="flex items-center gap-1.5 font-mono font-bold text-sky-400 group-hover:text-sky-300 group-hover:underline">
+              <span>{row.original.primary_identifier || row.original.asset_id}</span>
+              <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
+            </div>
+            <span className="block text-[11px] text-slate-400">
               {row.original.identifier_count} identifier
               {row.original.identifier_count === 1 ? "" : "s"}
             </span>
@@ -50,12 +52,12 @@ export default function AssetsPage() {
       },
       {
         accessorKey: "status",
-        header: "Status",
+        header: "Lifecycle Status",
         cell: ({ row }) => <StatusBadge value={row.original.status} map={ASSET_STATUS} />,
       },
       {
         accessorKey: "asset_criticality",
-        header: "Criticality",
+        header: "Criticality Level",
         cell: ({ row }) =>
           row.original.asset_criticality != null ? (
             <StatusBadge
@@ -63,25 +65,25 @@ export default function AssetsPage() {
               map={ASSET_CRITICALITY}
             />
           ) : (
-            <span className="text-xs text-muted-foreground">—</span>
+            <span className="text-xs text-slate-500">Unset</span>
           ),
       },
       {
         accessorKey: "first_seen",
-        header: "First Seen",
+        header: "First Discovered",
         sortingFn: "datetime",
         cell: ({ getValue }) => (
-          <span className="text-sm text-muted-foreground">
+          <span className="text-xs text-slate-400">
             {formatDistanceToNow(new Date(String(getValue())), { addSuffix: true })}
           </span>
         ),
       },
       {
         accessorKey: "last_seen",
-        header: "Last Seen",
+        header: "Last Telemetry",
         sortingFn: "datetime",
         cell: ({ getValue }) => (
-          <span className="text-sm text-muted-foreground">
+          <span className="text-xs text-slate-300 font-medium">
             {formatDistanceToNow(new Date(String(getValue())), { addSuffix: true })}
           </span>
         ),
@@ -91,8 +93,8 @@ export default function AssetsPage() {
         header: "",
         enableSorting: false,
         cell: ({ row }) => (
-          <Button asChild variant="outline" size="sm">
-            <Link href={assetDetailHref(row.original.asset_id)}>View</Link>
+          <Button asChild variant="outline" size="sm" className="h-7 text-xs border-slate-800 bg-slate-900 text-sky-400 hover:bg-slate-800 hover:text-white">
+            <Link href={assetDetailHref(row.original.asset_id)}>Details</Link>
           </Button>
         ),
       },
@@ -102,13 +104,17 @@ export default function AssetsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Assets Inventory</h1>
-        <p className="text-sm text-muted-foreground">
-          Cross-run asset registry from <code className="text-xs">GET /api/assets</code> — persists
-          across scans (first/last seen, status, criticality), unlike per-run Runs/Hosts views.
-          {assetsQuery.isFetching ? " · refreshing…" : ""}
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <Server className="h-5 w-5 text-sky-400" />
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Global Assets Inventory</h1>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            Persistent fleet asset registry across discovery scan runs. Track status, business unit owners, and risk criticality.
+            {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
+          </p>
+        </div>
       </div>
 
       <DataTable
@@ -117,29 +123,33 @@ export default function AssetsPage() {
         isLoading={assetsQuery.isLoading}
         error={assetsQuery.error}
         initialSorting={[{ id: "last_seen", desc: true }]}
-        searchPlaceholder="Filter by IP or hostname…"
+        searchPlaceholder="Filter by IP range or domain hostname…"
         toolbar={
-          <Select
-            value={status || STATUS_FILTER_ALL}
-            onValueChange={(value) =>
-              setStatus(value === STATUS_FILTER_ALL ? "" : (value as AssetStatus))
-            }
-          >
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="All statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={STATUS_FILTER_ALL}>All statuses</SelectItem>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="stale">Stale</SelectItem>
-              <SelectItem value="decommissioned">Decommissioned</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-slate-400" />
+            <Select
+              value={status || STATUS_FILTER_ALL}
+              onValueChange={(value) =>
+                setStatus(value === STATUS_FILTER_ALL ? "" : (value as AssetStatus))
+              }
+            >
+              <SelectTrigger className="w-48 bg-slate-900 border-slate-800 text-slate-200">
+                <SelectValue placeholder="All statuses" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value={STATUS_FILTER_ALL}>All Statuses</SelectItem>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="stale">Stale</SelectItem>
+                <SelectItem value="decommissioned">Decommissioned</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         }
-        meta={`${data.length.toLocaleString()} asset${data.length === 1 ? "" : "s"}`}
-        loadingMessage="Loading assets…"
-        emptyMessage="No assets recorded yet — assets are upserted here after a scan completes."
+        meta={`${data.length.toLocaleString()} asset${data.length === 1 ? "" : "s"} tracked`}
+        loadingMessage="Retrieving asset inventory database…"
+        emptyMessage="No assets registered yet. Run a discovery scan to populate the asset catalog."
       />
     </div>
   );
 }
+

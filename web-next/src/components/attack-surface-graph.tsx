@@ -173,37 +173,37 @@ export function AttackSurfaceGraph({
 
   if (hosts.length === 0) {
     return (
-      <p className="rounded-md border bg-white px-3 py-6 text-center text-sm text-muted-foreground">
-        No alive hosts in this run — nothing to graph.
-      </p>
+      <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 px-4 py-8 text-center text-xs text-slate-400 backdrop-blur">
+        No alive hosts detected in this scan run — nothing to graph.
+      </div>
     );
   }
 
   const legend = Array.from(model.clusterColor.entries());
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span className="font-medium text-slate-700">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-slate-800/80 bg-slate-900/80 px-4 py-2.5 text-xs backdrop-blur">
+        <span className="font-bold text-slate-200 uppercase tracking-wider text-[11px]">
           {model.clusterMode === "asn" ? "Networks (ASN):" : "Countries:"}
         </span>
         {legend.length === 0 ? (
-          <span>{model.clusterMode === "asn" ? "no ASN data" : "no GeoIP data"}</span>
+          <span className="text-slate-400">{model.clusterMode === "asn" ? "No ASN telemetry" : "No GeoIP telemetry"}</span>
         ) : (
           legend.map(([cluster, color]) => (
-            <span key={cluster} className="flex items-center gap-1">
-              <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: color }} />
+            <span key={cluster} className="flex items-center gap-1.5 font-medium text-slate-300">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm shadow-sm" style={{ backgroundColor: color }} />
               {truncate(cluster, 28)}
             </span>
           ))
         )}
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1.5 font-medium text-slate-400">
           <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: NO_GEO }} />
-          unknown
+          Unknown
         </span>
       </div>
 
-      <div className="max-h-[70vh] overflow-auto rounded-lg border bg-white">
+      <div className="max-h-[72vh] overflow-auto rounded-xl border border-slate-800/80 bg-slate-950 p-4 shadow-xl">
         <svg
           viewBox={`0 0 ${SVG_W} ${model.height}`}
           width="100%"
@@ -213,31 +213,31 @@ export function AttackSurfaceGraph({
           aria-label="Attack surface graph: hostnames to IPs to ports to services"
         >
           {/* Column headers */}
-          <text x={COL_X.host} y={10} className="fill-slate-400" fontSize={10} fontWeight={600}>
+          <text x={COL_X.host} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
             HOSTNAMES
           </text>
-          <text x={COL_X.ip} y={10} className="fill-slate-400" fontSize={10} fontWeight={600}>
-            IPs
+          <text x={COL_X.ip} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+            IP HOSTS
           </text>
-          <text x={COL_X.port} y={10} className="fill-slate-400" fontSize={10} fontWeight={600}>
-            PORTS
+          <text x={COL_X.port} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+            OPEN PORTS
           </text>
-          <text x={COL_X.service} y={10} className="fill-slate-400" fontSize={10} fontWeight={600}>
+          <text x={COL_X.service} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
             SERVICES
           </text>
 
-          {/* Edges (drawn first, under nodes) */}
-          <g stroke="#cbd5e1" strokeWidth={1} fill="none">
+          {/* Edges (drawn under nodes with glowing strokes) */}
+          <g stroke="#0284c7" strokeWidth={1.5} opacity={0.4} fill="none">
             {model.edgesHostIp.map((e, i) => (
               <path key={`he-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
           </g>
-          <g stroke="#fca5a5" strokeWidth={1} fill="none">
+          <g stroke="#f43f5e" strokeWidth={1.5} opacity={0.5} fill="none">
             {model.edgesIpPort.map((e, i) => (
               <path key={`pe-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
           </g>
-          <g stroke="#a5b4fc" strokeWidth={1} fill="none">
+          <g stroke="#818cf8" strokeWidth={1.5} opacity={0.4} fill="none">
             {model.edgesPortService.map((e, i) => (
               <path key={`se-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
@@ -251,14 +251,17 @@ export function AttackSurfaceGraph({
                 y={model.hostY.get(name)}
                 width={NODE_W}
                 height={NODE_H}
-                rx={4}
-                className="fill-slate-100 stroke-slate-300"
+                rx={6}
+                fill="#0f172a"
+                stroke="#334155"
+                strokeWidth={1}
               />
               <text
                 x={COL_X.host + 8}
                 y={(model.hostY.get(name) || 0) + 15}
-                fontSize={11}
-                className="fill-slate-700"
+                fontSize={10}
+                fontWeight={600}
+                fill="#cbd5e1"
               >
                 {truncate(name)}
               </text>
@@ -271,8 +274,8 @@ export function AttackSurfaceGraph({
             const y = model.ipY.get(h.host)!;
             return (
               <g key={`ip-${h.host}`}>
-                <rect x={COL_X.ip} y={y} width={NODE_W} height={NODE_H} rx={4} fill={color} opacity={0.9} />
-                <text x={COL_X.ip + 8} y={y + 15} fontSize={11} fill="#ffffff" fontFamily="monospace">
+                <rect x={COL_X.ip} y={y} width={NODE_W} height={NODE_H} rx={6} fill={color} opacity={0.9} stroke="#1e293b" strokeWidth={1} />
+                <text x={COL_X.ip + 8} y={y + 15} fontSize={10} fontWeight={700} fill="#ffffff" fontFamily="monospace">
                   {truncate(h.host, 18)}
                   {h.vulnerability_count ? ` ⚠${h.vulnerability_count}` : ""}
                 </text>
@@ -288,10 +291,12 @@ export function AttackSurfaceGraph({
                 y={p.y}
                 width={NODE_W}
                 height={NODE_H}
-                rx={4}
-                className={p.vulns ? "fill-rose-100 stroke-rose-300" : "fill-slate-100 stroke-slate-300"}
+                rx={6}
+                fill={p.vulns ? "#881337" : "#0f172a"}
+                stroke={p.vulns ? "#f43f5e" : "#334155"}
+                strokeWidth={1}
               />
-              <text x={COL_X.port + 8} y={p.y + 15} fontSize={11} className="fill-slate-700" fontFamily="monospace">
+              <text x={COL_X.port + 8} y={p.y + 15} fontSize={10} fontWeight={700} fill={p.vulns ? "#fecdd3" : "#cbd5e1"} fontFamily="monospace">
                 {p.label}
                 {p.vulns ? ` ⚠${p.vulns}` : ""}
               </text>
@@ -306,10 +311,12 @@ export function AttackSurfaceGraph({
                 y={s.y}
                 width={NODE_W}
                 height={NODE_H}
-                rx={4}
-                className="fill-indigo-50 stroke-indigo-200"
+                rx={6}
+                fill="#1e1b4b"
+                stroke="#4338ca"
+                strokeWidth={1}
               />
-              <text x={COL_X.service + 8} y={s.y + 15} fontSize={11} className="fill-slate-700">
+              <text x={COL_X.service + 8} y={s.y + 15} fontSize={10} fontWeight={600} fill="#e0e7ff">
                 {truncate(s.name, 18)}
               </text>
             </g>
@@ -317,12 +324,13 @@ export function AttackSurfaceGraph({
         </svg>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        Showing {model.hostnames.length}/{model.totals.hostnames} hostnames · {model.ipHosts.length}/
-        {model.totals.hosts} IPs · {model.ports.length}/{model.totals.ports} ports ·{" "}
-        {model.services.length}/{model.totals.services} services (capped for legibility, IPs ranked
-        by finding count).
+      <p className="text-xs text-slate-400">
+        Rendering <span className="font-semibold text-slate-200">{model.hostnames.length}/{model.totals.hostnames}</span> hostnames ·{" "}
+        <span className="font-semibold text-slate-200">{model.ipHosts.length}/{model.totals.hosts}</span> IP hosts ·{" "}
+        <span className="font-semibold text-slate-200">{model.ports.length}/{model.totals.ports}</span> ports ·{" "}
+        <span className="font-semibold text-slate-200">{model.services.length}/{model.totals.services}</span> services.
       </p>
     </div>
   );
 }
+

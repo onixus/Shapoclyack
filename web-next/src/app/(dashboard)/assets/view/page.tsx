@@ -41,7 +41,7 @@ const CRIT_UNSET = "unset";
 
 export default function AssetDetailPage() {
   return (
-    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading asset…</p>}>
+    <Suspense fallback={<p className="text-sm text-slate-400">Loading asset posture details…</p>}>
       <AssetDetailInner />
     </Suspense>
   );
@@ -49,10 +49,10 @@ export default function AssetDetailPage() {
 
 function BackToAssets() {
   return (
-    <Button asChild variant="ghost" size="sm" className="gap-2 px-0">
+    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-slate-400 hover:text-slate-100 hover:bg-transparent">
       <Link href="/assets">
-        <ArrowLeft className="h-4 w-4" />
-        Assets
+        <ArrowLeft className="h-4 w-4 text-sky-400" />
+        Back to Assets Inventory
       </Link>
     </Button>
   );
@@ -67,9 +67,6 @@ function AssetDetailInner() {
   const asset = detailQuery.data;
   const ip = asset?.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ?? null;
 
-  // Correlate the cross-run asset with its most recent per-run observation
-  // (vulnerabilities/ports/OS/geo) by its primary IP. Gated on the IP being
-  // known so we never fetch a whole run's findings for nothing.
   const runsQuery = useRuns();
   const latest = pickLatestRun(runsQuery.data || []);
   const corrRunId = ip && latest ? latest.run_id : "";
@@ -85,7 +82,7 @@ function AssetDetailInner() {
     return (
       <div className="space-y-4">
         <BackToAssets />
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
           <AlertDescription>Missing assetId query parameter.</AlertDescription>
         </Alert>
       </div>
@@ -97,32 +94,38 @@ function AssetDetailInner() {
       return (
         <div className="space-y-4">
           <BackToAssets />
-          <Alert variant="destructive">
+          <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
         </div>
       );
     }
-    return <p className="text-sm text-muted-foreground">Loading asset…</p>;
+    return <p className="text-sm text-slate-400">Loading asset telemetry data…</p>;
   }
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
+      <div className="space-y-3 border-b border-slate-800/80 pb-5">
         <BackToAssets />
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            {asset.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ||
-              asset.asset_id}
-          </h1>
-          <StatusBadge value={asset.status} map={ASSET_STATUS} />
-          {asset.asset_criticality != null ? (
-            <StatusBadge value={String(asset.asset_criticality)} map={ASSET_CRITICALITY} />
-          ) : (
-            <Badge variant="outline">criticality unset</Badge>
-          )}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-2xl font-extrabold font-mono tracking-tight text-slate-100">
+                {asset.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ||
+                  asset.asset_id}
+              </h1>
+              <StatusBadge value={asset.status} map={ASSET_STATUS} />
+              {asset.asset_criticality != null ? (
+                <StatusBadge value={String(asset.asset_criticality)} map={ASSET_CRITICALITY} />
+              ) : (
+                <Badge variant="outline" className="border-slate-700 bg-slate-900 text-slate-400">
+                  Criticality Unset
+                </Badge>
+              )}
+            </div>
+            <p className="mt-1 font-mono text-xs text-slate-400">UUID: {asset.asset_id}</p>
+          </div>
         </div>
-        <p className="font-mono text-xs text-muted-foreground">{asset.asset_id}</p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -131,46 +134,54 @@ function AssetDetailInner() {
           {canOperate ? <EditCard asset={asset} /> : null}
         </div>
 
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-4">
           <Tabs defaultValue="vulns">
-            <TabsList>
-              <TabsTrigger value="vulns">Vulnerabilities ({vulns.length})</TabsTrigger>
-              <TabsTrigger value="ports">Ports ({assetPorts.length})</TabsTrigger>
-              <TabsTrigger value="host">Host</TabsTrigger>
+            <TabsList className="bg-slate-900/90 border border-slate-800">
+              <TabsTrigger value="vulns" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+                Vulnerabilities ({vulns.length})
+              </TabsTrigger>
+              <TabsTrigger value="ports" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+                Open Ports ({assetPorts.length})
+              </TabsTrigger>
+              <TabsTrigger value="host" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+                Host Telemetry
+              </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="vulns" className="space-y-2">
+            <TabsContent value="vulns" className="space-y-3 pt-3">
               {!ip ? (
                 <EmptyNote>No IP identifier — cannot correlate scan findings.</EmptyNote>
               ) : vulnsQuery.isLoading ? (
-                <EmptyNote>Loading findings…</EmptyNote>
+                <EmptyNote>Correlating findings from scan stream…</EmptyNote>
               ) : vulns.length === 0 ? (
-                <EmptyNote>No findings for this asset in the latest run.</EmptyNote>
+                <EmptyNote>No vulnerability findings detected for this asset in the latest scan run.</EmptyNote>
               ) : (
-                <div className="overflow-hidden rounded-lg border bg-white">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase text-muted-foreground">
+                <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-slate-800 bg-slate-950/80 text-slate-400 font-bold uppercase tracking-wider">
                       <tr>
-                        <th className="px-3 py-2 text-left">CVE / Script</th>
-                        <th className="px-3 py-2 text-left">Port</th>
-                        <th className="px-3 py-2 text-left">CVSS</th>
-                        <th className="px-3 py-2 text-left">Severity</th>
+                        <th className="px-3.5 py-3">CVE / Script ID</th>
+                        <th className="px-3.5 py-3">Port</th>
+                        <th className="px-3.5 py-3">CVSS Score</th>
+                        <th className="px-3.5 py-3">Severity</th>
                       </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="divide-y divide-slate-800/60">
                       {vulns.map((v, idx) => (
                         <tr
                           key={`${v.cve || v.script_id}-${v.port}-${idx}`}
-                          className="border-t border-slate-100"
+                          className="hover:bg-slate-800/40 transition-colors"
                         >
-                          <td className="px-3 py-2 font-mono text-xs">
+                          <td className="px-3.5 py-3 font-mono font-semibold text-sky-400">
                             {v.cve || v.script_id || "—"}
                           </td>
-                          <td className="px-3 py-2 tabular-nums">{v.port || "—"}</td>
-                          <td className="px-3 py-2 tabular-nums">
-                            {v.cvss4 ?? v.cvss ?? "—"}
+                          <td className="px-3.5 py-3 font-mono text-slate-300">{v.port || "—"}</td>
+                          <td className="px-3.5 py-3">
+                            <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold tabular-nums text-rose-300 border border-rose-500/30">
+                              {v.cvss4 ?? v.cvss ?? "—"}
+                            </span>
                           </td>
-                          <td className="px-3 py-2">
+                          <td className="px-3.5 py-3">
                             <StatusBadge
                               value={normalizeSeverity(v.severity)}
                               map={SEVERITY_STATUS}
@@ -182,46 +193,46 @@ function AssetDetailInner() {
                   </table>
                 </div>
               )}
-              <p className="text-xs text-muted-foreground">
-                Findings from the latest run
-                {latest ? ` (${latest.run_id})` : ""} for this asset&apos;s IP.
+              <p className="text-xs text-slate-400">
+                Findings correlated from active run{" "}
+                {latest ? <code className="font-mono text-sky-400">{latest.run_id}</code> : ""}.
               </p>
             </TabsContent>
 
-            <TabsContent value="ports">
+            <TabsContent value="ports" className="pt-3">
               <EntityList
                 items={assetPorts.map((row) => ({
                   key: `${row.port}/${row.protocol || "tcp"}`,
                   title: `:${row.port}${row.protocol ? `/${row.protocol}` : ""}`,
                   subtitle: row.vulnerability_count
-                    ? `${row.vulnerability_count} vulns`
-                    : "no vulns",
-                  meta: <span className="tabular-nums">{row.host_count}</span>,
+                    ? `${row.vulnerability_count} vulnerability findings`
+                    : "clean",
+                  meta: <span className="font-semibold text-slate-200">{row.host_count} hosts</span>,
                 }))}
                 activeKey={null}
                 onSelect={() => {}}
-                emptyMessage={ip ? "No open ports for this asset in the latest run." : "No IP to correlate."}
+                emptyMessage={ip ? "No open ports recorded for this asset in the latest run." : "No IP to correlate."}
               />
             </TabsContent>
 
-            <TabsContent value="host" className="space-y-3">
+            <TabsContent value="host" className="space-y-3 pt-3">
               {hostRow ? (
-                <div className="grid grid-cols-2 gap-3 rounded-lg border bg-white p-4 text-sm">
-                  <Field label="Hostname" value={hostRow.hostname || hostRow.names[0] || "—"} />
-                  <Field label="Location" value={formatLocation(hostRow) || "—"} />
+                <div className="grid grid-cols-2 gap-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
+                  <Field label="Hostname (Reverse PTR)" value={hostRow.hostname || hostRow.names[0] || "—"} />
+                  <Field label="GeoIP Location" value={formatLocation(hostRow) || "—"} />
                   <Field
-                    label="OS"
+                    label="Detected OS"
                     value={
                       hostRow.os_name
-                        ? `${hostRow.os_name}${hostRow.os_accuracy ? ` (${hostRow.os_accuracy}%)` : ""}`
+                        ? `${hostRow.os_name}${hostRow.os_accuracy ? ` (${hostRow.os_accuracy}% accuracy)` : ""}`
                         : "—"
                     }
                   />
-                  <Field label="Findings" value={String(hostRow.vulnerability_count)} />
+                  <Field label="Total Findings" value={String(hostRow.vulnerability_count)} />
                 </div>
               ) : (
                 <EmptyNote>
-                  {ip ? "This asset was not alive in the latest run." : "No IP to correlate."}
+                  {ip ? "This asset was not detected as alive in the latest scan run." : "No IP to correlate."}
                 </EmptyNote>
               )}
             </TabsContent>
@@ -234,36 +245,38 @@ function AssetDetailInner() {
 
 function OverviewCard({ asset }: { asset: AssetDetail }) {
   return (
-    <div className="space-y-4 rounded-lg border bg-white p-4 text-sm">
-      <p className="font-medium text-slate-900">Overview</p>
+    <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
+      <p className="text-sm font-bold uppercase tracking-wider text-slate-200 border-b border-slate-800 pb-2">Asset Telemetry Overview</p>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="First seen" value={new Date(asset.first_seen).toLocaleString()} />
-        <Field label="Last seen" value={new Date(asset.last_seen).toLocaleString()} />
-        <Field label="Owner" value={asset.owner_email || "—"} />
-        <Field label="Business unit" value={asset.business_unit || "—"} />
+        <Field label="First Discovered" value={new Date(asset.first_seen).toLocaleString()} />
+        <Field label="Last Telemetry" value={new Date(asset.last_seen).toLocaleString()} />
+        <Field label="Owner Email" value={asset.owner_email || "Unassigned"} />
+        <Field label="Business Unit" value={asset.business_unit || "Unassigned"} />
       </div>
-      <div>
-        <p className="mb-1 text-xs text-muted-foreground">
+      <div className="pt-2 border-t border-slate-800">
+        <p className="mb-2 text-xs font-semibold text-slate-400">
           Identifiers ({asset.identifiers.length})
         </p>
-        <ul className="space-y-1">
+        <ul className="space-y-1.5">
           {asset.identifiers.map((identifier) => (
             <li
               key={`${identifier.identifier_type}:${identifier.identifier_value}`}
-              className="flex items-center gap-2"
+              className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2 border border-slate-800/60"
             >
-              <Badge variant="secondary">{identifier.identifier_type}</Badge>
-              <span className="font-mono text-xs">{identifier.identifier_value}</span>
+              <Badge variant="secondary" className="uppercase font-semibold text-[10px] bg-slate-800 text-sky-400">
+                {identifier.identifier_type}
+              </Badge>
+              <span className="font-mono font-bold text-slate-200">{identifier.identifier_value}</span>
             </li>
           ))}
         </ul>
       </div>
       {Object.keys(asset.tags).length > 0 ? (
-        <div>
-          <p className="mb-1 text-xs text-muted-foreground">Tags</p>
-          <div className="flex flex-wrap gap-2">
+        <div className="pt-2 border-t border-slate-800">
+          <p className="mb-1.5 text-xs font-semibold text-slate-400">Asset Tags</p>
+          <div className="flex flex-wrap gap-1.5">
             {Object.entries(asset.tags).map(([key, value]) => (
-              <Badge key={key} variant="secondary">
+              <Badge key={key} variant="outline" className="border-slate-700 bg-slate-950 text-slate-300 text-[11px]">
                 {key}={value}
               </Badge>
             ))}
@@ -282,7 +295,6 @@ function EditCard({ asset }: { asset: AssetDetail }) {
     asset.asset_criticality == null ? CRIT_UNSET : String(asset.asset_criticality),
   );
 
-  // Re-sync local form state if the asset is refetched/updated elsewhere.
   useEffect(() => {
     setOwner(asset.owner_email || "");
     setUnit(asset.business_unit || "");
@@ -300,76 +312,80 @@ function EditCard({ asset }: { asset: AssetDetail }) {
   }
 
   return (
-    <div className="space-y-4 rounded-lg border bg-white p-4 text-sm">
-      <p className="font-medium text-slate-900">Edit</p>
+    <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
+      <p className="text-sm font-bold uppercase tracking-wider text-slate-200 border-b border-slate-800 pb-2">Asset Posture Configurator</p>
 
-      <div className="space-y-1">
-        <Label htmlFor="owner">Owner email</Label>
+      <div className="space-y-1.5">
+        <Label htmlFor="owner" className="text-slate-300 font-semibold">Owner Email</Label>
         <Input
           id="owner"
           value={owner}
           onChange={(e) => setOwner(e.target.value)}
-          placeholder="team@example.com"
+          placeholder="sec-ops@enterprise.com"
+          className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
         />
       </div>
 
-      <div className="space-y-1">
-        <Label htmlFor="unit">Business unit</Label>
+      <div className="space-y-1.5">
+        <Label htmlFor="unit" className="text-slate-300 font-semibold">Business Unit</Label>
         <Input
           id="unit"
           value={unit}
           onChange={(e) => setUnit(e.target.value)}
-          placeholder="e.g. Payments"
+          placeholder="e.g. Core Infrastructure"
+          className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
         />
       </div>
 
-      <div className="space-y-1">
-        <Label>Criticality</Label>
+      <div className="space-y-1.5">
+        <Label className="text-slate-300 font-semibold">Asset Criticality (0 - 4)</Label>
         <Select value={crit} onValueChange={setCrit}>
-          <SelectTrigger>
+          <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={CRIT_UNSET}>Unset (heuristic)</SelectItem>
+          <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+            <SelectItem value={CRIT_UNSET}>Unset (Heuristic Evaluation)</SelectItem>
             {[0, 1, 2, 3, 4].map((n) => (
               <SelectItem key={n} value={String(n)}>
-                {n} — {ASSET_CRITICALITY[n].label}
+                L{n} — {ASSET_CRITICALITY[n].label}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
 
-      <div className="flex items-center justify-between pt-2">
-        <Button onClick={save} disabled={update.isPending}>
-          {update.isPending ? "Saving…" : "Save"}
+      <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+        <Button onClick={save} disabled={update.isPending} size="sm" className="bg-sky-600 hover:bg-sky-500 text-white font-semibold">
+          {update.isPending ? "Updating…" : "Save Changes"}
         </Button>
 
         {!decommissioned ? (
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" className="text-rose-700">
+              <Button variant="outline" size="sm" className="border-rose-500/40 text-rose-400 hover:bg-rose-950/60">
                 Decommission
               </Button>
             </AlertDialogTrigger>
-            <AlertDialogContent>
+            <AlertDialogContent className="bg-slate-900 border-slate-800 text-slate-100">
               <AlertDialogHeader>
-                <AlertDialogTitle>Decommission this asset?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Marks the asset as decommissioned (logged as a Phase 10.1 event). Active/stale
-                  are system-managed and cannot be set back manually.
+                <AlertDialogTitle className="text-slate-100">Decommission this asset?</AlertDialogTitle>
+                <AlertDialogDescription className="text-slate-400 text-xs">
+                  Marks the asset as decommissioned. Decommissioning is logged into Postgres state.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={() => update.mutate({ status: "decommissioned" })}>
-                  Decommission
+                <AlertDialogCancel className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800">Cancel</AlertDialogCancel>
+                <AlertDialogAction 
+                  onClick={() => update.mutate({ status: "decommissioned" })}
+                  className="bg-rose-600 text-white hover:bg-rose-500"
+                >
+                  Decommission Asset
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
         ) : (
-          <Badge variant="secondary">decommissioned</Badge>
+          <Badge variant="secondary" className="bg-slate-800 text-slate-400">Decommissioned</Badge>
         )}
       </div>
     </div>
@@ -379,16 +395,17 @@ function EditCard({ asset }: { asset: AssetDetail }) {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-slate-800">{value}</p>
+      <p className="text-[11px] font-medium text-slate-400">{label}</p>
+      <p className="text-xs font-semibold text-slate-200 mt-0.5">{value}</p>
     </div>
   );
 }
 
 function EmptyNote({ children }: { children: React.ReactNode }) {
   return (
-    <p className="rounded-md border bg-white px-3 py-6 text-center text-sm text-muted-foreground">
+    <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 px-4 py-8 text-center text-xs text-slate-400 backdrop-blur">
       {children}
-    </p>
+    </div>
   );
 }
+

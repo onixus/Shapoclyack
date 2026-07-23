@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
+import { Play, Terminal, ArrowUpRight, Cpu } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -52,53 +53,61 @@ export default function JobsPage() {
     () => [
       {
         accessorKey: "job_id",
-        header: "Job",
-        cell: ({ getValue }) => <code className="text-xs">{String(getValue())}</code>,
+        header: "Job ID",
+        cell: ({ getValue }) => <code className="font-mono text-xs text-sky-400 font-semibold">{String(getValue())}</code>,
       },
       {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => <StatusBadge value={row.original.status} map={JOB_STATUS} />,
+        cell: ({ row }) => <StatusBadge value={row.original.status} map={JOB_STATUS} showPulse={row.original.status === "running"} />,
       },
       {
         accessorKey: "mode",
-        header: "Mode",
+        header: "Profile Mode",
+        cell: ({ getValue }) => <span className="uppercase text-[11px] font-bold tracking-wider text-slate-300">{String(getValue())}</span>,
       },
       {
         accessorKey: "run_id",
-        header: "Run",
+        header: "Associated Run",
         enableSorting: false,
         cell: ({ row }) => {
           const runId = row.original.run_id;
-          if (!runId) return "—";
+          if (!runId) return <span className="text-slate-500">—</span>;
           return (
             <Link
               href={runDetailHref(runId)}
-              className="font-medium text-sky-700 underline-offset-2 hover:underline"
+              className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline"
               title="Open run report"
             >
-              <code className="text-xs">{runId}</code>
+              <span>{runId}</span>
+              <ArrowUpRight className="h-3 w-3" />
             </Link>
           );
         },
       },
       {
         accessorKey: "execution",
-        header: "Exec",
-        cell: ({ getValue }) => String(getValue() || "local"),
+        header: "Execution",
+        cell: ({ getValue }) => (
+          <span className="inline-flex items-center gap-1 text-xs text-slate-300 font-medium">
+            <Cpu className="h-3 w-3 text-slate-400" />
+            {String(getValue() || "local")}
+          </span>
+        ),
       },
       {
         accessorKey: "started_at",
-        header: "Started",
+        header: "Started At",
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at
-            ? format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm:ss")
+            ? <span className="text-xs text-slate-400 font-mono">{format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm:ss")}</span>
             : "—",
       },
       {
         accessorKey: "requested_by",
-        header: "By",
+        header: "Operator",
+        cell: ({ getValue }) => <span className="text-xs font-semibold text-slate-200">{String(getValue())}</span>,
       },
     ],
     [],
@@ -106,10 +115,10 @@ export default function JobsPage() {
 
   if (!canOperate) {
     return (
-      <div className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
-        <p className="text-sm text-muted-foreground">
-          Operator or admin role required to view and start scan jobs.
+      <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/80 p-8 text-center">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-100">Scan Job Orchestration</h1>
+        <p className="text-xs text-slate-400">
+          Operator or admin role privileges required to launch and monitor scan jobs.
         </p>
       </div>
     );
@@ -137,116 +146,136 @@ export default function JobsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Jobs</h1>
-        <p className="text-sm text-muted-foreground">
-          Live orchestration from <code className="text-xs">GET/POST /api/jobs</code>
-          {isFetching ? " · refreshing…" : ""}
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <Terminal className="h-5 w-5 text-sky-400" />
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Scan Jobs Orchestrator</h1>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            Control center for launching network discovery and vulnerability scan jobs.
+            {isFetching ? " · Refreshing job queue…" : ""}
+          </p>
+        </div>
       </div>
 
-      <form onSubmit={onSubmit} className="space-y-4 rounded-lg border bg-white p-4">
-        <div className="grid gap-4 md:grid-cols-2">
+      <form onSubmit={onSubmit} className="space-y-5 rounded-xl border border-slate-800/80 bg-slate-900/80 p-6 shadow-xl backdrop-blur">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-200">Launch New Recon Job</h3>
+          <span className="text-xs text-sky-400 font-semibold">Step 1 of 2: Configure Targets</span>
+        </div>
+
+        <div className="grid gap-5 md:grid-cols-2">
           <div className="grid gap-2">
-            <Label htmlFor="scan-mode">Mode</Label>
+            <Label htmlFor="scan-mode" className="text-slate-300 font-semibold">Scan Profile Mode</Label>
             <Select value={mode} onValueChange={setMode}>
-              <SelectTrigger id="scan-mode">
+              <SelectTrigger id="scan-mode" className="bg-slate-950 border-slate-800 text-slate-200">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="safe">safe</SelectItem>
-                <SelectItem value="balanced">balanced</SelectItem>
-                <SelectItem value="fast">fast</SelectItem>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value="safe">safe (500 pps · low load)</SelectItem>
+                <SelectItem value="balanced">balanced (2,000 pps · standard)</SelectItem>
+                <SelectItem value="fast">fast (5,000 pps · aggressive)</SelectItem>
               </SelectContent>
             </Select>
           </div>
-          <div className="flex flex-wrap items-end gap-4 text-sm">
-            <Label className="flex items-center gap-2 font-normal">
-              <Checkbox checked={delta} onCheckedChange={(checked) => setDelta(checked === true)} />
-              Delta
+
+          <div className="flex flex-wrap items-end gap-5 text-xs text-slate-300">
+            <Label className="flex items-center gap-2 font-semibold cursor-pointer">
+              <Checkbox checked={delta} onCheckedChange={(checked) => setDelta(checked === true)} className="border-slate-700" />
+              Delta Mode (Incremental)
             </Label>
-            <Label className="flex items-center gap-2 font-normal">
+            <Label className="flex items-center gap-2 font-semibold cursor-pointer">
               <Checkbox
                 checked={skipNse}
                 onCheckedChange={(checked) => setSkipNse(checked === true)}
+                className="border-slate-700"
               />
-              Skip NSE
+              Skip NSE Scripts
             </Label>
-            <Label className="flex items-center gap-2 font-normal">
+            <Label className="flex items-center gap-2 font-semibold cursor-pointer">
               <Checkbox
                 checked={notify}
                 onCheckedChange={(checked) => setNotify(checked === true)}
+                className="border-slate-700"
               />
-              Notify
+              Alert Notifications
             </Label>
           </div>
+
           <div className="grid gap-2">
-            <Label htmlFor="scan-ranges">Ranges (optional)</Label>
+            <Label htmlFor="scan-ranges" className="text-slate-300 font-semibold">Target CIDR Ranges (Optional)</Label>
             <Textarea
               id="scan-ranges"
-              className="min-h-[96px]"
+              className="min-h-[96px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
               value={ranges}
               onChange={(e) => setRanges(e.target.value)}
-              placeholder={"10.0.0.0/24"}
+              placeholder={"10.0.0.0/24\n192.168.1.0/28"}
               spellCheck={false}
             />
           </div>
+
           <div className="grid gap-2">
-            <Label htmlFor="scan-domains">Domains (optional)</Label>
+            <Label htmlFor="scan-domains" className="text-slate-300 font-semibold">Target Domains / FQDNs (Optional)</Label>
             <Textarea
               id="scan-domains"
-              className="min-h-[96px]"
+              className="min-h-[96px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
               value={domains}
               onChange={(e) => setDomains(e.target.value)}
-              placeholder={"example.com"}
+              placeholder={"api.example.com\nportal.internal"}
               spellCheck={false}
             />
           </div>
+
           <div className="grid gap-2">
-            <Label htmlFor="scan-ports">TCP ports (optional)</Label>
+            <Label htmlFor="scan-ports" className="text-slate-300 font-semibold">TCP Ports Override (Optional)</Label>
             <Textarea
               id="scan-ports"
-              className="min-h-[72px]"
+              className="min-h-[72px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
               value={ports}
               onChange={(e) => setPorts(e.target.value)}
-              placeholder={"22,80,443\n8000-8010"}
+              placeholder={"22,80,443\n8000-8080"}
               spellCheck={false}
             />
           </div>
+
           <div className="grid gap-2">
-            <Label htmlFor="scan-ports-udp">UDP ports (optional)</Label>
+            <Label htmlFor="scan-ports-udp" className="text-slate-300 font-semibold">UDP Ports Override (Optional)</Label>
             <Textarea
               id="scan-ports-udp"
-              className="min-h-[72px]"
+              className="min-h-[72px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
               value={portsUdp}
               onChange={(e) => setPortsUdp(e.target.value)}
-              placeholder={"53,123,161\n500-510"}
+              placeholder={"53,123,161"}
               spellCheck={false}
             />
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Empty fields use server default input files. UDP list applies when{" "}
-          <code>ports.protocol</code> is <code>udp</code> or <code>tcp_udp</code>.
-        </p>
-        <Button type="submit" disabled={mutation.isPending}>
-          {mutation.isPending ? "Starting…" : "Start scan"}
-        </Button>
+
+        <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+          <p className="text-xs text-slate-400">
+            Empty fields will automatically use server default targets from inputs configuration.
+          </p>
+          <Button type="submit" disabled={mutation.isPending} className="gap-2 bg-sky-600 hover:bg-sky-500 text-white font-semibold">
+            <Play className="h-3.5 w-3.5 fill-current" />
+            {mutation.isPending ? "Starting Scan Job…" : "Start Scan Job"}
+          </Button>
+        </div>
       </form>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="bg-slate-900 border-slate-800 text-slate-100">
           <AlertDialogHeader>
-            <AlertDialogTitle>Start a {mode} scan?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="text-slate-100">Start {mode.toUpperCase()} scan job?</AlertDialogTitle>
+            <AlertDialogDescription className="text-slate-400 text-xs">
               {noTargets
-                ? "No targets specified — the server default input files will be scanned. Active scanning will begin immediately after confirmation."
-                : "Active scanning of the specified targets will begin immediately after confirmation."}
+                ? "No custom targets specified — scanner will proceed using configured server target inputs."
+                : "Reconnaissance execution will start immediately on specified target ranges."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={startConfirmed}>Start scan</AlertDialogAction>
+            <AlertDialogCancel className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800">Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={startConfirmed} className="bg-sky-600 text-white hover:bg-sky-500">Confirm & Launch</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -257,10 +286,11 @@ export default function JobsPage() {
         isLoading={isLoading}
         error={error}
         initialSorting={[{ id: "started_at", desc: true }]}
-        searchPlaceholder="Filter jobs…"
-        loadingMessage="Loading jobs…"
-        emptyMessage="No jobs yet."
+        searchPlaceholder="Search jobs by ID or operator…"
+        loadingMessage="Retrieving scan jobs stream…"
+        emptyMessage="No scan jobs recorded."
       />
     </div>
   );
 }
+
