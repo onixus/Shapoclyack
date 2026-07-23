@@ -168,6 +168,7 @@ export type AssetSummary = {
   last_seen: string;
   primary_identifier: string | null;
   identifier_count: number;
+  asset_criticality: number | null;
 };
 
 export type AssetDetail = {
@@ -178,8 +179,16 @@ export type AssetDetail = {
   last_seen: string;
   owner_email: string | null;
   business_unit: string | null;
+  asset_criticality: number | null;
   identifiers: AssetIdentifier[];
   tags: Record<string, string>;
+};
+
+export type UpdateAssetBody = {
+  owner_email?: string | null;
+  business_unit?: string | null;
+  asset_criticality?: number | null;
+  status?: "decommissioned";
 };
 
 export type ProvisioningKeyInfo = {
@@ -439,6 +448,21 @@ export async function fetchAsset(assetId: string, tenantId = "default") {
 export async function fetchSystemStatus() {
   try {
     const { data } = await api.get<SystemStatus>("/system");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Operator-only partial update of an asset (owner/business unit/criticality,
+ * or a one-way decommission). Backed by PATCH /api/assets/{id}. */
+export async function updateAsset(assetId: string, body: UpdateAssetBody, tenantId = "default") {
+  try {
+    const params = new URLSearchParams({ tenant_id: tenantId });
+    const { data } = await api.patch<AssetDetail>(
+      `/assets/${encodeURIComponent(assetId)}?${params}`,
+      body,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
