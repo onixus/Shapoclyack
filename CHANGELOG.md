@@ -34,6 +34,17 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **System status page (read-only installation configurator)** — a new
+  `GET /api/system` endpoint (`api/services/system_status.py`, viewer role)
+  and a **System** page in `web-next/` surface, at a glance: the app version;
+  scanner tool versions (nmap/naabu/nuclei/dnsx, probed via subprocess,
+  cached, fail-soft when a tool is absent); enrichment-database freshness
+  (EPSS/KEV/GeoIP/CVSS4 — present/size/age at their effective env-or-config
+  paths, with fresh/stale/missing badges); enabled pipeline stages and scan
+  profiles parsed from the effective scan config; runtime flags
+  (`allow_scan_start`, job execution mode, Postgres/ClickHouse/NATS/ingest
+  enablement as booleans); and tenant/agent counts. Exposes no secrets — URLs,
+  tokens, and the JWT secret are reduced to booleans and never serialized.
 - **Reports in the Web UI** — run artifacts (including the business `summary.pdf`)
   are now surfaced in `web-next/`: a new **Reports** tab on the run detail page
   lists every artifact with inline preview for text (JSON/TXT/MD, pretty-printed

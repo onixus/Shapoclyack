@@ -15,6 +15,7 @@ from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
 from api.routes import jobs as jobs_routes
 from api.routes import runs as runs_routes
+from api.routes import system as system_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
 from api.services import ch_ingest_worker
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(agents_routes.router, prefix="/api")
     app.include_router(assets_routes.router, prefix="/api")
+    app.include_router(system_routes.router, prefix="/api")
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():

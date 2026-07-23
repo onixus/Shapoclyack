@@ -244,3 +244,52 @@ class AuthExchangeResponse(BaseModel):
     agent_id: str
     key_id: str | None = None
     expires_in: int
+
+
+class ToolVersion(BaseModel):
+    name: str
+    version: str | None = None
+    error: str | None = None
+
+
+class EnrichmentDb(BaseModel):
+    name: str
+    present: bool
+    path: str
+    size_bytes: int | None = None
+    modified_at: datetime | None = None
+    age_days: float | None = None
+
+
+class ScanConfigSummary(BaseModel):
+    profiles: list[str]
+    nse_profiles: list[str]
+    stages: dict[str, bool]
+
+
+class RuntimeInfo(BaseModel):
+    allow_scan_start: bool
+    job_execution_mode: str
+    nats_enabled: bool
+    clickhouse_enabled: bool
+    postgres_enabled: bool
+    ch_ingest_enabled: bool
+    asset_stale_days: int
+
+
+class InventoryCounts(BaseModel):
+    tenants: int | None = None
+    agents_total: int | None = None
+    agents_online: int | None = None
+
+
+class SystemStatus(BaseModel):
+    """Read-only snapshot of the running installation (Web UI System page).
+    Contains no secrets — only booleans/counts derived from settings."""
+
+    app_version: str
+    tools: list[ToolVersion]
+    enrichment: list[EnrichmentDb]
+    scan_config: ScanConfigSummary
+    runtime: RuntimeInfo
+    inventory: InventoryCounts
