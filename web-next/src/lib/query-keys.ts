@@ -15,4 +15,5 @@ export const queryKeys = {
   assets: (filters: { status?: string }) => ["assets", filters] as const,
   asset: (assetId: string) => ["asset", assetId] as const,
   system: ["system"] as const,
+  config: ["config"] as const,
 };

@@ -4,8 +4,10 @@ import { Card, Title } from "@tremor/react";
 import { formatDistanceToNow } from "date-fns";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { ConfigEditor } from "@/components/config-editor";
 import { KpiCard } from "@/components/kpi-card";
 import { useSystemStatus } from "@/hooks/use-system";
+import { useAuthStore } from "@/lib/auth-store";
 import type { EnrichmentDb } from "@/lib/api";
 
 const STALE_AFTER_DAYS = 30;
@@ -29,6 +31,7 @@ function formatBytes(bytes: number | null): string {
 
 export default function SystemPage() {
   const { data, isLoading, error, isFetching } = useSystemStatus();
+  const isAdmin = useAuthStore((s) => s.user?.role === "admin");
 
   return (
     <div className="space-y-6">
@@ -176,6 +179,8 @@ export default function SystemPage() {
               </div>
             </Card>
           </div>
+
+          <ConfigEditor canEdit={isAdmin} />
         </>
       )}
     </div>
