@@ -126,6 +126,13 @@ class ClickHouseIngestWorker:
                         await nc.close()
                 except Exception:  # noqa: BLE001
                     pass
+                loop = asyncio.get_running_loop()
+                current_task = asyncio.current_task(loop)
+                pending = [t for t in asyncio.all_tasks(loop) if t is not current_task and not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
                 await asyncio.sleep(0.05)
 
     async def _handle_msg(self, client: Any, msg: Any) -> None:
