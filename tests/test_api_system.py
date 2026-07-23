@@ -38,7 +38,7 @@ def test_system_status_shape():
         assert tool["version"] is not None or tool["error"] is not None
 
     enrichment_names = {db["name"] for db in body["enrichment"]}
-    assert enrichment_names == {"epss", "kev", "geoip", "cvss4"}
+    assert enrichment_names == {"epss", "kev", "geoip", "cvss4", "asn"}
 
     assert set(body["scan_config"]["stages"]) >= {"fingerprint", "tls_posture", "nuclei", "pdf_summary"}
     assert "balanced" in body["scan_config"]["profiles"]

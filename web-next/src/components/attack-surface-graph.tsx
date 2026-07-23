@@ -43,6 +43,11 @@ export function AttackSurfaceGraph({
   caps?: AttackSurfaceCaps;
 }) {
   const model = useMemo(() => {
+    // Cluster by ASN/org when the run has ASN enrichment, else by GeoIP country.
+    const clusterMode: "asn" | "geo" = hosts.some((h) => h.asn_org) ? "asn" : "geo";
+    const clusterValue = (h: AliveHost): string =>
+      clusterMode === "asn" ? h.asn_org || h.asn || "" : h.country || "";
+
     // Prioritize the most interesting IPs (most findings first) when capping.
     const rankedHosts = [...hosts].sort(
       (a, b) => (b.vulnerability_count || 0) - (a.vulnerability_count || 0),
@@ -50,12 +55,18 @@ export function AttackSurfaceGraph({
     const ipHosts = rankedHosts.slice(0, caps.maxIps);
     const ipSet = new Set(ipHosts.map((h) => h.host));
 
-    // Country → color.
-    const countries = Array.from(
-      new Set(ipHosts.map((h) => h.country).filter((c): c is string => Boolean(c))),
+    // Cluster value → color, and per-IP color for rendering.
+    const clusters = Array.from(
+      new Set(ipHosts.map(clusterValue).filter((c): c is string => Boolean(c))),
     );
-    const countryColor = new Map<string, string>();
-    countries.forEach((c, i) => countryColor.set(c, COUNTRY_PALETTE[i % COUNTRY_PALETTE.length]));
+    const clusterColor = new Map<string, string>();
+    clusters.forEach((c, i) => clusterColor.set(c, COUNTRY_PALETTE[i % COUNTRY_PALETTE.length]));
+    const ipColor = new Map(
+      ipHosts.map((h) => {
+        const cv = clusterValue(h);
+        return [h.host, cv ? clusterColor.get(cv) || NO_GEO : NO_GEO] as const;
+      }),
+    );
 
     // Hostnames attached to the selected IPs.
     const hostnameToIps = new Map<string, string[]>();
@@ -117,7 +128,9 @@ export function AttackSurfaceGraph({
       hostY,
       ipY,
       ports: rankedPorts.map((p) => ({ key: portKey(p), label: portKey(p), y: portY.get(portKey(p))!, vulns: p.vulnerability_count })),
-      countryColor,
+      clusterMode,
+      clusterColor,
+      ipColor,
       edgesHostIp,
       edgesIpPort,
       height,
@@ -134,19 +147,21 @@ export function AttackSurfaceGraph({
     );
   }
 
-  const legend = Array.from(model.countryColor.entries());
+  const legend = Array.from(model.clusterColor.entries());
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span className="font-medium text-slate-700">Countries:</span>
+        <span className="font-medium text-slate-700">
+          {model.clusterMode === "asn" ? "Networks (ASN):" : "Countries:"}
+        </span>
         {legend.length === 0 ? (
-          <span>no GeoIP data</span>
+          <span>{model.clusterMode === "asn" ? "no ASN data" : "no GeoIP data"}</span>
         ) : (
-          legend.map(([country, color]) => (
-            <span key={country} className="flex items-center gap-1">
+          legend.map(([cluster, color]) => (
+            <span key={cluster} className="flex items-center gap-1">
               <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: color }} />
-              {country}
+              {truncate(cluster, 28)}
             </span>
           ))
         )}
@@ -210,9 +225,9 @@ export function AttackSurfaceGraph({
             </g>
           ))}
 
-          {/* IP nodes (colored by country) */}
+          {/* IP nodes (colored by ASN/org or country cluster) */}
           {model.ipHosts.map((h) => {
-            const color = h.country ? model.countryColor.get(h.country) || NO_GEO : NO_GEO;
+            const color = model.ipColor.get(h.host) || NO_GEO;
             const y = model.ipY.get(h.host)!;
             return (
               <g key={`ip-${h.host}`}>

@@ -326,9 +326,18 @@ class GeoIpConfig(BaseModel):
     database: str = "scanner/data/geoip/geoip-overlay.json"
 
 
+class AsnEnrichConfig(BaseModel):
+    enabled: bool = True
+    # MaxMind GeoLite2-ASN.mmdb / DB-IP ASN Lite .mmdb or JSON overlay (labs/tests).
+    # Fetch MMDB with scripts/fetch-asn-db.sh. Per-host ASN/org lookup (offline),
+    # distinct from the opt-in scope-expanding asn_discovery stage.
+    database: str = "scanner/data/asn/asn-overlay.json"
+
+
 class EnrichmentConfig(BaseModel):
     cvss4: Cvss4Config = Field(default_factory=Cvss4Config)
     geoip: GeoIpConfig = Field(default_factory=GeoIpConfig)
+    asn: AsnEnrichConfig = Field(default_factory=AsnEnrichConfig)
 
 
 class FingerprintConfig(BaseModel):

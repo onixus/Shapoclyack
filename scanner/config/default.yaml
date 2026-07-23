@@ -226,6 +226,14 @@ enrichment:
     # scanner/data/geoip/geoip-overlay.json or set OCTO_GEOIP_DATABASE. For MaxMind's
     # (more accurate, needs a free account) GeoLite2-City: MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh
     database: scanner/data/geoip/geoip.mmdb
+  asn:
+    enabled: true
+    # Per-host ASN/org lookup for attack-surface graph clustering. Docker builds
+    # bake a real DB-IP ASN Lite .mmdb here (scripts/fetch-enrichment.sh,
+    # best-effort); falls back to no ASN data if absent. For a hand-editable
+    # lab/test overlay point this at scanner/data/asn/asn-overlay.json or set
+    # OCTO_ASN_DATABASE. For MaxMind GeoLite2-ASN: MAXMIND_LICENSE_KEY=… ./scripts/fetch-asn-db.sh
+    database: scanner/data/asn/asn.mmdb
 
 # Tech stack fingerprinting (Phase 9.1): one HTTP GET per already-open web
 # port -> CDN/WAF + CMS/framework signatures. Opt-in; findings only, never

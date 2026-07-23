@@ -46,7 +46,7 @@ run() {
   fi
 }
 
-mkdir -p "$DEST/geoip" "$DEST/cvss4" "$DEST/epss" "$DEST/kev"
+mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev"
 
 # Floor: seed data ships in the image at $ROOT/scanner/data; copy anything
 # missing at DEST so scoring never runs with zero data even if every fetch
@@ -72,6 +72,15 @@ if [[ -n "${MAXMIND_LICENSE_KEY:-}" ]]; then
   run "geoip (maxmind)" "$ROOT/scripts/fetch-geoip-db.sh" --provider maxmind -o "$GEOIP_MMDB"
 else
   run "geoip (dbip)" "$ROOT/scripts/fetch-geoip-db.sh" --provider dbip -o "$GEOIP_MMDB"
+fi
+
+# ASN/org database (attack-surface graph clustering); same stable-path,
+# provider-by-key convention as GeoIP above.
+ASN_MMDB="$DEST/asn/asn.mmdb"
+if [[ -n "${MAXMIND_LICENSE_KEY:-}" ]]; then
+  run "asn (maxmind)" "$ROOT/scripts/fetch-asn-db.sh" --provider maxmind -o "$ASN_MMDB"
+else
+  run "asn (dbip)" "$ROOT/scripts/fetch-asn-db.sh" --provider dbip -o "$ASN_MMDB"
 fi
 
 run "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" -o "$DEST/cvss4/cvss4.json"
