@@ -9,13 +9,13 @@ import type { AliveHost, PortAggregate } from "@/lib/api";
 // — ASN/org needs the opt-in asn_discovery stage). Node counts are capped so a
 // 50k-asset fleet stays legible; the caller states what was shown vs. total.
 
-const COL_X = { host: 20, ip: 340, port: 660 } as const;
-const NODE_W = 150;
+const COL_X = { host: 16, ip: 232, port: 448, service: 664 } as const;
+const NODE_W = 140;
 const NODE_H = 22;
 const V_GAP = 8;
 const ROW = NODE_H + V_GAP;
 const TOP_PAD = 16;
-const SVG_W = 840;
+const SVG_W = 820;
 
 const COUNTRY_PALETTE = [
   "#2563eb", "#0891b2", "#7c3aed", "#db2777", "#ea580c",
@@ -27,6 +27,7 @@ export type AttackSurfaceCaps = {
   maxIps: number;
   maxHostnames: number;
   maxPorts: number;
+  maxServices: number;
 };
 
 function truncate(text: string, max = 22): string {
@@ -36,7 +37,7 @@ function truncate(text: string, max = 22): string {
 export function AttackSurfaceGraph({
   hosts,
   ports,
-  caps = { maxIps: 40, maxHostnames: 40, maxPorts: 30 },
+  caps = { maxIps: 40, maxHostnames: 40, maxPorts: 30, maxServices: 24 },
 }: {
   hosts: AliveHost[];
   ports: PortAggregate[];
@@ -93,12 +94,27 @@ export function AttackSurfaceGraph({
       )
       .slice(0, caps.maxPorts);
 
+    // Services touching the selected ports (port → service edges), capped.
+    const portKey = (p: PortAggregate) => `${p.port}/${p.protocol || "tcp"}`;
+    const serviceToPorts = new Map<string, string[]>();
+    for (const p of rankedPorts) {
+      for (const svc of p.services || []) {
+        if (!svc) continue;
+        const list = serviceToPorts.get(svc) || [];
+        list.push(portKey(p));
+        serviceToPorts.set(svc, list);
+      }
+    }
+    const services = Array.from(serviceToPorts.keys())
+      .sort((a, b) => (serviceToPorts.get(b)!.length - serviceToPorts.get(a)!.length))
+      .slice(0, caps.maxServices);
+
     // Y positions per column.
     const yOf = (idx: number) => TOP_PAD + idx * ROW;
     const hostY = new Map(hostnames.map((n, i) => [n, yOf(i)]));
     const ipY = new Map(ipHosts.map((h, i) => [h.host, yOf(i)]));
-    const portKey = (p: PortAggregate) => `${p.port}/${p.protocol || "tcp"}`;
     const portY = new Map(rankedPorts.map((p, i) => [portKey(p), yOf(i)]));
+    const serviceY = new Map(services.map((s, i) => [s, yOf(i)]));
 
     const edgesHostIp: { x1: number; y1: number; x2: number; y2: number }[] = [];
     for (const name of hostnames) {
@@ -118,8 +134,17 @@ export function AttackSurfaceGraph({
         edgesIpPort.push({ x1: COL_X.ip + NODE_W, y1: y1 + NODE_H / 2, x2: COL_X.port, y2: y2 + NODE_H / 2 });
       }
     }
+    const edgesPortService: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    for (const svc of services) {
+      const y2 = serviceY.get(svc)!;
+      for (const pk of serviceToPorts.get(svc) || []) {
+        const y1 = portY.get(pk);
+        if (y1 == null) continue;
+        edgesPortService.push({ x1: COL_X.port + NODE_W, y1: y1 + NODE_H / 2, x2: COL_X.service, y2: y2 + NODE_H / 2 });
+      }
+    }
 
-    const rows = Math.max(hostnames.length, ipHosts.length, rankedPorts.length, 1);
+    const rows = Math.max(hostnames.length, ipHosts.length, rankedPorts.length, services.length, 1);
     const height = TOP_PAD * 2 + rows * ROW;
 
     return {
@@ -128,14 +153,21 @@ export function AttackSurfaceGraph({
       hostY,
       ipY,
       ports: rankedPorts.map((p) => ({ key: portKey(p), label: portKey(p), y: portY.get(portKey(p))!, vulns: p.vulnerability_count })),
+      services: services.map((s) => ({ name: s, y: serviceY.get(s)! })),
       clusterMode,
       clusterColor,
       ipColor,
       edgesHostIp,
       edgesIpPort,
+      edgesPortService,
       height,
       hostnameSet,
-      totals: { hosts: hosts.length, hostnames: hostnameToIps.size, ports: ports.length },
+      totals: {
+        hosts: hosts.length,
+        hostnames: hostnameToIps.size,
+        ports: ports.length,
+        services: serviceToPorts.size,
+      },
     };
   }, [hosts, ports, caps]);
 
@@ -176,9 +208,9 @@ export function AttackSurfaceGraph({
           viewBox={`0 0 ${SVG_W} ${model.height}`}
           width="100%"
           preserveAspectRatio="xMidYMin meet"
-          className="min-w-[720px]"
+          className="min-w-[820px]"
           role="img"
-          aria-label="Attack surface graph: hostnames to IPs to ports"
+          aria-label="Attack surface graph: hostnames to IPs to ports to services"
         >
           {/* Column headers */}
           <text x={COL_X.host} y={10} className="fill-slate-400" fontSize={10} fontWeight={600}>
@@ -190,16 +222,24 @@ export function AttackSurfaceGraph({
           <text x={COL_X.port} y={10} className="fill-slate-400" fontSize={10} fontWeight={600}>
             PORTS
           </text>
+          <text x={COL_X.service} y={10} className="fill-slate-400" fontSize={10} fontWeight={600}>
+            SERVICES
+          </text>
 
           {/* Edges (drawn first, under nodes) */}
           <g stroke="#cbd5e1" strokeWidth={1} fill="none">
             {model.edgesHostIp.map((e, i) => (
-              <path key={`he-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 60},${e.y1} ${e.x2 - 60},${e.y2} ${e.x2},${e.y2}`} />
+              <path key={`he-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
           </g>
           <g stroke="#fca5a5" strokeWidth={1} fill="none">
             {model.edgesIpPort.map((e, i) => (
-              <path key={`pe-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 60},${e.y1} ${e.x2 - 60},${e.y2} ${e.x2},${e.y2}`} />
+              <path key={`pe-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
+            ))}
+          </g>
+          <g stroke="#a5b4fc" strokeWidth={1} fill="none">
+            {model.edgesPortService.map((e, i) => (
+              <path key={`se-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
             ))}
           </g>
 
@@ -257,13 +297,31 @@ export function AttackSurfaceGraph({
               </text>
             </g>
           ))}
+
+          {/* Service nodes */}
+          {model.services.map((s) => (
+            <g key={`svc-${s.name}`}>
+              <rect
+                x={COL_X.service}
+                y={s.y}
+                width={NODE_W}
+                height={NODE_H}
+                rx={4}
+                className="fill-indigo-50 stroke-indigo-200"
+              />
+              <text x={COL_X.service + 8} y={s.y + 15} fontSize={11} className="fill-slate-700">
+                {truncate(s.name, 18)}
+              </text>
+            </g>
+          ))}
         </svg>
       </div>
 
       <p className="text-xs text-muted-foreground">
         Showing {model.hostnames.length}/{model.totals.hostnames} hostnames · {model.ipHosts.length}/
-        {model.totals.hosts} IPs · {model.ports.length}/{model.totals.ports} ports (capped for
-        legibility, IPs ranked by finding count).
+        {model.totals.hosts} IPs · {model.ports.length}/{model.totals.ports} ports ·{" "}
+        {model.services.length}/{model.totals.services} services (capped for legibility, IPs ranked
+        by finding count).
       </p>
     </div>
   );

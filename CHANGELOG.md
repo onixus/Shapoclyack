@@ -34,6 +34,11 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Services layer on the attack-surface graph** — the graph gains a fourth
+  column, so it now maps **hostnames → IPs → ports → services**. The
+  `/runs/{id}/ports` API aggregates distinct service names per port from
+  `findings.json` (new `services` field on `PortAggregateItem`), and the graph
+  draws port → service edges (capped like the other columns).
 - **ASN/org enrichment + attack-surface clustering** — alive hosts are now
   annotated with their Autonomous System number and holder/org name via a new
   offline `scanner/pipeline/asn_enrich.py` (`enrichment.asn`, MaxMind

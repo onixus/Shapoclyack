@@ -72,6 +72,7 @@ class PortAggregateItem(BaseModel):
     host_count: int = 0
     vulnerability_count: int = 0
     hosts: list[str] = Field(default_factory=list)
+    services: list[str] = Field(default_factory=list)
 
 
 class AssetIdentifier(BaseModel):

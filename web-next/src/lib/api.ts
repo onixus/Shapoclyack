@@ -117,6 +117,7 @@ export type PortAggregate = {
   host_count: number;
   vulnerability_count: number;
   hosts: string[];
+  services: string[];
 };
 
 export type JobInfo = {
