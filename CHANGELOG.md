@@ -34,6 +34,14 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Attack surface graph** — a new **Attack Surface** page renders a run's
+  hostnames → IPs → ports as a three-column layered graph, with IP nodes
+  colored by GeoIP country and ports flagged when they carry findings. Built
+  as dependency-free SVG (no graph library, static-export safe) from the
+  existing `/runs/{id}/hosts` and `/runs/{id}/ports` endpoints; node counts are
+  capped (IPs ranked by finding count) so large fleets stay legible, and a run
+  selector switches between runs. ASN/org clustering is deferred — that data
+  needs the opt-in `asn_discovery` stage, so country is used for now.
 - **Executive dashboard** — the home dashboard is now an exec-level exposure
   view: added a findings-by-severity donut, a "top critical & high findings"
   table (sorted by CVSS v4/v3) for the latest run, an **asset posture** panel
