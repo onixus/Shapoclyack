@@ -90,40 +90,41 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
   const overrideCount = paths.filter(isOverridden).length;
 
   return (
-    <Card>
+    <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-6 shadow-lg backdrop-blur">
       <div className="flex items-center justify-between">
-        <Title>Scanner configuration</Title>
+        <Title className="text-sm font-bold uppercase tracking-wider text-slate-200">Scanner Configuration Tuner</Title>
         {overrideCount > 0 ? (
-          <Badge variant="secondary">{overrideCount} overridden</Badge>
+          <Badge variant="secondary" className="bg-amber-500/20 text-amber-300 border-amber-500/30 font-mono text-[11px]">{overrideCount} overridden</Badge>
         ) : (
-          <Badge variant="outline">defaults</Badge>
+          <Badge variant="outline" className="border-slate-800 text-slate-400 font-mono text-[11px]">defaults</Badge>
         )}
       </div>
-      <p className="mt-1 text-sm text-muted-foreground">
+      <p className="mt-1 text-xs text-slate-400">
         {canEdit
-          ? "Overrides are merged onto the base config for local scans. Only changed values are stored."
-          : "Read-only — an admin can edit these. Values reflect the effective scan config."}
+          ? "Overrides are merged onto the base YAML config for local scans. Only changed parameters are stored."
+          : "Read-only — admin privilege required to mutate runtime configuration parameters."}
       </p>
 
-      <div className="mt-4 space-y-6">
+      <div className="mt-5 space-y-6">
         {Object.entries(grouped).map(([group, groupPaths]) => (
           <div key={group}>
-            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{group}</p>
+            <p className="mb-2 text-xs font-mono font-bold uppercase tracking-wider text-sky-400">{group}</p>
             <div className="grid gap-3 sm:grid-cols-2">
               {groupPaths.map((path) => {
                 const widget = widgetFor(path);
                 const leaf = path.split(".").slice(group.startsWith("profile") ? 2 : 1).join(".");
                 return (
-                  <div key={path} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                    <Label className="text-sm text-slate-700" title={humanize(path)}>
+                  <div key={path} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800/80 bg-slate-950/60 px-3 py-2">
+                    <Label className="text-xs font-mono text-slate-200" title={humanize(path)}>
                       {leaf}
-                      {isOverridden(path) ? <span className="ml-1 text-amber-600">•</span> : null}
+                      {isOverridden(path) ? <span className="ml-1 text-amber-400 font-bold">•</span> : null}
                     </Label>
                     {widget === "bool" ? (
                       <Checkbox
                         checked={Boolean(values[path])}
                         disabled={!canEdit}
                         onCheckedChange={(c) => setValue(path, Boolean(c))}
+                        className="border-slate-700 data-[state=checked]:bg-sky-500 data-[state=checked]:border-sky-500"
                       />
                     ) : widget === "timing" ? (
                       <Select
@@ -131,10 +132,10 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                         onValueChange={(v) => setValue(path, v)}
                         disabled={!canEdit}
                       >
-                        <SelectTrigger className="w-24">
+                        <SelectTrigger className="w-24 h-8 bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
+                        <SelectContent className="bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs">
                           {TIMINGS.map((t) => (
                             <SelectItem key={t} value={t}>
                               {t}
@@ -144,7 +145,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                       </Select>
                     ) : widget === "list" ? (
                       <Input
-                        className="w-48"
+                        className="w-48 h-8 bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs placeholder:text-slate-600"
                         value={asList(values[path]).join(", ")}
                         disabled={!canEdit}
                         placeholder="comma,separated"
@@ -161,7 +162,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                     ) : (
                       <Input
                         type="number"
-                        className="w-28"
+                        className="w-24 h-8 bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs"
                         value={Number(values[path] ?? 0)}
                         disabled={!canEdit}
                         onChange={(e) => setValue(path, Number(e.target.value))}
@@ -176,12 +177,12 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
       </div>
 
       {canEdit ? (
-        <div className="mt-6 flex gap-2">
-          <Button onClick={save} disabled={update.isPending}>
-            {update.isPending ? "Saving…" : "Save overrides"}
+        <div className="mt-6 flex gap-2 pt-4 border-t border-slate-800">
+          <Button onClick={save} disabled={update.isPending} className="bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs">
+            {update.isPending ? "Saving…" : "Save Overrides"}
           </Button>
-          <Button variant="outline" onClick={resetToDefaults} disabled={update.isPending || overrideCount === 0}>
-            Reset to defaults
+          <Button variant="outline" onClick={resetToDefaults} disabled={update.isPending || overrideCount === 0} className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800 text-xs">
+            Reset to Defaults
           </Button>
         </div>
       ) : null}

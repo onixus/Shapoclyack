@@ -25,28 +25,29 @@ export function EntityList({
   emptyMessage: string;
 }) {
   if (items.length === 0) {
-    return <p className="text-sm text-muted-foreground">{emptyMessage}</p>;
+    return <p className="text-xs text-slate-400 py-6 text-center">{emptyMessage}</p>;
   }
   return (
-    <div className="max-h-[28rem] overflow-auto rounded-lg border bg-white">
-      <ul className="divide-y">
+    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
+      <ul className="divide-y divide-slate-800/60">
         {items.map((item) => {
           const value = item.value ?? item.key;
+          const isSelected = activeKey === value;
           return (
             <li key={item.key}>
               <button
                 type="button"
-                className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left text-sm hover:bg-slate-50 ${
-                  activeKey === value ? "bg-slate-100" : ""
+                className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left text-xs transition-colors hover:bg-slate-800/50 ${
+                  isSelected ? "bg-sky-500/10 border-l-2 border-sky-400" : ""
                 }`}
                 onClick={() => onSelect(value)}
               >
                 <span>
-                  <strong className="text-slate-900">{item.title}</strong>
-                  <span className="mt-0.5 block text-muted-foreground">{item.subtitle}</span>
+                  <strong className="font-mono text-xs font-bold text-slate-100">{item.title}</strong>
+                  <span className="mt-0.5 block text-slate-400 text-[11px]">{item.subtitle}</span>
                 </span>
                 {item.meta != null ? (
-                  <span className="shrink-0 text-xs text-muted-foreground">{item.meta}</span>
+                  <span className="shrink-0 font-mono text-[11px] text-slate-400">{item.meta}</span>
                 ) : null}
               </button>
             </li>
