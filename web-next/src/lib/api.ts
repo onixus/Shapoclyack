@@ -274,6 +274,55 @@ export async function fetchPorts(runId: string, limit = 10000) {
   }
 }
 
+/** Encode each path segment but keep the "/" separators for the :path route param. */
+function encodeArtifactPath(path: string): string {
+  return path
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/");
+}
+
+/** Raw text of a run artifact (JSON/TXT/MD) for in-UI preview. Kept as a plain
+ * string (no JSON.parse) so JSON artifacts render as formatted source. */
+export async function fetchArtifactText(runId: string, path: string) {
+  try {
+    const { data } = await api.get<string>(
+      `/runs/${encodeURIComponent(runId)}/artifacts/${encodeArtifactPath(path)}`,
+      { responseType: "text", transformResponse: (value) => value },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Programmatically trigger a browser "Save as" for an in-memory blob. */
+export function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Download a run artifact (binary-safe, e.g. summary.pdf). Fetches as a blob
+ * via axios so the Authorization interceptor applies — a plain <a href> would
+ * not carry the bearer token. */
+export async function downloadArtifact(runId: string, path: string) {
+  try {
+    const { data } = await api.get<Blob>(
+      `/runs/${encodeURIComponent(runId)}/download/${encodeArtifactPath(path)}`,
+      { responseType: "blob" },
+    );
+    triggerBrowserDownload(data, path.split("/").pop() || "artifact");
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchAgents() {
   try {
     const { data } = await api.get<AgentInfo[]>("/agents");

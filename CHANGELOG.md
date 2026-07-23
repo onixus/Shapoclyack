@@ -34,6 +34,18 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Reports in the Web UI** — run artifacts (including the business `summary.pdf`)
+  are now surfaced in `web-next/`: a new **Reports** tab on the run detail page
+  lists every artifact with inline preview for text (JSON/TXT/MD, pretty-printed
+  for JSON) and one-click download, and a new top-level **Reports** page lists
+  runs with a direct PDF download. Previously `RunDetail.artifacts` came back
+  from the API but was never rendered, and the PDF was effectively
+  unreachable. Backend: a new binary-safe `GET /runs/{id}/download/{path}`
+  endpoint (`FileResponse` with an extension-derived content-type and an
+  attachment disposition) — the existing `artifacts/{path}` endpoint
+  UTF-8-decodes and truncates to 1 MB, which is fine for previewing text but
+  corrupts binaries like the PDF. The shared path-traversal guard is factored
+  into `runs_service.resolve_artifact()` and reused by both endpoints.
 - **Nuclei template-based vulnerability/misconfig scanning** — a new opt-in
   stage (`scanner/pipeline/nuclei_scan.py`, `nuclei` config key) runs the
   `nuclei` engine against the same already-open web ports as `fingerprint`
