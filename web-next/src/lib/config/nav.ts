@@ -1,4 +1,13 @@
-import { CalendarDays, Database, FileText, Home, Play, Server, Users } from "lucide-react";
+import {
+  CalendarDays,
+  Database,
+  FileText,
+  Home,
+  Play,
+  Server,
+  SlidersHorizontal,
+  Users,
+} from "lucide-react";
 
 export const NAV = [
   { href: "/", label: "Dashboard", icon: Home },
@@ -8,4 +17,5 @@ export const NAV = [
   { href: "/runs", label: "Runs", icon: Play },
   { href: "/assets", label: "Assets", icon: Database },
   { href: "/reports", label: "Reports", icon: FileText },
+  { href: "/system", label: "System", icon: SlidersHorizontal },
 ] as const;

@@ -220,6 +220,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 | 11.2 | Attack surface graph | new component in `web-next/` | Domains → subdomains → IPs → ports → services, clustered by ASN/org | **Planned** |
 | 11.3 | Exposure trend & exec dashboard | Tremor charts in `web-next/` | Exposure score over time, top critical findings | **Planned** |
 | 11.4 | Reports surface | `web-next/src/app/(dashboard)/reports`, `runs/view` Reports tab, `api/routes/runs.py` | Surface run artifacts + business PDF in the UI (per-run Reports tab with text preview/download + top-level Reports page); new binary-safe `GET /runs/{id}/download/{path}` endpoint | **Done** |
+| 11.5 | System status page | `web-next/src/app/(dashboard)/system`, `api/routes/system.py`, `api/services/system_status.py` | Read-only installation configurator: app/tool versions, enrichment-DB freshness, enabled stages, runtime flags, tenant/agent counts via `GET /api/system` (no secrets) | **Done** |
 
 ---
 

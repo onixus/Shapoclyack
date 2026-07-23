@@ -14,4 +14,5 @@ export const queryKeys = {
   tenants: ["tenants"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,
   asset: (assetId: string) => ["asset", assetId] as const,
+  system: ["system"] as const,
 };

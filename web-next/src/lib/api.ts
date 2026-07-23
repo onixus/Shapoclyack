@@ -192,6 +192,52 @@ export type ProvisioningKeyInfo = {
   key?: string | null;
 };
 
+export type ToolVersion = {
+  name: string;
+  version: string | null;
+  error: string | null;
+};
+
+export type EnrichmentDb = {
+  name: string;
+  present: boolean;
+  path: string;
+  size_bytes: number | null;
+  modified_at: string | null;
+  age_days: number | null;
+};
+
+export type ScanConfigSummary = {
+  profiles: string[];
+  nse_profiles: string[];
+  stages: Record<string, boolean>;
+};
+
+export type RuntimeInfo = {
+  allow_scan_start: boolean;
+  job_execution_mode: string;
+  nats_enabled: boolean;
+  clickhouse_enabled: boolean;
+  postgres_enabled: boolean;
+  ch_ingest_enabled: boolean;
+  asset_stale_days: number;
+};
+
+export type InventoryCounts = {
+  tenants: number | null;
+  agents_total: number | null;
+  agents_online: number | null;
+};
+
+export type SystemStatus = {
+  app_version: string;
+  tools: ToolVersion[];
+  enrichment: EnrichmentDb[];
+  scan_config: ScanConfigSummary;
+  runtime: RuntimeInfo;
+  inventory: InventoryCounts;
+};
+
 export async function login(username: string, password: string) {
   try {
     const { data } = await api.post<{
@@ -384,6 +430,15 @@ export async function fetchAsset(assetId: string, tenantId = "default") {
   try {
     const params = new URLSearchParams({ tenant_id: tenantId });
     const { data } = await api.get<AssetDetail>(`/assets/${encodeURIComponent(assetId)}?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchSystemStatus() {
+  try {
+    const { data } = await api.get<SystemStatus>("/system");
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
