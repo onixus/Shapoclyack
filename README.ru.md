@@ -50,6 +50,25 @@ kubectl -n network-scan port-forward svc/octo-man-api 8080:8080
 `python -m agent`. Подробности и примеры k8s — в README (EN) и
 `k8s/octo-man/examples/agent-*.yaml`.
 
+## Web UI v2 (`web-next/`, фаза 11)
+
+Next.js-дашборд, отдаётся из aio/API. RBAC: `viewer` / `operator` / `admin`. Страницы:
+
+- **Dashboard** — exec-обзор: тренд экспозиции, находки по severity, топ критичных/high,
+  «asset posture» (распределение по бизнес-критичности + счётчики статусов).
+- **Runs** — находки/хосты/порты по прогону и вкладка **Reports**: артефакты прогона и
+  скачивание бизнес-PDF (`GET /api/runs/{id}/download/{path}`, бинарно-безопасно). Отдельная
+  верхнеуровневая страница **Reports** со списком прогонов.
+- **Assets** — сквозной инвентарь и полноценная **карточка актива**: правка
+  `owner_email`/`business_unit`/`asset_criticality` и decommission, плюс уязвимости/порты/ОС/GeoIP
+  актива из последнего прогона.
+- **Attack Surface** — слоёный SVG-граф (домены → IP → порты → сервисы) без внешних
+  зависимостей; IP кластеризуются по ASN/org (иначе по стране GeoIP).
+- **System** — версии инструментов, свежесть БД обогащения, включённые стадии и рантайм-флаги
+  (`GET /api/system`), а также **редактируемый конфигуратор** для admin (`GET`/`PUT /api/config`):
+  тумблеры стадий + тюнинг профилей, с whitelist- и schema-валидацией; оверрайды хранятся в
+  Postgres и мержатся в конфиг на старте local-скана.
+
 ## Phase 7: Postgres и инвентарь активов
 
 **Важно (breaking):** начиная с фазы 7 Postgres — **обязательная** зависимость API, а не

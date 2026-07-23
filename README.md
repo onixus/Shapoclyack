@@ -48,6 +48,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - Report exports with summary, parsed Nmap service data, OS matches and vulnerability findings.
 - **CVSS v4 enrichment** (`enrichment.cvss4`): local CVE → CVSS 4.0 JSON map (`scanner/data/cvss4/`); refresh via `scripts/fetch-cvss4-db.py`.
 - **GeoIP enrichment** (`enrichment.geoip`): country/city per host via MaxMind GeoLite2 `.mmdb` or JSON overlay; Web UI shows location on Alive hosts / findings. Fetch MMDB with `scripts/fetch-geoip-db.sh` (do not redistribute MaxMind DB files in the image).
+- **ASN/org enrichment** (`enrichment.asn`): per-host Autonomous System number + holder/org name via MaxMind GeoLite2-ASN / DB-IP ASN Lite `.mmdb` or JSON overlay; the Attack Surface graph clusters IPs by network operator. Offline and fail-soft (distinct from the opt-in, online `discovery.asn` scope-expansion stage); fetch with `scripts/fetch-asn-db.sh` (baked by `fetch-enrichment.sh`).
 - **EPSS / KEV risk scoring** (`api/services/risk_scoring.py`): CVE → exploit-probability (EPSS) and CISA Known Exploited Vulnerabilities overlays feed `epss_score` / `exploit_active` / `cisa_decision`. Refresh via `scripts/fetch-epss-db.sh` / `scripts/fetch-kev-db.sh` (both keyless).
 - **Enrichment refresh pipeline**: the committed EPSS/KEV/GeoIP/CVSS4 files are tiny seed stubs, not production feeds — run `scripts/fetch-enrichment.sh` to pull real data for all four in one pass (set `MAXMIND_LICENSE_KEY` for MaxMind GeoIP, otherwise it falls back to keyless DB-IP). `Dockerfile`/`Dockerfile.allinone` now run this (and `scripts/fetch-vulscan-db.sh` for vulscan's offline CVE databases) as a best-effort build step, so a fresh image ships with real data instead of only the seed stubs. The API hot-reloads EPSS/KEV changes on disk (`OCTO_ENRICHMENT_RELOAD_SECONDS`, default 60s) without a restart. For production, apply `k8s/octo-man/overlays/enrichment` (shared RWX volume + daily CronJob) or compose with `docker-compose.enrichment.yml --profile enrichment` — see those files' headers for details.
 - **Report diffs** (`reporting.diff` / `--compare-run-id`): hosts, ports, and CVE delta vs the previous run → `diff.json` / `diff.md`. Also emits a normalized `events` list (`new_asset`/`new_open_port`/`new_cve`/`cert_expiring`, Phase 10.1) for a future event bus; `decommissioned_host` is logged when an operator manually decommissions an asset via `PATCH /api/assets/{id}`.
@@ -55,7 +56,12 @@ Russian ops notes: [README.ru.md](README.ru.md).
 - **DefectDojo export** (`defectdojo` / `--export-defectdojo`): Generic Findings Import via API v2 reimport (Phase 3).
 - **Business PDF reports** (`reporting.pdf_summary`): executive `summary.pdf` with severity KPIs and priority findings (Phase 3).
 - **Lab scheduler** (`python -m scanner.scheduler`): interval/cron helper; prefer Kubernetes CronJob in production.
-- **API + dashboard**: FastAPI + React UI, JWT RBAC (`viewer` / `operator` / `admin`); severity dashboard; click Alive hosts / Open ports to explore and filter findings.
+- **Web UI v2** (`web-next/`, Next.js): FastAPI-served dashboard with JWT RBAC (`viewer` / `operator` / `admin`). Pages:
+  - **Executive Dashboard** — exposure trend, findings-by-severity, top critical/high findings, and asset posture (criticality distribution + status counts).
+  - **Runs** — per-run findings/hosts/ports, plus a **Reports** tab to browse run artifacts and download the business `summary.pdf` (binary-safe `GET /api/runs/{id}/download/{path}`); a top-level **Reports** page lists runs with direct PDF access.
+  - **Assets** — cross-run inventory with a full **asset card**: edit `owner_email`/`business_unit`/`asset_criticality` and decommission inline, plus the asset's vulnerabilities/ports/OS/GeoIP from the latest run.
+  - **Attack Surface** — a dependency-free layered graph (hostnames → IPs → ports → services), IP nodes clustered/colored by ASN/org (falling back to GeoIP country).
+  - **System** — tool versions, enrichment-DB freshness, enabled stages and runtime flags (`GET /api/system`), plus an **admin-editable configurator** (`GET`/`PUT /api/config`) for stage toggles + per-profile scan tuning, whitelist- and schema-validated, Postgres-persisted and merged onto the base config at local scan start.
 - **All-in-one** (`shapoclyack-aio` / `docker compose`): Web UI starts local scans by default.
 - **Kubernetes**: `Job` / `CronJob` / aio API Deployment under `k8s/octo-man` (includes optional NATS JetStream StatefulSet; enable with `OCTO_NATS_URL`).
 - **Remote agents**: HTTP claim/upload by default; set `OCTO_NATS_URL` for a long-lived
@@ -315,8 +321,13 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
 
 - `POST /api/auth/login` → JWT
 - `GET /api/auth/me`
-- `GET /api/runs`, `GET /api/runs/{run_id}`, `GET /api/runs/{run_id}/vulnerabilities`
-- `GET /api/runs/{run_id}/diff`, `GET /api/runs/{run_id}/artifacts/{path}`
+- `GET /api/runs`, `GET /api/runs/{run_id}`, `GET /api/runs/{run_id}/vulnerabilities`,
+  `GET /api/runs/{run_id}/hosts`, `GET /api/runs/{run_id}/ports` (ports carry aggregated service names)
+- `GET /api/runs/{run_id}/diff`, `GET /api/runs/{run_id}/artifacts/{path}` (text preview),
+  `GET /api/runs/{run_id}/download/{path}` (binary-safe artifact download, e.g. `summary.pdf`)
+- `GET /api/assets`, `GET /api/assets/{id}`, `PATCH /api/assets/{id}` (operator+) — owner / business unit / criticality / decommission
+- `GET /api/system` — installation status (tool versions, enrichment-DB freshness, enabled stages, runtime flags; no secrets)
+- `GET /api/config`, `PUT /api/config` (admin) — editable scanner-config overrides (stage toggles + per-profile tuning)
 - `GET|POST /api/jobs` (operator+) — optional body fields `ranges` / `domains` / `ports` /
   `ports_udp` (newline-separated). When set, the API writes per-job inputs under
   `state/job_inputs/<job_id>/` and passes `--ranges` / `--domains` / `--ports-file` /
