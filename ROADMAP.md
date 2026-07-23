@@ -253,4 +253,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.4); Phase 9 is partially done (9.1, 9.2, 9.4); Phase 10 is partially done (10.1); Phase 11 is **Done** (11.1–11.5 — asset card, attack-surface graph, exec dashboard, reports, system status).
+Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.4); Phase 9 is partially done (9.1, 9.2, 9.4); Phase 10 is partially done (10.1); Phase 11 is **Done** (11.1–11.6 — asset card, attack-surface graph, exec dashboard, reports, system status, editable configurator).
