@@ -27,6 +27,8 @@ def get_engine(url: str) -> Engine:
             _engine = create_engine(url, pool_pre_ping=True, future=True)
             _engine_url = url
             _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
+            from api.db import models
+            models.Base.metadata.create_all(_engine)
         return _engine
 
 
