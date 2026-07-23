@@ -13,6 +13,7 @@ from typing import Any
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
 from api.services import assets as assets_service
+from api.services import config_override as config_override_service
 from api.services import nats_bus
 from api.services import results_ingest
 from api.services import tenants as tenants_service
@@ -131,13 +132,14 @@ def _build_command(
     *,
     run_id: str | None,
     target_args: list[str],
+    config_path: str,
 ) -> list[str]:
     command = [
         sys.executable,
         "-m",
         "scanner.main",
         "--config",
-        str(settings.config_path),
+        config_path,
         "--mode",
         request.mode,
     ]
@@ -227,7 +229,17 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     _, target_counts, target_args = _prepare_target_inputs(settings, job_id, request)
-    command = _build_command(settings, request, run_id=run_id, target_args=target_args)
+    # Local scans run in this container, so apply the installation config
+    # overrides by merging them into a job-specific config file. Agents run
+    # their own mounted config, so overrides don't reach them — they keep the
+    # base config (documented limitation).
+    if execution == "local":
+        config_path = config_override_service.effective_config_path(settings, job_id)
+    else:
+        config_path = str(settings.config_path)
+    command = _build_command(
+        settings, request, run_id=run_id, target_args=target_args, config_path=config_path
+    )
 
     queued_at = datetime.now(UTC).isoformat()
     record: dict[str, Any] = {

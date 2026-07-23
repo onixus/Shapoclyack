@@ -34,6 +34,18 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Editable configurator** — the System page gains an admin-editable scanner
+  config panel (`GET`/`PUT /api/config`): pipeline-stage toggles
+  (`fingerprint`/`tls_posture`/`nuclei`/`reporting.pdf_summary`), nuclei
+  severities/exclude-tags, and per-profile scan tuning (`discover_rate`,
+  `port_rate`, `top_ports`, `nmap_timing`). Only a strict whitelist of paths is
+  editable and the merged result is validated against the full `AppConfig`
+  schema before it can be saved. Overrides persist in a new Postgres
+  `config_overrides` table (migration `0002`) and are deep-merged onto the base
+  config into a job-specific file at **local** scan start — so operators can
+  tune scans without editing the (often read-only) config file. Agents keep
+  their mounted config (documented limitation). Viewers see the effective
+  values read-only; only `admin` can edit.
 - **Services layer on the attack-surface graph** — the graph gains a fourth
   column, so it now maps **hostnames → IPs → ports → services**. The
   `/runs/{id}/ports` API aggregates distinct service names per port from

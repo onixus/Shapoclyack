@@ -296,3 +296,18 @@ class SystemStatus(BaseModel):
     scan_config: ScanConfigSummary
     runtime: RuntimeInfo
     inventory: InventoryCounts
+
+
+class ConfigResponse(BaseModel):
+    """Editable scanner-config settings for the configurator (dot-path keyed)."""
+
+    editable_paths: list[str]
+    defaults: dict[str, Any]
+    effective: dict[str, Any]
+    overrides: dict[str, Any]
+
+
+class ConfigUpdateRequest(BaseModel):
+    """Flat dot-path → value overrides (only whitelisted paths are accepted)."""
+
+    overrides: dict[str, Any] = Field(default_factory=dict)

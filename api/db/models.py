@@ -4,12 +4,29 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class ConfigOverride(Base):
+    """Installation-wide scanner-config overrides (editable configurator).
+
+    A single ``scope="global"`` row holds a JSON dict deep-merged onto the base
+    scan config at job start, so operators can toggle stages / tune profiles
+    without editing the (often read-only) config file. Kept in Postgres like
+    the tenant/asset stores so it survives restarts and multi-replica APIs.
+    """
+
+    __tablename__ = "config_overrides"
+
+    scope: Mapped[str] = mapped_column(primary_key=True, default="global")
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime]
+    updated_by: Mapped[str | None] = mapped_column(default=None)
 
 
 class Tenant(Base):

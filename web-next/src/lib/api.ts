@@ -457,6 +457,34 @@ export async function fetchSystemStatus() {
   }
 }
 
+export type ConfigResponse = {
+  editable_paths: string[];
+  defaults: Record<string, unknown>;
+  effective: Record<string, unknown>;
+  overrides: Record<string, unknown>;
+};
+
+export async function fetchConfig() {
+  try {
+    const { data } = await api.get<ConfigResponse>("/config");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Replace the installation-wide scanner-config overrides (admin only).
+ * `overrides` is a flat dot-path → value map of only the settings that differ
+ * from the base config; an empty object clears all overrides. */
+export async function updateConfig(overrides: Record<string, unknown>) {
+  try {
+    const { data } = await api.put<ConfigResponse>("/config", { overrides });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 /** Operator-only partial update of an asset (owner/business unit/criticality,
  * or a one-way decommission). Backed by PATCH /api/assets/{id}. */
 export async function updateAsset(assetId: string, body: UpdateAssetBody, tenantId = "default") {
