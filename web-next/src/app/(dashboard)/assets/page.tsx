@@ -1,11 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -15,18 +14,20 @@ import {
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
-import { useAssetDetail, useAssets } from "@/hooks/use-assets";
+import { useAssets } from "@/hooks/use-assets";
 import { type AssetStatus, type AssetSummary } from "@/lib/api";
-import { ASSET_STATUS } from "@/lib/config/statuses";
+import { ASSET_CRITICALITY, ASSET_STATUS } from "@/lib/config/statuses";
 
 const STATUS_FILTER_ALL = "all";
 
+function assetDetailHref(assetId: string): string {
+  return `/assets/view?assetId=${encodeURIComponent(assetId)}`;
+}
+
 export default function AssetsPage() {
   const [status, setStatus] = useState<AssetStatus | "">("");
-  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
 
   const assetsQuery = useAssets({ status });
-  const detailQuery = useAssetDetail(selectedAssetId);
   const data = assetsQuery.data || [];
 
   const columns = useMemo<ColumnDef<AssetSummary>[]>(
@@ -36,21 +37,34 @@ export default function AssetsPage() {
         accessorFn: (row) => `${row.primary_identifier || ""} ${row.asset_id}`,
         header: "Asset",
         cell: ({ row }) => (
-          <div className="space-y-1">
-            <p className="font-medium text-slate-900">
+          <Link href={assetDetailHref(row.original.asset_id)} className="block space-y-1">
+            <span className="block font-medium text-sky-700 underline-offset-2 hover:underline">
               {row.original.primary_identifier || row.original.asset_id}
-            </p>
-            <p className="text-xs text-muted-foreground">
+            </span>
+            <span className="block text-xs text-muted-foreground">
               {row.original.identifier_count} identifier
               {row.original.identifier_count === 1 ? "" : "s"}
-            </p>
-          </div>
+            </span>
+          </Link>
         ),
       },
       {
         accessorKey: "status",
         header: "Status",
         cell: ({ row }) => <StatusBadge value={row.original.status} map={ASSET_STATUS} />,
+      },
+      {
+        accessorKey: "asset_criticality",
+        header: "Criticality",
+        cell: ({ row }) =>
+          row.original.asset_criticality != null ? (
+            <StatusBadge
+              value={String(row.original.asset_criticality)}
+              map={ASSET_CRITICALITY}
+            />
+          ) : (
+            <span className="text-xs text-muted-foreground">—</span>
+          ),
       },
       {
         accessorKey: "first_seen",
@@ -77,12 +91,8 @@ export default function AssetsPage() {
         header: "",
         enableSorting: false,
         cell: ({ row }) => (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSelectedAssetId(row.original.asset_id)}
-          >
-            View
+          <Button asChild variant="outline" size="sm">
+            <Link href={assetDetailHref(row.original.asset_id)}>View</Link>
           </Button>
         ),
       },
@@ -96,7 +106,7 @@ export default function AssetsPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Assets Inventory</h1>
         <p className="text-sm text-muted-foreground">
           Cross-run asset registry from <code className="text-xs">GET /api/assets</code> — persists
-          across scans (first/last seen, status), unlike per-run Runs/Hosts views.
+          across scans (first/last seen, status, criticality), unlike per-run Runs/Hosts views.
           {assetsQuery.isFetching ? " · refreshing…" : ""}
         </p>
       </div>
@@ -130,75 +140,6 @@ export default function AssetsPage() {
         loadingMessage="Loading assets…"
         emptyMessage="No assets recorded yet — assets are upserted here after a scan completes."
       />
-
-      <Dialog
-        open={Boolean(selectedAssetId)}
-        onOpenChange={(open) => !open && setSelectedAssetId(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Asset detail</DialogTitle>
-          </DialogHeader>
-          {detailQuery.isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : detailQuery.error ? (
-            <p className="text-sm text-rose-700">{(detailQuery.error as Error).message}</p>
-          ) : detailQuery.data ? (
-            <div className="space-y-4 text-sm">
-              <div className="flex items-center justify-between">
-                <code className="text-xs text-muted-foreground">{detailQuery.data.asset_id}</code>
-                <StatusBadge value={detailQuery.data.status} map={ASSET_STATUS} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <p className="text-xs text-muted-foreground">First seen</p>
-                  <p>{new Date(detailQuery.data.first_seen).toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Last seen</p>
-                  <p>{new Date(detailQuery.data.last_seen).toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Owner</p>
-                  <p>{detailQuery.data.owner_email || "—"}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Business unit</p>
-                  <p>{detailQuery.data.business_unit || "—"}</p>
-                </div>
-              </div>
-              <div>
-                <p className="mb-1 text-xs text-muted-foreground">
-                  Identifiers ({detailQuery.data.identifiers.length})
-                </p>
-                <ul className="space-y-1">
-                  {detailQuery.data.identifiers.map((identifier) => (
-                    <li
-                      key={`${identifier.identifier_type}:${identifier.identifier_value}`}
-                      className="flex items-center gap-2"
-                    >
-                      <Badge variant="secondary">{identifier.identifier_type}</Badge>
-                      <span>{identifier.identifier_value}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              {Object.keys(detailQuery.data.tags).length > 0 ? (
-                <div>
-                  <p className="mb-1 text-xs text-muted-foreground">Tags</p>
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(detailQuery.data.tags).map(([key, value]) => (
-                      <Badge key={key} variant="secondary">
-                        {key}={value}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

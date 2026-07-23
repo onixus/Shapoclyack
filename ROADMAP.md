@@ -216,7 +216,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 11.1 | Asset inventory page | `web-next/src/app/(dashboard)/assets` | Cross-run asset list/filter with first/last seen, criticality, owner | **Planned** |
+| 11.1 | Asset inventory + detail card | `web-next/src/app/(dashboard)/assets`, `assets/view` | Cross-run asset list (status/criticality columns) + full detail card: edit owner/business-unit/criticality + decommission via `PATCH /assets/{id}`, and per-asset vulnerabilities/ports/OS/GeoIP correlated from the latest run by primary IP | **Done** |
 | 11.2 | Attack surface graph | new component in `web-next/` | Domains → subdomains → IPs → ports → services, clustered by ASN/org | **Planned** |
 | 11.3 | Exposure trend & exec dashboard | Tremor charts in `web-next/` | Exposure score over time, top critical findings | **Planned** |
 | 11.4 | Reports surface | `web-next/src/app/(dashboard)/reports`, `runs/view` Reports tab, `api/routes/runs.py` | Surface run artifacts + business PDF in the UI (per-run Reports tab with text preview/download + top-level Reports page); new binary-safe `GET /runs/{id}/download/{path}` endpoint | **Done** |

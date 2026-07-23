@@ -34,6 +34,16 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Asset detail card** — a full asset page (`/assets/view`) replaces the cramped
+  dialog: it shows the cross-run asset (status, business criticality, owner,
+  business unit, identifiers, tags) alongside its most recent per-run
+  observation — vulnerabilities, open ports, and OS/GeoIP — correlated by the
+  asset's primary IP against the latest run. Operators can edit
+  `owner_email`/`business_unit`/`asset_criticality` and one-way **decommission**
+  an asset inline (wiring the already-shipped `PATCH /api/assets/{id}`, which had
+  no UI before); the edit panel is hidden for viewers. The Assets list now links
+  rows to the card and shows a criticality column. `api.ts` gains
+  `asset_criticality` on the asset types plus an `updateAsset()` call.
 - **System status page (read-only installation configurator)** — a new
   `GET /api/system` endpoint (`api/services/system_status.py`, viewer role)
   and a **System** page in `web-next/` surface, at a glance: the app version;

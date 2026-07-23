@@ -49,6 +49,15 @@ export const ASSET_STATUS: Record<AssetStatus, StatusStyle> = {
   decommissioned: { label: "decommissioned", className: "bg-slate-400 hover:bg-slate-400" },
 };
 
+/** Operator-set business criticality (0–4). Keyed by the raw int the API stores. */
+export const ASSET_CRITICALITY: Record<number, StatusStyle> = {
+  0: { label: "none", variant: "secondary" },
+  1: { label: "low", className: "bg-sky-600 hover:bg-sky-600" },
+  2: { label: "medium", className: IN_PROGRESS },
+  3: { label: "high", className: "bg-orange-600 hover:bg-orange-600" },
+  4: { label: "critical", className: "bg-rose-700 hover:bg-rose-700" },
+};
+
 export const SEVERITY_STATUS: Record<Severity, StatusStyle & { tremorColor: string }> = {
   critical: { label: "critical", className: "bg-rose-700 hover:bg-rose-700", tremorColor: "rose" },
   high: { label: "high", className: "bg-orange-600 hover:bg-orange-600", tremorColor: "orange" },
