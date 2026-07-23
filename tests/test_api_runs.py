@@ -114,6 +114,10 @@ def _write_run(root: Path, run_id: str) -> None:
         encoding="utf-8",
     )
     (run_dir / "summary.md").write_text("# Scan Summary\n", encoding="utf-8")
+    # A binary artifact with non-UTF8 bytes (0xFF/0xFE are invalid UTF-8) so we
+    # can assert the download endpoint streams it byte-for-byte, unlike the
+    # text endpoint which decodes with errors="replace".
+    (run_dir / "summary.pdf").write_bytes(b"%PDF-1.4\n\xff\xfe binary body \x00\x01\x02%%EOF")
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -198,6 +202,31 @@ def test_list_and_get_run(tmp_path: Path):
     artifact = client.get("/api/runs/run-a/artifacts/summary.md", headers=headers)
     assert artifact.status_code == 200
     assert "Scan Summary" in artifact.text
+
+
+def test_download_artifact_binary_intact(tmp_path: Path):
+    client = _client(tmp_path)
+    headers = {"Authorization": f"Bearer {_token(client)}"}
+
+    resp = client.get("/api/runs/run-a/download/summary.pdf", headers=headers)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert "attachment" in resp.headers["content-disposition"]
+    assert "summary.pdf" in resp.headers["content-disposition"]
+    # Byte-for-byte identical to what was written (the text endpoint would have
+    # mangled the invalid-UTF8 bytes via errors="replace").
+    assert resp.content == b"%PDF-1.4\n\xff\xfe binary body \x00\x01\x02%%EOF"
+
+    # An extensionless / unknown type falls back to octet-stream, not text.
+    missing = client.get("/api/runs/run-a/download/does-not-exist.bin", headers=headers)
+    assert missing.status_code == 404
+
+
+def test_download_artifact_path_traversal_blocked(tmp_path: Path):
+    client = _client(tmp_path)
+    headers = {"Authorization": f"Bearer {_token(client)}"}
+    resp = client.get("/api/runs/run-a/download/..%2F..%2Fsecret.txt", headers=headers)
+    assert resp.status_code == 404
 
 
 def test_path_traversal_blocked(tmp_path: Path):

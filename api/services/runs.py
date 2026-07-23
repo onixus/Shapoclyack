@@ -323,11 +323,15 @@ def get_ports(settings: Settings, run_id: str, *, limit: int = 10000) -> list[Po
     return items[:limit]
 
 
-def read_artifact_text(settings: Settings, run_id: str, relative: str, *, max_bytes: int = 1_000_000) -> str | None:
+def resolve_artifact(settings: Settings, run_id: str, relative: str) -> Path | None:
+    """Resolve a run-relative artifact path to a real file, or ``None`` if the
+    run/file doesn't exist or the path escapes the run directory. Rejects
+    absolute paths and ``..`` segments (even if the HTTP layer normalizes URLs)
+    and confirms the resolved target stays under ``run_dir``. Shared by the
+    text-preview and binary-download endpoints."""
     run_dir = get_run_dir(settings, run_id)
     if run_dir is None:
         return None
-    # Prevent path traversal (reject .. segments even if the HTTP layer normalizes URLs).
     rel = Path(relative)
     if rel.is_absolute() or ".." in rel.parts:
         return None
@@ -337,6 +341,13 @@ def read_artifact_text(settings: Settings, run_id: str, relative: str, *, max_by
     except ValueError:
         return None
     if not target.is_file():
+        return None
+    return target
+
+
+def read_artifact_text(settings: Settings, run_id: str, relative: str, *, max_bytes: int = 1_000_000) -> str | None:
+    target = resolve_artifact(settings, run_id, relative)
+    if target is None:
         return None
     data = target.read_bytes()[:max_bytes]
     return data.decode("utf-8", errors="replace")

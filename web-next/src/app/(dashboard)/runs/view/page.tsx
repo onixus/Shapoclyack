@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ArtifactsPanel } from "@/components/run/artifacts-panel";
 import { EntityList } from "@/components/run/entity-list";
 import { FindingsList } from "@/components/run/findings-list";
 import { RunDiffPanel } from "@/components/run/run-diff-panel";
@@ -37,6 +38,7 @@ function BackToRuns() {
 function RunDetailInner() {
   const searchParams = useSearchParams();
   const runId = (searchParams.get("runId") || "").trim();
+  const initialTab = searchParams.get("tab") || "vulns";
   const report = useRunReport(runId);
   const { filters } = report;
 
@@ -108,11 +110,12 @@ function RunDetailInner() {
         onChange={report.setSeverity}
       />
 
-      <Tabs defaultValue="vulns">
+      <Tabs defaultValue={initialTab}>
         <TabsList>
           <TabsTrigger value="vulns">Findings</TabsTrigger>
           <TabsTrigger value="hosts">Hosts ({report.hosts.length})</TabsTrigger>
           <TabsTrigger value="ports">Ports ({report.ports.length})</TabsTrigger>
+          <TabsTrigger value="reports">Reports ({report.detail.artifacts.length})</TabsTrigger>
         </TabsList>
 
         <TabsContent value="vulns" className="space-y-4">
@@ -162,6 +165,10 @@ function RunDetailInner() {
             onSelect={report.togglePort}
             emptyMessage="No open ports recorded for this run."
           />
+        </TabsContent>
+
+        <TabsContent value="reports">
+          <ArtifactsPanel runId={report.detail.run_id} artifacts={report.detail.artifacts} />
         </TabsContent>
       </Tabs>
     </div>
