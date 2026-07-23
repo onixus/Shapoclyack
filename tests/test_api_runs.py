@@ -109,6 +109,17 @@ def _write_run(root: Path, run_id: str) -> None:
         "10.0.0.1:22/tcp\n10.0.0.2:80/tcp\n10.0.0.3:443/tcp\n10.0.0.1:443/tcp\n",
         encoding="utf-8",
     )
+    (run_dir / "findings.json").write_text(
+        json.dumps(
+            [
+                {"host": "10.0.0.1", "port": "22", "protocol": "tcp", "service": "ssh"},
+                {"host": "10.0.0.2", "port": "80", "protocol": "tcp", "service": "http"},
+                {"host": "10.0.0.3", "port": "443", "protocol": "tcp", "service": "https"},
+                {"host": "10.0.0.1", "port": "443", "protocol": "tcp", "service": "https"},
+            ]
+        ),
+        encoding="utf-8",
+    )
     (run_dir / "diff.json").write_text(
         json.dumps({"has_changes": True, "counts": {"hosts_added": 1, "hosts_removed": 0}}),
         encoding="utf-8",
@@ -194,6 +205,8 @@ def test_list_and_get_run(tmp_path: Path):
     assert port_map["443"]["host_count"] == 2
     assert port_map["22"]["host_count"] == 1
     assert port_map["443"]["vulnerability_count"] == 1
+    assert port_map["443"]["services"] == ["https"]
+    assert port_map["22"]["services"] == ["ssh"]
 
     diff = client.get("/api/runs/run-a/diff", headers=headers)
     assert diff.status_code == 200

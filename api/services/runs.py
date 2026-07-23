@@ -274,7 +274,9 @@ def get_ports(settings: Settings, run_id: str, *, limit: int = 10000) -> list[Po
         if not port:
             continue
         key = f"{port}/{(protocol or 'tcp')}"
-        bucket = buckets.setdefault(key, {"port": port, "protocol": protocol or "tcp", "hosts": set()})
+        bucket = buckets.setdefault(
+            key, {"port": port, "protocol": protocol or "tcp", "hosts": set(), "services": set()}
+        )
         if host:
             bucket["hosts"].add(host)
 
@@ -289,9 +291,14 @@ def get_ports(settings: Settings, run_id: str, *, limit: int = 10000) -> list[Po
             protocol = str(entry.get("protocol") or "tcp")
             host = str(entry.get("host") or "")
             key = f"{port}/{protocol}"
-            bucket = buckets.setdefault(key, {"port": port, "protocol": protocol, "hosts": set()})
+            bucket = buckets.setdefault(
+                key, {"port": port, "protocol": protocol, "hosts": set(), "services": set()}
+            )
             if host:
                 bucket["hosts"].add(host)
+            service = str(entry.get("service") or "").strip()
+            if service and service != "unknown":
+                bucket["services"].add(service)
 
     vulns = _load_json(run_dir / "vulnerabilities.json")
     vuln_by_port: dict[str, int] = {}
@@ -312,6 +319,7 @@ def get_ports(settings: Settings, run_id: str, *, limit: int = 10000) -> list[Po
                 host_count=len(hosts),
                 vulnerability_count=vuln_by_port.get(port, 0),
                 hosts=hosts[:200],
+                services=sorted(bucket.get("services", set())),
             )
         )
     items.sort(
