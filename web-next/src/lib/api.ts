@@ -106,6 +106,8 @@ export type AliveHost = {
   country_iso: string | null;
   os_name: string | null;
   os_accuracy: number | null;
+  asn: string | null;
+  asn_org: string | null;
   vulnerability_count: number;
 };
 

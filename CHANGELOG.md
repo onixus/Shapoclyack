@@ -34,6 +34,17 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **ASN/org enrichment + attack-surface clustering** — alive hosts are now
+  annotated with their Autonomous System number and holder/org name via a new
+  offline `scanner/pipeline/asn_enrich.py` (`enrichment.asn`, MaxMind
+  GeoLite2-ASN / DB-IP ASN Lite `.mmdb` or a JSON overlay, fail-soft — mirrors
+  the GeoIP path and is distinct from the opt-in scope-expanding
+  `asn_discovery` stage). Docker builds bake a real ASN `.mmdb`
+  (`scripts/fetch-asn-db.sh`, wired into `fetch-enrichment.sh`). The
+  `/runs/{id}/hosts` API and the **Attack Surface** graph pick this up: IP
+  nodes now **cluster/color by network (ASN/org)** when available, falling
+  back to GeoIP country — closing the ASN/org clustering deferred from the
+  initial attack-surface work.
 - **Attack surface graph** — a new **Attack Surface** page renders a run's
   hostnames → IPs → ports as a three-column layered graph, with IP nodes
   colored by GeoIP country and ports flagged when they carry findings. Built

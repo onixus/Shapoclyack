@@ -487,6 +487,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     # mirroring the env-or-config pattern used for alerts/DefectDojo secrets.
     cvss4_database = os.environ.get("OCTO_CVSS4_DATABASE", "").strip() or enrichment.cvss4.database
     geoip_database = os.environ.get("OCTO_GEOIP_DATABASE", "").strip() or enrichment.geoip.database
+    asn_database = os.environ.get("OCTO_ASN_DATABASE", "").strip() or enrichment.asn.database
     build_reports(
         output_dir=paths.output_dir,
         total_targets=len(all_targets),
@@ -502,6 +503,8 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         cvss4_database=cvss4_database,
         geoip_enabled=enrichment.geoip.enabled,
         geoip_database=geoip_database,
+        asn_enabled=enrichment.asn.enabled,
+        asn_database=asn_database,
         extra_vulnerabilities=nuclei_cve_findings,
     )
     checkpoint.mark_done("report")

@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from .cvss4 import Cvss4Database, enrich_vulnerabilities
+from .asn_enrich import AsnDatabase, enrich_hosts_asn
 from .geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
 from .utils import save_json
 
@@ -180,6 +181,8 @@ def build_reports(
     cvss4_database: Path | str | None = None,
     geoip_enabled: bool = True,
     geoip_database: Path | str | None = None,
+    asn_enabled: bool = True,
+    asn_database: Path | str | None = None,
     extra_vulnerabilities: list[dict] | None = None,
 ) -> None:
     hostnames = hostnames_map or {}
@@ -231,6 +234,17 @@ def build_reports(
             item.setdefault("country", None)
             item.setdefault("city", None)
             item.setdefault("country_iso", None)
+
+    # ASN/org enrichment for alive hosts (attack-surface graph clustering).
+    # Offline, fail-soft, mirrors GeoIP above.
+    asn_map: dict[str, dict[str, str]] = {}
+    if asn_enabled:
+        asn_path = Path(asn_database) if asn_database else None
+        asn_db = AsnDatabase.load(asn_path)
+        try:
+            asn_map = enrich_hosts_asn(sorted(set(alive_hosts)), asn_db)
+        finally:
+            asn_db.close()
 
     severity_counts = Counter(item["severity"] for item in vulnerabilities)
     vulnerable_hosts = sorted({item["host"] for item in vulnerabilities})
@@ -287,6 +301,8 @@ def build_reports(
             "country_iso": (geo_map.get(host) or {}).get("country_iso") or None,
             "os_name": (best_os_by_host.get(host) or {}).get("name") or None,
             "os_accuracy": _os_accuracy(best_os_by_host.get(host)),
+            "asn": (asn_map.get(host) or {}).get("asn") or None,
+            "asn_org": (asn_map.get(host) or {}).get("asn_org") or None,
         }
         for host in sorted(set(alive_hosts))
     ]

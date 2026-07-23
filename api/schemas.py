@@ -61,6 +61,8 @@ class AliveHostItem(BaseModel):
     country_iso: str | None = None
     os_name: str | None = None
     os_accuracy: int | None = None
+    asn: str | None = None
+    asn_org: str | None = None
     vulnerability_count: int = 0
 
 

@@ -241,6 +241,8 @@ def get_hosts(settings: Settings, run_id: str, *, limit: int = 10000) -> list[Al
                     country_iso=entry.get("country_iso") or geo_hit.get("country_iso"),
                     os_name=entry.get("os_name") or None,
                     os_accuracy=entry.get("os_accuracy"),
+                    asn=entry.get("asn") or None,
+                    asn_org=entry.get("asn_org") or None,
                     vulnerability_count=vuln_counts.get(host, 0),
                 )
             )

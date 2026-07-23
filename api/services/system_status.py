@@ -100,16 +100,18 @@ def _stat_db(name: str, path_str: str) -> dict[str, Any]:
 
 
 def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Freshness of the four enrichment databases at their effective paths
+    """Freshness of the enrichment databases at their effective paths
     (env override → scan-config default → hardcoded fallback)."""
     enrichment = config.get("enrichment", {}) if isinstance(config, dict) else {}
     geoip_default = (enrichment.get("geoip", {}) or {}).get("database", "scanner/data/geoip/geoip.mmdb")
     cvss4_default = (enrichment.get("cvss4", {}) or {}).get("database", "scanner/data/cvss4/cvss4.json")
+    asn_default = (enrichment.get("asn", {}) or {}).get("database", "scanner/data/asn/asn.mmdb")
     paths = {
         "epss": os.environ.get("OCTO_EPSS_DATABASE") or "scanner/data/epss/epss-overlay.json",
         "kev": os.environ.get("OCTO_KEV_DATABASE") or "scanner/data/kev/kev-overlay.json",
         "geoip": os.environ.get("OCTO_GEOIP_DATABASE") or geoip_default,
         "cvss4": os.environ.get("OCTO_CVSS4_DATABASE") or cvss4_default,
+        "asn": os.environ.get("OCTO_ASN_DATABASE") or asn_default,
     }
     return [_stat_db(name, path) for name, path in paths.items()]
 
