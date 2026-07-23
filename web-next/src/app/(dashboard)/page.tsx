@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { AreaChart, BarChart, Card, DonutChart, Title } from "@tremor/react";
-import { ShieldAlert, Play, RefreshCw, Layers, ArrowUpRight } from "lucide-react";
+import { ShieldAlert, Play, RefreshCw, ArrowUpRight } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { KpiCard } from "@/components/kpi-card";

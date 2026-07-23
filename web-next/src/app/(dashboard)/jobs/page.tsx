@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Play, Terminal, Shield, ArrowUpRight, Cpu } from "lucide-react";
+import { Play, Terminal, ArrowUpRight, Cpu } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,

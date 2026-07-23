@@ -2,7 +2,7 @@
 
 import { Card, Title } from "@tremor/react";
 import { formatDistanceToNow } from "date-fns";
-import { Settings, Cpu, Database, Layers, Activity } from "lucide-react";
+import { Settings } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { ConfigEditor } from "@/components/config-editor";
