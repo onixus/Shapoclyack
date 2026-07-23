@@ -4,6 +4,8 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+## [0.36-0723] — 2026-07-23
+
 ### Fixed
 
 - **OS detection (`nmap -O`) silently failing as the non-root container user**
@@ -30,7 +32,7 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   `job-resume.yaml`, `enrichment/cronjob.yaml`, both overlay patches, and the
   agent example manifest all still pointed at the pre-fix `0.33` image, so
   `kubectl apply -k` deployments silently ran stale code even after pulling
-  the latest release. Bumped all references to `shapoclyack-0.35-0722`.
+  the latest release. Bumped all references to `shapoclyack-0.36-0723`.
 
 ### Added
 

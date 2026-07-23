@@ -14,7 +14,7 @@ Russian ops notes: [README.ru.md](README.ru.md).
 | **Inputs** | CIDR / IP / FQDN |
 | **Outputs** | JSON / JSONL / CSV + Markdown / HTML (+ diffs, alerts) |
 | **Runtime** | All-in-one (`docker compose`) or Kubernetes + kustomize ([k8s/README.md](k8s/README.md)) |
-| **Release** | **[shapoclyack-0.35-0722](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.35-0722)** — `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
+| **Release** | **[shapoclyack-0.36-0723](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.36-0723)** — `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.36-0723` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 
 ### Docs map
 
@@ -280,7 +280,7 @@ docker compose -f docker-compose.yml -f docker-compose.nats.yml -f docker-compos
 # expect GET /api/health → "nats": true, "clickhouse": true, "ch_ingest": {...}
 ```
 
-Image: `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722` (scanner tools + API + UI).  
+Image: `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.36-0723` (scanner tools + API + UI).  
 `OCTO_ALLOW_SCAN_START=true` and `OCTO_JOB_EXECUTION_MODE=local` are baked in.
 
 Kubernetes (aio Deployment, UI can start scans):
@@ -525,35 +525,35 @@ Published product images:
 | `ghcr.io/onixus/shapoclyack-scanner` | `Dockerfile` (scanner-only) |
 | `ghcr.io/onixus/shapoclyack-api` | `Dockerfile.api` (thin API + Web UI v2) |
 
-Tagging: tag name as image tag (e.g. `shapoclyack-0.35-0722`), semver patterns when the tag is
+Tagging: tag name as image tag (e.g. `shapoclyack-0.36-0723`), semver patterns when the tag is
 `v*`-shaped, commit `sha-<...>`, and `latest` on tag/release publishes.
 `workflow_dispatch` can publish an extra ad-hoc tag.
 
 Pull and run all-in-one:
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.36-0723
 docker compose up
 ```
 
 Scanner-only:
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.35-0722
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723
 docker run --rm \
   --cap-add NET_RAW --cap-add NET_ADMIN \
   -v "$PWD/scanner/inputs:/app/scanner/inputs" \
   -v "$PWD/scanner/output:/app/scanner/output" \
   -v "$PWD/scanner/config:/app/scanner/config" \
   -v "$PWD/scanner/state:/app/scanner/state" \
-  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.35-0722 --config scanner/config/default.yaml --mode balanced
+  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723 --config scanner/config/default.yaml --mode balanced
 ```
 
 To cut a release build, push a version tag and/or publish a GitHub Release (triggers GHCR publish):
 
 ```bash
-git tag shapoclyack-0.35-0722 && git push origin shapoclyack-0.35-0722
-# or: gh release create shapoclyack-0.35-0722 --generate-notes
+git tag shapoclyack-0.36-0723 && git push origin shapoclyack-0.36-0723
+# or: gh release create shapoclyack-0.36-0723 --generate-notes
 ```
 
 > The GHCR package may be **private** by default; make it public (or authenticate

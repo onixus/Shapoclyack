@@ -5,8 +5,8 @@
 
 | | |
 |---|---|
-| **Релиз** | **[shapoclyack-0.35-0722](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.35-0722)** |
-| **Образы** | `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
+| **Релиз** | **[shapoclyack-0.36-0723](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.36-0723)** |
+| **Образы** | `ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.36-0723` (+ `shapoclyack-scanner` / `shapoclyack-api`) |
 | **Runtime** | All-in-one (`docker compose`) или Kubernetes ([k8s/README.md](k8s/README.md)) |
 | **История** | [CHANGELOG.md](CHANGELOG.md) |
 | **Roadmap** | [ROADMAP.md](ROADMAP.md) — MSSP / Enterprise (NATS, tenancy, ClickHouse, Web UI v2, …) |
@@ -503,9 +503,9 @@ ruff check scanner api tests
 - Образы: `shapoclyack-aio` (по умолчанию), `shapoclyack-scanner`, `shapoclyack-api`.
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.35-0722
-docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.35-0722
-docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.35-0722
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.36-0723
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723
+docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.36-0723
 ```
 
 Подробности и полный пример запуска — в [README.md](README.md#container-image-ghcr).
