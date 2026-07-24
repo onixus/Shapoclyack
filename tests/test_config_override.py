@@ -41,6 +41,34 @@ def test_validate_rejects_bad_types_and_ranges():
         cfg.validate_overrides({"nuclei": {"severities": ["nope"]}})
 
 
+def test_validate_accepts_nuclei_performance_knobs():
+    data = cfg.unflatten(
+        {
+            "nuclei.templates_dir": "/usr/share/nuclei-templates/http/cves",
+            "nuclei.concurrency": 40,
+            "nuclei.rate_limit": 400,
+            "nuclei.timeout_seconds": 5,
+            "nuclei.retries": 0,
+        }
+    )
+    assert cfg.validate_overrides(data) is data
+
+
+def test_validate_rejects_nuclei_performance_knobs_out_of_range():
+    with pytest.raises(ValueError, match="integer"):
+        cfg.validate_overrides({"nuclei": {"concurrency": 0}})
+    with pytest.raises(ValueError, match="integer"):
+        cfg.validate_overrides({"nuclei": {"rate_limit": 20_000}})
+    with pytest.raises(ValueError, match="integer"):
+        cfg.validate_overrides({"nuclei": {"timeout_seconds": 0}})
+    with pytest.raises(ValueError, match="integer"):
+        cfg.validate_overrides({"nuclei": {"retries": 6}})
+    with pytest.raises(ValueError, match="non-empty string"):
+        cfg.validate_overrides({"nuclei": {"templates_dir": ""}})
+    with pytest.raises(ValueError, match="non-empty string"):
+        cfg.validate_overrides({"nuclei": {"templates_dir": 123}})
+
+
 def test_deep_merge_via_effective_paths():
     base = {"nuclei": {"enabled": False, "severities": ["critical"]}, "profiles": {"safe": {"top_ports": 100}}}
     over = {"nuclei": {"enabled": True}, "profiles": {"safe": {"top_ports": 250}}}

@@ -70,13 +70,25 @@ def _str_list(value: Any) -> list[str]:
     return value
 
 
-# Static (non-profile) editable leaf paths → validator.
+def _nonempty_str(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("expected a non-empty string")
+    return value
+
+
+# Static (non-profile) editable leaf paths → validator. Ranges mirror the
+# NucleiConfig pydantic bounds in scanner/pipeline/config_schema.py.
 _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "fingerprint.enabled": _as_bool,
     "tls_posture.enabled": _as_bool,
     "nuclei.enabled": _as_bool,
     "nuclei.severities": _severities,
     "nuclei.exclude_tags": _str_list,
+    "nuclei.templates_dir": _nonempty_str,
+    "nuclei.concurrency": _int_range(1, 100),
+    "nuclei.rate_limit": _int_range(1, 10_000),
+    "nuclei.timeout_seconds": _int_range(1, 60),
+    "nuclei.retries": _int_range(0, 5),
     "reporting.pdf_summary": _as_bool,
 }
 # Per-profile editable leaf → validator (path is profiles.<profile>.<leaf>).

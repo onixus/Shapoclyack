@@ -18,12 +18,13 @@ import { useConfig, useUpdateConfig } from "@/hooks/use-config";
 
 const TIMINGS = ["T0", "T1", "T2", "T3", "T4", "T5"];
 
-type Widget = "bool" | "int" | "timing" | "list";
+type Widget = "bool" | "int" | "timing" | "list" | "text";
 
 function widgetFor(path: string): Widget {
   if (path.endsWith(".enabled") || path === "reporting.pdf_summary") return "bool";
   if (path.endsWith(".nmap_timing")) return "timing";
   if (path === "nuclei.severities" || path === "nuclei.exclude_tags") return "list";
+  if (path === "nuclei.templates_dir") return "text";
   return "int";
 }
 
@@ -158,6 +159,13 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                               .filter(Boolean),
                           )
                         }
+                      />
+                    ) : widget === "text" ? (
+                      <Input
+                        className="w-56 h-8 bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs"
+                        value={String(values[path] ?? "")}
+                        disabled={!canEdit}
+                        onChange={(e) => setValue(path, e.target.value)}
                       />
                     ) : (
                       <Input
