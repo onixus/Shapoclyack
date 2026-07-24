@@ -5,8 +5,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.auth import Role, TokenUser, get_settings, require_role
-from api.schemas import AssetDetail, AssetSummary, UpdateAssetRequest
+from api.schemas import AssetDetail, AssetSummary, EndpointSoftwareItemInfo, UpdateAssetRequest
 from api.services import assets as assets_service
+from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -37,6 +38,18 @@ def get_asset(
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
     return AssetDetail.model_validate(item)
+
+
+@router.get("/{asset_id}/software", response_model=list[EndpointSoftwareItemInfo])
+def get_asset_software(
+    asset_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
+) -> list[dict]:
+    if assets_service.get_asset(settings, tenant_id, asset_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    return endpoint_inventory_service.list_software_for_asset(tenant_id, asset_id)
 
 
 @router.patch("/{asset_id}", response_model=AssetDetail)

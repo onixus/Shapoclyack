@@ -31,11 +31,24 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EntityList } from "@/components/run/entity-list";
 import { StatusBadge } from "@/components/status-badge";
 import { useAssetDetail, useUpdateAsset } from "@/hooks/use-assets";
+import {
+  useAssetSoftware,
+  useEndpointDeviceChanges,
+  useEndpointDevicesForAsset,
+} from "@/hooks/use-endpoint-inventory";
 import { useRunHosts, useRunPorts, useRuns, useRunVulns } from "@/hooks/use-runs";
 import { useAuthStore } from "@/lib/auth-store";
-import type { AssetDetail } from "@/lib/api";
-import { ASSET_CRITICALITY, ASSET_STATUS, SEVERITY_STATUS } from "@/lib/config/statuses";
+import type { AssetDetail, EndpointDeviceInfo, EndpointSoftwareItemInfo } from "@/lib/api";
+import {
+  ASSET_CRITICALITY,
+  ASSET_STATUS,
+  ENDPOINT_RECONCILIATION_STATUS,
+  SEVERITY_STATUS,
+  SOFTWARE_CHANGE_STATUS,
+} from "@/lib/config/statuses";
 import { formatLocation, normalizeSeverity, pickLatestRun } from "@/lib/run-data";
+
+const STALE_INVENTORY_HOURS = 48;
 
 const CRIT_UNSET = "unset";
 
@@ -77,6 +90,11 @@ function AssetDetailInner() {
   const hostRow = (hostsQuery.data || []).find((h) => h.host === ip) || null;
   const assetPorts = (portsQuery.data || []).filter((p) => ip && p.hosts.includes(ip));
   const vulns = vulnsQuery.data || [];
+
+  const devicesQuery = useEndpointDevicesForAsset(assetId || null);
+  const device = (devicesQuery.data || [])[0] || null;
+  const softwareQuery = useAssetSoftware(assetId || null);
+  const software = softwareQuery.data || [];
 
   if (!assetId) {
     return (
@@ -131,6 +149,7 @@ function AssetDetailInner() {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-1">
           <OverviewCard asset={asset} />
+          {device ? <EndpointCard device={device} /> : null}
           {canOperate ? <EditCard asset={asset} /> : null}
         </div>
 
@@ -146,6 +165,11 @@ function AssetDetailInner() {
               <TabsTrigger value="host" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
                 Host Telemetry
               </TabsTrigger>
+              {device ? (
+                <TabsTrigger value="software" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+                  Software ({software.length})
+                </TabsTrigger>
+              ) : null}
             </TabsList>
 
             <TabsContent value="vulns" className="space-y-3 pt-3">
@@ -236,6 +260,12 @@ function AssetDetailInner() {
                 </EmptyNote>
               )}
             </TabsContent>
+
+            {device ? (
+              <TabsContent value="software" className="space-y-3 pt-3">
+                <SoftwareTab device={device} software={software} isLoading={softwareQuery.isLoading} />
+              </TabsContent>
+            ) : null}
           </Tabs>
         </div>
       </div>
@@ -283,6 +313,124 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
+  const staleAfterMs = STALE_INVENTORY_HOURS * 60 * 60 * 1000;
+  const lastInventoryMs = device.last_inventory_at ? new Date(device.last_inventory_at).getTime() : null;
+  const isStale = lastInventoryMs != null && Date.now() - lastInventoryMs > staleAfterMs;
+
+  return (
+    <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
+      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+        <p className="text-sm font-bold uppercase tracking-wider text-slate-200">Endpoint (Lariska)</p>
+        <StatusBadge value={device.reconciliation_status} map={ENDPOINT_RECONCILIATION_STATUS} />
+      </div>
+      {device.reconciliation_status === "conflict" ? (
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+          <AlertDescription>
+            A platform identifier on this device is already claimed by another endpoint in this
+            tenant. Not auto-merged — review manually.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {isStale ? (
+        <Alert className="border-amber-500/40 bg-amber-950/30 text-amber-200">
+          <AlertDescription>
+            No inventory received in over {STALE_INVENTORY_HOURS}h — this endpoint may be offline.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="OS" value={[device.os_name, device.os_version].filter(Boolean).join(" ") || "—"} />
+        <Field label="Architecture" value={device.os_arch || "—"} />
+        <Field label="Agent Version" value={device.agent_version || "—"} />
+        <Field
+          label="Last Inventory"
+          value={device.last_inventory_at ? new Date(device.last_inventory_at).toLocaleString() : "never"}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SoftwareTab({
+  device,
+  software,
+  isLoading,
+}: {
+  device: EndpointDeviceInfo;
+  software: EndpointSoftwareItemInfo[];
+  isLoading: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<"name" | "version" | "publisher" | "source">("name");
+  const changesQuery = useEndpointDeviceChanges(device.device_id);
+  const recentChanges = (changesQuery.data || []).filter((c) => c.snapshot_id === device.latest_snapshot_id);
+
+  const filtered = software
+    .filter((item) => !query.trim() || item.name.toLowerCase().includes(query.trim().toLowerCase()))
+    .slice()
+    .sort((a, b) => (a[sortKey] || "").localeCompare(b[sortKey] || ""));
+
+  return (
+    <div className="space-y-3">
+      {recentChanges.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-slate-400">Since previous snapshot:</span>
+          {recentChanges.map((change, idx) => (
+            <span key={`${change.event_type}-${change.display_name}-${idx}`} className="inline-flex items-center gap-1">
+              <StatusBadge value={change.event_type} map={SOFTWARE_CHANGE_STATUS} />
+              <span className="font-mono text-slate-300">{change.display_name}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <Input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search installed software…"
+        className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
+      />
+
+      {isLoading ? (
+        <EmptyNote>Loading installed software…</EmptyNote>
+      ) : filtered.length === 0 ? (
+        <EmptyNote>No installed software recorded for this endpoint.</EmptyNote>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-slate-800 bg-slate-950/80 text-slate-400 font-bold uppercase tracking-wider">
+              <tr>
+                {(["name", "version", "publisher", "source"] as const).map((col) => (
+                  <th
+                    key={col}
+                    className="cursor-pointer px-3.5 py-3 hover:text-sky-300"
+                    onClick={() => setSortKey(col)}
+                  >
+                    {col}
+                  </th>
+                ))}
+                <th className="px-3.5 py-3">Architecture</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {filtered.map((item, idx) => (
+                <tr key={`${item.name}-${item.version}-${idx}`} className="hover:bg-slate-800/40 transition-colors">
+                  <td className="px-3.5 py-3 font-semibold text-slate-200">{item.name}</td>
+                  <td className="px-3.5 py-3 font-mono text-slate-300">{item.version || "—"}</td>
+                  <td className="px-3.5 py-3 text-slate-300">{item.publisher || "—"}</td>
+                  <td className="px-3.5 py-3 text-slate-300">{item.source}</td>
+                  <td className="px-3.5 py-3 text-slate-300">{item.architecture || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

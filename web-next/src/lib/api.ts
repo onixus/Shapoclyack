@@ -194,6 +194,46 @@ export type UpdateAssetBody = {
   status?: "decommissioned";
 };
 
+export type EndpointReconciliationStatus = "linked" | "conflict" | "unlinked";
+
+export type EndpointDeviceInfo = {
+  device_id: string;
+  tenant_id: string;
+  agent_id: string;
+  asset_id: string | null;
+  hostname: string;
+  os_family: string | null;
+  os_name: string | null;
+  os_version: string | null;
+  os_arch: string | null;
+  agent_version: string;
+  labels: Record<string, string>;
+  reconciliation_status: EndpointReconciliationStatus;
+  first_seen: string | null;
+  last_seen: string | null;
+  last_inventory_at: string | null;
+  latest_snapshot_id: string | null;
+};
+
+export type EndpointSoftwareItemInfo = {
+  name: string;
+  version: string | null;
+  publisher: string | null;
+  architecture: string | null;
+  source: string;
+  install_location: string | null;
+};
+
+export type EndpointSoftwareChangeInfo = {
+  device_id: string;
+  snapshot_id: string;
+  event_type: "installed" | "removed" | "updated";
+  display_name: string;
+  old_version: string | null;
+  new_version: string | null;
+  observed_at: string | null;
+};
+
 export type ProvisioningKeyInfo = {
   key_id: string;
   tenant_id: string;
@@ -442,6 +482,43 @@ export async function fetchAsset(assetId: string, tenantId = "default") {
   try {
     const params = new URLSearchParams({ tenant_id: tenantId });
     const { data } = await api.get<AssetDetail>(`/assets/${encodeURIComponent(assetId)}?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Endpoint/software inventory from the Lariska agent (Agent_plan.md S1-S7),
+ * scoped to the network-scan asset it reconciled to — distinct from
+ * fetchAssets/fetchAsset above. */
+export async function fetchEndpointDevicesForAsset(assetId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams({ tenant_id: tenantId, asset_id: assetId });
+    const { data } = await api.get<EndpointDeviceInfo[]>(`/endpoint/devices?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAssetSoftware(assetId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams({ tenant_id: tenantId });
+    const { data } = await api.get<EndpointSoftwareItemInfo[]>(
+      `/assets/${encodeURIComponent(assetId)}/software?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchEndpointDeviceChanges(deviceId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams({ tenant_id: tenantId });
+    const { data } = await api.get<EndpointSoftwareChangeInfo[]>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/changes?${params}`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

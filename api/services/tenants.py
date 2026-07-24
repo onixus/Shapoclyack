@@ -103,7 +103,12 @@ def reset_for_tests() -> None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         # Children before parents (FK constraints): identifiers/tags -> assets;
-        # scan_schedules/provisioning_keys -> tenants.
+        # scan_schedules/provisioning_keys -> tenants; endpoint_* -> assets/tenants.
+        session.query(models.EndpointSoftwareChange).delete()
+        session.query(models.EndpointSoftwareItem).delete()
+        session.query(models.EndpointInventorySnapshot).delete()
+        session.query(models.EndpointIdentifier).delete()
+        session.query(models.EndpointDevice).delete()
         session.query(models.AssetIdentifier).delete()
         session.query(models.AssetTag).delete()
         session.query(models.Asset).delete()

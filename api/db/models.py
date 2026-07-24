@@ -118,6 +118,134 @@ class ScanSchedule(Base):
     __table_args__ = (Index("ix_scan_schedules_tenant_enabled", "tenant_id", "enabled"),)
 
 
+class EndpointDevice(Base):
+    """A Lariska-managed endpoint (Endpoint Inventory Integration, Agent_plan.md).
+
+    Separate identity from the network-scanner ``Asset``/``AssetIdentifier``
+    tables — an endpoint may or may not link to an ``Asset`` (``asset_id``).
+    Business-rule validation (reconciliation, bounds) lives in
+    ``api/services/endpoint_inventory.py``.
+    """
+
+    __tablename__ = "endpoint_devices"
+
+    device_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
+    agent_id: Mapped[str]
+    asset_id: Mapped[str | None] = mapped_column(ForeignKey("assets.asset_id"), default=None)
+    hostname: Mapped[str]
+    os_family: Mapped[str | None] = mapped_column(default=None)
+    os_name: Mapped[str | None] = mapped_column(default=None)
+    os_version: Mapped[str | None] = mapped_column(default=None)
+    os_arch: Mapped[str | None] = mapped_column(default=None)
+    agent_version: Mapped[str]
+    labels: Mapped[dict] = mapped_column(JSON, default=dict)
+    reconciliation_status: Mapped[str] = mapped_column(default="linked")  # linked | conflict | unlinked
+    first_seen: Mapped[datetime]
+    last_seen: Mapped[datetime]
+    last_inventory_at: Mapped[datetime | None] = mapped_column(default=None)
+    latest_snapshot_id: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", name="uq_endpoint_device_tenant_agent"),
+    )
+
+
+class EndpointIdentifier(Base):
+    """Agent-hashed platform identifier (MAC/serial/BIOS-UUID/TPM-EK). Only
+    hashes are ever stored — never the raw machine identifier."""
+
+    __tablename__ = "endpoint_identifiers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("endpoint_devices.device_id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    identifier_type: Mapped[str]
+    value_hash: Mapped[str]
+    first_seen: Mapped[datetime]
+    last_seen: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "identifier_type", "value_hash", name="uq_endpoint_identifier"
+        ),
+    )
+
+
+class EndpointInventorySnapshot(Base):
+    """One accepted inventory submission for a device. ``snapshot_id`` is
+    agent-supplied (idempotency key); ``payload_digest`` is the canonical
+    sha256 used to detect exact-replay vs. conflicting-content resubmits."""
+
+    __tablename__ = "endpoint_inventory_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("endpoint_devices.device_id"), index=True)
+    schema_version: Mapped[int]
+    collected_at: Mapped[datetime]
+    received_at: Mapped[datetime]
+    payload_digest: Mapped[str]
+    software_count: Mapped[int]
+    collector_warnings: Mapped[dict] = mapped_column(JSON, default=dict)
+    response: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "snapshot_id", name="uq_endpoint_snapshot"),
+    )
+
+
+class EndpointSoftwareItem(Base):
+    """A single software row within one snapshot. ``comparison_key`` is the
+    stable sha256(name|publisher|architecture|source) used for diffing
+    against the device's previous accepted snapshot."""
+
+    __tablename__ = "endpoint_software_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_inventory_snapshots.snapshot_id"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    device_id: Mapped[str] = mapped_column(index=True)
+    comparison_key: Mapped[str]
+    name: Mapped[str]
+    version: Mapped[str | None] = mapped_column(default=None)
+    publisher: Mapped[str | None] = mapped_column(default=None)
+    architecture: Mapped[str | None] = mapped_column(default=None)
+    source: Mapped[str]
+    install_location: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id", "comparison_key", name="uq_software_item_snapshot_key"
+        ),
+    )
+
+
+class EndpointSoftwareChange(Base):
+    """installed/removed/updated event computed by diffing two consecutive
+    accepted snapshots for a device. Suppressed for a device's first
+    snapshot. No upgrade/downgrade ordering is claimed for ``updated``."""
+
+    __tablename__ = "endpoint_software_changes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("endpoint_devices.device_id"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("endpoint_inventory_snapshots.snapshot_id"))
+    comparison_key: Mapped[str]
+    event_type: Mapped[str]  # installed | removed | updated
+    old_version: Mapped[str | None] = mapped_column(default=None)
+    new_version: Mapped[str | None] = mapped_column(default=None)
+    display_name: Mapped[str]
+    observed_at: Mapped[datetime]
+
+    __table_args__ = (
+        Index("ix_endpoint_software_changes_device_time", "device_id", "observed_at"),
+    )
+
+
 class AssetTag(Base):
     __tablename__ = "asset_tags"
 

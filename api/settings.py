@@ -69,6 +69,16 @@ class Settings:
     # default since postgres_url always resolves (sqlite fallback), unlike
     # the opt-in NATS/ClickHouse sidecars.
     scheduler_dispatch_enabled: bool = True
+    # Lariska endpoint-inventory ingestion (Agent_plan.md S1-S7). Router is
+    # only registered when this is true.
+    endpoint_inventory_enabled: bool = True
+    endpoint_inventory_max_software_items: int = 5000
+    endpoint_inventory_max_identifiers: int = 16
+    endpoint_inventory_max_labels: int = 32
+    endpoint_inventory_max_string_length: int = 512
+    endpoint_inventory_max_snapshot_age_seconds: int = 86400
+    endpoint_inventory_max_future_skew_seconds: int = 300
+    endpoint_inventory_rate_limit_per_hour: int = 12
 
 
 def load_settings() -> Settings:
@@ -111,4 +121,27 @@ def load_settings() -> Settings:
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
+        endpoint_inventory_enabled=os.environ.get("OCTO_ENDPOINT_INVENTORY_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        endpoint_inventory_max_software_items=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_SOFTWARE_ITEMS", "5000")
+        ),
+        endpoint_inventory_max_identifiers=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_IDENTIFIERS", "16")
+        ),
+        endpoint_inventory_max_labels=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_LABELS", "32")
+        ),
+        endpoint_inventory_max_string_length=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_STRING_LENGTH", "512")
+        ),
+        endpoint_inventory_max_snapshot_age_seconds=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_SNAPSHOT_AGE_SECONDS", "86400")
+        ),
+        endpoint_inventory_max_future_skew_seconds=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_FUTURE_SKEW_SECONDS", "300")
+        ),
+        endpoint_inventory_rate_limit_per_hour=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR", "12")
+        ),
     )

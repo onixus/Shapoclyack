@@ -6,6 +6,25 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Endpoint inventory ingestion (Lariska agent integration, S1-S7)** — a new
+  `POST /api/endpoint/inventory` contract (schema v1) lets the separate
+  Lariska endpoint agent submit device identity/OS metadata and installed-
+  software snapshots, authenticated via the existing agent-JWT/legacy-token
+  `require_agent` dependency and kept fully independent of the network-scan
+  agent protocol (`ingest.raw_results`, job claim/upload). New Postgres tables
+  (`endpoint_devices`, `endpoint_identifiers`, `endpoint_inventory_snapshots`,
+  `endpoint_software_items`, `endpoint_software_changes`, migration `0004`)
+  back idempotent snapshot ingestion (natural-key digest, replay-safe),
+  tenant-scoped asset reconciliation (exact-FQDN link, new endpoint-backed
+  asset, or a reviewable `conflict` state — never auto-merged), and
+  installed/removed/updated software-diff events (suppressed on first
+  snapshot). Only agent-hashed platform identifiers are ever stored, never a
+  raw MAC/serial. New read APIs (`GET /api/endpoint/devices[/…]`,
+  `GET /api/assets/{id}/software`) and an Endpoint/Software section on the
+  Web UI asset card. Gated by `OCTO_ENDPOINT_INVENTORY_ENABLED` (default on).
+  NATS event publish (S8), retention/ops (S9), and the cross-repo e2e test
+  (S10) are deferred to a follow-up.
+
 - **Continuous org-level scan scheduling (Phase 8.5)** — a new per-tenant
   `scan_schedules` table (cron or fixed-interval cadence, target set + scan
   options) managed via `/api/schedules` (`GET`/`POST`/`PATCH` for operators,
