@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from api import __version__
+from api.services import config_override
 from api.settings import Settings
 
 LOG = logging.getLogger(__name__)
@@ -121,17 +122,37 @@ def _stage_enabled(config: dict[str, Any], section: str, key: str = "enabled") -
     return bool(isinstance(node, dict) and node.get(key))
 
 
-def scan_config_summary(config: dict[str, Any]) -> dict[str, Any]:
+def _effective_overrides(settings: Settings) -> dict[str, Any]:
+    """Whitelisted config paths as actually applied (base file + stored
+    overrides). Fail-soft to ``{}`` on any error (matches editable_snapshot /
+    get_overrides) so a Postgres hiccup degrades to base-file values below,
+    never a 500."""
+    try:
+        return config_override.editable_snapshot(settings).get("effective", {})
+    except Exception:  # noqa: BLE001 - fail-soft status view
+        LOG.warning("system_status: could not load config overrides", exc_info=True)
+        return {}
+
+
+def scan_config_summary(config: dict[str, Any], effective: dict[str, Any] | None = None) -> dict[str, Any]:
+    effective = effective or {}
     profiles = config.get("profiles", {})
     nse = config.get("nse_profiles", {})
     return {
         "profiles": sorted(profiles.keys()) if isinstance(profiles, dict) else [],
         "nse_profiles": sorted(nse.keys()) if isinstance(nse, dict) else [],
         "stages": {
-            "fingerprint": _stage_enabled(config, "fingerprint"),
-            "tls_posture": _stage_enabled(config, "tls_posture"),
-            "nuclei": _stage_enabled(config, "nuclei"),
-            "pdf_summary": _stage_enabled(config, "reporting", "pdf_summary"),
+            # fingerprint/tls_posture/nuclei/pdf_summary are editable via the
+            # Web UI's config overrides (Postgres-backed, see config_override.py)
+            # -- prefer the effective (overridden) value over the base file so
+            # this panel doesn't lag behind what an admin actually saved.
+            "fingerprint": bool(effective.get("fingerprint.enabled", _stage_enabled(config, "fingerprint"))),
+            "tls_posture": bool(effective.get("tls_posture.enabled", _stage_enabled(config, "tls_posture"))),
+            "nuclei": bool(effective.get("nuclei.enabled", _stage_enabled(config, "nuclei"))),
+            "pdf_summary": bool(
+                effective.get("reporting.pdf_summary", _stage_enabled(config, "reporting", "pdf_summary"))
+            ),
+            # Not overridable (no whitelist entry in config_override.py) -- base file only.
             "alerts": _stage_enabled(config, "alerts"),
             "defectdojo": _stage_enabled(config, "defectdojo"),
             "scheduler": _stage_enabled(config, "scheduler"),
@@ -180,7 +201,7 @@ def build_status(settings: Settings) -> dict[str, Any]:
         "app_version": __version__,
         "tools": tool_versions(),
         "enrichment": enrichment_status(config),
-        "scan_config": scan_config_summary(config),
+        "scan_config": scan_config_summary(config, _effective_overrides(settings)),
         "runtime": runtime_info(settings),
         "inventory": inventory_counts(),
     }

@@ -66,3 +66,27 @@ def test_system_status_leaks_no_secrets():
 def test_system_status_requires_auth():
     client = _client()
     assert client.get("/api/system").status_code == 401
+
+
+def test_system_status_reflects_config_overrides():
+    """A saved override for an editable stage must show up in the Pipeline
+    Stages panel, not just in GET /config -- system_status previously read
+    only the base YAML file and silently ignored the overrides table."""
+    client = _client()
+    admin_token = _token(client, "admin", "admin-change-me")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    put_response = client.put(
+        "/api/config",
+        json={"overrides": {"fingerprint.enabled": True, "tls_posture.enabled": True}},
+        headers=headers,
+    )
+    assert put_response.status_code == 200
+    try:
+        stages = client.get("/api/system", headers=headers).json()["scan_config"]["stages"]
+        assert stages["fingerprint"] is True
+        assert stages["tls_posture"] is True
+        # Untouched stages are still read straight from the base file.
+        assert stages["nuclei"] is False
+    finally:
+        client.put("/api/config", json={"overrides": {}}, headers=headers)
