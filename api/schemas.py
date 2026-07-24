@@ -185,6 +185,54 @@ class AgentClaimResponse(BaseModel):
     tenant_id: str = "default"
 
 
+class CreateScheduleRequest(BaseModel):
+    tenant_id: str | None = None
+    name: str = Field(min_length=1, max_length=128)
+    cron: str | None = None
+    interval_seconds: int | None = None
+    mode: Literal["safe", "balanced", "fast"] = "balanced"
+    delta: bool = True
+    skip_nse: bool = False
+    notify: bool = False
+    export_defectdojo: bool = False
+    ranges: str | None = None
+    domains: str | None = None
+    ports: str | None = None
+    ports_udp: str | None = None
+
+
+class UpdateScheduleRequest(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    cron: str | None = None
+    interval_seconds: int | None = None
+    mode: Literal["safe", "balanced", "fast"] | None = None
+    delta: bool | None = None
+    skip_nse: bool | None = None
+    notify: bool | None = None
+    export_defectdojo: bool | None = None
+    ranges: str | None = None
+    domains: str | None = None
+    ports: str | None = None
+    ports_udp: str | None = None
+
+
+class ScheduleInfo(BaseModel):
+    schedule_id: str
+    tenant_id: str
+    name: str
+    enabled: bool
+    cron: str | None = None
+    interval_seconds: int | None = None
+    scan_options: dict[str, Any]
+    targets: dict[str, Any]
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    last_job_id: str | None = None
+    created_at: str | None = None
+    created_by: str | None = None
+
+
 class AgentCompleteRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128)
     exit_code: int = 0

@@ -16,6 +16,7 @@ from api.routes import auth as auth_routes
 from api.routes import jobs as jobs_routes
 from api.routes import config as config_routes
 from api.routes import runs as runs_routes
+from api.routes import schedules as schedules_routes
 from api.routes import system as system_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
@@ -23,6 +24,8 @@ from api.services import ch_ingest_worker
 from api.services import clickhouse_client
 from api.services import jobs as jobs_service
 from api.services import nats_bus
+from api.services import scan_schedules
+from api.services import schedule_dispatcher
 from api.services import tenants as tenants_service
 
 
@@ -37,9 +40,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             clickhouse_url=settings.clickhouse_url,
             settings=settings,
         )
+    schedule_dispatcher.start_worker(settings)
     try:
         yield
     finally:
+        schedule_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()
         nats_bus.shutdown_bus()
 
@@ -49,6 +54,7 @@ def create_app() -> FastAPI:
     tenants_service.load_tenants(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
+    scan_schedules.configure(settings)
 
     app = FastAPI(
         title="Octo-man API",
@@ -89,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(assets_routes.router, prefix="/api")
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
+    app.include_router(schedules_routes.router, prefix="/api")
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():

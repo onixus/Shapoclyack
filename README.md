@@ -332,6 +332,10 @@ Override with `OCTO_API_USERS` (JSON list of `{username,password,role}`) and set
   `ports_udp` (newline-separated). When set, the API writes per-job inputs under
   `state/job_inputs/<job_id>/` and passes `--ranges` / `--domains` / `--ports-file` /
   `--ports-udp-file`. The Jobs page exposes the same fields.
+- `GET|POST /api/schedules`, `GET|PATCH /api/schedules/{id}` (operator+), `DELETE /api/schedules/{id}` (admin) —
+  per-tenant recurring scan schedules (cron or fixed-interval; same target/scan-option fields as `POST /api/jobs`
+  plus `name`). An in-process dispatcher polls due schedules and starts jobs automatically — no per-tenant
+  K8s CronJob needed.
 - `GET /api/agents` (operator+) — registered remote agents
 - Agent API (shared bearer `OCTO_AGENT_TOKEN`): `POST /api/agent/register`,
   `POST /api/agent/heartbeat`, `POST /api/agent/jobs/claim`,

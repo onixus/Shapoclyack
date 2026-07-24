@@ -90,6 +90,34 @@ class AssetIdentifier(Base):
     )
 
 
+class ScanSchedule(Base):
+    """Per-tenant recurring scan schedule (Phase 8.5).
+
+    Dispatched by ``api.services.schedule_dispatcher`` in-process (same pod as
+    the API, alongside the ClickHouse ingest worker) rather than one K8s
+    CronJob per tenant. ``cron`` and ``interval_seconds`` are mutually
+    exclusive; enforced in ``api/services/scan_schedules.py``, not here.
+    """
+
+    __tablename__ = "scan_schedules"
+
+    schedule_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
+    name: Mapped[str]
+    enabled: Mapped[bool] = mapped_column(default=True)
+    cron: Mapped[str | None] = mapped_column(default=None)
+    interval_seconds: Mapped[int | None] = mapped_column(default=None)
+    scan_options: Mapped[dict] = mapped_column(JSON, default=dict)
+    targets: Mapped[dict] = mapped_column(JSON, default=dict)
+    next_run_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_run_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_job_id: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (Index("ix_scan_schedules_tenant_enabled", "tenant_id", "enabled"),)
+
+
 class AssetTag(Base):
     __tablename__ = "asset_tags"
 

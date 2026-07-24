@@ -4,6 +4,19 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Added
+
+- **Continuous org-level scan scheduling (Phase 8.5)** — a new per-tenant
+  `scan_schedules` table (cron or fixed-interval cadence, target set + scan
+  options) managed via `/api/schedules` (`GET`/`POST`/`PATCH` for operators,
+  `DELETE` for admins). An in-process dispatcher thread, started from the API
+  `lifespan` alongside the existing ClickHouse ingest worker, polls due
+  schedules every 30s and starts jobs through the existing `jobs_service.start_scan`
+  — skipping a tick if the schedule's previous job is still running. No new
+  K8s CronJob/Deployment needed; the original single-tenant `scanner/scheduler.py`
+  and static `k8s/octo-man/base/cronjob.yaml` are unchanged for simple
+  self-hosted deployments.
+
 ## [0.36-0723] — 2026-07-23
 
 ### Fixed
