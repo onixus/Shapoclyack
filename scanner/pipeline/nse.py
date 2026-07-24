@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,6 +15,11 @@ from .protocol import (
     parse_endpoint,
 )
 from .utils import run_command, write_lines
+
+
+def _running_as_root() -> bool:
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() == 0
 
 
 def _format_nmap_host(host: str) -> str:
@@ -67,7 +73,19 @@ def _build_nmap_command(
     if version_detection:
         command.append("-sV")
     if os_detection and scan_protocol == "tcp":
-        command += ["-O", "--osscan-guess"]
+        if _running_as_root():
+            command += ["-O", "--osscan-guess"]
+        else:
+            # nmap hard-requires euid 0 for -O regardless of capabilities
+            # (cap_net_raw/cap_net_admin aren't enough) and refuses to run the
+            # WHOLE command -- not just skip OS detection -- when unprivileged,
+            # which would silently kill -sV and every NSE script too. The
+            # all-in-one image runs as a non-root user by design (Dockerfile.allinone),
+            # so drop it here rather than losing the entire scan.
+            logging.warning(
+                "os_detection is enabled but the process is not root; skipping -O/--osscan-guess "
+                "(nmap requires root for OS fingerprinting -- version detection and NSE scripts still run)"
+            )
     if per_process_rate > 0:
         command += ["--max-rate", str(per_process_rate)]
     command += ["--script", scripts]
@@ -112,7 +130,14 @@ def _scan_host_group(
         per_process_rate,
         scan_protocol,
     )
-    run_command(command, timeout=timeout, retries=retries, check=False, capture_output=False)
+    completed = run_command(command, timeout=timeout, retries=retries, check=False, capture_output=True)
+    if completed.returncode != 0:
+        logging.warning(
+            "nmap exited %s for host group [%s]: %s",
+            completed.returncode,
+            ", ".join(hosts),
+            (completed.stderr or completed.stdout or "").strip()[:500],
+        )
     return hosts
 
 

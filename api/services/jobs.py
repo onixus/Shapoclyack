@@ -35,6 +35,16 @@ def _persist(settings: Settings) -> None:
 
 
 def load_jobs(settings: Settings) -> None:
+    """Restore persisted jobs at process startup.
+
+    Local-mode jobs run in an in-process thread (see ``_run_job``): its only
+    executor dies with the process, so any job still ``queued``/``running``
+    at load time was orphaned by a crash or restart and will never be updated
+    again -- reconcile it to ``failed`` here rather than leaving it stuck
+    forever. Agent-mode jobs are untouched: their execution lives on a remote
+    agent process independent of this one, so ``running``/``queued`` there is
+    still meaningful.
+    """
     path = _jobs_file(settings)
     if not path.exists():
         return
@@ -44,10 +54,20 @@ def load_jobs(settings: Settings) -> None:
         return
     if not isinstance(raw, list):
         return
+    changed = False
+    now = datetime.now(UTC).isoformat()
     with _LOCK:
         for item in raw:
-            if isinstance(item, dict) and item.get("job_id"):
-                _JOBS[str(item["job_id"])] = item
+            if not (isinstance(item, dict) and item.get("job_id")):
+                continue
+            if item.get("execution") == "local" and item.get("status") in {"queued", "running"}:
+                item["status"] = "failed"
+                item["finished_at"] = now
+                item["error"] = "Interrupted by API process restart before completion"
+                changed = True
+            _JOBS[str(item["job_id"])] = item
+        if changed:
+            _persist(settings)
 
 
 def list_jobs() -> list[JobInfo]:
