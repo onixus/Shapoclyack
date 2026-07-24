@@ -65,6 +65,10 @@ class Settings:
     # Asset lifecycle: active assets not re-observed within this many days flip
     # to "stale" at the end of every ingest (api/services/assets.py).
     asset_stale_days: int = 14
+    # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
+    # default since postgres_url always resolves (sqlite fallback), unlike
+    # the opt-in NATS/ClickHouse sidecars.
+    scheduler_dispatch_enabled: bool = True
 
 
 def load_settings() -> Settings:
@@ -105,4 +109,6 @@ def load_settings() -> Settings:
         in {"1", "true", "yes"},
         postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip() or "sqlite:///scanner/state/octo_man.db",
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
+        scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
     )

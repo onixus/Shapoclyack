@@ -156,7 +156,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** evolve Octo-man from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
 
-**Status:** Phase 7 **done** (MVP); Phase 8 partially done (8.1–8.4); Phase 9 partially done (9.1, 9.2, 9.4) — remainder **Planned**.
+**Status:** Phase 7 **done** (MVP); Phase 8 **done** (8.1–8.5); Phase 9 partially done (9.1, 9.2, 9.4) — remainder **Planned**.
 
 ### Phase 7 — Asset Inventory & Identity Graph
 
@@ -175,7 +175,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** surface assets the customer never declared — the defining trait of EASM vs. seed-list scanning.
 
-**Status:** **8.1–8.4 done** (MVP); **8.5 deferred** to a follow-up phase (continuous org-level scheduling — independent new surface, not an extension of 8.1–8.4's code). 8.3's original "public cloud ranges by org tag" half was dropped as not honestly implementable — AWS/GCP publish IP ranges tagged by service+region, not by customer organization; there is no public API that attributes a cloud IP to a specific org.
+**Status:** **Done** (8.1–8.5). 8.3's original "public cloud ranges by org tag" half was dropped as not honestly implementable — AWS/GCP publish IP ranges tagged by service+region, not by customer organization; there is no public API that attributes a cloud IP to a specific org.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
@@ -183,7 +183,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 | 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py` | Adds an `otx` (AlienVault OTX passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in wordlist brute-force pass (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`, concurrency/candidate-capped) | **Done** |
 | 8.3 | Cloud resource discovery | `scanner/pipeline/cloud_discovery.py` (new) | S3/GCS/Azure Blob bucket + container enumeration via unauthenticated HEAD/GET against public provider endpoints; org tokens × wordlist candidates, hard-capped at `max_candidates` (default 500) and `concurrency` (default 10) since checks hit shared third-party cloud infrastructure, not the target's own hosts; findings reported, never merged into scan scope | **Done** |
 | 8.4 | Typosquat / domain monitoring | `scanner/pipeline/domain_monitor.py` (new) | Look-alike domain candidates (omission/transposition/keyboard-adjacent/doubling/homoglyph/TLD-swap generators) resolved via passive dnsx A/AAAA lookups only — same risk class as `ct.brute_force`, never merged into scan scope; plus a dangling-CNAME/subdomain-takeover heuristic over the org's own in-scope FQDNs (CNAME target matches a known vulnerable-service suffix AND has no A/AAAA record) that flags the pattern + non-resolution only and never confirms an actual takeover | **Done** |
-| 8.5 | Continuous org-level scheduling | `scanner/scheduler.py`, K8s CronJob | Move from one-shot scans to a recurring discovery loop with delta output | **Planned** |
+| 8.5 | Continuous org-level scheduling | `api/db/models.py` (`ScanSchedule`), `api/services/scan_schedules.py`, `api/services/schedule_dispatcher.py`, `api/routes/schedules.py` | Per-tenant `scan_schedules` table (cron or fixed-interval, target set + scan options); an in-process dispatcher thread (started from the API `lifespan`, same pattern as the ClickHouse ingest worker — no per-tenant K8s CronJob) polls due schedules and calls the existing `jobs_service.start_scan`, skipping a tick if the schedule's previous job is still running. `CRUD via `/api/schedules` (operator role; delete is admin-only). API-only this iteration, no web-next UI. The original `scanner/scheduler.py`/static `cronjob.yaml` remain as-is for simple single-tenant self-hosts. | **Done** |
 
 ### Phase 9 — Exposure Fingerprinting
 
@@ -253,4 +253,4 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 
-Phases 1–6 and Phase 7 are **Done** (merged to `main`); Phase 8 is partially done (8.1–8.4); Phase 9 is partially done (9.1, 9.2, 9.4); Phase 10 is partially done (10.1); Phase 11 is **Done** (11.1–11.6 — asset card, attack-surface graph, exec dashboard, reports, system status, editable configurator).
+Phases 1–8 are **Done** (merged to `main`); Phase 9 is partially done (9.1, 9.2, 9.4); Phase 10 is partially done (10.1); Phase 11 is **Done** (11.1–11.6 — asset card, attack-surface graph, exec dashboard, reports, system status, editable configurator).

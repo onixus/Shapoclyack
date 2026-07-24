@@ -102,11 +102,12 @@ def reset_for_tests() -> None:
     """Clear tenants/provisioning_keys tables (test isolation only)."""
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
-        # Children before parents (FK constraints): identifiers/tags -> assets
-        # -> provisioning_keys -> tenants.
+        # Children before parents (FK constraints): identifiers/tags -> assets;
+        # scan_schedules/provisioning_keys -> tenants.
         session.query(models.AssetIdentifier).delete()
         session.query(models.AssetTag).delete()
         session.query(models.Asset).delete()
+        session.query(models.ScanSchedule).delete()
         session.query(models.ProvisioningKey).delete()
         session.query(models.Tenant).delete()
 
