@@ -41,8 +41,9 @@ unavailable PostgreSQL URL, or a read-only mounted output directory.
 ## Nmap, Naabu, DNSx, or Nuclei fails
 
 ```bash
-docker run --rm ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723 \
-  sh -lc 'nmap --version; naabu -version; dnsx -version; nuclei -version'
+docker run --rm --entrypoint sh \
+  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723 \
+  -lc 'nmap --version; naabu -version; dnsx -version; nuclei -version'
 ```
 
 Use the pinned image tag, not `latest`. Exit code `4` means an external stage
@@ -89,7 +90,7 @@ forensics rather than deleting it before diagnosis.
 ```bash
 bash k8s/scripts/validate-kustomize.sh
 kubectl kustomize k8s/octo-man/overlays/dev
-kubectl -n octo-man get events --sort-by=.lastTimestamp
+kubectl -n network-scan get events --sort-by=.lastTimestamp
 ```
 
 Optional overlays can require CRDs, a ReadWriteMany StorageClass, or secrets

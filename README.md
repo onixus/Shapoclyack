@@ -131,7 +131,7 @@ scanner/inputs/ports.txt       # optional TCP ports
 scanner/inputs/ports_udp.txt   # optional UDP ports
 ```
 
-Each run is isolated under `scanner/output/<run_id>/`. Depending on enabled
+Each run is isolated under `scanner/output/runs/<run_id>/`. Depending on enabled
 stages, artifacts include machine-readable JSON/JSONL/CSV, Markdown/HTML/PDF
 reports, scan logs, Nmap XML, diffs, enrichment results, and checkpoints.
 

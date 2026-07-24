@@ -4,6 +4,11 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Fixed
+
+- Shut down the dedicated NATS event loop cleanly so pending client tasks do not
+  survive until pytest closes the loop.
+
 ### Changed
 
 - Refactored the documentation into task-oriented guides under `docs/`, reduced

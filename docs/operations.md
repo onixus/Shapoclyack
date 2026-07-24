@@ -5,7 +5,7 @@
 Every scan writes to:
 
 ```text
-scanner/output/<run_id>/
+scanner/output/runs/<run_id>/
 ```
 
 The directory can contain:
@@ -108,8 +108,8 @@ docker compose logs --tail=200 shapoclyack
 Kubernetes:
 
 ```bash
-kubectl -n octo-man get pods,jobs,cronjobs
-kubectl -n octo-man logs deployment/octo-man-api --tail=200
+kubectl -n network-scan get pods,jobs,cronjobs
+kubectl -n network-scan logs deployment/octo-man-api --tail=200
 ```
 
 ## Backups

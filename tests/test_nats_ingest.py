@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+import threading
 
 import pytest
 
@@ -53,6 +54,43 @@ def test_publish_raw_results_without_nats(monkeypatch):
     assert meta["published"] is False
     assert meta["msg_id"]
     assert meta["archive_sha256"] == nats_bus.archive_sha256(archive)
+
+
+def test_nats_bus_close_waits_for_shutdown_and_closes_loop():
+    class FakeNatsClient:
+        is_closed = False
+        drained = False
+        closed = False
+
+        async def drain(self):
+            self.drained = True
+
+        async def close(self):
+            self.closed = True
+            self.is_closed = True
+
+    bus = nats_bus.NatsBus(nats_bus.NatsConfig(url="nats://localhost:4222"))
+    client = FakeNatsClient()
+    ready = threading.Event()
+
+    bus._nc = client  # noqa: SLF001
+    bus._js = object()  # noqa: SLF001
+    bus._started = True  # noqa: SLF001
+    bus._thread.start()  # noqa: SLF001
+    bus._loop.call_soon_threadsafe(ready.set)  # noqa: SLF001
+    assert ready.wait(timeout=1)
+
+    bus.close()
+
+    assert client.drained
+    assert client.closed
+    assert not bus._thread.is_alive()  # noqa: SLF001
+    assert bus._loop.is_closed()  # noqa: SLF001
+    assert bus._nc is None  # noqa: SLF001
+    assert bus._js is None  # noqa: SLF001
+    assert not bus._started  # noqa: SLF001
+
+    bus.close()
 
 
 @requires_postgres

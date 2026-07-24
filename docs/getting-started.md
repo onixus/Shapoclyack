@@ -152,7 +152,7 @@ Check:
 
 - the job reaches `succeeded`;
 - a run appears under **Runs**;
-- `scanner/output/<run_id>/` contains `run.json` and stage artifacts;
+- `scanner/output/runs/<run_id>/` contains `run_meta.json` and stage artifacts;
 - summary counts are plausible for the authorized target set;
 - external tool errors are absent from the run log.
 
