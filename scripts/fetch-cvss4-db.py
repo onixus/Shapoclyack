@@ -74,21 +74,36 @@ def _extract_cvss4(metrics: dict) -> dict | None:
     return None
 
 
-def fetch_cve(cve_id: str, api_key: str | None) -> dict | None:
+def fetch_cve(cve_id: str, api_key: str | None, *, retries: int = 5) -> dict | None:
     params = urllib.parse.urlencode({"cveId": cve_id})
     req = urllib.request.Request(f"{NVD_URL}?{params}")
     req.add_header("User-Agent", "octo-man-cvss4-fetch/1.0")
     if api_key:
         req.add_header("apiKey", api_key)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        print(f"warn: {cve_id}: HTTP {exc.code}", file=sys.stderr)
-        return None
-    except Exception as exc:  # noqa: BLE001
-        print(f"warn: {cve_id}: {exc}", file=sys.stderr)
-        return None
+    # NVD's anonymous rate limit is 5 req/30s (50/30s with an API key) -- a
+    # 429 here isn't a permanent failure like a 404, so back off and retry
+    # instead of dropping the CVE (this is what silently lost ~80% of a
+    # 150-CVE batch before this fix).
+    backoff = 8.0
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+                break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < retries:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                delay = float(retry_after) if retry_after else backoff
+                print(f"warn: {cve_id}: HTTP 429, retrying in {delay:.0f}s (attempt {attempt + 1}/{retries})",
+                      file=sys.stderr)
+                time.sleep(delay)
+                backoff = min(backoff * 2, 60.0)
+                continue
+            print(f"warn: {cve_id}: HTTP {exc.code}", file=sys.stderr)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            print(f"warn: {cve_id}: {exc}", file=sys.stderr)
+            return None
     for item in payload.get("vulnerabilities") or []:
         cve = item.get("cve") or {}
         if str(cve.get("id", "")).upper() != cve_id.upper():
