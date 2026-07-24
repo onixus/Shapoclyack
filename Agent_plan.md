@@ -625,15 +625,119 @@ For each issue:
 10. Stop if Lariska's payload diverges from schema v1; update the shared
     contract intentionally rather than accepting undocumented fields.
 
-## 19. Decisions required before S1 closes
+## 19. Decisions (closed 2026-07-24)
 
-- maximum inventory request size and software entry count;
-- snapshot/history retention period;
-- whether raw or hashed machine identifiers are stored;
-- software comparison-key policy;
-- handling of incomplete/partial collector results;
-- compression support;
-- endpoint staleness threshold;
-- whether endpoint-only assets appear in all existing asset views;
-- tenant export/deletion semantics;
-- minimum supported Lariska schema and agent versions.
+All ten items below are resolved. Several were already fixed by the S1-S7
+implementation; this section makes them explicit so S8-S10 build against a
+documented decision instead of re-deriving one from code.
+
+1. **Maximum inventory request size and software entry count** — bounded by
+   the existing per-field limits already enforced in
+   [api/settings.py](api/settings.py:75) /
+   [api/services/endpoint_inventory.py:99-138](api/services/endpoint_inventory.py):
+   `endpoint_inventory_max_software_items=5000`,
+   `endpoint_inventory_max_identifiers=16`, `endpoint_inventory_max_labels=32`,
+   `endpoint_inventory_max_string_length=512`. No separate total-byte cap
+   exists today; worst case (5000 items x ~6 bounded string fields x 512
+   bytes) stays under ~15 MB. Decision: add an explicit
+   `OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES` (default `15728640`, 15 MiB) hard
+   request-size check as part of S9, rejecting oversized bodies with `413`
+   before JSON parsing. Until S9 lands, the per-field limits are the
+   effective cap.
+
+2. **Snapshot/history retention period** — not yet implemented (S9, per
+   `CHANGELOG.md` Unreleased). Decision: keep full snapshot + software-item
+   rows for 90 days (`OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS`,
+   default `90`), then prune `endpoint_software_items` rows for snapshots
+   older than that while keeping the snapshot summary row (id, digest,
+   counts, timestamps) and all `endpoint_software_changes` events for 1 year
+   (`OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS`, default `365`) for audit
+   history. S9 must implement this as a scheduled cleanup job, tenant-scoped
+   and observable per Section 15.
+
+3. **Raw vs. hashed machine identifiers** — already decided and implemented:
+   hashed only. `EndpointIdentifier` stores `value_hash`
+   ([api/db/models.py:154-172](api/db/models.py)); the API never sees or
+   computes a hash from a raw MAC/serial
+   ([api/services/endpoint_inventory.py:9-10](api/services/endpoint_inventory.py)).
+   Supported types are constrained to `mac_hash`, `serial_hash`,
+   `bios_uuid_hash`, `tpm_ek_hash`
+   ([api/schemas.py:379](api/schemas.py)). No change needed; documented as
+   final.
+
+4. **Software comparison-key policy** — already decided and implemented:
+   `name + publisher + architecture + source` (lowercased/stripped, sha256
+   hashed), with `version` deliberately excluded from the key and tracked
+   separately as `old_version`/`new_version` on `EndpointSoftwareChange`
+   ([api/services/endpoint_inventory.py:81-90](api/services/endpoint_inventory.py),
+   [api/db/models.py:226-246](api/db/models.py)). No change needed;
+   documented as final.
+
+5. **Handling of incomplete/partial collector results** — already decided
+   and implemented: accept-with-warnings, no partial-rejection.
+   `collector_warnings: list[str]` is stored verbatim as free text on the
+   snapshot ([api/schemas.py:399](api/schemas.py),
+   [api/services/endpoint_inventory.py:308](api/services/endpoint_inventory.py))
+   and returned via `list_snapshots`. There is no completeness score and no
+   rejection tied to warning count or an empty `software` list. Decision:
+   keep this behavior — a collector that reports warnings still gets a
+   durable, queryable snapshot; do not add a hard rejection threshold.
+
+6. **Compression support** — decided: not supported, intentionally. Given
+   the bounds in item 1, worst-case payload size is small enough to send
+   uncompressed over HTTPS without a meaningful latency or bandwidth cost.
+   No `Content-Encoding` handling exists in
+   [api/routes/endpoint_inventory.py](api/routes/endpoint_inventory.py) and
+   none is planned. Revisit only if real-world snapshot sizes are shown to
+   exceed the bound in practice.
+
+7. **Endpoint staleness threshold** — decided: 48 hours. This formalizes the
+   value already used for display purposes as `STALE_INVENTORY_HOURS = 48`
+   in
+   [web-next/src/app/(dashboard)/assets/view/page.tsx:51](web-next/src/app/(dashboard)/assets/view/page.tsx),
+   computed client-side from `last_inventory_at`. There is currently no
+   server-side equivalent of `asset_stale_days`
+   ([api/settings.py:67](api/settings.py),
+   [api/services/assets.py:142-163](api/services/assets.py)) for endpoint
+   devices. S9 must add a backend `OCTO_ENDPOINT_STALE_HOURS` setting
+   (default `48`, matching the existing frontend constant) and a device
+   status/staleness field so the threshold is enforced and observable
+   server-side rather than only rendered in the UI.
+
+8. **Whether endpoint-only assets appear in all existing asset views** —
+   already decided and implemented: yes, unfiltered. `_reconcile_asset()`
+   creates an ordinary `Asset` row (id prefix `ep_...`) with no
+   distinguishing field
+   ([api/services/endpoint_inventory.py:162-194](api/services/endpoint_inventory.py)),
+   and `list_assets`/`get_asset`
+   ([api/services/assets.py:166-231](api/services/assets.py),
+   [api/routes/assets.py:17-40](api/routes/assets.py)) return/query all
+   assets identically. No hiding or flagging is planned; documented as
+   final.
+
+9. **Tenant export/deletion semantics** — decided: endpoint inventory data
+   follows whatever general tenant-offboarding mechanism Shapoclyack adopts;
+   it is out of scope for S9 to build a bespoke export/delete flow ahead of
+   one. No such mechanism exists today for assets or agents either — the
+   only deletion-adjacent code is a test/reset helper in
+   `tenants.py:117` and the unrelated `DELETE /schedules/{id}`
+   ([api/routes/schedules.py:82](api/routes/schedules.py)). Concrete minimum
+   for S9: the migration 0004 foreign keys (`endpoint_devices.tenant_id` ->
+   `tenants.tenant_id`, and the identifier/snapshot/software/change tables
+   chaining off `device_id`/`snapshot_id`) currently have no `ondelete`
+   clause, so a future tenant-delete would fail on FK violation rather than
+   cascade. S9 should add `ondelete="CASCADE"` on these FKs in a follow-up
+   migration so endpoint data is automatically covered whenever a general
+   tenant-deletion flow ships, without needing endpoint-specific deletion
+   code.
+
+10. **Minimum supported Lariska schema and agent versions** — already
+    decided and implemented: `schema_version` is a hard `Literal[1]`
+    ([api/schemas.py:386](api/schemas.py)); any other value is rejected with
+    `422` at validation time, with no negotiation. `agent_version` is stored
+    on `EndpointDevice.agent_version`
+    ([api/db/models.py:141](api/db/models.py)) as informational metadata
+    only — no minimum-version gate exists or is needed while schema v1 is
+    the only version. Decision: keep `agent_version` informational-only;
+    introduce an explicit minimum-agent-version gate only alongside a
+    schema v2, not before.
