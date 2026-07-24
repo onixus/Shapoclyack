@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "snapshot_id": "snap_bad_version",
+  "agent_id": "lariska-agent-0001",
+  "collected_at": "2026-07-24T12:00:00Z",
+  "hostname": "workstation-01.example.internal",
+  "agent_version": "1.0.0",
+  "software": []
+}

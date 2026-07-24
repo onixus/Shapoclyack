@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap_0000000000000001",
+  "agent_id": "lariska-agent-0001",
+  "collected_at": "2026-07-24T12:00:00Z",
+  "hostname": "workstation-01.example.internal",
+  "os_family": "linux",
+  "os_name": "Ubuntu",
+  "os_version": "24.04",
+  "os_arch": "x86_64",
+  "agent_version": "1.0.0",
+  "labels": {"env": "prod"},
+  "identifiers": [
+    {"identifier_type": "mac_hash", "value_hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"}
+  ],
+  "software": [
+    {
+      "name": "openssh-server",
+      "version": "1:9.6p1-3ubuntu13",
+      "publisher": "Canonical",
+      "architecture": "amd64",
+      "source": "dpkg",
+      "install_location": null
+    },
+    {
+      "name": "curl",
+      "version": "8.5.0-2ubuntu10",
+      "publisher": "Canonical",
+      "architecture": "amd64",
+      "source": "dpkg",
+      "install_location": null
+    }
+  ],
+  "collector_warnings": []
+}

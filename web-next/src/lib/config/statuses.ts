@@ -1,4 +1,4 @@
-import type { AgentInfo, AssetStatus, JobInfo, TenantInfo } from "@/lib/api";
+import type { AgentInfo, AssetStatus, EndpointReconciliationStatus, JobInfo, TenantInfo } from "@/lib/api";
 import type { Severity } from "@/lib/run-data";
 
 export type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
@@ -56,6 +56,18 @@ export const ASSET_CRITICALITY: Record<number, StatusStyle> = {
   2: { label: "medium", className: IN_PROGRESS },
   3: { label: "high", className: "bg-orange-500/20 text-orange-300 border border-orange-500/30" },
   4: { label: "critical", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-bold" },
+};
+
+export const ENDPOINT_RECONCILIATION_STATUS: Record<EndpointReconciliationStatus, StatusStyle> = {
+  linked: { label: "linked", className: SUCCESS },
+  conflict: { label: "conflict", variant: "destructive", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold" },
+  unlinked: { label: "unlinked", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
+};
+
+export const SOFTWARE_CHANGE_STATUS: Record<"installed" | "removed" | "updated", StatusStyle> = {
+  installed: { label: "installed", className: SUCCESS },
+  removed: { label: "removed", variant: "destructive", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold" },
+  updated: { label: "updated", className: IN_PROGRESS },
 };
 
 export const SEVERITY_STATUS: Record<Severity, StatusStyle & { tremorColor: string }> = {

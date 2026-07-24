@@ -359,3 +359,99 @@ class ConfigUpdateRequest(BaseModel):
     """Flat dot-path → value overrides (only whitelisted paths are accepted)."""
 
     overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class EndpointSoftwareItem(BaseModel):
+    """One installed-software record within an inventory snapshot (Lariska agent)."""
+
+    name: str = Field(min_length=1, max_length=512)
+    version: str | None = Field(default=None, max_length=128)
+    publisher: str | None = Field(default=None, max_length=256)
+    architecture: str | None = Field(default=None, max_length=32)
+    source: Literal["apt", "dpkg", "rpm", "winreg", "msi", "brew", "other"] = "other"
+    install_location: str | None = Field(default=None, max_length=1024)
+
+
+class EndpointIdentifierIn(BaseModel):
+    """Agent-hashed platform identifier. The API never sees or stores a raw
+    machine identifier (MAC/serial/etc.) — only the hash the agent computed."""
+
+    identifier_type: Literal["mac_hash", "serial_hash", "bios_uuid_hash", "tpm_ek_hash"]
+    value_hash: str = Field(min_length=8, max_length=128)
+
+
+class EndpointInventorySnapshotRequest(BaseModel):
+    """Body for ``POST /api/endpoint/inventory`` (schema v1)."""
+
+    schema_version: Literal[1]
+    snapshot_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    collected_at: str
+    hostname: str = Field(min_length=1, max_length=255)
+    os_family: str | None = Field(default=None, max_length=64)
+    os_name: str | None = Field(default=None, max_length=128)
+    os_version: str | None = Field(default=None, max_length=128)
+    os_arch: str | None = Field(default=None, max_length=32)
+    agent_version: str = Field(min_length=1, max_length=64)
+    labels: dict[str, str] = Field(default_factory=dict)
+    identifiers: list[EndpointIdentifierIn] = Field(default_factory=list)
+    software: list[EndpointSoftwareItem] = Field(default_factory=list)
+    collector_warnings: list[str] = Field(default_factory=list)
+
+
+class EndpointInventoryResponse(BaseModel):
+    snapshot_id: str
+    status: Literal["accepted"] = "accepted"
+    device_id: str
+    asset_id: str | None = None
+    reconciliation_status: str = "linked"
+    software_count: int
+    changes: dict[str, int] = Field(default_factory=lambda: {"installed": 0, "removed": 0, "updated": 0})
+
+
+class EndpointDeviceInfo(BaseModel):
+    device_id: str
+    tenant_id: str
+    agent_id: str
+    asset_id: str | None = None
+    hostname: str
+    os_family: str | None = None
+    os_name: str | None = None
+    os_version: str | None = None
+    os_arch: str | None = None
+    agent_version: str
+    labels: dict[str, str] = Field(default_factory=dict)
+    reconciliation_status: str
+    first_seen: str | None = None
+    last_seen: str | None = None
+    last_inventory_at: str | None = None
+    latest_snapshot_id: str | None = None
+
+
+class EndpointSnapshotSummary(BaseModel):
+    snapshot_id: str
+    device_id: str
+    schema_version: int
+    collected_at: str | None = None
+    received_at: str | None = None
+    software_count: int
+    collector_warnings: list[str] = Field(default_factory=list)
+
+
+class EndpointSoftwareChangeInfo(BaseModel):
+    device_id: str
+    snapshot_id: str
+    event_type: Literal["installed", "removed", "updated"]
+    display_name: str
+    old_version: str | None = None
+    new_version: str | None = None
+    observed_at: str | None = None
+
+
+class EndpointSoftwareItemInfo(BaseModel):
+    name: str
+    version: str | None = None
+    publisher: str | None = None
+    architecture: str | None = None
+    source: str
+    install_location: str | None = None

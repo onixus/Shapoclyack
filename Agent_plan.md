@@ -1,5 +1,12 @@
 # Shapoclyack — Endpoint Inventory Integration Backlog
 
+**Status:** S1-S7 **done** (merged to `main`) — contract/schema v1, DB models +
+migration `0004_endpoint_inventory`, ingestion API with idempotency/limits,
+asset reconciliation, software diff/events, read APIs, and a Web UI
+Endpoint/Software section on the asset card. S8 (optional NATS event), S9
+(retention job + ops docs), and S10 (cross-repository e2e test) are
+**deferred** to a follow-up — see `CHANGELOG.md` `## Unreleased`.
+
 ## 1. Goal
 
 Add a secure, tenant-isolated endpoint inventory ingestion path for the Lariska
