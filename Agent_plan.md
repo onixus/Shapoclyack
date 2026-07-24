@@ -1,5 +1,8 @@
 # Shapoclyack — Endpoint Inventory Integration Backlog
 
+> Integration design and implementation history for the Lariska endpoint
+> inventory. Operator documentation starts at [docs/README.md](docs/README.md).
+
 **Status:** S1-S7 **done** (merged to `main`) — contract/schema v1, DB models +
 migration `0004_endpoint_inventory`, ingestion API with idempotency/limits,
 asset reconciliation, software diff/events, read APIs, and a Web UI

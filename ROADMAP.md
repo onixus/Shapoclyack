@@ -1,4 +1,7 @@
-# Octo-man Roadmap
+# Shapoclyack Roadmap
+
+For installation and operator guidance, see [docs/README.md](docs/README.md).
+This file tracks delivery status and is not a deployment manual.
 
 **Product:** Octo-man  
 **Repository:** [`onixus/shapoclyack`](https://github.com/onixus/Shapoclyack)  

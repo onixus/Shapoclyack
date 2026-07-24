@@ -1,75 +1,90 @@
-# Shapoclyack Web UI v2 (`web-next/`)
+# Shapoclyack Web UI
 
-Next.js 14 App Router dashboard for MSSP / Enterprise Vulnerability Management.
+The operator console is a Next.js 14 App Router application. It is exported as
+static HTML/JavaScript and served by FastAPI in production; no Node.js process
+is required in the runtime image.
 
-Production builds use **`output: "export"`** so the static `out/` tree is served by
-FastAPI from `OCTO_WEB_DIST` (aio / API images copy `out/` → `/app/web/dist`).
+Platform documentation: [../docs/README.md](../docs/README.md).
+UI guide and screenshots: [../docs/ui.md](../docs/ui.md).
 
 ## Stack
 
-- Next.js 14 (App Router) + TypeScript + Tailwind CSS
-- Shadcn UI (Slate) + Lucide icons
+- TypeScript and React 18
+- Tailwind CSS and Shadcn/Radix primitives
+- TanStack Query and Table
 - Tremor charts
-- TanStack Table + React Query
-- Axios JWT client (`src/lib/api.ts`) + Zustand auth store
+- Zustand authentication state
+- Axios API client
+- Vitest and Testing Library
 
-## Develop
+## Requirements
 
-```bash
-cd web-next
-npm install
-# API on :8080 (rewrites /api/* → API_PROXY_TARGET during next dev)
-npm run dev
-# http://localhost:3000/login
-```
+Node.js 24 or newer and a running Shapoclyack API.
 
-Optional:
+## Development
 
 ```bash
-API_PROXY_TARGET=http://localhost:8080 npm run dev
-# or point the browser client directly at the API:
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api npm run dev
+npm ci
+API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev
 ```
 
-Static export (same as Docker image build):
+Open <http://localhost:3000/login>. In development, `/api/*` is proxied to
+`API_PROXY_TARGET`.
+
+Alternatively, point the browser client directly at an API that permits the
+origin:
 
 ```bash
-npm run build   # writes out/
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8080/api npm run dev
 ```
 
-Demo users (aio defaults): `viewer` / `operator` / `admin` with `*-change-me` passwords.
+## Production build
 
-## Current pages
+```bash
+npm run build
+```
 
-| Route | Status |
-|-------|--------|
-| `/login` | JWT login against `POST /api/auth/login` |
-| `/` Dashboard | Live KPIs/charts from latest run |
-| `/tenants` | Live `GET/POST /api/tenants` + provisioning key (admin) |
-| `/assets` | Cross-run asset inventory from `GET /api/assets` (first/last seen, status) |
-| `/agents` | Live `GET /api/agents` (5s poll) |
-| `/jobs` | Live `GET/POST /api/jobs` (operator+) |
-| `/runs` | Live `GET /api/runs` (10s poll); links to detail |
-| `/runs/view?runId=` | Live run detail (static-export friendly query URL) |
+Output is written to `out/`. `Dockerfile.allinone` copies the export into the
+FastAPI-served Web distribution directory.
 
-See [ROADMAP.md](../ROADMAP.md) Phase 6.
+The warning that rewrites are not applied to `output: "export"` is expected:
+rewrites are a development convenience, while production uses same-origin
+FastAPI routes.
+
+## Routes
+
+| Route | Surface |
+|---|---|
+| `/login` | JWT login |
+| `/` | Exposure dashboard |
+| `/assets` and `/assets/view` | Persistent inventory and asset detail |
+| `/attack-surface` | Hostname/IP/port/service graph |
+| `/jobs` | Scan job creation and status |
+| `/runs` and `/runs/view` | Run history, findings, diff, and artifacts |
+| `/reports` | Report discovery and download |
+| `/agents` | Remote worker fleet |
+| `/tenants` | Tenant provisioning |
+| `/system` | Component status and validated config overrides |
+
+Query-string detail routes are intentional because static export cannot produce
+dynamic server routes.
 
 ## Scripts
 
 | Command | Purpose |
-|---------|---------|
-| `npm run dev` | Dev server with `/api/*` proxy |
-| `npm run build` | Static export to `out/` (includes typecheck + ESLint) |
-| `npm run lint` | ESLint (`next lint`) |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run test` | Vitest (unit + component tests, jsdom) |
-| `npm run format` / `format:check` | Prettier over `src/` |
+|---|---|
+| `npm run dev` | Development server |
+| `npm run build` | Typecheck, lint, and static export |
+| `npm run typecheck` | TypeScript without emit |
+| `npm run test` | Vitest suite |
+| `npm run format` | Format `src/` |
+| `npm run format:check` | Verify formatting |
 
 ## Conventions
 
-- Shared table UI: `src/components/data-table.tsx` (sorting, search, pagination).
-- Status/severity colors: `src/lib/config/statuses.ts` + `StatusBadge` — do not
-  hardcode badge colors in pages.
-- Data fetching: hooks in `src/hooks/` with keys from `src/lib/query-keys.ts`
-  and intervals from `src/lib/config/constants.ts`; pages stay presentational.
-- Mutation feedback: sonner toasts (`Toaster` is mounted in the dashboard layout).
+- API response types and functions live in `src/lib/api.ts`.
+- React Query hooks live in `src/hooks/`.
+- Shared status semantics live in `src/lib/config/statuses.ts`.
+- Secrets never belong in `NEXT_PUBLIC_*` variables.
+- Role checks in the UI do not replace API authorization.
+- Screenshots use only synthetic tenants, users, addresses, and domains.

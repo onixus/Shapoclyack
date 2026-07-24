@@ -4,6 +4,20 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Fixed
+
+- Shut down the dedicated NATS event loop cleanly so pending client tasks do not
+  survive until pytest closes the loop.
+
+### Changed
+
+- Refactored the documentation into task-oriented guides under `docs/`, reduced
+  the root English and Russian READMEs to stable project entry points, and
+  aligned the Web UI, Kubernetes, roadmap, security, and endpoint-inventory
+  documents with the current platform.
+- Added a documented, privacy-safe interface screenshot inventory and
+  reproducible capture procedure in `docs/ui.md`.
+
 ### Added
 
 - **Endpoint inventory ingestion (Lariska agent integration, S1-S7)** — a new

@@ -1,4 +1,7 @@
-# Octo-man — Kubernetes
+# Shapoclyack — Kubernetes
+
+This guide deploys Shapoclyack with Kustomize. For architecture, configuration,
+and operational context, start at [../docs/README.md](../docs/README.md).
 
 Primary cluster runtime for **shapoclyack-0.36-0723+**. Default control plane is the **all-in-one**
 image with Web UI scan start enabled.
@@ -165,7 +168,7 @@ Default RBAC:
 |------|--------|
 | `viewer` | List/read runs, summaries, diffs, vulns, artifacts |
 | `operator` | Viewer + start/list scan jobs / agents via API |
-| `admin` | Same as operator (reserved for future admin APIs) |
+| `admin` | Operator access plus tenant provisioning and configuration administration |
 
 Default aio Deployment sets **`OCTO_ALLOW_SCAN_START=true`** so operators start scans from
 the Jobs page. Scheduled scans can still use `Job` / `CronJob`. Remote agents remain optional

@@ -7,17 +7,16 @@ Published container images receive tags for the current semver release (see [Rel
 
 | Version   | Supported |
 |-----------|-----------|
-| `0.3.x` / `0.3.2.1` | Yes |
-| `0.2.x`   | Yes (security fixes only; upgrade recommended) |
-| `0.1.x`   | No        |
-| `< 0.1.0` | No        |
+| `0.36-0723` / current `0.36` line | Yes |
+| `0.35` | Security fixes only; upgrade recommended |
+| `0.34` and older | No |
 
 We recommend always using the latest image tags, for example:
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:0.3.2.1
-docker pull ghcr.io/onixus/shapoclyack-scanner:0.3.2.1
-docker pull ghcr.io/onixus/shapoclyack-api:0.3.2.1
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.36-0723
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723
+docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.36-0723
 ```
 
 ## Reporting a vulnerability
@@ -69,10 +68,14 @@ will not be pursued as a policy violation by the maintainers.
 
 - **CI image gate:** Trivy fails the pipeline on fixable **CRITICAL** issues in the built image (`ignore-unfixed: true`; exceptions in `.trivyignore` are reviewed and time-bounded).
 - **SBOM + provenance:** Release images on GHCR include SPDX SBOM and SLSA provenance attestations (see [docker-publish workflow](workflows/docker-publish.yml)).
-- **Reproducible pins:** Base image digest, dnsx/naabu checksums, and NSE script commits are pinned in the `Dockerfile` (see README *Reproducible & Pinned Builds*).
+- **Reproducible pins:** Base image digest, dnsx/naabu checksums, and NSE script commits are pinned in the `Dockerfile` (see [Third-party dependencies](../docs/third-party.md)).
 - **Least privilege in containers:** Scanner runs as non-root UID `1000` (`scanner`); API as UID `1000` (`octo`). Raw sockets use file capabilities on `naabu`/`nmap` only.
 
 ## Operator security notes
+
+The complete deployment and trust-boundary overview is in
+[Architecture](../docs/architecture.md) and the safe configuration guidance is
+in [Configuration](../docs/configuration.md).
 
 - Grant **`NET_RAW` / `NET_ADMIN`** only to scanner Jobs/CronJobs; the API Deployment drops all capabilities.
 - Do not expose the Docker socket to scanner or API pods.

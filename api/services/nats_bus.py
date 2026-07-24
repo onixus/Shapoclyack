@@ -204,7 +204,9 @@ class NatsBus:
         return fut.result(timeout=timeout)
 
     def close(self) -> None:
-        if self._nc is not None and self._loop.is_running():
+        loop = self._loop
+
+        if self._nc is not None and loop.is_running():
             async def _shutdown() -> None:
                 if self._nc is not None:
                     try:
@@ -223,19 +225,26 @@ class NatsBus:
                     task.cancel()
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
-                await asyncio.sleep(0.05)
-                asyncio.get_running_loop().stop()
 
             try:
-                fut = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
+                fut = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
                 fut.result(timeout=5)
             except Exception:  # noqa: BLE001
-                if self._loop.is_running():
-                    self._loop.call_soon_threadsafe(self._loop.stop)
-            self._nc = None
-            self._js = None
-        elif self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+                LOG.debug("Failed to shut down NATS event loop cleanly", exc_info=True)
+            finally:
+                if loop.is_running():
+                    loop.call_soon_threadsafe(loop.stop)
+        elif loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=5)
+
+        if not self._thread.is_alive() and not loop.is_running() and not loop.is_closed():
+            loop.close()
+
+        self._nc = None
+        self._js = None
         self._started = False
 
     def publish_json(
