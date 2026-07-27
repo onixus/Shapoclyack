@@ -4,10 +4,25 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+## [0.37-0727] — 2026-07-27
+
 ### Fixed
 
 - Shut down the dedicated NATS event loop cleanly so pending client tasks do not
   survive until pytest closes the loop.
+- **NSE host batching could fail an entire group over one slow host** —
+  `nse_hosts_per_scan` (nmap processes now scan one host each instead of
+  batching up to 8 per invocation, `scanner/config/default.yaml` and
+  `k8s/octo-man/base/config/k8s.yaml`). Bundling several hosts into one nmap
+  invocation meant they shared the `nse_timeout_seconds` budget (hard-capped
+  at 600s); a single host doing heavy `vulners`/`ssl-enum-ciphers` NSE work
+  could blow that shared budget and fail every other host in the group, even
+  though they would have finished fine scanned individually.
+- Accepted `GHSA-r277-6w6q-xmqw` (kin-openapi fail-open auth bypass, pulled in
+  transitively by the `nuclei` binary's OpenAPI spec parser) as a documented
+  Trivy CI exception — no nuclei release has shipped the fix yet, and the
+  vulnerable code path (`openapi3filter.ValidationHandler`) is unreachable in
+  how nuclei actually uses the dependency.
 
 ### Changed
 

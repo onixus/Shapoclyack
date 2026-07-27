@@ -42,7 +42,7 @@ unavailable PostgreSQL URL, or a read-only mounted output directory.
 
 ```bash
 docker run --rm --entrypoint sh \
-  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723 \
+  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.37-0727 \
   -lc 'nmap --version; naabu -version; dnsx -version; nuclei -version'
 ```
 
