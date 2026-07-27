@@ -83,4 +83,13 @@ jobs:
           sbom: true
           provenance: mode=max
           cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          # mode=max + multi-platform (linux/amd64,linux/arm64) on the larger
+          # images (esp. aio) regularly hangs/fails "preparing build cache for
+          # export" with ERROR: not_found -- a known buildx/BuildKit issue
+          # (moby/buildkit#6008, #4628) triggered by mode=max cache size on
+          # big images. mode=min exports far less (final layers only) and
+          # avoids it; ignore-error=true means a cache-export failure (which
+          # happens strictly after the image itself is already pushed, see
+          # the "pushing manifest ... done" step above) no longer fails the
+          # whole job -- it only costs a colder cache on the next build.
+          cache-to: type=gha,mode=min,scope=${{ matrix.name }},ignore-error=true
