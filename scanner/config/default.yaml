@@ -13,7 +13,11 @@ runtime:
   # nmap processes (each gets nse_max_rate / nse_concurrency). 0 = unlimited.
   nse_max_rate: 0
   # Hosts scanned per nmap process (reduces startup overhead). 1 = one host per nmap.
-  nse_hosts_per_scan: 8
+  # Lowered from 8: bundling several hosts into one nmap invocation means one
+  # slow host (heavy vulners/ssl-enum-ciphers NSE work) can blow the shared
+  # nse_timeout_seconds budget (hard-capped at 600s, see config_schema.py) for
+  # the whole group, failing hosts that would've finished fine on their own.
+  nse_hosts_per_scan: 1
   # Parallel naabu batches for discovery and port scan (each batch is independent).
   discover_concurrency: 4
   ports_concurrency: 4
