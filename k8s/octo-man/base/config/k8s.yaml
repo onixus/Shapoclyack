@@ -11,7 +11,7 @@ runtime:
   nse_timeout_seconds: 600
   nse_concurrency: 2
   nse_max_rate: 1500
-  nse_hosts_per_scan: 8
+  nse_hosts_per_scan: 1
   discover_concurrency: 2
   ports_concurrency: 2
   skip_nse: false
