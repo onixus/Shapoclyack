@@ -6,7 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGate>
-      <div className="min-h-screen bg-slate-50 lg:flex">
+      <div className="min-h-screen bg-background lg:flex">
         <Sidebar />
         <div className="flex min-h-screen min-w-0 flex-1 flex-col">
           <TopHeader />

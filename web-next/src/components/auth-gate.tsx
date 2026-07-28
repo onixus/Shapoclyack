@@ -22,7 +22,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (!hydrated || loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-muted-foreground">
+      <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
         Loading session…
       </div>
     );
@@ -30,7 +30,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (!user) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-muted-foreground">
+      <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
         Redirecting to login…
       </div>
     );
