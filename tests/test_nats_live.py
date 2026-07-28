@@ -7,6 +7,7 @@ Skipped unless ``OCTO_NATS_URL`` (or ``NATS_URL``) is set. CI sets this via a
 from __future__ import annotations
 
 import os
+import time
 import uuid
 
 import pytest
@@ -25,7 +26,18 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture()
 def bus():
     nats_bus.reset_bus_for_tests()
-    started = nats_bus.startup_bus(NATS_URL)
+    # A prior test's own NATS client (e.g. AgentNatsSession) may still be
+    # finishing background teardown when this fixture runs; under CI-runner
+    # timing that occasionally makes the very next connect attempt fail even
+    # though the broker itself is healthy. Retry a couple of times rather than
+    # flaking the whole suite on a transient reconnect.
+    started = None
+    for attempt in range(3):
+        started = nats_bus.startup_bus(NATS_URL)
+        if started is not None and started._started:  # noqa: SLF001
+            break
+        nats_bus.reset_bus_for_tests()
+        time.sleep(0.5 * (attempt + 1))
     assert started is not None and started._started  # noqa: SLF001
     yield started
     nats_bus.reset_bus_for_tests()

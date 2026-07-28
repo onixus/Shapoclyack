@@ -14,6 +14,7 @@ from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
 from api.services import assets as assets_service
 from api.services import config_override as config_override_service
+from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import results_ingest
 from api.services import tenants as tenants_service
@@ -89,6 +90,34 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
             return
         job.update(fields)
         _persist(settings)
+        snapshot = dict(job) if "status" in fields else None
+    if snapshot is not None:
+        _record_job_metrics(snapshot)
+
+
+def _record_job_metrics(job: dict[str, Any]) -> None:
+    status = job.get("status")
+    if status in {"succeeded", "failed"}:
+        started, finished = job.get("started_at"), job.get("finished_at")
+        if started and finished:
+            try:
+                duration = (
+                    datetime.fromisoformat(finished) - datetime.fromisoformat(started)
+                ).total_seconds()
+            except ValueError:
+                duration = None
+            if duration is not None and duration >= 0:
+                metrics_service.JOB_DURATION_SECONDS.labels(
+                    status=status, execution=str(job.get("execution") or "local")
+                ).observe(duration)
+    _refresh_job_gauges()
+
+
+def _refresh_job_gauges() -> None:
+    with _LOCK:
+        statuses = [item.get("status") for item in _JOBS.values()]
+    metrics_service.JOBS_QUEUED.set(sum(1 for s in statuses if s == "queued"))
+    metrics_service.JOBS_RUNNING.set(sum(1 for s in statuses if s == "running"))
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
@@ -289,6 +318,7 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
     with _LOCK:
         _JOBS[job_id] = record
         _persist(settings)
+    _refresh_job_gauges()
 
     if execution == "local":
         thread = threading.Thread(target=_run_job, args=(settings, job_id, command), daemon=True)
@@ -403,6 +433,7 @@ def claim_job(
         opts = dict(job.get("scan_options") or {})
         mode = str(job.get("mode") or opts.get("mode") or "balanced")
         job_tenant = str(job.get("tenant_id") or "default")
+    _refresh_job_gauges()
 
     if not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")

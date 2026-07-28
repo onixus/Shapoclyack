@@ -11,3 +11,4 @@ clickhouse-connect==1.5.0
 SQLAlchemy==2.0.51
 alembic==1.18.5
 psycopg[binary]==3.3.4
+prometheus-client==0.26.0

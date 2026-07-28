@@ -366,19 +366,28 @@ class AgentNatsSession:
                         task.cancel()
                     if pending:
                         await asyncio.gather(*pending, return_exceptions=True)
-                    await asyncio.sleep(0.05)
-                    asyncio.get_running_loop().stop()
 
                 try:
                     fut = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
                     fut.result(timeout=5)
                 except Exception:  # noqa: BLE001
+                    pass
+                finally:
                     if self._loop.is_running():
                         self._loop.call_soon_threadsafe(self._loop.stop)
                 self._nc = None
                 self._sub = None
             elif self._loop.is_running():
                 self._loop.call_soon_threadsafe(self._loop.stop)
+
+            # Without joining, this background thread can still be tearing down
+            # (cancelling tasks, closing sockets) when the caller moves on and a
+            # new session/bus connects — a race that surfaces as spurious
+            # connect failures under CI timing (see test_nats_live.py flakiness).
+            if self._thread.is_alive() and threading.current_thread() is not self._thread:
+                self._thread.join(timeout=5)
+            if not self._thread.is_alive() and not self._loop.is_running() and not self._loop.is_closed():
+                self._loop.close()
             self._started = False
 
     def _ensure_ready(self) -> None:
