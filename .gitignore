@@ -12,6 +12,8 @@ scanner/inputs/bench/.bench-net
 .DS_Store
 *.egg-info/
 .ruff_cache/
+.coverage
+coverage.xml
 # MaxMind GeoLite2 databases (license-restricted; fetch via scripts/fetch-geoip-db.sh)
 *.mmdb
 !tests/data/geoip/GeoIP2-City-Test.mmdb
