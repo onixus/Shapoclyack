@@ -29,8 +29,6 @@ spec:
           args:
             - "--config"
             - "/etc/nats/nats.conf"
-            - "--jetstream"
-            - "--store_dir=/data"
           env:
             - name: SERVER_NAME
               valueFrom:
