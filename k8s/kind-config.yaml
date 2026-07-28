@@ -1,0 +1,11 @@
+# Local dev cluster for Shapoclyack — replaces `docker compose up --build`.
+# Usage: scripts/dev-up.sh / scripts/dev-down.sh (wraps kind + kubectl apply -k).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: shapoclyack-dev
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP

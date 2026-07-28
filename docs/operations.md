@@ -101,13 +101,6 @@ Useful checks:
 
 ```bash
 curl --fail http://localhost:8080/api/health
-docker compose ps
-docker compose logs --tail=200 shapoclyack
-```
-
-Kubernetes:
-
-```bash
 kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/octo-man-api --tail=200
 ```

@@ -14,7 +14,23 @@ image with Web UI scan start enabled.
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 
-For local labs, prefer `docker compose up` at the repo root.
+For local labs, prefer `scripts/dev-up.sh` at the repo root — it builds the
+all-in-one image, loads it into a [kind](https://kind.sigs.k8s.io/) cluster,
+and applies `overlays/kind-dev`. Tear down with `scripts/dev-down.sh`.
+
+### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
+
+nmap/naabu need raw sockets, granted via file capabilities baked into the
+image at build time (`setcap`, see `Dockerfile`). Any pod running them as a
+non-root user needs `allowPrivilegeEscalation: true` alongside
+`capabilities.add: [NET_RAW, NET_ADMIN]` — setting `allowPrivilegeEscalation:
+false` (a common hardening default) sets `no_new_privs`, which silently
+blocks those file capabilities from taking effect on exec, regardless of what
+`capabilities.add` lists. This is a Linux capabilities interaction, not a
+Docker-vs-Kubernetes difference — it affected both runtimes equally before
+being fixed (see `job.yaml`, `cronjob.yaml`, `api-deployment.yaml`,
+`agents/agent-deployment.yaml`, all of which correctly set it `true`). Don't
+"fix" it back to `false` on any manifest that runs nmap/naabu directly.
 
 ## Layout
 

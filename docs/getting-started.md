@@ -5,22 +5,26 @@ runs the first authorized scan.
 
 ## Prerequisites
 
-- Docker Engine with the Compose plugin;
+- Docker Engine (to build/load images), [kind](https://kind.sigs.k8s.io/), and `kubectl`;
 - 4 GB free memory for evaluation, more when scanning large target sets;
-- write access to `scanner/inputs`, `scanner/output`, and `scanner/state`;
 - explicit authorization for every target.
 
-Raw socket capabilities are required by some discovery modes. The Compose file
-adds `NET_RAW` and `NET_ADMIN` to the scanner container.
+Raw socket capabilities are required by some discovery modes. The Kubernetes
+manifests add `NET_RAW` and `NET_ADMIN` to the scanner container (see the
+[Kubernetes guide](../k8s/README.md) for the capabilities/`allowPrivilegeEscalation`
+detail).
 
-## 1. Clone and set secrets
+## 1. Clone
 
 ```bash
 git clone https://github.com/onixus/Shapoclyack.git
 cd Shapoclyack
-
-export OCTO_JWT_SECRET='replace-with-a-long-random-secret'
 ```
+
+`scripts/dev-up.sh` (below) uses the dev-only JWT secret baked into
+`k8s/octo-man/base/kustomization.yaml`. For anything beyond a local kind
+cluster, override it with `k8s/octo-man/examples/api-secrets.example.yaml`
+(see the [Kubernetes guide](../k8s/README.md)) rather than exporting an env var.
 
 The default users are for local evaluation only:
 
@@ -68,6 +72,10 @@ Optional port overrides:
 The addresses above are documentation ranges. Replace them with authorized
 targets.
 
+The Web UI's on-demand job submission (below) takes targets directly in the
+request. The scheduled Job/CronJob path instead reads them from a `scan-targets`
+Kubernetes Secret built from these files — see step 4.
+
 ## 3. Validate scanner configuration
 
 ```bash
@@ -78,34 +86,24 @@ A validation failure exits with code `2` and does not start external tools.
 
 ## 4. Start the platform
 
-Minimal evaluation:
-
 ```bash
-docker compose up --build
+scripts/dev-up.sh
 ```
 
-Persistent inventory:
+This creates a local `kind` cluster, builds and loads the all-in-one image,
+and applies `k8s/octo-man/overlays/kind-dev` — PostgreSQL, NATS, and
+ClickHouse are included (NATS/ClickHouse client wiring is opt-in via env vars,
+off by default). Tear down with `scripts/dev-down.sh`.
+
+The scheduled Job/CronJob require a `scan-targets` Secret built from the files
+in step 2:
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.postgres.yml \
-  --profile postgres \
-  up --build
-```
-
-Distributed execution and analytics:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.postgres.yml \
-  -f docker-compose.nats.yml \
-  -f docker-compose.clickhouse.yml \
-  --profile postgres \
-  --profile nats \
-  --profile clickhouse \
-  up --build
+kubectl create secret generic scan-targets -n network-scan \
+  --from-file=ranges.txt=scanner/inputs/ranges.txt \
+  --from-file=domains.txt=scanner/inputs/domains.txt \
+  --from-file=ports.txt=scanner/inputs/ports.txt \
+  --from-file=ports_udp.txt=scanner/inputs/ports_udp.txt
 ```
 
 ## 5. Verify health
@@ -115,8 +113,8 @@ curl --fail http://localhost:8080/api/health
 ```
 
 The response reports API health and the configured state of NATS, ClickHouse,
-and ingest. A service shown as disabled is not an error when its Compose profile
-was not selected.
+and ingest. A service shown as disabled is not an error when its `OCTO_NATS_URL`
+/ `OCTO_CLICKHOUSE_URL` env var was left empty.
 
 Open <http://localhost:8080> and use the operator account for the first scan.
 

@@ -18,8 +18,12 @@ spec:
         app.kubernetes.io/name: octo-man
         app.kubernetes.io/component: clickhouse
     spec:
-      # Official image runs as uid 101 (clickhouse).
+      # Official image runs as uid 101 (clickhouse). Setting runAsUser here
+      # (not just fsGroup) skips the image's root-bootstrap chown step, which
+      # would otherwise fail under capabilities.drop: ALL below (no CAP_CHOWN).
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
         fsGroup: 101
       containers:
         - name: clickhouse

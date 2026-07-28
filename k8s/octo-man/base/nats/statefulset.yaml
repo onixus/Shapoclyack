@@ -26,11 +26,12 @@ spec:
         - name: nats
           image: nats:2.10.24-alpine
           imagePullPolicy: IfNotPresent
+          # store_dir is already set in nats.conf's jetstream block (configmap.yaml)
+          # — passing --store_dir here too makes nats-server reject the config
+          # as a duplicate setting.
           args:
             - "--config"
             - "/etc/nats/nats.conf"
-            - "--jetstream"
-            - "--store_dir=/data"
           env:
             - name: SERVER_NAME
               valueFrom:

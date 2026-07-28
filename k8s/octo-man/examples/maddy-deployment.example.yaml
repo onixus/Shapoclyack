@@ -1,0 +1,61 @@
+# Example local Maddy SMTP for Phase 5.3 alerts (dev / lab only).
+# Pair with alerts.smtp.enabled + OCTO_SMTP_* (see scanner/config/default.yaml).
+#
+#   kubectl apply -n network-scan -f k8s/octo-man/examples/maddy-deployment.example.yaml
+#
+# Scanner / aio can then use:
+#   OCTO_SMTP_HOST=octo-man-maddy
+#   OCTO_SMTP_PORT=25
+#   OCTO_SMTP_FROM=alerts@example.test
+#   OCTO_SMTP_TO=ops@example.test
+#
+# Configure real DKIM/PTR in Maddy before setting require_dkim / require_ptr in production.
+# Default image entrypoint expects /data/maddy.conf — mount your own ConfigMap/PVC for production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-man-maddy
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: maddy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/component: maddy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: octo-man
+        app.kubernetes.io/component: maddy
+    spec:
+      containers:
+        - name: maddy
+          image: foxcpp/maddy:latest
+          ports:
+            - name: smtp
+              containerPort: 25
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: octo-man-maddy
+  labels:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: maddy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/component: maddy
+  ports:
+    - name: smtp
+      port: 25
+      targetPort: smtp

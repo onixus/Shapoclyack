@@ -1,0 +1,16 @@
+# Local kind cluster overlay — replaces `docker compose up --build` for dev.
+# Loads locally-built images into the kind node (imagePullPolicy: IfNotPresent
+# on all base manifests means kubelet won't try to pull once `kind load
+# docker-image` has placed the tag on the node). See scripts/dev-up.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../dev
+
+patches:
+  - path: api-service-nodeport-patch.yaml
+
+images:
+  - name: ghcr.io/onixus/shapoclyack-aio
+    newTag: kind-dev
