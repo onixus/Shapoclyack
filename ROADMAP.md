@@ -267,7 +267,7 @@ P0–P1 are prerequisites for safely running the platform at MSSP scale; P2 comp
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 3.0 | Wire up existing frontend tests in CI | `.github/workflows/ci.yml` (`web` job) | Add `npm test` (vitest run) step — tests already exist, just not invoked | **Done** |
-| 3.1 | Coverage gate | `requirements-dev.txt`, `.github/workflows/ci.yml` (`test` job) | Add `pytest-cov`; `--cov=api --cov=scanner --cov-report=xml --cov-fail-under=NN`; baseline current %, ratchet up over time | **Planned** |
+| 3.1 | Coverage gate | `requirements-dev.txt`, `.github/workflows/ci.yml` (`test` job) | Added `pytest-cov==7.1.0`; `--cov=api --cov=scanner --cov-report=xml --cov-fail-under=74` (measured baseline: 76% with NATS+Postgres up); ratchet the threshold up over time | **Done** |
 | 3.2 | Server-side pagination — API | `api/routes/{assets,runs,jobs,agents,schedules}.py`, matching `api/services/*.py` | Uniform `offset`/`limit` (or keyset) + `total`/`has_more` on response models; start with `jobs`/`agents`/`schedules` (currently fully unbounded) | **Planned** |
 | 3.3 | Server-side pagination — UI | `web-next/src/app/(dashboard)/...` tables, `lib/api.ts` | Switch TanStack Table/React Query from client-side over full lists to server-side pagination | **Planned** |
 | 3.4 | Prometheus / OpenTelemetry instrumentation | `api/app.py`, new `api/services/metrics.py`, `api/routes/system.py` (or new `/metrics`), `scanner/main.py`, `agent/worker.py` | `prometheus_client` + `/metrics`; job duration, queue depth, NATS consumer lag, CH ingest batch latency, HTTP request duration/count by route | **Planned** |
