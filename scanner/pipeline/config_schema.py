@@ -293,6 +293,37 @@ class NseProfileConfig(BaseModel):
     os_detection: bool = False
 
 
+class PulseProbeConfig(BaseModel):
+    """Pulse CLI settings (https://github.com/onixus/GenDec)."""
+
+    bin: str = ""  # empty → OCTO_PULSE_BIN or PATH
+    concurrency: int = Field(default=500, ge=1, le=10_000)
+    rate: int = Field(default=2000, ge=0, le=100_000)
+    adaptive: bool = True
+    host_parallel: int = Field(default=8, ge=0, le=256)
+    timeout_ms: int = Field(default=800, ge=50, le=60_000)
+    banner: bool = True
+    os_detect: bool = True
+    os_mode: Literal["sinfp", "nmap", "auto"] = "auto"
+    cve: bool = True
+    cve_online: bool = False
+    syn: bool = False
+    max_hosts: int = Field(default=65536, ge=1, le=1_000_000)
+    chunk_hosts: int = Field(default=64, ge=1, le=4096)
+
+
+class ServiceProbeConfig(BaseModel):
+    """Service/OS enrichment after open ports are known.
+
+    * ``nmap`` — existing NSE stage (default, full scripts/TLS XML).
+    * ``pulse`` — Pulse only (no NSE scripts; tls_posture may be empty).
+    * ``hybrid`` — Pulse for OS/banner/CVE, then nmap NSE as today.
+    """
+
+    backend: Literal["nmap", "pulse", "hybrid"] = "nmap"
+    pulse: PulseProbeConfig = Field(default_factory=PulseProbeConfig)
+
+
 class DiffReportingConfig(BaseModel):
     # Compare current run artifacts against the previous run (hosts/ports/CVEs).
     enabled: bool = True
@@ -542,6 +573,8 @@ class AppConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
     nse_profiles: dict[str, NseProfileConfig]
+    # Optional; default nmap keeps backward compatibility when key omitted.
+    service_probe: ServiceProbeConfig = Field(default_factory=ServiceProbeConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)

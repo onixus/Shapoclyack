@@ -25,6 +25,7 @@ assume the repository root unless a guide says otherwise.
 | [Roadmap](../ROADMAP.md) | Delivered and planned platform phases |
 | [Changelog](../CHANGELOG.md) | Release and unreleased changes |
 | [Third-party components](third-party.md) | Runtime dependencies and license considerations |
+| [Pulse backend](pulse-backend.md) | Optional Nmap alternative for OS/banner/CVE (GenDec Pulse) |
 | [Security policy](../.github/SECURITY.md) | Supported releases and vulnerability disclosure |
 
 ## Documentation conventions

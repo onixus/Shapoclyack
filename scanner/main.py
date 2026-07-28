@@ -38,6 +38,7 @@ from scanner.pipeline.hostnames import (
 )
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ports import fast_port_scan
+from scanner.pipeline.pulse_probe import run_pulse_probe
 from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.defectdojo import export_to_defectdojo
 from scanner.pipeline.pdf_report import write_business_pdf
@@ -409,35 +410,85 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     skip_nse = args.skip_nse or runtime.skip_nse
     nmap_dir = paths.output_dir / "nmap"
+    # service_probe.backend: nmap (default) | pulse | hybrid
+    # Env OCTO_SERVICE_BACKEND overrides YAML for progressive rollout.
+    service_backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+    if not service_backend:
+        service_backend = config.service_probe.backend
+    if service_backend not in ("nmap", "pulse", "hybrid"):
+        logging.warning("unknown service_probe.backend %r; using nmap", service_backend)
+        service_backend = "nmap"
+
+    run_pulse = service_backend in ("pulse", "hybrid") and not skip_nse
+    run_nmap_nse = service_backend in ("nmap", "hybrid") and not skip_nse
+
     if skip_nse:
-        logging.info("Skipping NSE stage (skip_nse enabled)")
+        logging.info("Skipping service probe / NSE stage (skip_nse enabled)")
         nmap_dir.mkdir(parents=True, exist_ok=True)
-    elif args.resume and checkpoint.is_done("nse"):
-        pass
     else:
-        nse_profile = config.nse_profiles[profile.nse_profile]
-        nse_timeout = runtime.nse_timeout_seconds
-        nse_concurrency = profile.nse_concurrency or runtime.nse_concurrency
-        nse_max_rate = profile.nse_max_rate if profile.nse_max_rate is not None else runtime.nse_max_rate
-        nmap_dir = _run_stage(
-            "nse",
-            lambda: run_nse(
-                open_ports,
-                output_dir=paths.output_dir,
-                scripts=nse_profile.scripts,
-                version_detection=nse_profile.version_detection,
-                os_detection=nse_profile.os_detection,
-                nmap_timing=profile.nmap_timing,
-                timeout=nse_timeout,
-                retries=retries,
-                concurrency=nse_concurrency,
-                max_rate=nse_max_rate,
-                hosts_per_scan=runtime.nse_hosts_per_scan,
-                done_hosts=checkpoint.done_items("nse") if args.resume else set(),
-                on_host_done=lambda host: checkpoint.mark_item_done("nse", host),
-            ),
-        )
-        checkpoint.mark_done("nse")
+        if run_pulse:
+            if args.resume and checkpoint.is_done("pulse"):
+                logging.info("Skipping Pulse probe (checkpoint)")
+            else:
+                pulse_cfg = config.service_probe.pulse
+                _run_stage(
+                    "pulse",
+                    lambda: run_pulse_probe(
+                        open_ports,
+                        output_dir=paths.output_dir,
+                        bin_path=pulse_cfg.bin,
+                        concurrency=pulse_cfg.concurrency,
+                        rate=pulse_cfg.rate,
+                        adaptive=pulse_cfg.adaptive,
+                        host_parallel=pulse_cfg.host_parallel,
+                        timeout_ms=pulse_cfg.timeout_ms,
+                        banner=pulse_cfg.banner,
+                        os_detect=pulse_cfg.os_detect,
+                        os_mode=pulse_cfg.os_mode,
+                        cve=pulse_cfg.cve,
+                        cve_online=pulse_cfg.cve_online,
+                        syn=pulse_cfg.syn,
+                        max_hosts=pulse_cfg.max_hosts,
+                        timeout_seconds=runtime.nse_timeout_seconds,
+                        retries=retries,
+                        done_hosts=checkpoint.done_items("pulse") if args.resume else set(),
+                        on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
+                        chunk_hosts=pulse_cfg.chunk_hosts,
+                    ),
+                )
+                checkpoint.mark_done("pulse")
+
+        if run_nmap_nse:
+            if args.resume and checkpoint.is_done("nse"):
+                pass
+            else:
+                nse_profile = config.nse_profiles[profile.nse_profile]
+                nse_timeout = runtime.nse_timeout_seconds
+                nse_concurrency = profile.nse_concurrency or runtime.nse_concurrency
+                nse_max_rate = (
+                    profile.nse_max_rate if profile.nse_max_rate is not None else runtime.nse_max_rate
+                )
+                nmap_dir = _run_stage(
+                    "nse",
+                    lambda: run_nse(
+                        open_ports,
+                        output_dir=paths.output_dir,
+                        scripts=nse_profile.scripts,
+                        version_detection=nse_profile.version_detection,
+                        os_detection=nse_profile.os_detection,
+                        nmap_timing=profile.nmap_timing,
+                        timeout=nse_timeout,
+                        retries=retries,
+                        concurrency=nse_concurrency,
+                        max_rate=nse_max_rate,
+                        hosts_per_scan=runtime.nse_hosts_per_scan,
+                        done_hosts=checkpoint.done_items("nse") if args.resume else set(),
+                        on_host_done=lambda host: checkpoint.mark_item_done("nse", host),
+                    ),
+                )
+                checkpoint.mark_done("nse")
+        else:
+            nmap_dir.mkdir(parents=True, exist_ok=True)
 
     # Phase 9.2: TLS/certificate posture (findings-only, non-escalating --
     # see tls_posture.py module docstring). Reads ssl-cert/ssl-enum-ciphers

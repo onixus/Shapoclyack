@@ -186,7 +186,23 @@ def build_reports(
     extra_vulnerabilities: list[dict] | None = None,
 ) -> None:
     hostnames = hostnames_map or {}
-    findings, os_matches, script_findings = _parse_nmap_xml(nmap_dir)
+    # Prefer Pulse canonical artifacts when present (service_probe.backend pulse|hybrid).
+    from .pulse_probe import load_service_artifacts
+
+    pulse_artifacts = load_service_artifacts(output_dir)
+    pulse_extra_vulns: list[dict] = []
+    if pulse_artifacts is not None:
+        findings, os_matches, pulse_extra_vulns = pulse_artifacts
+        # NSE script findings still come from nmap XML when hybrid/nmap ran.
+        _, _, script_findings = _parse_nmap_xml(nmap_dir)
+        # If pulse produced services, prefer them; if empty and nmap has data, fall back.
+        if not findings:
+            nmap_services, nmap_os, script_findings = _parse_nmap_xml(nmap_dir)
+            findings = nmap_services
+            if not os_matches:
+                os_matches = nmap_os
+    else:
+        findings, os_matches, script_findings = _parse_nmap_xml(nmap_dir)
     if hostnames:
         for item in findings:
             item["hostname"] = _lookup_hostname(hostnames, item["host"])
@@ -199,6 +215,8 @@ def build_reports(
     # External-tool findings (e.g. nuclei_scan.py's CVE-tagged matches) that
     # should participate in the same CVSS4/GeoIP enrichment, severity
     # counting, and export as NSE-derived vulnerabilities below.
+    if pulse_extra_vulns:
+        vulnerabilities.extend(pulse_extra_vulns)
     if extra_vulnerabilities:
         vulnerabilities.extend(extra_vulnerabilities)
         vulnerabilities.sort(

@@ -30,6 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     && rm -rf /var/lib/apt/lists/*
 
+# Optional Pulse (https://github.com/onixus/GenDec) for service_probe.backend=pulse|hybrid.
+# Uncomment multi-stage build or COPY a release binary to /usr/local/bin/pulse and:
+#   setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse  # only if using --syn/--os raw
+# See docs/pulse-backend.md and scripts/install-pulse.sh
+
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.
 ARG DNSX_VERSION=1.2.3

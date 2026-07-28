@@ -273,6 +273,32 @@ nuclei:
   http_ports: [80, 8080, 8000, 8008, 8888]
   https_ports: [443, 8443]
 
+# Service / OS enrichment after open ports (naabu).
+# backend:
+#   nmap   — classic NSE stage (default; full scripts + nmap XML for tls_posture)
+#   pulse  — Pulse only (OS/banner/CVE; no NSE scripts)
+#   hybrid — Pulse first, then nmap NSE
+# Override: OCTO_SERVICE_BACKEND=pulse|nmap|hybrid
+# Pulse binary: OCTO_PULSE_BIN=/usr/local/bin/pulse
+# See docs/pulse-backend.md
+service_probe:
+  backend: nmap
+  pulse:
+    bin: ""
+    concurrency: 500
+    rate: 2000
+    adaptive: true
+    host_parallel: 8
+    timeout_ms: 800
+    banner: true
+    os_detect: true
+    os_mode: auto          # sinfp | nmap | auto
+    cve: true
+    cve_online: false
+    syn: false
+    max_hosts: 65536
+    chunk_hosts: 64
+
 # TLS / certificate posture (Phase 9.2): parses ssl-cert / ssl-enum-ciphers
 # NSE script output already written by the nse stage -> cert expiry,
 # self-signed heuristic, weak protocol/cipher findings. Opt-in; findings
