@@ -68,7 +68,17 @@ jobs:
         env:
           OCTO_NATS_URL: nats://127.0.0.1:4222
           OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/octo_man
-        run: python -m pytest -q
+        run: |
+          python -m pytest -q \
+            --cov=api --cov=scanner --cov-report=xml --cov-report=term-missing \
+            --cov-fail-under=74
+      - name: Upload coverage report
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
 
   web:
     name: Web dashboard (build)
