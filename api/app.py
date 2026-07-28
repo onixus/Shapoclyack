@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +26,7 @@ from api.services import ch_ingest_worker
 from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import jobs as jobs_service
+from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
@@ -72,6 +74,22 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _metrics_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - start
+        route = request.scope.get("route")
+        path = route.path if route is not None else request.url.path
+        metrics_service.HTTP_REQUESTS_TOTAL.labels(request.method, path, str(response.status_code)).inc()
+        metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(request.method, path).observe(duration)
+        return response
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics_endpoint() -> Response:
+        body, content_type = metrics_service.render()
+        return Response(content=body, media_type=content_type)
 
     @app.get("/api/health", response_model=HealthResponse, tags=["health"])
     def health() -> HealthResponse:

@@ -11,10 +11,12 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Any
 
 from api.services import ch_transform
 from api.services import clickhouse_client as ch
+from api.services import metrics as metrics_service
 from api.services.nats_bus import STREAM_INGEST
 from api.settings import Settings
 
@@ -111,7 +113,9 @@ class ClickHouseIngestWorker:
                 try:
                     msgs = await sub.fetch(1, timeout=self._fetch_timeout)
                 except NatsTimeout:
+                    await self._report_consumer_lag(sub)
                     continue
+                await self._report_consumer_lag(sub)
                 for msg in msgs:
                     await self._handle_msg(client, msg)
         finally:
@@ -134,7 +138,17 @@ class ClickHouseIngestWorker:
                     await asyncio.gather(*pending, return_exceptions=True)
                 await asyncio.sleep(0.05)
 
+    async def _report_consumer_lag(self, sub: Any) -> None:
+        try:
+            info = await sub.consumer_info()
+            metrics_service.NATS_CONSUMER_PENDING.labels(consumer=CONSUMER_CH_INGEST).set(
+                info.num_pending
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _handle_msg(self, client: Any, msg: Any) -> None:
+        start = time.perf_counter()
         try:
             payload = json.loads(msg.data.decode("utf-8"))
             if not isinstance(payload, dict):
@@ -163,6 +177,7 @@ class ClickHouseIngestWorker:
             self._stats["messages"] += 1
             self._stats["vuln_rows"] += inserted_v
             self._stats["port_rows"] += inserted_p
+            metrics_service.CH_INGEST_MESSAGES_TOTAL.labels(result="ok").inc()
             await msg.ack()
             LOG.info(
                 "Ingested job=%s run=%s vulns=%s ports=%s",
@@ -173,11 +188,14 @@ class ClickHouseIngestWorker:
             )
         except Exception:  # noqa: BLE001
             self._stats["errors"] += 1
+            metrics_service.CH_INGEST_MESSAGES_TOTAL.labels(result="error").inc()
             LOG.exception("Failed to process ingest message")
             try:
                 await msg.nak()
             except Exception:  # noqa: BLE001
                 pass
+        finally:
+            metrics_service.CH_INGEST_BATCH_DURATION_SECONDS.observe(time.perf_counter() - start)
 
 
 _WORKER: ClickHouseIngestWorker | None = None
