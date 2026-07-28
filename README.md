@@ -22,7 +22,7 @@ Next.js operations console.
 | Inventory | Cross-run assets, identifiers, ownership, criticality, lifecycle, endpoint software |
 | Operations | Jobs, schedules, diffs, alerts, reports, remote agents, and resume |
 | Platform | JWT RBAC, multi-tenancy, PostgreSQL, ClickHouse, and NATS JetStream |
-| Deployment | All-in-one Docker Compose or Kubernetes with Kustomize |
+| Deployment | Kubernetes with Kustomize (kind for local dev) |
 
 The scanner pipeline is:
 
@@ -32,14 +32,19 @@ targets → resolve → discovery → hostnames → ports → NSE/Nuclei → enr
 
 ## Quick start
 
-Requirements: Docker with the Compose plugin and at least 4 GB of free memory.
+Requirements: Docker (to build/load images), [kind](https://kind.sigs.k8s.io/),
+and `kubectl`, with at least 4 GB of free memory.
 
 ```bash
 git clone https://github.com/onixus/Shapoclyack.git
 cd Shapoclyack
 
-docker compose up --build
+scripts/dev-up.sh
 ```
+
+This creates a local `kind` cluster, builds the all-in-one image, loads it into
+the cluster, and applies `k8s/octo-man/overlays/kind-dev` (API, PostgreSQL,
+NATS, ClickHouse, and the scan Job/CronJob).
 
 Open <http://localhost:8080> and sign in as:
 
@@ -48,29 +53,13 @@ operator / operator-change-me
 ```
 
 Change the development JWT secret and demo passwords before exposing the
-service outside a trusted lab. PostgreSQL is required for persistent tenant and
-asset inventory:
+service outside a trusted lab (see `examples/api-secrets.example.yaml` under
+[k8s/octo-man/](k8s/octo-man/)).
+
+Tear the cluster down with:
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.postgres.yml \
-  --profile postgres \
-  up --build
-```
-
-Add NATS and ClickHouse when distributed execution and analytics are required:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.postgres.yml \
-  -f docker-compose.nats.yml \
-  -f docker-compose.clickhouse.yml \
-  --profile postgres \
-  --profile nats \
-  --profile clickhouse \
-  up --build
+scripts/dev-down.sh
 ```
 
 See [Getting started](docs/getting-started.md) for targets, profiles, validation,
@@ -95,13 +84,12 @@ Current interface screenshots and the capture procedure live in
 | Mode | Best for | Required services |
 |---|---|---|
 | Scanner CLI | CI, one-shot assessment, troubleshooting | Scanner image only |
-| All-in-one | Lab, evaluation, small installation | AIO container; PostgreSQL recommended |
-| Distributed Compose | Persistent or multi-worker installation | AIO/API, PostgreSQL, NATS; ClickHouse optional |
-| Kubernetes | Production, HA, isolated agents | Kustomize base plus selected overlays |
+| Kubernetes (kind, `overlays/dev`) | Local lab, evaluation | AIO container; PostgreSQL recommended |
+| Kubernetes (`overlays/prod`) | Production, HA, isolated agents | Kustomize base plus selected overlays |
 
 Detailed guides:
 
-- [Docker and first scan](docs/getting-started.md)
+- [Getting started](docs/getting-started.md)
 - [Kubernetes](k8s/README.md)
 - [Architecture](docs/architecture.md)
 - [Configuration and profiles](docs/configuration.md)

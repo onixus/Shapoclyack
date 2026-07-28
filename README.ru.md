@@ -22,7 +22,7 @@ Shapoclyack — self-hosted платформа для обнаружения в�
 | Инвентарь | Активы между прогонами, идентификаторы, владелец, критичность, lifecycle, ПО endpoints |
 | Эксплуатация | Jobs, schedules, diff, alerts, reports, remote agents, resume |
 | Платформа | JWT RBAC, multi-tenancy, PostgreSQL, ClickHouse, NATS JetStream |
-| Развёртывание | Docker Compose all-in-one или Kubernetes/Kustomize |
+| Развёртывание | Kubernetes/Kustomize (kind для локальной разработки) |
 
 Конвейер сканирования:
 
@@ -32,13 +32,18 @@ Shapoclyack — self-hosted платформа для обнаружения в�
 
 ## Быстрый старт
 
-Требуются Docker с Compose plugin и не менее 4 ГБ свободной памяти.
+Требуются Docker (для сборки/загрузки образов), [kind](https://kind.sigs.k8s.io/)
+и `kubectl`, не менее 4 ГБ свободной памяти.
 
 ```bash
 git clone https://github.com/onixus/Shapoclyack.git
 cd Shapoclyack
-docker compose up --build
+scripts/dev-up.sh
 ```
+
+Скрипт поднимает локальный кластер kind, собирает all-in-one образ, загружает
+его в кластер и применяет `k8s/octo-man/overlays/kind-dev` (API, PostgreSQL,
+NATS, ClickHouse, Job/CronJob сканера).
 
 Откройте <http://localhost:8080>:
 
@@ -47,29 +52,12 @@ operator / operator-change-me
 ```
 
 Перед публикацией сервиса за пределами тестового контура замените demo-пароли и
-JWT secret. Для постоянного хранения tenants и asset inventory подключите
-PostgreSQL:
+JWT secret (`k8s/octo-man/examples/api-secrets.example.yaml`).
+
+Остановить кластер:
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.postgres.yml \
-  --profile postgres \
-  up --build
-```
-
-Для распределённых агентов и аналитики добавьте NATS и ClickHouse:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.postgres.yml \
-  -f docker-compose.nats.yml \
-  -f docker-compose.clickhouse.yml \
-  --profile postgres \
-  --profile nats \
-  --profile clickhouse \
-  up --build
+scripts/dev-down.sh
 ```
 
 Подготовка целей, выбор профиля и проверка первого прогона описаны в

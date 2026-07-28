@@ -5,8 +5,8 @@ Start with the narrowest failing layer and preserve the first useful error.
 ## API or UI does not start
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 shapoclyack
+kubectl -n network-scan get pods
+kubectl -n network-scan logs deploy/octo-man-api --tail=200
 curl -v http://localhost:8080/api/health
 ```
 
@@ -59,12 +59,15 @@ failed after retries; inspect the corresponding stage log.
 
 ## NATS or ClickHouse shows unavailable
 
-An optional service is expected to be unavailable when its profile/URL is not
-enabled. When enabled:
+An optional service is expected to be unavailable when its URL env var
+(`OCTO_NATS_URL` / `OCTO_CLICKHOUSE_URL`) is empty. When enabled:
 
 ```bash
-docker compose --profile nats --profile clickhouse ps
+kubectl -n network-scan get pods -l app.kubernetes.io/component=nats
+kubectl -n network-scan get pods -l app.kubernetes.io/component=clickhouse
+kubectl -n network-scan port-forward svc/octo-man-nats-client 8222:8222 &
 curl http://localhost:8222/healthz
+kubectl -n network-scan port-forward svc/octo-man-clickhouse-client 8123:8123 &
 curl http://localhost:8123/ping
 ```
 
