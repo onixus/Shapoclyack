@@ -260,6 +260,24 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 
 P0–P1 are prerequisites for safely running the platform at MSSP scale; P2 completes the EASM alerting loop already scaffolded in Phase 10; P3 is a parallel hardening track, not a blocking dependency; P4 is scope already flagged as deferred/out-of-scope in Phases 9–10 and can start once P0–P2 land.
 
+### P3 breakdown — Scale & observability
+
+**Current state:** no metrics instrumentation exists (no Prometheus/OTel, no `/metrics`, stdlib `logging` only); no pagination anywhere (`assets`/`runs` are `limit`-only, `jobs`/`agents`/`schedules` are fully unbounded); no 1k/10k/50k-asset test fixtures (only a network-load harness in `tests/load/`, not a DB/API/UI data generator); frontend Vitest tests exist (`web-next/src/components/*.test.tsx`) but are **not** run in CI; no coverage gate (`pytest-cov` unused); ClickHouse queries in `ch_diff.py` do full-table scans with no `LIMIT`, and both CH tables lack `PARTITION BY`.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 3.0 | Wire up existing frontend tests in CI | `.github/workflows/ci.yml` (`web` job) | Add `npm test` (vitest run) step — tests already exist, just not invoked | **Done** |
+| 3.1 | Coverage gate | `requirements-dev.txt`, `.github/workflows/ci.yml` (`test` job) | Add `pytest-cov`; `--cov=api --cov=scanner --cov-report=xml --cov-fail-under=NN`; baseline current %, ratchet up over time | **Planned** |
+| 3.2 | Server-side pagination — API | `api/routes/{assets,runs,jobs,agents,schedules}.py`, matching `api/services/*.py` | Uniform `offset`/`limit` (or keyset) + `total`/`has_more` on response models; start with `jobs`/`agents`/`schedules` (currently fully unbounded) | **Planned** |
+| 3.3 | Server-side pagination — UI | `web-next/src/app/(dashboard)/...` tables, `lib/api.ts` | Switch TanStack Table/React Query from client-side over full lists to server-side pagination | **Planned** |
+| 3.4 | Prometheus / OpenTelemetry instrumentation | `api/app.py`, new `api/services/metrics.py`, `api/routes/system.py` (or new `/metrics`), `scanner/main.py`, `agent/worker.py` | `prometheus_client` + `/metrics`; job duration, queue depth, NATS consumer lag, CH ingest batch latency, HTTP request duration/count by route | **Planned** |
+| 3.5 | K8s scrape wiring | `k8s/octo-man/base/` (ServiceMonitor or scrape annotations), `k8s/README.md` | Wire `/metrics` to Prometheus; no Prometheus operator in-cluster today, so document bring-your-own or add example manifest | **Planned** |
+| 3.6 | SLOs | `docs/slo.md` (new) | Define SLOs for ingest latency, job completion time, API p95, based on 3.4 metrics | **Planned** |
+| 3.7 | Scale test fixtures (1k/10k/50k) | `tests/fixtures/scale_seed.py` (new) | Bulk-insert generator for Postgres `assets`/`asset_identifiers` + ClickHouse `shapoclyack_vulnerabilities`/`shapoclyack_open_ports` at N scale | **Planned** |
+| 3.8 | ClickHouse/API/UI profiling at scale | `api/services/ch_diff.py` (`fetch_tenant_cves`/`fetch_tenant_ports`, currently unbounded), `clickhouse_client.py` | Run 3.7 fixtures through diff/assets-list queries, measure; evaluate `PARTITION BY` for both CH tables (currently unpartitioned `ReplacingMergeTree`, risk of read/merge amplification) | **Planned** |
+
+Suggested order: 3.0 → 3.1 (cheap, CI-only, independent) → 3.4 (metrics — prerequisite for 3.6, useful for 3.8) → 3.2/3.3 (pagination, can run alongside 3.4) → 3.7 → 3.8 → 3.5/3.6 close it out.
+
 ---
 
 ## Status legend

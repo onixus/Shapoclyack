@@ -64,7 +64,8 @@ describe("DataTable", () => {
     const user = userEvent.setup();
     const many = Array.from({ length: 5 }, (_, i) => ({ name: `row-${i}`, count: i }));
     render(<DataTable columns={columns} data={many} pageSize={2} />);
-    expect(screen.getByText("Page 1 of 3 · 5 rows")).toBeInTheDocument();
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+    expect(screen.getByText(/Showing/).textContent).toContain("2");
     expect(screen.queryByText("row-2")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Next" }));
     expect(screen.getByText("row-2")).toBeInTheDocument();
