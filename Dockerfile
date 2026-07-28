@@ -96,11 +96,14 @@ RUN set -eux; \
 # exceeds the runtime bounding set fails the *entire* execve() with EPERM
 # instead of being silently dropped (verified via a real CI regression), so
 # don't run this image (or its smoke-test) with zero --cap-add at all.
+# Do NOT `apt-get purge libcap2-bin` afterward: fping (installed above) Depends
+# on libcap2-bin for its own postinst setcap call, so purging it cascades into
+# silently removing fping too (apt exits 0; the binary just vanishes).
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
     setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
-    apt-get purge -y libcap2-bin && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
