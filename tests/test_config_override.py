@@ -69,6 +69,18 @@ def test_validate_rejects_nuclei_performance_knobs_out_of_range():
         cfg.validate_overrides({"nuclei": {"templates_dir": 123}})
 
 
+def test_validate_accepts_service_probe_backend_and_shadow():
+    data = cfg.unflatten({"service_probe.backend": "hybrid", "service_probe.shadow": True})
+    assert cfg.validate_overrides(data) is data
+
+
+def test_validate_rejects_unknown_service_probe_backend():
+    with pytest.raises(ValueError, match="one of"):
+        cfg.validate_overrides({"service_probe": {"backend": "wireshark"}})
+    with pytest.raises(ValueError, match="expected a boolean"):
+        cfg.validate_overrides({"service_probe": {"shadow": "yes"}})
+
+
 def test_deep_merge_via_effective_paths():
     base = {"nuclei": {"enabled": False, "severities": ["critical"]}, "profiles": {"safe": {"top_ports": 100}}}
     over = {"nuclei": {"enabled": True}, "profiles": {"safe": {"top_ports": 250}}}

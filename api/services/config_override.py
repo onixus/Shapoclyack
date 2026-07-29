@@ -76,6 +76,18 @@ def _nonempty_str(value: Any) -> str:
     return value
 
 
+def _enum(choices: tuple[str, ...]) -> Callable[[Any], str]:
+    def check(value: Any) -> str:
+        if value not in choices:
+            raise ValueError(f"expected one of {list(choices)}")
+        return value
+
+    return check
+
+
+_SERVICE_BACKENDS = ("nmap", "pulse", "hybrid")
+
+
 # Static (non-profile) editable leaf paths → validator. Ranges mirror the
 # NucleiConfig pydantic bounds in scanner/pipeline/config_schema.py.
 _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
@@ -90,6 +102,8 @@ _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "nuclei.timeout_seconds": _int_range(1, 60),
     "nuclei.retries": _int_range(0, 5),
     "reporting.pdf_summary": _as_bool,
+    "service_probe.backend": _enum(_SERVICE_BACKENDS),
+    "service_probe.shadow": _as_bool,
 }
 # Per-profile editable leaf → validator (path is profiles.<profile>.<leaf>).
 _PROFILE_SPEC: dict[str, Callable[[Any], Any]] = {
