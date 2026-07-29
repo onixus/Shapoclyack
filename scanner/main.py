@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -18,6 +19,7 @@ from scanner.pipeline.config_schema import (
     format_validation_error,
     load_config,
     merge_pulse_config,
+    resolve_service_probe_backend,
 )
 from scanner.pipeline.discovery_profiles import apply_discovery_profile, resolve_discovery_profile_name
 from scanner.pipeline.contract import validate_inputs
@@ -43,7 +45,7 @@ from scanner.pipeline.hostnames import (
 )
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ports import fast_port_scan
-from scanner.pipeline.pulse_probe import run_pulse_probe
+from scanner.pipeline.pulse_probe import run_pulse_probe, sync_report_primary_marker
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
 from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.defectdojo import export_to_defectdojo
@@ -420,26 +422,30 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     skip_nse = args.skip_nse or runtime.skip_nse
     nmap_dir = paths.output_dir / "nmap"
-    # service_probe.backend: pulse (Phase 4.1 default) | nmap | hybrid
+    # service_probe.backend: pulse (Phase 4.1 default) | nmap | hybrid.
     # Precedence: OCTO_SERVICE_BACKEND > profiles.<mode>.service_backend > YAML.
-    service_backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
-    if not service_backend and profile.service_backend:
-        service_backend = profile.service_backend
-    if not service_backend:
-        service_backend = config.service_probe.backend
-    if service_backend not in ("nmap", "pulse", "hybrid"):
-        logging.warning("unknown service_probe.backend %r; using pulse", service_backend)
-        service_backend = "pulse"
+    resolution = resolve_service_probe_backend(
+        env_backend=os.environ.get("OCTO_SERVICE_BACKEND", ""),
+        profile_backend=profile.service_backend,
+        yaml_backend=config.service_probe.backend,
+        yaml_shadow=config.service_probe.shadow,
+        env_shadow=os.environ.get("OCTO_PULSE_SHADOW", ""),
+        skip_nse=skip_nse,
+        warn=lambda msg: logging.warning(msg),
+    )
+    service_backend = resolution.backend
+    shadow = resolution.shadow
+    run_pulse = resolution.run_pulse
+    run_nmap_nse = resolution.run_nmap_nse
+    report_primary_pulse = resolution.report_primary_pulse
 
-    # Shadow: force dual-run + diff_pulse_nmap.json (OCTO_PULSE_SHADOW=1 or YAML).
-    shadow_env = os.environ.get("OCTO_PULSE_SHADOW", "").strip().lower()
-    shadow = config.service_probe.shadow or shadow_env in ("1", "true", "yes", "on")
-
-    # --skip-nse: ports-only L1 (skip Pulse + nmap). For Pulse without nmap, use
-    # default backend pulse (no flag). For full NSE: backend nmap|hybrid.
-    run_pulse = (service_backend in ("pulse", "hybrid") or shadow) and not skip_nse
-    run_nmap_nse = (service_backend in ("nmap", "hybrid") or shadow) and not skip_nse
-    report_primary_pulse = service_backend in ("pulse", "hybrid")
+    # Keep pulse/REPORT_PRIMARY in sync with the *resolved* backend on every
+    # invocation, not just when the pulse stage itself runs -- otherwise a
+    # --resume that switches the backend away from pulse/hybrid leaves a
+    # stale marker from an earlier run and report.py silently keeps
+    # preferring outdated Pulse data (see build_reports' report_primary arg).
+    (paths.output_dir / "pulse").mkdir(parents=True, exist_ok=True)
+    sync_report_primary_marker(paths.output_dir / "pulse", report_primary_pulse)
 
     if shadow and not skip_nse:
         logging.info(
@@ -458,70 +464,101 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         logging.info("Skipping service probe / NSE stage (skip_nse: ports-only L1)")
         nmap_dir.mkdir(parents=True, exist_ok=True)
     else:
-        if run_pulse:
-            if args.resume and checkpoint.is_done("pulse"):
-                logging.info("Skipping Pulse probe (checkpoint)")
-            else:
-                pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
-                _run_stage(
-                    "pulse",
-                    lambda: run_pulse_probe(
-                        open_ports,
-                        output_dir=paths.output_dir,
-                        bin_path=pulse_cfg.bin,
-                        concurrency=pulse_cfg.concurrency,
-                        rate=pulse_cfg.rate,
-                        adaptive=pulse_cfg.adaptive,
-                        host_parallel=pulse_cfg.host_parallel,
-                        timeout_ms=pulse_cfg.timeout_ms,
-                        banner=pulse_cfg.banner,
-                        os_detect=pulse_cfg.os_detect,
-                        os_mode=pulse_cfg.os_mode,
-                        cve=pulse_cfg.cve,
-                        cve_online=pulse_cfg.cve_online,
-                        syn=pulse_cfg.syn,
-                        max_hosts=pulse_cfg.max_hosts,
-                        timeout_seconds=runtime.nse_timeout_seconds,
-                        retries=retries,
-                        done_hosts=checkpoint.done_items("pulse") if args.resume else set(),
-                        on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
-                        chunk_hosts=pulse_cfg.chunk_hosts,
-                        report_primary=report_primary_pulse,
-                    ),
-                )
-                checkpoint.mark_done("pulse")
+        pulse_pending = run_pulse and not (args.resume and checkpoint.is_done("pulse"))
+        nse_pending = run_nmap_nse and not (args.resume and checkpoint.is_done("nse"))
 
-        if run_nmap_nse:
-            if args.resume and checkpoint.is_done("nse"):
-                pass
-            else:
-                nse_profile = config.nse_profiles[profile.nse_profile]
-                nse_timeout = runtime.nse_timeout_seconds
-                nse_concurrency = profile.nse_concurrency or runtime.nse_concurrency
-                nse_max_rate = (
-                    profile.nse_max_rate if profile.nse_max_rate is not None else runtime.nse_max_rate
-                )
-                nmap_dir = _run_stage(
-                    "nse",
-                    lambda: run_nse(
-                        open_ports,
-                        output_dir=paths.output_dir,
-                        scripts=nse_profile.scripts,
-                        version_detection=nse_profile.version_detection,
-                        os_detection=nse_profile.os_detection,
-                        nmap_timing=profile.nmap_timing,
-                        timeout=nse_timeout,
-                        retries=retries,
-                        concurrency=nse_concurrency,
-                        max_rate=nse_max_rate,
-                        hosts_per_scan=runtime.nse_hosts_per_scan,
-                        done_hosts=checkpoint.done_items("nse") if args.resume else set(),
-                        on_host_done=lambda host: checkpoint.mark_item_done("nse", host),
-                    ),
-                )
-                checkpoint.mark_done("nse")
+        def _do_pulse() -> None:
+            pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
+            _run_stage(
+                "pulse",
+                lambda: run_pulse_probe(
+                    open_ports,
+                    output_dir=paths.output_dir,
+                    bin_path=pulse_cfg.bin,
+                    concurrency=pulse_cfg.concurrency,
+                    rate=pulse_cfg.rate,
+                    adaptive=pulse_cfg.adaptive,
+                    host_parallel=pulse_cfg.host_parallel,
+                    timeout_ms=pulse_cfg.timeout_ms,
+                    banner=pulse_cfg.banner,
+                    os_detect=pulse_cfg.os_detect,
+                    os_mode=pulse_cfg.os_mode,
+                    cve=pulse_cfg.cve,
+                    cve_online=pulse_cfg.cve_online,
+                    syn=pulse_cfg.syn,
+                    max_hosts=pulse_cfg.max_hosts,
+                    timeout_seconds=runtime.nse_timeout_seconds,
+                    retries=retries,
+                    done_hosts=checkpoint.done_items("pulse") if args.resume else set(),
+                    on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
+                    chunk_hosts=pulse_cfg.chunk_hosts,
+                    report_primary=report_primary_pulse,
+                ),
+            )
+            checkpoint.mark_done("pulse")
+
+        def _do_nse() -> Path:
+            nse_profile = config.nse_profiles[profile.nse_profile]
+            nse_timeout = runtime.nse_timeout_seconds
+            nse_concurrency = profile.nse_concurrency or runtime.nse_concurrency
+            nse_max_rate = (
+                profile.nse_max_rate if profile.nse_max_rate is not None else runtime.nse_max_rate
+            )
+            result_dir = _run_stage(
+                "nse",
+                lambda: run_nse(
+                    open_ports,
+                    output_dir=paths.output_dir,
+                    scripts=nse_profile.scripts,
+                    version_detection=nse_profile.version_detection,
+                    os_detection=nse_profile.os_detection,
+                    nmap_timing=profile.nmap_timing,
+                    timeout=nse_timeout,
+                    retries=retries,
+                    concurrency=nse_concurrency,
+                    max_rate=nse_max_rate,
+                    hosts_per_scan=runtime.nse_hosts_per_scan,
+                    done_hosts=checkpoint.done_items("nse") if args.resume else set(),
+                    on_host_done=lambda host: checkpoint.mark_item_done("nse", host),
+                ),
+            )
+            checkpoint.mark_done("nse")
+            return result_dir
+
+        if pulse_pending and nse_pending:
+            # Pulse and nmap NSE are independent subprocess-based stages over
+            # the same open_ports (no data dependency) -- only reachable when
+            # both run (shadow/hybrid). Run them concurrently instead of
+            # paying the full sum of both wall-clocks; CheckpointStore is
+            # thread-safe and the two stages write to disjoint output paths.
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pulse_future = pool.submit(_do_pulse)
+                nse_future = pool.submit(_do_nse)
+                pulse_exc: Exception | None = None
+                nse_exc: Exception | None = None
+                try:
+                    pulse_future.result()
+                except Exception as exc:  # noqa: BLE001
+                    pulse_exc = exc
+                try:
+                    nmap_dir = nse_future.result()
+                except Exception as exc:  # noqa: BLE001
+                    nse_exc = exc
+                if pulse_exc is not None:
+                    raise pulse_exc
+                if nse_exc is not None:
+                    raise nse_exc
         else:
-            nmap_dir.mkdir(parents=True, exist_ok=True)
+            if run_pulse:
+                if not pulse_pending:
+                    logging.info("Skipping Pulse probe (checkpoint)")
+                else:
+                    _do_pulse()
+            if run_nmap_nse:
+                if nse_pending:
+                    nmap_dir = _do_nse()
+            else:
+                nmap_dir.mkdir(parents=True, exist_ok=True)
 
         # Shadow / hybrid: compare Pulse vs Nmap coverage when both sides exist.
         if (shadow or service_backend == "hybrid") and not (
@@ -612,6 +649,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         asn_enabled=enrichment.asn.enabled,
         asn_database=asn_database,
         extra_vulnerabilities=nuclei_cve_findings,
+        report_primary=report_primary_pulse,
     )
     checkpoint.mark_done("report")
 

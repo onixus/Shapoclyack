@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -10,6 +11,7 @@ from pathlib import Path
 from .cvss4 import Cvss4Database, enrich_vulnerabilities
 from .asn_enrich import AsnDatabase, enrich_hosts_asn
 from .geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
+from .pulse_probe import load_service_artifacts
 from .utils import save_json
 
 _CVE_WITH_SCORE_RE = re.compile(r"(CVE-\d{4}-\d{3,7})\s+(\d{1,2}(?:\.\d+)?)", re.IGNORECASE)
@@ -205,28 +207,42 @@ def build_reports(
     asn_enabled: bool = True,
     asn_database: Path | str | None = None,
     extra_vulnerabilities: list[dict] | None = None,
+    report_primary: bool | None = None,
 ) -> None:
+    """Build all configured report formats.
+
+    ``report_primary``: whether Pulse artifacts (services.json/os.json) are
+    the source of truth for this run, as resolved by scanner/main.py's
+    env>profile>YAML backend precedence. Callers that already know this
+    (i.e. scanner/main.py) should always pass it explicitly -- report
+    generation must not re-derive it independently, since main.py's
+    precedence resolution is the only place that can see profile-level
+    overrides and is guaranteed fresh for the current invocation. When
+    ``None`` (ad-hoc report regeneration, tests), falls back to
+    OCTO_SERVICE_BACKEND plus the on-disk pulse/REPORT_PRIMARY marker.
+    """
     hostnames = hostnames_map or {}
     # Prefer Pulse artifacts only when backend is pulse/hybrid (not mere shadow).
     # Shadow (nmap primary + dual-run) still writes services.json for diff, but
     # report must keep nmap as source of truth for services/OS.
-    import os
-
-    from .pulse_probe import load_service_artifacts
-
-    backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
-    prefer_pulse = backend in ("pulse", "hybrid")
-    # Also prefer pulse if explicitly marked (future runs without env).
-    if (output_dir / "pulse" / "REPORT_PRIMARY").exists():
-        prefer_pulse = True
+    if report_primary is None:
+        backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+        prefer_pulse = backend in ("pulse", "hybrid") or (
+            output_dir / "pulse" / "REPORT_PRIMARY"
+        ).exists()
+    else:
+        prefer_pulse = report_primary
 
     pulse_artifacts = load_service_artifacts(output_dir)
     pulse_extra_vulns: list[dict] = []
     nmap_services, nmap_os, script_findings = _parse_nmap_xml(nmap_dir)
 
+    services_source = "Nmap XML"
     if prefer_pulse and pulse_artifacts is not None:
         findings, os_matches, pulse_extra_vulns = pulse_artifacts
-        if not findings:
+        if findings:
+            services_source = "Pulse"
+        else:
             findings = nmap_services
         if not os_matches:
             os_matches = nmap_os
@@ -325,6 +341,7 @@ def build_reports(
         "alive_hosts_with_names": hosts_with_names,
         "open_host_port_pairs": len(open_ports),
         "nmap_open_services": len(findings),
+        "open_services_source": services_source,
         "os_detected_hosts": len(best_os_by_host),
         "nse_script_findings": len(script_findings),
         "potential_vulnerabilities": len(vulnerabilities),
@@ -428,7 +445,8 @@ def build_reports(
             f"- Alive hosts: {summary['alive_hosts']}",
             f"- Alive hosts with resolved names: {summary['alive_hosts_with_names']}",
             f"- Open host:port pairs: {summary['open_host_port_pairs']}",
-            f"- Parsed open services from Nmap XML: {summary['nmap_open_services']}",
+            f"- Parsed open services from {summary['open_services_source']}: "
+            f"{summary['nmap_open_services']}",
             f"- Hosts with OS detected: {summary['os_detected_hosts']}",
             f"- NSE script findings: {summary['nse_script_findings']}",
             f"- Potential vulnerabilities: {summary['potential_vulnerabilities']} "

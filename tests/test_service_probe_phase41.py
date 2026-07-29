@@ -9,6 +9,7 @@ from scanner.pipeline.config_schema import (
     ProfilePulseConfig,
     load_config,
     merge_pulse_config,
+    resolve_service_probe_backend,
 )
 from scanner.pipeline.pulse_probe import write_pulse_artifacts
 from scanner.pipeline.service_schema import ServiceRecord
@@ -73,3 +74,114 @@ def test_write_artifacts_still_works(tmp_path: Path):
         [],
     )
     assert (tmp_path / "services.json").exists()
+
+
+def test_profile_pulse_config_bounds_match_base():
+    """ProfilePulseConfig hand-mirrors PulseProbeConfig's fields as Optional;
+    this guards against the two silently drifting (a bound changed in one but
+    not the other, or a field added to one and forgotten in the other)."""
+    base_fields = PulseProbeConfig.model_fields
+    override_fields = ProfilePulseConfig.model_fields
+    # `bin` is intentionally not overridable per-profile.
+    assert set(override_fields) == set(base_fields) - {"bin"}
+    for name, override_field in override_fields.items():
+        base_field = base_fields[name]
+
+        def bounds(field):
+            ge = le = None
+            for meta in field.metadata:
+                if hasattr(meta, "ge"):
+                    ge = meta.ge
+                if hasattr(meta, "le"):
+                    le = meta.le
+            return ge, le
+
+        assert bounds(override_field) == bounds(base_field), (
+            f"ProfilePulseConfig.{name} bounds {bounds(override_field)} != "
+            f"PulseProbeConfig.{name} bounds {bounds(base_field)}"
+        )
+
+
+def test_resolve_service_probe_backend_precedence():
+    # env wins over profile wins over YAML
+    r = resolve_service_probe_backend(
+        env_backend="nmap",
+        profile_backend="hybrid",
+        yaml_backend="pulse",
+        yaml_shadow=False,
+        env_shadow="",
+        skip_nse=False,
+    )
+    assert r.backend == "nmap"
+    assert r.run_nmap_nse is True
+    assert r.run_pulse is False
+    assert r.report_primary_pulse is False
+
+    r = resolve_service_probe_backend(
+        env_backend="",
+        profile_backend="hybrid",
+        yaml_backend="pulse",
+        yaml_shadow=False,
+        env_shadow="",
+        skip_nse=False,
+    )
+    assert r.backend == "hybrid"
+    assert r.run_pulse is True
+    assert r.run_nmap_nse is True
+    assert r.report_primary_pulse is True
+
+    r = resolve_service_probe_backend(
+        env_backend="",
+        profile_backend=None,
+        yaml_backend="pulse",
+        yaml_shadow=False,
+        env_shadow="",
+        skip_nse=False,
+    )
+    assert r.backend == "pulse"
+
+
+def test_resolve_service_probe_backend_shadow_forces_dual_run():
+    r = resolve_service_probe_backend(
+        env_backend="nmap",
+        profile_backend=None,
+        yaml_backend="pulse",
+        yaml_shadow=True,
+        env_shadow="",
+        skip_nse=False,
+    )
+    assert r.backend == "nmap"
+    assert r.shadow is True
+    assert r.run_pulse is True
+    assert r.run_nmap_nse is True
+    # Shadow forces both stages to run, but report preference still follows
+    # the resolved backend, not the shadow flag.
+    assert r.report_primary_pulse is False
+
+
+def test_resolve_service_probe_backend_skip_nse_disables_both():
+    r = resolve_service_probe_backend(
+        env_backend="",
+        profile_backend=None,
+        yaml_backend="hybrid",
+        yaml_shadow=True,
+        env_shadow="",
+        skip_nse=True,
+    )
+    assert r.run_pulse is False
+    assert r.run_nmap_nse is False
+
+
+def test_resolve_service_probe_backend_unknown_falls_back_to_pulse():
+    warnings: list[str] = []
+    r = resolve_service_probe_backend(
+        env_backend="bogus",
+        profile_backend=None,
+        yaml_backend="pulse",
+        yaml_shadow=False,
+        env_shadow="",
+        skip_nse=False,
+        warn=warnings.append,
+    )
+    assert r.backend == "pulse"
+    assert warnings

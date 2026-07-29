@@ -141,15 +141,23 @@ def _classify_from_cert(
     if isinstance(not_after, datetime):
         if not_after.tzinfo is None:
             not_after = not_after.replace(tzinfo=timezone.utc)
+        days = (not_after - now).days
         if not_after < now:
-            issues.append({"kind": "cert_expired", "severity": "critical", "detail": str(cert.get("not_after"))})
+            issues.append(
+                {
+                    "kind": "cert_expired",
+                    "severity": "critical",
+                    "days": days,
+                    "detail": str(cert.get("not_after")),
+                }
+            )
         else:
-            days = (not_after - now).days
             if days <= expiring_soon_days:
                 issues.append(
                     {
                         "kind": "cert_expiring_soon",
                         "severity": "medium",
+                        "days": days,
                         "detail": f"expires in {days}d ({cert.get('not_after')})",
                     }
                 )

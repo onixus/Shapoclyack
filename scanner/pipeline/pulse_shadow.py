@@ -12,14 +12,16 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .protocol import format_endpoint
 from .report import _parse_nmap_xml
+from .utils import save_json
 
 
 def _endpoint_key(host: str, port: str | int, protocol: str = "tcp") -> str:
     proto = (protocol or "tcp").lower()
     if proto in ("tcpsyn", "syn"):
         proto = "tcp"
-    return f"{host}:{port}/{proto}"
+    return format_endpoint(host, str(port), proto)
 
 
 def _services_from_pulse(output_dir: Path) -> set[str]:
@@ -182,7 +184,7 @@ def write_pulse_nmap_diff(
     if extra:
         diff["meta"] = extra
     path = output_dir / "diff_pulse_nmap.json"
-    path.write_text(json.dumps(diff, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    save_json(path, diff)
     ep = diff["endpoints"]
     os_ = diff["os"]
     logging.info(

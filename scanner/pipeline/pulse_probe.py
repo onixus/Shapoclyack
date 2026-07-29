@@ -37,7 +37,7 @@ from .service_schema import (
     os_to_report_matches,
     services_to_report_findings,
 )
-from .utils import run_command, write_lines
+from .utils import run_command, save_json, write_lines
 
 
 def resolve_pulse_bin(configured: str = "") -> str:
@@ -266,40 +266,18 @@ def write_pulse_artifacts(
     pulse_dir = output_dir / "pulse"
     pulse_dir.mkdir(parents=True, exist_ok=True)
     if raw is not None:
-        (pulse_dir / "raw.json").write_text(
-            json.dumps(raw, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    services_path = output_dir / "services.json"
-    os_path = output_dir / "os.json"
-    cve_path = output_dir / "pulse_cves.json"
-    services_path.write_text(
-        json.dumps([s.model_dump(mode="json") for s in services], indent=2, ensure_ascii=False)
-        + "\n",
-        encoding="utf-8",
-    )
-    os_path.write_text(
-        json.dumps([o.model_dump(mode="json") for o in os_records], indent=2, ensure_ascii=False)
-        + "\n",
-        encoding="utf-8",
-    )
-    cve_path.write_text(
-        json.dumps([c.model_dump(mode="json") for c in cves], indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+        save_json(pulse_dir / "raw.json", raw)
+    save_json(output_dir / "services.json", [s.model_dump(mode="json") for s in services])
+    save_json(output_dir / "os.json", [o.model_dump(mode="json") for o in os_records])
+    save_json(output_dir / "pulse_cves.json", [c.model_dump(mode="json") for c in cves])
     # Convenience: report-shaped findings for debugging
-    (pulse_dir / "findings_report_shape.json").write_text(
-        json.dumps(
-            {
-                "services": services_to_report_findings(services),
-                "os_matches": os_to_report_matches(os_records),
-                "vulnerabilities": cves_to_extra_vulnerabilities(cves),
-            },
-            indent=2,
-            ensure_ascii=False,
-        )
-        + "\n",
-        encoding="utf-8",
+    save_json(
+        pulse_dir / "findings_report_shape.json",
+        {
+            "services": services_to_report_findings(services),
+            "os_matches": os_to_report_matches(os_records),
+            "vulnerabilities": cves_to_extra_vulnerabilities(cves),
+        },
     )
     return pulse_dir
 
@@ -364,6 +342,26 @@ def load_service_artifacts(
     )
 
 
+def sync_report_primary_marker(pulse_dir: Path, report_primary: bool | None) -> None:
+    """Write or remove ``pulse/REPORT_PRIMARY`` to match ``report_primary``.
+
+    When ``report_primary`` is None, falls back to ``OCTO_SERVICE_BACKEND`` in
+    {pulse, hybrid}. Callers that already know the resolved backend (e.g.
+    scanner/main.py) should always pass an explicit bool.
+    """
+    if report_primary is None:
+        backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+        report_primary = backend in ("pulse", "hybrid")
+    marker = pulse_dir / "REPORT_PRIMARY"
+    if report_primary:
+        marker.write_text("pulse\n", encoding="utf-8")
+    elif marker.exists():
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+
 def run_pulse_probe(
     open_ports: list[str],
     *,
@@ -418,11 +416,7 @@ def run_pulse_probe(
     if not pending_hosts:
         logging.info("pulse_probe: no TCP open ports to probe")
         write_pulse_artifacts(output_dir, [], [], [], raw=merged_raw)
-        if report_primary is None:
-            backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
-            report_primary = backend in ("pulse", "hybrid")
-        if report_primary:
-            (pulse_dir / "REPORT_PRIMARY").write_text("pulse\n", encoding="utf-8")
+        sync_report_primary_marker(pulse_dir, report_primary)
         return pulse_dir
 
     # Global port union keeps one pulse invocation simpler; overscans closed
@@ -528,17 +522,7 @@ def run_pulse_probe(
     write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
 
     # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.
-    if report_primary is None:
-        backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
-        report_primary = backend in ("pulse", "hybrid")
-    marker = pulse_dir / "REPORT_PRIMARY"
-    if report_primary:
-        marker.write_text("pulse\n", encoding="utf-8")
-    elif marker.exists():
-        try:
-            marker.unlink()
-        except OSError:
-            pass
+    sync_report_primary_marker(pulse_dir, report_primary)
 
     logging.info(
         "pulse_probe done: %s services, %s os, %s cves",

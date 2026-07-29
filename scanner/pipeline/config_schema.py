@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -372,6 +374,56 @@ def merge_pulse_config(
     return PulseProbeConfig.model_validate(data)
 
 
+@dataclass(frozen=True)
+class ServiceProbeResolution:
+    """Resolved service_probe decision for one pipeline run (see resolve_service_probe_backend)."""
+
+    backend: Literal["nmap", "pulse", "hybrid"]
+    shadow: bool
+    run_pulse: bool
+    run_nmap_nse: bool
+    report_primary_pulse: bool
+
+
+def resolve_service_probe_backend(
+    *,
+    env_backend: str,
+    profile_backend: str | None,
+    yaml_backend: str,
+    yaml_shadow: bool,
+    env_shadow: str,
+    skip_nse: bool,
+    warn: Callable[[str], None] | None = None,
+) -> ServiceProbeResolution:
+    """Resolve service_probe.backend/shadow and the derived per-stage flags.
+
+    Precedence: ``env_backend`` (OCTO_SERVICE_BACKEND) > ``profile_backend``
+    (profiles.<mode>.service_backend) > ``yaml_backend`` (service_probe.backend).
+    Pulled out of scanner/main.py's ``_run_pipeline`` as a pure function so this
+    precedence chain and the shadow/skip_nse derivation are unit-testable in
+    isolation, without exercising the full pipeline.
+    """
+    backend = env_backend.strip().lower()
+    if not backend and profile_backend:
+        backend = profile_backend
+    if not backend:
+        backend = yaml_backend
+    if backend not in ("nmap", "pulse", "hybrid"):
+        if warn is not None:
+            warn(f"unknown service_probe.backend {backend!r}; using pulse")
+        backend = "pulse"
+
+    shadow = yaml_shadow or env_shadow.strip().lower() in ("1", "true", "yes", "on")
+
+    return ServiceProbeResolution(
+        backend=backend,
+        shadow=shadow,
+        run_pulse=(backend in ("pulse", "hybrid") or shadow) and not skip_nse,
+        run_nmap_nse=(backend in ("nmap", "hybrid") or shadow) and not skip_nse,
+        report_primary_pulse=backend in ("pulse", "hybrid"),
+    )
+
+
 class DiffReportingConfig(BaseModel):
     # Compare current run artifacts against the previous run (hosts/ports/CVEs).
     enabled: bool = True
@@ -633,7 +685,7 @@ class AppConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
     nse_profiles: dict[str, NseProfileConfig]
-    # Optional; default nmap keeps backward compatibility when key omitted.
+    # Optional; defaults to ServiceProbeConfig.backend ("pulse", Phase 4.1) when key omitted.
     service_probe: ServiceProbeConfig = Field(default_factory=ServiceProbeConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
