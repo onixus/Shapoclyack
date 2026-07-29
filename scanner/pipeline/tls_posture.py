@@ -5,11 +5,17 @@ parses free-text ``output`` of nmap's ``ssl-cert`` / ``ssl-enum-ciphers``
 scripts from ``nmap/tcp/*.xml`` (and ``nmap/udp/*.xml``), the same XML
 walked generically by ``report.py``.
 
-Fallback path (Phase 4): when nmap XML has no SSL scripts (Pulse backend,
-``--skip-nse``, empty nmap dir) and ``probe_fallback`` is enabled, opens a
-direct TLS handshake via ``tls_probe`` (stdlib ``ssl``) against open ports.
+Fallback paths (Phase 4): when nmap XML has no SSL scripts (Pulse backend,
+``--skip-nse``, empty nmap dir):
+
+1. **Pulse TLS JSON** (preferred) — if ``pulse/tls.json`` or ``pulse/raw.json``
+   contains a ``tls`` array from Pulse ``--cve`` / TLS probe, convert those
+   cert/weak-protocol fields into the same finding shape (``source: pulse-tls``).
+2. **stdlib probe** — when ``probe_fallback`` is enabled and Pulse TLS is
+   missing, open a direct handshake via ``tls_probe`` (``source: pulse-tls-probe``).
+
 Does not replace full nmap cipher grading; covers cert expiry, self-signed
-heuristic, and weak negotiated protocol/cipher name.
+heuristic, and weak protocol acceptance / negotiated protocol.
 
 From ``ssl-cert`` output this module extracts certificate subject/issuer,
 SAN, signature algorithm, public key size, and validity window, then flags:
@@ -64,6 +70,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_schema import TlsPostureConfig
+from .pulse_probe import load_pulse_tls_artifact
 from .tls_probe import _parse_tls_endpoints, probe_tls_endpoints, write_tls_probe_json
 from .utils import save_json, write_lines
 
@@ -293,7 +300,287 @@ def _classify_ciphers(versions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return issues
 
 
+
+def _normalize_proto_label(raw: str) -> str:
+    """Map Pulse rustls Debug / accepts labels to tls_posture version strings."""
+    s = (raw or "").strip()
+    low = s.lower().replace(" ", "")
+    mapping = {
+        "tlsv1_0": "TLSv1.0",
+        "tlsv1.0": "TLSv1.0",
+        "tls1_0": "TLSv1.0",
+        "tls1.0": "TLSv1.0",
+        "tlsv1_1": "TLSv1.1",
+        "tlsv1.1": "TLSv1.1",
+        "tls1_1": "TLSv1.1",
+        "tls1.1": "TLSv1.1",
+        "tlsv1_2": "TLSv1.2",
+        "tlsv1.2": "TLSv1.2",
+        "tlsv1_3": "TLSv1.3",
+        "tlsv1.3": "TLSv1.3",
+        "sslv3": "SSLv3",
+        "sslv2": "SSLv2",
+    }
+    if low in mapping:
+        return mapping[low]
+    # already pretty?
+    for p in _WEAK_PROTOCOLS:
+        if p.lower() == low:
+            return p
+    return s or "unknown"
+
+
+def _parse_pulse_datetime(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    # Pulse/x509: "2026-09-21 8:37:24.0 +00:00:00" or ISO
+    cleaned = raw.replace("+00:00:00", "+00:00")
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S.%f %z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ):
+        try:
+            # handle single-digit hour in pulse output
+            candidate = cleaned
+            if " " in candidate and "T" not in candidate:
+                # pad hour if needed: "2026-09-21 8:37:24" -> "2026-09-21 08:37:24"
+                parts = candidate.split(" ", 1)
+                if len(parts) == 2 and parts[1] and parts[1][0].isdigit() and parts[1][1] == ":":
+                    candidate = parts[0] + " 0" + parts[1]
+            dt = datetime.strptime(candidate, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            continue
+    # last resort: fromisoformat after cleanup
+    try:
+        iso = cleaned.replace(" ", "T", 1).split("+")[0]
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+def findings_from_pulse_tls(
+    artifact: dict[str, Any],
+    *,
+    now: datetime,
+    expiring_soon_days: int,
+    max_targets: int,
+) -> list[dict[str, Any]]:
+    """Convert Pulse ``tls[]`` (+ optional tls-class findings) to tls_posture rows."""
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in artifact.get("tls") or []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "").strip()
+        host_disp = str(row.get("host") or ip).strip()
+        try:
+            port_i = int(row.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not ip or port_i < 1:
+            continue
+        port = str(port_i)
+        key = (ip, port)
+
+        not_before_raw = row.get("not_before")
+        not_after_raw = row.get("not_after")
+        not_before_dt = _parse_pulse_datetime(
+            str(not_before_raw) if not_before_raw is not None else None
+        )
+        not_after_dt = _parse_pulse_datetime(
+            str(not_after_raw) if not_after_raw is not None else None
+        )
+
+        subject_cn = row.get("subject_cn")
+        issuer_cn = row.get("issuer_cn")
+        san = row.get("san")
+        if isinstance(san, list):
+            san_str = ", ".join(str(x) for x in san)
+        else:
+            san_str = str(san) if san else None
+
+        cert = {
+            "subject": subject_cn,
+            "issuer": issuer_cn,
+            "subject_cn": subject_cn,
+            "issuer_cn": issuer_cn,
+            "san": san_str,
+            "not_before_raw": str(not_before_raw) if not_before_raw else None,
+            "not_after_raw": str(not_after_raw) if not_after_raw else None,
+            "not_before": not_before_dt.isoformat() if not_before_dt else None,
+            "not_after": not_after_dt.isoformat() if not_after_dt else None,
+            "parse_ok": bool(subject_cn or issuer_cn or not_after_dt),
+        }
+
+        issues: list[dict[str, Any]] = []
+        # Prefer explicit Pulse flags, recompute days against *our* now for consistency
+        if row.get("expired") or (not_after_dt is not None and not_after_dt < now):
+            days = None
+            if not_after_dt is not None:
+                days = (not_after_dt - now).days
+            elif row.get("expires_in_days") is not None:
+                try:
+                    days = int(row["expires_in_days"])
+                except (TypeError, ValueError):
+                    days = None
+            issues.append(
+                {
+                    "kind": "cert_expired",
+                    "severity": "critical",
+                    "days": days,
+                    "detail": str(not_after_raw or ""),
+                }
+            )
+        else:
+            days_left = None
+            if not_after_dt is not None:
+                days_left = (not_after_dt - now).days
+            elif row.get("expires_in_days") is not None:
+                try:
+                    days_left = int(row["expires_in_days"])
+                except (TypeError, ValueError):
+                    days_left = None
+            if days_left is not None and 0 <= days_left <= expiring_soon_days:
+                issues.append(
+                    {
+                        "kind": "cert_expiring_soon",
+                        "severity": "medium",
+                        "days": days_left,
+                        "detail": f"expires in {days_left}d ({not_after_raw})",
+                    }
+                )
+
+        if row.get("self_signed"):
+            issues.append(
+                {
+                    "kind": "self_signed",
+                    "severity": "medium",
+                    "heuristic": True,
+                    "detail": f"subject_cn={subject_cn!r} issuer_cn={issuer_cn!r}",
+                }
+            )
+
+        weak_accepted = row.get("accepts_weak_protocols") or []
+        if isinstance(weak_accepted, list):
+            for proto in weak_accepted:
+                label = _normalize_proto_label(str(proto))
+                if label in _WEAK_PROTOCOLS or str(proto).upper().startswith("TLSV1"):
+                    issues.append(
+                        {
+                            "kind": "weak_protocol",
+                            "severity": "high",
+                            "version": label,
+                            "detail": f"server accepts {label} (pulse legacy probe)",
+                            "requires_confirmation": True,
+                        }
+                    )
+
+        negotiated = row.get("negotiated_protocol")
+        neg_label = _normalize_proto_label(str(negotiated)) if negotiated else None
+        if neg_label in _WEAK_PROTOCOLS:
+            # avoid dup if already listed from accepts_weak
+            if not any(
+                i.get("kind") == "weak_protocol" and i.get("version") == neg_label
+                for i in issues
+            ):
+                issues.append(
+                    {
+                        "kind": "weak_protocol",
+                        "severity": "high",
+                        "version": neg_label,
+                        "detail": f"negotiated {neg_label}",
+                    }
+                )
+
+        cipher_versions: list[dict[str, Any]] = []
+        if neg_label:
+            cipher_versions.append(
+                {"version": neg_label, "ciphers": [], "least_strength": None}
+            )
+
+        by_key[key] = {
+            "host": ip,
+            "port": port,
+            "host_display": host_disp,
+            "cert": cert,
+            "cipher_versions": cipher_versions,
+            "issues": issues,
+            "source": "pulse-tls",
+            "negotiated_protocol": neg_label,
+            "accepts_weak_protocols": [
+                _normalize_proto_label(str(p)) for p in (weak_accepted or [])
+            ]
+            if isinstance(weak_accepted, list)
+            else [],
+        }
+
+    # Merge finding_class=tls rows that might not have a tls[] entry (rare)
+    for f in artifact.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        if str(f.get("finding_class") or "").lower() != "tls":
+            continue
+        ip = str(f.get("ip") or "").strip()
+        try:
+            port = str(int(f.get("port") or 0))
+        except (TypeError, ValueError):
+            continue
+        if not ip or port == "0":
+            continue
+        key = (ip, port)
+        entry = by_key.get(key)
+        if entry is None:
+            entry = {
+                "host": ip,
+                "port": port,
+                "cert": None,
+                "cipher_versions": [],
+                "issues": [],
+                "source": "pulse-tls",
+            }
+            by_key[key] = entry
+        title = str(f.get("title") or "").lower()
+        evidence = str(f.get("evidence") or f.get("summary") or "")
+        kind = None
+        severity = str(f.get("severity") or "medium").lower()
+        if "expired" in title:
+            kind = "cert_expired"
+            severity = "critical"
+        elif "expiring" in title:
+            kind = "cert_expiring_soon"
+        elif "self-signed" in title or "self_signed" in title:
+            kind = "self_signed"
+        elif "weak" in title:
+            kind = "weak_protocol"
+            severity = "high"
+        if kind and not any(i.get("kind") == kind for i in entry["issues"]):
+            issue = {
+                "kind": kind,
+                "severity": severity,
+                "detail": evidence or title,
+            }
+            if f.get("requires_confirmation"):
+                issue["requires_confirmation"] = True
+            entry["issues"].append(issue)
+
+    ordered = sorted(by_key.values(), key=lambda r: (r["host"], int(r["port"])))
+    if len(ordered) > max_targets:
+        ordered = ordered[:max_targets]
+    return ordered
+
+
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
+
     save_json(output_dir / "tls_posture.json", result)
     lines: list[str] = []
     for finding in result["findings"]:
@@ -312,12 +599,12 @@ def check_tls_posture(
     now: datetime | None = None,
     open_ports: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build TLS posture findings from nmap NSE XML, with optional TLS probe fallback.
+    """Build TLS posture findings from nmap NSE, Pulse TLS JSON, or stdlib probe.
 
-    When nmap has ``ssl-cert`` / ``ssl-enum-ciphers`` script output, those are
-    preferred (richer cipher grades). If none are present and
-    ``config.probe_fallback`` is true, probe ``open_ports`` via ``tls_probe``
-    (stdlib handshake). Pass ``open_ports`` from the ports stage for fallback.
+    Priority:
+      1. nmap ``ssl-cert`` / ``ssl-enum-ciphers`` (richest cipher grades)
+      2. Pulse ``pulse/tls.json`` / ``pulse/raw.json`` ``tls`` array
+      3. stdlib ``tls_probe`` when ``probe_fallback`` and ``open_ports`` set
     """
     now = now or datetime.now(timezone.utc)
     result: dict[str, Any] = {
@@ -387,7 +674,35 @@ def check_tls_posture(
         )
         return result
 
-    # --- Phase 4 fallback: direct TLS probe when nmap SSL scripts missing ---
+    # --- Phase 4.3: Pulse TLS JSON (from pulse_probe --cve / TLS stage) ---
+    pulse_art = load_pulse_tls_artifact(output_dir)
+    if pulse_art is not None:
+        tls_rows = pulse_art.get("tls") or []
+        truncated = len(tls_rows) > config.max_targets
+        pulse_findings = findings_from_pulse_tls(
+            pulse_art,
+            now=now,
+            expiring_soon_days=config.expiring_soon_days,
+            max_targets=config.max_targets,
+        )
+        if pulse_findings:
+            result["targets_considered"] = min(len(tls_rows) or len(pulse_findings), config.max_targets)
+            result["checked_count"] = len(pulse_findings)
+            result["findings"] = pulse_findings
+            result["truncated"] = truncated
+            result["source"] = "pulse-tls"
+            with_issues = sum(1 for f in pulse_findings if f.get("issues"))
+            _persist(output_dir, result)
+            LOG.info(
+                "tls_posture: %d endpoint(s) checked (pulse-tls) -> %d with finding(s)%s",
+                len(pulse_findings),
+                with_issues,
+                " [truncated]" if truncated else "",
+            )
+            return result
+        LOG.info("tls_posture: pulse tls artifact present but empty after convert; trying probe_fallback")
+
+    # --- Phase 4 fallback: direct TLS probe when nmap + pulse TLS missing ---
     if not config.probe_fallback:
         result["skipped_reason"] = "no_tls_endpoints"
         _persist(output_dir, result)

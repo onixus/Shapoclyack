@@ -338,8 +338,8 @@ service_probe:
 
 # TLS / certificate posture (Phase 9.2 + Pulse Phase 4): prefers nmap
 # ssl-cert / ssl-enum-ciphers NSE output from the nse stage. When those are
-# missing (Pulse backend / --skip-nse) and probe_fallback is true, opens a
-# direct TLS handshake (stdlib ssl) on open ports listed in probe_tls_ports.
+# missing (Pulse backend / --skip-nse): prefer pulse/tls.json from Pulse, else
+# if probe_fallback is true open a stdlib TLS handshake on probe_tls_ports.
 # Opt-in; findings only, never merged into scan scope.
 # Hostname/SAN-CN mismatch is out of scope (see tls_posture.py).
 tls_posture:

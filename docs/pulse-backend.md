@@ -98,6 +98,8 @@ NVD online: set `NVD_API_KEY` or mount a key file readable by the scanner
 | Path | Content |
 |------|---------|
 | `services.json` | `octo.service.v1` open services |
+| `pulse/tls.json` | Pulse TLS cert posture (`octo.pulse_tls.v1`) |
+| `tls_posture.json` | Unified TLS findings (nmap / pulse-tls / probe) |
 | `os.json` | `octo.os.v1` OS guesses |
 | `pulse_cves.json` | Pulse CVE hits |
 | `pulse/raw.json` | Merged raw Pulse JSON |
