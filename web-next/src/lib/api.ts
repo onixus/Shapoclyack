@@ -582,17 +582,26 @@ export async function fetchAsset(assetId: string, tenantId = "default") {
   }
 }
 
-/** Endpoint/software inventory from the Lariska agent (Agent_plan.md S1-S7),
- * scoped to the network-scan asset it reconciled to — distinct from
- * fetchAssets/fetchAsset above. */
-export async function fetchEndpointDevicesForAsset(assetId: string, tenantId = "default") {
+/** All Lariska endpoint devices for a tenant (optional filter by linked asset). */
+export async function fetchEndpointDevices(opts?: {
+  tenantId?: string;
+  assetId?: string;
+}) {
   try {
-    const params = new URLSearchParams({ tenant_id: tenantId, asset_id: assetId });
+    const params = new URLSearchParams({ tenant_id: opts?.tenantId || "default" });
+    if (opts?.assetId) params.set("asset_id", opts.assetId);
     const { data } = await api.get<EndpointDeviceInfo[]>(`/endpoint/devices?${params}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }
+}
+
+/** Endpoint/software inventory from the Lariska agent (Agent_plan.md S1-S7),
+ * scoped to the network-scan asset it reconciled to — distinct from
+ * fetchAssets/fetchAsset above. */
+export async function fetchEndpointDevicesForAsset(assetId: string, tenantId = "default") {
+  return fetchEndpointDevices({ tenantId, assetId });
 }
 
 export async function fetchAssetSoftware(assetId: string, tenantId = "default") {
