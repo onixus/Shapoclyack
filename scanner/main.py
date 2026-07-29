@@ -13,7 +13,12 @@ from scanner import exit_codes
 from scanner.pipeline.batching import expand_batches, single_batch
 from scanner.pipeline.batch_runner import run_batches_parallel
 from scanner.pipeline.checkpoint import CheckpointStore
-from scanner.pipeline.config_schema import AppConfig, format_validation_error, load_config
+from scanner.pipeline.config_schema import (
+    AppConfig,
+    format_validation_error,
+    load_config,
+    merge_pulse_config,
+)
 from scanner.pipeline.discovery_profiles import apply_discovery_profile, resolve_discovery_profile_name
 from scanner.pipeline.contract import validate_inputs
 from scanner.pipeline.discovery_runner import run_discovery_stage, verify_alive_without_ports
@@ -69,7 +74,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-nse",
         action="store_true",
-        help="Skip NSE stage (discover + ports + reports only); re-run with --resume to enrich",
+        help=(
+            "Ports-only L1: skip Pulse and nmap NSE (discover + ports + reports). "
+            "Default path already uses Pulse without nmap; use backend nmap|hybrid "
+            "for full NSE. Re-run with --resume to enrich after ports-only."
+        ),
     )
     parser.add_argument(
         "--delta",
@@ -411,37 +420,49 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     skip_nse = args.skip_nse or runtime.skip_nse
     nmap_dir = paths.output_dir / "nmap"
-    # service_probe.backend: nmap (default) | pulse | hybrid
-    # Env OCTO_SERVICE_BACKEND overrides YAML for progressive rollout.
+    # service_probe.backend: pulse (Phase 4.1 default) | nmap | hybrid
+    # Precedence: OCTO_SERVICE_BACKEND > profiles.<mode>.service_backend > YAML.
     service_backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+    if not service_backend and profile.service_backend:
+        service_backend = profile.service_backend
     if not service_backend:
         service_backend = config.service_probe.backend
     if service_backend not in ("nmap", "pulse", "hybrid"):
-        logging.warning("unknown service_probe.backend %r; using nmap", service_backend)
-        service_backend = "nmap"
+        logging.warning("unknown service_probe.backend %r; using pulse", service_backend)
+        service_backend = "pulse"
 
     # Shadow: force dual-run + diff_pulse_nmap.json (OCTO_PULSE_SHADOW=1 or YAML).
     shadow_env = os.environ.get("OCTO_PULSE_SHADOW", "").strip().lower()
     shadow = config.service_probe.shadow or shadow_env in ("1", "true", "yes", "on")
 
+    # --skip-nse: ports-only L1 (skip Pulse + nmap). For Pulse without nmap, use
+    # default backend pulse (no flag). For full NSE: backend nmap|hybrid.
     run_pulse = (service_backend in ("pulse", "hybrid") or shadow) and not skip_nse
     run_nmap_nse = (service_backend in ("nmap", "hybrid") or shadow) and not skip_nse
+    report_primary_pulse = service_backend in ("pulse", "hybrid")
 
     if shadow and not skip_nse:
         logging.info(
             "service_probe shadow enabled (backend=%s): running pulse + nmap, will write diff",
             service_backend,
         )
+    elif not skip_nse:
+        logging.info(
+            "service_probe backend=%s (pulse=%s nmap_nse=%s)",
+            service_backend,
+            run_pulse,
+            run_nmap_nse,
+        )
 
     if skip_nse:
-        logging.info("Skipping service probe / NSE stage (skip_nse enabled)")
+        logging.info("Skipping service probe / NSE stage (skip_nse: ports-only L1)")
         nmap_dir.mkdir(parents=True, exist_ok=True)
     else:
         if run_pulse:
             if args.resume and checkpoint.is_done("pulse"):
                 logging.info("Skipping Pulse probe (checkpoint)")
             else:
-                pulse_cfg = config.service_probe.pulse
+                pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
                 _run_stage(
                     "pulse",
                     lambda: run_pulse_probe(
@@ -465,6 +486,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
                         done_hosts=checkpoint.done_items("pulse") if args.resume else set(),
                         on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
                         chunk_hosts=pulse_cfg.chunk_hosts,
+                        report_primary=report_primary_pulse,
                     ),
                 )
                 checkpoint.mark_done("pulse")

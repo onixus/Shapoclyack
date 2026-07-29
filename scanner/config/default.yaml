@@ -30,6 +30,9 @@ runtime:
   log_backup_count: 5
 
 profiles:
+  # Phase 4.1: default service_probe.backend is pulse (OS/banner/CVE).
+  # nse_profile is used only when backend is nmap|hybrid (escape hatch).
+  # profiles.<mode>.pulse.* overrides service_probe.pulse for that speed mode.
   safe:
     discover_rate: 2000
     port_rate: 1000
@@ -38,23 +41,46 @@ profiles:
     nse_profile: baseline
     nse_concurrency: 2
     nse_max_rate: 500
+    pulse:
+      concurrency: 300
+      rate: 500
+      host_parallel: 4
+      os_mode: sinfp
+      banner: true
+      cve: true
   balanced:
     # Slightly below prior 6000 — closer to realistic-bench completeness vs raw speed.
     discover_rate: 4000
     port_rate: 3000
     top_ports: 1000
     nmap_timing: T4
-    nse_profile: vuln
+    nse_profile: vuln_legacy
     nse_concurrency: 4
     nse_max_rate: 2000
+    pulse:
+      concurrency: 800
+      rate: 2000
+      adaptive: true
+      host_parallel: 16
+      os_mode: auto
+      banner: true
+      cve: true
   fast:
     discover_rate: 10000
     port_rate: 7000
     top_ports: 1000
     nmap_timing: T4
-    nse_profile: vuln
+    nse_profile: vuln_legacy
     nse_concurrency: 8
     nse_max_rate: 5000
+    pulse:
+      concurrency: 1200
+      rate: 5000
+      adaptive: true
+      host_parallel: 32
+      os_mode: sinfp
+      banner: true
+      cve: true
 
 batching:
   # Split work into resumable batches so a single huge naabu command never
@@ -182,9 +208,14 @@ nse_profiles:
     scripts: "default,safe"
     version_detection: true
     os_detection: true
+  # Phase 4.5 escape hatch: full NSE when service_probe.backend is nmap|hybrid.
+  # Prefer Pulse CVE + Nuclei for default pulse path (no nmap required).
+  vuln_legacy:
+    scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
+    version_detection: true
+    os_detection: true
   vuln:
-    # Nmap "vuln" category + vulners CVE lookup by service version.
-    # vulners queries the vulners.com API and needs outbound internet access.
+    # Alias of vuln_legacy (kept for older configs / overrides).
     scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
     version_detection: true
     os_detection: true
@@ -274,15 +305,17 @@ nuclei:
   https_ports: [443, 8443]
 
 # Service / OS enrichment after open ports (naabu).
+# Phase 4.1 default is pulse (OS/banner/CVE; no nmap NSE required).
 # backend:
-#   nmap   — classic NSE stage (default; full scripts + nmap XML for tls_posture)
-#   pulse  — Pulse only (OS/banner/CVE; no NSE scripts)
+#   pulse  — Pulse only (default; tls_posture uses probe_fallback)
+#   nmap   — classic NSE (scripts + nmap XML); set for vuln_legacy path
 #   hybrid — Pulse first, then nmap NSE
 # Override: OCTO_SERVICE_BACKEND=pulse|nmap|hybrid
+# Per-profile: profiles.<safe|balanced|fast>.service_backend / .pulse.*
 # Pulse binary: OCTO_PULSE_BIN=/usr/local/bin/pulse
 # See docs/pulse-backend.md
 service_probe:
-  backend: nmap
+  backend: pulse
   # shadow: true  # or OCTO_PULSE_SHADOW=1 — run pulse+nmap and write diff_pulse_nmap.json
   shadow: false
   pulse:

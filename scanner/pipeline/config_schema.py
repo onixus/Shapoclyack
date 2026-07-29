@@ -32,6 +32,27 @@ class RuntimeConfig(BaseModel):
         return self
 
 
+class ProfilePulseConfig(BaseModel):
+    """Optional per-speed-profile Pulse knobs (override ``service_probe.pulse``).
+
+    Only non-None fields replace the global PulseProbeConfig for that run.
+    """
+
+    concurrency: int | None = Field(default=None, ge=1, le=10_000)
+    rate: int | None = Field(default=None, ge=0, le=100_000)
+    adaptive: bool | None = None
+    host_parallel: int | None = Field(default=None, ge=0, le=256)
+    timeout_ms: int | None = Field(default=None, ge=50, le=60_000)
+    banner: bool | None = None
+    os_detect: bool | None = None
+    os_mode: Literal["sinfp", "nmap", "auto"] | None = None
+    cve: bool | None = None
+    cve_online: bool | None = None
+    syn: bool | None = None
+    max_hosts: int | None = Field(default=None, ge=1, le=1_000_000)
+    chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
+
+
 class ProfileConfig(BaseModel):
     discover_rate: int = Field(ge=1, le=100_000)
     port_rate: int = Field(ge=1, le=100_000)
@@ -40,6 +61,10 @@ class ProfileConfig(BaseModel):
     nse_profile: str
     nse_concurrency: int | None = Field(default=None, ge=1, le=64)
     nse_max_rate: int | None = Field(default=None, ge=0)
+    # Phase 4.1: optional per-profile backend (overrides service_probe.backend).
+    service_backend: Literal["nmap", "pulse", "hybrid"] | None = None
+    # Phase 4.1: optional Pulse rate/OS knobs for this speed profile.
+    pulse: ProfilePulseConfig = Field(default_factory=ProfilePulseConfig)
 
 
 class BatchingConfig(BaseModel):
@@ -315,20 +340,36 @@ class PulseProbeConfig(BaseModel):
 class ServiceProbeConfig(BaseModel):
     """Service/OS enrichment after open ports are known.
 
-    * ``nmap`` — existing NSE stage (default, full scripts/TLS XML).
-    * ``pulse`` — Pulse only (no NSE scripts; tls_posture may be empty).
-    * ``hybrid`` — Pulse for OS/banner/CVE, then nmap NSE as today.
+    * ``pulse`` — Pulse OS/banner/CVE only (Phase 4.1 **default**; no NSE).
+    * ``nmap`` — classic NSE stage (full scripts + nmap XML).
+    * ``hybrid`` — Pulse first, then nmap NSE.
+
+    Per-speed-profile overrides: ``profiles.<mode>.service_backend`` and
+    ``profiles.<mode>.pulse.*``. Env ``OCTO_SERVICE_BACKEND`` wins over YAML.
 
     When ``shadow`` is true (or env ``OCTO_PULSE_SHADOW=1``), **both** Pulse and
     Nmap run even if backend is only one of them, and ``diff_pulse_nmap.json``
-    is written for coverage comparison. Report still follows ``backend`` for
-    which service list is preferred (pulse artifacts win when present).
+    is written for coverage comparison. Report prefers Pulse when backend is
+    pulse/hybrid (``pulse/REPORT_PRIMARY`` marker).
     """
 
-    backend: Literal["nmap", "pulse", "hybrid"] = "nmap"
+    backend: Literal["nmap", "pulse", "hybrid"] = "pulse"
     # Force dual-run + diff artifact (does not change default report backend preference).
     shadow: bool = False
     pulse: PulseProbeConfig = Field(default_factory=PulseProbeConfig)
+
+
+def merge_pulse_config(
+    base: PulseProbeConfig,
+    override: ProfilePulseConfig | None,
+) -> PulseProbeConfig:
+    """Apply non-None profile.pulse fields onto global service_probe.pulse."""
+    if override is None:
+        return base
+    data = base.model_dump()
+    for key, value in override.model_dump(exclude_none=True).items():
+        data[key] = value
+    return PulseProbeConfig.model_validate(data)
 
 
 class DiffReportingConfig(BaseModel):

@@ -386,10 +386,15 @@ def run_pulse_probe(
     done_hosts: Iterable[str] | None = None,
     on_host_done: Callable[[str], None] | None = None,
     chunk_hosts: int = 64,
+    report_primary: bool | None = None,
 ) -> Path:
     """Run Pulse against hosts derived from open_ports; write artifacts.
 
     Returns ``output_dir / "pulse"``. Empty open_ports → empty artifacts, still OK.
+
+    ``report_primary``: when True, write ``pulse/REPORT_PRIMARY`` so report.py
+    prefers services.json/os.json. When None, fall back to
+    ``OCTO_SERVICE_BACKEND`` in {pulse, hybrid}.
     """
     pulse_bin = resolve_pulse_bin(bin_path)
     grouped = _group_tcp_ports(open_ports)
@@ -413,6 +418,11 @@ def run_pulse_probe(
     if not pending_hosts:
         logging.info("pulse_probe: no TCP open ports to probe")
         write_pulse_artifacts(output_dir, [], [], [], raw=merged_raw)
+        if report_primary is None:
+            backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+            report_primary = backend in ("pulse", "hybrid")
+        if report_primary:
+            (pulse_dir / "REPORT_PRIMARY").write_text("pulse\n", encoding="utf-8")
         return pulse_dir
 
     # Global port union keeps one pulse invocation simpler; overscans closed
@@ -517,10 +527,12 @@ def run_pulse_probe(
 
     write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
 
-    # Mark report preference when OCTO_SERVICE_BACKEND is pulse/hybrid (not shadow-only).
-    backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+    # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.
+    if report_primary is None:
+        backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+        report_primary = backend in ("pulse", "hybrid")
     marker = pulse_dir / "REPORT_PRIMARY"
-    if backend in ("pulse", "hybrid"):
+    if report_primary:
         marker.write_text("pulse\n", encoding="utf-8")
     elif marker.exists():
         try:

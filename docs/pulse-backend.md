@@ -9,9 +9,36 @@ Migration plan (full): see GenDec `docs/shapoclyack-migration.md`.
 
 | `service_probe.backend` | Behaviour |
 |-------------------------|-----------|
-| `nmap` (default) | Classic NSE stage only |
-| `pulse` | Pulse OS / banner / CVE only (no NSE scripts, no nmap XML for TLS) |
+| `pulse` (**default**, Phase 4.1) | Pulse OS / banner / CVE only; no nmap NSE |
+| `nmap` | Classic NSE stage only (`vuln_legacy` / `baseline`) |
 | `hybrid` | Pulse first, then nmap NSE |
+
+Precedence: `OCTO_SERVICE_BACKEND` → `profiles.<mode>.service_backend` →
+`service_probe.backend`.
+
+### Speed profiles (Pulse knobs)
+
+| Mode | Profile `pulse.*` overrides | NSE if backend nmap/hybrid |
+|------|-----------------------------|----------------------------|
+| `safe` | c=300 rate=500 host-parallel=4 os=sinfp | `baseline` |
+| `balanced` | c=800 rate=2000 host-parallel=16 os=auto | `vuln_legacy` |
+| `fast` | c=1200 rate=5000 host-parallel=32 os=sinfp | `vuln_legacy` |
+
+### Escape hatch: full NSE
+
+```yaml
+service_probe:
+  backend: nmap   # or hybrid
+```
+
+```bash
+export OCTO_SERVICE_BACKEND=nmap
+```
+
+### Ports-only L1
+
+`--skip-nse` skips **both** Pulse and nmap. Default path already uses Pulse
+without nmap — you do not need `--skip-nse` for that.
 
 ### Shadow mode (Phase 3)
 
@@ -40,8 +67,8 @@ export OCTO_PULSE_BIN=/usr/local/bin/pulse
 
 ```yaml
 service_probe:
-  backend: nmap   # pulse | hybrid
-  shadow: false   # or OCTO_PULSE_SHADOW=1
+  backend: pulse   # nmap | hybrid
+  shadow: false    # or OCTO_PULSE_SHADOW=1
   pulse:
     concurrency: 500
     rate: 2000
@@ -52,6 +79,15 @@ service_probe:
     os_mode: auto
     cve: true
     cve_online: false
+
+profiles:
+  balanced:
+    pulse:
+      concurrency: 800
+      rate: 2000
+      host_parallel: 16
+      os_mode: auto
+    nse_profile: vuln_legacy   # only if backend is nmap|hybrid
 ```
 
 NVD online: set `NVD_API_KEY` or mount a key file readable by the scanner
@@ -65,11 +101,13 @@ NVD online: set `NVD_API_KEY` or mount a key file readable by the scanner
 | `os.json` | `octo.os.v1` OS guesses |
 | `pulse_cves.json` | Pulse CVE hits |
 | `pulse/raw.json` | Merged raw Pulse JSON |
+| `pulse/REPORT_PRIMARY` | Marker: report prefers Pulse services/OS |
 | `diff_pulse_nmap.json` | Shadow/hybrid comparison |
 | `nmap/**` | Written when backend is `nmap`/`hybrid` or shadow |
 
-`report.py` prefers `services.json` / `os.json` when present, and still merges
-nmap script findings from XML when hybrid/nmap ran.
+`report.py` prefers `services.json` / `os.json` when backend is pulse/hybrid
+(or `REPORT_PRIMARY` exists), and still merges nmap script findings from XML
+when hybrid/nmap ran.
 
 ## Image install
 
@@ -137,7 +175,7 @@ optional `cryptography` package is installed (API image).
 
 ## Limitations (current)
 
-- Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …).
+- Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …) on the default path.
 - TLS probe fallback ≠ full `ssl-enum-ciphers` grade table.
 - UDP enrichment still relies on naabu/nmap paths.
 - Banner ≠ full nmap `-sV` product/version.

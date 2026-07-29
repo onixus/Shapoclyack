@@ -22,6 +22,11 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   ports via stdlib `ssl` (`probe_fallback`, default on). Writes
   `tls_probe.json` and fills `tls_posture.json` with `source: pulse-tls-probe`
   (cert expiry, self-signed heuristic, weak negotiated protocol/cipher).
+- **Pulse default service probe (Phase 4.1)** — `service_probe.backend`
+  defaults to `pulse` (OS/banner/CVE; no nmap NSE). Per-profile Pulse knobs
+  under `profiles.<safe|balanced|fast>.pulse.*`. Full NSE via
+  `backend: nmap|hybrid` and `nse_profiles.vuln_legacy`. `--skip-nse` remains
+  ports-only L1 (skips Pulse and nmap).
 
 ## [0.37-0727] — 2026-07-27
 
