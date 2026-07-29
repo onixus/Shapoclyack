@@ -17,7 +17,7 @@ ARG PULSE_VERSION=v0.2.0
 ARG PULSE_GITHUB_REPO=onixus/GenDec
 RUN --mount=type=secret,id=github_token,required=false \
     set -eux; \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
       amd64) a=amd64 ;; \
@@ -27,15 +27,24 @@ RUN --mount=type=secret,id=github_token,required=false \
     ver="${PULSE_VERSION}"; \
     case "${ver}" in v*) ;; *) ver="v${ver}" ;; esac; \
     name="pulse-${ver}-linux-${a}.tar.gz"; \
-    url="https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/${name}"; \
-    echo "Fetching ${url}"; \
     auth_header=""; \
     if [ -f /run/secrets/github_token ] && [ -s /run/secrets/github_token ]; then \
       auth_header="Authorization: Bearer $(cat /run/secrets/github_token)"; \
     fi; \
     if [ -n "${auth_header}" ]; then \
-      curl -fsSL -H "${auth_header}" -o /tmp/pulse.tgz "${url}"; \
+      # Private repos: the plain releases/download/... URL 404s even with a
+      # valid token (that path only works for public repos / browser
+      # sessions) -- resolve the numeric asset id via the API first, then
+      # fetch it from the assets endpoint with Accept: octet-stream.
+      asset_url="$(curl -fsSL -H "${auth_header}" -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${PULSE_GITHUB_REPO}/releases/tags/${ver}" \
+        | jq -r --arg name "${name}" '.assets[] | select(.name == $name) | .url')"; \
+      test -n "${asset_url}"; \
+      echo "Fetching ${asset_url} (private, via API)"; \
+      curl -fsSL -H "${auth_header}" -H "Accept: application/octet-stream" -o /tmp/pulse.tgz "${asset_url}"; \
     else \
+      url="https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/${name}"; \
+      echo "Fetching ${url}"; \
       curl -fsSL -o /tmp/pulse.tgz "${url}"; \
     fi; \
     mkdir -p /out; \
