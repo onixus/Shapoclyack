@@ -15,7 +15,9 @@ CVE-tagged matches (``info.classification.cve-id``) are split out as
 and risk scoring then treat them identically. Non-CVE matches (exposed
 panels, misconfig, tech detection) are reported only in ``nuclei.json``.
 
-SAFETY: disabled by default (``nuclei.enabled = false``). Template scope is
+SAFETY: enabled by default since Phase 4.2 (``nuclei.enabled = true``) as the
+web-CVE companion to Pulse ``--cve``. Set ``nuclei.enabled: false`` to opt out.
+Template scope is
 capped by ``severities``/``exclude_tags`` (conservative by default -- see
 ``NucleiConfig``), and the candidate endpoint list is capped by
 ``max_targets`` -- past the cap, remaining endpoints are skipped and the run

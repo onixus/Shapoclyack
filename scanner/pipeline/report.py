@@ -133,6 +133,7 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
                         "cve": cve,
                         "cvss": cvss,
                         "severity": _severity(cvss),
+                        "source": "nmap-nse",
                     }
                 )
         elif "VULNERABLE" in output.upper():
@@ -144,6 +145,7 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
                     "cve": None,
                     "cvss": None,
                     "severity": "unknown",
+                    "source": "nmap-nse",
                 }
             )
 
@@ -152,6 +154,25 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
         reverse=True,
     )
     return vulnerabilities
+
+
+def _dedupe_vulnerabilities(vulnerabilities: list[dict]) -> list[dict]:
+    """Drop duplicate host:port:CVE rows; keep first occurrence (higher-priority sources first).
+
+    Rows without a CVE id are keyed by host:port:script_id so non-CVE
+    VULNERABLE scripts still appear once.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict] = []
+    for item in vulnerabilities:
+        cve = item.get("cve")
+        cve_key = str(cve).upper() if cve else f"script:{(item.get('script_id') or '')}"
+        key = (str(item.get("host") or ""), str(item.get("port") or ""), cve_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
 
 
 def _lookup_hostname(hostnames_map: dict, host: str) -> str:
@@ -223,17 +244,21 @@ def build_reports(
             item["hostname"] = _lookup_hostname(hostnames, item["host"])
     service_counter = Counter(item["service"] for item in findings)
     vulnerabilities = _build_vulnerabilities(script_findings)
-    # External-tool findings (e.g. nuclei_scan.py's CVE-tagged matches) that
-    # should participate in the same CVSS4/GeoIP enrichment, severity
-    # counting, and export as NSE-derived vulnerabilities below.
+    # Phase 4.2 CVE stack (default path, no nmap-vulners):
+    #   Pulse --cve  → pulse_extra_vulns (source: pulse)
+    #   Nuclei CVE   → extra_vulnerabilities (source: nuclei)
+    #   NSE (legacy) → script_findings via _build_vulnerabilities
+    # All feed CVSS4/EPSS/KEV enrichment below. Dedupe by host:port:CVE
+    # (prefer first: NSE then Pulse then Nuclei when same id appears twice).
     if pulse_extra_vulns:
         vulnerabilities.extend(pulse_extra_vulns)
     if extra_vulnerabilities:
         vulnerabilities.extend(extra_vulnerabilities)
-        vulnerabilities.sort(
-            key=lambda item: (SEVERITY_ORDER.get(item["severity"], 0), item["cvss"] or 0.0),
-            reverse=True,
-        )
+    vulnerabilities = _dedupe_vulnerabilities(vulnerabilities)
+    vulnerabilities.sort(
+        key=lambda item: (SEVERITY_ORDER.get(item["severity"], 0), item["cvss"] or 0.0),
+        reverse=True,
+    )
 
     if cvss4_enabled:
         cvss4_path = Path(cvss4_database) if cvss4_database else None

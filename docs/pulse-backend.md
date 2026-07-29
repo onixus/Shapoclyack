@@ -173,6 +173,23 @@ Full cipher-suite enumeration (nmap grade A–F) still needs nmap NSE or a
 future dedicated enumerator. Cert DER field extraction is richer when the
 optional `cryptography` package is installed (API image).
 
+## CVE stack without nmap-vulners (Phase 4.2)
+
+Default path (no nmap required):
+
+| Layer | Config | Output |
+|-------|--------|--------|
+| Pulse `--cve` | `service_probe.pulse.cve: true` | `pulse_cves.json` → vulns `source: pulse` |
+| Nuclei (web) | `nuclei.enabled: true` (default) | `nuclei.json` + vulns `source: nuclei` |
+| CVSS4 enrich | `enrichment.cvss4.enabled` | scores on `vulnerabilities.json` |
+
+nmap-**vulners** / **vulscan** only run when `service_probe.backend` is
+`nmap` or `hybrid` and the profile uses `vuln_legacy` / `vuln-offline`.
+
+Nuclei skips cleanly if the binary or `templates_dir` is missing
+(host installs without the Docker bake). Disable with
+`nuclei.enabled: false`.
+
 ## Limitations (current)
 
 - Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …) on the default path.

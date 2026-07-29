@@ -455,7 +455,12 @@ class FingerprintConfig(BaseModel):
 
 
 class NucleiConfig(BaseModel):
-    """Nuclei template-based vulnerability/misconfig scanning. Opt-in.
+    """Nuclei template-based vulnerability/misconfig scanning.
+
+    Phase 4.2: **enabled by default** as the web-CVE companion to Pulse
+    ``--cve`` (replacing nmap-vulners on the default Pulse path). Stage
+    skips cleanly when the binary or ``templates_dir`` is missing (host
+    installs without the image bake).
 
     Runs against already-discovered open web ports (``open_ports.txt``) --
     same candidate-endpoint selection as ``fingerprint.py``, no new port scan.
@@ -470,12 +475,10 @@ class NucleiConfig(BaseModel):
     panels, misconfig, tech detection) are reported separately in
     ``nuclei.json`` only. ``max_targets`` caps how many endpoints get probed
     per run -- past the cap, remaining endpoints are skipped and the run is
-    flagged "truncated". ``templates_dir`` must exist (populated at image
-    build time, see ``Dockerfile``/``scripts/fetch-nuclei-templates.sh``) --
-    if missing, the stage skips cleanly rather than failing the scan.
+    flagged "truncated".
     """
 
-    enabled: bool = False
+    enabled: bool = True
     templates_dir: str = "/usr/share/nuclei-templates"
     severities: list[str] = Field(default_factory=lambda: ["critical", "high", "medium"])
     exclude_tags: list[str] = Field(default_factory=lambda: ["intrusive", "fuzz", "dos"])

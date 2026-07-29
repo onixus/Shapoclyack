@@ -27,6 +27,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   under `profiles.<safe|balanced|fast>.pulse.*`. Full NSE via
   `backend: nmap|hybrid` and `nse_profiles.vuln_legacy`. `--skip-nse` remains
   ports-only L1 (skips Pulse and nmap).
+- **CVE stack without nmap-vulners (Phase 4.2)** — default path is Pulse
+  `--cve` + Nuclei (now **enabled by default**) + CVSS4 enrichment.
+  Vulns tagged `source: pulse|nuclei|nmap-nse`; host:port:CVE deduped in
+  reports. nmap-vulners only via `vuln_legacy` when backend is nmap/hybrid.
 
 ## [0.37-0727] — 2026-07-27
 

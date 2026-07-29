@@ -569,12 +569,10 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         )
         checkpoint.mark_done("fingerprint")
 
-    # Nuclei template-based vulnerability/misconfig scanning (opt-in, see
-    # nuclei_scan.py module docstring). Runs against already-open web ports;
-    # CVE-tagged matches feed into build_reports below alongside NSE-derived
-    # vulnerabilities. Under --resume, reload the prior result from disk
-    # (same pattern as cloudflare/ct/asn above) since reports regenerate
-    # every run even when this stage itself is skipped.
+    # Phase 4.2: Nuclei web CVE/misconfig scan (default on; see nuclei_scan.py).
+    # CVE path without nmap-vulners: Pulse --cve + Nuclei + CVSS4 enrichment.
+    # CVE-tagged matches feed into build_reports alongside Pulse/NSE vulns.
+    # Under --resume, reload prior result from disk (reports still regenerate).
     if args.resume and checkpoint.is_done("nuclei"):
         nuclei_result = load_json(
             paths.output_dir / "nuclei.json",

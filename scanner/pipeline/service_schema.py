@@ -103,7 +103,11 @@ def os_to_report_matches(os_records: list[OsRecord]) -> list[dict[str, Any]]:
 
 
 def cves_to_extra_vulnerabilities(cves: list[CveRecord]) -> list[dict[str, Any]]:
-    """Map Pulse CVEs into report extra_vulnerabilities shape."""
+    """Map Pulse CVEs into report extra_vulnerabilities shape.
+
+    Tagged ``source: "pulse"`` so reports can distinguish from nuclei/NSE
+    (Phase 4.2 — replaces nmap-vulners on the default Pulse path).
+    """
     out: list[dict[str, Any]] = []
     for c in cves:
         sev = (c.severity or "unknown").lower()
@@ -117,11 +121,13 @@ def cves_to_extra_vulnerabilities(cves: list[CveRecord]) -> list[dict[str, Any]]
             severity = "low"
         else:
             severity = "unknown"
+        origin = (c.source or "local").strip() or "local"
         out.append(
             {
                 "host": c.ip,
                 "port": str(c.port) if c.port else "",
-                "script_id": c.source or "pulse-cve",
+                "script_id": f"pulse:{origin}",
+                "source": "pulse",
                 "cve": c.cve_id,
                 "cvss": c.cvss,
                 "severity": severity,

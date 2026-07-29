@@ -98,6 +98,8 @@ def test_write_and_load_artifacts(tmp_path: Path):
     assert len(vulns) == 1
     assert vulns[0]["cve"] == "CVE-2023-0001"
     assert vulns[0]["severity"] == "high"
+    assert vulns[0]["source"] == "pulse"
+    assert vulns[0]["script_id"].startswith("pulse:")
 
 
 def test_load_missing_returns_none(tmp_path: Path):

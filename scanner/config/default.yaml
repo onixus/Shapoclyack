@@ -208,8 +208,8 @@ nse_profiles:
     scripts: "default,safe"
     version_detection: true
     os_detection: true
-  # Phase 4.5 escape hatch: full NSE when service_probe.backend is nmap|hybrid.
-  # Prefer Pulse CVE + Nuclei for default pulse path (no nmap required).
+  # Phase 4.5 escape hatch: full NSE + vulners when backend is nmap|hybrid.
+  # Default Pulse path uses Pulse --cve + Nuclei + CVSS4 instead (Phase 4.2).
   vuln_legacy:
     scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
     version_detection: true
@@ -283,15 +283,17 @@ fingerprint:
   https_ports: [443, 8443]
   verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
 
-# Nuclei template-based vulnerability/misconfig scanning: runs against the
-# same already-open web ports as fingerprint above -- no new port scan.
-# Conservative by default (severities floor + excluded intrusive/fuzz/dos
-# tags); widen explicitly for a more aggressive scan. Opt-in. CVE-tagged
-# matches merge into vulnerabilities.json (source: "nuclei"); everything
-# else is findings-only in nuclei.json. Requires templates_dir to exist
-# (baked at image build time — see Dockerfile / scripts/fetch-nuclei-templates.sh).
+# Nuclei template-based web vuln/misconfig scan (Phase 4.2 default ON).
+# Together with Pulse --cve + CVSS4 enrichment this replaces nmap-vulners on
+# the default Pulse path. nmap-vulners remains only in nse_profiles.vuln_legacy
+# when service_probe.backend is nmap|hybrid.
+# Skips cleanly if binary or templates_dir is missing (host installs).
+# Conservative: severities floor + exclude intrusive/fuzz/dos tags.
+# CVE-tagged matches → vulnerabilities.json (source: "nuclei"); other findings
+# → nuclei.json only. Templates baked at image build (Dockerfile /
+# scripts/fetch-nuclei-templates.sh).
 nuclei:
-  enabled: false
+  enabled: true
   templates_dir: /usr/share/nuclei-templates
   severities: [critical, high, medium]
   exclude_tags: [intrusive, fuzz, dos]
