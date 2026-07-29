@@ -111,17 +111,22 @@ when hybrid/nmap ran.
 
 ## Image install
 
-`Dockerfile` and `Dockerfile.allinone` multi-stage-build Pulse from
-[onixus/GenDec](https://github.com/onixus/GenDec) and install to
+`Dockerfile` and `Dockerfile.allinone` multi-stage-build Pulse and install to
 `/usr/local/bin/pulse` with `cap_net_raw,cap_net_admin+eip` (same pattern as
 nmap/naabu).
+
+**Source (private GenDec-safe):** prefer in-tree `vendor/pulse/` (Cargo.toml +
+`src/`). Refresh with the notes in `vendor/pulse/VENDOR.md`. If vendor is
+incomplete, the build falls back to cloning `PULSE_GIT_URL` (optional
+BuildKit secret `github_token` for private repos).
 
 Build args:
 
 | Arg | Default | Meaning |
 |-----|---------|---------|
-| `PULSE_GIT_URL` | `https://github.com/onixus/GenDec.git` | source repo |
-| `PULSE_REF` | `main` | branch/tag/commit |
+| `PULSE_GIT_URL` | `https://github.com/onixus/GenDec.git` | clone fallback |
+| `PULSE_REF` | `main` | branch/tag/commit for clone fallback |
+| `INSTALL_NMAP` | `1` | set `0` for lean Pulse-only image |
 
 ```bash
 docker build -f Dockerfile \

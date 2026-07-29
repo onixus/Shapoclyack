@@ -7,17 +7,36 @@ FROM golang:1.25-bookworm AS nuclei-build
 ARG NUCLEI_VERSION=v3.9.0
 RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
 
-# Pulse (https://github.com/onixus/GenDec) — optional service_probe backend.
-# Pin PULSE_REF to a tag/commit when you need a frozen scanner; default main.
+# Pulse service probe (GenDec). Prefer in-tree vendor/pulse so CI can build
+# when GenDec is private (https://github.com/onixus/GenDec). Override with
+# PULSE_GIT_URL + BuildKit secret github_token for external clone.
+# Sync: rsync GenDec src/Cargo.* into vendor/pulse (see vendor/pulse/README.md).
 FROM rust:1-bookworm AS pulse-build
 ARG PULSE_GIT_URL=https://github.com/onixus/GenDec.git
 ARG PULSE_REF=main
-RUN set -eux; \
-    git clone --depth 1 "${PULSE_GIT_URL}" /src; \
-    cd /src; \
-    if [ "${PULSE_REF}" != "main" ] && [ "${PULSE_REF}" != "master" ]; then \
-      git fetch --depth 1 origin "${PULSE_REF}" || true; \
-      git checkout "${PULSE_REF}" || git checkout FETCH_HEAD || true; \
+ARG PULSE_SOURCE=vendor
+WORKDIR /src
+# Always copy vendor/ first (may be a stub README-only tree).
+COPY vendor/pulse/ /src/
+RUN --mount=type=secret,id=github_token,required=false \
+    set -eux; \
+    if [ -f /src/Cargo.toml ] && [ -d /src/src ]; then \
+      echo "Building Pulse from vendor/pulse"; \
+    else \
+      echo "vendor/pulse incomplete; cloning ${PULSE_GIT_URL}@${PULSE_REF}"; \
+      rm -rf /src/* /src/.[!.]* 2>/dev/null || true; \
+      TOKEN=""; \
+      if [ -f /run/secrets/github_token ]; then TOKEN=$(cat /run/secrets/github_token); fi; \
+      if [ -n "${TOKEN}" ]; then \
+        git clone --depth 1 "https://x-access-token:${TOKEN}@${PULSE_GIT_URL#https://}" /src; \
+      else \
+        git clone --depth 1 "${PULSE_GIT_URL}" /src; \
+      fi; \
+      cd /src; \
+      if [ "${PULSE_REF}" != "main" ] && [ "${PULSE_REF}" != "master" ]; then \
+        git fetch --depth 1 origin "${PULSE_REF}" || true; \
+        git checkout "${PULSE_REF}" || git checkout FETCH_HEAD || true; \
+      fi; \
     fi; \
     cargo build --release; \
     mkdir -p /out; \

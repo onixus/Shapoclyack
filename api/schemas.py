@@ -301,6 +301,8 @@ class ToolVersion(BaseModel):
     name: str
     version: str | None = None
     error: str | None = None
+    # Phase 5: tools not required for default Pulse path (e.g. nmap).
+    optional: bool = False
 
 
 class EnrichmentDb(BaseModel):
@@ -315,6 +317,8 @@ class EnrichmentDb(BaseModel):
 class ScanConfigSummary(BaseModel):
     profiles: list[str]
     nse_profiles: list[str]
+    # service_probe.backend (pulse | nmap | hybrid); optional for older responses.
+    service_backend: str | None = None
     stages: dict[str, bool]
 
 
