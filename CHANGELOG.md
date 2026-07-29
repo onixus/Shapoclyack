@@ -2,7 +2,7 @@
 
 All notable changes to the Octo-man product (hosted in Shapoclyack) are documented in this file.
 
-## Unreleased
+## [0.38-0729] — 2026-07-29
 
 ### Added
 
