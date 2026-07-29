@@ -29,11 +29,15 @@ RUN --mount=type=secret,id=github_token,required=false \
     name="pulse-${ver}-linux-${a}.tar.gz"; \
     url="https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/${name}"; \
     echo "Fetching ${url}"; \
-    AUTH=(); \
+    auth_header=""; \
     if [ -f /run/secrets/github_token ] && [ -s /run/secrets/github_token ]; then \
-      AUTH=(-H "Authorization: Bearer $(cat /run/secrets/github_token)"); \
+      auth_header="Authorization: Bearer $(cat /run/secrets/github_token)"; \
     fi; \
-    curl -fsSL "${AUTH[@]}" -o /tmp/pulse.tgz "${url}"; \
+    if [ -n "${auth_header}" ]; then \
+      curl -fsSL -H "${auth_header}" -o /tmp/pulse.tgz "${url}"; \
+    else \
+      curl -fsSL -o /tmp/pulse.tgz "${url}"; \
+    fi; \
     mkdir -p /out; \
     tar -xzf /tmp/pulse.tgz -C /out; \
     test -x /out/pulse; \
