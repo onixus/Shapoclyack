@@ -53,7 +53,15 @@ export OCTO_SERVICE_BACKEND=nmap   # report stays on nmap
 
 YAML: `service_probe.shadow: true`
 
-Artifact: **`diff_pulse_nmap.json`** — endpoint Jaccard, only_pulse / only_nmap
+Artifact: **`diff_pulse_nmap.json`**
+
+Fair live compare (avoid multi-A inflation):
+
+```bash
+scripts/compare-pulse-nmap.py --one-ip-per-host \
+  scanme.nmap.org example.com 1.1.1.1
+```
+ — endpoint Jaccard, only_pulse / only_nmap
 samples, OS family agree/disagree.
 
 Override without editing YAML:
