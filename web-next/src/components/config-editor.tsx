@@ -17,12 +17,16 @@ import {
 import { useConfig, useUpdateConfig } from "@/hooks/use-config";
 
 const TIMINGS = ["T0", "T1", "T2", "T3", "T4", "T5"];
+const SERVICE_BACKENDS = ["nmap", "pulse", "hybrid"];
 
-type Widget = "bool" | "int" | "timing" | "list" | "text";
+type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text";
 
 function widgetFor(path: string): Widget {
-  if (path.endsWith(".enabled") || path === "reporting.pdf_summary") return "bool";
+  if (path.endsWith(".enabled") || path === "reporting.pdf_summary" || path === "service_probe.shadow") {
+    return "bool";
+  }
   if (path.endsWith(".nmap_timing")) return "timing";
+  if (path === "service_probe.backend" || path.endsWith(".service_backend")) return "backend";
   if (path === "nuclei.severities" || path === "nuclei.exclude_tags") return "list";
   if (path === "nuclei.templates_dir") return "text";
   return "int";
@@ -140,6 +144,23 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                           {TIMINGS.map((t) => (
                             <SelectItem key={t} value={t}>
                               {t}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : widget === "backend" ? (
+                      <Select
+                        value={String(values[path] ?? "")}
+                        onValueChange={(v) => setValue(path, v)}
+                        disabled={!canEdit}
+                      >
+                        <SelectTrigger className="w-28 h-8 bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs">
+                          <SelectValue placeholder="unset" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs">
+                          {SERVICE_BACKENDS.map((b) => (
+                            <SelectItem key={b} value={b}>
+                              {b}
                             </SelectItem>
                           ))}
                         </SelectContent>
