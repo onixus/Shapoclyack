@@ -1,12 +1,15 @@
-"""TLS / certificate posture (Phase 9.2).
+"""TLS / certificate posture (Phase 9.2 + Pulse Phase 4).
 
-Reuses the already-collected NSE output from the ``nse`` stage -- this
-module never runs nmap or opens a TLS connection itself. It parses the
-free-text ``output`` attribute nmap's own ``ssl-cert`` / ``ssl-enum-ciphers``
-scripts write into ``nmap/tcp/*.xml`` (and ``nmap/udp/*.xml``), the same XML
-already walked generically by ``report.py``'s ``_parse_nmap_xml`` /
-``_script_record``. No new scan and no Python TLS-handshake dependency
-(``cryptography``/``pyopenssl``) is added here.
+Primary path: reuses already-collected NSE output from the ``nse`` stage --
+parses free-text ``output`` of nmap's ``ssl-cert`` / ``ssl-enum-ciphers``
+scripts from ``nmap/tcp/*.xml`` (and ``nmap/udp/*.xml``), the same XML
+walked generically by ``report.py``.
+
+Fallback path (Phase 4): when nmap XML has no SSL scripts (Pulse backend,
+``--skip-nse``, empty nmap dir) and ``probe_fallback`` is enabled, opens a
+direct TLS handshake via ``tls_probe`` (stdlib ``ssl``) against open ports.
+Does not replace full nmap cipher grading; covers cert expiry, self-signed
+heuristic, and weak negotiated protocol/cipher name.
 
 From ``ssl-cert`` output this module extracts certificate subject/issuer,
 SAN, signature algorithm, public key size, and validity window, then flags:
@@ -61,6 +64,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_schema import TlsPostureConfig
+from .tls_probe import _parse_tls_endpoints, probe_tls_endpoints, write_tls_probe_json
 from .utils import save_json, write_lines
 
 LOG = logging.getLogger("octo-man.tls_posture")
@@ -306,8 +310,15 @@ def check_tls_posture(
     config: TlsPostureConfig,
     output_dir: Path,
     now: datetime | None = None,
+    open_ports: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Parse ssl-cert/ssl-enum-ciphers NSE output already present in ``nmap_dir``."""
+    """Build TLS posture findings from nmap NSE XML, with optional TLS probe fallback.
+
+    When nmap has ``ssl-cert`` / ``ssl-enum-ciphers`` script output, those are
+    preferred (richer cipher grades). If none are present and
+    ``config.probe_fallback`` is true, probe ``open_ports`` via ``tls_probe``
+    (stdlib handshake). Pass ``open_ports`` from the ports stage for fallback.
+    """
     now = now or datetime.now(timezone.utc)
     result: dict[str, Any] = {
         "targets_considered": 0,
@@ -315,6 +326,7 @@ def check_tls_posture(
         "findings": [],
         "truncated": False,
         "skipped_reason": None,
+        "source": None,
     }
 
     if not config.enabled:
@@ -327,52 +339,90 @@ def check_tls_posture(
     for host, port, script_id, output in scripts:
         endpoints.setdefault((host, port), {})[script_id] = output
 
-    result["targets_considered"] = len(endpoints)
-    if not endpoints:
+    if endpoints:
+        result["targets_considered"] = len(endpoints)
+        ordered_keys = sorted(endpoints.keys())
+        truncated = len(ordered_keys) > config.max_targets
+        ordered_keys = ordered_keys[: config.max_targets]
+
+        findings: list[dict[str, Any]] = []
+        for host, port in ordered_keys:
+            scripts_by_id = endpoints[(host, port)]
+            issues: list[dict[str, Any]] = []
+
+            cert: dict[str, Any] | None = None
+            cert_output = scripts_by_id.get(_SSL_CERT_SCRIPT_ID)
+            if cert_output is not None:
+                cert = _parse_ssl_cert_output(cert_output)
+                issues.extend(_classify_cert(cert, now, config.expiring_soon_days))
+
+            cipher_versions: list[dict[str, Any]] = []
+            cipher_output = scripts_by_id.get(_SSL_ENUM_CIPHERS_SCRIPT_ID)
+            if cipher_output is not None:
+                cipher_versions = _parse_ssl_enum_ciphers_output(cipher_output)
+                issues.extend(_classify_ciphers(cipher_versions))
+
+            findings.append(
+                {
+                    "host": host,
+                    "port": port,
+                    "cert": cert,
+                    "cipher_versions": cipher_versions,
+                    "issues": issues,
+                    "source": "nmap-nse",
+                }
+            )
+
+        result["checked_count"] = len(findings)
+        result["findings"] = findings
+        result["truncated"] = truncated
+        result["source"] = "nmap-nse"
+        with_issues = sum(1 for f in findings if f["issues"])
+        _persist(output_dir, result)
+        LOG.info(
+            "tls_posture: %d endpoint(s) checked (nmap) -> %d with finding(s)%s",
+            len(findings),
+            with_issues,
+            " [truncated]" if truncated else "",
+        )
+        return result
+
+    # --- Phase 4 fallback: direct TLS probe when nmap SSL scripts missing ---
+    if not config.probe_fallback:
         result["skipped_reason"] = "no_tls_endpoints"
         _persist(output_dir, result)
         return result
 
-    ordered_keys = sorted(endpoints.keys())
-    truncated = len(ordered_keys) > config.max_targets
-    ordered_keys = ordered_keys[: config.max_targets]
+    if not open_ports:
+        result["skipped_reason"] = "no_tls_endpoints"
+        _persist(output_dir, result)
+        return result
 
-    findings: list[dict[str, Any]] = []
-    for host, port in ordered_keys:
-        scripts_by_id = endpoints[(host, port)]
-        issues: list[dict[str, Any]] = []
+    considered = _parse_tls_endpoints(open_ports, set(config.probe_tls_ports))
+    truncated = len(considered) > config.max_targets
+    probe_findings = probe_tls_endpoints(
+        open_ports,
+        max_targets=config.max_targets,
+        timeout_seconds=config.probe_timeout_seconds,
+        concurrency=config.probe_concurrency,
+        expiring_soon_days=config.expiring_soon_days,
+        tls_ports=set(config.probe_tls_ports),
+        now=now,
+    )
+    write_tls_probe_json(output_dir, probe_findings)
 
-        cert: dict[str, Any] | None = None
-        cert_output = scripts_by_id.get(_SSL_CERT_SCRIPT_ID)
-        if cert_output is not None:
-            cert = _parse_ssl_cert_output(cert_output)
-            issues.extend(_classify_cert(cert, now, config.expiring_soon_days))
-
-        cipher_versions: list[dict[str, Any]] = []
-        cipher_output = scripts_by_id.get(_SSL_ENUM_CIPHERS_SCRIPT_ID)
-        if cipher_output is not None:
-            cipher_versions = _parse_ssl_enum_ciphers_output(cipher_output)
-            issues.extend(_classify_ciphers(cipher_versions))
-
-        findings.append(
-            {
-                "host": host,
-                "port": port,
-                "cert": cert,
-                "cipher_versions": cipher_versions,
-                "issues": issues,
-            }
-        )
-
-    result["checked_count"] = len(findings)
-    result["findings"] = findings
+    result["targets_considered"] = min(len(considered), config.max_targets)
+    result["checked_count"] = len(probe_findings)
+    result["findings"] = probe_findings
     result["truncated"] = truncated
-
-    with_issues = sum(1 for f in findings if f["issues"])
+    result["source"] = "pulse-tls-probe"
+    if not probe_findings:
+        result["skipped_reason"] = "no_tls_endpoints"
+    with_issues = sum(1 for f in probe_findings if f.get("issues"))
     _persist(output_dir, result)
     LOG.info(
-        "tls_posture: %d endpoint(s) checked -> %d with finding(s)%s",
-        len(findings),
+        "tls_posture: %d endpoint(s) checked (tls-probe) -> %d with finding(s)%s",
+        len(probe_findings),
         with_issues,
         " [truncated]" if truncated else "",
     )

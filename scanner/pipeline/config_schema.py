@@ -460,26 +460,35 @@ class NucleiConfig(BaseModel):
 
 
 class TlsPostureConfig(BaseModel):
-    """TLS / certificate posture (Phase 9.2). Opt-in.
+    """TLS / certificate posture (Phase 9.2 + Pulse Phase 4). Opt-in.
 
-    Parses the free-text ``output`` of nmap's own ``ssl-cert`` /
-    ``ssl-enum-ciphers`` NSE scripts, already written to ``nmap/tcp/*.xml`` by
-    the ``nse`` stage -- no new scan or TLS-handshake dependency is added
-    here (see ``tls_posture.py`` module docstring for the honesty note on
-    parsing free text, not a stable schema). ``ssl-enum-ciphers`` must be
-    present in the active NSE profile's ``scripts`` for weak-cipher/protocol
-    findings to populate; cert expiry/self-signed detection works off
-    ``ssl-cert`` alone. ``max_targets`` caps how many host:port endpoints get
-    inspected per run -- past the cap, remaining endpoints are skipped and
-    the run is flagged "truncated". ``expiring_soon_days`` is the lookahead
-    window for the ``cert_expiring_soon`` finding. Findings are reported only
-    (``tls_posture.json``) -- never merged into scan scope or asset identity.
-    Hostname/SAN-CN mismatch checking is out of scope for this module.
+    Primary path: parse free-text ``ssl-cert`` / ``ssl-enum-ciphers`` NSE
+    output already written to ``nmap/tcp/*.xml`` by the ``nse`` stage (see
+    ``tls_posture.py`` for the honesty note on free-text parsing).
+
+    Fallback path (Phase 4): when nmap XML has no SSL script output (Pulse
+    backend, ``--skip-nse``, or empty nmap dir) and ``probe_fallback`` is
+    true, open a direct TLS handshake via stdlib ``ssl`` against
+    ``open_ports`` on ``probe_tls_ports`` (see ``tls_probe.py``). This does
+    **not** grade full cipher suites like nmap ``ssl-enum-ciphers``; it
+    covers cert expiry, self-signed heuristic, and weak negotiated
+    protocol/cipher name.
+
+    ``max_targets`` caps endpoints per run (truncated flag past the cap).
+    Findings are reported only (``tls_posture.json``) -- never merged into
+    scan scope. Hostname/SAN-CN mismatch is out of scope.
     """
 
     enabled: bool = False
     max_targets: int = Field(default=2000, ge=1, le=50_000)
     expiring_soon_days: int = Field(default=30, ge=1, le=365)
+    # Phase 4: stdlib TLS probe when nmap SSL scripts are absent.
+    probe_fallback: bool = True
+    probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
+    probe_concurrency: int = Field(default=20, ge=1, le=500)
+    probe_tls_ports: list[int] = Field(
+        default_factory=lambda: [443, 8443, 9443, 4443, 10443, 6443]
+    )
 
 
 class SlackAlertConfig(BaseModel):

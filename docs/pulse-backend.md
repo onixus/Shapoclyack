@@ -107,9 +107,37 @@ Connect-mode Pulse works without root; SYN/OS still need caps/root like nmap.
 Pulse chunk checkpoints live under the run’s `pulse/*.ckpt`. Shapoclyack
 stage checkpoint marks hosts done under key `pulse` (and `nse` for nmap).
 
+## TLS posture without nmap (Phase 4)
+
+When `tls_posture.enabled: true` and nmap produced no `ssl-cert` /
+`ssl-enum-ciphers` output (Pulse backend, `--skip-nse`, empty `nmap/`),
+Shapoclyack can **probe open TLS ports directly** via stdlib `ssl`
+(`scanner/pipeline/tls_probe.py`).
+
+```yaml
+tls_posture:
+  enabled: true
+  probe_fallback: true          # default true
+  probe_timeout_seconds: 5.0
+  probe_concurrency: 20
+  probe_tls_ports: [443, 8443, 9443, 4443, 10443, 6443]
+```
+
+| Source | When | Covers |
+|--------|------|--------|
+| `nmap-nse` | SSL scripts present in nmap XML | cert + full cipher grades |
+| `pulse-tls-probe` | fallback handshake | cert expiry / self-signed / weak negotiated protocol+cipher name |
+
+Artifacts: `tls_posture.json` (same shape; `source` field), plus
+`tls_probe.json` when the fallback ran.
+
+Full cipher-suite enumeration (nmap grade A–F) still needs nmap NSE or a
+future dedicated enumerator. Cert DER field extraction is richer when the
+optional `cryptography` package is installed (API image).
+
 ## Limitations (current)
 
 - Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …).
-- `tls_posture` still needs nmap XML script output unless disabled.
+- TLS probe fallback ≠ full `ssl-enum-ciphers` grade table.
 - UDP enrichment still relies on naabu/nmap paths.
 - Banner ≠ full nmap `-sV` product/version.

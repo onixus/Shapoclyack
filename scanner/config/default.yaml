@@ -301,15 +301,20 @@ service_probe:
     max_hosts: 65536
     chunk_hosts: 64
 
-# TLS / certificate posture (Phase 9.2): parses ssl-cert / ssl-enum-ciphers
-# NSE script output already written by the nse stage -> cert expiry,
-# self-signed heuristic, weak protocol/cipher findings. Opt-in; findings
-# only, never merged into scan scope. Hostname/SAN-CN mismatch is out of
-# scope (see tls_posture.py module docstring).
+# TLS / certificate posture (Phase 9.2 + Pulse Phase 4): prefers nmap
+# ssl-cert / ssl-enum-ciphers NSE output from the nse stage. When those are
+# missing (Pulse backend / --skip-nse) and probe_fallback is true, opens a
+# direct TLS handshake (stdlib ssl) on open ports listed in probe_tls_ports.
+# Opt-in; findings only, never merged into scan scope.
+# Hostname/SAN-CN mismatch is out of scope (see tls_posture.py).
 tls_posture:
   enabled: false
   max_targets: 2000
   expiring_soon_days: 30
+  probe_fallback: true
+  probe_timeout_seconds: 5.0
+  probe_concurrency: 20
+  probe_tls_ports: [443, 8443, 9443, 4443, 10443, 6443]
 
 # Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID

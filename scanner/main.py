@@ -520,14 +520,19 @@ def _run_pipeline(args: argparse.Namespace) -> int:
                 )
                 checkpoint.mark_done("pulse_shadow")
 
-    # Phase 9.2: TLS/certificate posture (findings-only, non-escalating --
-    # see tls_posture.py module docstring). Reads ssl-cert/ssl-enum-ciphers
-    # output already present in nmap_dir from the nse stage above; runs even
-    # under --resume or --skip-nse (reports skipped_reason="no_tls_endpoints").
+    # Phase 9.2 + Pulse Phase 4: TLS/certificate posture (findings-only,
+    # non-escalating -- see tls_posture.py). Prefers ssl-cert/ssl-enum-ciphers
+    # from nmap_dir; when those are absent and probe_fallback is on, handshakes
+    # open TLS ports from open_ports via stdlib ssl (tls_probe).
     if not (args.resume and checkpoint.is_done("tls_posture")):
         _run_stage(
             "tls_posture",
-            lambda: check_tls_posture(nmap_dir, config.tls_posture, paths.output_dir),
+            lambda: check_tls_posture(
+                nmap_dir,
+                config.tls_posture,
+                paths.output_dir,
+                open_ports=open_ports,
+            ),
         )
         checkpoint.mark_done("tls_posture")
 

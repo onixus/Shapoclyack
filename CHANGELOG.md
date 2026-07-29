@@ -17,6 +17,11 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   runs both backends and writes `diff_pulse_nmap.json` (endpoint Jaccard +
   OS family agreement). With `backend: nmap`, report still prefers nmap XML;
   Pulse CVEs can still attach when present.
+- **TLS posture probe fallback (Phase 4)** — when nmap has no
+  `ssl-cert`/`ssl-enum-ciphers` output, `tls_posture` can handshake open TLS
+  ports via stdlib `ssl` (`probe_fallback`, default on). Writes
+  `tls_probe.json` and fills `tls_posture.json` with `source: pulse-tls-probe`
+  (cert expiry, self-signed heuristic, weak negotiated protocol/cipher).
 
 ## [0.37-0727] — 2026-07-27
 
