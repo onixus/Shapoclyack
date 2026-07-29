@@ -7,6 +7,7 @@ invokes ``pulse_shadow.compare_pulse_nmap`` (endpoint Jaccard + OS family).
 Usage:
   scripts/compare-pulse-nmap.py 127.0.0.1 scanme.nmap.org
   PULSE_BIN=./pulse NMAP_BIN=nmap scripts/compare-pulse-nmap.py --top 100 1.1.1.1
+  scripts/compare-pulse-nmap.py --one-ip-per-host scanme.nmap.org example.com
 
 Requires: pulse + nmap on PATH (or PULSE_BIN / NMAP_BIN).
 """
@@ -14,6 +15,7 @@ Requires: pulse + nmap on PATH (or PULSE_BIN / NMAP_BIN).
 from __future__ import annotations
 
 import argparse
+import socket
 import json
 import os
 import shutil
@@ -40,6 +42,55 @@ def _which(env_key: str, default: str) -> str:
     if found:
         return found
     raise SystemExit(f"missing binary: set {env_key} or install `{default}`")
+
+
+
+def resolve_targets(targets: list[str], *, one_ip_per_host: bool) -> list[str]:
+    """Resolve hostnames for fair compare.
+
+    When *one_ip_per_host* is True, each hostname collapses to a single IPv4
+    (first getaddrinfo result). Bare IPs pass through. Multi-A expansion is
+    the default Pulse behaviour and inflates endpoint Jaccard vs nmap.
+    """
+    if not one_ip_per_host:
+        return list(targets)
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in targets:
+        t = t.strip()
+        if not t:
+            continue
+        # already IPv4/IPv6 literal?
+        try:
+            socket.inet_pton(socket.AF_INET, t)
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+            continue
+        except OSError:
+            pass
+        try:
+            socket.inet_pton(socket.AF_INET6, t)
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+            continue
+        except OSError:
+            pass
+        try:
+            infos = socket.getaddrinfo(t, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise SystemExit(f"resolve failed for {t!r}: {exc}") from exc
+        if not infos:
+            raise SystemExit(f"no A records for {t!r}")
+        ip = infos[0][4][0]
+        if ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+            print(f"    resolve {t} -> {ip} (one-ip)")
+        else:
+            print(f"    resolve {t} -> {ip} (dup skipped)")
+    return out
 
 
 def run_pulse(
@@ -190,8 +241,16 @@ def main() -> int:
         action="store_true",
         help="enable OS detect (needs root/raw sockets on both tools)",
     )
+    ap.add_argument(
+        "--one-ip-per-host",
+        action="store_true",
+        help="resolve each hostname to a single IPv4 (fair Jaccard vs nmap)",
+    )
     args = ap.parse_args()
     targets = args.targets or ["127.0.0.1"]
+    if args.one_ip_per_host:
+        print("==> resolving targets (--one-ip-per-host)")
+        targets = resolve_targets(targets, one_ip_per_host=True)
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     os_detect = args.os or is_root
 
