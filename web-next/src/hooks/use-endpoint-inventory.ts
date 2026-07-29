@@ -4,9 +4,18 @@ import { useQuery } from "@tanstack/react-query";
 import {
   fetchAssetSoftware,
   fetchEndpointDeviceChanges,
+  fetchEndpointDevices,
   fetchEndpointDevicesForAsset,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
+
+/** All Lariska endpoint devices for the tenant. */
+export function useEndpointDevices(tenantId = "default") {
+  return useQuery({
+    queryKey: queryKeys.endpointDevices(tenantId),
+    queryFn: () => fetchEndpointDevices({ tenantId }),
+  });
+}
 
 /** Endpoint device(s) reconciled to this network-scan asset (Agent_plan.md S1-S7). */
 export function useEndpointDevicesForAsset(assetId: string | null) {

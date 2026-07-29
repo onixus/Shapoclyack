@@ -92,7 +92,8 @@ function AssetDetailInner() {
   const vulns = vulnsQuery.data || [];
 
   const devicesQuery = useEndpointDevicesForAsset(assetId || null);
-  const device = (devicesQuery.data || [])[0] || null;
+  const devices = devicesQuery.data || [];
+  const device = devices[0] || null;
   const softwareQuery = useAssetSoftware(assetId || null);
   const software = softwareQuery.data || [];
 
@@ -149,7 +150,11 @@ function AssetDetailInner() {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-1">
           <OverviewCard asset={asset} />
-          {device ? <EndpointCard device={device} /> : null}
+          {devices.length > 0 ? (
+            devices.map((d) => <EndpointCard key={d.device_id} device={d} />)
+          ) : (
+            <NoEndpointCard loading={devicesQuery.isLoading} />
+          )}
           {canOperate ? <EditCard asset={asset} /> : null}
         </div>
 
@@ -317,6 +322,27 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
   );
 }
 
+function NoEndpointCard({ loading }: { loading: boolean }) {
+  return (
+    <div className="space-y-3 rounded-xl border border-dashed border-slate-700/80 bg-slate-900/40 p-5 text-xs shadow-lg backdrop-blur">
+      <p className="text-sm font-bold uppercase tracking-wider text-slate-300">Endpoint (Lariska)</p>
+      {loading ? (
+        <p className="text-slate-500">Checking for linked agent…</p>
+      ) : (
+        <>
+          <p className="leading-relaxed text-slate-400">
+            No Lariska agent is correlated to this network asset yet. Install the endpoint agent with a
+            tenant provisioning key; inventory links here by hostname / platform identifiers.
+          </p>
+          <Button asChild variant="outline" size="sm" className="h-7 border-slate-700 text-xs text-sky-400">
+            <Link href="/endpoints">Browse endpoints</Link>
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
   const staleAfterMs = STALE_INVENTORY_HOURS * 60 * 60 * 1000;
   const lastInventoryMs = device.last_inventory_at ? new Date(device.last_inventory_at).getTime() : null;
@@ -325,7 +351,10 @@ function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
   return (
     <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
       <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-        <p className="text-sm font-bold uppercase tracking-wider text-slate-200">Endpoint (Lariska)</p>
+        <div>
+          <p className="text-sm font-bold uppercase tracking-wider text-slate-200">Endpoint (Lariska)</p>
+          <p className="mt-0.5 font-mono text-[10px] text-slate-500">{device.hostname}</p>
+        </div>
         <StatusBadge value={device.reconciliation_status} map={ENDPOINT_RECONCILIATION_STATUS} />
       </div>
       {device.reconciliation_status === "conflict" ? (
