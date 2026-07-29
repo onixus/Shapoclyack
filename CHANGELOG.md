@@ -6,6 +6,7 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Pulse v0.2.3** — pin `PULSE_VERSION=v0.2.3` (fingerprints/KEV feed/UDP + macOS GUI release assets).
 - **Pulse v0.2.2** — pin `PULSE_VERSION=v0.2.2` (H2: HTTP probes, KEV/scope, weak TLS; `tls_posture` prefers `pulse/tls.json`).
 - **Pulse service probe backend (opt-in)** — `service_probe.backend`:
   `nmap` (default) | `pulse` | `hybrid`. When `pulse`/`hybrid`, open ports
