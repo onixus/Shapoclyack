@@ -53,23 +53,36 @@ NVD online: set `NVD_API_KEY` or mount a key file readable by the scanner
 `report.py` prefers `services.json` / `os.json` when present, and still merges
 nmap script findings from XML when hybrid/nmap ran.
 
-## Image install (operator)
+## Image install
 
-Until the Dockerfile bakes Pulse:
+`Dockerfile` and `Dockerfile.allinone` multi-stage-build Pulse from
+[onixus/GenDec](https://github.com/onixus/GenDec) and install to
+`/usr/local/bin/pulse` with `cap_net_raw,cap_net_admin+eip` (same pattern as
+nmap/naabu).
 
-```dockerfile
-# example — pin a release
-COPY --from=ghcr.io/.../pulse:0.2 /usr/local/bin/pulse /usr/local/bin/pulse
-# or: multi-stage cargo build from https://github.com/onixus/GenDec
+Build args:
+
+| Arg | Default | Meaning |
+|-----|---------|---------|
+| `PULSE_GIT_URL` | `https://github.com/onixus/GenDec.git` | source repo |
+| `PULSE_REF` | `main` | branch/tag/commit |
+
+```bash
+docker build -f Dockerfile \
+  --build-arg PULSE_REF=main \
+  -t shapoclyack-scanner:local .
 ```
 
-Capabilities for SYN/OS (same story as nmap):
+Host install without image rebuild:
 
-```text
-cap_net_raw (+ root for some OS paths)
+```bash
+scripts/install-pulse.sh
+scripts/smoke-pulse.sh
 ```
 
-Connect-mode Pulse (default) works without root.
+System UI / API status probes `pulse --version` alongside nmap/naabu/nuclei.
+
+Connect-mode Pulse works without root; SYN/OS still need caps/root like nmap.
 
 ## Checkpoint
 

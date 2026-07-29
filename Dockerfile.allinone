@@ -10,6 +10,22 @@ FROM golang:1.25-bookworm AS nuclei-build
 ARG NUCLEI_VERSION=v3.9.0
 RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
 
+# Pulse (https://github.com/onixus/GenDec) — service_probe backend.
+FROM rust:1-bookworm AS pulse-build
+ARG PULSE_GIT_URL=https://github.com/onixus/GenDec.git
+ARG PULSE_REF=main
+RUN set -eux; \
+    git clone --depth 1 "${PULSE_GIT_URL}" /src; \
+    cd /src; \
+    if [ "${PULSE_REF}" != "main" ] && [ "${PULSE_REF}" != "master" ]; then \
+      git fetch --depth 1 origin "${PULSE_REF}" || true; \
+      git checkout "${PULSE_REF}" || git checkout FETCH_HEAD || true; \
+    fi; \
+    cargo build --release; \
+    mkdir -p /out; \
+    cp target/release/pulse /out/pulse; \
+    strip /out/pulse || true
+
 FROM node:24-bookworm-slim AS web-build
 WORKDIR /web
 COPY web-next/package.json web-next/package-lock.json ./
@@ -46,6 +62,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     nmap \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=pulse-build /out/pulse /usr/local/bin/pulse
 
 ARG DNSX_VERSION=1.2.3
 ARG NAABU_VERSION=2.6.1
@@ -105,6 +123,7 @@ RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
     setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

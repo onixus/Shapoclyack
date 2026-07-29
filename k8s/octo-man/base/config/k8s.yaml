@@ -130,6 +130,21 @@ ports:
   top_udp_ports: 100
   udp_probes: true
 
+# Pulse service probe (optional). Override with OCTO_SERVICE_BACKEND=pulse|hybrid.
+# Image bakes /usr/local/bin/pulse; NVD key via NVD_API_KEY secret if cve_online.
+service_probe:
+  backend: nmap
+  pulse:
+    concurrency: 500
+    rate: 2000
+    adaptive: true
+    host_parallel: 8
+    banner: true
+    os_detect: true
+    os_mode: auto
+    cve: true
+    cve_online: false
+
 nse_profiles:
   baseline:
     scripts: "default,safe"

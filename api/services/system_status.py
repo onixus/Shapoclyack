@@ -30,6 +30,8 @@ _TOOL_COMMANDS: dict[str, list[str]] = {
     "naabu": ["naabu", "-version"],
     "nuclei": ["nuclei", "-version"],
     "dnsx": ["dnsx", "-version"],
+    # Pulse (GenDec) — optional service_probe backend; "not installed" is OK.
+    "pulse": ["pulse", "--version"],
 }
 _VERSION_RE = re.compile(r"v?\d+\.\d+(?:\.\d+)?")
 
@@ -63,7 +65,7 @@ def _probe_tool(command: list[str]) -> dict[str, str | None]:
 
 
 def tool_versions(*, force: bool = False) -> list[dict[str, str | None]]:
-    """Versions of nmap/naabu/nuclei/dnsx, cached for ``_TOOL_TTL_SECONDS``."""
+    """Versions of nmap/naabu/nuclei/dnsx/pulse, cached for ``_TOOL_TTL_SECONDS``."""
     global _tool_cache, _tool_cache_at
     now = time.monotonic()
     if force or _tool_cache is None or (now - _tool_cache_at) > _TOOL_TTL_SECONDS:

@@ -7,6 +7,23 @@ FROM golang:1.25-bookworm AS nuclei-build
 ARG NUCLEI_VERSION=v3.9.0
 RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
 
+# Pulse (https://github.com/onixus/GenDec) — optional service_probe backend.
+# Pin PULSE_REF to a tag/commit when you need a frozen scanner; default main.
+FROM rust:1-bookworm AS pulse-build
+ARG PULSE_GIT_URL=https://github.com/onixus/GenDec.git
+ARG PULSE_REF=main
+RUN set -eux; \
+    git clone --depth 1 "${PULSE_GIT_URL}" /src; \
+    cd /src; \
+    if [ "${PULSE_REF}" != "main" ] && [ "${PULSE_REF}" != "master" ]; then \
+      git fetch --depth 1 origin "${PULSE_REF}" || true; \
+      git checkout "${PULSE_REF}" || git checkout FETCH_HEAD || true; \
+    fi; \
+    cargo build --release; \
+    mkdir -p /out; \
+    cp target/release/pulse /out/pulse; \
+    strip /out/pulse || true
+
 # Shapoclyack scanner image (Octo-man product pipeline).
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
@@ -30,10 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     && rm -rf /var/lib/apt/lists/*
 
-# Optional Pulse (https://github.com/onixus/GenDec) for service_probe.backend=pulse|hybrid.
-# Uncomment multi-stage build or COPY a release binary to /usr/local/bin/pulse and:
-#   setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse  # only if using --syn/--os raw
-# See docs/pulse-backend.md and scripts/install-pulse.sh
+# Pulse CLI for service_probe.backend=pulse|hybrid (see docs/pulse-backend.md).
+COPY --from=pulse-build /out/pulse /usr/local/bin/pulse
 
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.
@@ -108,6 +123,7 @@ RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
     setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

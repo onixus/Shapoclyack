@@ -4,6 +4,16 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Added
+
+- **Pulse service probe backend (opt-in)** — `service_probe.backend`:
+  `nmap` (default) | `pulse` | `hybrid`. When `pulse`/`hybrid`, open ports
+  from naabu are enriched via [Pulse](https://github.com/onixus/GenDec)
+  (OS/banner/CVE → `services.json` / `os.json`). Override with
+  `OCTO_SERVICE_BACKEND`. Scanner and all-in-one images multi-stage-build
+  Pulse and install `/usr/local/bin/pulse` with raw-socket caps. System
+  status lists `pulse --version`. Docs: `docs/pulse-backend.md`.
+
 ## [0.37-0727] — 2026-07-27
 
 ### Fixed
