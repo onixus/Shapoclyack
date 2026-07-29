@@ -54,14 +54,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     OCTO_STATE_DIR=scanner/state \
     OCTO_CONFIG=scanner/config/default.yaml
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    fping \
-    git \
-    jq \
-    nmap \
-    && rm -rf /var/lib/apt/lists/*
+# Phase 5: nmap optional (default on). Lean Pulse-only: --build-arg INSTALL_NMAP=0
+ARG INSTALL_NMAP=1
+RUN set -eux; \
+    apt-get update; \
+    PKGS="ca-certificates curl fping git jq"; \
+    if [ "${INSTALL_NMAP}" = "1" ]; then PKGS="${PKGS} nmap"; fi; \
+    apt-get install -y --no-install-recommends ${PKGS}; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=pulse-build /out/pulse /usr/local/bin/pulse
 
@@ -92,7 +92,12 @@ RUN set -eux; \
 
 ARG NMAP_VULNERS_REF=0555294abe71857c581afc2ef62ea3ca5c7b7145
 ARG VULSCAN_REF=bd642ed1bc9d96795a91cdf1acd8c93ceef2d07e
+ARG INSTALL_NMAP=1
 RUN set -eux; \
+    if [ "${INSTALL_NMAP}" != "1" ]; then \
+      echo "INSTALL_NMAP=0: skipping nmap-vulners/vulscan"; \
+      exit 0; \
+    fi; \
     git clone https://github.com/vulnersCom/nmap-vulners.git /usr/share/nmap/scripts/nmap-vulners; \
     git -C /usr/share/nmap/scripts/nmap-vulners checkout "${NMAP_VULNERS_REF}"; \
     git clone https://github.com/scipag/vulscan.git /usr/share/nmap/scripts/vulscan; \
@@ -111,19 +116,16 @@ RUN set -eux; \
     git -C /usr/share/nuclei-templates checkout "${NUCLEI_TEMPLATES_REF}"; \
     rm -rf /usr/share/nuclei-templates/.git
 
-# See Dockerfile's matching step for why both capabilities are set here (nmap
-# -O needs cap_net_admin as well as cap_net_raw to work non-root; every place
-# this image actually runs scans — docker-compose.yml, tests/e2e/run.sh, the
-# k8s api/agent/job/cronjob manifests — already grants NET_ADMIN at the
-# container level to match).
-# Do NOT `apt-get purge libcap2-bin` afterward: fping (installed above) Depends
-# on libcap2-bin for its own postinst setcap call, so purging it cascades into
-# silently removing fping too (apt exits 0; the binary just vanishes).
+# See Dockerfile: naabu + Pulse need cap_net_raw,cap_net_admin; nmap too when present.
+# Do NOT `apt-get purge libcap2-bin` afterward: fping Depends on it.
+ARG INSTALL_NMAP=1
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
-    setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
+    if [ "${INSTALL_NMAP}" = "1" ] && [ -x /usr/bin/nmap ]; then \
+      setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

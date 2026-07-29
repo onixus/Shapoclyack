@@ -190,9 +190,27 @@ Nuclei skips cleanly if the binary or `templates_dir` is missing
 (host installs without the Docker bake). Disable with
 `nuclei.enabled: false`.
 
+## Optional nmap (Phase 5)
+
+nmap remains in the default image for `backend: nmap|hybrid` and
+`vuln_legacy`, but is **not required** for the default Pulse path.
+
+| Build | Command |
+|-------|---------|
+| Full (default) | `docker build -f Dockerfile …` (`INSTALL_NMAP=1`) |
+| Pulse-only lean | `docker build --build-arg INSTALL_NMAP=0 …` |
+
+When nmap is absent, `run_nse` writes `nmap/SKIPPED_NMAP_MISSING` and
+continues (Pulse + Nuclei + TLS probe still run).
+
+System UI marks **nmap** as optional and shows `service_probe.backend`.
+
+K8s caps (`NET_RAW` / `NET_ADMIN` + `allowPrivilegeEscalation: true`) remain
+required for **naabu** and Pulse SYN/OS — see `k8s/README.md`.
+
 ## Limitations (current)
 
 - Does not run NSE scripts (`ssl-enum-ciphers`, vulners, …) on the default path.
 - TLS probe fallback ≠ full `ssl-enum-ciphers` grade table.
-- UDP enrichment still relies on naabu/nmap paths.
+- UDP enrichment still relies on naabu (and optional nmap) paths.
 - Banner ≠ full nmap `-sV` product/version.

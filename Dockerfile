@@ -38,14 +38,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    fping \
-    git \
-    jq \
-    nmap \
-    && rm -rf /var/lib/apt/lists/*
+# Phase 5: nmap is optional for the default Pulse path. Default INSTALL_NMAP=1
+# keeps the full image (hybrid/vuln_legacy). Pulse-only lean builds:
+#   docker build --build-arg INSTALL_NMAP=0 …
+ARG INSTALL_NMAP=1
+RUN set -eux; \
+    apt-get update; \
+    PKGS="ca-certificates curl fping git jq"; \
+    if [ "${INSTALL_NMAP}" = "1" ]; then PKGS="${PKGS} nmap"; fi; \
+    apt-get install -y --no-install-recommends ${PKGS}; \
+    rm -rf /var/lib/apt/lists/*
 
 # Pulse CLI for service_probe.backend=pulse|hybrid (see docs/pulse-backend.md).
 COPY --from=pulse-build /out/pulse /usr/local/bin/pulse
@@ -77,13 +79,19 @@ RUN set -eux; \
     rm -f /tmp/dnsx.zip /tmp/naabu.zip; \
     apt-get purge -y unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
-# Vulnerability NSE scripts:
+# Vulnerability NSE scripts (only when INSTALL_NMAP=1):
 #  - nmap-vulners: maps service versions (-sV) to CVEs via the vulners.com API (needs egress).
 #  - vulscan: offline CVE matching against bundled local databases (no internet required).
 # Pinned to specific commits for reproducible, supply-chain-safe builds.
+# Skipped for Pulse-only images (Phase 5); default CVE path is Pulse + Nuclei.
 ARG NMAP_VULNERS_REF=0555294abe71857c581afc2ef62ea3ca5c7b7145
 ARG VULSCAN_REF=bd642ed1bc9d96795a91cdf1acd8c93ceef2d07e
+ARG INSTALL_NMAP=1
 RUN set -eux; \
+    if [ "${INSTALL_NMAP}" != "1" ]; then \
+      echo "INSTALL_NMAP=0: skipping nmap-vulners/vulscan"; \
+      exit 0; \
+    fi; \
     git clone https://github.com/vulnersCom/nmap-vulners.git /usr/share/nmap/scripts/nmap-vulners; \
     git -C /usr/share/nmap/scripts/nmap-vulners checkout "${NMAP_VULNERS_REF}"; \
     git clone https://github.com/scipag/vulscan.git /usr/share/nmap/scripts/vulscan; \
@@ -106,11 +114,9 @@ RUN set -eux; \
 # host discovery / SYN scans / OS detection work as the non-root 'scanner' user.
 # (A container-level --cap-add alone is NOT inherited by a non-root process on
 # exec without this — the binary needs the file capability bit set too.)
-# Both cap_net_raw and cap_net_admin are required: nmap's -O OS detection (built
-# with libcap-ng, as Debian/Ubuntu's package is) checks for both when dropping
-# from root, same as the well-known `setcap cap_net_raw,cap_net_admin+eip
-# $(which nmap)` recipe. NET_ADMIN is NOT in Docker's default bounding set, so
-# every place this image actually runs scans already grants it explicitly:
+# Both cap_net_raw and cap_net_admin are required for naabu SYN, Pulse SYN/OS,
+# and nmap -O (when present). NET_ADMIN is NOT in Docker's default bounding set,
+# so every place this image actually runs scans already grants it explicitly:
 # docker-compose.yml's cap_add, tests/e2e/run.sh's --cap-add, and the k8s
 # api/agent/job/cronjob manifests' capabilities.add. A file capability that
 # exceeds the runtime bounding set fails the *entire* execve() with EPERM
@@ -119,11 +125,14 @@ RUN set -eux; \
 # Do NOT `apt-get purge libcap2-bin` afterward: fping (installed above) Depends
 # on libcap2-bin for its own postinst setcap call, so purging it cascades into
 # silently removing fping too (apt exits 0; the binary just vanishes).
+ARG INSTALL_NMAP=1
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
-    setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
+    if [ "${INSTALL_NMAP}" = "1" ] && [ -x /usr/bin/nmap ]; then \
+      setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

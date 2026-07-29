@@ -191,7 +191,7 @@ export default function JobsPage() {
                 onCheckedChange={(checked) => setSkipNse(checked === true)}
                 className="border-slate-700"
               />
-              Skip NSE Scripts
+              Ports only (skip service probe)
             </Label>
             <Label className="flex items-center gap-2 font-semibold cursor-pointer">
               <Checkbox

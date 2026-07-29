@@ -31,6 +31,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   `--cve` + Nuclei (now **enabled by default**) + CVSS4 enrichment.
   Vulns tagged `source: pulse|nuclei|nmap-nse`; host:port:CVE deduped in
   reports. nmap-vulners only via `vuln_legacy` when backend is nmap/hybrid.
+- **Optional nmap (Phase 5)** — `INSTALL_NMAP=0` build arg for lean
+  Pulse-only images; `run_nse` skips cleanly if nmap is missing. System
+  status marks nmap optional and surfaces `service_backend`. UI: “Ports
+  only (skip service probe)” and “Legacy nmap NSE profiles”.
 
 ## [0.37-0727] — 2026-07-27
 
