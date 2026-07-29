@@ -1,8 +1,18 @@
+"""Nmap NSE / -sV / -O stage (optional since Pulse Phase 5).
+
+Default service enrichment is Pulse (``service_probe.backend: pulse``).
+This module remains the escape hatch for ``backend: nmap|hybrid`` and
+``nse_profiles.vuln_legacy``. When the ``nmap`` binary is not installed
+(Pulse-only image: ``INSTALL_NMAP=0``), ``run_nse`` logs and returns an
+empty ``nmap/`` directory instead of failing the scan.
+"""
+
 from __future__ import annotations
 
 import hashlib
 import logging
 import os
+import shutil
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -241,6 +251,20 @@ def run_nse(
     done_hosts: Iterable[str] | None = None,
     on_host_done: Callable[[str], None] | None = None,
 ) -> Path:
+    nmap_root = output_dir / "nmap"
+    nmap_root.mkdir(parents=True, exist_ok=True)
+
+    if shutil.which("nmap") is None:
+        logging.warning(
+            "nmap binary not found; skipping NSE stage "
+            "(Pulse-only image or PATH). Use service_probe.backend=pulse "
+            "or install nmap for hybrid/nmap backends."
+        )
+        (nmap_root / "SKIPPED_NMAP_MISSING").write_text(
+            "nmap not installed\n", encoding="utf-8"
+        )
+        return nmap_root
+
     normalized: list[str] = []
     for entry in host_port_list:
         parsed = parse_endpoint(entry)
@@ -251,8 +275,6 @@ def run_nse(
     targets_file = output_dir / "nse_targets.txt"
     write_lines(targets_file, normalized)
 
-    nmap_root = output_dir / "nmap"
-    nmap_root.mkdir(parents=True, exist_ok=True)
     if not normalized:
         return nmap_root
 

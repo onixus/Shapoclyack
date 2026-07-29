@@ -20,9 +20,19 @@ and applies `overlays/kind-dev`. Tear down with `scripts/dev-down.sh`.
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
-nmap/naabu need raw sockets, granted via file capabilities baked into the
-image at build time (`setcap`, see `Dockerfile`). Any pod running them as a
-non-root user needs `allowPrivilegeEscalation: true` alongside
+**Default path (Phase 4–5):** service enrichment is **Pulse** + Nuclei, not
+nmap NSE. Caps still matter for:
+
+| Binary | Why caps |
+|--------|----------|
+| **naabu** | SYN / host discovery |
+| **pulse** | SYN mode and OS fingerprint (connect mode needs no raw caps) |
+| **nmap** | Optional (`INSTALL_NMAP=1` default; `backend: nmap\|hybrid` only) |
+| **fping** | ICMP discovery |
+
+Raw sockets are granted via file capabilities baked into the image at build
+time (`setcap`, see `Dockerfile`). Any pod running them as a non-root user
+needs `allowPrivilegeEscalation: true` alongside
 `capabilities.add: [NET_RAW, NET_ADMIN]` — setting `allowPrivilegeEscalation:
 false` (a common hardening default) sets `no_new_privs`, which silently
 blocks those file capabilities from taking effect on exec, regardless of what
@@ -30,7 +40,16 @@ blocks those file capabilities from taking effect on exec, regardless of what
 Docker-vs-Kubernetes difference — it affected both runtimes equally before
 being fixed (see `job.yaml`, `cronjob.yaml`, `api-deployment.yaml`,
 `agents/agent-deployment.yaml`, all of which correctly set it `true`). Don't
-"fix" it back to `false` on any manifest that runs nmap/naabu directly.
+"fix" it back to `false` on any manifest that runs naabu/pulse/nmap
+directly.
+
+**Pulse-only lean image** (no nmap package / vulners scripts):
+
+```bash
+docker build -f Dockerfile --build-arg INSTALL_NMAP=0 -t shapoclyack-scanner:pulse-only .
+```
+
+NSE stage then skips cleanly if someone still sets `backend: nmap`.
 
 ## Layout
 

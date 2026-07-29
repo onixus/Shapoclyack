@@ -90,10 +90,19 @@ export default function SystemPage() {
                 <tbody className="divide-y divide-slate-800/60">
                   {data.tools.map((tool) => (
                     <tr key={tool.name} className="hover:bg-slate-800/40 transition-colors">
-                      <td className="py-2.5 px-2 font-mono font-bold text-slate-200">{tool.name}</td>
+                      <td className="py-2.5 px-2 font-mono font-bold text-slate-200">
+                        {tool.name}
+                        {tool.optional ? (
+                          <span className="ml-1.5 text-[10px] font-semibold uppercase text-slate-500">optional</span>
+                        ) : null}
+                      </td>
                       <td className="py-2.5 px-2 text-right">
                         {tool.version ? (
                           <code className="rounded bg-slate-950 px-2 py-0.5 font-mono text-[11px] text-sky-400 border border-slate-800">{tool.version}</code>
+                        ) : tool.optional ? (
+                          <Badge variant="secondary" className="bg-slate-800 text-slate-400 border-slate-700">
+                            {tool.error || "not installed"}
+                          </Badge>
                         ) : (
                           <Badge variant="destructive" className="bg-rose-500/20 text-rose-300 border-rose-500/30">{tool.error || "unavailable"}</Badge>
                         )}
@@ -145,8 +154,16 @@ export default function SystemPage() {
                 ))}
               </div>
               <div className="mt-5 space-y-3 pt-3 border-t border-slate-800 text-xs">
+                {data.scan_config.service_backend ? (
+                  <div className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2 border border-slate-800/60">
+                    <span className="font-medium text-slate-300">Service probe backend</span>
+                    <Badge variant="secondary" className="bg-sky-500/20 text-sky-300 border-sky-500/30 font-mono text-[11px]">
+                      {data.scan_config.service_backend}
+                    </Badge>
+                  </div>
+                ) : null}
                 <div>
-                  <p className="text-slate-400 font-semibold mb-1">Configured Scan Profiles</p>
+                  <p className="text-slate-400 font-semibold mb-1">Speed profiles</p>
                   <div className="flex flex-wrap gap-1.5">
                     {data.scan_config.profiles.map((p) => (
                       <Badge key={p} variant="secondary" className="bg-slate-800 text-sky-300 font-mono text-[11px]">{p}</Badge>
@@ -154,7 +171,8 @@ export default function SystemPage() {
                   </div>
                 </div>
                 <div>
-                  <p className="text-slate-400 font-semibold mb-1">NSE Script Profiles</p>
+                  <p className="text-slate-400 font-semibold mb-1">Legacy nmap NSE profiles</p>
+                  <p className="text-[10px] text-slate-500 mb-1.5">Used only when backend is nmap or hybrid</p>
                   <div className="flex flex-wrap gap-1.5">
                     {data.scan_config.nse_profiles.map((p) => (
                       <Badge key={p} variant="outline" className="border-slate-700 text-slate-300 font-mono text-[11px]">{p}</Badge>

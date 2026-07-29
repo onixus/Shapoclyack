@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -10,6 +11,7 @@ from pathlib import Path
 from .cvss4 import Cvss4Database, enrich_vulnerabilities
 from .asn_enrich import AsnDatabase, enrich_hosts_asn
 from .geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
+from .pulse_probe import load_service_artifacts
 from .utils import save_json
 
 _CVE_WITH_SCORE_RE = re.compile(r"(CVE-\d{4}-\d{3,7})\s+(\d{1,2}(?:\.\d+)?)", re.IGNORECASE)
@@ -133,6 +135,7 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
                         "cve": cve,
                         "cvss": cvss,
                         "severity": _severity(cvss),
+                        "source": "nmap-nse",
                     }
                 )
         elif "VULNERABLE" in output.upper():
@@ -144,6 +147,7 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
                     "cve": None,
                     "cvss": None,
                     "severity": "unknown",
+                    "source": "nmap-nse",
                 }
             )
 
@@ -152,6 +156,25 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
         reverse=True,
     )
     return vulnerabilities
+
+
+def _dedupe_vulnerabilities(vulnerabilities: list[dict]) -> list[dict]:
+    """Drop duplicate host:port:CVE rows; keep first occurrence (higher-priority sources first).
+
+    Rows without a CVE id are keyed by host:port:script_id so non-CVE
+    VULNERABLE scripts still appear once.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict] = []
+    for item in vulnerabilities:
+        cve = item.get("cve")
+        cve_key = str(cve).upper() if cve else f"script:{(item.get('script_id') or '')}"
+        key = (str(item.get("host") or ""), str(item.get("port") or ""), cve_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
 
 
 def _lookup_hostname(hostnames_map: dict, host: str) -> str:
@@ -184,9 +207,50 @@ def build_reports(
     asn_enabled: bool = True,
     asn_database: Path | str | None = None,
     extra_vulnerabilities: list[dict] | None = None,
+    report_primary: bool | None = None,
 ) -> None:
+    """Build all configured report formats.
+
+    ``report_primary``: whether Pulse artifacts (services.json/os.json) are
+    the source of truth for this run, as resolved by scanner/main.py's
+    env>profile>YAML backend precedence. Callers that already know this
+    (i.e. scanner/main.py) should always pass it explicitly -- report
+    generation must not re-derive it independently, since main.py's
+    precedence resolution is the only place that can see profile-level
+    overrides and is guaranteed fresh for the current invocation. When
+    ``None`` (ad-hoc report regeneration, tests), falls back to
+    OCTO_SERVICE_BACKEND plus the on-disk pulse/REPORT_PRIMARY marker.
+    """
     hostnames = hostnames_map or {}
-    findings, os_matches, script_findings = _parse_nmap_xml(nmap_dir)
+    # Prefer Pulse artifacts only when backend is pulse/hybrid (not mere shadow).
+    # Shadow (nmap primary + dual-run) still writes services.json for diff, but
+    # report must keep nmap as source of truth for services/OS.
+    if report_primary is None:
+        backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+        prefer_pulse = backend in ("pulse", "hybrid") or (
+            output_dir / "pulse" / "REPORT_PRIMARY"
+        ).exists()
+    else:
+        prefer_pulse = report_primary
+
+    pulse_artifacts = load_service_artifacts(output_dir)
+    pulse_extra_vulns: list[dict] = []
+    nmap_services, nmap_os, script_findings = _parse_nmap_xml(nmap_dir)
+
+    services_source = "Nmap XML"
+    if prefer_pulse and pulse_artifacts is not None:
+        findings, os_matches, pulse_extra_vulns = pulse_artifacts
+        if findings:
+            services_source = "Pulse"
+        else:
+            findings = nmap_services
+        if not os_matches:
+            os_matches = nmap_os
+    else:
+        findings, os_matches = nmap_services, nmap_os
+        # Still attach Pulse CVEs when shadow produced them
+        if pulse_artifacts is not None:
+            _, _, pulse_extra_vulns = pulse_artifacts
     if hostnames:
         for item in findings:
             item["hostname"] = _lookup_hostname(hostnames, item["host"])
@@ -196,15 +260,21 @@ def build_reports(
             item["hostname"] = _lookup_hostname(hostnames, item["host"])
     service_counter = Counter(item["service"] for item in findings)
     vulnerabilities = _build_vulnerabilities(script_findings)
-    # External-tool findings (e.g. nuclei_scan.py's CVE-tagged matches) that
-    # should participate in the same CVSS4/GeoIP enrichment, severity
-    # counting, and export as NSE-derived vulnerabilities below.
+    # Phase 4.2 CVE stack (default path, no nmap-vulners):
+    #   Pulse --cve  → pulse_extra_vulns (source: pulse)
+    #   Nuclei CVE   → extra_vulnerabilities (source: nuclei)
+    #   NSE (legacy) → script_findings via _build_vulnerabilities
+    # All feed CVSS4/EPSS/KEV enrichment below. Dedupe by host:port:CVE
+    # (prefer first: NSE then Pulse then Nuclei when same id appears twice).
+    if pulse_extra_vulns:
+        vulnerabilities.extend(pulse_extra_vulns)
     if extra_vulnerabilities:
         vulnerabilities.extend(extra_vulnerabilities)
-        vulnerabilities.sort(
-            key=lambda item: (SEVERITY_ORDER.get(item["severity"], 0), item["cvss"] or 0.0),
-            reverse=True,
-        )
+    vulnerabilities = _dedupe_vulnerabilities(vulnerabilities)
+    vulnerabilities.sort(
+        key=lambda item: (SEVERITY_ORDER.get(item["severity"], 0), item["cvss"] or 0.0),
+        reverse=True,
+    )
 
     if cvss4_enabled:
         cvss4_path = Path(cvss4_database) if cvss4_database else None
@@ -271,6 +341,7 @@ def build_reports(
         "alive_hosts_with_names": hosts_with_names,
         "open_host_port_pairs": len(open_ports),
         "nmap_open_services": len(findings),
+        "open_services_source": services_source,
         "os_detected_hosts": len(best_os_by_host),
         "nse_script_findings": len(script_findings),
         "potential_vulnerabilities": len(vulnerabilities),
@@ -374,7 +445,8 @@ def build_reports(
             f"- Alive hosts: {summary['alive_hosts']}",
             f"- Alive hosts with resolved names: {summary['alive_hosts_with_names']}",
             f"- Open host:port pairs: {summary['open_host_port_pairs']}",
-            f"- Parsed open services from Nmap XML: {summary['nmap_open_services']}",
+            f"- Parsed open services from {summary['open_services_source']}: "
+            f"{summary['nmap_open_services']}",
             f"- Hosts with OS detected: {summary['os_detected_hosts']}",
             f"- NSE script findings: {summary['nse_script_findings']}",
             f"- Potential vulnerabilities: {summary['potential_vulnerabilities']} "

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -32,6 +34,27 @@ class RuntimeConfig(BaseModel):
         return self
 
 
+class ProfilePulseConfig(BaseModel):
+    """Optional per-speed-profile Pulse knobs (override ``service_probe.pulse``).
+
+    Only non-None fields replace the global PulseProbeConfig for that run.
+    """
+
+    concurrency: int | None = Field(default=None, ge=1, le=10_000)
+    rate: int | None = Field(default=None, ge=0, le=100_000)
+    adaptive: bool | None = None
+    host_parallel: int | None = Field(default=None, ge=0, le=256)
+    timeout_ms: int | None = Field(default=None, ge=50, le=60_000)
+    banner: bool | None = None
+    os_detect: bool | None = None
+    os_mode: Literal["sinfp", "nmap", "auto"] | None = None
+    cve: bool | None = None
+    cve_online: bool | None = None
+    syn: bool | None = None
+    max_hosts: int | None = Field(default=None, ge=1, le=1_000_000)
+    chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
+
+
 class ProfileConfig(BaseModel):
     discover_rate: int = Field(ge=1, le=100_000)
     port_rate: int = Field(ge=1, le=100_000)
@@ -40,6 +63,10 @@ class ProfileConfig(BaseModel):
     nse_profile: str
     nse_concurrency: int | None = Field(default=None, ge=1, le=64)
     nse_max_rate: int | None = Field(default=None, ge=0)
+    # Phase 4.1: optional per-profile backend (overrides service_probe.backend).
+    service_backend: Literal["nmap", "pulse", "hybrid"] | None = None
+    # Phase 4.1: optional Pulse rate/OS knobs for this speed profile.
+    pulse: ProfilePulseConfig = Field(default_factory=ProfilePulseConfig)
 
 
 class BatchingConfig(BaseModel):
@@ -293,6 +320,110 @@ class NseProfileConfig(BaseModel):
     os_detection: bool = False
 
 
+class PulseProbeConfig(BaseModel):
+    """Pulse CLI settings (https://github.com/onixus/GenDec)."""
+
+    bin: str = ""  # empty → OCTO_PULSE_BIN or PATH
+    concurrency: int = Field(default=500, ge=1, le=10_000)
+    rate: int = Field(default=2000, ge=0, le=100_000)
+    adaptive: bool = True
+    host_parallel: int = Field(default=8, ge=0, le=256)
+    timeout_ms: int = Field(default=800, ge=50, le=60_000)
+    banner: bool = True
+    os_detect: bool = True
+    os_mode: Literal["sinfp", "nmap", "auto"] = "auto"
+    cve: bool = True
+    cve_online: bool = False
+    syn: bool = False
+    max_hosts: int = Field(default=65536, ge=1, le=1_000_000)
+    chunk_hosts: int = Field(default=64, ge=1, le=4096)
+
+
+class ServiceProbeConfig(BaseModel):
+    """Service/OS enrichment after open ports are known.
+
+    * ``pulse`` — Pulse OS/banner/CVE only (Phase 4.1 **default**; no NSE).
+    * ``nmap`` — classic NSE stage (full scripts + nmap XML).
+    * ``hybrid`` — Pulse first, then nmap NSE.
+
+    Per-speed-profile overrides: ``profiles.<mode>.service_backend`` and
+    ``profiles.<mode>.pulse.*``. Env ``OCTO_SERVICE_BACKEND`` wins over YAML.
+
+    When ``shadow`` is true (or env ``OCTO_PULSE_SHADOW=1``), **both** Pulse and
+    Nmap run even if backend is only one of them, and ``diff_pulse_nmap.json``
+    is written for coverage comparison. Report prefers Pulse when backend is
+    pulse/hybrid (``pulse/REPORT_PRIMARY`` marker).
+    """
+
+    backend: Literal["nmap", "pulse", "hybrid"] = "pulse"
+    # Force dual-run + diff artifact (does not change default report backend preference).
+    shadow: bool = False
+    pulse: PulseProbeConfig = Field(default_factory=PulseProbeConfig)
+
+
+def merge_pulse_config(
+    base: PulseProbeConfig,
+    override: ProfilePulseConfig | None,
+) -> PulseProbeConfig:
+    """Apply non-None profile.pulse fields onto global service_probe.pulse."""
+    if override is None:
+        return base
+    data = base.model_dump()
+    for key, value in override.model_dump(exclude_none=True).items():
+        data[key] = value
+    return PulseProbeConfig.model_validate(data)
+
+
+@dataclass(frozen=True)
+class ServiceProbeResolution:
+    """Resolved service_probe decision for one pipeline run (see resolve_service_probe_backend)."""
+
+    backend: Literal["nmap", "pulse", "hybrid"]
+    shadow: bool
+    run_pulse: bool
+    run_nmap_nse: bool
+    report_primary_pulse: bool
+
+
+def resolve_service_probe_backend(
+    *,
+    env_backend: str,
+    profile_backend: str | None,
+    yaml_backend: str,
+    yaml_shadow: bool,
+    env_shadow: str,
+    skip_nse: bool,
+    warn: Callable[[str], None] | None = None,
+) -> ServiceProbeResolution:
+    """Resolve service_probe.backend/shadow and the derived per-stage flags.
+
+    Precedence: ``env_backend`` (OCTO_SERVICE_BACKEND) > ``profile_backend``
+    (profiles.<mode>.service_backend) > ``yaml_backend`` (service_probe.backend).
+    Pulled out of scanner/main.py's ``_run_pipeline`` as a pure function so this
+    precedence chain and the shadow/skip_nse derivation are unit-testable in
+    isolation, without exercising the full pipeline.
+    """
+    backend = env_backend.strip().lower()
+    if not backend and profile_backend:
+        backend = profile_backend
+    if not backend:
+        backend = yaml_backend
+    if backend not in ("nmap", "pulse", "hybrid"):
+        if warn is not None:
+            warn(f"unknown service_probe.backend {backend!r}; using pulse")
+        backend = "pulse"
+
+    shadow = yaml_shadow or env_shadow.strip().lower() in ("1", "true", "yes", "on")
+
+    return ServiceProbeResolution(
+        backend=backend,
+        shadow=shadow,
+        run_pulse=(backend in ("pulse", "hybrid") or shadow) and not skip_nse,
+        run_nmap_nse=(backend in ("nmap", "hybrid") or shadow) and not skip_nse,
+        report_primary_pulse=backend in ("pulse", "hybrid"),
+    )
+
+
 class DiffReportingConfig(BaseModel):
     # Compare current run artifacts against the previous run (hosts/ports/CVEs).
     enabled: bool = True
@@ -376,7 +507,12 @@ class FingerprintConfig(BaseModel):
 
 
 class NucleiConfig(BaseModel):
-    """Nuclei template-based vulnerability/misconfig scanning. Opt-in.
+    """Nuclei template-based vulnerability/misconfig scanning.
+
+    Phase 4.2: **enabled by default** as the web-CVE companion to Pulse
+    ``--cve`` (replacing nmap-vulners on the default Pulse path). Stage
+    skips cleanly when the binary or ``templates_dir`` is missing (host
+    installs without the image bake).
 
     Runs against already-discovered open web ports (``open_ports.txt``) --
     same candidate-endpoint selection as ``fingerprint.py``, no new port scan.
@@ -391,12 +527,10 @@ class NucleiConfig(BaseModel):
     panels, misconfig, tech detection) are reported separately in
     ``nuclei.json`` only. ``max_targets`` caps how many endpoints get probed
     per run -- past the cap, remaining endpoints are skipped and the run is
-    flagged "truncated". ``templates_dir`` must exist (populated at image
-    build time, see ``Dockerfile``/``scripts/fetch-nuclei-templates.sh``) --
-    if missing, the stage skips cleanly rather than failing the scan.
+    flagged "truncated".
     """
 
-    enabled: bool = False
+    enabled: bool = True
     templates_dir: str = "/usr/share/nuclei-templates"
     severities: list[str] = Field(default_factory=lambda: ["critical", "high", "medium"])
     exclude_tags: list[str] = Field(default_factory=lambda: ["intrusive", "fuzz", "dos"])
@@ -422,26 +556,35 @@ class NucleiConfig(BaseModel):
 
 
 class TlsPostureConfig(BaseModel):
-    """TLS / certificate posture (Phase 9.2). Opt-in.
+    """TLS / certificate posture (Phase 9.2 + Pulse Phase 4). Opt-in.
 
-    Parses the free-text ``output`` of nmap's own ``ssl-cert`` /
-    ``ssl-enum-ciphers`` NSE scripts, already written to ``nmap/tcp/*.xml`` by
-    the ``nse`` stage -- no new scan or TLS-handshake dependency is added
-    here (see ``tls_posture.py`` module docstring for the honesty note on
-    parsing free text, not a stable schema). ``ssl-enum-ciphers`` must be
-    present in the active NSE profile's ``scripts`` for weak-cipher/protocol
-    findings to populate; cert expiry/self-signed detection works off
-    ``ssl-cert`` alone. ``max_targets`` caps how many host:port endpoints get
-    inspected per run -- past the cap, remaining endpoints are skipped and
-    the run is flagged "truncated". ``expiring_soon_days`` is the lookahead
-    window for the ``cert_expiring_soon`` finding. Findings are reported only
-    (``tls_posture.json``) -- never merged into scan scope or asset identity.
-    Hostname/SAN-CN mismatch checking is out of scope for this module.
+    Primary path: parse free-text ``ssl-cert`` / ``ssl-enum-ciphers`` NSE
+    output already written to ``nmap/tcp/*.xml`` by the ``nse`` stage (see
+    ``tls_posture.py`` for the honesty note on free-text parsing).
+
+    Fallback path (Phase 4): when nmap XML has no SSL script output (Pulse
+    backend, ``--skip-nse``, or empty nmap dir) and ``probe_fallback`` is
+    true, open a direct TLS handshake via stdlib ``ssl`` against
+    ``open_ports`` on ``probe_tls_ports`` (see ``tls_probe.py``). This does
+    **not** grade full cipher suites like nmap ``ssl-enum-ciphers``; it
+    covers cert expiry, self-signed heuristic, and weak negotiated
+    protocol/cipher name.
+
+    ``max_targets`` caps endpoints per run (truncated flag past the cap).
+    Findings are reported only (``tls_posture.json``) -- never merged into
+    scan scope. Hostname/SAN-CN mismatch is out of scope.
     """
 
     enabled: bool = False
     max_targets: int = Field(default=2000, ge=1, le=50_000)
     expiring_soon_days: int = Field(default=30, ge=1, le=365)
+    # Phase 4: stdlib TLS probe when nmap SSL scripts are absent.
+    probe_fallback: bool = True
+    probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
+    probe_concurrency: int = Field(default=20, ge=1, le=500)
+    probe_tls_ports: list[int] = Field(
+        default_factory=lambda: [443, 8443, 9443, 4443, 10443, 6443]
+    )
 
 
 class SlackAlertConfig(BaseModel):
@@ -542,6 +685,8 @@ class AppConfig(BaseModel):
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
     nse_profiles: dict[str, NseProfileConfig]
+    # Optional; defaults to ServiceProbeConfig.backend ("pulse", Phase 4.1) when key omitted.
+    service_probe: ServiceProbeConfig = Field(default_factory=ServiceProbeConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)

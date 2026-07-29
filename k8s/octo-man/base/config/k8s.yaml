@@ -21,6 +21,7 @@ runtime:
   log_backup_count: 5
 
 profiles:
+  # Phase 4.1: default service_probe.backend is pulse; nse_profile used only for nmap|hybrid.
   safe:
     discover_rate: 1000
     port_rate: 1000
@@ -29,6 +30,11 @@ profiles:
     nse_profile: baseline
     nse_concurrency: 2
     nse_max_rate: 500
+    pulse:
+      concurrency: 300
+      rate: 500
+      host_parallel: 4
+      os_mode: sinfp
   balanced:
     discover_rate: 2000
     port_rate: 2000
@@ -37,6 +43,11 @@ profiles:
     nse_profile: vuln-offline
     nse_concurrency: 2
     nse_max_rate: 1500
+    pulse:
+      concurrency: 800
+      rate: 2000
+      host_parallel: 16
+      os_mode: auto
   fast:
     discover_rate: 5000
     port_rate: 5000
@@ -45,6 +56,11 @@ profiles:
     nse_profile: vuln-offline
     nse_concurrency: 4
     nse_max_rate: 3000
+    pulse:
+      concurrency: 1200
+      rate: 5000
+      host_parallel: 32
+      os_mode: sinfp
 
 batching:
   enabled: true
@@ -130,9 +146,29 @@ ports:
   top_udp_ports: 100
   udp_probes: true
 
+# Phase 4.1: Pulse default. Override with OCTO_SERVICE_BACKEND=nmap|hybrid for NSE.
+# Image bakes /usr/local/bin/pulse; NVD key via NVD_API_KEY secret if cve_online.
+service_probe:
+  backend: pulse
+  shadow: false   # true or OCTO_PULSE_SHADOW=1 → dual-run + diff_pulse_nmap.json
+  pulse:
+    concurrency: 500
+    rate: 2000
+    adaptive: true
+    host_parallel: 8
+    banner: true
+    os_detect: true
+    os_mode: auto
+    cve: true
+    cve_online: false
+
 nse_profiles:
   baseline:
     scripts: "default,safe"
+    version_detection: true
+    os_detection: true
+  vuln_legacy:
+    scripts: "default,safe,vuln,vulners"
     version_detection: true
     os_detection: true
   vuln:

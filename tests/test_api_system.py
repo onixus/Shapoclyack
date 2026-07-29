@@ -31,17 +31,22 @@ def test_system_status_shape():
     assert isinstance(body["app_version"], str) and body["app_version"]
 
     tool_names = {tool["name"] for tool in body["tools"]}
-    assert tool_names == {"nmap", "naabu", "nuclei", "dnsx"}
+    assert tool_names == {"pulse", "naabu", "nuclei", "dnsx", "nmap"}
     # Fail-soft: a tool absent from the CI runner reports version=None + an error
     # string rather than 500-ing the endpoint.
     for tool in body["tools"]:
         assert tool["version"] is not None or tool["error"] is not None
+        if tool["name"] == "nmap":
+            assert tool.get("optional") is True
+        else:
+            assert tool.get("optional") is False
 
     enrichment_names = {db["name"] for db in body["enrichment"]}
     assert enrichment_names == {"epss", "kev", "geoip", "cvss4", "asn"}
 
     assert set(body["scan_config"]["stages"]) >= {"fingerprint", "tls_posture", "nuclei", "pdf_summary"}
     assert "balanced" in body["scan_config"]["profiles"]
+    assert body["scan_config"].get("service_backend") in ("pulse", "nmap", "hybrid", None)
 
     runtime = body["runtime"]
     assert isinstance(runtime["postgres_enabled"], bool)
@@ -86,7 +91,7 @@ def test_system_status_reflects_config_overrides():
         stages = client.get("/api/system", headers=headers).json()["scan_config"]["stages"]
         assert stages["fingerprint"] is True
         assert stages["tls_posture"] is True
-        # Untouched stages are still read straight from the base file.
-        assert stages["nuclei"] is False
+        # Nuclei is enabled by default (Phase 4.2); only check editable stages we flipped.
+        assert stages["nuclei"] is True
     finally:
         client.put("/api/config", json={"overrides": {}}, headers=headers)

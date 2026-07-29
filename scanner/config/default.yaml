@@ -30,6 +30,9 @@ runtime:
   log_backup_count: 5
 
 profiles:
+  # Phase 4.1: default service_probe.backend is pulse (OS/banner/CVE).
+  # nse_profile is used only when backend is nmap|hybrid (escape hatch).
+  # profiles.<mode>.pulse.* overrides service_probe.pulse for that speed mode.
   safe:
     discover_rate: 2000
     port_rate: 1000
@@ -38,23 +41,46 @@ profiles:
     nse_profile: baseline
     nse_concurrency: 2
     nse_max_rate: 500
+    pulse:
+      concurrency: 300
+      rate: 500
+      host_parallel: 4
+      os_mode: sinfp
+      banner: true
+      cve: true
   balanced:
     # Slightly below prior 6000 — closer to realistic-bench completeness vs raw speed.
     discover_rate: 4000
     port_rate: 3000
     top_ports: 1000
     nmap_timing: T4
-    nse_profile: vuln
+    nse_profile: vuln_legacy
     nse_concurrency: 4
     nse_max_rate: 2000
+    pulse:
+      concurrency: 800
+      rate: 2000
+      adaptive: true
+      host_parallel: 16
+      os_mode: auto
+      banner: true
+      cve: true
   fast:
     discover_rate: 10000
     port_rate: 7000
     top_ports: 1000
     nmap_timing: T4
-    nse_profile: vuln
+    nse_profile: vuln_legacy
     nse_concurrency: 8
     nse_max_rate: 5000
+    pulse:
+      concurrency: 1200
+      rate: 5000
+      adaptive: true
+      host_parallel: 32
+      os_mode: sinfp
+      banner: true
+      cve: true
 
 batching:
   # Split work into resumable batches so a single huge naabu command never
@@ -182,9 +208,14 @@ nse_profiles:
     scripts: "default,safe"
     version_detection: true
     os_detection: true
+  # Phase 4.5 escape hatch: full NSE + vulners when backend is nmap|hybrid.
+  # Default Pulse path uses Pulse --cve + Nuclei + CVSS4 instead (Phase 4.2).
+  vuln_legacy:
+    scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
+    version_detection: true
+    os_detection: true
   vuln:
-    # Nmap "vuln" category + vulners CVE lookup by service version.
-    # vulners queries the vulners.com API and needs outbound internet access.
+    # Alias of vuln_legacy (kept for older configs / overrides).
     scripts: "default,safe,vuln,vulners,ssl-enum-ciphers"
     version_detection: true
     os_detection: true
@@ -252,15 +283,17 @@ fingerprint:
   https_ports: [443, 8443]
   verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
 
-# Nuclei template-based vulnerability/misconfig scanning: runs against the
-# same already-open web ports as fingerprint above -- no new port scan.
-# Conservative by default (severities floor + excluded intrusive/fuzz/dos
-# tags); widen explicitly for a more aggressive scan. Opt-in. CVE-tagged
-# matches merge into vulnerabilities.json (source: "nuclei"); everything
-# else is findings-only in nuclei.json. Requires templates_dir to exist
-# (baked at image build time — see Dockerfile / scripts/fetch-nuclei-templates.sh).
+# Nuclei template-based web vuln/misconfig scan (Phase 4.2 default ON).
+# Together with Pulse --cve + CVSS4 enrichment this replaces nmap-vulners on
+# the default Pulse path. nmap-vulners remains only in nse_profiles.vuln_legacy
+# when service_probe.backend is nmap|hybrid.
+# Skips cleanly if binary or templates_dir is missing (host installs).
+# Conservative: severities floor + exclude intrusive/fuzz/dos tags.
+# CVE-tagged matches → vulnerabilities.json (source: "nuclei"); other findings
+# → nuclei.json only. Templates baked at image build (Dockerfile /
+# scripts/fetch-nuclei-templates.sh).
 nuclei:
-  enabled: false
+  enabled: true
   templates_dir: /usr/share/nuclei-templates
   severities: [critical, high, medium]
   exclude_tags: [intrusive, fuzz, dos]
@@ -273,15 +306,50 @@ nuclei:
   http_ports: [80, 8080, 8000, 8008, 8888]
   https_ports: [443, 8443]
 
-# TLS / certificate posture (Phase 9.2): parses ssl-cert / ssl-enum-ciphers
-# NSE script output already written by the nse stage -> cert expiry,
-# self-signed heuristic, weak protocol/cipher findings. Opt-in; findings
-# only, never merged into scan scope. Hostname/SAN-CN mismatch is out of
-# scope (see tls_posture.py module docstring).
+# Service / OS enrichment after open ports (naabu).
+# Phase 4.1 default is pulse (OS/banner/CVE; no nmap NSE required).
+# backend:
+#   pulse  — Pulse only (default; tls_posture uses probe_fallback)
+#   nmap   — classic NSE (scripts + nmap XML); set for vuln_legacy path
+#   hybrid — Pulse first, then nmap NSE
+# Override: OCTO_SERVICE_BACKEND=pulse|nmap|hybrid
+# Per-profile: profiles.<safe|balanced|fast>.service_backend / .pulse.*
+# Pulse binary: OCTO_PULSE_BIN=/usr/local/bin/pulse
+# See docs/pulse-backend.md
+service_probe:
+  backend: pulse
+  # shadow: true  # or OCTO_PULSE_SHADOW=1 — run pulse+nmap and write diff_pulse_nmap.json
+  shadow: false
+  pulse:
+    bin: ""
+    concurrency: 500
+    rate: 2000
+    adaptive: true
+    host_parallel: 8
+    timeout_ms: 800
+    banner: true
+    os_detect: true
+    os_mode: auto          # sinfp | nmap | auto
+    cve: true
+    cve_online: false
+    syn: false
+    max_hosts: 65536
+    chunk_hosts: 64
+
+# TLS / certificate posture (Phase 9.2 + Pulse Phase 4): prefers nmap
+# ssl-cert / ssl-enum-ciphers NSE output from the nse stage. When those are
+# missing (Pulse backend / --skip-nse) and probe_fallback is true, opens a
+# direct TLS handshake (stdlib ssl) on open ports listed in probe_tls_ports.
+# Opt-in; findings only, never merged into scan scope.
+# Hostname/SAN-CN mismatch is out of scope (see tls_posture.py).
 tls_posture:
   enabled: false
   max_targets: 2000
   expiring_soon_days: 30
+  probe_fallback: true
+  probe_timeout_seconds: 5.0
+  probe_concurrency: 20
+  probe_tls_ports: [443, 8443, 9443, 4443, 10443, 6443]
 
 # Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID

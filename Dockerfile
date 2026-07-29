@@ -7,6 +7,52 @@ FROM golang:1.25-bookworm AS nuclei-build
 ARG NUCLEI_VERSION=v3.9.0
 RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
 
+# Pulse CLI from GenDec releases (not vendored source).
+# Pin PULSE_VERSION to a GenDec release tag. Optional BuildKit secret
+# github_token for private GenDec release assets.
+# Prefer: COPY --from=ghcr.io/onixus/pulse:0.2.0 when GHCR is public/logged-in.
+# Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
+FROM debian:bookworm-slim AS pulse-bin
+ARG PULSE_VERSION=v0.2.1
+ARG PULSE_GITHUB_REPO=onixus/GenDec
+RUN --mount=type=secret,id=github_token,required=false \
+    set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+      amd64) a=amd64 ;; \
+      arm64) a=arm64 ;; \
+      *) echo "unsupported arch: ${arch}"; exit 1 ;; \
+    esac; \
+    ver="${PULSE_VERSION}"; \
+    case "${ver}" in v*) ;; *) ver="v${ver}" ;; esac; \
+    name="pulse-${ver}-linux-${a}.tar.gz"; \
+    auth_header=""; \
+    if [ -f /run/secrets/github_token ] && [ -s /run/secrets/github_token ]; then \
+      auth_header="Authorization: Bearer $(cat /run/secrets/github_token)"; \
+    fi; \
+    if [ -n "${auth_header}" ]; then \
+      # Private repos: the plain releases/download/... URL 404s even with a
+      # valid token (that path only works for public repos / browser
+      # sessions) -- resolve the numeric asset id via the API first, then
+      # fetch it from the assets endpoint with Accept: octet-stream.
+      asset_url="$(curl -fsSL -H "${auth_header}" -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${PULSE_GITHUB_REPO}/releases/tags/${ver}" \
+        | jq -r --arg name "${name}" '.assets[] | select(.name == $name) | .url')"; \
+      test -n "${asset_url}"; \
+      echo "Fetching ${asset_url} (private, via API)"; \
+      curl -fsSL -H "${auth_header}" -H "Accept: application/octet-stream" -o /tmp/pulse.tgz "${asset_url}"; \
+    else \
+      url="https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/${name}"; \
+      echo "Fetching ${url}"; \
+      curl -fsSL -o /tmp/pulse.tgz "${url}"; \
+    fi; \
+    mkdir -p /out; \
+    tar -xzf /tmp/pulse.tgz -C /out; \
+    test -x /out/pulse; \
+    chmod 755 /out/pulse; \
+    rm -rf /var/lib/apt/lists/*
+
 # Shapoclyack scanner image (Octo-man product pipeline).
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
@@ -21,14 +67,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    fping \
-    git \
-    jq \
-    nmap \
-    && rm -rf /var/lib/apt/lists/*
+# Phase 5: nmap is optional for the default Pulse path. Default INSTALL_NMAP=1
+# keeps the full image (hybrid/vuln_legacy). Pulse-only lean builds:
+#   docker build --build-arg INSTALL_NMAP=0 …
+ARG INSTALL_NMAP=1
+RUN set -eux; \
+    apt-get update; \
+    PKGS="ca-certificates curl fping git jq"; \
+    if [ "${INSTALL_NMAP}" = "1" ]; then PKGS="${PKGS} nmap"; fi; \
+    apt-get install -y --no-install-recommends ${PKGS}; \
+    rm -rf /var/lib/apt/lists/*
+
+# Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).
+COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.
@@ -57,13 +108,19 @@ RUN set -eux; \
     rm -f /tmp/dnsx.zip /tmp/naabu.zip; \
     apt-get purge -y unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
-# Vulnerability NSE scripts:
+# Vulnerability NSE scripts (only when INSTALL_NMAP=1):
 #  - nmap-vulners: maps service versions (-sV) to CVEs via the vulners.com API (needs egress).
 #  - vulscan: offline CVE matching against bundled local databases (no internet required).
 # Pinned to specific commits for reproducible, supply-chain-safe builds.
+# Skipped for Pulse-only images (Phase 5); default CVE path is Pulse + Nuclei.
 ARG NMAP_VULNERS_REF=0555294abe71857c581afc2ef62ea3ca5c7b7145
 ARG VULSCAN_REF=bd642ed1bc9d96795a91cdf1acd8c93ceef2d07e
+ARG INSTALL_NMAP=1
 RUN set -eux; \
+    if [ "${INSTALL_NMAP}" != "1" ]; then \
+      echo "INSTALL_NMAP=0: skipping nmap-vulners/vulscan"; \
+      exit 0; \
+    fi; \
     git clone https://github.com/vulnersCom/nmap-vulners.git /usr/share/nmap/scripts/nmap-vulners; \
     git -C /usr/share/nmap/scripts/nmap-vulners checkout "${NMAP_VULNERS_REF}"; \
     git clone https://github.com/scipag/vulscan.git /usr/share/nmap/scripts/vulscan; \
@@ -86,11 +143,9 @@ RUN set -eux; \
 # host discovery / SYN scans / OS detection work as the non-root 'scanner' user.
 # (A container-level --cap-add alone is NOT inherited by a non-root process on
 # exec without this — the binary needs the file capability bit set too.)
-# Both cap_net_raw and cap_net_admin are required: nmap's -O OS detection (built
-# with libcap-ng, as Debian/Ubuntu's package is) checks for both when dropping
-# from root, same as the well-known `setcap cap_net_raw,cap_net_admin+eip
-# $(which nmap)` recipe. NET_ADMIN is NOT in Docker's default bounding set, so
-# every place this image actually runs scans already grants it explicitly:
+# Both cap_net_raw and cap_net_admin are required for naabu SYN, Pulse SYN/OS,
+# and nmap -O (when present). NET_ADMIN is NOT in Docker's default bounding set,
+# so every place this image actually runs scans already grants it explicitly:
 # docker-compose.yml's cap_add, tests/e2e/run.sh's --cap-add, and the k8s
 # api/agent/job/cronjob manifests' capabilities.add. A file capability that
 # exceeds the runtime bounding set fails the *entire* execve() with EPERM
@@ -99,10 +154,14 @@ RUN set -eux; \
 # Do NOT `apt-get purge libcap2-bin` afterward: fping (installed above) Depends
 # on libcap2-bin for its own postinst setcap call, so purging it cascades into
 # silently removing fping too (apt exits 0; the binary just vanishes).
+ARG INSTALL_NMAP=1
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
-    setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
+    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
+    if [ "${INSTALL_NMAP}" = "1" ] && [ -x /usr/bin/nmap ]; then \
+      setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

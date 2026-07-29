@@ -4,6 +4,43 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Added
+
+- **Pulse service probe backend (opt-in)** — `service_probe.backend`:
+  `nmap` (default) | `pulse` | `hybrid`. When `pulse`/`hybrid`, open ports
+  from naabu are enriched via [Pulse](https://github.com/onixus/GenDec)
+  (OS/banner/CVE → `services.json` / `os.json`). Override with
+  `OCTO_SERVICE_BACKEND`. Scanner and all-in-one images multi-stage-build
+  Pulse and install `/usr/local/bin/pulse` with raw-socket caps. System
+  status lists `pulse --version`. Docs: `docs/pulse-backend.md`.
+- **Pulse/Nmap shadow diff** — `service_probe.shadow` or `OCTO_PULSE_SHADOW=1`
+  runs both backends and writes `diff_pulse_nmap.json` (endpoint Jaccard +
+  OS family agreement). With `backend: nmap`, report still prefers nmap XML;
+  Pulse CVEs can still attach when present.
+- **TLS posture probe fallback (Phase 4)** — when nmap has no
+  `ssl-cert`/`ssl-enum-ciphers` output, `tls_posture` can handshake open TLS
+  ports via stdlib `ssl` (`probe_fallback`, default on). Writes
+  `tls_probe.json` and fills `tls_posture.json` with `source: pulse-tls-probe`
+  (cert expiry, self-signed heuristic, weak negotiated protocol/cipher).
+- **Pulse default service probe (Phase 4.1)** — `service_probe.backend`
+  defaults to `pulse` (OS/banner/CVE; no nmap NSE). Per-profile Pulse knobs
+  under `profiles.<safe|balanced|fast>.pulse.*`. Full NSE via
+  `backend: nmap|hybrid` and `nse_profiles.vuln_legacy`. `--skip-nse` remains
+  ports-only L1 (skips Pulse and nmap).
+- **CVE stack without nmap-vulners (Phase 4.2)** — default path is Pulse
+  `--cve` + Nuclei (now **enabled by default**) + CVSS4 enrichment.
+  Vulns tagged `source: pulse|nuclei|nmap-nse`; host:port:CVE deduped in
+  reports. nmap-vulners only via `vuln_legacy` when backend is nmap/hybrid.
+- **Optional nmap (Phase 5)** — `INSTALL_NMAP=0` build arg for lean
+  Pulse-only images; `run_nse` skips cleanly if nmap is missing. System
+  status marks nmap optional and surfaces `service_backend`. UI: “Ports
+  only (skip service probe)” and “Legacy nmap NSE profiles”.
+- **Pulse v0.2.1** — pin `PULSE_VERSION=v0.2.1` (findings taxonomy H1, TLS, fingerprint).
+- **Pulse from GenDec releases** — Docker installs Pulse via
+  `PULSE_VERSION` GitHub Release assets (no vendored Rust tree). CI uses
+  optional `GENDEC_READ_TOKEN` for private GenDec. See GenDec
+  `docs/release.md`.
+
 ## [0.37-0727] — 2026-07-27
 
 ### Fixed

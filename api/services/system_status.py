@@ -25,12 +25,18 @@ from api.settings import Settings
 LOG = logging.getLogger(__name__)
 
 # `<binary>: <version-probe args>` for the external scanner toolchain.
+# Phase 5: nmap is optional (default path is Pulse); pulse/nuclei/naabu/dnsx
+# cover the default stack. ``optional`` tools may report "not installed".
 _TOOL_COMMANDS: dict[str, list[str]] = {
-    "nmap": ["nmap", "--version"],
+    "pulse": ["pulse", "--version"],
     "naabu": ["naabu", "-version"],
     "nuclei": ["nuclei", "-version"],
     "dnsx": ["dnsx", "-version"],
+    # Optional: only required for service_probe.backend nmap|hybrid.
+    "nmap": ["nmap", "--version"],
 }
+# Tools that are not required for the default Pulse path (Phase 5).
+_OPTIONAL_TOOLS: frozenset[str] = frozenset({"nmap"})
 _VERSION_RE = re.compile(r"v?\d+\.\d+(?:\.\d+)?")
 
 # Probing four subprocesses on every page poll is wasteful and the answer only
@@ -62,14 +68,25 @@ def _probe_tool(command: list[str]) -> dict[str, str | None]:
     return {"version": first_line or None, "error": None if first_line else "no version output"}
 
 
-def tool_versions(*, force: bool = False) -> list[dict[str, str | None]]:
-    """Versions of nmap/naabu/nuclei/dnsx, cached for ``_TOOL_TTL_SECONDS``."""
+def tool_versions(*, force: bool = False) -> list[dict[str, Any]]:
+    """Versions of pulse/naabu/nuclei/dnsx/nmap, cached for ``_TOOL_TTL_SECONDS``.
+
+    Each entry includes ``optional: true`` for tools not needed on the default
+    Pulse path (currently ``nmap``).
+    """
     global _tool_cache, _tool_cache_at
     now = time.monotonic()
     if force or _tool_cache is None or (now - _tool_cache_at) > _TOOL_TTL_SECONDS:
         _tool_cache = {name: _probe_tool(cmd) for name, cmd in _TOOL_COMMANDS.items()}
         _tool_cache_at = now
-    return [{"name": name, **info} for name, info in _tool_cache.items()]
+    return [
+        {
+            "name": name,
+            "optional": name in _OPTIONAL_TOOLS,
+            **info,
+        }
+        for name, info in _tool_cache.items()
+    ]
 
 
 def _load_config(settings: Settings) -> dict[str, Any]:
@@ -138,9 +155,13 @@ def scan_config_summary(config: dict[str, Any], effective: dict[str, Any] | None
     effective = effective or {}
     profiles = config.get("profiles", {})
     nse = config.get("nse_profiles", {})
+    service_probe = config.get("service_probe") if isinstance(config.get("service_probe"), dict) else {}
+    backend = str(service_probe.get("backend") or "pulse")
     return {
         "profiles": sorted(profiles.keys()) if isinstance(profiles, dict) else [],
+        # Legacy nmap NSE profiles (used only when backend is nmap|hybrid).
         "nse_profiles": sorted(nse.keys()) if isinstance(nse, dict) else [],
+        "service_backend": backend,
         "stages": {
             # fingerprint/tls_posture/nuclei/pdf_summary are editable via the
             # Web UI's config overrides (Postgres-backed, see config_override.py)
