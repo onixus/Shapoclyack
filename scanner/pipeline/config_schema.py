@@ -318,9 +318,16 @@ class ServiceProbeConfig(BaseModel):
     * ``nmap`` — existing NSE stage (default, full scripts/TLS XML).
     * ``pulse`` — Pulse only (no NSE scripts; tls_posture may be empty).
     * ``hybrid`` — Pulse for OS/banner/CVE, then nmap NSE as today.
+
+    When ``shadow`` is true (or env ``OCTO_PULSE_SHADOW=1``), **both** Pulse and
+    Nmap run even if backend is only one of them, and ``diff_pulse_nmap.json``
+    is written for coverage comparison. Report still follows ``backend`` for
+    which service list is preferred (pulse artifacts win when present).
     """
 
     backend: Literal["nmap", "pulse", "hybrid"] = "nmap"
+    # Force dual-run + diff artifact (does not change default report backend preference).
+    shadow: bool = False
     pulse: PulseProbeConfig = Field(default_factory=PulseProbeConfig)
 
 

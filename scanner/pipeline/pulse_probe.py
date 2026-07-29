@@ -516,6 +516,18 @@ def run_pulse_probe(
         deduped.append(s)
 
     write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
+
+    # Mark report preference when OCTO_SERVICE_BACKEND is pulse/hybrid (not shadow-only).
+    backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+    marker = pulse_dir / "REPORT_PRIMARY"
+    if backend in ("pulse", "hybrid"):
+        marker.write_text("pulse\n", encoding="utf-8")
+    elif marker.exists():
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
     logging.info(
         "pulse_probe done: %s services, %s os, %s cves",
         len(deduped),

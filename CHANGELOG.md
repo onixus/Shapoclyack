@@ -13,6 +13,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   `OCTO_SERVICE_BACKEND`. Scanner and all-in-one images multi-stage-build
   Pulse and install `/usr/local/bin/pulse` with raw-socket caps. System
   status lists `pulse --version`. Docs: `docs/pulse-backend.md`.
+- **Pulse/Nmap shadow diff** — `service_probe.shadow` or `OCTO_PULSE_SHADOW=1`
+  runs both backends and writes `diff_pulse_nmap.json` (endpoint Jaccard +
+  OS family agreement). With `backend: nmap`, report still prefers nmap XML;
+  Pulse CVEs can still attach when present.
 
 ## [0.37-0727] — 2026-07-27
 

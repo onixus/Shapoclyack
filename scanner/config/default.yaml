@@ -283,6 +283,8 @@ nuclei:
 # See docs/pulse-backend.md
 service_probe:
   backend: nmap
+  # shadow: true  # or OCTO_PULSE_SHADOW=1 — run pulse+nmap and write diff_pulse_nmap.json
+  shadow: false
   pulse:
     bin: ""
     concurrency: 500

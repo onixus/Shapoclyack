@@ -134,6 +134,7 @@ ports:
 # Image bakes /usr/local/bin/pulse; NVD key via NVD_API_KEY secret if cve_online.
 service_probe:
   backend: nmap
+  shadow: false   # true or OCTO_PULSE_SHADOW=1 → dual-run + diff_pulse_nmap.json
   pulse:
     concurrency: 500
     rate: 2000

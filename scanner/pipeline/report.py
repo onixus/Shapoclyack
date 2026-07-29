@@ -186,23 +186,34 @@ def build_reports(
     extra_vulnerabilities: list[dict] | None = None,
 ) -> None:
     hostnames = hostnames_map or {}
-    # Prefer Pulse canonical artifacts when present (service_probe.backend pulse|hybrid).
+    # Prefer Pulse artifacts only when backend is pulse/hybrid (not mere shadow).
+    # Shadow (nmap primary + dual-run) still writes services.json for diff, but
+    # report must keep nmap as source of truth for services/OS.
+    import os
+
     from .pulse_probe import load_service_artifacts
+
+    backend = os.environ.get("OCTO_SERVICE_BACKEND", "").strip().lower()
+    prefer_pulse = backend in ("pulse", "hybrid")
+    # Also prefer pulse if explicitly marked (future runs without env).
+    if (output_dir / "pulse" / "REPORT_PRIMARY").exists():
+        prefer_pulse = True
 
     pulse_artifacts = load_service_artifacts(output_dir)
     pulse_extra_vulns: list[dict] = []
-    if pulse_artifacts is not None:
+    nmap_services, nmap_os, script_findings = _parse_nmap_xml(nmap_dir)
+
+    if prefer_pulse and pulse_artifacts is not None:
         findings, os_matches, pulse_extra_vulns = pulse_artifacts
-        # NSE script findings still come from nmap XML when hybrid/nmap ran.
-        _, _, script_findings = _parse_nmap_xml(nmap_dir)
-        # If pulse produced services, prefer them; if empty and nmap has data, fall back.
         if not findings:
-            nmap_services, nmap_os, script_findings = _parse_nmap_xml(nmap_dir)
             findings = nmap_services
-            if not os_matches:
-                os_matches = nmap_os
+        if not os_matches:
+            os_matches = nmap_os
     else:
-        findings, os_matches, script_findings = _parse_nmap_xml(nmap_dir)
+        findings, os_matches = nmap_services, nmap_os
+        # Still attach Pulse CVEs when shadow produced them
+        if pulse_artifacts is not None:
+            _, _, pulse_extra_vulns = pulse_artifacts
     if hostnames:
         for item in findings:
             item["hostname"] = _lookup_hostname(hostnames, item["host"])

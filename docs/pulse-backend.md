@@ -13,6 +13,22 @@ Migration plan (full): see GenDec `docs/shapoclyack-migration.md`.
 | `pulse` | Pulse OS / banner / CVE only (no NSE scripts, no nmap XML for TLS) |
 | `hybrid` | Pulse first, then nmap NSE |
 
+### Shadow mode (Phase 3)
+
+Run **both** Pulse and Nmap and write coverage diff. With `backend: nmap`,
+the report still prefers nmap XML; Pulse CVEs can still attach.
+
+```bash
+export OCTO_PULSE_SHADOW=1
+export OCTO_SERVICE_BACKEND=nmap   # report stays on nmap
+# export OCTO_SERVICE_BACKEND=hybrid  # report prefers services.json
+```
+
+YAML: `service_probe.shadow: true`
+
+Artifact: **`diff_pulse_nmap.json`** — endpoint Jaccard, only_pulse / only_nmap
+samples, OS family agree/disagree.
+
 Override without editing YAML:
 
 ```bash
@@ -25,6 +41,7 @@ export OCTO_PULSE_BIN=/usr/local/bin/pulse
 ```yaml
 service_probe:
   backend: nmap   # pulse | hybrid
+  shadow: false   # or OCTO_PULSE_SHADOW=1
   pulse:
     concurrency: 500
     rate: 2000
@@ -48,7 +65,8 @@ NVD online: set `NVD_API_KEY` or mount a key file readable by the scanner
 | `os.json` | `octo.os.v1` OS guesses |
 | `pulse_cves.json` | Pulse CVE hits |
 | `pulse/raw.json` | Merged raw Pulse JSON |
-| `nmap/**` | Still written when backend is `nmap` or `hybrid` |
+| `diff_pulse_nmap.json` | Shadow/hybrid comparison |
+| `nmap/**` | Written when backend is `nmap`/`hybrid` or shadow |
 
 `report.py` prefers `services.json` / `os.json` when present, and still merges
 nmap script findings from XML when hybrid/nmap ran.

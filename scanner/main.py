@@ -39,6 +39,7 @@ from scanner.pipeline.hostnames import (
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ports import fast_port_scan
 from scanner.pipeline.pulse_probe import run_pulse_probe
+from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
 from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.defectdojo import export_to_defectdojo
 from scanner.pipeline.pdf_report import write_business_pdf
@@ -419,8 +420,18 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         logging.warning("unknown service_probe.backend %r; using nmap", service_backend)
         service_backend = "nmap"
 
-    run_pulse = service_backend in ("pulse", "hybrid") and not skip_nse
-    run_nmap_nse = service_backend in ("nmap", "hybrid") and not skip_nse
+    # Shadow: force dual-run + diff_pulse_nmap.json (OCTO_PULSE_SHADOW=1 or YAML).
+    shadow_env = os.environ.get("OCTO_PULSE_SHADOW", "").strip().lower()
+    shadow = config.service_probe.shadow or shadow_env in ("1", "true", "yes", "on")
+
+    run_pulse = (service_backend in ("pulse", "hybrid") or shadow) and not skip_nse
+    run_nmap_nse = (service_backend in ("nmap", "hybrid") or shadow) and not skip_nse
+
+    if shadow and not skip_nse:
+        logging.info(
+            "service_probe shadow enabled (backend=%s): running pulse + nmap, will write diff",
+            service_backend,
+        )
 
     if skip_nse:
         logging.info("Skipping service probe / NSE stage (skip_nse enabled)")
@@ -489,6 +500,25 @@ def _run_pipeline(args: argparse.Namespace) -> int:
                 checkpoint.mark_done("nse")
         else:
             nmap_dir.mkdir(parents=True, exist_ok=True)
+
+        # Shadow / hybrid: compare Pulse vs Nmap coverage when both sides exist.
+        if (shadow or service_backend == "hybrid") and not (
+            args.resume and checkpoint.is_done("pulse_shadow")
+        ):
+            if (paths.output_dir / "services.json").exists() or any(nmap_dir.rglob("*.xml")):
+                _run_stage(
+                    "pulse_shadow",
+                    lambda: write_pulse_nmap_diff(
+                        paths.output_dir,
+                        nmap_dir,
+                        extra={
+                            "backend": service_backend,
+                            "shadow": shadow,
+                            "open_ports": len(open_ports),
+                        },
+                    ),
+                )
+                checkpoint.mark_done("pulse_shadow")
 
     # Phase 9.2: TLS/certificate posture (findings-only, non-escalating --
     # see tls_posture.py module docstring). Reads ssl-cert/ssl-enum-ciphers
