@@ -139,7 +139,7 @@ jobs:
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
           build-args: |
-            PULSE_VERSION=v0.2.3
+            PULSE_VERSION=v0.2.6
       - name: Smoke-check toolchain in image
         # naabu/nmap/pulse carry cap_net_raw+cap_net_admin as file capabilities
         # (see Dockerfile); --cap-add must match compose / e2e / k8s manifests.

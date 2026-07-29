@@ -6,6 +6,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ### Added
 
+- **Pulse v0.2.6** — pin `PULSE_VERSION=v0.2.6` (fixes `pulse --cve` silently
+  missing `version_cve` matches for services on non-standard ports; adds a
+  Windows CLI build plus a native Windows GUI, `pulse-gui`, with the same
+  glass-neon look as the macOS app).
 - **Pulse v0.2.3** — pin `PULSE_VERSION=v0.2.3` (fingerprints/KEV feed/UDP + macOS GUI release assets).
 - **Pulse v0.2.2** — pin `PULSE_VERSION=v0.2.2` (H2: HTTP probes, KEV/scope, weak TLS; `tls_posture` prefers `pulse/tls.json`).
 - **Pulse service probe backend (opt-in)** — `service_probe.backend`:
