@@ -43,6 +43,7 @@ import {
   useSchedules,
   useUpdateSchedule,
 } from "@/hooks/use-schedules";
+import { useSystemStatus } from "@/hooks/use-system";
 import { type CreateScheduleBody, type ScanSchedule } from "@/lib/api";
 import { SCHEDULE_ENABLED_STATUS } from "@/lib/config/statuses";
 import { useAuthStore } from "@/lib/auth-store";
@@ -91,6 +92,8 @@ export default function SchedulesPage() {
   const createMutation = useCreateSchedule();
   const updateMutation = useUpdateSchedule();
   const deleteMutation = useDeleteSchedule();
+  const { data: systemStatus } = useSystemStatus();
+  const serviceBackend = systemStatus?.scan_config.service_backend;
 
   function openCreate() {
     setEditing(null);
@@ -379,12 +382,17 @@ export default function SchedulesPage() {
                   </Label>
                   <Label className="flex items-center gap-2 font-semibold cursor-pointer">
                     <Checkbox checked={form.skipNse} onCheckedChange={(c) => setForm((f) => ({ ...f, skipNse: c === true }))} className="border-slate-700" />
-                    Ports only
+                    Ports only (no service/OS/CVE probe)
                   </Label>
                   <Label className="flex items-center gap-2 font-semibold cursor-pointer">
                     <Checkbox checked={form.notify} onCheckedChange={(c) => setForm((f) => ({ ...f, notify: c === true }))} className="border-slate-700" />
                     Notify
                   </Label>
+                  {serviceBackend ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px] font-mono text-slate-400">
+                      Full probe uses <span className="text-sky-400">{serviceBackend}</span> backend
+                    </span>
+                  ) : null}
                 </div>
               </div>
 

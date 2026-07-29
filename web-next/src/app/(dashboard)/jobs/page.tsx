@@ -29,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useJobs, useStartScan } from "@/hooks/use-jobs";
+import { useSystemStatus } from "@/hooks/use-system";
 import { type JobInfo } from "@/lib/api";
 import { JOB_STATUS } from "@/lib/config/statuses";
 import { runDetailHref } from "@/lib/run-data";
@@ -48,6 +49,8 @@ export default function JobsPage() {
 
   const { data = [], isLoading, error, isFetching } = useJobs(canOperate);
   const mutation = useStartScan();
+  const { data: systemStatus } = useSystemStatus();
+  const serviceBackend = systemStatus?.scan_config.service_backend;
 
   const columns = useMemo<ColumnDef<JobInfo>[]>(
     () => [
@@ -198,7 +201,7 @@ export default function JobsPage() {
                 onCheckedChange={(checked) => setSkipNse(checked === true)}
                 className="border-slate-700"
               />
-              Ports only (skip service probe)
+              Ports only (no service/OS/CVE probe)
             </Label>
             <Label className="flex items-center gap-2 font-semibold cursor-pointer">
               <Checkbox
@@ -208,6 +211,11 @@ export default function JobsPage() {
               />
               Alert Notifications
             </Label>
+            {serviceBackend ? (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px] font-mono text-slate-400">
+                Full probe uses <span className="text-sky-400">{serviceBackend}</span> backend
+              </span>
+            ) : null}
           </div>
 
           <div className="grid gap-2">

@@ -16,24 +16,44 @@ import {
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useEndpointDevices } from "@/hooks/use-endpoint-inventory";
+import { useTenants } from "@/hooks/use-tenants";
 import type { EndpointDeviceInfo, EndpointReconciliationStatus } from "@/lib/api";
 import { ENDPOINT_RECONCILIATION_STATUS } from "@/lib/config/statuses";
+import { useAuthStore } from "@/lib/auth-store";
 
 const FILTER_ALL = "all";
+/** Matches the offline threshold used on the asset detail EndpointCard. */
+const STALE_INVENTORY_HOURS = 48;
 
 function assetHref(assetId: string): string {
   return `/assets/view?assetId=${encodeURIComponent(assetId)}`;
 }
 
+function isStaleDevice(device: EndpointDeviceInfo): boolean {
+  if (!device.last_inventory_at) return true;
+  const ageMs = Date.now() - new Date(device.last_inventory_at).getTime();
+  return ageMs > STALE_INVENTORY_HOURS * 60 * 60 * 1000;
+}
+
 export default function EndpointsPage() {
+  const { canOperate } = useAuthStore();
   const [reconFilter, setReconFilter] = useState<string>(FILTER_ALL);
-  const devicesQuery = useEndpointDevices();
+  const [tenantId, setTenantId] = useState<string>("default");
+  const [staleOnly, setStaleOnly] = useState(false);
+
+  const tenantsQuery = useTenants(canOperate);
+  const tenants = tenantsQuery.data || [];
+
+  const devicesQuery = useEndpointDevices(tenantId);
   const raw = useMemo(() => devicesQuery.data || [], [devicesQuery.data]);
 
   const data = useMemo(() => {
-    if (reconFilter === FILTER_ALL) return raw;
-    return raw.filter((d) => d.reconciliation_status === reconFilter);
-  }, [raw, reconFilter]);
+    return raw.filter((d) => {
+      if (reconFilter !== FILTER_ALL && d.reconciliation_status !== reconFilter) return false;
+      if (staleOnly && !isStaleDevice(d)) return false;
+      return true;
+    });
+  }, [raw, reconFilter, staleOnly]);
 
   const columns = useMemo<ColumnDef<EndpointDeviceInfo>[]>(
     () => [
@@ -143,6 +163,7 @@ export default function EndpointsPage() {
 
   const linked = raw.filter((d) => d.asset_id).length;
   const conflicts = raw.filter((d) => d.reconciliation_status === "conflict").length;
+  const stale = raw.filter(isStaleDevice).length;
 
   return (
     <div className="space-y-6">
@@ -170,6 +191,35 @@ export default function EndpointsPage() {
               <span className="font-semibold text-rose-400">{conflicts}</span> conflict
             </span>
           ) : null}
+          {stale > 0 ? (
+            <span>
+              <span className="font-semibold text-amber-400">{stale}</span> stale
+            </span>
+          ) : null}
+          {tenants.length > 1 ? (
+            <Select value={tenantId} onValueChange={setTenantId}>
+              <SelectTrigger className="h-8 w-[150px] border-slate-800 bg-slate-900 text-xs">
+                <SelectValue placeholder="Tenant" />
+              </SelectTrigger>
+              <SelectContent>
+                {tenants.map((t) => (
+                  <SelectItem key={t.tenant_id} value={t.tenant_id}>
+                    {t.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setStaleOnly((v) => !v)}
+            className={`h-8 border-slate-800 bg-slate-900 text-xs ${
+              staleOnly ? "text-amber-300 border-amber-500/40" : "text-slate-300"
+            }`}
+          >
+            {staleOnly ? `Stale only (>${STALE_INVENTORY_HOURS}h)` : "Show stale only"}
+          </Button>
           <Select value={reconFilter} onValueChange={setReconFilter}>
             <SelectTrigger className="h-8 w-[140px] border-slate-800 bg-slate-900 text-xs">
               <SelectValue placeholder="Filter" />
@@ -199,7 +249,11 @@ export default function EndpointsPage() {
         data={data}
         isLoading={devicesQuery.isLoading}
         error={devicesQuery.error ? (devicesQuery.error as Error).message : null}
-        emptyMessage="No Lariska endpoints yet. Install the agent with a tenant provisioning key."
+        emptyMessage={
+          raw.length > 0
+            ? "No endpoints match the current filters."
+            : "No Lariska endpoints yet. Install the agent with a tenant provisioning key."
+        }
         searchPlaceholder="Filter hostname, OS, agent…"
         meta={
           devicesQuery.isFetching && !devicesQuery.isLoading ? "Refreshing…" : undefined
