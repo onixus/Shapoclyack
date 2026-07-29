@@ -7,6 +7,7 @@ import {
   Server,
   Share2,
   SlidersHorizontal,
+  Timer,
   Users,
 } from "lucide-react";
 
@@ -15,6 +16,7 @@ export const NAV = [
   { href: "/tenants", label: "Tenants", icon: Users },
   { href: "/agents", label: "Agents", icon: Server },
   { href: "/jobs", label: "Jobs", icon: CalendarDays },
+  { href: "/schedules", label: "Schedules", icon: Timer },
   { href: "/runs", label: "Runs", icon: Play },
   { href: "/assets", label: "Assets", icon: Database },
   { href: "/attack-surface", label: "Attack Surface", icon: Share2 },

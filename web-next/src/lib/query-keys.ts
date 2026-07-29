@@ -10,6 +10,7 @@ export const queryKeys = {
   runVulns: (runId: string, filters?: { host?: string | null; port?: string | null }) =>
     ["run", runId, "vulns", { host: filters?.host ?? null, port: filters?.port ?? null }] as const,
   jobs: ["jobs"] as const,
+  schedules: ["schedules"] as const,
   agents: ["agents"] as const,
   tenants: ["tenants"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,
