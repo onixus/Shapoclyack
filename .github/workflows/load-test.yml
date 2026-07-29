@@ -59,12 +59,10 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          # inputs.* for workflow_dispatch / workflow_call; event.inputs for dispatch only.
-          HOSTS_INPUT: ${{ inputs.host_count || github.event.inputs.host_count || '32' }}
-          CONFIG_INPUT: ${{ inputs.config || github.event.inputs.config || 'tests/load/config-heavy.yaml' }}
+          HOSTS_INPUT: ${{ github.event.inputs.host_count || '32' }}
+          CONFIG_INPUT: ${{ github.event.inputs.config || 'tests/load/config-heavy.yaml' }}
           # Do not use || on booleans — false is falsy in GitHub Expressions.
           RESUME_DISPATCH: ${{ github.event.inputs.resume_test }}
-          RESUME_CALL: ${{ inputs.resume_test }}
         run: |
           set -euo pipefail
           hosts="${HOSTS_INPUT}"
@@ -73,13 +71,6 @@ jobs:
           case "${EVENT_NAME}" in
             schedule)
               resume="false"
-              ;;
-            workflow_call)
-              if [[ "${RESUME_CALL}" == "true" ]]; then
-                resume="true"
-              else
-                resume="false"
-              fi
               ;;
             *)
               # workflow_dispatch default is true; string "false" disables resume.

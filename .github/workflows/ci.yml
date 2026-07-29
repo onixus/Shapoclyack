@@ -21,6 +21,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install ruff
         run: pip install ruff==0.15.20
       - name: Ruff check
@@ -33,6 +34,22 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+    services:
+      # Native service: Postgres needs no CMD args, just env — health-checked
+      # by the runner itself, no manual polling loop required.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: octo_man
+          POSTGRES_USER: octo
+          POSTGRES_PASSWORD: octo-ci-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U octo -d octo_man"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,20 +61,15 @@ jobs:
       - name: Compile sources
         run: python -m compileall scanner api tests agent
       - name: Start JetStream broker
+        # NATS needs --jetstream/--store_dir/--http_port as CMD args, which
+        # GitHub Actions' native `services:` cannot override (services only
+        # take image/env/ports/options — no way to change the container's
+        # command) — so this stays a manual docker run.
         run: |
           docker run -d --name ci-nats-js -p 4222:4222 -p 8222:8222 \
             nats:2.10.24-alpine --jetstream --store_dir=/data --http_port=8222
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8222/healthz >/dev/null && break
-            sleep 0.5
-          done
-      - name: Start Postgres (PRIMARY_DB — tenants + asset inventory, Phase 7)
-        run: |
-          docker run -d --name ci-postgres -p 5432:5432 \
-            -e POSTGRES_DB=octo_man -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret \
-            postgres:16-alpine
-          for i in $(seq 1 30); do
-            docker exec ci-postgres pg_isready -U octo -d octo_man >/dev/null 2>&1 && break
             sleep 0.5
           done
       - name: Apply Alembic migrations
