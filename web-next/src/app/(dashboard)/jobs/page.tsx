@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Play, Terminal, ArrowUpRight, Cpu } from "lucide-react";
+import { Play, Terminal, ArrowUpRight, Cpu, Timer } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -157,6 +157,13 @@ export default function JobsPage() {
             {isFetching ? " · Refreshing job queue…" : ""}
           </p>
         </div>
+        <Link
+          href="/schedules"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+        >
+          <Timer className="h-3.5 w-3.5" />
+          Manage schedules
+        </Link>
       </div>
 
       <form onSubmit={onSubmit} className="space-y-5 rounded-xl border border-slate-800/80 bg-slate-900/80 p-6 shadow-xl backdrop-blur">

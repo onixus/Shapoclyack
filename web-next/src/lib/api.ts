@@ -136,6 +136,57 @@ export type JobInfo = {
   tenant_id?: string | null;
 };
 
+export type ScheduleScanOptions = {
+  mode: "safe" | "balanced" | "fast";
+  delta: boolean;
+  skip_nse: boolean;
+  notify: boolean;
+  export_defectdojo: boolean;
+};
+
+export type ScheduleTargets = {
+  ranges: string | null;
+  domains: string | null;
+  ports: string | null;
+  ports_udp: string | null;
+};
+
+export type ScanSchedule = {
+  schedule_id: string;
+  tenant_id: string;
+  name: string;
+  enabled: boolean;
+  cron: string | null;
+  interval_seconds: number | null;
+  scan_options: ScheduleScanOptions;
+  targets: ScheduleTargets;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_job_id: string | null;
+  created_at: string | null;
+  created_by: string | null;
+};
+
+export type CreateScheduleBody = {
+  tenant_id?: string;
+  name: string;
+  cron?: string | null;
+  interval_seconds?: number | null;
+  mode: "safe" | "balanced" | "fast";
+  delta: boolean;
+  skip_nse: boolean;
+  notify: boolean;
+  export_defectdojo?: boolean;
+  ranges?: string | null;
+  domains?: string | null;
+  ports?: string | null;
+  ports_udp?: string | null;
+};
+
+export type UpdateScheduleBody = Partial<
+  Omit<CreateScheduleBody, "tenant_id"> & { enabled: boolean }
+>;
+
 export type AgentInfo = {
   agent_id: string;
   hostname: string;
@@ -458,6 +509,45 @@ export async function startScan(body: {
   try {
     const { data } = await api.post<JobInfo>("/jobs", body);
     return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchSchedules(tenantId?: string) {
+  try {
+    const params = tenantId ? `?${new URLSearchParams({ tenant_id: tenantId })}` : "";
+    const { data } = await api.get<ScanSchedule[]>(`/schedules${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createSchedule(body: CreateScheduleBody) {
+  try {
+    const { data } = await api.post<ScanSchedule>("/schedules", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function updateSchedule(scheduleId: string, body: UpdateScheduleBody) {
+  try {
+    const { data } = await api.patch<ScanSchedule>(
+      `/schedules/${encodeURIComponent(scheduleId)}`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteSchedule(scheduleId: string) {
+  try {
+    await api.delete(`/schedules/${encodeURIComponent(scheduleId)}`);
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }

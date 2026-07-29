@@ -562,13 +562,14 @@ class TlsPostureConfig(BaseModel):
     output already written to ``nmap/tcp/*.xml`` by the ``nse`` stage (see
     ``tls_posture.py`` for the honesty note on free-text parsing).
 
-    Fallback path (Phase 4): when nmap XML has no SSL script output (Pulse
-    backend, ``--skip-nse``, or empty nmap dir) and ``probe_fallback`` is
-    true, open a direct TLS handshake via stdlib ``ssl`` against
-    ``open_ports`` on ``probe_tls_ports`` (see ``tls_probe.py``). This does
-    **not** grade full cipher suites like nmap ``ssl-enum-ciphers``; it
-    covers cert expiry, self-signed heuristic, and weak negotiated
-    protocol/cipher name.
+    Fallback paths (Phase 4): when nmap XML has no SSL script output:
+
+    1. Pulse ``pulse/tls.json`` (from service_probe Pulse run with ``--cve``)
+    2. If missing and ``probe_fallback`` is true, stdlib ``ssl`` handshake
+       against ``open_ports`` on ``probe_tls_ports`` (see ``tls_probe.py``).
+
+    Does **not** grade full cipher suites like nmap ``ssl-enum-ciphers``;
+    covers cert expiry, self-signed heuristic, and weak protocol acceptance.
 
     ``max_targets`` caps endpoints per run (truncated flag past the cap).
     Findings are reported only (``tls_posture.json``) -- never merged into

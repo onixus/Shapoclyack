@@ -38,6 +38,11 @@ export function agentEffectiveStatus(agent: AgentInfo): AgentEffectiveStatus {
   return agent.online ? agent.status : "offline";
 }
 
+export const SCHEDULE_ENABLED_STATUS: Record<"enabled" | "disabled", StatusStyle> = {
+  enabled: { label: "enabled", className: SUCCESS },
+  disabled: { label: "disabled", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
+};
+
 export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
   active: { label: "active", className: SUCCESS },
   disabled: { label: "disabled", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },

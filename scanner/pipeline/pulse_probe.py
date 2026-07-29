@@ -159,6 +159,8 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
         if proto in ("tcpsyn", "syn"):
             proto = "tcp"
         banner = row.get("banner")
+        product = str(row.get("product") or "").strip()
+        version = str(row.get("version") or "").strip()
         services.append(
             ServiceRecord(
                 ip=ip,
@@ -166,8 +168,8 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
                 protocol=proto if proto in ("tcp", "udp") else "tcp",
                 state="open",
                 service=str(row.get("service") or "unknown"),
-                product="",
-                version="",
+                product=product,
+                version=version,
                 banner=str(banner) if banner else "",
                 source="pulse",
                 host=str(row.get("host") or ip),
@@ -218,7 +220,9 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
         )
 
     cves: list[CveRecord] = []
-    for row in payload.get("cves") or []:
+    # Prefer full findings array; fall back to cves key.
+    cve_rows = payload.get("findings") or payload.get("cves") or []
+    for row in cve_rows:
         if not isinstance(row, dict):
             continue
         cve_id = str(row.get("cve_id") or "").strip()
@@ -255,6 +259,15 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
     return services, os_records, cves
 
 
+def extract_pulse_tls(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return TLS endpoint rows from a Pulse scan JSON payload."""
+    out: list[dict[str, Any]] = []
+    for row in payload.get("tls") or []:
+        if isinstance(row, dict):
+            out.append(row)
+    return out
+
+
 def write_pulse_artifacts(
     output_dir: Path,
     services: list[ServiceRecord],
@@ -267,6 +280,21 @@ def write_pulse_artifacts(
     pulse_dir.mkdir(parents=True, exist_ok=True)
     if raw is not None:
         save_json(pulse_dir / "raw.json", raw)
+        tls_rows = extract_pulse_tls(raw)
+        save_json(
+            pulse_dir / "tls.json",
+            {
+                "schema": "octo.pulse_tls.v1",
+                "count": len(tls_rows),
+                "tls": tls_rows,
+                "findings": [
+                    f
+                    for f in (raw.get("findings") or raw.get("cves") or [])
+                    if isinstance(f, dict)
+                    and str(f.get("finding_class") or "").lower() == "tls"
+                ],
+            },
+        )
     save_json(output_dir / "services.json", [s.model_dump(mode="json") for s in services])
     save_json(output_dir / "os.json", [o.model_dump(mode="json") for o in os_records])
     save_json(output_dir / "pulse_cves.json", [c.model_dump(mode="json") for c in cves])
@@ -280,6 +308,40 @@ def write_pulse_artifacts(
         },
     )
     return pulse_dir
+
+
+def load_pulse_tls_artifact(output_dir: Path) -> dict[str, Any] | None:
+    """Load ``pulse/tls.json`` or extract tls from ``pulse/raw.json``.
+
+    Returns dict with keys ``tls`` / optional ``findings``, or None if missing.
+    """
+    tls_path = output_dir / "pulse" / "tls.json"
+    if tls_path.is_file():
+        try:
+            data = json.loads(tls_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict) and (data.get("tls") or data.get("findings")):
+            return data
+
+    raw_path = output_dir / "pulse" / "raw.json"
+    if not raw_path.is_file():
+        return None
+    try:
+        raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    tls_rows = extract_pulse_tls(raw)
+    findings = [
+        f
+        for f in (raw.get("findings") or raw.get("cves") or [])
+        if isinstance(f, dict) and str(f.get("finding_class") or "").lower() == "tls"
+    ]
+    if not tls_rows and not findings:
+        return None
+    return {"schema": "octo.pulse_tls.v1", "tls": tls_rows, "findings": findings}
 
 
 def load_service_artifacts(
@@ -406,6 +468,8 @@ def run_pulse_probe(
         "open": [],
         "os": [],
         "cves": [],
+        "findings": [],
+        "tls": [],
         "stats": {},
         "chunks": [],
     }
@@ -499,6 +563,10 @@ def run_pulse_probe(
             merged_raw["open"].extend(payload.get("open") or [])
             merged_raw["os"].extend(payload.get("os") or [])
             merged_raw["cves"].extend(payload.get("cves") or [])
+            merged_raw["findings"].extend(
+                payload.get("findings") or payload.get("cves") or []
+            )
+            merged_raw["tls"].extend(payload.get("tls") or [])
             merged_raw["chunks"].append(
                 {"index": idx, "hosts": host_chunk, "returncode": completed.returncode}
             )
@@ -519,15 +587,36 @@ def run_pulse_probe(
         seen.add(key)
         deduped.append(s)
 
+    # Dedupe TLS by ip:port
+    tls_seen: set[tuple[str, int]] = set()
+    tls_deduped: list[dict[str, Any]] = []
+    for row in merged_raw.get("tls") or []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "").strip()
+        try:
+            port = int(row.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not ip or port < 1:
+            continue
+        key = (ip, port)
+        if key in tls_seen:
+            continue
+        tls_seen.add(key)
+        tls_deduped.append(row)
+    merged_raw["tls"] = tls_deduped
+
     write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
 
     # Mark report preference: explicit flag, else OCTO_SERVICE_BACKEND env.
     sync_report_primary_marker(pulse_dir, report_primary)
 
     logging.info(
-        "pulse_probe done: %s services, %s os, %s cves",
+        "pulse_probe done: %s services, %s os, %s cves, %s tls",
         len(deduped),
         len(all_os),
         len(all_cves),
+        len(tls_deduped),
     )
     return pulse_dir
