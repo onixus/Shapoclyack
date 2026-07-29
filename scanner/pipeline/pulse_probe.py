@@ -27,7 +27,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from .protocol import ScanProtocol, format_endpoint, parse_endpoint
+from .protocol import parse_endpoint
 from .service_schema import (
     CveRecord,
     OsMatchRank,
