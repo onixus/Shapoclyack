@@ -118,18 +118,21 @@ export default function SchedulesPage() {
   }
 
   function buildBody(): CreateScheduleBody {
+    // Explicit `null` (not `undefined`) for the inactive cadence field and any
+    // cleared target so the PATCH actually clears it server-side, rather than
+    // being dropped from the JSON body and leaving the stored value untouched.
     return {
       name: form.name.trim(),
-      cron: form.cadenceKind === "cron" ? form.cron.trim() : undefined,
-      interval_seconds: form.cadenceKind === "interval" ? Number(form.intervalSeconds) || undefined : undefined,
+      cron: form.cadenceKind === "cron" ? form.cron.trim() : null,
+      interval_seconds: form.cadenceKind === "interval" ? Number(form.intervalSeconds) || null : null,
       mode: form.mode,
       delta: form.delta,
       skip_nse: form.skipNse,
       notify: form.notify,
-      ranges: form.ranges.trim() || undefined,
-      domains: form.domains.trim() || undefined,
-      ports: form.ports.trim() || undefined,
-      ports_udp: form.portsUdp.trim() || undefined,
+      ranges: form.ranges.trim() || null,
+      domains: form.domains.trim() || null,
+      ports: form.ports.trim() || null,
+      ports_udp: form.portsUdp.trim() || null,
     };
   }
 

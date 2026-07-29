@@ -180,8 +180,10 @@ def update_schedule(schedule_id: str, **fields: Any) -> dict[str, Any] | None:
             row.scan_options = merged
         if "targets" in fields and fields["targets"] is not None:
             merged_targets = dict(row.targets or {})
+            # `None` is an explicit clear from the client, not "leave unchanged" —
+            # only keys absent from the payload are left untouched.
             merged_targets.update(
-                {k: v for k, v in fields["targets"].items() if k in _TARGET_KEYS and v is not None}
+                {k: v for k, v in fields["targets"].items() if k in _TARGET_KEYS}
             )
             row.targets = merged_targets
 

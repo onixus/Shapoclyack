@@ -368,6 +368,40 @@ def _parse_pulse_datetime(raw: str | None) -> datetime | None:
         return None
 
 
+def _pulse_tls_target_keys(artifact: dict[str, Any]) -> set[tuple[str, str]]:
+    """Union of (ip, port) keys covered by ``tls[]`` rows and tls-class ``findings``.
+
+    Mirrors the key extraction in findings_from_pulse_tls so truncation checks
+    account for endpoints that only appear via findings (no matching tls row).
+    """
+    keys: set[tuple[str, str]] = set()
+    for row in artifact.get("tls") or []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "").strip()
+        try:
+            port_i = int(row.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not ip or port_i < 1:
+            continue
+        keys.add((ip, str(port_i)))
+    for f in artifact.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        if str(f.get("finding_class") or "").lower() != "tls":
+            continue
+        ip = str(f.get("ip") or "").strip()
+        try:
+            port = str(int(f.get("port") or 0))
+        except (TypeError, ValueError):
+            continue
+        if not ip or port == "0":
+            continue
+        keys.add((ip, port))
+    return keys
+
+
 def findings_from_pulse_tls(
     artifact: dict[str, Any],
     *,
@@ -677,8 +711,8 @@ def check_tls_posture(
     # --- Phase 4.3: Pulse TLS JSON (from pulse_probe --cve / TLS stage) ---
     pulse_art = load_pulse_tls_artifact(output_dir)
     if pulse_art is not None:
-        tls_rows = pulse_art.get("tls") or []
-        truncated = len(tls_rows) > config.max_targets
+        target_keys = _pulse_tls_target_keys(pulse_art)
+        truncated = len(target_keys) > config.max_targets
         pulse_findings = findings_from_pulse_tls(
             pulse_art,
             now=now,
@@ -686,7 +720,7 @@ def check_tls_posture(
             max_targets=config.max_targets,
         )
         if pulse_findings:
-            result["targets_considered"] = min(len(tls_rows) or len(pulse_findings), config.max_targets)
+            result["targets_considered"] = min(len(target_keys) or len(pulse_findings), config.max_targets)
             result["checked_count"] = len(pulse_findings)
             result["findings"] = pulse_findings
             result["truncated"] = truncated

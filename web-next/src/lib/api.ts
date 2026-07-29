@@ -170,17 +170,17 @@ export type ScanSchedule = {
 export type CreateScheduleBody = {
   tenant_id?: string;
   name: string;
-  cron?: string;
-  interval_seconds?: number;
+  cron?: string | null;
+  interval_seconds?: number | null;
   mode: "safe" | "balanced" | "fast";
   delta: boolean;
   skip_nse: boolean;
   notify: boolean;
   export_defectdojo?: boolean;
-  ranges?: string;
-  domains?: string;
-  ports?: string;
-  ports_udp?: string;
+  ranges?: string | null;
+  domains?: string | null;
+  ports?: string | null;
+  ports_udp?: string | null;
 };
 
 export type UpdateScheduleBody = Partial<
