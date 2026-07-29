@@ -133,17 +133,22 @@ jobs:
           tags: network-scan-cli:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Private GenDec releases: set repo secret GENDEC_READ_TOKEN
+          # (classic PAT with contents:read on onixus/GenDec). Optional once
+          # GenDec releases/packages are public.
+          secrets: |
+            github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          build-args: |
+            PULSE_VERSION=v0.2.0
       - name: Smoke-check toolchain in image
-        # naabu/nmap carry cap_net_raw+cap_net_admin as file capabilities (see
-        # Dockerfile); a capability requested by the binary but missing from
-        # the container's bounding set fails the whole exec with EPERM rather
-        # than being silently dropped, so --cap-add here must match what
-        # docker-compose.yml / tests/e2e/run.sh / the k8s manifests grant.
+        # naabu/nmap/pulse carry cap_net_raw+cap_net_admin as file capabilities
+        # (see Dockerfile); --cap-add must match compose / e2e / k8s manifests.
         run: |
           docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh network-scan-cli:ci -c '
             set -e
             naabu -version
             dnsx -version
+            pulse --version
             nmap --version | head -n 1
             test -f /usr/share/nmap/scripts/nmap-vulners/vulners.nse
             test -f /usr/share/nmap/scripts/vulscan/vulscan.nse

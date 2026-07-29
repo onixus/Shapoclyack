@@ -7,41 +7,38 @@ FROM golang:1.25-bookworm AS nuclei-build
 ARG NUCLEI_VERSION=v3.9.0
 RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
 
-# Pulse service probe (GenDec). Prefer in-tree vendor/pulse so CI can build
-# when GenDec is private (https://github.com/onixus/GenDec). Override with
-# PULSE_GIT_URL + BuildKit secret github_token for external clone.
-# Sync: rsync GenDec src/Cargo.* into vendor/pulse (see vendor/pulse/README.md).
-FROM rust:1-bookworm AS pulse-build
-ARG PULSE_GIT_URL=https://github.com/onixus/GenDec.git
-ARG PULSE_REF=main
-ARG PULSE_SOURCE=vendor
-WORKDIR /src
-# Always copy vendor/ first (may be a stub README-only tree).
-COPY vendor/pulse/ /src/
+# Pulse CLI from GenDec releases (not vendored source).
+# Pin PULSE_VERSION to a GenDec release tag. Optional BuildKit secret
+# github_token for private GenDec release assets.
+# Prefer: COPY --from=ghcr.io/onixus/pulse:0.2.0 when GHCR is public/logged-in.
+# Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
+FROM debian:bookworm-slim AS pulse-bin
+ARG PULSE_VERSION=v0.2.0
+ARG PULSE_GITHUB_REPO=onixus/GenDec
 RUN --mount=type=secret,id=github_token,required=false \
     set -eux; \
-    if [ -f /src/Cargo.toml ] && [ -d /src/src ]; then \
-      echo "Building Pulse from vendor/pulse"; \
-    else \
-      echo "vendor/pulse incomplete; cloning ${PULSE_GIT_URL}@${PULSE_REF}"; \
-      rm -rf /src/* /src/.[!.]* 2>/dev/null || true; \
-      TOKEN=""; \
-      if [ -f /run/secrets/github_token ]; then TOKEN=$(cat /run/secrets/github_token); fi; \
-      if [ -n "${TOKEN}" ]; then \
-        git clone --depth 1 "https://x-access-token:${TOKEN}@${PULSE_GIT_URL#https://}" /src; \
-      else \
-        git clone --depth 1 "${PULSE_GIT_URL}" /src; \
-      fi; \
-      cd /src; \
-      if [ "${PULSE_REF}" != "main" ] && [ "${PULSE_REF}" != "master" ]; then \
-        git fetch --depth 1 origin "${PULSE_REF}" || true; \
-        git checkout "${PULSE_REF}" || git checkout FETCH_HEAD || true; \
-      fi; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+      amd64) a=amd64 ;; \
+      arm64) a=arm64 ;; \
+      *) echo "unsupported arch: ${arch}"; exit 1 ;; \
+    esac; \
+    ver="${PULSE_VERSION}"; \
+    case "${ver}" in v*) ;; *) ver="v${ver}" ;; esac; \
+    name="pulse-${ver}-linux-${a}.tar.gz"; \
+    url="https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/${name}"; \
+    echo "Fetching ${url}"; \
+    AUTH=(); \
+    if [ -f /run/secrets/github_token ] && [ -s /run/secrets/github_token ]; then \
+      AUTH=(-H "Authorization: Bearer $(cat /run/secrets/github_token)"); \
     fi; \
-    cargo build --release; \
+    curl -fsSL "${AUTH[@]}" -o /tmp/pulse.tgz "${url}"; \
     mkdir -p /out; \
-    cp target/release/pulse /out/pulse; \
-    strip /out/pulse || true
+    tar -xzf /tmp/pulse.tgz -C /out; \
+    test -x /out/pulse; \
+    chmod 755 /out/pulse; \
+    rm -rf /var/lib/apt/lists/*
 
 # Shapoclyack scanner image (Octo-man product pipeline).
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
@@ -68,8 +65,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     rm -rf /var/lib/apt/lists/*
 
-# Pulse CLI for service_probe.backend=pulse|hybrid (see docs/pulse-backend.md).
-COPY --from=pulse-build /out/pulse /usr/local/bin/pulse
+# Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).
+COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.

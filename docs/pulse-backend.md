@@ -111,22 +111,31 @@ when hybrid/nmap ran.
 
 ## Image install
 
-`Dockerfile` and `Dockerfile.allinone` multi-stage-build Pulse and install to
-`/usr/local/bin/pulse` with `cap_net_raw,cap_net_admin+eip` (same pattern as
-nmap/naabu).
+`Dockerfile` / `Dockerfile.allinone` install Pulse from a **GenDec GitHub
+Release** (not a vendored Rust tree). Canonical pipeline:
+[GenDec `docs/release.md`](https://github.com/onixus/GenDec/blob/main/docs/release.md).
 
-**Source (private GenDec-safe):** prefer in-tree `vendor/pulse/` (Cargo.toml +
-`src/`). Refresh with the notes in `vendor/pulse/VENDOR.md`. If vendor is
-incomplete, the build falls back to cloning `PULSE_GIT_URL` (optional
-BuildKit secret `github_token` for private repos).
+```dockerfile
+# stage pulse-bin downloads:
+#   pulse-v0.2.0-linux-amd64.tar.gz from onixus/GenDec releases
+COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
+# + setcap cap_net_raw,cap_net_admin+eip
+```
 
-Build args:
+| Arg / secret | Default | Meaning |
+|--------------|---------|---------|
+| `PULSE_VERSION` | `v0.2.0` | GenDec release tag |
+| `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
+| BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
+| `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
 
-| Arg | Default | Meaning |
-|-----|---------|---------|
-| `PULSE_GIT_URL` | `https://github.com/onixus/GenDec.git` | clone fallback |
-| `PULSE_REF` | `main` | branch/tag/commit for clone fallback |
-| `INSTALL_NMAP` | `1` | set `0` for lean Pulse-only image |
+Host install without Docker:
+
+```bash
+scripts/install-pulse.sh                  # from release
+PULSE_VERSION=v0.2.0 scripts/install-pulse.sh
+PULSE_FROM_SOURCE=1 scripts/install-pulse.sh  # cargo fallback
+```
 
 ```bash
 docker build -f Dockerfile \

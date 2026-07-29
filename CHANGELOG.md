@@ -35,6 +35,10 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   Pulse-only images; `run_nse` skips cleanly if nmap is missing. System
   status marks nmap optional and surfaces `service_backend`. UI: “Ports
   only (skip service probe)” and “Legacy nmap NSE profiles”.
+- **Pulse from GenDec releases** — Docker installs Pulse via
+  `PULSE_VERSION` GitHub Release assets (no vendored Rust tree). CI uses
+  optional `GENDEC_READ_TOKEN` for private GenDec. See GenDec
+  `docs/release.md`.
 
 ## [0.37-0727] — 2026-07-27
 
