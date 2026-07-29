@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/c
 
 # Pulse CLI from GenDec GitHub Release (see GenDec docs/release.md).
 FROM debian:bookworm-slim AS pulse-bin
-ARG PULSE_VERSION=v0.2.0
+ARG PULSE_VERSION=v0.2.1
 ARG PULSE_GITHUB_REPO=onixus/GenDec
 RUN --mount=type=secret,id=github_token,required=false \
     set -eux; \
