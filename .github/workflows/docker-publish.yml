@@ -31,15 +31,35 @@ jobs:
       matrix:
         include:
           # Container packages are Shapoclyack-scoped (not the legacy Octo-man GHCR package).
+          # Default scanner/aio images ship Pulse-only (no Nmap) -- see issue #97:
+          # Nmap's NPSL license makes bundling it in the default distributed
+          # artifacts a redistribution risk. A second `-nmap` tag is published
+          # alongside for anyone who explicitly wants the legacy NSE path.
           - name: scanner
             dockerfile: Dockerfile
             image: ghcr.io/onixus/shapoclyack-scanner
+            install_nmap: "0"
+            tag_suffix: ""
+          - name: scanner-nmap
+            dockerfile: Dockerfile
+            image: ghcr.io/onixus/shapoclyack-scanner
+            install_nmap: "1"
+            tag_suffix: "-nmap"
           - name: api
             dockerfile: Dockerfile.api
             image: ghcr.io/onixus/shapoclyack-api
+            install_nmap: "0"
+            tag_suffix: ""
           - name: aio
             dockerfile: Dockerfile.allinone
             image: ghcr.io/onixus/shapoclyack-aio
+            install_nmap: "0"
+            tag_suffix: ""
+          - name: aio-nmap
+            dockerfile: Dockerfile.allinone
+            image: ghcr.io/onixus/shapoclyack-aio
+            install_nmap: "1"
+            tag_suffix: "-nmap"
     steps:
       - uses: actions/checkout@v4
 
@@ -61,6 +81,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ matrix.image }}
+          flavor: |
+            suffix=${{ matrix.tag_suffix }},onlatest=true
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -85,8 +107,11 @@ jobs:
           # Private GenDec release assets for Pulse binary stage.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          # No PULSE_VERSION override here: the Dockerfiles' own ARG default is
+          # the single source of truth (avoid this workflow silently pinning a
+          # stale Pulse release out from under a Dockerfile bump).
           build-args: |
-            PULSE_VERSION=v0.2.6
+            INSTALL_NMAP=${{ matrix.install_nmap }}
           cache-from: type=gha,scope=${{ matrix.name }}
           # mode=max + multi-platform (linux/amd64,linux/arm64) on the larger
           # images (esp. aio) regularly hangs/fails "preparing build cache for

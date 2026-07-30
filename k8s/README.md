@@ -27,7 +27,7 @@ nmap NSE. Caps still matter for:
 |--------|----------|
 | **naabu** | SYN / host discovery |
 | **pulse** | SYN mode and OS fingerprint (connect mode needs no raw caps) |
-| **nmap** | Optional (`INSTALL_NMAP=1` default; `backend: nmap\|hybrid` only) |
+| **nmap** | Optional — not in the default `shapoclyack-scanner`/`-aio` images (`backend: nmap\|hybrid` only); local `docker build` defaults to `INSTALL_NMAP=1` unless overridden, see below |
 | **fping** | ICMP discovery |
 
 Raw sockets are granted via file capabilities baked into the image at build
@@ -43,13 +43,24 @@ being fixed (see `job.yaml`, `cronjob.yaml`, `api-deployment.yaml`,
 "fix" it back to `false` on any manifest that runs naabu/pulse/nmap
 directly.
 
-**Pulse-only lean image** (no nmap package / vulners scripts):
+**Published images are Nmap-free by default** — `ghcr.io/onixus/shapoclyack-{scanner,aio}:latest`
+(and versioned tags) are built with `INSTALL_NMAP=0`; no Nmap binary, NSE data,
+or `nmap-vulners`/Vulscan scripts, so the Nmap Public Source License's
+redistribution terms don't apply to those artifacts (see
+[issue #97](https://github.com/onixus/Shapoclyack/issues/97)). A separate
+`-nmap` tag (`shapoclyack-{scanner,aio}:latest-nmap`) is published for anyone
+who explicitly wants classic NSE — review NPSL before redistributing that tag
+further.
+
+A local `docker build` still defaults to `INSTALL_NMAP=1` unless you pass the
+build-arg explicitly:
 
 ```bash
 docker build -f Dockerfile --build-arg INSTALL_NMAP=0 -t shapoclyack-scanner:pulse-only .
 ```
 
-NSE stage then skips cleanly if someone still sets `backend: nmap`.
+NSE stage skips cleanly if someone still sets `backend: nmap` against a
+Nmap-free image.
 
 ## Layout
 

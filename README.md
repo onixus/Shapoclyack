@@ -181,6 +181,13 @@ Pin a release tag in production. Do not depend on `latest`.
 ## License notes
 
 Shapoclyack integrates third-party scanners and data sources under their own
-licenses. Review image contents and redistribution terms—especially the Nmap
-Public Source License—before commercial redistribution. See
-[Third-party components](docs/third-party.md).
+licenses. Review image contents and redistribution terms before commercial
+redistribution. See [Third-party components](docs/third-party.md).
+
+**Nmap is not shipped in the default images.** Pulse is the default
+`service_probe.backend` and the default `shapoclyack-scanner`/`-aio` images
+(built with `INSTALL_NMAP=0`) contain no Nmap binary or NSE data — this keeps
+the Nmap Public Source License's redistribution terms out of the artifacts
+most people pull. If you need classic NSE scripts, use the separate `-nmap`
+image tag (`INSTALL_NMAP=1`) or install Nmap yourself; that tag still carries
+NPSL obligations if you redistribute it further.
