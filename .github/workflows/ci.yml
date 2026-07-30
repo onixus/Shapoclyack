@@ -119,6 +119,10 @@ jobs:
         run: ./k8s/scripts/validate-kustomize.sh
 
   image:
+    # Builds the actual default distributed image (INSTALL_NMAP=0, no nmap /
+    # nmap-vulners / vulscan) -- see issue #97 Phase 1. This is what
+    # ghcr.io/onixus/shapoclyack-{scanner,aio} ship as `latest`, so this is
+    # the path e2e/load/scan/SBOM need to exercise, not the opt-in -nmap one.
     name: Image (build, smoke, e2e, scan, SBOM)
     runs-on: ubuntu-latest
     steps:
@@ -138,20 +142,23 @@ jobs:
           # GenDec releases/packages are public.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          # No PULSE_VERSION override -- follow the Dockerfile's own ARG
+          # default (see docker-publish.yml for why this must not be pinned
+          # here). INSTALL_NMAP=0 matches the published default image.
           build-args: |
-            PULSE_VERSION=v0.2.6
+            INSTALL_NMAP=0
       - name: Smoke-check toolchain in image
-        # naabu/nmap/pulse carry cap_net_raw+cap_net_admin as file capabilities
+        # naabu/pulse carry cap_net_raw+cap_net_admin as file capabilities
         # (see Dockerfile); --cap-add must match compose / e2e / k8s manifests.
+        # No nmap here: this is the default Nmap-free image (see nmap-legacy
+        # job below for the opt-in INSTALL_NMAP=1 path).
         run: |
           docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh network-scan-cli:ci -c '
             set -e
             naabu -version
             dnsx -version
             pulse --version
-            nmap --version | head -n 1
-            test -f /usr/share/nmap/scripts/nmap-vulners/vulners.nse
-            test -f /usr/share/nmap/scripts/vulscan/vulscan.nse
+            ! command -v nmap
             python -m compileall scanner
           '
       - name: End-to-end scan against a target container
@@ -195,3 +202,40 @@ jobs:
           name: sbom
           path: sbom.spdx.json
           if-no-files-found: error
+
+  image-nmap-legacy:
+    # Opt-in INSTALL_NMAP=1 path (published as the `-nmap` tag, see
+    # docker-publish.yml and issue #97). Lighter than the `image` job above
+    # -- just confirms the legacy toolchain still builds and NSE data lands
+    # where nse.py expects it; e2e/load/scan/SBOM run against the default
+    # image instead, since that's what's actually distributed as `latest`.
+    name: Image nmap-legacy (build, smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (INSTALL_NMAP=1)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: network-scan-cli:ci-nmap
+          cache-from: type=gha,scope=nmap-legacy
+          cache-to: type=gha,mode=max,scope=nmap-legacy
+          secrets: |
+            github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          build-args: |
+            INSTALL_NMAP=1
+      - name: Smoke-check nmap toolchain in image
+        run: |
+          docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh network-scan-cli:ci-nmap -c '
+            set -e
+            naabu -version
+            dnsx -version
+            pulse --version
+            nmap --version | head -n 1
+            test -f /usr/share/nmap/scripts/nmap-vulners/vulners.nse
+            test -f /usr/share/nmap/scripts/vulscan/vulscan.nse
+            python -m compileall scanner
+          '
