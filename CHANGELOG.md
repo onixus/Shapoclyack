@@ -2,6 +2,14 @@
 
 All notable changes to the Octo-man product (hosted in Shapoclyack) are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- **Pulse v0.2.7** — pin `PULSE_VERSION=v0.2.7` (fixes the `CVE-2024-6387`
+  regreSSHion banner regex, which only matched OpenSSH 9.0-9.5 and silently
+  missed the rest of the officially affected range, 8.5p1-9.7p1).
+
 ## [0.38-0729] — 2026-07-29
 
 ### Added
