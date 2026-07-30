@@ -452,9 +452,12 @@ class Cvss4Config(BaseModel):
 
 class GeoIpConfig(BaseModel):
     enabled: bool = True
-    # MaxMind GeoLite2-City.mmdb or JSON overlay (labs/tests).
-    # Fetch MMDB with scripts/fetch-geoip-db.sh (requires MAXMIND_LICENSE_KEY).
-    database: str = "scanner/data/geoip/geoip-overlay.json"
+    # MaxMind GeoLite2-City.mmdb or JSON overlay (labs/tests). Docker builds
+    # bake a real DB-IP City Lite .mmdb at this path (scripts/fetch-enrichment.sh);
+    # point at scanner/data/geoip/geoip-overlay.json instead for a small
+    # hand-editable lab/test overlay, or fetch MaxMind's GeoLite2-City with
+    # scripts/fetch-geoip-db.sh (requires MAXMIND_LICENSE_KEY).
+    database: str = "scanner/data/geoip/geoip.mmdb"
 
 
 class AsnEnrichConfig(BaseModel):

@@ -8,7 +8,7 @@ from scanner.pipeline.config_schema import NucleiConfig
 from scanner.pipeline.nuclei_scan import (
     _candidate_endpoints,
     _to_finding,
-    _to_vulnerability_row,
+    _to_vulnerability_rows,
     run_nuclei_scan,
 )
 
@@ -45,12 +45,12 @@ def test_to_finding_extracts_cve_and_severity():
     assert finding["cvss_score"] == 10.0
 
 
-def test_to_vulnerability_row_none_without_cve():
+def test_to_vulnerability_rows_empty_without_cve():
     finding = _to_finding({"host": "10.0.0.1", "port": "80", "info": {"severity": "info"}})
-    assert _to_vulnerability_row(finding) is None
+    assert _to_vulnerability_rows(finding) == []
 
 
-def test_to_vulnerability_row_falls_back_to_severity_floor_without_cvss():
+def test_to_vulnerability_rows_falls_back_to_severity_floor_without_cvss():
     finding = _to_finding(
         {
             "host": "10.0.0.1",
@@ -59,16 +59,38 @@ def test_to_vulnerability_row_falls_back_to_severity_floor_without_cvss():
             "info": {"severity": "high", "classification": {"cve-id": ["CVE-2020-1"]}},
         }
     )
-    row = _to_vulnerability_row(finding)
-    assert row == {
-        "host": "10.0.0.1",
-        "port": "80",
-        "cve": "CVE-2020-1",
-        "cvss": 7.5,
-        "severity": "high",
-        "script_id": "nuclei:some-cve-check",
-        "source": "nuclei",
-    }
+    rows = _to_vulnerability_rows(finding)
+    assert rows == [
+        {
+            "host": "10.0.0.1",
+            "port": "80",
+            "cve": "CVE-2020-1",
+            "cvss": 7.5,
+            "severity": "high",
+            "script_id": "nuclei:some-cve-check",
+            "source": "nuclei",
+        }
+    ]
+
+
+def test_to_vulnerability_rows_emits_one_row_per_cve():
+    finding = _to_finding(
+        {
+            "host": "10.0.0.1",
+            "port": "8080",
+            "template-id": "cve-2021-44228",
+            "info": {
+                "severity": "critical",
+                "classification": {
+                    "cve-id": ["CVE-2021-44228", "CVE-2021-45046"],
+                    "cvss-score": 10.0,
+                },
+            },
+        }
+    )
+    rows = _to_vulnerability_rows(finding)
+    assert [row["cve"] for row in rows] == ["CVE-2021-44228", "CVE-2021-45046"]
+    assert all(row["cvss"] == 10.0 and row["source"] == "nuclei" for row in rows)
 
 
 def test_run_nuclei_scan_disabled(tmp_path: Path):

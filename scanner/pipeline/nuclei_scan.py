@@ -113,21 +113,24 @@ def _to_finding(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _to_vulnerability_row(finding: dict[str, Any]) -> dict[str, Any] | None:
+def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
     if not finding["cve"] or not finding["host"]:
-        return None
+        return []
     cvss = finding.get("cvss_score")
     if not isinstance(cvss, (int, float)):
         cvss = _SEVERITY_CVSS_FLOOR.get(finding["severity"])
-    return {
-        "host": finding["host"],
-        "port": finding["port"],
-        "cve": str(finding["cve"][0]).upper(),
-        "cvss": cvss,
-        "severity": finding["severity"],
-        "script_id": f"nuclei:{finding['template_id']}",
-        "source": "nuclei",
-    }
+    return [
+        {
+            "host": finding["host"],
+            "port": finding["port"],
+            "cve": str(cve).upper(),
+            "cvss": cvss,
+            "severity": finding["severity"],
+            "script_id": f"nuclei:{finding['template_id']}",
+            "source": "nuclei",
+        }
+        for cve in finding["cve"]
+    ]
 
 
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
@@ -216,9 +219,7 @@ def run_nuclei_scan(
                 continue
             finding = _to_finding(raw)
             findings.append(finding)
-            vuln_row = _to_vulnerability_row(finding)
-            if vuln_row is not None:
-                cve_findings.append(vuln_row)
+            cve_findings.extend(_to_vulnerability_rows(finding))
 
     result["checked_count"] = len(candidates)
     result["findings"] = findings
