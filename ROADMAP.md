@@ -23,6 +23,7 @@ Shipped through **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/relea
 | Remote agents, DefectDojo, PDF reports | Done |
 | Kubernetes (`k8s/octo-man/`) + all-in-one compose | Done |
 | GHCR images `shapoclyack-{aio,scanner,api}` | Done |
+| Nmap made optional / non-default in published images ([#97](https://github.com/onixus/Shapoclyack/issues/97) Phase 1) — Pulse is the default service-probe backend; default `-aio`/`-scanner` images ship Nmap-free; a legacy `-nmap` tag remains opt-in for NPSL-aware users who want classic NSE | Done |
 
 The phases below are the **next platform evolution** toward multi-tenant MSSP scale.
 

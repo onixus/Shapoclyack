@@ -4,6 +4,20 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Changed
+
+- **Nmap removed from default published images** ([#97](https://github.com/onixus/Shapoclyack/issues/97)
+  Phase 1) — `docker-publish.yml` now builds the default `shapoclyack-scanner`/
+  `-aio` GHCR images with `INSTALL_NMAP=0`; Pulse is already the default
+  `service_probe.backend`, so this closes the actual NPSL redistribution risk
+  in the distributed artifacts (previously only the config default was
+  Pulse-first — the published images still bundled Nmap). A separate
+  `-nmap` tag is published alongside for anyone who wants classic NSE.
+- `docker-publish.yml` no longer hardcodes `PULSE_VERSION` as a build-arg —
+  it now always follows the Dockerfiles' own `ARG PULSE_VERSION` default, so
+  a Dockerfile version bump can't be silently overridden by a stale CI pin
+  (this is what happened with the v0.2.7 bump below before this fix).
+
 ### Fixed
 
 - **Pulse v0.2.7** — pin `PULSE_VERSION=v0.2.7` (fixes the `CVE-2024-6387`
