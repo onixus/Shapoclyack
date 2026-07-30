@@ -127,14 +127,14 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 
 ```dockerfile
 # stage pulse-bin downloads:
-#   pulse-v0.2.6-linux-amd64.tar.gz from onixus/GenDec releases
+#   pulse-v0.2.7-linux-amd64.tar.gz from onixus/GenDec releases
 COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 # + setcap cap_net_raw,cap_net_admin+eip
 ```
 
 | Arg / secret | Default | Meaning |
 |--------------|---------|---------|
-| `PULSE_VERSION` | `v0.2.6` | GenDec release tag |
+| `PULSE_VERSION` | `v0.2.7` | GenDec release tag |
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
@@ -143,7 +143,7 @@ Host install without Docker:
 
 ```bash
 scripts/install-pulse.sh                  # from release
-PULSE_VERSION=v0.2.6 scripts/install-pulse.sh
+PULSE_VERSION=v0.2.7 scripts/install-pulse.sh
 PULSE_FROM_SOURCE=1 scripts/install-pulse.sh  # cargo fallback
 ```
 
