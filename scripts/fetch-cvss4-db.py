@@ -57,19 +57,26 @@ def _extract_cvss4(metrics: dict) -> dict | None:
             "severity": _severity_from_score(float(score)),
             "version": version or ("4.0" if "V40" in key or "V4" in key else ""),
         }
-    # Fallback: any metric with a base score
+    # Fallback: any *actual* v4 metric under a key we didn't already check above
+    # (e.g. a future/alternate NVD key name). Do NOT fall back to v3.x here --
+    # this database's "score"/"vector" are consumed downstream as genuine CVSS
+    # v4 (scanner/pipeline/cvss4.py overrides "severity" from them), so a v3.x
+    # score would be silently mislabeled as v4.
     for key, rows in metrics.items():
+        if key in ("cvssMetricV40", "cvssMetricV4", "cvssMetricV31", "cvssMetricV30"):
+            continue
         if not isinstance(rows, list) or not rows:
             continue
         data = (rows[0].get("cvssData") or {})
         score = data.get("baseScore")
-        if score is None:
+        version = str(data.get("version") or "")
+        if score is None or not version.startswith("4"):
             continue
         return {
             "score": float(score),
             "vector": data.get("vectorString") or "",
             "severity": _severity_from_score(float(score)),
-            "version": str(data.get("version") or ""),
+            "version": version,
         }
     return None
 

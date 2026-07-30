@@ -191,6 +191,8 @@ class RiskScoring:
     ) -> str:
         if exploit_active and base_cvss >= 7.0:
             return "Immediate"
+        if exploit_active:
+            return "Act"
         if base_cvss >= 9.0 or (base_cvss >= 7.0 and epss >= 0.1):
             return "Act"
         if base_cvss >= 4.0 or epss >= 0.05:

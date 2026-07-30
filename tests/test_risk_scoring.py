@@ -30,6 +30,9 @@ def test_cisa_decision_bands():
     assert (
         scorer.cisa_decision(base_cvss=1.0, epss=0.0, exploit_active=0) == "Track"
     )
+    assert (
+        scorer.cisa_decision(base_cvss=3.0, epss=0.0, exploit_active=1) == "Act"
+    )
 
 
 def test_score_log4shell_with_overlays():

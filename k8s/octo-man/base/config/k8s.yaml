@@ -200,7 +200,7 @@ enrichment:
     database: scanner/data/cvss4/cvss4.json
   geoip:
     enabled: true
-    database: scanner/data/geoip/geoip-overlay.json
+    database: scanner/data/geoip/geoip.mmdb
 
 alerts:
   enabled: false
