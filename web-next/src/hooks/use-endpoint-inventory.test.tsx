@@ -122,7 +122,7 @@ describe("useEndpointDevicesForAsset", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual([DEVICE]);
-    expect(fetchEndpointDevicesForAsset).toHaveBeenCalledWith("asset_1");
+    expect(fetchEndpointDevicesForAsset).toHaveBeenCalledWith("asset_1", "default");
   });
 });
 

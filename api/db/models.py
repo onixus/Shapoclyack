@@ -243,6 +243,7 @@ class EndpointSoftwareChange(Base):
 
     __table_args__ = (
         Index("ix_endpoint_software_changes_device_time", "device_id", "observed_at"),
+        Index("ix_endpoint_software_changes_tenant_time", "tenant_id", "observed_at"),
     )
 
 

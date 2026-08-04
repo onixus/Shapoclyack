@@ -74,9 +74,10 @@ function BackToAssets() {
 function AssetDetailInner() {
   const searchParams = useSearchParams();
   const assetId = (searchParams.get("assetId") || "").trim();
+  const tenantId = searchParams.get("tenantId") || "default";
   const { canOperate } = useAuthStore();
 
-  const detailQuery = useAssetDetail(assetId || null);
+  const detailQuery = useAssetDetail(assetId || null, tenantId);
   const asset = detailQuery.data;
   const ip = asset?.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ?? null;
 
@@ -91,10 +92,10 @@ function AssetDetailInner() {
   const assetPorts = (portsQuery.data || []).filter((p) => ip && p.hosts.includes(ip));
   const vulns = vulnsQuery.data || [];
 
-  const devicesQuery = useEndpointDevicesForAsset(assetId || null);
+  const devicesQuery = useEndpointDevicesForAsset(assetId || null, tenantId);
   const devices = devicesQuery.data || [];
   const device = devices[0] || null;
-  const softwareQuery = useAssetSoftware(assetId || null);
+  const softwareQuery = useAssetSoftware(assetId || null, tenantId);
   const software = softwareQuery.data || [];
 
   if (!assetId) {
@@ -268,7 +269,12 @@ function AssetDetailInner() {
 
             {device ? (
               <TabsContent value="software" className="space-y-3 pt-3">
-                <SoftwareTab device={device} software={software} isLoading={softwareQuery.isLoading} />
+                <SoftwareTab
+                  device={device}
+                  software={software}
+                  isLoading={softwareQuery.isLoading}
+                  tenantId={tenantId}
+                />
               </TabsContent>
             ) : null}
           </Tabs>
@@ -389,14 +395,16 @@ function SoftwareTab({
   device,
   software,
   isLoading,
+  tenantId,
 }: {
   device: EndpointDeviceInfo;
   software: EndpointSoftwareItemInfo[];
   isLoading: boolean;
+  tenantId: string;
 }) {
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<"name" | "version" | "publisher" | "source">("name");
-  const changesQuery = useEndpointDeviceChanges(device.device_id);
+  const changesQuery = useEndpointDeviceChanges(device.device_id, tenantId);
   const recentChanges = (changesQuery.data || []).filter((c) => c.snapshot_id === device.latest_snapshot_id);
 
   const filtered = software

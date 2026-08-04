@@ -19,26 +19,26 @@ export function useEndpointDevices(tenantId = "default") {
 }
 
 /** Endpoint device(s) reconciled to this network-scan asset (Agent_plan.md S1-S7). */
-export function useEndpointDevicesForAsset(assetId: string | null) {
+export function useEndpointDevicesForAsset(assetId: string | null, tenantId = "default") {
   return useQuery({
-    queryKey: queryKeys.endpointDevicesForAsset(assetId ?? ""),
-    queryFn: () => fetchEndpointDevicesForAsset(assetId!),
+    queryKey: queryKeys.endpointDevicesForAsset(assetId ?? "", tenantId),
+    queryFn: () => fetchEndpointDevicesForAsset(assetId!, tenantId),
     enabled: Boolean(assetId),
   });
 }
 
-export function useAssetSoftware(assetId: string | null) {
+export function useAssetSoftware(assetId: string | null, tenantId = "default") {
   return useQuery({
-    queryKey: queryKeys.assetSoftware(assetId ?? ""),
-    queryFn: () => fetchAssetSoftware(assetId!),
+    queryKey: queryKeys.assetSoftware(assetId ?? "", tenantId),
+    queryFn: () => fetchAssetSoftware(assetId!, tenantId),
     enabled: Boolean(assetId),
   });
 }
 
-export function useEndpointDeviceChanges(deviceId: string | null) {
+export function useEndpointDeviceChanges(deviceId: string | null, tenantId = "default") {
   return useQuery({
-    queryKey: queryKeys.endpointDeviceChanges(deviceId ?? ""),
-    queryFn: () => fetchEndpointDeviceChanges(deviceId!),
+    queryKey: queryKeys.endpointDeviceChanges(deviceId ?? "", tenantId),
+    queryFn: () => fetchEndpointDeviceChanges(deviceId!, tenantId),
     enabled: Boolean(deviceId),
   });
 }
@@ -46,7 +46,7 @@ export function useEndpointDeviceChanges(deviceId: string | null) {
 /** Cross-device recent software-change feed for the tenant. */
 export function useRecentSoftwareChanges(tenantId = "default", limit = 50) {
   return useQuery({
-    queryKey: queryKeys.recentSoftwareChanges(tenantId),
+    queryKey: queryKeys.recentSoftwareChanges(tenantId, limit),
     queryFn: () => fetchRecentSoftwareChanges({ tenantId, limit }),
   });
 }

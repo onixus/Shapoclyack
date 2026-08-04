@@ -25,8 +25,10 @@ const FILTER_ALL = "all";
 /** Matches the offline threshold used on the asset detail EndpointCard. */
 const STALE_INVENTORY_HOURS = 48;
 
-function assetHref(assetId: string): string {
-  return `/assets/view?assetId=${encodeURIComponent(assetId)}`;
+function assetHref(assetId: string, tenantId: string): string {
+  const params = new URLSearchParams({ assetId });
+  if (tenantId && tenantId !== "default") params.set("tenantId", tenantId);
+  return `/assets/view?${params}`;
 }
 
 function isStaleDevice(device: EndpointDeviceInfo): boolean {
@@ -72,7 +74,7 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
                   <span className="shrink-0 text-slate-600">on</span>
                   {change.asset_id ? (
                     <Link
-                      href={assetHref(change.asset_id)}
+                      href={assetHref(change.asset_id, tenantId)}
                       className="shrink-0 truncate font-mono text-sky-400 hover:text-sky-300 hover:underline"
                     >
                       {change.hostname}
@@ -168,7 +170,7 @@ export default function EndpointsPage() {
           }
           return (
             <Link
-              href={assetHref(id)}
+              href={assetHref(id, tenantId)}
               className="group inline-flex items-center gap-1 font-mono text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline"
             >
               <span className="max-w-[10rem] truncate">{id}</span>
@@ -214,13 +216,13 @@ export default function EndpointsPage() {
               size="sm"
               className="h-7 border-slate-800 bg-slate-900 text-xs text-sky-400 hover:bg-slate-800 hover:text-white"
             >
-              <Link href={assetHref(id)}>Open asset</Link>
+              <Link href={assetHref(id, tenantId)}>Open asset</Link>
             </Button>
           );
         },
       },
     ],
-    [],
+    [tenantId],
   );
 
   const linked = raw.filter((d) => d.asset_id).length;
