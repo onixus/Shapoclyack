@@ -288,6 +288,7 @@ def ingest_snapshot(
         _reconcile_asset(session, tenant_id=tenant_id, device=device, hostname=request.hostname)
 
         previous_items: dict[str, str | None] = {}
+        previous_name_by_key: dict[str, str] = {}
         if not is_first_snapshot and device.latest_snapshot_id:
             previous_rows = session.execute(
                 select(models.EndpointSoftwareItem).where(
@@ -295,6 +296,7 @@ def ingest_snapshot(
                 )
             ).scalars().all()
             previous_items = {row.comparison_key: row.version for row in previous_rows}
+            previous_name_by_key = {row.comparison_key: row.name for row in previous_rows}
 
         snapshot = models.EndpointInventorySnapshot(
             snapshot_id=request.snapshot_id,
@@ -376,7 +378,7 @@ def ingest_snapshot(
                             event_type="removed",
                             old_version=old_version,
                             new_version=None,
-                            display_name="",
+                            display_name=previous_name_by_key.get(key, ""),
                             observed_at=now,
                         )
                     )
@@ -493,6 +495,49 @@ def list_changes(tenant_id: str, device_id: str) -> list[dict[str, Any]]:
             "observed_at": _iso(row.observed_at),
         }
         for row in rows
+    ]
+
+
+_MAX_RECENT_CHANGES_LIMIT = 200
+
+
+def list_recent_changes(
+    tenant_id: str,
+    *,
+    limit: int = 50,
+    event_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Cross-device software-change feed (installed/removed/updated), newest
+    first, joined with the owning device's hostname/asset for display."""
+    limit = max(1, min(limit, _MAX_RECENT_CHANGES_LIMIT))
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        query = (
+            select(models.EndpointSoftwareChange, models.EndpointDevice)
+            .join(
+                models.EndpointDevice,
+                models.EndpointDevice.device_id == models.EndpointSoftwareChange.device_id,
+            )
+            .where(models.EndpointSoftwareChange.tenant_id == tenant_id)
+            .order_by(models.EndpointSoftwareChange.observed_at.desc())
+            .limit(limit)
+        )
+        if event_type:
+            query = query.where(models.EndpointSoftwareChange.event_type == event_type)
+        rows = session.execute(query).all()
+    return [
+        {
+            "device_id": change.device_id,
+            "snapshot_id": change.snapshot_id,
+            "event_type": change.event_type,
+            "display_name": change.display_name,
+            "old_version": change.old_version,
+            "new_version": change.new_version,
+            "observed_at": _iso(change.observed_at),
+            "hostname": device.hostname,
+            "asset_id": device.asset_id,
+        }
+        for change, device in rows
     ]
 
 

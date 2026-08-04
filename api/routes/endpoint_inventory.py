@@ -12,6 +12,7 @@ from api.schemas import (
     EndpointInventoryResponse,
     EndpointInventorySnapshotRequest,
     EndpointSnapshotSummary,
+    EndpointSoftwareChangeFeedItem,
     EndpointSoftwareChangeInfo,
 )
 from api.services import endpoint_inventory as endpoint_inventory_service
@@ -87,3 +88,16 @@ def list_changes(
     tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
 ) -> list[dict]:
     return endpoint_inventory_service.list_changes(tenant_id, device_id)
+
+
+@router.get("/changes", response_model=list[EndpointSoftwareChangeFeedItem])
+def list_recent_changes(
+    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    event_type: Annotated[str | None, Query()] = None,
+) -> list[dict]:
+    """Cross-device recent software-change feed (installed/removed/updated)."""
+    return endpoint_inventory_service.list_recent_changes(
+        tenant_id, limit=limit, event_type=event_type
+    )

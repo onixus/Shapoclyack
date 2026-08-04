@@ -4,6 +4,16 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Added
+
+- **Cross-device software-changes feed** ([#98](https://github.com/onixus/Shapoclyack/issues/98)
+  Phase 3) — `GET /api/endpoint/changes` returns recent installed/removed/
+  updated software events across all endpoints for a tenant (joined with
+  device hostname/asset), and the `/endpoints` page now shows a "Recent
+  software changes" panel above the device table. Completes the one item
+  left open from the Phase 3 endpoint-inventory plan (per-device history
+  already existed on the asset view; this adds the global view).
+
 ### Changed
 
 - **Nmap removed from default published images** ([#97](https://github.com/onixus/Shapoclyack/issues/97)
@@ -23,6 +33,12 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 - **Pulse v0.2.7** — pin `PULSE_VERSION=v0.2.7` (fixes the `CVE-2024-6387`
   regreSSHion banner regex, which only matched OpenSSH 9.0-9.5 and silently
   missed the rest of the officially affected range, 8.5p1-9.7p1).
+- **Endpoint software-change events had a blank name for removals** —
+  `ingest_snapshot`'s diff only looked up display names from the *new*
+  snapshot's software list, which doesn't contain removed items; both
+  `GET /endpoint/devices/{id}/changes` and the new `/endpoint/changes` feed
+  showed an empty name for every `removed` event. Now looked up from the
+  previous snapshot instead. Found while building the changes feed above.
 
 ## [0.38-0729] — 2026-07-29
 

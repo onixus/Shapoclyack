@@ -2,13 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import type { EndpointDeviceInfo, EndpointSoftwareChangeInfo, EndpointSoftwareItemInfo } from "@/lib/api";
+import type {
+  EndpointDeviceInfo,
+  EndpointSoftwareChangeFeedItem,
+  EndpointSoftwareChangeInfo,
+  EndpointSoftwareItemInfo,
+} from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   fetchEndpointDevices: vi.fn(),
   fetchEndpointDevicesForAsset: vi.fn(),
   fetchAssetSoftware: vi.fn(),
   fetchEndpointDeviceChanges: vi.fn(),
+  fetchRecentSoftwareChanges: vi.fn(),
 }));
 
 import {
@@ -16,12 +22,14 @@ import {
   fetchEndpointDevicesForAsset,
   fetchAssetSoftware,
   fetchEndpointDeviceChanges,
+  fetchRecentSoftwareChanges,
 } from "@/lib/api";
 import {
   useEndpointDevices,
   useEndpointDevicesForAsset,
   useAssetSoftware,
   useEndpointDeviceChanges,
+  useRecentSoftwareChanges,
 } from "@/hooks/use-endpoint-inventory";
 
 const DEVICE: EndpointDeviceInfo = {
@@ -60,6 +68,12 @@ const SOFTWARE_CHANGE: EndpointSoftwareChangeInfo = {
   old_version: null,
   new_version: "9.6p1",
   observed_at: "2026-07-30T00:00:00Z",
+};
+
+const FEED_ITEM: EndpointSoftwareChangeFeedItem = {
+  ...SOFTWARE_CHANGE,
+  hostname: "host-1",
+  asset_id: "asset_1",
 };
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -108,7 +122,7 @@ describe("useEndpointDevicesForAsset", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual([DEVICE]);
-    expect(fetchEndpointDevicesForAsset).toHaveBeenCalledWith("asset_1");
+    expect(fetchEndpointDevicesForAsset).toHaveBeenCalledWith("asset_1", "default");
   });
 });
 
@@ -152,5 +166,26 @@ describe("useEndpointDeviceChanges", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual([SOFTWARE_CHANGE]);
+  });
+});
+
+describe("useRecentSoftwareChanges", () => {
+  it("returns the cross-device feed on the happy path", async () => {
+    vi.mocked(fetchRecentSoftwareChanges).mockResolvedValueOnce([FEED_ITEM]);
+
+    const { result } = renderHook(() => useRecentSoftwareChanges("default", 50), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual([FEED_ITEM]);
+    expect(fetchRecentSoftwareChanges).toHaveBeenCalledWith({ tenantId: "default", limit: 50 });
+  });
+
+  it("surfaces the error when the fetch fails", async () => {
+    vi.mocked(fetchRecentSoftwareChanges).mockRejectedValueOnce(new Error("forbidden"));
+
+    const { result } = renderHook(() => useRecentSoftwareChanges("default"), { wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect((result.current.error as Error).message).toBe("forbidden");
   });
 });
