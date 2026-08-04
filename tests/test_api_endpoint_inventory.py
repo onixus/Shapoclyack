@@ -161,3 +161,61 @@ def test_read_endpoints_require_viewer_role_and_are_tenant_scoped(tmp_path, monk
     )
     assert software.status_code == 200
     assert len(software.json()) == 2
+
+
+def test_recent_changes_feed_returns_hostname_and_is_tenant_scoped(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    body = _load_fixture("endpoint_inventory_v1_valid.json")
+    first = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body)
+    assert first.status_code == 201
+
+    second_body = dict(body)
+    second_body["snapshot_id"] = "snap_0000000000000002"
+    second_body["software"] = [
+        {
+            "name": "curl",
+            "version": "8.5.0-2ubuntu10",
+            "publisher": "Canonical",
+            "architecture": "amd64",
+            "source": "dpkg",
+            "install_location": None,
+        },
+        {
+            "name": "htop",
+            "version": "3.3.0",
+            "publisher": "Debian",
+            "architecture": "amd64",
+            "source": "dpkg",
+            "install_location": None,
+        },
+    ]
+    second = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=second_body)
+    assert second.status_code == 201
+
+    token = _operator_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    unauth = client.get("/api/endpoint/changes", params={"tenant_id": "default"})
+    assert unauth.status_code == 401
+
+    feed = client.get("/api/endpoint/changes", headers=headers, params={"tenant_id": "default"})
+    assert feed.status_code == 200
+    events = feed.json()
+    assert {e["event_type"] for e in events} == {"installed", "removed"}
+    assert all(e["hostname"] == body["hostname"] for e in events)
+    by_type = {e["event_type"]: e for e in events}
+    assert by_type["removed"]["display_name"] == "openssh-server"
+
+    installed_only = client.get(
+        "/api/endpoint/changes",
+        headers=headers,
+        params={"tenant_id": "default", "event_type": "installed"},
+    )
+    assert installed_only.status_code == 200
+    assert [e["display_name"] for e in installed_only.json()] == ["htop"]
+
+    other_tenant = client.get(
+        "/api/endpoint/changes", headers=headers, params={"tenant_id": "ten_missing"}
+    )
+    assert other_tenant.status_code == 200
+    assert other_tenant.json() == []

@@ -285,6 +285,11 @@ export type EndpointSoftwareChangeInfo = {
   observed_at: string | null;
 };
 
+export type EndpointSoftwareChangeFeedItem = EndpointSoftwareChangeInfo & {
+  hostname: string;
+  asset_id: string | null;
+};
+
 export type ProvisioningKeyInfo = {
   key_id: string;
   tenant_id: string;
@@ -621,6 +626,24 @@ export async function fetchEndpointDeviceChanges(deviceId: string, tenantId = "d
     const params = new URLSearchParams({ tenant_id: tenantId });
     const { data } = await api.get<EndpointSoftwareChangeInfo[]>(
       `/endpoint/devices/${encodeURIComponent(deviceId)}/changes?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Cross-device recent software-change feed (installed/removed/updated),
+ * newest first — the global counterpart to fetchEndpointDeviceChanges. */
+export async function fetchRecentSoftwareChanges(opts?: {
+  tenantId?: string;
+  limit?: number;
+}) {
+  try {
+    const params = new URLSearchParams({ tenant_id: opts?.tenantId || "default" });
+    params.set("limit", String(opts?.limit ?? 50));
+    const { data } = await api.get<EndpointSoftwareChangeFeedItem[]>(
+      `/endpoint/changes?${params}`,
     );
     return data;
   } catch (error) {

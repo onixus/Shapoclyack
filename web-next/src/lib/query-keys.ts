@@ -19,6 +19,7 @@ export const queryKeys = {
   endpointDevicesForAsset: (assetId: string) => ["endpoint-devices", "asset", assetId] as const,
   assetSoftware: (assetId: string) => ["asset", assetId, "software"] as const,
   endpointDeviceChanges: (deviceId: string) => ["endpoint-device", deviceId, "changes"] as const,
+  recentSoftwareChanges: (tenantId = "default") => ["endpoint-changes", tenantId] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

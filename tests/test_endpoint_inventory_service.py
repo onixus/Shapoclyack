@@ -136,6 +136,7 @@ def test_second_snapshot_computes_diff_events(settings):
     device_id = result["device_id"]
     changes = {c["event_type"]: c for c in endpoint_inventory.list_changes("default", device_id)}
     assert changes["installed"]["display_name"] == "htop"
+    assert changes["removed"]["display_name"] == "vim"
     assert changes["removed"]["old_version"] == "9.0"
     assert changes["updated"]["old_version"] == "8.5.0"
     assert changes["updated"]["new_version"] == "8.6.0"
@@ -259,6 +260,64 @@ def test_tenant_isolation_devices_not_shared(settings):
     assert len(default_devices) == 1
     assert len(other_devices) == 1
     assert default_devices[0]["device_id"] != other_devices[0]["device_id"]
+
+
+def test_list_recent_changes_joins_hostname_across_devices(settings):
+    endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-1",
+        request=_request(
+            snapshot_id="snap_1",
+            software=[EndpointSoftwareItem(name="curl", version="8.5.0", source="dpkg")],
+        ),
+    )
+    endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-1",
+        request=_request(
+            snapshot_id="snap_2",
+            software=[EndpointSoftwareItem(name="htop", version="3.3", source="dpkg")],
+        ),
+    )
+    endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-2",
+        request=_request(
+            agent_id="agent-2",
+            snapshot_id="snap_agent2",
+            hostname="host-2.example.internal",
+            software=[EndpointSoftwareItem(name="vim", version="9.0", source="dpkg")],
+        ),
+    )
+
+    changes = endpoint_inventory.list_recent_changes("default")
+    assert len(changes) == 2  # snap_2's diff against snap_1: curl removed, htop installed
+    assert {c["hostname"] for c in changes} == {"host-1.example.internal"}
+    assert {c["event_type"] for c in changes} == {"installed", "removed"}
+    by_type = {c["event_type"]: c for c in changes}
+    assert by_type["removed"]["display_name"] == "curl"
+
+    installed_only = endpoint_inventory.list_recent_changes("default", event_type="installed")
+    assert len(installed_only) == 1
+    assert installed_only[0]["display_name"] == "htop"
+
+    capped = endpoint_inventory.list_recent_changes("default", limit=1)
+    assert len(capped) == 1
+
+
+def test_list_recent_changes_tenant_isolated(settings):
+    tenants_service.create_tenant(name="Other", tenant_id="ten_other")
+    endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-1",
+        request=_request(snapshot_id="snap_1", software=[EndpointSoftwareItem(name="curl", version="1", source="dpkg")]),
+    )
+    endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-1",
+        request=_request(snapshot_id="snap_2", software=[EndpointSoftwareItem(name="htop", version="1", source="dpkg")]),
+    )
+    assert endpoint_inventory.list_recent_changes("ten_other") == []
 
 
 def test_list_devices_filters_by_asset_id(settings):

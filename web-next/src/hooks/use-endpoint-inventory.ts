@@ -6,6 +6,7 @@ import {
   fetchEndpointDeviceChanges,
   fetchEndpointDevices,
   fetchEndpointDevicesForAsset,
+  fetchRecentSoftwareChanges,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -39,5 +40,13 @@ export function useEndpointDeviceChanges(deviceId: string | null) {
     queryKey: queryKeys.endpointDeviceChanges(deviceId ?? ""),
     queryFn: () => fetchEndpointDeviceChanges(deviceId!),
     enabled: Boolean(deviceId),
+  });
+}
+
+/** Cross-device recent software-change feed for the tenant. */
+export function useRecentSoftwareChanges(tenantId = "default", limit = 50) {
+  return useQuery({
+    queryKey: queryKeys.recentSoftwareChanges(tenantId),
+    queryFn: () => fetchRecentSoftwareChanges({ tenantId, limit }),
   });
 }
