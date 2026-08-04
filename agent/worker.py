@@ -345,49 +345,49 @@ class AgentNatsSession:
                 stream=STREAM_JOBS,
             )
 
+    async def _close_connection(self) -> None:
+        """Let nats-py stop its own background tasks before the loop is closed."""
+        connection = self._nc
+        if connection is None:
+            return
+        try:
+            if not connection.is_closed:
+                await connection.drain()
+        except Exception:  # noqa: BLE001
+            LOG.debug("Failed to drain NATS agent connection", exc_info=True)
+        try:
+            if not connection.is_closed:
+                await connection.close()
+        except Exception:  # noqa: BLE001
+            LOG.debug("Failed to close NATS agent connection", exc_info=True)
+        # Give nats-py's completion callbacks one final event-loop turn. The old
+        # implementation cancelled every task in the loop, including the
+        # client's flusher, which produced GeneratorExit/Event-loop-closed
+        # warnings during Python 3.11 CI teardown.
+        await asyncio.sleep(0)
+
     def close(self) -> None:
         with self._lock:
-            if self._nc is not None and self._loop.is_running():
-                async def _shutdown() -> None:
-                    if self._nc is not None:
-                        try:
-                            if not self._nc.is_closed:
-                                await self._nc.drain()
-                        except Exception:  # noqa: BLE001
-                            pass
-                        try:
-                            if not self._nc.is_closed:
-                                await self._nc.close()
-                        except Exception:  # noqa: BLE001
-                            pass
-                    current = asyncio.current_task()
-                    pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
-                    for task in pending:
-                        task.cancel()
-                    if pending:
-                        await asyncio.gather(*pending, return_exceptions=True)
-
+            loop = self._loop
+            if self._nc is not None and loop.is_running():
                 try:
-                    fut = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
+                    fut = asyncio.run_coroutine_threadsafe(self._close_connection(), loop)
                     fut.result(timeout=5)
                 except Exception:  # noqa: BLE001
-                    pass
-                finally:
-                    if self._loop.is_running():
-                        self._loop.call_soon_threadsafe(self._loop.stop)
-                self._nc = None
-                self._sub = None
-            elif self._loop.is_running():
-                self._loop.call_soon_threadsafe(self._loop.stop)
+                    LOG.debug("Failed to shut down NATS agent session cleanly", exc_info=True)
 
-            # Without joining, this background thread can still be tearing down
-            # (cancelling tasks, closing sockets) when the caller moves on and a
-            # new session/bus connects — a race that surfaces as spurious
-            # connect failures under CI timing (see test_nats_live.py flakiness).
+            if loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
+
+            self._nc = None
+            self._sub = None
+
             if self._thread.is_alive() and threading.current_thread() is not self._thread:
                 self._thread.join(timeout=5)
-            if not self._thread.is_alive() and not self._loop.is_running() and not self._loop.is_closed():
-                self._loop.close()
+            if self._thread.is_alive():
+                LOG.warning("NATS agent event-loop thread did not stop within timeout")
+            elif not loop.is_running() and not loop.is_closed():
+                loop.close()
             self._started = False
 
     def _ensure_ready(self) -> None:
@@ -569,7 +569,6 @@ def run_loop(args: argparse.Namespace) -> int:
     finally:
         if nats_session is not None:
             nats_session.close()
-
 
 
 def build_parser() -> argparse.ArgumentParser:
