@@ -76,15 +76,15 @@ def test_upsert_assets_from_run_idempotent_and_stale(tmp_path):
     assert stats1.assets_created == 2
     assert stats1.assets_updated == 0
 
-    listed = assets_service.list_assets(settings, tenant_id)
-    assert len(listed) == 2
+    listed, total = assets_service.list_assets(settings, tenant_id)
+    assert len(listed) == total == 2
 
     # Re-ingesting the same run must not duplicate assets/identifiers.
     stats2 = assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
     assert stats2.assets_created == 0
     assert stats2.assets_updated == 2
-    listed_again = assets_service.list_assets(settings, tenant_id)
-    assert len(listed_again) == 2
+    listed_again, total_again = assets_service.list_assets(settings, tenant_id)
+    assert len(listed_again) == total_again == 2
 
     detail = assets_service.get_asset(settings, tenant_id, listed[0]["asset_id"])
     assert detail is not None
@@ -102,8 +102,8 @@ def test_upsert_assets_from_run_idempotent_and_stale(tmp_path):
 
     marked = assets_service.mark_stale_assets(settings, tenant_id=tenant_id)
     assert marked == 2
-    stale = assets_service.list_assets(settings, tenant_id, status="stale")
-    assert len(stale) == 2
+    stale, stale_total = assets_service.list_assets(settings, tenant_id, status="stale")
+    assert len(stale) == stale_total == 2
 
 
 def _settings_with_tenant(tmp_path: Path):

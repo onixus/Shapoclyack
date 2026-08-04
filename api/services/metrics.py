@@ -62,6 +62,50 @@ CH_INGEST_MESSAGES_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# Endpoint inventory (Agent_plan.md S9 / §15). Labels are deliberately
+# low-cardinality — no agent, device, asset, tenant, or product names.
+ENDPOINT_SUBMISSIONS_TOTAL = Counter(
+    "octo_endpoint_inventory_submissions_total",
+    "Endpoint inventory submissions, by outcome "
+    "(accepted, replay, rate_limited, too_large, conflict, invalid, error).",
+    ["result"],
+    registry=REGISTRY,
+)
+ENDPOINT_INGEST_DURATION_SECONDS = Histogram(
+    "octo_endpoint_inventory_ingest_duration_seconds",
+    "Endpoint inventory submission handling duration in seconds.",
+    registry=REGISTRY,
+)
+ENDPOINT_SOFTWARE_ITEMS = Histogram(
+    "octo_endpoint_inventory_software_items",
+    "Software entries per accepted endpoint inventory snapshot.",
+    buckets=(1, 10, 50, 100, 250, 500, 1000, 2500, 5000),
+    registry=REGISTRY,
+)
+ENDPOINT_SOFTWARE_CHANGES_TOTAL = Counter(
+    "octo_endpoint_inventory_software_changes_total",
+    "Software change events generated, by event type.",
+    ["event_type"],
+    registry=REGISTRY,
+)
+ENDPOINT_DEVICES = Gauge(
+    "octo_endpoint_devices",
+    "Endpoint devices known to the installation, by derived staleness state.",
+    ["state"],
+    registry=REGISTRY,
+)
+ENDPOINT_RETENTION_DELETED_TOTAL = Counter(
+    "octo_endpoint_retention_deleted_total",
+    "Rows deleted by the endpoint-inventory retention job, by table.",
+    ["table"],
+    registry=REGISTRY,
+)
+ENDPOINT_RETENTION_RUN_DURATION_SECONDS = Histogram(
+    "octo_endpoint_retention_run_duration_seconds",
+    "Duration of one endpoint-inventory retention sweep in seconds.",
+    registry=REGISTRY,
+)
+
 
 def render() -> tuple[bytes, str]:
     """Return the current metrics snapshot and its Prometheus content type."""

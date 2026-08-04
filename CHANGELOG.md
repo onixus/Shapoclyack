@@ -4,6 +4,48 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 
 ## Unreleased
 
+### Added
+
+- **Server-side pagination on every list endpoint** (ROADMAP
+  [P3.2](ROADMAP.md)/[P3.3](ROADMAP.md)) — `GET /api/runs`, `/jobs`, `/agents`,
+  `/assets`, and `/schedules` now take `offset`/`limit`/`q`/`sort`/`order` and
+  answer with `{items, total, offset, limit, has_more}`. **Breaking**: these
+  five routes previously returned a bare JSON array; clients must read
+  `.items`. Filtering happens before `total` is counted, and an unknown `sort`
+  falls back to the resource default rather than erroring. `jobs`/`agents`/
+  `schedules` were fully unbounded before this. Asset listing pushes the
+  identifier search into an EXISTS subquery, so `q` no longer post-filters an
+  already-truncated page; run listing slices directories first and reads
+  `run_meta.json`/`summary.json` for the requested page only.
+- Web UI tables (assets, runs, jobs, agents, schedules, reports) drive paging,
+  search, and sorting from the server instead of loading whole lists and
+  filtering in the browser; search is debounced and any filter/sort change
+  rewinds to the first page. The dashboard keeps aggregating and now shows the
+  exact asset `total` alongside a note when its posture chart samples the cap.
+- **Endpoint inventory retention, staleness, and operations (Agent_plan.md S9)**
+  — an in-process sweep (`api/services/endpoint_retention.py`, started from the
+  API lifespan like the schedule dispatcher) prunes `endpoint_software_items`
+  for snapshots older than `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS`
+  (90d, snapshot summary rows kept) and deletes `endpoint_software_changes`
+  older than `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` (365d). Deletes
+  are tenant-scoped, batched, and idempotent; a device's current snapshot is
+  never pruned, since it backs the next submission's software diff.
+- Server-side endpoint staleness (`OCTO_ENDPOINT_STALE_HOURS`, default 48):
+  devices now carry a derived `status` (`active`/`stale`), read routes accept
+  `device_status=` as a filter, and the Web UI uses the server value instead of
+  recomputing the threshold client-side.
+- Hard request-body cap on `POST /api/endpoint/inventory`
+  (`OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES`, default 15 MiB) enforced from
+  `Content-Length` before JSON parsing — oversized bodies get `413`, bodies
+  without `Content-Length` get `411` and are never buffered.
+- Endpoint-inventory Prometheus series (submission outcomes, ingest latency,
+  entries per snapshot, change events, active/stale device gauge, retention
+  deletions and sweep duration) plus an "Endpoint Inventory & Retention" panel
+  on the System page and `endpoint_inventory` in `GET /api/system`.
+- Migration `0005_endpoint_fk_cascade` — the endpoint FK chain now cascades from
+  `tenants` (and nulls `asset_id` when an asset is deleted), so a future
+  tenant-offboarding flow removes endpoint data without bespoke deletion code.
+
 ### Changed
 
 - **Nmap removed from default published images** ([#97](https://github.com/onixus/Shapoclyack/issues/97)

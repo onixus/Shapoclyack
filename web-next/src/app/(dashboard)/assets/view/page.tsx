@@ -48,7 +48,6 @@ import {
 } from "@/lib/config/statuses";
 import { formatLocation, normalizeSeverity, pickLatestRun } from "@/lib/run-data";
 
-const STALE_INVENTORY_HOURS = 48;
 
 const CRIT_UNSET = "unset";
 
@@ -80,8 +79,9 @@ function AssetDetailInner() {
   const asset = detailQuery.data;
   const ip = asset?.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ?? null;
 
-  const runsQuery = useRuns();
-  const latest = pickLatestRun(runsQuery.data || []);
+  // Only the newest run is correlated against, so a single page suffices (P3.3).
+  const runsQuery = useRuns(undefined, { limit: 20 });
+  const latest = pickLatestRun(runsQuery.data?.items ?? []);
   const corrRunId = ip && latest ? latest.run_id : "";
   const vulnsQuery = useRunVulns(corrRunId, { host: ip });
   const hostsQuery = useRunHosts(corrRunId);
@@ -344,9 +344,9 @@ function NoEndpointCard({ loading }: { loading: boolean }) {
 }
 
 function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
-  const staleAfterMs = STALE_INVENTORY_HOURS * 60 * 60 * 1000;
-  const lastInventoryMs = device.last_inventory_at ? new Date(device.last_inventory_at).getTime() : null;
-  const isStale = lastInventoryMs != null && Date.now() - lastInventoryMs > staleAfterMs;
+  // Server-derived against OCTO_ENDPOINT_STALE_HOURS (Agent_plan.md S9) — the
+  // threshold is enforced in the API, not recomputed here.
+  const isStale = device.status === "stale" && device.last_inventory_at != null;
 
   return (
     <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
@@ -368,7 +368,8 @@ function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
       {isStale ? (
         <Alert className="border-amber-500/40 bg-amber-950/30 text-amber-200">
           <AlertDescription>
-            No inventory received in over {STALE_INVENTORY_HOURS}h — this endpoint may be offline.
+            No inventory received within the configured staleness window — this endpoint may be
+            offline.
           </AlertDescription>
         </Alert>
       ) : null}

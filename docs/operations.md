@@ -92,6 +92,62 @@ Set retention according to legal, operational, and privacy requirements. Scan
 artifacts can contain internal hostnames, IPs, software versions, and
 vulnerability evidence.
 
+### Endpoint inventory retention
+
+Endpoint inventory is the one layer with an automatic policy. The API runs an
+in-process sweep every `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` (6h) that,
+per tenant:
+
+- deletes `endpoint_software_items` for snapshots received more than
+  `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS` (90) ago, keeping the
+  snapshot summary row — submission history, digests, counts, and collector
+  warnings stay queryable;
+- deletes `endpoint_software_changes` older than
+  `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` (365) — the audit trail
+  deliberately outlives the raw software rows it was derived from.
+
+A device's current snapshot is never pruned regardless of age: it backs the
+diff for that device's next submission, so pruning it would report a quiet
+endpoint's entire software list as freshly installed.
+
+Sizing: one snapshot row plus up to
+`OCTO_ENDPOINT_INVENTORY_MAX_SOFTWARE_ITEMS` (5000) software rows per accepted
+submission, bounded per agent by
+`OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR` (12). At one daily snapshot of
+~1500 packages per endpoint, 10,000 endpoints hold roughly 1.35 billion
+software rows over the 90-day window — plan for a daily-or-slower collection
+cadence, or shorten the window, before scaling past a few thousand endpoints.
+
+Runbook:
+
+- **Storage growing faster than expected** — check
+  `octo_endpoint_inventory_software_items` (entries per snapshot) and
+  `octo_endpoint_inventory_submissions_total{result="accepted"}`. Lower the
+  collection cadence on the Lariska side first; shorten
+  `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS` second.
+- **Sweep not running** — the System page shows "Last Retention Sweep"; a
+  never-run sweep means `OCTO_ENDPOINT_RETENTION_ENABLED` is off or the API
+  pod restarted within the interval. The worker is in-process, so with several
+  API replicas each one sweeps; deletes are idempotent, so overlap is safe.
+- **Sweep too heavy** — lower `OCTO_ENDPOINT_RETENTION_BATCH_SIZE`; each
+  statement deletes at most that many rows.
+- **Rollback** — retention deletes are irreversible; restore from the
+  PostgreSQL backup. Disable the sweep (`OCTO_ENDPOINT_RETENTION_ENABLED=false`)
+  before investigating an unexpected data-loss report so the next interval
+  cannot compound it.
+- **Ingestion rejected** — `octo_endpoint_inventory_submissions_total{result}`
+  separates `rate_limited`, `too_large`, `conflict`, and `invalid`. A body over
+  `OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES` is refused with `413` from the
+  `Content-Length` header alone; a request without `Content-Length` is refused
+  with `411` and never buffered.
+
+Tenant offboarding: endpoint data has no bespoke delete/export flow and follows
+whatever general tenant-deletion mechanism the platform adopts. The endpoint FK
+chain cascades from `tenants` (migration `0005_endpoint_fk_cascade`), so
+deleting a tenant row removes its devices, identifiers, snapshots, software
+rows, and change events; a linked asset being deleted only nulls the device's
+`asset_id`.
+
 ## Logs and observability
 
 Use structured application logs and correlate by tenant, `job_id`, `run_id`,
@@ -104,6 +160,20 @@ curl --fail http://localhost:8080/api/health
 kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/octo-man-api --tail=200
 ```
+
+`GET /metrics` exposes the Prometheus series used by the dashboards and alerts
+referenced above. Endpoint-inventory series (all labels are low-cardinality —
+no agent, device, asset, tenant, or product names):
+
+| Series | Use |
+|---|---|
+| `octo_endpoint_inventory_submissions_total{result}` | Accept/replay/reject breakdown; alert on a sustained non-`accepted` share |
+| `octo_endpoint_inventory_ingest_duration_seconds` | Ingest latency |
+| `octo_endpoint_inventory_software_items` | Entries per snapshot; drives storage growth |
+| `octo_endpoint_inventory_software_changes_total{event_type}` | Installed/removed/updated volume |
+| `octo_endpoint_devices{state}` | Active vs. stale endpoints; alert when the stale share climbs |
+| `octo_endpoint_retention_deleted_total{table}` | Rows the sweep removed |
+| `octo_endpoint_retention_run_duration_seconds` | Sweep cost; alert if it approaches the sweep interval |
 
 ## Backups
 

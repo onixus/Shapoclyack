@@ -20,6 +20,7 @@ import yaml
 
 from api import __version__
 from api.services import config_override
+from api.services import pagination
 from api.settings import Settings
 
 LOG = logging.getLogger(__name__)
@@ -191,6 +192,43 @@ def runtime_info(settings: Settings) -> dict[str, Any]:
         "postgres_enabled": bool(settings.postgres_url.strip()),
         "ch_ingest_enabled": settings.ch_ingest_enabled,
         "asset_stale_days": settings.asset_stale_days,
+        "endpoint_inventory_enabled": settings.endpoint_inventory_enabled,
+        "endpoint_stale_hours": settings.endpoint_stale_hours,
+    }
+
+
+def endpoint_inventory_status(settings: Settings) -> dict[str, Any]:
+    """Endpoint-inventory footprint, staleness, and retention posture (S9).
+
+    Fail-soft like every other panel here: an unconfigured Postgres or a
+    disabled feature degrades to ``None`` counts rather than raising. Also
+    refreshes the ``octo_endpoint_devices`` gauge, which otherwise only moves
+    on a retention sweep.
+    """
+    counts: dict[str, int | None] = {"devices_total": None, "devices_stale": None}
+    if settings.endpoint_inventory_enabled:
+        try:
+            from api.services import endpoint_inventory as endpoint_inventory_service
+            from api.services import metrics as metrics_service
+
+            tallied = endpoint_inventory_service.device_counts()
+            counts = {"devices_total": tallied["total"], "devices_stale": tallied["stale"]}
+            metrics_service.ENDPOINT_DEVICES.labels("active").set(tallied["active"])
+            metrics_service.ENDPOINT_DEVICES.labels("stale").set(tallied["stale"])
+        except Exception:  # noqa: BLE001 - fail-soft status view
+            LOG.warning("system_status: could not count endpoint devices", exc_info=True)
+
+    from api.services import endpoint_retention
+
+    return {
+        "enabled": settings.endpoint_inventory_enabled,
+        **counts,
+        "stale_hours": settings.endpoint_stale_hours,
+        "retention_enabled": settings.endpoint_retention_enabled,
+        "snapshot_retention_days": settings.endpoint_snapshot_retention_days,
+        "change_retention_days": settings.endpoint_change_retention_days,
+        "retention_interval_seconds": settings.endpoint_retention_interval_seconds,
+        "retention_last_run_at": (endpoint_retention.worker_stats() or {}).get("last_run_at"),
     }
 
 
@@ -207,8 +245,9 @@ def inventory_counts() -> dict[str, int | None]:
     try:
         from api.services import agents as agents_service
 
-        agent_rows = agents_service.list_agents()
-        agents_total = len(agent_rows)
+        # Status counts are installation-wide, so ask for everything rather
+        # than the paginated default (ROADMAP P3.2).
+        agent_rows, agents_total = agents_service.list_agents(limit=pagination.MAX_LIMIT)
         agents_online = sum(1 for a in agent_rows if getattr(a, "online", False))
     except Exception:  # noqa: BLE001 - fail-soft status view
         agents_total = None
@@ -225,4 +264,5 @@ def build_status(settings: Settings) -> dict[str, Any]:
         "scan_config": scan_config_summary(config, _effective_overrides(settings)),
         "runtime": runtime_info(settings),
         "inventory": inventory_counts(),
+        "endpoint_inventory": endpoint_inventory_status(settings),
     }

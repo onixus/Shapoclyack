@@ -6,19 +6,33 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from api.auth import Role, TokenUser, get_settings, require_role
-from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
+from api.routes._pagination import PageParams, build_page
+from api.schemas import (
+    AliveHostItem,
+    Page,
+    PortAggregateItem,
+    RunDetail,
+    RunSummary,
+    VulnerabilityItem,
+)
 from api.services import runs as runs_service
 from api.settings import Settings
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
-@router.get("", response_model=list[RunSummary])
+@router.get("", response_model=Page[RunSummary])
 def list_runs(
     _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> list[RunSummary]:
-    return runs_service.list_runs(settings)
+    page: PageParams,
+) -> Page[RunSummary]:
+    # `sort` is accepted for uniformity but ignored: runs are ordered by
+    # run_id, the only key readable without opening every run's JSON.
+    items, total = runs_service.list_runs(
+        settings, offset=page.offset, limit=page.limit, q=page.q, order=page.order
+    )
+    return build_page(items, total, page)
 
 
 @router.get("/{run_id}", response_model=RunDetail)

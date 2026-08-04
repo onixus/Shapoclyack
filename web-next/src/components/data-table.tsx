@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   flexRender,
   getCoreRowModel,
@@ -46,7 +46,30 @@ interface DataTableProps<TData> {
   pageSize?: number;
   /** Optional caption under the toolbar, e.g. "12 tenants". */
   meta?: string;
+  /**
+   * Switches the table to server-side paging, search, and sorting (ROADMAP
+   * P3.3). `data` is then one page of rows, `total` is the row count for the
+   * whole filtered result set, and every control reports back instead of
+   * filtering the in-memory page — which would only ever search what happens
+   * to be loaded.
+   */
+  serverPagination?: ServerPagination;
 }
+
+export type ServerPagination = {
+  offset: number;
+  limit: number;
+  total: number;
+  onOffsetChange: (offset: number) => void;
+  /** Wire up when the endpoint supports `q`; omit to hide the search input. */
+  search?: string;
+  onSearchChange?: (value: string) => void;
+  /** Whitelist of server-sortable column ids; others render unsorted. */
+  sortableColumns?: string[];
+  sort?: string;
+  order?: "asc" | "desc";
+  onSortChange?: (sort: string | undefined, order: "asc" | "desc") => void;
+};
 
 export function DataTable<TData>({
   columns,
@@ -60,41 +83,77 @@ export function DataTable<TData>({
   toolbar,
   pageSize = DEFAULT_PAGE_SIZE,
   meta,
+  serverPagination,
 }: DataTableProps<TData>) {
+  const server = serverPagination;
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [globalFilter, setGlobalFilter] = useState("");
+  // Debounced so typing doesn't fire a request per keystroke.
+  const [searchDraft, setSearchDraft] = useState(server?.search ?? "");
+
+  useEffect(() => {
+    if (!server?.onSearchChange) return;
+    if (searchDraft === (server.search ?? "")) return;
+    const timer = setTimeout(() => server.onSearchChange?.(searchDraft), 300);
+    return () => clearTimeout(timer);
+  }, [searchDraft, server]);
 
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter },
-    onSortingChange: setSorting,
+    state: server ? { sorting } : { sorting, globalFilter },
+    onSortingChange: (updater) => {
+      const next = typeof updater === "function" ? updater(sorting) : updater;
+      setSorting(next);
+      if (server?.onSortChange) {
+        const first = next[0];
+        server.onSortChange(first?.id, first?.desc === false ? "asc" : "desc");
+      }
+    },
     onGlobalFilterChange: setGlobalFilter,
     globalFilterFn: "includesString",
+    manualPagination: Boolean(server),
+    manualSorting: Boolean(server),
+    manualFiltering: Boolean(server),
     getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    ...(server
+      ? {}
+      : {
+          getSortedRowModel: getSortedRowModel(),
+          getFilteredRowModel: getFilteredRowModel(),
+          getPaginationRowModel: getPaginationRowModel(),
+        }),
     initialState: { pagination: { pageSize } },
   });
 
   const rows = table.getRowModel().rows;
-  const totalRows = table.getFilteredRowModel().rows.length;
-  const pageCount = table.getPageCount();
+  const totalRows = server ? server.total : table.getFilteredRowModel().rows.length;
+  const pageCount = server ? Math.max(1, Math.ceil(server.total / server.limit)) : table.getPageCount();
+  const pageIndex = server
+    ? Math.floor(server.offset / server.limit)
+    : table.getState().pagination.pageIndex;
+  const canPrevious = server ? server.offset > 0 : table.getCanPreviousPage();
+  const canNext = server ? server.offset + rows.length < server.total : table.getCanNextPage();
+
+  const showSearch = server ? Boolean(searchPlaceholder && server.onSearchChange) : Boolean(searchPlaceholder);
+  const searchValue = server ? searchDraft : globalFilter;
+  const onSearch = server ? setSearchDraft : setGlobalFilter;
+  const canSortColumn = (columnId: string) =>
+    !server || (server.sortableColumns ?? []).includes(columnId);
 
   return (
     <div className="space-y-3.5">
-      {searchPlaceholder || toolbar || meta ? (
+      {showSearch || toolbar || meta ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-1 flex-wrap items-center gap-3">
-            {searchPlaceholder ? (
+            {showSearch ? (
               <div className="relative min-w-[240px] max-w-sm">
                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                 <Input
                   className="pl-9 bg-slate-900/90 border-slate-800 text-slate-100 placeholder:text-slate-500 focus:border-sky-500/60 focus:ring-sky-500/20"
                   placeholder={searchPlaceholder}
-                  value={globalFilter}
-                  onChange={(event) => setGlobalFilter(event.target.value)}
+                  value={searchValue}
+                  onChange={(event) => onSearch(event.target.value)}
                 />
               </div>
             ) : null}
@@ -119,7 +178,8 @@ export function DataTable<TData>({
               <TableRow key={headerGroup.id} className="hover:bg-transparent border-slate-800">
                 {headerGroup.headers.map((header) => (
                   <TableHead key={header.id} className="text-xs font-bold uppercase tracking-wider text-slate-400 py-3">
-                    {header.isPlaceholder ? null : header.column.getCanSort() ? (
+                    {header.isPlaceholder ? null : header.column.getCanSort() &&
+                      canSortColumn(header.column.id) ? (
                       <Button
                         type="button"
                         variant="ghost"
@@ -172,7 +232,7 @@ export function DataTable<TData>({
         </Table>
       </div>
 
-      {pageCount > 1 ? (
+      {pageCount > 1 || (server && server.total > 0) ? (
         <div className="flex items-center justify-between gap-3 pt-1">
           <p className="text-xs text-slate-400">
             Showing <span className="font-semibold text-slate-200">{rows.length}</span> of{" "}
@@ -183,20 +243,26 @@ export function DataTable<TData>({
               variant="outline"
               size="sm"
               className="border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-40"
-              onClick={() => table.previousPage()}
-              disabled={!table.getCanPreviousPage()}
+              onClick={() =>
+                server
+                  ? server.onOffsetChange(Math.max(0, server.offset - server.limit))
+                  : table.previousPage()
+              }
+              disabled={!canPrevious}
             >
               Previous
             </Button>
             <span className="text-xs font-medium text-slate-400 px-1">
-              {table.getState().pagination.pageIndex + 1} / {pageCount}
+              {pageIndex + 1} / {pageCount}
             </span>
             <Button
               variant="outline"
               size="sm"
               className="border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-40"
-              onClick={() => table.nextPage()}
-              disabled={!table.getCanNextPage()}
+              onClick={() =>
+                server ? server.onOffsetChange(server.offset + server.limit) : table.nextPage()
+              }
+              disabled={!canNext}
             >
               Next
             </Button>

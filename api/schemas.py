@@ -1,9 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field
+
+T = TypeVar("T")
+
+
+class Page(BaseModel, Generic[T]):
+    """Uniform envelope for every paginated list endpoint (ROADMAP P3.2).
+
+    ``offset``/``limit`` echo the request so a client never has to track what
+    it asked for, ``total`` is the count *after* filtering, and ``has_more``
+    saves the caller the ``offset + len(items) < total`` arithmetic.
+    """
+
+    items: list[T]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
 
 
 class HealthResponse(BaseModel):
@@ -330,12 +347,28 @@ class RuntimeInfo(BaseModel):
     postgres_enabled: bool
     ch_ingest_enabled: bool
     asset_stale_days: int
+    endpoint_inventory_enabled: bool = True
+    endpoint_stale_hours: int = 48
 
 
 class InventoryCounts(BaseModel):
     tenants: int | None = None
     agents_total: int | None = None
     agents_online: int | None = None
+
+
+class EndpointInventoryStatus(BaseModel):
+    """Endpoint-inventory footprint and retention posture (Agent_plan.md S9)."""
+
+    enabled: bool
+    devices_total: int | None = None
+    devices_stale: int | None = None
+    stale_hours: int
+    retention_enabled: bool
+    snapshot_retention_days: int
+    change_retention_days: int
+    retention_interval_seconds: int
+    retention_last_run_at: str | None = None
 
 
 class SystemStatus(BaseModel):
@@ -348,6 +381,7 @@ class SystemStatus(BaseModel):
     scan_config: ScanConfigSummary
     runtime: RuntimeInfo
     inventory: InventoryCounts
+    endpoint_inventory: EndpointInventoryStatus
 
 
 class ConfigResponse(BaseModel):
@@ -426,6 +460,9 @@ class EndpointDeviceInfo(BaseModel):
     agent_version: str
     labels: dict[str, str] = Field(default_factory=dict)
     reconciliation_status: str
+    # Derived from last_inventory_at against OCTO_ENDPOINT_STALE_HOURS (S9) —
+    # "active" | "stale". Never stored, so a threshold change applies at once.
+    status: str = "stale"
     first_seen: str | None = None
     last_seen: str | None = None
     last_inventory_at: str | None = None

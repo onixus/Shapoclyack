@@ -43,6 +43,7 @@ import {
   useSchedules,
   useUpdateSchedule,
 } from "@/hooks/use-schedules";
+import { usePagination } from "@/hooks/use-pagination";
 import { useSystemStatus } from "@/hooks/use-system";
 import { type CreateScheduleBody, type ScanSchedule } from "@/lib/api";
 import { SCHEDULE_ENABLED_STATUS } from "@/lib/config/statuses";
@@ -88,7 +89,11 @@ export default function SchedulesPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [deleteTarget, setDeleteTarget] = useState<ScanSchedule | null>(null);
 
-  const { data = [], isLoading, error, isFetching } = useSchedules(canOperate);
+  // Server-side paging/search/sort (ROADMAP P3.3): the schedule list is unbounded.
+  const pagination = usePagination({ sort: "created_at", order: "desc" });
+  const { data, isLoading, error, isFetching } = useSchedules(canOperate, pagination.params);
+  const schedules = data?.items ?? [];
+  const scheduleTotal = data?.total ?? 0;
   const createMutation = useCreateSchedule();
   const updateMutation = useUpdateSchedule();
   const deleteMutation = useDeleteSchedule();
@@ -470,13 +475,25 @@ export default function SchedulesPage() {
 
       <DataTable
         columns={columns}
-        data={data}
+        data={schedules}
         isLoading={isLoading}
         error={error}
         searchPlaceholder="Filter schedules by name…"
-        meta={`${data.length} schedule${data.length === 1 ? "" : "s"}`}
+        meta={`${scheduleTotal} schedule${scheduleTotal === 1 ? "" : "s"}`}
         loadingMessage="Retrieving scan schedules…"
         emptyMessage="No continuous schedules configured yet."
+        serverPagination={{
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total: scheduleTotal,
+          onOffsetChange: pagination.setOffset,
+          search: pagination.search,
+          onSearchChange: pagination.setSearch,
+          sortableColumns: ["created_at", "name", "next_run_at", "last_run_at", "enabled", "tenant_id"],
+          sort: pagination.sort,
+          order: pagination.order,
+          onSortChange: pagination.setSort,
+        }}
       />
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(next) => !next && setDeleteTarget(null)}>

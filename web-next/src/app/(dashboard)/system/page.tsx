@@ -211,6 +211,44 @@ export default function SystemPage() {
                 </div>
               </div>
             </Card>
+
+            <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
+              <Title className="text-sm font-bold uppercase tracking-wider text-slate-200">Endpoint Inventory & Retention</Title>
+              <div className="mt-4 space-y-2.5 text-xs">
+                <div className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2.5 border border-slate-800/60">
+                  <span className="font-semibold text-slate-300">Endpoint Ingestion</span>
+                  <EnabledBadge on={data.endpoint_inventory.enabled} />
+                </div>
+                <div className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2.5 border border-slate-800/60">
+                  <span className="font-semibold text-slate-300">Endpoints (Stale / Total)</span>
+                  <span className="font-mono font-bold text-sky-400">
+                    {data.endpoint_inventory.devices_stale ?? "—"} / {data.endpoint_inventory.devices_total ?? "—"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2.5 border border-slate-800/60">
+                  <span className="font-semibold text-slate-300">Endpoint Stale Threshold</span>
+                  <span className="font-mono font-bold text-sky-400">{data.endpoint_inventory.stale_hours} hours</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2.5 border border-slate-800/60">
+                  <span className="font-semibold text-slate-300">Retention Job</span>
+                  <EnabledBadge on={data.endpoint_inventory.retention_enabled} />
+                </div>
+                <div className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2.5 border border-slate-800/60">
+                  <span className="font-semibold text-slate-300">Software Rows / Change Events</span>
+                  <span className="font-mono font-bold text-sky-400">
+                    {data.endpoint_inventory.snapshot_retention_days}d / {data.endpoint_inventory.change_retention_days}d
+                  </span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2.5 border border-slate-800/60">
+                  <span className="font-semibold text-slate-300">Last Retention Sweep</span>
+                  <span className="font-mono font-bold text-sky-400">
+                    {data.endpoint_inventory.retention_last_run_at
+                      ? formatDistanceToNow(new Date(data.endpoint_inventory.retention_last_run_at), { addSuffix: true })
+                      : "not yet run"}
+                  </span>
+                </div>
+              </div>
+            </Card>
           </div>
 
           <ConfigEditor canEdit={isAdmin} />

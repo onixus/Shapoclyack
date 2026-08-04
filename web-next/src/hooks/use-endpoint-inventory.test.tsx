@@ -37,6 +37,7 @@ const DEVICE: EndpointDeviceInfo = {
   agent_version: "0.2.7",
   labels: {},
   reconciliation_status: "linked",
+  status: "active",
   first_seen: "2026-07-01T00:00:00Z",
   last_seen: "2026-07-30T00:00:00Z",
   last_inventory_at: "2026-07-30T00:00:00Z",

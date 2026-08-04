@@ -16,6 +16,7 @@ import {
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useAssets } from "@/hooks/use-assets";
+import { usePagination } from "@/hooks/use-pagination";
 import { type AssetStatus, type AssetSummary } from "@/lib/api";
 import { ASSET_CRITICALITY, ASSET_STATUS } from "@/lib/config/statuses";
 
@@ -28,13 +29,17 @@ function assetDetailHref(assetId: string): string {
 export default function AssetsPage() {
   const [status, setStatus] = useState<AssetStatus | "">("");
 
-  const assetsQuery = useAssets({ status });
-  const data = assetsQuery.data || [];
+  // Server-side paging/search/sort (ROADMAP P3.3) — the registry is the one
+  // list expected to reach 50k rows, so nothing here is filtered client-side.
+  const pagination = usePagination({ sort: "last_seen", order: "desc" });
+  const assetsQuery = useAssets({ status }, pagination.params);
+  const data = assetsQuery.data?.items ?? [];
+  const total = assetsQuery.data?.total ?? 0;
 
   const columns = useMemo<ColumnDef<AssetSummary>[]>(
     () => [
       {
-        id: "asset",
+        id: "asset_id",
         accessorFn: (row) => `${row.primary_identifier || ""} ${row.asset_id}`,
         header: "Asset Identifier",
         cell: ({ row }) => (
@@ -129,9 +134,11 @@ export default function AssetsPage() {
             <Filter className="h-4 w-4 text-slate-400" />
             <Select
               value={status || STATUS_FILTER_ALL}
-              onValueChange={(value) =>
-                setStatus(value === STATUS_FILTER_ALL ? "" : (value as AssetStatus))
-              }
+              onValueChange={(value) => {
+                setStatus(value === STATUS_FILTER_ALL ? "" : (value as AssetStatus));
+                // The old offset points into a differently filtered result set.
+                pagination.reset();
+              }}
             >
               <SelectTrigger className="w-48 bg-slate-900 border-slate-800 text-slate-200">
                 <SelectValue placeholder="All statuses" />
@@ -145,9 +152,21 @@ export default function AssetsPage() {
             </Select>
           </div>
         }
-        meta={`${data.length.toLocaleString()} asset${data.length === 1 ? "" : "s"} tracked`}
+        meta={`${total.toLocaleString()} asset${total === 1 ? "" : "s"} tracked`}
         loadingMessage="Retrieving asset inventory database…"
         emptyMessage="No assets registered yet. Run a discovery scan to populate the asset catalog."
+        serverPagination={{
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total,
+          onOffsetChange: pagination.setOffset,
+          search: pagination.search,
+          onSearchChange: pagination.setSearch,
+          sortableColumns: ["last_seen", "first_seen", "status", "asset_criticality", "asset_id"],
+          sort: pagination.sort,
+          order: pagination.order,
+          onSortChange: pagination.setSort,
+        }}
       />
     </div>
   );

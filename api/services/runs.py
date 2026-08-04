@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
+from api.services import pagination
 from api.settings import Settings
 
 
@@ -89,9 +90,33 @@ def _run_id_for(path: Path, settings: Settings) -> str:
     return path.name
 
 
-def list_runs(settings: Settings) -> list[RunSummary]:
+def list_runs(
+    settings: Settings,
+    *,
+    offset: int = 0,
+    limit: int = pagination.DEFAULT_LIMIT,
+    q: str | None = None,
+    order: str | None = None,
+) -> tuple[list[RunSummary], int]:
+    """Return ``(page, total_after_filtering)``.
+
+    Runs are ordered by ``run_id`` — the timestamped directory name — which is
+    the only key available without opening every run's JSON. Filtering and
+    slicing therefore happen on directory names, and ``run_meta.json`` /
+    ``summary.json`` are read for the requested page only, so listing stays
+    O(page) instead of O(all runs). Sorting by a summary column would require
+    reading every run and is deliberately not offered server-side.
+    """
+    run_dirs = _run_dirs(settings)
+    if q:
+        needle = q.strip().lower()
+        run_dirs = [d for d in run_dirs if needle in _run_id_for(d, settings).lower()]
+    if (order or "").lower() == "asc":
+        run_dirs = list(reversed(run_dirs))
+    page_dirs, total = pagination.slice_page(run_dirs, offset=offset, limit=limit)
+
     results: list[RunSummary] = []
-    for run_dir in _run_dirs(settings):
+    for run_dir in page_dirs:
         run_id = _run_id_for(run_dir, settings)
         meta = _load_json(run_dir / "run_meta.json") or {}
         summary = _load_json(run_dir / "summary.json") or {}
@@ -112,7 +137,7 @@ def list_runs(settings: Settings) -> list[RunSummary]:
                 path=str(run_dir),
             )
         )
-    return results
+    return results, total
 
 
 def get_run_dir(settings: Settings, run_id: str) -> Path | None:

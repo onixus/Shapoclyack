@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from api.schemas import AgentInfo
+from api.services import pagination
 from api.settings import Settings
 
 _lock = threading.Lock()
@@ -153,11 +154,35 @@ def heartbeat(
         return _to_info(agent)
 
 
-def list_agents() -> list[AgentInfo]:
+AGENT_SORT_FIELDS = ("hostname", "agent_id", "status", "last_seen_at", "registered_at", "tenant_id")
+AGENT_QUERY_FIELDS = ("agent_id", "hostname", "version", "status", "tenant_id", "current_job_id")
+
+
+def list_agents(
+    *,
+    offset: int = 0,
+    limit: int = pagination.DEFAULT_LIMIT,
+    q: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+    tenant_id: str | None = None,
+) -> tuple[list[AgentInfo], int]:
+    """Return ``(page, total_after_filtering)`` — see api/services/pagination.py."""
     with _lock:
         items = [_to_info(agent) for agent in _agents.values()]
-    items.sort(key=lambda a: (a.hostname or a.agent_id).lower())
-    return items
+    if tenant_id:
+        items = [agent for agent in items if agent.tenant_id == tenant_id]
+    items = pagination.apply_query(items, q, AGENT_QUERY_FIELDS)
+    items = pagination.apply_sort(
+        items,
+        sort,
+        order or "asc",
+        allowed=AGENT_SORT_FIELDS,
+        default="hostname",
+        # Unnamed agents sort by their id rather than sinking to the bottom.
+        key_overrides={"hostname": lambda a: (a.hostname or a.agent_id)},
+    )
+    return pagination.slice_page(items, offset=offset, limit=limit)
 
 
 def get_agent(agent_id: str) -> AgentInfo | None:

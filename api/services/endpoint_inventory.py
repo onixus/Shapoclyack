@@ -23,6 +23,7 @@ from sqlalchemy import select
 from api.db import models
 from api.db.engine import get_session
 from api.schemas import EndpointInventorySnapshotRequest
+from api.services import metrics as metrics_service
 from api.settings import Settings
 
 _settings: Settings | None = None
@@ -399,11 +400,33 @@ def ingest_snapshot(
             "changes": changes,
         }
         snapshot.response = response
-        return {**response, "_replay": False}
+
+    metrics_service.ENDPOINT_SOFTWARE_ITEMS.observe(len(request.software))
+    for event_type, count in changes.items():
+        if count:
+            metrics_service.ENDPOINT_SOFTWARE_CHANGES_TOTAL.labels(event_type).inc(count)
+    return {**response, "_replay": False}
+
+
+def device_status(last_inventory_at: datetime | None, *, now: datetime | None = None) -> str:
+    """Derived endpoint staleness (S9, decision 7).
+
+    Kept derived rather than a stored column so a threshold change takes effect
+    immediately and can never disagree with ``last_inventory_at``. A device
+    that has never submitted an accepted snapshot counts as stale.
+    """
+    settings = _require_settings()
+    if last_inventory_at is None:
+        return "stale"
+    if last_inventory_at.tzinfo is None:
+        last_inventory_at = last_inventory_at.replace(tzinfo=UTC)
+    age = (now or _now()) - last_inventory_at
+    return "stale" if age > timedelta(hours=settings.endpoint_stale_hours) else "active"
 
 
 def _device_to_dict(row: models.EndpointDevice) -> dict[str, Any]:
     return {
+        "status": device_status(row.last_inventory_at),
         "device_id": row.device_id,
         "tenant_id": row.tenant_id,
         "agent_id": row.agent_id,
@@ -423,7 +446,9 @@ def _device_to_dict(row: models.EndpointDevice) -> dict[str, Any]:
     }
 
 
-def list_devices(tenant_id: str, *, asset_id: str | None = None) -> list[dict[str, Any]]:
+def list_devices(
+    tenant_id: str, *, asset_id: str | None = None, status: str | None = None
+) -> list[dict[str, Any]]:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         stmt = select(models.EndpointDevice).where(models.EndpointDevice.tenant_id == tenant_id)
@@ -431,8 +456,27 @@ def list_devices(tenant_id: str, *, asset_id: str | None = None) -> list[dict[st
             stmt = stmt.where(models.EndpointDevice.asset_id == asset_id)
         rows = session.execute(stmt).scalars().all()
     items = [_device_to_dict(row) for row in rows]
+    if status:
+        # Derived, not a column — filter after mapping (see device_status).
+        items = [d for d in items if d["status"] == status]
     items.sort(key=lambda d: str(d.get("last_seen") or ""), reverse=True)
     return items
+
+
+def device_counts(tenant_id: str | None = None) -> dict[str, int]:
+    """Total / stale endpoint-device counts, optionally scoped to one tenant.
+
+    Feeds the System page and the ``octo_endpoint_devices`` gauge (S9 / §15).
+    """
+    settings = _require_settings()
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        stmt = select(models.EndpointDevice.last_inventory_at)
+        if tenant_id:
+            stmt = stmt.where(models.EndpointDevice.tenant_id == tenant_id)
+        seen = session.execute(stmt).scalars().all()
+    stale = sum(1 for last in seen if device_status(last, now=now) == "stale")
+    return {"total": len(seen), "stale": stale, "active": len(seen) - stale}
 
 
 def get_device(tenant_id: str, device_id: str) -> dict[str, Any] | None:

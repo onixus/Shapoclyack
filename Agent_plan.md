@@ -3,12 +3,14 @@
 > Integration design and implementation history for the Lariska endpoint
 > inventory. Operator documentation starts at [docs/README.md](docs/README.md).
 
-**Status:** S1-S7 **done** (merged to `main`) — contract/schema v1, DB models +
-migration `0004_endpoint_inventory`, ingestion API with idempotency/limits,
-asset reconciliation, software diff/events, read APIs, and a Web UI
-Endpoint/Software section on the asset card. S8 (optional NATS event), S9
-(retention job + ops docs), and S10 (cross-repository e2e test) are
-**deferred** to a follow-up — see `CHANGELOG.md` `## Unreleased`.
+**Status:** S1-S7 and S9 **done** (merged to `main`) — contract/schema v1, DB
+models + migrations `0004_endpoint_inventory`/`0005_endpoint_fk_cascade`,
+ingestion API with idempotency/limits, asset reconciliation, software
+diff/events, read APIs, a Web UI Endpoint/Software section on the asset card,
+and (S9) the retention sweep, server-side staleness, hard body cap, metrics,
+System-page status, and operations documentation. S8 (optional NATS event) and
+S10 (cross-repository e2e test) remain **deferred** to a follow-up — see
+`CHANGELOG.md` `## Unreleased`.
 
 ## 1. Goal
 
@@ -576,7 +578,16 @@ Acceptance:
 
 Dependencies: S3, S5. May be deferred.
 
-### S9 — Retention, operations, and documentation
+### S9 — Retention, operations, and documentation — **Done**
+
+Delivered in `api/services/endpoint_retention.py` (tenant-scoped batched sweep,
+current snapshot never pruned), `api/middleware.py` (`Content-Length`-based
+body cap → `413`/`411` before parsing), `endpoint_inventory.device_status()` /
+`device_counts()` (`OCTO_ENDPOINT_STALE_HOURS`), the `octo_endpoint_*` metrics
+in `api/services/metrics.py`, `endpoint_inventory` in `GET /api/system` plus
+its System-page panel, migration `0005_endpoint_fk_cascade`, and the retention/
+runbook/sizing sections in [docs/operations.md](docs/operations.md) with the
+variable table in [docs/configuration.md](docs/configuration.md).
 
 Deliver:
 
@@ -645,18 +656,22 @@ documented decision instead of re-deriving one from code.
    bytes) stays under ~15 MB. Decision: add an explicit
    `OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES` (default `15728640`, 15 MiB) hard
    request-size check as part of S9, rejecting oversized bodies with `413`
-   before JSON parsing. Until S9 lands, the per-field limits are the
-   effective cap.
+   before JSON parsing. **Implemented** in
+   [api/middleware.py](api/middleware.py) as a header check ahead of body
+   buffering; a request without `Content-Length` is refused with `411`.
 
-2. **Snapshot/history retention period** — not yet implemented (S9, per
-   `CHANGELOG.md` Unreleased). Decision: keep full snapshot + software-item
+2. **Snapshot/history retention period** — **implemented** in S9
+   ([api/services/endpoint_retention.py](api/services/endpoint_retention.py)).
+   Decision: keep full snapshot + software-item
    rows for 90 days (`OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS`,
    default `90`), then prune `endpoint_software_items` rows for snapshots
    older than that while keeping the snapshot summary row (id, digest,
    counts, timestamps) and all `endpoint_software_changes` events for 1 year
    (`OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS`, default `365`) for audit
-   history. S9 must implement this as a scheduled cleanup job, tenant-scoped
-   and observable per Section 15.
+   history. The sweep runs in-process on
+   `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS`, is tenant-scoped, batched, and
+   idempotent, and never prunes a device's current snapshot (it backs the next
+   submission's diff).
 
 3. **Raw vs. hashed machine identifiers** — already decided and implemented:
    hashed only. `EndpointIdentifier` stores `value_hash`
@@ -702,10 +717,11 @@ documented decision instead of re-deriving one from code.
    server-side equivalent of `asset_stale_days`
    ([api/settings.py:67](api/settings.py),
    [api/services/assets.py:142-163](api/services/assets.py)) for endpoint
-   devices. S9 must add a backend `OCTO_ENDPOINT_STALE_HOURS` setting
-   (default `48`, matching the existing frontend constant) and a device
-   status/staleness field so the threshold is enforced and observable
-   server-side rather than only rendered in the UI.
+   devices. **Implemented** in S9: `OCTO_ENDPOINT_STALE_HOURS` (default
+   `48`) plus a derived `status` field on every device read, a
+   `device_status=` filter, and stale counts in `GET /api/system` and the
+   `octo_endpoint_devices` gauge. The frontend constant was removed in favour
+   of the server value.
 
 8. **Whether endpoint-only assets appear in all existing asset views** —
    already decided and implemented: yes, unfiltered. `_reconcile_asset()`
@@ -729,10 +745,11 @@ documented decision instead of re-deriving one from code.
    `tenants.tenant_id`, and the identifier/snapshot/software/change tables
    chaining off `device_id`/`snapshot_id`) currently have no `ondelete`
    clause, so a future tenant-delete would fail on FK violation rather than
-   cascade. S9 should add `ondelete="CASCADE"` on these FKs in a follow-up
-   migration so endpoint data is automatically covered whenever a general
-   tenant-deletion flow ships, without needing endpoint-specific deletion
-   code.
+   cascade. **Implemented** in migration `0005_endpoint_fk_cascade`:
+   `CASCADE` down the endpoint chain and `SET NULL` on
+   `endpoint_devices.asset_id`, so endpoint data is automatically covered
+   whenever a general tenant-deletion flow ships, without needing
+   endpoint-specific deletion code.
 
 10. **Minimum supported Lariska schema and agent versions** — already
     decided and implemented: `schema_version` is a hard `Literal[1]`

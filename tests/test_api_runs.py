@@ -161,8 +161,11 @@ def test_list_and_get_run(tmp_path: Path):
 
     listed = client.get("/api/runs", headers=headers)
     assert listed.status_code == 200
-    assert listed.json()[0]["run_id"] == "run-a"
-    assert listed.json()[0]["has_diff"] is True
+    body = listed.json()
+    assert body["items"][0]["run_id"] == "run-a"
+    assert body["items"][0]["has_diff"] is True
+    assert body["total"] == len(body["items"])
+    assert body["has_more"] is False
 
     detail = client.get("/api/runs/run-a", headers=headers)
     assert detail.status_code == 200

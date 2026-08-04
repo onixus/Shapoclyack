@@ -16,10 +16,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import pagination
 from api.services import tenants as tenants_service
 from api.settings import Settings
 from scanner.scheduler import next_cron_time, parse_cron
@@ -132,16 +133,55 @@ def create_schedule(
         return _to_dict(row)
 
 
-def list_schedules(tenant_id: str | None = None) -> list[dict[str, Any]]:
+SCHEDULE_SORT_COLUMNS = {
+    "created_at": models.ScanSchedule.created_at,
+    "name": models.ScanSchedule.name,
+    "next_run_at": models.ScanSchedule.next_run_at,
+    "last_run_at": models.ScanSchedule.last_run_at,
+    "enabled": models.ScanSchedule.enabled,
+    "tenant_id": models.ScanSchedule.tenant_id,
+}
+
+
+def list_schedules(
+    tenant_id: str | None = None,
+    *,
+    offset: int = 0,
+    limit: int = pagination.DEFAULT_LIMIT,
+    q: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return ``(page, total_after_filtering)`` — filtered, counted, and sliced
+    in SQL (ROADMAP P3.2)."""
     settings = _require_settings()
+    sort_column = SCHEDULE_SORT_COLUMNS.get(sort or "", models.ScanSchedule.created_at)
+    direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
+
     with get_session(settings.postgres_url) as session:
-        stmt = select(models.ScanSchedule)
+        filters = []
         if tenant_id:
-            stmt = stmt.where(models.ScanSchedule.tenant_id == tenant_id)
-        rows = session.execute(stmt).scalars().all()
-    items = [_to_dict(row) for row in rows]
-    items.sort(key=lambda s: str(s.get("created_at") or ""), reverse=True)
-    return items
+            filters.append(models.ScanSchedule.tenant_id == tenant_id)
+        if q and q.strip():
+            needle = f"%{q.strip().lower()}%"
+            filters.append(
+                or_(
+                    func.lower(models.ScanSchedule.name).like(needle),
+                    func.lower(models.ScanSchedule.schedule_id).like(needle),
+                    func.lower(models.ScanSchedule.tenant_id).like(needle),
+                )
+            )
+        total = session.execute(
+            select(func.count()).select_from(models.ScanSchedule).where(*filters)
+        ).scalar_one()
+        rows = session.execute(
+            select(models.ScanSchedule)
+            .where(*filters)
+            .order_by(direction, models.ScanSchedule.schedule_id)
+            .offset(offset)
+            .limit(limit)
+        ).scalars().all()
+    return [_to_dict(row) for row in rows], total
 
 
 def get_schedule(schedule_id: str) -> dict[str, Any] | None:

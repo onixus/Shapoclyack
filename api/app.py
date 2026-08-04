@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
+from api.middleware import BodySizeLimitMiddleware
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
@@ -25,6 +26,7 @@ from api.services import agents as agents_service
 from api.services import ch_ingest_worker
 from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
+from api.services import endpoint_retention
 from api.services import jobs as jobs_service
 from api.services import metrics as metrics_service
 from api.services import nats_bus
@@ -45,9 +47,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             settings=settings,
         )
     schedule_dispatcher.start_worker(settings)
+    endpoint_retention.start_worker(settings)
     try:
         yield
     finally:
+        endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()
         nats_bus.shutdown_bus()
@@ -67,6 +71,16 @@ def create_app() -> FastAPI:
         description="HTTP API for Octo-man scan runs, jobs, remote agents, and RBAC-protected access.",
         lifespan=lifespan,
     )
+    if settings.endpoint_inventory_enabled:
+        # Runs before routing and body parsing: the cap is decided from the
+        # request headers, never by buffering the payload first (S9). Added
+        # before CORS so CORSMiddleware stays outside it and still annotates
+        # the 413/411 responses this layer generates.
+        app.add_middleware(
+            BodySizeLimitMiddleware,
+            max_bytes=settings.endpoint_inventory_max_body_bytes,
+            paths=("/api/endpoint/inventory",),
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

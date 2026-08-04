@@ -9,12 +9,16 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table";
+import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
 import { downloadArtifact, type RunSummary } from "@/lib/api";
 import { runDetailHref } from "@/lib/run-data";
 
 export default function ReportsPage() {
-  const { data = [], isLoading, error, isFetching } = useRuns();
+  // Same server-paged run list as /runs (P3.3); ordering is by run_id.
+  const pagination = usePagination({ sort: "run_id", order: "desc" });
+  const { data, isLoading, error, isFetching } = useRuns(undefined, pagination.params);
+  const runs = data?.items ?? [];
   const [busyRun, setBusyRun] = useState<string | null>(null);
 
   async function downloadPdf(runId: string) {
@@ -121,13 +125,25 @@ export default function ReportsPage() {
 
       <DataTable
         columns={columns}
-        data={data}
+        data={runs}
         isLoading={isLoading}
         error={error}
-        initialSorting={[{ id: "started_at", desc: true }]}
-        searchPlaceholder="Filter run IDs or profiles…"
+        searchPlaceholder="Filter run IDs…"
         loadingMessage="Retrieving report catalog…"
         emptyMessage="No scan runs recorded yet."
+        meta={`${data?.total ?? 0} runs`}
+        serverPagination={{
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total: data?.total ?? 0,
+          onOffsetChange: pagination.setOffset,
+          search: pagination.search,
+          onSearchChange: pagination.setSearch,
+          sortableColumns: ["run_id"],
+          sort: pagination.sort,
+          order: pagination.order,
+          onSortChange: pagination.setSort,
+        }}
       />
     </div>
   );
