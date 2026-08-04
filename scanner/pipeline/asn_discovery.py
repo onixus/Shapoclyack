@@ -26,11 +26,11 @@ import httpx
 from .config_schema import AsnDiscoveryConfig
 from .utils import save_json, write_lines
 
-LOG = logging.getLogger("octo-man.asn-discovery")
+LOG = logging.getLogger("shapoclyack.asn-discovery")
 
 RIPESTAT_NETWORK_INFO = "https://stat.ripe.net/data/network-info/data.json"
 RIPESTAT_ANNOUNCED_PREFIXES = "https://stat.ripe.net/data/announced-prefixes/data.json"
-USER_AGENT = "shapoclyack-octo-man/asn-discovery"
+USER_AGENT = "shapoclyack/asn-discovery"
 
 
 def _resolve_domain_ips(domain: str, timeout: float) -> list[str]:

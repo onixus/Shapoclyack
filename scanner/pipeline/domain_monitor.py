@@ -43,7 +43,7 @@ from typing import Any
 from .config_schema import DomainMonitorConfig
 from .utils import run_command, save_json, write_lines
 
-LOG = logging.getLogger("octo-man.domain-monitor")
+LOG = logging.getLogger("shapoclyack.domain-monitor")
 
 _KEYBOARD_ADJACENCY = {
     "q": "wa", "w": "qes", "e": "wrd", "r": "etf", "t": "ryg", "y": "tuh", "u": "yij",

@@ -39,7 +39,7 @@ from .config_schema import NucleiConfig
 from .protocol import is_ipv6, parse_endpoint
 from .utils import run_command, save_json, write_lines
 
-LOG = logging.getLogger("octo-man.nuclei")
+LOG = logging.getLogger("shapoclyack.nuclei")
 
 _SEVERITY_CVSS_FLOOR = {
     "critical": 9.5,

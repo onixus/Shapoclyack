@@ -6,7 +6,7 @@ namespace: network-scan
 labels:
   - pairs:
       app.kubernetes.io/managed-by: kustomize
-      app.kubernetes.io/part-of: octo-man
+      app.kubernetes.io/part-of: shapoclyack
     includeSelectors: false
 
 resources:
@@ -35,12 +35,12 @@ configMapGenerator:
       - k8s.yaml=config/k8s.yaml
 
 secretGenerator:
-  - name: octo-man-api
+  - name: shapoclyack-api
     literals:
-      - jwt_secret=octo-man-dev-secret-change-me
-  - name: octo-man-postgres
+      - jwt_secret=shapoclyack-dev-secret-change-me
+  - name: shapoclyack-postgres
     literals:
-      - password=octo-man-dev-postgres-change-me
+      - password=shapoclyack-dev-postgres-change-me
 
 generatorOptions:
   disableNameSuffixHash: true

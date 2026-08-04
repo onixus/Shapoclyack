@@ -1,4 +1,4 @@
-"""Business-oriented PDF summary for Octo-man scan runs.
+"""Business-oriented PDF summary for Shapoclyack scan runs.
 
 Reads artifacts already written by ``build_reports`` / report diff and produces
 ``summary.pdf``.
@@ -45,7 +45,7 @@ class _BusinessReportPDF(FPDF):
         self.set_x(self.l_margin)
         self.set_font("Helvetica", "B", 9)
         self.set_text_color(30, 58, 138)
-        label = "Octo-man"
+        label = "Shapoclyack"
         if self.org_name:
             label = f"{self.org_name}  |  {label}"
         self.cell(0, 6, _safe(label), align="L")
@@ -109,7 +109,7 @@ def write_business_pdf(
     output_dir: Path,
     *,
     run_id: str = "",
-    title: str = "Octo-man Security Scan Report",
+    title: str = "Shapoclyack Security Scan Report",
     org_name: str = "",
     max_vulnerabilities: int = 40,
 ) -> Path:
@@ -147,7 +147,7 @@ def write_business_pdf(
         6,
         _safe(
             "Executive summary of network reconnaissance results. "
-            "Figures below reflect the latest Octo-man pipeline run."
+            "Figures below reflect the latest Shapoclyack pipeline run."
         ),
     )
     pdf.ln(2)
@@ -312,7 +312,7 @@ def write_business_pdf(
         width,
         5,
         _safe(
-            "This report is generated automatically from Octo-man pipeline artifacts. "
+            "This report is generated automatically from Shapoclyack pipeline artifacts. "
             "CVE matches come from NSE scripts (vuln/vulners/vulscan) and may include "
             "version-based associations that require analyst validation. Use only on "
             "assets you are authorized to assess."

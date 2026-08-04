@@ -158,7 +158,7 @@ Useful checks:
 ```bash
 curl --fail http://localhost:8080/api/health
 kubectl -n network-scan get pods,jobs,cronjobs
-kubectl -n network-scan logs deployment/octo-man-api --tail=200
+kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
 
 `GET /metrics` exposes the Prometheus series used by the dashboards and alerts

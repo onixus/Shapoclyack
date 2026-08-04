@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: octo-man-clickhouse-config
+  name: shapoclyack-clickhouse-config
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: clickhouse
 data:
   # Keep defaults; override paths for StatefulSet PVC mounts.
@@ -17,7 +17,7 @@ data:
       <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
       <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
       <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>
-      <display_name>octo-man-clickhouse</display_name>
+      <display_name>shapoclyack-clickhouse</display_name>
       <listen_host>::</listen_host>
       <http_port>8123</http_port>
       <tcp_port>9000</tcp_port>

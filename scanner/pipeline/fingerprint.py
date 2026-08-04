@@ -49,9 +49,9 @@ from .config_schema import FingerprintConfig
 from .protocol import parse_endpoint
 from .utils import save_json, write_lines
 
-LOG = logging.getLogger("octo-man.fingerprint")
+LOG = logging.getLogger("shapoclyack.fingerprint")
 
-USER_AGENT = "shapoclyack-octo-man/fingerprint"
+USER_AGENT = "shapoclyack/fingerprint"
 
 
 def _header_has_prefix(headers: httpx.Headers, prefix: str) -> bool:

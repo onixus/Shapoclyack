@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: octo-man-clickhouse
+  name: shapoclyack-clickhouse
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: clickhouse
 spec:
-  serviceName: octo-man-clickhouse
+  serviceName: shapoclyack-clickhouse
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/name: shapoclyack
       app.kubernetes.io/component: clickhouse
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: octo-man
+        app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: clickhouse
     spec:
       # Official image runs as uid 101 (clickhouse). Setting runAsUser here
@@ -76,11 +76,11 @@ spec:
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse
             - name: config
-              mountPath: /etc/clickhouse-server/config.d/octo-man-config.xml
+              mountPath: /etc/clickhouse-server/config.d/shapoclyack-config.xml
               subPath: config.xml
               readOnly: true
             - name: config
-              mountPath: /etc/clickhouse-server/users.d/octo-man-users.xml
+              mountPath: /etc/clickhouse-server/users.d/shapoclyack-users.xml
               subPath: users.xml
               readOnly: true
             - name: config
@@ -90,12 +90,12 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: octo-man-clickhouse-config
+            name: shapoclyack-clickhouse-config
   volumeClaimTemplates:
     - metadata:
         name: clickhouse-data
         labels:
-          app.kubernetes.io/name: octo-man
+          app.kubernetes.io/name: shapoclyack
           app.kubernetes.io/component: clickhouse
       spec:
         accessModes:

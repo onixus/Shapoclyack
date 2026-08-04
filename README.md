@@ -43,7 +43,7 @@ scripts/dev-up.sh
 ```
 
 This creates a local `kind` cluster, builds the all-in-one image, loads it into
-the cluster, and applies `k8s/octo-man/overlays/kind-dev` (API, PostgreSQL,
+the cluster, and applies `k8s/shapoclyack/overlays/kind-dev` (API, PostgreSQL,
 NATS, ClickHouse, and the scan Job/CronJob).
 
 Open <http://localhost:8080> and sign in as:
@@ -54,7 +54,7 @@ operator / operator-change-me
 
 Change the development JWT secret and demo passwords before exposing the
 service outside a trusted lab (see `examples/api-secrets.example.yaml` under
-[k8s/octo-man/](k8s/octo-man/)).
+[k8s/shapoclyack/](k8s/shapoclyack/)).
 
 Tear the cluster down with:
 
@@ -104,7 +104,7 @@ Detailed guides:
 | `agent/` | Remote worker that claims and completes scan jobs |
 | `web-next/` | Next.js 14 static-export operations console |
 | `recon/` | Go-based discovery worker foundation |
-| `k8s/octo-man/` | Kubernetes base, overlays, and examples |
+| `k8s/shapoclyack/` | Kubernetes base, overlays, and examples |
 | `bench/` | Local discovery benchmark harness |
 | `tests/` | Unit, integration, load, and end-to-end tests |
 

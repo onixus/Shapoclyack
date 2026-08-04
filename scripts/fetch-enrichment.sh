@@ -3,7 +3,7 @@
 #
 # Designed to run as a Kubernetes CronJob / initContainer or a compose
 # one-shot service, writing onto a shared volume that API + scanner replicas
-# mount read-only — see k8s/octo-man/base/enrichment/ and
+# mount read-only — see k8s/shapoclyack/base/enrichment/ and
 # docker-compose.enrichment.yml.
 #
 # Behavior:

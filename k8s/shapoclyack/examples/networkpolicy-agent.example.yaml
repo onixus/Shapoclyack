@@ -3,14 +3,14 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: octo-man-agent-egress
+  name: shapoclyack-agent-egress
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: agent
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/name: shapoclyack
       app.kubernetes.io/component: agent
   policyTypes:
     - Egress
@@ -23,11 +23,11 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Octo-man API (ClusterIP)
+    # Shapoclyack API (ClusterIP)
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: octo-man
+              app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: api
       ports:
         - protocol: TCP
@@ -36,7 +36,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: octo-man
+              app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: nats
       ports:
         - protocol: TCP
@@ -46,14 +46,14 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: octo-man-api-ingress
+  name: shapoclyack-api-ingress
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: api
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/name: shapoclyack
       app.kubernetes.io/component: api
   policyTypes:
     - Ingress
@@ -61,7 +61,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: octo-man
+              app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: agent
         - namespaceSelector: {}
       ports:

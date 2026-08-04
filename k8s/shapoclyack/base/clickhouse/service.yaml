@@ -2,15 +2,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: octo-man-clickhouse
+  name: shapoclyack-clickhouse
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: clickhouse
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
   selector:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: clickhouse
   ports:
     - name: http
@@ -21,19 +21,19 @@ spec:
       targetPort: native
 ---
 # Stable ClusterIP for API / consumers:
-#   HTTP  http://octo-man-clickhouse-client:8123
-#   Native octo-man-clickhouse-client:9000
+#   HTTP  http://shapoclyack-clickhouse-client:8123
+#   Native shapoclyack-clickhouse-client:9000
 apiVersion: v1
 kind: Service
 metadata:
-  name: octo-man-clickhouse-client
+  name: shapoclyack-clickhouse-client
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: clickhouse
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: clickhouse
   ports:
     - name: http

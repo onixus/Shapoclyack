@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the Octo-man scheduler (Phase 1).
+# Run the Shapoclyack scheduler (Phase 1).
 # Usage:
 #   ./scripts/schedule.sh                  # honor scheduler.* from default.yaml
 #   ./scripts/schedule.sh --once           # single immediate scan

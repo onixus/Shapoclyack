@@ -183,7 +183,7 @@ def test_default_yaml_adaptive_discovery():
 def test_k8s_yaml_discovery_completeness_knobs():
     import yaml
 
-    text = Path("k8s/octo-man/base/config/k8s.yaml").read_text(encoding="utf-8")
+    text = Path("k8s/shapoclyack/base/config/k8s.yaml").read_text(encoding="utf-8")
     cfg = AppConfig.model_validate(yaml.safe_load(text))
     assert cfg.discovery.verify.enabled is True
     assert cfg.discovery.verify.rate == 1250
@@ -228,7 +228,7 @@ def test_default_yaml_phase1_sections():
     assert cfg.discovery.ct.enabled is False
     assert cfg.discovery.ct.providers == ["crtsh"]
     assert cfg.defectdojo.enabled is False
-    assert cfg.defectdojo.product_name == "Octo-man"
+    assert cfg.defectdojo.product_name == "Shapoclyack"
     assert cfg.defectdojo.min_severity == "high"
     assert cfg.scheduler.enabled is False
     assert cfg.scheduler.cron == "0 2 * * *"

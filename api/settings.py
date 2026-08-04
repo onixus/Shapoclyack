@@ -27,7 +27,7 @@ DEFAULT_USERS = [
 
 @dataclass
 class Settings:
-    jwt_secret: str = "octo-man-dev-secret-change-me"
+    jwt_secret: str = "shapoclyack-dev-secret-change-me"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
     output_dir: Path = Path("scanner/output")
@@ -44,9 +44,9 @@ class Settings:
     agent_stale_seconds: int = 120
     # Short-lived agent JWT lifetime after provisioning-key exchange (Phase 2).
     agent_jwt_expire_minutes: int = 60
-    # NATS JetStream URL (e.g. nats://octo-man-nats-client:4222). Empty disables broker.
+    # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
-    # ClickHouse HTTP URL (e.g. http://octo-man-clickhouse-client:8123). Empty disables CH.
+    # ClickHouse HTTP URL (e.g. http://shapoclyack-clickhouse-client:8123). Empty disables CH.
     clickhouse_url: str = ""
     # Start NATS→ClickHouse ingest worker when both NATS and CH URLs are set.
     ch_ingest_enabled: bool = True
@@ -97,6 +97,22 @@ class Settings:
     endpoint_retention_batch_size: int = 5000
 
 
+# Legacy sqlite filename from when the product was called "octo-man". Kept as a
+# fallback so an existing self-host keeps its data after the rename instead of
+# silently starting against a fresh, empty database.
+_LEGACY_SQLITE_NAME = "octo_man.db"
+_SQLITE_NAME = "shapoclyack.db"
+
+
+def _default_sqlite_url() -> str:
+    state_dir = Path(os.environ.get("OCTO_STATE_DIR", "scanner/state"))
+    current = state_dir / _SQLITE_NAME
+    legacy = state_dir / _LEGACY_SQLITE_NAME
+    if not current.exists() and legacy.exists():
+        return f"sqlite:///{legacy}"
+    return f"sqlite:///{current}"
+
+
 def load_settings() -> Settings:
     users_raw = os.environ.get("OCTO_API_USERS", "").strip()
     users = DEFAULT_USERS
@@ -115,7 +131,7 @@ def load_settings() -> Settings:
 
     return Settings(
         jwt_secret=os.environ.get("API_SECRET_KEY", "").strip()
-        or os.environ.get("OCTO_JWT_SECRET", "octo-man-dev-secret-change-me"),
+        or os.environ.get("OCTO_JWT_SECRET", "shapoclyack-dev-secret-change-me"),
         jwt_expire_minutes=int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")),
         output_dir=Path(os.environ.get("OCTO_OUTPUT_DIR", "scanner/output")),
         state_dir=Path(os.environ.get("OCTO_STATE_DIR", "scanner/state")),
@@ -133,7 +149,7 @@ def load_settings() -> Settings:
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
-        postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip() or "sqlite:///scanner/state/octo_man.db",
+        postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip() or _default_sqlite_url(),
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},

@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: octo-man-nats-config
+  name: shapoclyack-nats-config
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: nats
 data:
   nats.conf: |
@@ -16,7 +16,7 @@ data:
       max_file: 4G
     }
 
-    # $SERVER_NAME (pod name, e.g. octo-man-nats-0) keeps cluster peers
+    # $SERVER_NAME (pod name, e.g. shapoclyack-nats-0) keeps cluster peers
     # distinct; set via downward API in statefulset.yaml.
     server_name: $SERVER_NAME
 

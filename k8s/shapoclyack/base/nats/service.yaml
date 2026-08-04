@@ -1,16 +1,16 @@
-# Headless Service for StatefulSet DNS (octo-man-nats-0.octo-man-nats).
+# Headless Service for StatefulSet DNS (shapoclyack-nats-0.shapoclyack-nats).
 apiVersion: v1
 kind: Service
 metadata:
-  name: octo-man-nats
+  name: shapoclyack-nats
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: nats
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
   selector:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: nats
   ports:
     - name: client
@@ -23,18 +23,18 @@ spec:
       port: 6222
       targetPort: cluster
 ---
-# Stable ClusterIP for API / agents: nats://octo-man-nats-client:4222
+# Stable ClusterIP for API / agents: nats://shapoclyack-nats-client:4222
 apiVersion: v1
 kind: Service
 metadata:
-  name: octo-man-nats-client
+  name: shapoclyack-nats-client
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: nats
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: nats
   ports:
     - name: client

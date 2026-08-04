@@ -4,15 +4,15 @@
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  name: octo-man-agent
+  name: shapoclyack-agent
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: agent
 spec:
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: octo-man-agent
+    name: shapoclyack-agent
   updatePolicy:
     # Auto: recreate pods when recommendations change (avoids OOM on heavy scans).
     updateMode: Auto

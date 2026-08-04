@@ -24,7 +24,7 @@ from scanner.pipeline.utils import load_yaml, setup_logging
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Schedule Octo-man scan runs")
+    parser = argparse.ArgumentParser(description="Schedule Shapoclyack scan runs")
     parser.add_argument("--config", default="scanner/config/default.yaml", help="Path to YAML config")
     parser.add_argument(
         "--once",

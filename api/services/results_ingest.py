@@ -17,7 +17,7 @@ from typing import Any
 
 from api.services import nats_bus
 
-LOG = logging.getLogger("octo-man.ingest")
+LOG = logging.getLogger("shapoclyack.ingest")
 
 
 class IngestError(ValueError):

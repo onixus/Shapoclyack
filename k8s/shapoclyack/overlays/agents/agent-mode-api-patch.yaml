@@ -2,7 +2,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: octo-man-api
+  name: shapoclyack-api
 spec:
   template:
     spec:
@@ -12,4 +12,4 @@ spec:
             - name: OCTO_JOB_EXECUTION_MODE
               value: agent
             - name: OCTO_NATS_URL
-              value: nats://octo-man-nats-client:4222
+              value: nats://shapoclyack-nats-client:4222

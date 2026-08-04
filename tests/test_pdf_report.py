@@ -92,7 +92,7 @@ def test_write_business_pdf_creates_valid_pdf(tmp_path: Path):
     path = write_business_pdf(
         out_dir,
         run_id="pdf-run-1",
-        title="Octo-man Security Scan Report",
+        title="Shapoclyack Security Scan Report",
         org_name="Acme Security",
         max_vulnerabilities=10,
     )

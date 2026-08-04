@@ -3,5 +3,5 @@ kind: Namespace
 metadata:
   name: network-scan
   labels:
-    app.kubernetes.io/name: octo-man
-    app.kubernetes.io/part-of: octo-man
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack

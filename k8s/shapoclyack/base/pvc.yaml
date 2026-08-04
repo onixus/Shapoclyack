@@ -3,7 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: scanner-data
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: storage
 spec:
   accessModes:

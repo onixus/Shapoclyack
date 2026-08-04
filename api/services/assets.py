@@ -24,7 +24,7 @@ from scanner.pipeline.asset_identity import (
     ip_identity_key,
 )
 
-LOG = logging.getLogger("octo-man.assets")
+LOG = logging.getLogger("shapoclyack.assets")
 
 
 @dataclass(frozen=True)

@@ -3,11 +3,10 @@
 For installation and operator guidance, see [docs/README.md](docs/README.md).
 This file tracks delivery status and is not a deployment manual.
 
-**Product:** Octo-man  
 **Repository:** [`onixus/shapoclyack`](https://github.com/onixus/Shapoclyack)  
 **Domain target:** MSSP and Enterprise Vulnerability Management (up to **50,000 assets**)
 
-Visual overview: [octo_man.html](octo_man.html) · Release history: [CHANGELOG.md](CHANGELOG.md)
+Visual overview: [shapoclyack.html](shapoclyack.html) · Release history: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -21,7 +20,7 @@ Shipped through **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/relea
 | CVSS v4 + GeoIP enrichment | Done |
 | FastAPI API + React dashboard + JWT RBAC | Done |
 | Remote agents, DefectDojo, PDF reports | Done |
-| Kubernetes (`k8s/octo-man/`) + all-in-one compose | Done |
+| Kubernetes (`k8s/shapoclyack/`) + all-in-one compose | Done |
 | GHCR images `shapoclyack-{aio,scanner,api}` | Done |
 | Nmap made optional / non-default in published images ([#97](https://github.com/onixus/Shapoclyack/issues/97) Phase 1) — Pulse is the default service-probe backend; default `-aio`/`-scanner` images ship Nmap-free; a legacy `-nmap` tag remains opt-in for NPSL-aware users who want classic NSE | Done |
 
@@ -39,7 +38,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | `agent/` | Remote scanning workers |
 | `scanner/` | Core pipeline (Nmap, CVSS4, GeoIP) |
 | `web-next/` | Next.js 14 App Router dashboard (**Web UI v2**, served from aio) — the only web UI; legacy Vite `web/` was removed after the cutover |
-| `k8s/octo-man/` | Kubernetes deployment manifests |
+| `k8s/shapoclyack/` | Kubernetes deployment manifests |
 
 ---
 
@@ -66,7 +65,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 1.1 | Deploy NATS JetStream | `k8s/octo-man/base/` | StatefulSet + headless/client Services; compose profile `nats` | **Done** |
+| 1.1 | Deploy NATS JetStream | `k8s/shapoclyack/base/` | StatefulSet + headless/client Services; compose profile `nats` | **Done** |
 | 1.2 | Refactor API ingest | `api/services/results_ingest.py`, `nats_bus.py` | Validate archive → publish `ingest.raw_results` (JetStream `Nats-Msg-Id` dedupe); still extract to FS for UI | **Done** |
 | 1.3 | Update agent worker | `agent/worker.py` | When `OCTO_NATS_URL` set: JetStream pull on `jobs.scan` (durable `octo-agents`); else HTTP claim poll | **Done** |
 
@@ -81,7 +80,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | 2.1 | Provisioning | `api/services/tenants.py`, `api/routes/auth.py` | Create tenants + provisioning keys (hashed); plaintext returned once | **Done** |
 | 2.2 | JWT exchange | `POST /api/auth/agent/token`, `api/services/auth.py`, `agent/worker.py` | Exchange key → short-lived agent JWT (`typ=agent`, `tenant_id`) | **Done** |
 | 2.3 | Gateway JWT validation | `require_agent`, jobs/ingest NATS publish | Enforce agent JWT + tenant match before claim/complete/NATS; `tenant_id` header on messages | **Done** |
-| 2.4 | Kubernetes hardening | `k8s/octo-man/examples/networkpolicy-*.yaml`, `externalsecret.example.yaml` | Agent egress NetworkPolicy; ExternalSecrets example for keys via env | **Done** |
+| 2.4 | Kubernetes hardening | `k8s/shapoclyack/examples/networkpolicy-*.yaml`, `externalsecret.example.yaml` | Agent egress NetworkPolicy; ExternalSecrets example for keys via env | **Done** |
 
 ### Phase 3 — ClickHouse Analytics Engine
 
@@ -93,7 +92,7 @@ FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 3.1 | ClickHouse deployment | `k8s/octo-man/base/clickhouse/` | StatefulSet + 50Gi PVC + init SQL | **Done** |
+| 3.1 | ClickHouse deployment | `k8s/shapoclyack/base/clickhouse/` | StatefulSet + 50Gi PVC + init SQL | **Done** |
 | 3.2 | NATS → ClickHouse consumer | `api/services/ch_ingest_worker.py` | Durable pull on `ingest.>`, bulk insert vulns + ports | **Done** |
 | 3.3 | Schema setup | init.sql | `shapoclyack_vulnerabilities` + `shapoclyack_open_ports` (`ReplacingMergeTree`) | **Done** |
 | 3.4 | Diff-report logic | `api/services/ch_diff.py` | CH query helpers for CVE/port deltas (scanner FS diff unchanged) | **Done** |
@@ -107,9 +106,9 @@ FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 4.1 | Agent distribution | `k8s/octo-man/base/agents/agent-deployment.yaml` | `topologySpreadConstraints` on zone + hostname | **Done** |
-| 4.2 | Vertical Pod Autoscaling | `k8s/octo-man/base/agents/agent-vpa.yaml` | VPA Auto (CPU/RAM min-max) for agent pods | **Done** |
-| 4.3 | Opt-in overlay | `k8s/octo-man/overlays/agents` | replicas=3 + API agent-mode; not in default base | **Done** |
+| 4.1 | Agent distribution | `k8s/shapoclyack/base/agents/agent-deployment.yaml` | `topologySpreadConstraints` on zone + hostname | **Done** |
+| 4.2 | Vertical Pod Autoscaling | `k8s/shapoclyack/base/agents/agent-vpa.yaml` | VPA Auto (CPU/RAM min-max) for agent pods | **Done** |
+| 4.3 | Opt-in overlay | `k8s/shapoclyack/overlays/agents` | replicas=3 + API agent-mode; not in default base | **Done** |
 
 ### Phase 5 — Advanced Discovery & Notifications
 
@@ -158,7 +157,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 ## EASM evolution (Phases 7–11)
 
-**Goal:** evolve Octo-man from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
+**Goal:** evolve Shapoclyack from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
 
 **Status:** Phase 7 **done** (MVP); Phase 8 **done** (8.1–8.5); Phase 9 partially done (9.1, 9.2, 9.4) — remainder **Planned**.
 
@@ -253,7 +252,7 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 
 | Priority | Est. effort | Theme | Scope |
 |----------|-------------|-------|-------|
-| **P0** | 1–2 sprints | Tenant-aware IAM | User memberships; tenant claims / server-derived tenant context; scope runs/jobs/agents/assets/schedules/artifacts by tenant; tenant switcher; negative cross-tenant tests |
+| **P0** | 1–2 sprints | Tenant-aware IAM | **Partly done** — user memberships (`user_tenants`, migration `0007`), server-derived tenant context (`require_tenant`), scoping for jobs/agents/assets/schedules/endpoint inventory, and negative cross-tenant tests are merged. **Remaining:** tag runs with a tenant and scope run artifacts, plus the UI tenant switcher |
 | **P1** | 2–4 sprints | Durable control plane | Move jobs and agents into PostgreSQL; formal state machine; leases; idempotency keys; extract the scheduler into its own worker or add leader election |
 | **P2** | 2–3 sprints | Asset event workflows | Finish [Phase 10.2–10.3](#phase-10--change-detection--alerting-at-asset-level): `events.asset.*`, routing policies, webhooks first, retries, DLQ, audit trail; then Jira/ServiceNow |
 | **P3** | parallel track | Scale & observability | Prometheus/OpenTelemetry, SLOs, ~~server-side pagination~~ (done, 3.2/3.3), 1k/10k/50k-asset test fixtures, ClickHouse/API/UI profiling, coverage gate + frontend tests in CI |
@@ -272,7 +271,7 @@ P0–P1 are prerequisites for safely running the platform at MSSP scale; P2 comp
 | 3.2 | Server-side pagination — API | `api/routes/_pagination.py` (new), `api/services/pagination.py` (new), `api/routes/{assets,runs,jobs,agents,schedules}.py` + matching services | Uniform `offset`/`limit`/`q`/`sort`/`order` and a `Page` envelope (`items`/`total`/`offset`/`limit`/`has_more`) on all five lists — **breaking**: they used to return bare arrays. `total` is counted after filtering; unknown `sort` falls back to the resource default. Assets/schedules filter+count+slice in SQL (the asset identifier search became an EXISTS subquery instead of a post-filter over an already-truncated page); jobs/agents filter+sort+slice in memory; runs slice directory names and read each run's JSON for the requested page only. Run sub-resources (`hosts`/`ports`/`vulnerabilities`) stay `limit`-only by design | **Done** |
 | 3.3 | Server-side pagination — UI | `web-next/src/components/data-table.tsx`, `hooks/use-pagination.ts` (new), `lib/api.ts`, `(dashboard)/{assets,runs,jobs,agents,schedules,reports}` | `DataTable` gained a `serverPagination` mode (manual paging/sorting/filtering, debounced server-side search, per-resource sortable-column whitelist); `usePagination` holds the state and rewinds to page 1 on any filter/sort change. The dashboard still aggregates: it requests one max-size page and shows the exact `total` with a note when the posture chart samples the cap | **Done** |
 | 3.4 | Prometheus instrumentation | `api/app.py`, new `api/services/metrics.py`, `api/services/jobs.py`, `api/services/ch_ingest_worker.py` | `prometheus_client` registry + unauthenticated `GET /metrics`; HTTP request count/duration by method+route (middleware); job duration histogram + queued/running gauges (`jobs.py` lifecycle hooks); ClickHouse ingest batch duration + message outcome counter + JetStream consumer-lag gauge (`ch_ingest_worker.py`). `scanner/main.py`/`agent/worker.py` deferred — neither runs a persistent HTTP server today, so there's no natural scrape target for process-level metrics from them; their contribution (scan duration) is already captured via the job-duration histogram above | **Done** |
-| 3.5 | K8s scrape wiring | `k8s/octo-man/base/` (ServiceMonitor or scrape annotations), `k8s/README.md` | Wire `/metrics` to Prometheus; no Prometheus operator in-cluster today, so document bring-your-own or add example manifest | **Planned** |
+| 3.5 | K8s scrape wiring | `k8s/shapoclyack/base/` (ServiceMonitor or scrape annotations), `k8s/README.md` | Wire `/metrics` to Prometheus; no Prometheus operator in-cluster today, so document bring-your-own or add example manifest | **Planned** |
 | 3.6 | SLOs | `docs/slo.md` (new) | Define SLOs for ingest latency, job completion time, API p95, based on 3.4 metrics | **Planned** |
 | 3.7 | Scale test fixtures (1k/10k/50k) | `tests/fixtures/scale_seed.py` (new) | Bulk-insert generator for Postgres `assets`/`asset_identifiers` + ClickHouse `shapoclyack_vulnerabilities`/`shapoclyack_open_ports` at N scale | **Planned** |
 | 3.8 | ClickHouse/API/UI profiling at scale | `api/services/ch_diff.py` (`fetch_tenant_cves`/`fetch_tenant_ports`, currently unbounded), `clickhouse_client.py` | Run 3.7 fixtures through diff/assets-list queries, measure; evaluate `PARTITION BY` for both CH tables (currently unpartitioned `ReplacingMergeTree`, risk of read/merge amplification) | **Planned** |

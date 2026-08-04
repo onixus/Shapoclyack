@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: octo-man-api
+  name: shapoclyack-api
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: api
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/name: shapoclyack
       app.kubernetes.io/component: api
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: octo-man
+        app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: api
@@ -35,10 +35,10 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: octo-man-postgres
+                  name: shapoclyack-postgres
                   key: password
             - name: OCTO_POSTGRES_URL
-              value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@octo-man-postgres-client:5432/octo_man
+              value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@shapoclyack-postgres-client:5432/shapoclyack
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -65,11 +65,11 @@ spec:
             - name: OCTO_JOB_EXECUTION_MODE
               value: local
             # Empty disables NATS (HTTP agent claim/upload only). Enable with:
-            # nats://octo-man-nats-client:4222
+            # nats://shapoclyack-nats-client:4222
             - name: OCTO_NATS_URL
               value: ""
             # Empty disables ClickHouse client / ingest worker. Enable with:
-            # http://octo-man-clickhouse-client:8123
+            # http://shapoclyack-clickhouse-client:8123
             - name: OCTO_CLICKHOUSE_URL
               value: ""
             - name: OCTO_CH_INGEST_ENABLED
@@ -79,18 +79,18 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: octo-man-postgres
+                  name: shapoclyack-postgres
                   key: password
             - name: OCTO_POSTGRES_URL
-              value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@octo-man-postgres-client:5432/octo_man
+              value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@shapoclyack-postgres-client:5432/shapoclyack
             - name: OCTO_JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: octo-man-api
+                  name: shapoclyack-api
                   key: jwt_secret
           envFrom:
             - secretRef:
-                name: octo-man-api-users
+                name: shapoclyack-api-users
                 optional: true
           readinessProbe:
             httpGet:

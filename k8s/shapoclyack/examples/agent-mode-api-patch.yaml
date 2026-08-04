@@ -4,11 +4,11 @@
 # Required:
 #   OCTO_JOB_EXECUTION_MODE=agent
 #   OCTO_ALLOW_SCAN_START=true
-#   OCTO_AGENT_TOKEN=<from secret octo-man-agent>
+#   OCTO_AGENT_TOKEN=<from secret shapoclyack-agent>
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: octo-man-api
+  name: shapoclyack-api
 spec:
   template:
     spec:
@@ -22,5 +22,5 @@ spec:
             - name: OCTO_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: octo-man-agent
+                  name: shapoclyack-agent
                   key: OCTO_AGENT_TOKEN

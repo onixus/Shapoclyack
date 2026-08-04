@@ -10,7 +10,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: octo-man-nats-config
+  name: shapoclyack-nats-config
 data:
   nats.conf: |
     port: 4222
@@ -22,16 +22,16 @@ data:
       max_file: 4G
     }
 
-    # $SERVER_NAME (pod name, e.g. octo-man-nats-0) keeps cluster peers
+    # $SERVER_NAME (pod name, e.g. shapoclyack-nats-0) keeps cluster peers
     # distinct; set via downward API in statefulset.yaml.
     server_name: $SERVER_NAME
 
     cluster {
-      name: octo-man-nats
+      name: shapoclyack-nats
       port: 6222
       routes: [
-        nats://octo-man-nats-0.octo-man-nats:6222
-        nats://octo-man-nats-1.octo-man-nats:6222
-        nats://octo-man-nats-2.octo-man-nats:6222
+        nats://shapoclyack-nats-0.shapoclyack-nats:6222
+        nats://shapoclyack-nats-1.shapoclyack-nats:6222
+        nats://shapoclyack-nats-2.shapoclyack-nats:6222
       ]
     }

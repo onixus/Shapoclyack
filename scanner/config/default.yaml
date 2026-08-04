@@ -236,7 +236,7 @@ reporting:
   json_export: true
   # Business PDF for leadership / ticket attachments (written after reports + diff).
   pdf_summary: true
-  pdf_title: "Octo-man Security Scan Report"
+  pdf_title: "Shapoclyack Security Scan Report"
   pdf_org_name: ""
   pdf_max_vulnerabilities: 40
   # Compare hosts/ports/CVEs against the previous run (latest_run.json or previous_run_dir).
@@ -389,10 +389,10 @@ defectdojo:
   enabled: false
   url: ""
   api_key: ""
-  product_name: "Octo-man"
+  product_name: "Shapoclyack"
   product_type_name: "Network"
-  engagement_name: "Octo-man"
-  test_title: "Octo-man NSE"
+  engagement_name: "Shapoclyack"
+  test_title: "Shapoclyack NSE"
   min_severity: high
   include_without_cve: true
   close_old_findings: true
@@ -403,7 +403,7 @@ defectdojo:
   timeout_seconds: 60
 
 # Optional in-container scheduler: python -m scanner.scheduler
-# In Kubernetes prefer CronJob (k8s/octo-man); this helper is for local labs.
+# In Kubernetes prefer CronJob (k8s/shapoclyack); this helper is for local labs.
 scheduler:
   enabled: false
   cron: "0 2 * * *"          # daily 02:00 UTC

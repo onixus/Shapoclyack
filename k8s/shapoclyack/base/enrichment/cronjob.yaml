@@ -3,7 +3,7 @@ kind: CronJob
 metadata:
   name: enrichment-refresh
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: enrichment-cronjob
 spec:
   # Daily 03:00 UTC — ahead of the weekly Sunday 02:00 scan (cronjob.yaml) so a
@@ -20,7 +20,7 @@ spec:
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: octo-man
+            app.kubernetes.io/name: shapoclyack
             app.kubernetes.io/component: enrichment-cronjob
         spec:
           restartPolicy: Never
@@ -40,7 +40,7 @@ spec:
                 - name: MAXMIND_LICENSE_KEY
                   valueFrom:
                     secretKeyRef:
-                      name: octo-man-geoip
+                      name: shapoclyack-geoip
                       key: maxmind_license_key
                       optional: true
               resources:

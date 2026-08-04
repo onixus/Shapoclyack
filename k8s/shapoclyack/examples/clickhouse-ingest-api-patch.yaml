@@ -2,7 +2,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: octo-man-api
+  name: shapoclyack-api
 spec:
   template:
     spec:
@@ -10,8 +10,8 @@ spec:
         - name: api
           env:
             - name: OCTO_NATS_URL
-              value: nats://octo-man-nats-client:4222
+              value: nats://shapoclyack-nats-client:4222
             - name: OCTO_CLICKHOUSE_URL
-              value: http://octo-man-clickhouse-client:8123
+              value: http://shapoclyack-clickhouse-client:8123
             - name: OCTO_CH_INGEST_ENABLED
               value: "true"

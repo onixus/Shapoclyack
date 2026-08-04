@@ -22,8 +22,8 @@ cd Shapoclyack
 ```
 
 `scripts/dev-up.sh` (below) uses the dev-only JWT secret baked into
-`k8s/octo-man/base/kustomization.yaml`. For anything beyond a local kind
-cluster, override it with `k8s/octo-man/examples/api-secrets.example.yaml`
+`k8s/shapoclyack/base/kustomization.yaml`. For anything beyond a local kind
+cluster, override it with `k8s/shapoclyack/examples/api-secrets.example.yaml`
 (see the [Kubernetes guide](../k8s/README.md)) rather than exporting an env var.
 
 The default users are for local evaluation only:
@@ -91,7 +91,7 @@ scripts/dev-up.sh
 ```
 
 This creates a local `kind` cluster, builds and loads the all-in-one image,
-and applies `k8s/octo-man/overlays/kind-dev` — PostgreSQL, NATS, and
+and applies `k8s/shapoclyack/overlays/kind-dev` — PostgreSQL, NATS, and
 ClickHouse are included (NATS/ClickHouse client wiring is opt-in via env vars,
 off by default). Tear down with `scripts/dev-down.sh`.
 

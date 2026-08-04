@@ -84,7 +84,7 @@ def _extract_cvss4(metrics: dict) -> dict | None:
 def fetch_cve(cve_id: str, api_key: str | None, *, retries: int = 5) -> dict | None:
     params = urllib.parse.urlencode({"cveId": cve_id})
     req = urllib.request.Request(f"{NVD_URL}?{params}")
-    req.add_header("User-Agent", "octo-man-cvss4-fetch/1.0")
+    req.add_header("User-Agent", "shapoclyack-cvss4-fetch/1.0")
     if api_key:
         req.add_header("apiKey", api_key)
     # NVD's anonymous rate limit is 5 req/30s (50/30s with an API key) -- a

@@ -438,7 +438,7 @@ class ReportingConfig(BaseModel):
     json_export: bool = True
     # Business PDF (summary.pdf) for leadership / ticket attachments.
     pdf_summary: bool = True
-    pdf_title: str = "Octo-man Security Scan Report"
+    pdf_title: str = "Shapoclyack Security Scan Report"
     pdf_org_name: str = ""
     pdf_max_vulnerabilities: int = Field(default=40, ge=1, le=500)
     diff: DiffReportingConfig = Field(default_factory=DiffReportingConfig)
@@ -643,11 +643,11 @@ class DefectDojoConfig(BaseModel):
     # Prefer env OCTO_DEFECTDOJO_URL / OCTO_DEFECTDOJO_API_KEY over YAML secrets.
     url: str = ""
     api_key: str = ""
-    product_name: str = "Octo-man"
+    product_name: str = "Shapoclyack"
     product_type_name: str = "Network"
     # Stable engagement name so reimport closes mitigated findings across runs.
-    engagement_name: str = "Octo-man"
-    test_title: str = "Octo-man NSE"
+    engagement_name: str = "Shapoclyack"
+    test_title: str = "Shapoclyack NSE"
     min_severity: Literal["critical", "high", "medium", "low", "unknown"] = "high"
     include_without_cve: bool = True
     close_old_findings: bool = True

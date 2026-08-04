@@ -1,23 +1,23 @@
 # Remote scanner agent Deployment (Phase 4).
 # Not included in default base — enable via overlays/agents (see base/agents/).
-# Requires Secret octo-man-agent and usually OCTO_JOB_EXECUTION_MODE=agent on the API.
+# Requires Secret shapoclyack-agent and usually OCTO_JOB_EXECUTION_MODE=agent on the API.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: octo-man-agent
+  name: shapoclyack-agent
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: agent
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/name: shapoclyack
       app.kubernetes.io/component: agent
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: octo-man
+        app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: agent
     spec:
       # Spread agents across zones and nodes (Phase 4.1).
@@ -27,14 +27,14 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: octo-man
+              app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: agent
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: octo-man
+              app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: agent
       containers:
         - name: agent
@@ -45,18 +45,18 @@ spec:
             - "--config"
             - "scanner/config/k8s.yaml"
             - "--api-url"
-            - "http://octo-man-api:8080"
+            - "http://shapoclyack-api:8080"
           env:
             - name: OCTO_AGENT_PROVISIONING_KEY
               valueFrom:
                 secretKeyRef:
-                  name: octo-man-agent
+                  name: shapoclyack-agent
                   key: OCTO_AGENT_PROVISIONING_KEY
                   optional: true
             - name: OCTO_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: octo-man-agent
+                  name: shapoclyack-agent
                   key: OCTO_AGENT_TOKEN
                   optional: true
             - name: OCTO_OUTPUT_DIR
@@ -66,7 +66,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: OCTO_NATS_URL
-              value: nats://octo-man-nats-client:4222
+              value: nats://shapoclyack-nats-client:4222
           securityContext:
             # This worker runs the full scanner pipeline (nmap -O / naabu need
             # NET_RAW+NET_ADMIN file capabilities, set at build time via

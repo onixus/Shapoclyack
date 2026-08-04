@@ -1,5 +1,5 @@
 # Optional enrichment-data component (not part of default base).
-# Enable via: kubectl apply -k k8s/octo-man/overlays/enrichment
+# Enable via: kubectl apply -k k8s/shapoclyack/overlays/enrichment
 #
 # Sets its own namespace transformer (unlike base/agents/) since this
 # component's PVC/CronJob must land in the same namespace as the API pods

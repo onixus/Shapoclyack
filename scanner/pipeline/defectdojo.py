@@ -1,4 +1,4 @@
-"""Export Octo-man vulnerabilities to DefectDojo via Generic Findings Import.
+"""Export Shapoclyack vulnerabilities to DefectDojo via Generic Findings Import.
 
 Uses the DefectDojo API v2 ``/reimport-scan/`` (falls back-compatible with first
 upload) with ``auto_create_context`` so Product / Engagement can be created on
@@ -75,14 +75,14 @@ def map_vulnerabilities_to_generic_findings(
 
         host = str(item.get("host") or "")
         port = str(item.get("port") or "")
-        title = str(cve) if cve else (script_id or "Octo-man finding")
+        title = str(cve) if cve else (script_id or "Shapoclyack finding")
         if host and port:
             title = f"{title} @ {host}:{port}"
         elif host:
             title = f"{title} @ {host}"
 
         description_parts = [
-            f"Octo-man run `{run_id}`",
+            f"Shapoclyack run `{run_id}`",
             f"Host: {host or 'n/a'}",
             f"Port: {port or 'n/a'}",
             f"NSE script: {script_id or 'n/a'}",
@@ -121,8 +121,8 @@ def map_vulnerabilities_to_generic_findings(
         findings.append(finding)
 
     return {
-        "name": f"Octo-man {run_id}",
-        "type": "Octo-man",
+        "name": f"Shapoclyack {run_id}",
+        "type": "Shapoclyack",
         "findings": findings,
     }
 
@@ -131,7 +131,7 @@ def _encode_multipart(
     fields: dict[str, str],
     files: dict[str, tuple[str, bytes, str]],
 ) -> tuple[bytes, str]:
-    boundary = f"----OctoManBoundary{uuid.uuid4().hex}"
+    boundary = f"----ShapoclyackBoundary{uuid.uuid4().hex}"
     body = bytearray()
     for name, value in fields.items():
         body.extend(f"--{boundary}\r\n".encode("utf-8"))
@@ -255,8 +255,8 @@ def export_to_defectdojo(
         logging.warning("DefectDojo export enabled but credentials are incomplete")
         return result
 
-    engagement_name = config.engagement_name or "Octo-man"
-    product_name = config.product_name or "Octo-man"
+    engagement_name = config.engagement_name or "Shapoclyack"
+    product_name = config.product_name or "Shapoclyack"
     result["attempted"] = True
     result["url"] = base_url
     result["engagement_name"] = engagement_name
@@ -281,7 +281,7 @@ def export_to_defectdojo(
             api_key=api_key,
             fields=fields,
             file_bytes=payload_path.read_bytes(),
-            filename=f"octo-man-{run_id}.json",
+            filename=f"shapoclyack-{run_id}.json",
             verify_ssl=config.verify_ssl,
             timeout=config.timeout_seconds,
         )

@@ -11,7 +11,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: octo-man-api
+  name: shapoclyack-api
 spec:
   template:
     spec:
@@ -26,7 +26,7 @@ spec:
             - name: MAXMIND_LICENSE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: octo-man-geoip
+                  name: shapoclyack-geoip
                   key: maxmind_license_key
                   optional: true
           securityContext:

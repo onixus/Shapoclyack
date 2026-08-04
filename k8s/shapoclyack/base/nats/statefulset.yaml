@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: octo-man-nats
+  name: shapoclyack-nats
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: nats
 spec:
-  serviceName: octo-man-nats
+  serviceName: shapoclyack-nats
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: octo-man
+      app.kubernetes.io/name: shapoclyack
       app.kubernetes.io/component: nats
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: octo-man
+        app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: nats
     spec:
       securityContext:
@@ -79,12 +79,12 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: octo-man-nats-config
+            name: shapoclyack-nats-config
   volumeClaimTemplates:
     - metadata:
         name: nats-data
         labels:
-          app.kubernetes.io/name: octo-man
+          app.kubernetes.io/name: shapoclyack
           app.kubernetes.io/component: nats
       spec:
         accessModes:

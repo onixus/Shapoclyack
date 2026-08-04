@@ -16,7 +16,7 @@ from api.services import assets as assets_service
 from api.services.risk_scoring import get_scorer
 from api.settings import Settings
 
-LOG = logging.getLogger("octo-man.ch-transform")
+LOG = logging.getLogger("shapoclyack.ch-transform")
 
 TENANT_UUID_NS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # URL namespace
 

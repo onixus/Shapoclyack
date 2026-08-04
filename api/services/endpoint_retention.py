@@ -37,7 +37,7 @@ from api.db.engine import get_session
 from api.services import metrics as metrics_service
 from api.settings import Settings
 
-LOG = logging.getLogger("octo-man.endpoint-retention")
+LOG = logging.getLogger("shapoclyack.endpoint-retention")
 
 
 def _now() -> datetime:

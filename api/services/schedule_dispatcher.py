@@ -19,7 +19,7 @@ from api.services import jobs as jobs_service
 from api.services import scan_schedules
 from api.settings import Settings
 
-LOG = logging.getLogger("octo-man.schedule-dispatcher")
+LOG = logging.getLogger("shapoclyack.schedule-dispatcher")
 
 _RUNNING_STATUSES = {"queued", "running"}
 

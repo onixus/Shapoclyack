@@ -45,7 +45,7 @@ def test_map_vulnerabilities_filters_by_min_severity_and_maps_fields():
             }
         ],
     )
-    assert payload["type"] == "Octo-man"
+    assert payload["type"] == "Shapoclyack"
     assert len(payload["findings"]) == 1
     finding = payload["findings"][0]
     assert finding["severity"] == "Critical"

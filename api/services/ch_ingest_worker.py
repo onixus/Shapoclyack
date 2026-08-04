@@ -20,7 +20,7 @@ from api.services import metrics as metrics_service
 from api.services.nats_bus import STREAM_INGEST
 from api.settings import Settings
 
-LOG = logging.getLogger("octo-man.ch-ingest")
+LOG = logging.getLogger("shapoclyack.ch-ingest")
 
 CONSUMER_CH_INGEST = "octo-ch-ingest"
 SUBJECT_FILTER = "ingest.>"

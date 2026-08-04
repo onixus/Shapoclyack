@@ -3,7 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: enrichment-data
   labels:
-    app.kubernetes.io/name: octo-man
+    app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: enrichment-storage
 spec:
   accessModes:

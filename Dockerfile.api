@@ -1,4 +1,4 @@
-# Shapoclyack thin API + Web UI v2 image (Octo-man; no scanner tools).
+# Shapoclyack thin API + Web UI v2 image (no scanner tools).
 FROM node:24-bookworm-slim AS web-build
 WORKDIR /web
 COPY web-next/package.json web-next/package-lock.json ./
@@ -10,7 +10,7 @@ FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-api" \
-      org.opencontainers.image.description="Octo-man API + Web UI v2 image published by Shapoclyack"
+      org.opencontainers.image.description="Shapoclyack API + Web UI v2 image"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

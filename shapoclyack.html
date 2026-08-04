@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Octo-man: Инфографика конвейера сканирования</title>
+    <title>Shapoclyack: Инфографика конвейера сканирования</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -26,7 +26,7 @@
 
 <!-- 
 ПЛАН НАРРАТИВА:
-1. Введение: Что такое Octo-man и его промышленный подход.
+1. Введение: Что такое Shapoclyack и его промышленный подход.
 2. Архитектура: Визуализация этапов конвейера через список и диаграмму состава.
 3. Стек технологий: Анализ используемых библиотек и инструментов.
 4. Стратегия апгрейда: Сравнение текущих возможностей с целевыми (Enterprise).
@@ -50,7 +50,7 @@
 
 <header class="gradient-brand text-white py-20 px-6 mb-12 text-center">
     <div class="max-w-4xl mx-auto">
-        <h1 class="text-5xl md:text-6xl font-bold mb-6 tracking-tight">Octo-man</h1>
+        <h1 class="text-5xl md:text-6xl font-bold mb-6 tracking-tight">Shapoclyack</h1>
         <p class="text-xl md:text-2xl font-light opacity-90 leading-relaxed">
             Промышленный фреймворк для автоматизированного сетевого сканирования и построения конвейеров разведки.
         </p>
@@ -63,7 +63,7 @@
         <div class="card-shadow">
             <h2 class="text-3xl font-bold mb-6 text-blue-900">Модульная разведка нового уровня</h2>
             <p class="text-lg text-slate-600 mb-8 leading-relaxed">
-                Octo-man — это не просто скрипт, а строгая последовательность независимых этапов. Такой подход позволяет обрабатывать огромные сети предсказуемо, используя механизмы контрольных точек (чекпоинтов) и параллельную обработку пакетов данных.
+                Shapoclyack — это не просто скрипт, а строгая последовательность независимых этапов. Такой подход позволяет обрабатывать огромные сети предсказуемо, используя механизмы контрольных точек (чекпоинтов) и параллельную обработку пакетов данных.
             </p>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
                 <div class="p-6 bg-blue-50 rounded-lg border border-blue-100">
@@ -127,7 +127,7 @@
     <section class="card-shadow mb-16">
         <h3 class="text-2xl font-bold mb-6 text-blue-900 text-center">Технологический фундамент</h3>
         <p class="text-center text-slate-600 mb-10 max-w-2xl mx-auto">
-            Octo-man построен на современном стеке Python, где приоритетом является целостность данных и скорость обработки.
+            Shapoclyack построен на современном стеке Python, где приоритетом является целостность данных и скорость обработки.
         </p>
         <div class="chart-container" style="max-width: 800px; height: 350px;">
             <canvas id="techStackChart"></canvas>
@@ -213,7 +213,7 @@
                 <span class="text-xs font-bold text-blue-600 uppercase">Phase 1 · planned</span>
                 <h4 class="font-bold mt-2 mb-4">NATS JetStream &amp; API Gateway</h4>
                 <ul class="text-xs text-slate-500 space-y-2">
-                    <li>● NATS StatefulSet в <code>k8s/octo-man/base/</code></li>
+                    <li>● NATS StatefulSet в <code>k8s/shapoclyack/base/</code></li>
                     <li>● Ingest gateway → topic <code>ingest.raw_results</code></li>
                     <li>● Agent: NATS pull consumer (jobs)</li>
                     <li>● Идемпотентность сообщений</li>
@@ -313,13 +313,13 @@
 <footer class="bg-slate-900 text-white py-16 px-6">
     <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center opacity-60">
         <div class="text-center md:text-left mb-8 md:mb-0">
-            <h4 class="text-2xl font-bold">Octo-man</h4>
+            <h4 class="text-2xl font-bold">Shapoclyack</h4>
             <p class="text-sm">Network Reconnaissance · MSSP / Enterprise roadmap<br>
             Repo: <code class="text-slate-300">onixus/shapoclyack</code></p>
         </div>
         <div class="text-sm text-center md:text-right">
             Разработано для профессионалов кибербезопасности.<br>
-            &copy; 2026 Проект Octo-man. Все права защищены.
+            &copy; 2026 Проект Shapoclyack. Все права защищены.
         </div>
     </div>
 </footer>
@@ -498,7 +498,7 @@
         const apiKey = ""; // API ключ автоматически подставится средой исполнения
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
         
-        const systemPrompt = "Ты — интегрированный AI-ассистент SecOps платформы Octo-man. Отвечай как строгий, опытный инженер по информационной безопасности. Объясняй риски, уязвимости или методы сетевого сканирования кратко, профессионально и строго по делу. Пиши на русском языке. Не используй сложную Markdown разметку, кроме жирного текста (**) для выделения главного.";
+        const systemPrompt = "Ты — интегрированный AI-ассистент SecOps платформы Shapoclyack. Отвечай как строгий, опытный инженер по информационной безопасности. Объясняй риски, уязвимости или методы сетевого сканирования кратко, профессионально и строго по делу. Пиши на русском языке. Не используй сложную Markdown разметку, кроме жирного текста (**) для выделения главного.";
         
         const payload = {
             contents: [{ parts: [{ text: query }] }],

@@ -12,7 +12,7 @@
 #     - path: ../../examples/nats-ha-patch.yaml
 #     - path: ../../examples/nats-ha-configmap-patch.yaml
 # or ad hoc:
-#   kubectl patch statefulset octo-man-nats -n network-scan --type=merge \
+#   kubectl patch statefulset shapoclyack-nats -n network-scan --type=merge \
 #     -p '{"spec":{"replicas":3}}'
 #
 # Pair with the API-side env below so JetStream streams replicate R3 instead
@@ -32,7 +32,7 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: octo-man-nats
+  name: shapoclyack-nats
 spec:
   replicas: 3
   podManagementPolicy: Parallel
