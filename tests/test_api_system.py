@@ -51,6 +51,17 @@ def test_system_status_shape():
     runtime = body["runtime"]
     assert isinstance(runtime["postgres_enabled"], bool)
     assert isinstance(runtime["job_execution_mode"], str)
+    assert isinstance(runtime["endpoint_stale_hours"], int)
+
+    # Endpoint-inventory footprint and retention posture (Agent_plan.md S9).
+    endpoint = body["endpoint_inventory"]
+    assert endpoint["snapshot_retention_days"] >= 1
+    assert endpoint["change_retention_days"] >= endpoint["snapshot_retention_days"]
+    assert endpoint["stale_hours"] == runtime["endpoint_stale_hours"]
+    assert isinstance(endpoint["retention_enabled"], bool)
+    # Counts are fail-soft: real ints when Postgres answers, None when it can't.
+    assert endpoint["devices_total"] is None or endpoint["devices_total"] >= 0
+    assert endpoint["devices_stale"] is None or endpoint["devices_stale"] >= 0
 
 
 def test_system_status_leaks_no_secrets():

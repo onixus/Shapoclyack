@@ -29,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useJobs, useStartScan } from "@/hooks/use-jobs";
+import { usePagination } from "@/hooks/use-pagination";
 import { useSystemStatus } from "@/hooks/use-system";
 import { type JobInfo } from "@/lib/api";
 import { JOB_STATUS } from "@/lib/config/statuses";
@@ -47,7 +48,10 @@ export default function JobsPage() {
   const [portsUdp, setPortsUdp] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const { data = [], isLoading, error, isFetching } = useJobs(canOperate);
+  // Server-side paging/search/sort (ROADMAP P3.3): the job list is unbounded.
+  const pagination = usePagination({ sort: "started_at", order: "desc" });
+  const { data, isLoading, error, isFetching } = useJobs(canOperate, pagination.params);
+  const jobs = data?.items ?? [];
   const mutation = useStartScan();
   const { data: systemStatus } = useSystemStatus();
   const serviceBackend = systemStatus?.scan_config.service_backend;
@@ -297,13 +301,26 @@ export default function JobsPage() {
 
       <DataTable
         columns={columns}
-        data={data}
+        data={jobs}
         isLoading={isLoading}
         error={error}
         initialSorting={[{ id: "started_at", desc: true }]}
         searchPlaceholder="Search jobs by ID or operator…"
         loadingMessage="Retrieving scan jobs stream…"
         emptyMessage="No scan jobs recorded."
+        meta={`${data?.total ?? 0} jobs`}
+        serverPagination={{
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total: data?.total ?? 0,
+          onOffsetChange: pagination.setOffset,
+          search: pagination.search,
+          onSearchChange: pagination.setSearch,
+          sortableColumns: ["started_at", "finished_at", "status", "job_id", "mode", "tenant_id"],
+          sort: pagination.sort,
+          order: pagination.order,
+          onSortChange: pagination.setSort,
+        }}
       />
     </div>
   );

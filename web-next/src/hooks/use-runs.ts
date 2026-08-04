@@ -1,14 +1,16 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { fetchHosts, fetchPorts, fetchRun, fetchRuns, fetchVulns } from "@/lib/api";
+import { fetchHosts, fetchPorts, fetchRun, fetchRuns, fetchVulns, type PageParams } from "@/lib/api";
 import { POLL_INTERVALS, VULN_FETCH_LIMIT } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
-export function useRuns(refetchInterval: number = POLL_INTERVALS.runs) {
+/** Paginated run list (ROADMAP P3.3). Callers that only need the newest runs
+ * (latest-run pickers, trends) can leave `page` unset and read `data.items`. */
+export function useRuns(refetchInterval: number = POLL_INTERVALS.runs, page?: PageParams) {
   return useQuery({
-    queryKey: queryKeys.runs,
-    queryFn: fetchRuns,
+    queryKey: queryKeys.runsPage(page),
+    queryFn: () => fetchRuns(page),
     refetchInterval,
   });
 }

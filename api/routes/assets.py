@@ -5,7 +5,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.auth import Role, TokenUser, get_settings, require_role
-from api.schemas import AssetDetail, AssetSummary, EndpointSoftwareItemInfo, UpdateAssetRequest
+from api.routes._pagination import PageParams, build_page
+from api.schemas import (
+    AssetDetail,
+    AssetSummary,
+    EndpointSoftwareItemInfo,
+    Page,
+    UpdateAssetRequest,
+)
 from api.services import assets as assets_service
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import tenants as tenants_service
@@ -14,17 +21,25 @@ from api.settings import Settings
 router = APIRouter(prefix="/assets", tags=["assets"])
 
 
-@router.get("", response_model=list[AssetSummary])
+@router.get("", response_model=Page[AssetSummary])
 def list_assets(
     _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
+    page: PageParams,
     tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
-    q: Annotated[str | None, Query(description="Filter by identifier substring")] = None,
-    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
-) -> list[AssetSummary]:
-    items = assets_service.list_assets(settings, tenant_id, status=status_filter, q=q, limit=limit)
-    return [AssetSummary.model_validate(item) for item in items]
+) -> Page[AssetSummary]:
+    items, total = assets_service.list_assets(
+        settings,
+        tenant_id,
+        status=status_filter,
+        q=page.q,
+        offset=page.offset,
+        limit=page.limit,
+        sort=page.sort,
+        order=page.order,
+    )
+    return build_page([AssetSummary.model_validate(item) for item in items], total, page)
 
 
 @router.get("/{asset_id}", response_model=AssetDetail)

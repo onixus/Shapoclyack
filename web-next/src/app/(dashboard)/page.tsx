@@ -23,12 +23,18 @@ import {
 } from "@/lib/run-data";
 
 const SEVERITY_DONUT_COLORS = ["rose", "orange", "amber", "sky", "slate"];
+/** Matches the API's MAX_LIMIT — the posture chart samples at most this many assets. */
+const ASSET_SAMPLE_LIMIT = 5000;
 
 export default function DashboardPage() {
-  const runsQuery = useRuns(POLL_INTERVALS.dashboard);
-  const assetsQuery = useAssets({ status: "" });
+  // The dashboard aggregates rather than paginates: ask for one large page
+  // (the API caps `limit` at 5000) and surface `total` separately, so the
+  // headline count stays exact even when the posture chart samples the cap.
+  const runsQuery = useRuns(POLL_INTERVALS.dashboard, { limit: 50 });
+  const assetsQuery = useAssets({ status: "" }, { limit: ASSET_SAMPLE_LIMIT });
 
-  const latest = useMemo(() => pickLatestRun(runsQuery.data || []), [runsQuery.data]);
+  const runs = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data]);
+  const latest = useMemo(() => pickLatestRun(runs), [runs]);
   const runId = latest?.run_id ?? "";
 
   const vulnsQuery = useRunVulns(runId);
@@ -36,7 +42,7 @@ export default function DashboardPage() {
 
   const vulns = useMemo(() => vulnsQuery.data || [], [vulnsQuery.data]);
   const severityCounts = useMemo(() => countSeverities(vulns), [vulns]);
-  const trend = useMemo(() => recentRunTrend(runsQuery.data || [], 15), [runsQuery.data]);
+  const trend = useMemo(() => recentRunTrend(runs, 15), [runs]);
   const topPorts = useMemo(() => topVulnerablePorts(portsQuery.data || [], 5), [portsQuery.data]);
   const topRisks = useMemo(() => topCriticalFindings(vulns, 10), [vulns]);
 
@@ -45,7 +51,9 @@ export default function DashboardPage() {
     [severityCounts],
   );
 
-  const assets = useMemo(() => assetsQuery.data || [], [assetsQuery.data]);
+  const assets = useMemo(() => assetsQuery.data?.items ?? [], [assetsQuery.data]);
+  const assetTotal = assetsQuery.data?.total ?? 0;
+  const assetsSampled = assetTotal > assets.length;
   const criticalityData = useMemo(() => {
     const buckets = new Map<string, number>();
     for (const asset of assets) {
@@ -259,7 +267,14 @@ export default function DashboardPage() {
           ) : (
             <>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                <span className="font-semibold text-slate-300">{assets.length} assets total</span>
+                <span className="font-semibold text-slate-300">
+                  {assetTotal.toLocaleString()} assets total
+                </span>
+                {assetsSampled ? (
+                  <span className="text-slate-500">
+                    (chart covers the {assets.length.toLocaleString()} most recent)
+                  </span>
+                ) : null}
                 <span className="text-slate-600">·</span>
                 {(["active", "stale", "decommissioned"] as const).map((s) =>
                   statusCounts[s] ? (

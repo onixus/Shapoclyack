@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -163,30 +163,67 @@ def mark_stale_assets(settings: Settings, *, tenant_id: str, stale_after_days: i
     return count
 
 
+ASSET_SORT_COLUMNS = {
+    "last_seen": models.Asset.last_seen,
+    "first_seen": models.Asset.first_seen,
+    "status": models.Asset.status,
+    "asset_criticality": models.Asset.asset_criticality,
+    "asset_id": models.Asset.asset_id,
+}
+
+
 def list_assets(
     settings: Settings,
     tenant_id: str,
     *,
     status: str | None = None,
     q: str | None = None,
+    offset: int = 0,
     limit: int = 500,
-) -> list[dict]:
+    sort: str | None = None,
+    order: str | None = None,
+) -> tuple[list[dict], int]:
+    """Return ``(page, total_after_filtering)``.
+
+    Filtering, counting, and slicing all run in SQL (ROADMAP P3.2) — the
+    identifier search is an EXISTS subquery rather than a post-filter over the
+    fetched page, so `total` is honest and `limit` bounds work, not results.
+    """
+    sort_column = ASSET_SORT_COLUMNS.get(sort or "", models.Asset.last_seen)
+    direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
+
     with get_session(settings.postgres_url) as session:
-        stmt = select(models.Asset).where(models.Asset.tenant_id == tenant_id)
+        filters = [models.Asset.tenant_id == tenant_id]
         if status:
-            stmt = stmt.where(models.Asset.status == status)
-        stmt = stmt.order_by(models.Asset.last_seen.desc()).limit(limit)
-        assets = session.execute(stmt).scalars().all()
+            filters.append(models.Asset.status == status)
+        if q and q.strip():
+            needle = f"%{q.strip().lower()}%"
+            filters.append(
+                select(models.AssetIdentifier.id)
+                .where(
+                    models.AssetIdentifier.asset_id == models.Asset.asset_id,
+                    func.lower(models.AssetIdentifier.identifier_value).like(needle),
+                )
+                .exists()
+            )
+
+        total = session.execute(
+            select(func.count()).select_from(models.Asset).where(*filters)
+        ).scalar_one()
+        assets = session.execute(
+            select(models.Asset)
+            .where(*filters)
+            # asset_id breaks ties so paging is stable when timestamps collide.
+            .order_by(direction, models.Asset.asset_id)
+            .offset(offset)
+            .limit(limit)
+        ).scalars().all()
 
         results: list[dict] = []
         for asset in assets:
             identifiers = session.execute(
                 select(models.AssetIdentifier).where(models.AssetIdentifier.asset_id == asset.asset_id)
             ).scalars().all()
-            if q:
-                needle = q.strip().lower()
-                if not any(needle in ident.identifier_value.lower() for ident in identifiers):
-                    continue
             primary = next((i.identifier_value for i in identifiers if i.identifier_type == "ip"), None)
             results.append(
                 {
@@ -200,7 +237,7 @@ def list_assets(
                     "asset_criticality": asset.asset_criticality,
                 }
             )
-        return results
+        return results, total
 
 
 def get_asset(settings: Settings, tenant_id: str, asset_id: str) -> dict | None:

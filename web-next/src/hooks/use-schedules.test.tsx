@@ -40,6 +40,15 @@ const SCHEDULE: ScanSchedule = {
   created_by: null,
 };
 
+/** Paginated envelope the API returns since ROADMAP P3.2. */
+const SCHEDULE_PAGE = {
+  items: [SCHEDULE],
+  total: 1,
+  offset: 0,
+  limit: 15,
+  has_more: false,
+};
+
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -53,12 +62,13 @@ afterEach(() => {
 
 describe("useSchedules", () => {
   it("returns the fetched schedules on the happy path", async () => {
-    vi.mocked(fetchSchedules).mockResolvedValueOnce([SCHEDULE]);
+    vi.mocked(fetchSchedules).mockResolvedValueOnce(SCHEDULE_PAGE);
 
     const { result } = renderHook(() => useSchedules(true), { wrapper });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toEqual([SCHEDULE]);
+    expect(result.current.data).toEqual(SCHEDULE_PAGE);
+    expect(result.current.data?.items).toEqual([SCHEDULE]);
   });
 
   it("surfaces the error when the fetch fails", async () => {

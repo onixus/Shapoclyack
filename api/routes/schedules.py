@@ -5,7 +5,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.auth import Role, TokenUser, require_role
-from api.schemas import CreateScheduleRequest, ScheduleInfo, UpdateScheduleRequest
+from api.routes._pagination import PageParams, build_page
+from api.schemas import CreateScheduleRequest, Page, ScheduleInfo, UpdateScheduleRequest
 from api.services import scan_schedules
 from api.services import tenants as tenants_service
 
@@ -15,12 +16,21 @@ _TARGET_KEYS = ("ranges", "domains", "ports", "ports_udp")
 _SCAN_OPTION_KEYS = ("mode", "delta", "skip_nse", "notify", "export_defectdojo")
 
 
-@router.get("", response_model=list[ScheduleInfo])
+@router.get("", response_model=Page[ScheduleInfo])
 def list_schedules(
     _: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    page: PageParams,
     tenant_id: Annotated[str | None, Query()] = None,
-) -> list[dict]:
-    return scan_schedules.list_schedules(tenant_id=tenant_id)
+) -> Page[ScheduleInfo]:
+    items, total = scan_schedules.list_schedules(
+        tenant_id=tenant_id,
+        offset=page.offset,
+        limit=page.limit,
+        q=page.q,
+        sort=page.sort,
+        order=page.order,
+    )
+    return build_page(items, total, page)
 
 
 @router.post("", response_model=ScheduleInfo, status_code=status.HTTP_201_CREATED)

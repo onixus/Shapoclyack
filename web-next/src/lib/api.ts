@@ -260,6 +260,8 @@ export type EndpointDeviceInfo = {
   agent_version: string;
   labels: Record<string, string>;
   reconciliation_status: EndpointReconciliationStatus;
+  /** Server-derived staleness (OCTO_ENDPOINT_STALE_HOURS, Agent_plan.md S9). */
+  status: "active" | "stale";
   first_seen: string | null;
   last_seen: string | null;
   last_inventory_at: string | null;
@@ -333,6 +335,21 @@ export type RuntimeInfo = {
   postgres_enabled: boolean;
   ch_ingest_enabled: boolean;
   asset_stale_days: number;
+  endpoint_inventory_enabled: boolean;
+  endpoint_stale_hours: number;
+};
+
+/** Endpoint-inventory footprint and retention posture (Agent_plan.md S9). */
+export type EndpointInventoryStatus = {
+  enabled: boolean;
+  devices_total: number | null;
+  devices_stale: number | null;
+  stale_hours: number;
+  retention_enabled: boolean;
+  snapshot_retention_days: number;
+  change_retention_days: number;
+  retention_interval_seconds: number;
+  retention_last_run_at: string | null;
 };
 
 export type InventoryCounts = {
@@ -348,6 +365,7 @@ export type SystemStatus = {
   scan_config: ScanConfigSummary;
   runtime: RuntimeInfo;
   inventory: InventoryCounts;
+  endpoint_inventory: EndpointInventoryStatus;
 };
 
 export async function login(username: string, password: string) {
@@ -373,9 +391,37 @@ export async function fetchMe() {
   }
 }
 
-export async function fetchRuns() {
+/** Uniform envelope returned by every paginated list endpoint (ROADMAP P3.2). */
+export type Page<T> = {
+  items: T[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+};
+
+export type PageParams = {
+  offset?: number;
+  limit?: number;
+  q?: string;
+  sort?: string;
+  order?: "asc" | "desc";
+};
+
+/** Only sends the params the caller actually set, so the server defaults stay authoritative. */
+function pageSearchParams(page?: PageParams, base?: Record<string, string>): URLSearchParams {
+  const params = new URLSearchParams(base);
+  if (page?.offset != null) params.set("offset", String(page.offset));
+  if (page?.limit != null) params.set("limit", String(page.limit));
+  if (page?.q) params.set("q", page.q);
+  if (page?.sort) params.set("sort", page.sort);
+  if (page?.order) params.set("order", page.order);
+  return params;
+}
+
+export async function fetchRuns(page?: PageParams) {
   try {
-    const { data } = await api.get<RunSummary[]>("/runs");
+    const { data } = await api.get<Page<RunSummary>>(`/runs?${pageSearchParams(page)}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -481,18 +527,18 @@ export async function downloadArtifact(runId: string, path: string) {
   }
 }
 
-export async function fetchAgents() {
+export async function fetchAgents(page?: PageParams) {
   try {
-    const { data } = await api.get<AgentInfo[]>("/agents");
+    const { data } = await api.get<Page<AgentInfo>>(`/agents?${pageSearchParams(page)}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }
 }
 
-export async function fetchJobs() {
+export async function fetchJobs(page?: PageParams) {
   try {
-    const { data } = await api.get<JobInfo[]>("/jobs");
+    const { data } = await api.get<Page<JobInfo>>(`/jobs?${pageSearchParams(page)}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -519,10 +565,10 @@ export async function startScan(body: {
   }
 }
 
-export async function fetchSchedules(tenantId?: string) {
+export async function fetchSchedules(tenantId?: string, page?: PageParams) {
   try {
-    const params = tenantId ? `?${new URLSearchParams({ tenant_id: tenantId })}` : "";
-    const { data } = await api.get<ScanSchedule[]>(`/schedules${params}`);
+    const params = pageSearchParams(page, tenantId ? { tenant_id: tenantId } : undefined);
+    const { data } = await api.get<Page<ScanSchedule>>(`/schedules?${params}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -559,18 +605,14 @@ export async function deleteSchedule(scheduleId: string) {
 }
 
 /** Cross-run asset inventory (Phase 7) — distinct from the per-run hosts/ports/vulns above. */
-export async function fetchAssets(opts?: {
-  tenantId?: string;
-  status?: AssetStatus | "";
-  q?: string;
-  limit?: number;
-}) {
+export async function fetchAssets(
+  opts?: { tenantId?: string; status?: AssetStatus | "" },
+  page?: PageParams,
+) {
   try {
-    const params = new URLSearchParams({ tenant_id: opts?.tenantId || "default" });
+    const params = pageSearchParams(page, { tenant_id: opts?.tenantId || "default" });
     if (opts?.status) params.set("status", opts.status);
-    if (opts?.q) params.set("q", opts.q);
-    params.set("limit", String(opts?.limit ?? 500));
-    const { data } = await api.get<AssetSummary[]>(`/assets?${params}`);
+    const { data } = await api.get<Page<AssetSummary>>(`/assets?${params}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

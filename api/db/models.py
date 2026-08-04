@@ -130,9 +130,14 @@ class EndpointDevice(Base):
     __tablename__ = "endpoint_devices"
 
     device_id: Mapped[str] = mapped_column(primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
     agent_id: Mapped[str]
-    asset_id: Mapped[str | None] = mapped_column(ForeignKey("assets.asset_id"), default=None)
+    # SET NULL, not CASCADE: unlinking an asset must not delete the endpoint.
+    asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.asset_id", ondelete="SET NULL"), default=None
+    )
     hostname: Mapped[str]
     os_family: Mapped[str | None] = mapped_column(default=None)
     os_name: Mapped[str | None] = mapped_column(default=None)
@@ -158,7 +163,9 @@ class EndpointIdentifier(Base):
     __tablename__ = "endpoint_identifiers"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("endpoint_devices.device_id"), index=True)
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_devices.device_id", ondelete="CASCADE"), index=True
+    )
     tenant_id: Mapped[str] = mapped_column(index=True)
     identifier_type: Mapped[str]
     value_hash: Mapped[str]
@@ -181,7 +188,9 @@ class EndpointInventorySnapshot(Base):
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
     tenant_id: Mapped[str] = mapped_column(index=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("endpoint_devices.device_id"), index=True)
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_devices.device_id", ondelete="CASCADE"), index=True
+    )
     schema_version: Mapped[int]
     collected_at: Mapped[datetime]
     received_at: Mapped[datetime]
@@ -204,7 +213,7 @@ class EndpointSoftwareItem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     snapshot_id: Mapped[str] = mapped_column(
-        ForeignKey("endpoint_inventory_snapshots.snapshot_id"), index=True
+        ForeignKey("endpoint_inventory_snapshots.snapshot_id", ondelete="CASCADE"), index=True
     )
     tenant_id: Mapped[str] = mapped_column(index=True)
     device_id: Mapped[str] = mapped_column(index=True)
@@ -232,8 +241,12 @@ class EndpointSoftwareChange(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[str] = mapped_column(index=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("endpoint_devices.device_id"), index=True)
-    snapshot_id: Mapped[str] = mapped_column(ForeignKey("endpoint_inventory_snapshots.snapshot_id"))
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_devices.device_id", ondelete="CASCADE"), index=True
+    )
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_inventory_snapshots.snapshot_id", ondelete="CASCADE")
+    )
     comparison_key: Mapped[str]
     event_type: Mapped[str]  # installed | removed | updated
     old_version: Mapped[str | None] = mapped_column(default=None)

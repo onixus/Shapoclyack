@@ -2,14 +2,14 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { fetchJobs, startScan } from "@/lib/api";
+import { fetchJobs, startScan, type PageParams } from "@/lib/api";
 import { POLL_INTERVALS } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
-export function useJobs(enabled: boolean) {
+export function useJobs(enabled: boolean, page?: PageParams) {
   return useQuery({
-    queryKey: queryKeys.jobs,
-    queryFn: fetchJobs,
+    queryKey: queryKeys.jobsPage(page),
+    queryFn: () => fetchJobs(page),
     refetchInterval: POLL_INTERVALS.jobs,
     enabled,
   });

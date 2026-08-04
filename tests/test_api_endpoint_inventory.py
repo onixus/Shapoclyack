@@ -115,6 +115,84 @@ def test_oversized_software_list_returns_413(tmp_path, monkeypatch):
     assert resp.status_code == 413
 
 
+def test_body_over_hard_cap_rejected_before_parsing(tmp_path, monkeypatch):
+    """S9 decision 1: the byte cap is a header check, so an oversized body is
+    refused without ever being buffered or JSON-parsed."""
+    client = _client(tmp_path, monkeypatch, endpoint_inventory_max_body_bytes=64)
+    body = _load_fixture("endpoint_inventory_v1_valid.json")
+    resp = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body)
+    assert resp.status_code == 413
+    assert "exceeds limit 64" in resp.json()["detail"]
+    # Rejected before auth/routing — nothing was written.
+    assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+def test_length_less_body_requires_content_length(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    body = _load_fixture("endpoint_inventory_v1_valid.json")
+
+    def chunks():
+        yield json.dumps(body).encode("utf-8")
+
+    resp = client.post(
+        "/api/endpoint/inventory",
+        headers={**_agent_headers(), "Content-Type": "application/json"},
+        content=chunks(),
+    )
+    assert resp.status_code == 411
+
+
+def test_other_endpoints_are_not_body_capped(tmp_path, monkeypatch):
+    """The cap guards only the inventory contract path."""
+    client = _client(tmp_path, monkeypatch, endpoint_inventory_max_body_bytes=1)
+    resp = client.post(
+        "/api/auth/login", json={"username": "operator", "password": "operator-change-me"}
+    )
+    assert resp.status_code == 200
+
+
+def test_device_status_is_served_and_filterable(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    body = _load_fixture("endpoint_inventory_v1_valid.json")
+    submit = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body)
+    assert submit.status_code == 201
+    headers = {"Authorization": f"Bearer {_operator_token(client)}"}
+
+    active = client.get(
+        "/api/endpoint/devices",
+        headers=headers,
+        params={"tenant_id": "default", "device_status": "active"},
+    )
+    assert active.status_code == 200
+    assert [d["status"] for d in active.json()] == ["active"]
+
+    stale = client.get(
+        "/api/endpoint/devices",
+        headers=headers,
+        params={"tenant_id": "default", "device_status": "stale"},
+    )
+    assert stale.json() == []
+
+    invalid = client.get(
+        "/api/endpoint/devices",
+        headers=headers,
+        params={"tenant_id": "default", "device_status": "bogus"},
+    )
+    assert invalid.status_code == 422
+
+
+def test_submission_outcomes_are_counted_in_metrics(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    body = _load_fixture("endpoint_inventory_v1_valid.json")
+    assert client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body).status_code == 201
+    assert client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body).status_code == 200
+
+    text = client.get("/metrics").text
+    assert 'octo_endpoint_inventory_submissions_total{result="accepted"}' in text
+    assert 'octo_endpoint_inventory_submissions_total{result="replay"}' in text
+    assert "octo_endpoint_inventory_software_items_count" in text
+
+
 def test_missing_auth_returns_401(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     body = _load_fixture("endpoint_inventory_v1_valid.json")

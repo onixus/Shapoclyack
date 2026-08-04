@@ -90,8 +90,9 @@ def test_agent_register_heartbeat_and_list(tmp_path, monkeypatch):
     token = _operator_token(client)
     listed = client.get("/api/agents", headers={"Authorization": f"Bearer {token}"})
     assert listed.status_code == 200
-    assert len(listed.json()) == 1
-    assert listed.json()[0]["hostname"] == "edge-1"
+    body = listed.json()
+    assert body["total"] == 1
+    assert body["items"][0]["hostname"] == "edge-1"
 
 
 def test_agent_claim_and_upload_results(tmp_path, monkeypatch):

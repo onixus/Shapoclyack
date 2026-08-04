@@ -2,14 +2,21 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { fetchAsset, fetchAssets, updateAsset, type AssetStatus, type UpdateAssetBody } from "@/lib/api";
+import {
+  fetchAsset,
+  fetchAssets,
+  updateAsset,
+  type AssetStatus,
+  type PageParams,
+  type UpdateAssetBody,
+} from "@/lib/api";
 import { POLL_INTERVALS } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
-export function useAssets(filters: { status: AssetStatus | "" }) {
+export function useAssets(filters: { status: AssetStatus | "" }, page?: PageParams) {
   return useQuery({
-    queryKey: queryKeys.assets({ status: filters.status }),
-    queryFn: () => fetchAssets({ status: filters.status }),
+    queryKey: queryKeys.assetsPage({ status: filters.status }, page),
+    queryFn: () => fetchAssets({ status: filters.status }, page),
     refetchInterval: POLL_INTERVALS.assets,
   });
 }

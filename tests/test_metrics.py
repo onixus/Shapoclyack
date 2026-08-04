@@ -23,6 +23,13 @@ def test_render_exposes_registered_metric_families():
         "octo_nats_consumer_pending",
         "octo_ch_ingest_batch_duration_seconds",
         "octo_ch_ingest_messages_total",
+        "octo_endpoint_inventory_submissions_total",
+        "octo_endpoint_inventory_ingest_duration_seconds",
+        "octo_endpoint_inventory_software_items",
+        "octo_endpoint_inventory_software_changes_total",
+        "octo_endpoint_devices",
+        "octo_endpoint_retention_deleted_total",
+        "octo_endpoint_retention_run_duration_seconds",
     ):
         assert name in text, f"{name} missing from /metrics output"
 

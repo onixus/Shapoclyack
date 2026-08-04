@@ -7,16 +7,20 @@ import { Cpu } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useAgents } from "@/hooks/use-agents";
+import { usePagination } from "@/hooks/use-pagination";
 import { type AgentInfo } from "@/lib/api";
 import { AGENT_STATUS, agentEffectiveStatus } from "@/lib/config/statuses";
 
 export default function AgentsPage() {
-  const { data = [], isLoading, error, isFetching } = useAgents();
+  // Server-side paging/search/sort (ROADMAP P3.3): the fleet list is unbounded.
+  const pagination = usePagination({ sort: "hostname", order: "asc" });
+  const { data, isLoading, error, isFetching } = useAgents(pagination.params);
+  const agents = data?.items ?? [];
 
   const columns = useMemo<ColumnDef<AgentInfo>[]>(
     () => [
       {
-        id: "agent",
+        id: "hostname",
         accessorFn: (agent) => `${agent.hostname} ${agent.agent_id}`,
         header: "Agent Hostname & ID",
         cell: ({ row }) => (
@@ -89,12 +93,25 @@ export default function AgentsPage() {
 
       <DataTable
         columns={columns}
-        data={data}
+        data={agents}
         isLoading={isLoading}
         error={error}
         searchPlaceholder="Search agent hostname or ID…"
         loadingMessage="Retrieving agent fleet telemetry…"
         emptyMessage="No distributed agents registered."
+        meta={`${data?.total ?? 0} agents`}
+        serverPagination={{
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total: data?.total ?? 0,
+          onOffsetChange: pagination.setOffset,
+          search: pagination.search,
+          onSearchChange: pagination.setSearch,
+          sortableColumns: ["hostname", "status", "tenant_id", "last_seen_at"],
+          sort: pagination.sort,
+          order: pagination.order,
+          onSortChange: pagination.setSort,
+        }}
       />
     </div>
   );

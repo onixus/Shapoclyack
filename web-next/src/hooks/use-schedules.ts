@@ -8,14 +8,15 @@ import {
   fetchSchedules,
   updateSchedule,
   type CreateScheduleBody,
+  type PageParams,
   type UpdateScheduleBody,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
-export function useSchedules(enabled: boolean) {
+export function useSchedules(enabled: boolean, page?: PageParams, tenantId?: string) {
   return useQuery({
-    queryKey: queryKeys.schedules,
-    queryFn: () => fetchSchedules(),
+    queryKey: queryKeys.schedulesPage(tenantId, page),
+    queryFn: () => fetchSchedules(tenantId, page),
     enabled,
   });
 }

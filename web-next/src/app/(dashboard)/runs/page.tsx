@@ -7,12 +7,18 @@ import { format } from "date-fns";
 import { Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table";
+import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
 import { type RunSummary } from "@/lib/api";
 import { runDetailHref } from "@/lib/run-data";
 
 export default function RunsPage() {
-  const { data = [], isLoading, error, isFetching } = useRuns();
+  // Server-side paging/search (ROADMAP P3.3). Runs are ordered by run_id —
+  // the API cannot sort on summary columns without opening every run's JSON —
+  // so only that column is server-sortable here.
+  const pagination = usePagination({ sort: "run_id", order: "desc" });
+  const { data, isLoading, error, isFetching } = useRuns(undefined, pagination.params);
+  const runs = data?.items ?? [];
 
   const columns = useMemo<ColumnDef<RunSummary>[]>(
     () => [
@@ -106,13 +112,25 @@ export default function RunsPage() {
 
       <DataTable
         columns={columns}
-        data={data}
+        data={runs}
         isLoading={isLoading}
         error={error}
-        initialSorting={[{ id: "started_at", desc: true }]}
-        searchPlaceholder="Search run IDs or profiles…"
+        searchPlaceholder="Search run IDs…"
         loadingMessage="Retrieving scan run history…"
         emptyMessage="No scan execution runs recorded yet."
+        meta={`${data?.total ?? 0} runs`}
+        serverPagination={{
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total: data?.total ?? 0,
+          onOffsetChange: pagination.setOffset,
+          search: pagination.search,
+          onSearchChange: pagination.setSearch,
+          sortableColumns: ["run_id"],
+          sort: pagination.sort,
+          order: pagination.order,
+          onSortChange: pagination.setSort,
+        }}
       />
     </div>
   );

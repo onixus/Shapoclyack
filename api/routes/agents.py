@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 
 from api.auth import AgentPrincipal, Role, TokenUser, get_settings, require_agent, require_role
+from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AgentClaimResponse,
     AgentHeartbeatRequest,
     AgentInfo,
     AgentRegisterRequest,
     JobInfo,
+    Page,
 )
 from api.services import agents as agents_service
 from api.services import jobs as jobs_service
@@ -126,8 +128,18 @@ async def upload_results(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
-@router.get("/agents", response_model=list[AgentInfo])
+@router.get("/agents", response_model=Page[AgentInfo])
 def list_agents(
     _: Annotated[TokenUser, Depends(require_role(Role.operator))],
-) -> list[AgentInfo]:
-    return agents_service.list_agents()
+    page: PageParams,
+    tenant_id: Annotated[str | None, Query()] = None,
+) -> Page[AgentInfo]:
+    items, total = agents_service.list_agents(
+        offset=page.offset,
+        limit=page.limit,
+        q=page.q,
+        sort=page.sort,
+        order=page.order,
+        tenant_id=tenant_id,
+    )
+    return build_page(items, total, page)

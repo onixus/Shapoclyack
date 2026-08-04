@@ -14,11 +14,15 @@ import { AttackSurfaceGraph } from "@/components/attack-surface-graph";
 import { useRunHosts, useRunPorts, useRuns } from "@/hooks/use-runs";
 import { pickLatestRun } from "@/lib/run-data";
 
+const RUN_PICKER_LIMIT = 50;
+
 export default function AttackSurfacePage() {
-  const runsQuery = useRuns();
+  // Run picker only needs the newest runs, so one page is enough (P3.3).
+  const runsQuery = useRuns(undefined, { limit: RUN_PICKER_LIMIT });
   const [selected, setSelected] = useState<string>("");
 
-  const latest = useMemo(() => pickLatestRun(runsQuery.data || []), [runsQuery.data]);
+  const runs = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data]);
+  const latest = useMemo(() => pickLatestRun(runs), [runs]);
   const runId = selected || latest?.run_id || "";
 
   const hostsQuery = useRunHosts(runId);
@@ -49,7 +53,7 @@ export default function AttackSurfacePage() {
               <SelectValue placeholder="Select a scan run" />
             </SelectTrigger>
             <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-              {(runsQuery.data || []).map((run) => (
+              {runs.map((run) => (
                 <SelectItem key={run.run_id} value={run.run_id} className="font-mono text-xs">
                   {run.run_id}
                 </SelectItem>

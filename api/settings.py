@@ -79,6 +79,22 @@ class Settings:
     endpoint_inventory_max_snapshot_age_seconds: int = 86400
     endpoint_inventory_max_future_skew_seconds: int = 300
     endpoint_inventory_rate_limit_per_hour: int = 12
+    # Hard request-body cap enforced before JSON parsing (S9, decision 1).
+    # 15 MiB covers the worst case allowed by the per-field limits above
+    # (5000 items x ~6 bounded 512-byte strings).
+    endpoint_inventory_max_body_bytes: int = 15 * 1024 * 1024
+    # Server-side endpoint staleness (S9, decision 7). Mirrors the 48h value
+    # the asset card already used client-side; a device whose last accepted
+    # inventory is older than this reports status "stale".
+    endpoint_stale_hours: int = 48
+    # Retention (S9, decision 2): software rows of snapshots older than
+    # snapshot_retention_days are pruned (summary row kept); change events are
+    # kept for change_retention_days as audit history.
+    endpoint_retention_enabled: bool = True
+    endpoint_snapshot_retention_days: int = 90
+    endpoint_change_retention_days: int = 365
+    endpoint_retention_interval_seconds: int = 21600
+    endpoint_retention_batch_size: int = 5000
 
 
 def load_settings() -> Settings:
@@ -143,5 +159,23 @@ def load_settings() -> Settings:
         ),
         endpoint_inventory_rate_limit_per_hour=int(
             os.environ.get("OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR", "12")
+        ),
+        endpoint_inventory_max_body_bytes=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES", str(15 * 1024 * 1024))
+        ),
+        endpoint_stale_hours=int(os.environ.get("OCTO_ENDPOINT_STALE_HOURS", "48")),
+        endpoint_retention_enabled=os.environ.get("OCTO_ENDPOINT_RETENTION_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        endpoint_snapshot_retention_days=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS", "90")
+        ),
+        endpoint_change_retention_days=int(
+            os.environ.get("OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS", "365")
+        ),
+        endpoint_retention_interval_seconds=int(
+            os.environ.get("OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS", "21600")
+        ),
+        endpoint_retention_batch_size=int(
+            os.environ.get("OCTO_ENDPOINT_RETENTION_BATCH_SIZE", "5000")
         ),
     )

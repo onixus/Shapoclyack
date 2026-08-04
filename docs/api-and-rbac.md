@@ -50,6 +50,43 @@ not an authorization control.
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
 
+`POST /api/endpoint/inventory` is the only agent-authenticated write in that
+group and carries contract-specific limits: `411` when `Content-Length` is
+absent, `413` when the body or a bounded field exceeds its limit, `429` on the
+per-agent hourly rate limit, `409` when a `snapshot_id` is resubmitted with
+different content, and `200` (rather than `201`) for an exact replay. Read
+routes expose each device's server-derived `status` (`active`/`stale`, from
+`OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
+filter.
+
+## Pagination
+
+`GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`, and `/api/schedules`
+return a page envelope rather than a bare array:
+
+```json
+{ "items": [], "total": 0, "offset": 0, "limit": 100, "has_more": false }
+```
+
+| Parameter | Meaning |
+|---|---|
+| `offset` | Rows to skip (default `0`) |
+| `limit` | Rows per page (default `100`, maximum `5000`) |
+| `q` | Case-insensitive substring filter; applied before `total` is counted |
+| `sort` | Sort field; an unknown value falls back to the resource default instead of erroring |
+| `order` | `asc` or `desc` (default `desc`) |
+
+Sortable fields per resource: assets — `last_seen`, `first_seen`, `status`,
+`asset_criticality`, `asset_id`; jobs — `started_at`, `finished_at`, `status`,
+`job_id`, `mode`, `tenant_id`; agents — `hostname`, `agent_id`, `status`,
+`last_seen_at`, `registered_at`, `tenant_id`; schedules — `created_at`, `name`,
+`next_run_at`, `last_run_at`, `enabled`, `tenant_id`. Runs are always ordered by
+`run_id` (the timestamped directory name): sorting on a summary column would
+require opening every run's JSON, so only `order` applies there.
+
+Sub-resources of a run (`/hosts`, `/ports`, `/vulnerabilities`) remain
+`limit`-only — the graph and detail views consume them whole.
+
 Inspect the generated OpenAPI schema for exact request and response fields:
 
 ```bash

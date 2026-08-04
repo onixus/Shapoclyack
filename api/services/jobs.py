@@ -16,6 +16,7 @@ from api.services import assets as assets_service
 from api.services import config_override as config_override_service
 from api.services import metrics as metrics_service
 from api.services import nats_bus
+from api.services import pagination
 from api.services import results_ingest
 from api.services import tenants as tenants_service
 from api.services.targets import parse_target_payload
@@ -71,10 +72,28 @@ def load_jobs(settings: Settings) -> None:
             _persist(settings)
 
 
-def list_jobs() -> list[JobInfo]:
+JOB_SORT_FIELDS = ("started_at", "finished_at", "status", "job_id", "mode", "tenant_id")
+JOB_QUERY_FIELDS = ("job_id", "run_id", "mode", "status", "requested_by", "tenant_id", "assigned_agent_id")
+
+
+def list_jobs(
+    *,
+    offset: int = 0,
+    limit: int = pagination.DEFAULT_LIMIT,
+    q: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+    tenant_id: str | None = None,
+) -> tuple[list[JobInfo], int]:
+    """Return ``(page, total_after_filtering)`` — see api/services/pagination.py."""
     with _LOCK:
-        items = sorted(_JOBS.values(), key=lambda item: item.get("started_at") or "", reverse=True)
-    return [JobInfo.model_validate(item) for item in items]
+        rows = [dict(item) for item in _JOBS.values()]
+    if tenant_id:
+        rows = [row for row in rows if row.get("tenant_id") == tenant_id]
+    rows = pagination.apply_query(rows, q, JOB_QUERY_FIELDS)
+    rows = pagination.apply_sort(rows, sort, order, allowed=JOB_SORT_FIELDS, default="started_at")
+    page, total = pagination.slice_page(rows, offset=offset, limit=limit)
+    return [JobInfo.model_validate(item) for item in page], total
 
 
 def get_job(job_id: str) -> JobInfo | None:

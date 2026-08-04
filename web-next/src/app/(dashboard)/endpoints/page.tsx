@@ -16,25 +16,18 @@ import {
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useEndpointDevices, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
+import { useSystemStatus } from "@/hooks/use-system";
 import { useTenants } from "@/hooks/use-tenants";
 import type { EndpointDeviceInfo, EndpointReconciliationStatus } from "@/lib/api";
 import { ENDPOINT_RECONCILIATION_STATUS, SOFTWARE_CHANGE_STATUS } from "@/lib/config/statuses";
 import { useAuthStore } from "@/lib/auth-store";
 
 const FILTER_ALL = "all";
-/** Matches the offline threshold used on the asset detail EndpointCard. */
-const STALE_INVENTORY_HOURS = 48;
 
 function assetHref(assetId: string, tenantId: string): string {
   const params = new URLSearchParams({ assetId });
   if (tenantId && tenantId !== "default") params.set("tenantId", tenantId);
   return `/assets/view?${params}`;
-}
-
-function isStaleDevice(device: EndpointDeviceInfo): boolean {
-  if (!device.last_inventory_at) return true;
-  const ageMs = Date.now() - new Date(device.last_inventory_at).getTime();
-  return ageMs > STALE_INVENTORY_HOURS * 60 * 60 * 1000;
 }
 
 /** Lightweight cross-device feed of recent software installs/removals/updates
@@ -105,6 +98,7 @@ export default function EndpointsPage() {
   const [tenantId, setTenantId] = useState<string>("default");
   const [staleOnly, setStaleOnly] = useState(false);
 
+  const staleHours = useSystemStatus().data?.endpoint_inventory.stale_hours ?? 48;
   const tenantsQuery = useTenants(canOperate);
   const tenants = tenantsQuery.data || [];
 
@@ -114,7 +108,8 @@ export default function EndpointsPage() {
   const data = useMemo(() => {
     return raw.filter((d) => {
       if (reconFilter !== FILTER_ALL && d.reconciliation_status !== reconFilter) return false;
-      if (staleOnly && !isStaleDevice(d)) return false;
+      // Staleness is server-derived from OCTO_ENDPOINT_STALE_HOURS (S9).
+      if (staleOnly && d.status !== "stale") return false;
       return true;
     });
   }, [raw, reconFilter, staleOnly]);
@@ -227,7 +222,7 @@ export default function EndpointsPage() {
 
   const linked = raw.filter((d) => d.asset_id).length;
   const conflicts = raw.filter((d) => d.reconciliation_status === "conflict").length;
-  const stale = raw.filter(isStaleDevice).length;
+  const stale = raw.filter((d) => d.status === "stale").length;
 
   return (
     <div className="space-y-6">
@@ -282,7 +277,7 @@ export default function EndpointsPage() {
               staleOnly ? "text-amber-300 border-amber-500/40" : "text-slate-300"
             }`}
           >
-            {staleOnly ? `Stale only (>${STALE_INVENTORY_HOURS}h)` : "Show stale only"}
+            {staleOnly ? `Stale only (>${staleHours}h)` : "Show stale only"}
           </Button>
           <Select value={reconFilter} onValueChange={setReconFilter}>
             <SelectTrigger className="h-8 w-[140px] border-slate-800 bg-slate-900 text-xs">

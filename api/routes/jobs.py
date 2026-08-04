@@ -2,21 +2,32 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.auth import Role, TokenUser, get_settings, require_role
-from api.schemas import JobInfo, StartScanRequest
+from api.routes._pagination import PageParams, build_page
+from api.schemas import JobInfo, Page, StartScanRequest
 from api.services import jobs as jobs_service
 from api.settings import Settings
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
-@router.get("", response_model=list[JobInfo])
+@router.get("", response_model=Page[JobInfo])
 def list_jobs(
     _: Annotated[TokenUser, Depends(require_role(Role.operator))],
-) -> list[JobInfo]:
-    return jobs_service.list_jobs()
+    page: PageParams,
+    tenant_id: Annotated[str | None, Query()] = None,
+) -> Page[JobInfo]:
+    items, total = jobs_service.list_jobs(
+        offset=page.offset,
+        limit=page.limit,
+        q=page.q,
+        sort=page.sort,
+        order=page.order,
+        tenant_id=tenant_id,
+    )
+    return build_page(items, total, page)
 
 
 @router.get("/{job_id}", response_model=JobInfo)
