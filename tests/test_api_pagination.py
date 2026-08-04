@@ -179,10 +179,12 @@ def test_schedules_pagination_is_sql_backed_and_tenant_scoped(tmp_path, monkeypa
     searched = client.get("/api/schedules", headers=headers, params={"q": "nightly-02"}).json()
     _assert_envelope(searched, total=1, offset=0, limit=100, items=1)
 
+    # Tenant scoping itself is covered in tests/test_tenant_iam.py (P0); here
+    # it only matters that an unauthorised tenant never yields a page.
     other_tenant = client.get(
         "/api/schedules", headers=headers, params={"tenant_id": "ten_missing"}
-    ).json()
-    _assert_envelope(other_tenant, total=0, offset=0, limit=100, items=0)
+    )
+    assert other_tenant.status_code == 403
 
 
 def test_assets_pagination_counts_after_the_identifier_filter(tmp_path, monkeypatch):

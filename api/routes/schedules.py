@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.auth import Role, TokenUser, require_role
+from api.auth import Role, TenantPrincipal, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import CreateScheduleRequest, Page, ScheduleInfo, UpdateScheduleRequest
 from api.services import scan_schedules
-from api.services import tenants as tenants_service
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -16,14 +15,27 @@ _TARGET_KEYS = ("ranges", "domains", "ports", "ports_udp")
 _SCAN_OPTION_KEYS = ("mode", "delta", "skip_nse", "notify", "export_defectdojo")
 
 
+def _require_own_schedule(schedule_id: str, principal: TenantPrincipal) -> dict:
+    """404 for a schedule in another tenant — the id's existence is not the
+    caller's business (same rule as GET /jobs/{id})."""
+    schedule = scan_schedules.get_schedule(schedule_id)
+    if schedule is None or (
+        not principal.is_platform_admin and schedule.get("tenant_id") != principal.tenant_id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
+    return schedule
+
+
 @router.get("", response_model=Page[ScheduleInfo])
 def list_schedules(
-    _: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     page: PageParams,
-    tenant_id: Annotated[str | None, Query()] = None,
 ) -> Page[ScheduleInfo]:
     items, total = scan_schedules.list_schedules(
-        tenant_id=tenant_id,
+        # Unscoped platform admin keeps the cross-tenant view (as for jobs/agents).
+        tenant_id=None
+        if principal.is_platform_admin and not principal.tenant_requested
+        else principal.tenant_id,
         offset=page.offset,
         limit=page.limit,
         q=page.q,
@@ -36,9 +48,17 @@ def list_schedules(
 @router.post("", response_model=ScheduleInfo, status_code=status.HTTP_201_CREATED)
 def create_schedule(
     body: CreateScheduleRequest,
-    user: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
 ) -> dict:
-    tenant_id = (body.tenant_id or tenants_service.DEFAULT_TENANT_ID).strip()
+    # As for POST /jobs: outside of a platform admin the body may not name a
+    # tenant the caller has not already resolved into.
+    requested = (body.tenant_id or "").strip()
+    if requested and requested != principal.tenant_id and not principal.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"No access to tenant {requested}",
+        )
+    tenant_id = requested if (requested and principal.is_platform_admin) else principal.tenant_id
     scan_options = {k: getattr(body, k) for k in _SCAN_OPTION_KEYS}
     targets = {k: getattr(body, k) for k in _TARGET_KEYS}
     try:
@@ -49,7 +69,7 @@ def create_schedule(
             interval_seconds=body.interval_seconds,
             scan_options=scan_options,
             targets=targets,
-            created_by=user.username,
+            created_by=principal.username,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -58,11 +78,9 @@ def create_schedule(
 @router.get("/{schedule_id}", response_model=ScheduleInfo)
 def get_schedule(
     schedule_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
 ) -> dict:
-    schedule = scan_schedules.get_schedule(schedule_id)
-    if schedule is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
+    schedule = _require_own_schedule(schedule_id, principal)
     return schedule
 
 
@@ -70,8 +88,9 @@ def get_schedule(
 def update_schedule(
     schedule_id: str,
     body: UpdateScheduleRequest,
-    _: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
 ) -> dict:
+    _require_own_schedule(schedule_id, principal)
     fields = body.model_dump(exclude_unset=True)
     scan_options = {k: fields.pop(k) for k in _SCAN_OPTION_KEYS if k in fields}
     targets = {k: fields.pop(k) for k in _TARGET_KEYS if k in fields}
@@ -91,7 +110,8 @@ def update_schedule(
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_schedule(
     schedule_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
 ) -> None:
+    _require_own_schedule(schedule_id, principal)
     if not scan_schedules.delete_schedule(schedule_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")

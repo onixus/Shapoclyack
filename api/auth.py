@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
@@ -39,6 +39,24 @@ class TokenUser(BaseModel):
     role: Role
 
 
+class TenantPrincipal(BaseModel):
+    """Server-derived tenant context for one request (ROADMAP P0).
+
+    ``tenant_id`` is resolved from the caller's memberships, never taken on
+    trust from the query string, and ``role`` is the caller's role *inside*
+    that tenant — which may differ from the global role in the JWT.
+    """
+
+    username: str
+    tenant_id: str
+    role: Role
+    is_platform_admin: bool = False
+    # True when the caller named a tenant explicitly. Lets the cross-tenant
+    # lists (jobs, agents) keep showing a platform admin everything by default
+    # while still honouring an explicit tenant filter.
+    tenant_requested: bool = False
+
+
 class AgentPrincipal(BaseModel):
     """Authenticated remote agent (JWT provisioning exchange or legacy shared token)."""
 
@@ -64,6 +82,11 @@ class TokenResponse(BaseModel):
 class MeResponse(BaseModel):
     username: str
     role: Role
+    # Tenants this user may act in, and the tenant used when a request omits
+    # ``tenant_id`` (ROADMAP P0). Feeds the UI's tenant switcher.
+    tenants: list[str] = Field(default_factory=list)
+    default_tenant: str = "default"
+    is_platform_admin: bool = False
 
 
 def hash_password(password: str) -> str:
@@ -180,6 +203,46 @@ def require_role(minimum: Role):
                 detail=f"Role '{minimum.value}' or higher required",
             )
         return user
+
+    return _checker
+
+
+def require_tenant(minimum: Role):
+    """Authenticate, resolve the request's tenant, and enforce the role *in it*.
+
+    Routes keep accepting a ``tenant_id`` query parameter, but it can now only
+    select among the tenants the caller is entitled to; anything else is a 403
+    rather than a silent cross-tenant read.
+    """
+
+    def _checker(
+        user: Annotated[TokenUser, Depends(get_current_user)],
+        tenant_id: Annotated[str | None, Query(description="Tenant to act in")] = None,
+    ) -> TenantPrincipal:
+        from api.services import memberships as memberships_service
+
+        try:
+            resolved, role_value = memberships_service.resolve_tenant(
+                user.username, tenant_id, global_role=user.role.value
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        try:
+            role = Role(role_value)
+        except ValueError:
+            role = Role.viewer
+        if ROLE_RANK[role] < ROLE_RANK[minimum]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Role '{minimum.value}' or higher required in tenant '{resolved}'",
+            )
+        return TenantPrincipal(
+            username=user.username,
+            tenant_id=resolved,
+            role=role,
+            is_platform_admin=user.role == Role.admin,
+            tenant_requested=bool((tenant_id or "").strip()),
+        )
 
     return _checker
 

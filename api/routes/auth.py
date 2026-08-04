@@ -25,11 +25,14 @@ from api.schemas import (
     AuthExchangeResponse,
     CreateProvisioningKeyRequest,
     CreateTenantRequest,
+    GrantMembershipRequest,
+    MembershipInfo,
     ProvisioningKeyInfo,
     TenantInfo,
 )
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
 from api.services import auth as auth_service
+from api.services import memberships as memberships_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -47,7 +50,19 @@ def login(body: LoginRequest, settings: Annotated[Settings, Depends(get_settings
 
 @router.get("/auth/me", response_model=MeResponse)
 def me(user: Annotated[TokenUser, Depends(get_current_user)]) -> MeResponse:
-    return MeResponse(username=user.username, role=user.role)
+    is_platform_admin = user.role == Role.admin
+    tenants = memberships_service.tenants_for_user(
+        user.username, is_platform_admin=is_platform_admin
+    )
+    return MeResponse(
+        username=user.username,
+        role=user.role,
+        tenants=tenants,
+        default_tenant=memberships_service.default_tenant_for_user(
+            user.username, is_platform_admin=is_platform_admin
+        ),
+        is_platform_admin=is_platform_admin,
+    )
 
 
 @router.post("/auth/agent/token", response_model=AgentTokenResponse)
@@ -87,9 +102,69 @@ def auth_exchange(
 
 @router.get("/tenants", response_model=list[TenantInfo])
 def list_tenants(
-    _: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    user: Annotated[TokenUser, Depends(require_role(Role.operator))],
 ) -> list[TenantInfo]:
-    return [TenantInfo.model_validate(t) for t in tenants_service.list_tenants()]
+    """Tenants the caller may act in — the whole list only for a platform admin.
+
+    This is what the UI's tenant switcher reads, so returning every tenant to
+    every operator would leak the customer list of an MSSP installation.
+    """
+    allowed = set(
+        memberships_service.tenants_for_user(
+            user.username, is_platform_admin=user.role == Role.admin
+        )
+    )
+    return [
+        TenantInfo.model_validate(t)
+        for t in tenants_service.list_tenants()
+        if t["tenant_id"] in allowed
+    ]
+
+
+@router.get("/tenants/{tenant_id}/members", response_model=list[MembershipInfo])
+def list_members(
+    tenant_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+) -> list[MembershipInfo]:
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    return [
+        MembershipInfo.model_validate(m)
+        for m in memberships_service.list_memberships(tenant_id=tenant_id)
+    ]
+
+
+@router.put(
+    "/tenants/{tenant_id}/members/{username}",
+    response_model=MembershipInfo,
+)
+def grant_membership(
+    tenant_id: str,
+    username: str,
+    body: GrantMembershipRequest,
+    user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+) -> MembershipInfo:
+    """Grant (or re-grant) one user access to one tenant. Idempotent."""
+    try:
+        granted = memberships_service.grant(
+            username=username,
+            tenant_id=tenant_id,
+            role=body.role,
+            created_by=user.username,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return MembershipInfo.model_validate(granted)
+
+
+@router.delete("/tenants/{tenant_id}/members/{username}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_membership(
+    tenant_id: str,
+    username: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+) -> None:
+    if not memberships_service.revoke(username=username, tenant_id=tenant_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membership not found")
 
 
 @router.post("/tenants", response_model=TenantInfo, status_code=status.HTTP_201_CREATED)

@@ -28,6 +28,7 @@ from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
 from api.services import jobs as jobs_service
+from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import scan_schedules
@@ -63,12 +64,13 @@ def create_app() -> FastAPI:
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
     scan_schedules.configure(settings)
+    memberships_service.configure(settings)
     endpoint_inventory_service.configure(settings)
 
     app = FastAPI(
-        title="Octo-man API",
+        title="Shapoclyack API",
         version=__version__,
-        description="HTTP API for Octo-man scan runs, jobs, remote agents, and RBAC-protected access.",
+        description="HTTP API for Shapoclyack scan runs, jobs, remote agents, and RBAC-protected access.",
         lifespan=lifespan,
     )
     if settings.endpoint_inventory_enabled:

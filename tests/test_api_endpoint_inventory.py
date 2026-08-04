@@ -218,11 +218,12 @@ def test_read_endpoints_require_viewer_role_and_are_tenant_scoped(tmp_path, monk
     assert listed.status_code == 200
     assert any(d["device_id"] == device_id for d in listed.json())
 
+    # P0: asking for a tenant the caller holds no membership in is refused
+    # outright rather than answered with an empty list.
     listed_other_tenant = client.get(
         "/api/endpoint/devices", headers=headers, params={"tenant_id": "ten_missing"}
     )
-    assert listed_other_tenant.status_code == 200
-    assert listed_other_tenant.json() == []
+    assert listed_other_tenant.status_code == 403
 
     detail = client.get(f"/api/endpoint/devices/{device_id}", headers=headers, params={"tenant_id": "default"})
     assert detail.status_code == 200
@@ -292,8 +293,8 @@ def test_recent_changes_feed_returns_hostname_and_is_tenant_scoped(tmp_path, mon
     assert installed_only.status_code == 200
     assert [e["display_name"] for e in installed_only.json()] == ["htop"]
 
+    # P0: a tenant the caller has no membership in is refused, not emptied.
     other_tenant = client.get(
         "/api/endpoint/changes", headers=headers, params={"tenant_id": "ten_missing"}
     )
-    assert other_tenant.status_code == 200
-    assert other_tenant.json() == []
+    assert other_tenant.status_code == 403
