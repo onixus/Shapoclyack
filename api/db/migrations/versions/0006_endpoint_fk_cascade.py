@@ -18,8 +18,8 @@ alter a constraint in place and would need a full table rebuild; a fresh
 SQLite deployment already gets the clauses from ``api/db/models.py``
 metadata, so this migration is a no-op there.
 
-Revision ID: 0005_endpoint_fk_cascade
-Revises: 0004_endpoint_inventory
+Revision ID: 0006_endpoint_fk_cascade
+Revises: 0005_endpoint_changes_fix
 Create Date: 2026-08-04
 
 """
@@ -30,8 +30,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0005_endpoint_fk_cascade"
-down_revision: Union[str, None] = "0004_endpoint_inventory"
+revision: str = "0006_endpoint_fk_cascade"
+down_revision: Union[str, None] = "0005_endpoint_changes_fix"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

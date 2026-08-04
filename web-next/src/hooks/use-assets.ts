@@ -21,10 +21,10 @@ export function useAssets(filters: { status: AssetStatus | "" }, page?: PagePara
   });
 }
 
-export function useAssetDetail(assetId: string | null) {
+export function useAssetDetail(assetId: string | null, tenantId = "default") {
   return useQuery({
-    queryKey: queryKeys.asset(assetId ?? ""),
-    queryFn: () => fetchAsset(assetId!),
+    queryKey: queryKeys.asset(assetId ?? "", tenantId),
+    queryFn: () => fetchAsset(assetId!, tenantId),
     enabled: Boolean(assetId),
   });
 }

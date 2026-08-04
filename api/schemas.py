@@ -489,6 +489,14 @@ class EndpointSoftwareChangeInfo(BaseModel):
     observed_at: str | None = None
 
 
+class EndpointSoftwareChangeFeedItem(EndpointSoftwareChangeInfo):
+    """A software-change event annotated with the device it happened on, for
+    the cross-device recent-changes feed (``GET /endpoint/changes``)."""
+
+    hostname: str
+    asset_id: str | None = None
+
+
 class EndpointSoftwareItemInfo(BaseModel):
     name: str
     version: str | None = None

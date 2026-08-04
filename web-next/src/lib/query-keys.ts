@@ -35,11 +35,16 @@ export const queryKeys = {
   assets: (filters: { status?: string }) => ["assets", filters] as const,
   assetsPage: (filters: { status?: string }, page?: PageParams) =>
     ["assets", filters, pageKey(page)] as const,
-  asset: (assetId: string) => ["asset", assetId] as const,
+  asset: (assetId: string, tenantId = "default") => ["asset", assetId, tenantId] as const,
   endpointDevices: (tenantId = "default") => ["endpoint-devices", tenantId] as const,
-  endpointDevicesForAsset: (assetId: string) => ["endpoint-devices", "asset", assetId] as const,
-  assetSoftware: (assetId: string) => ["asset", assetId, "software"] as const,
-  endpointDeviceChanges: (deviceId: string) => ["endpoint-device", deviceId, "changes"] as const,
+  endpointDevicesForAsset: (assetId: string, tenantId = "default") =>
+    ["endpoint-devices", "asset", assetId, tenantId] as const,
+  assetSoftware: (assetId: string, tenantId = "default") =>
+    ["asset", assetId, "software", tenantId] as const,
+  endpointDeviceChanges: (deviceId: string, tenantId = "default") =>
+    ["endpoint-device", deviceId, "changes", tenantId] as const,
+  recentSoftwareChanges: (tenantId = "default", limit = 50) =>
+    ["endpoint-changes", tenantId, limit] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

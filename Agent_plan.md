@@ -4,7 +4,7 @@
 > inventory. Operator documentation starts at [docs/README.md](docs/README.md).
 
 **Status:** S1-S7 and S9 **done** (merged to `main`) — contract/schema v1, DB
-models + migrations `0004_endpoint_inventory`/`0005_endpoint_fk_cascade`,
+models + migrations `0004_endpoint_inventory`/`0006_endpoint_fk_cascade`,
 ingestion API with idempotency/limits, asset reconciliation, software
 diff/events, read APIs, a Web UI Endpoint/Software section on the asset card,
 and (S9) the retention sweep, server-side staleness, hard body cap, metrics,
@@ -585,7 +585,7 @@ current snapshot never pruned), `api/middleware.py` (`Content-Length`-based
 body cap → `413`/`411` before parsing), `endpoint_inventory.device_status()` /
 `device_counts()` (`OCTO_ENDPOINT_STALE_HOURS`), the `octo_endpoint_*` metrics
 in `api/services/metrics.py`, `endpoint_inventory` in `GET /api/system` plus
-its System-page panel, migration `0005_endpoint_fk_cascade`, and the retention/
+its System-page panel, migration `0006_endpoint_fk_cascade`, and the retention/
 runbook/sizing sections in [docs/operations.md](docs/operations.md) with the
 variable table in [docs/configuration.md](docs/configuration.md).
 
@@ -745,7 +745,7 @@ documented decision instead of re-deriving one from code.
    `tenants.tenant_id`, and the identifier/snapshot/software/change tables
    chaining off `device_id`/`snapshot_id`) currently have no `ondelete`
    clause, so a future tenant-delete would fail on FK violation rather than
-   cascade. **Implemented** in migration `0005_endpoint_fk_cascade`:
+   cascade. **Implemented** in migration `0006_endpoint_fk_cascade`:
    `CASCADE` down the endpoint chain and `SET NULL` on
    `endpoint_devices.asset_id`, so endpoint data is automatically covered
    whenever a general tenant-deletion flow ships, without needing

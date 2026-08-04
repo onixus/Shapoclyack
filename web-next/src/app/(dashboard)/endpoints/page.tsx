@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowUpRight, Laptop } from "lucide-react";
+import { ArrowUpRight, History, Laptop } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -15,17 +15,81 @@ import {
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
-import { useEndpointDevices } from "@/hooks/use-endpoint-inventory";
+import { useEndpointDevices, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
 import { useSystemStatus } from "@/hooks/use-system";
 import { useTenants } from "@/hooks/use-tenants";
 import type { EndpointDeviceInfo, EndpointReconciliationStatus } from "@/lib/api";
-import { ENDPOINT_RECONCILIATION_STATUS } from "@/lib/config/statuses";
+import { ENDPOINT_RECONCILIATION_STATUS, SOFTWARE_CHANGE_STATUS } from "@/lib/config/statuses";
 import { useAuthStore } from "@/lib/auth-store";
 
 const FILTER_ALL = "all";
 
-function assetHref(assetId: string): string {
-  return `/assets/view?assetId=${encodeURIComponent(assetId)}`;
+function assetHref(assetId: string, tenantId: string): string {
+  const params = new URLSearchParams({ assetId });
+  if (tenantId && tenantId !== "default") params.set("tenantId", tenantId);
+  return `/assets/view?${params}`;
+}
+
+/** Lightweight cross-device feed of recent software installs/removals/updates
+ * (issue #98 Phase 3) — the per-device equivalent lives on the asset's
+ * Endpoint/Software tab. */
+function RecentChangesFeed({ tenantId }: { tenantId: string }) {
+  const changesQuery = useRecentSoftwareChanges(tenantId, 30);
+  const changes = changesQuery.data || [];
+
+  return (
+    <div className="rounded-xl border border-slate-800/80 bg-slate-950/40">
+      <div className="flex items-center gap-2 border-b border-slate-800/80 px-4 py-3">
+        <History className="h-4 w-4 text-slate-500" />
+        <h2 className="text-sm font-bold text-slate-200">Recent software changes</h2>
+      </div>
+      <div className="max-h-72 overflow-y-auto">
+        {changesQuery.isLoading ? (
+          <p className="px-4 py-4 text-xs text-slate-500">Loading…</p>
+        ) : changesQuery.error ? (
+          <p className="px-4 py-4 text-xs text-rose-400">
+            {(changesQuery.error as Error).message}
+          </p>
+        ) : changes.length === 0 ? (
+          <p className="px-4 py-4 text-xs text-slate-500">
+            No installs, removals, or updates observed yet.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-800/60">
+            {changes.map((change, idx) => (
+              <li
+                key={`${change.device_id}-${change.snapshot_id}-${change.display_name}-${idx}`}
+                className="flex items-center justify-between gap-3 px-4 py-2 text-xs"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <StatusBadge value={change.event_type} map={SOFTWARE_CHANGE_STATUS} />
+                  <span className="truncate font-mono text-slate-300">{change.display_name}</span>
+                  <span className="shrink-0 text-slate-600">on</span>
+                  {change.asset_id ? (
+                    <Link
+                      href={assetHref(change.asset_id, tenantId)}
+                      className="shrink-0 truncate font-mono text-sky-400 hover:text-sky-300 hover:underline"
+                    >
+                      {change.hostname}
+                    </Link>
+                  ) : (
+                    <span className="shrink-0 truncate font-mono text-slate-400">
+                      {change.hostname}
+                    </span>
+                  )}
+                </div>
+                <span className="shrink-0 text-slate-500">
+                  {change.observed_at
+                    ? formatDistanceToNow(new Date(change.observed_at), { addSuffix: true })
+                    : "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function EndpointsPage() {
@@ -101,7 +165,7 @@ export default function EndpointsPage() {
           }
           return (
             <Link
-              href={assetHref(id)}
+              href={assetHref(id, tenantId)}
               className="group inline-flex items-center gap-1 font-mono text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline"
             >
               <span className="max-w-[10rem] truncate">{id}</span>
@@ -147,13 +211,13 @@ export default function EndpointsPage() {
               size="sm"
               className="h-7 border-slate-800 bg-slate-900 text-xs text-sky-400 hover:bg-slate-800 hover:text-white"
             >
-              <Link href={assetHref(id)}>Open asset</Link>
+              <Link href={assetHref(id, tenantId)}>Open asset</Link>
             </Button>
           );
         },
       },
     ],
-    [],
+    [tenantId],
   );
 
   const linked = raw.filter((d) => d.asset_id).length;
@@ -238,6 +302,8 @@ export default function EndpointsPage() {
         inventory is attached to a network-scan asset (by hostname / identifiers). Open the asset to
         see Pulse vulns, ports, and installed software together.
       </p>
+
+      <RecentChangesFeed tenantId={tenantId} />
 
       <DataTable
         columns={columns}

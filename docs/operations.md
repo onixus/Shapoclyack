@@ -143,7 +143,7 @@ Runbook:
 
 Tenant offboarding: endpoint data has no bespoke delete/export flow and follows
 whatever general tenant-deletion mechanism the platform adopts. The endpoint FK
-chain cascades from `tenants` (migration `0005_endpoint_fk_cascade`), so
+chain cascades from `tenants` (migration `0006_endpoint_fk_cascade`), so
 deleting a tenant row removes its devices, identifiers, snapshots, software
 rows, and change events; a linked asset being deleted only nulls the device's
 `asset_id`.
