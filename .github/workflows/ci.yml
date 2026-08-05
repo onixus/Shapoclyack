@@ -102,11 +102,12 @@ jobs:
           node-version: "26"
           cache: npm
           cache-dependency-path: web-next/package-lock.json
-      - name: Install, lint, test, and build
+      - name: Install, lint, typecheck, test, and build
         working-directory: web-next
         run: |
           npm ci
           npm run lint
+          npm run typecheck
           npm test
           npm run build
 

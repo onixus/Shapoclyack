@@ -132,9 +132,30 @@ describe("recentRunTrend", () => {
 describe("topVulnerablePorts", () => {
   it("ranks by vulnerability count, falling back to host count", () => {
     const ports: PortAggregate[] = [
-      { port: "80", protocol: "tcp", host_count: 5, vulnerability_count: 1, hosts: [] },
-      { port: "443", protocol: "tcp", host_count: 2, vulnerability_count: 9, hosts: [] },
-      { port: "53", protocol: null, host_count: 7, vulnerability_count: 0, hosts: [] },
+      {
+        port: "80",
+        protocol: "tcp",
+        host_count: 5,
+        vulnerability_count: 1,
+        hosts: [],
+        services: [],
+      },
+      {
+        port: "443",
+        protocol: "tcp",
+        host_count: 2,
+        vulnerability_count: 9,
+        hosts: [],
+        services: [],
+      },
+      {
+        port: "53",
+        protocol: null,
+        host_count: 7,
+        vulnerability_count: 0,
+        hosts: [],
+        services: [],
+      },
     ];
     const top = topVulnerablePorts(ports, 2);
     expect(top.map((p) => p.name)).toEqual(["443/tcp", "53"]);
