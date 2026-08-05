@@ -1,90 +1,139 @@
-# Security Policy
+# Security policy
 
 ## Supported versions
 
-Security fixes are applied to the **latest release** on [`main`](https://github.com/onixus/Shapoclyack/tree/main).
-Published container images receive tags for the current semver release (see [Releases](https://github.com/onixus/Shapoclyack/releases)).
+Security fixes are applied to the latest published release and to `main` while a
+fix is being prepared. Older release lines are not maintained indefinitely.
 
-| Version   | Supported |
-|-----------|-----------|
-| `0.36-0723` / current `0.36` line | Yes |
-| `0.35` | Security fixes only; upgrade recommended |
-| `0.34` and older | No |
+| Version | Support status |
+|---|---|
+| `0.39-0805` / current `0.39` line | Supported |
+| `0.38` | Security fixes only; upgrade recommended |
+| `0.37` and older | Unsupported |
 
-We recommend always using the latest image tags, for example:
+Use immutable release tags in production. Do not depend on `latest`.
 
 ```bash
-docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.36-0723
-docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.36-0723
-docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.36-0723
+docker pull ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.39-0805
+docker pull ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.39-0805
+docker pull ghcr.io/onixus/shapoclyack-api:shapoclyack-0.39-0805
 ```
+
+The current release is listed on the repository
+[Releases](https://github.com/onixus/Shapoclyack/releases) page. When this file
+and the release page disagree, the release page is authoritative until the
+policy is corrected.
 
 ## Reporting a vulnerability
 
-**Please do not open public GitHub issues for security vulnerabilities.**
+Do not open public issues for suspected security vulnerabilities.
 
-Report issues in this repository (application code, Dockerfile, CI workflows, published GHCR image build) through one of these channels:
+Use one of these channels:
 
-1. **[GitHub Private vulnerability reporting](https://github.com/onixus/Shapoclyack/security/advisories/new)** (preferred)
-2. **Repository maintainer contact:** open a draft advisory or contact the [`onixus`](https://github.com/onixus) account owners via GitHub if private reporting is unavailable
+1. [GitHub private vulnerability reporting](https://github.com/onixus/Shapoclyack/security/advisories/new), preferred;
+2. a private draft security advisory in this repository;
+3. direct contact with the repository owner through GitHub when private
+   reporting is unavailable.
 
-Include as much detail as possible:
+Include enough information to reproduce and assess the issue:
 
-- Description and impact
-- Affected version / image tag (`ghcr.io/onixus/shapoclyack-aio:…` or `-scanner` / `-api`)
-- Steps to reproduce or proof-of-concept
-- Suggested fix (if any)
+- affected component and version or image tag;
+- impact and realistic attack preconditions;
+- reproduction steps or a minimal proof of concept;
+- tenant, role, deployment, and network assumptions;
+- logs or traces with credentials and customer data removed;
+- suggested remediation, when available.
 
-We aim to acknowledge reports within **5 business days** and to provide a remediation plan or status update within **30 days** for confirmed issues, depending on severity and complexity.
+The maintainers aim to acknowledge a report within five business days and to
+provide a remediation plan or status update within 30 days for confirmed
+issues. Actual timelines depend on severity, exploitability, and release risk.
 
 ## Scope
 
 ### In scope
 
-- Python code under `scanner/` and `api/`
-- Next.js dashboard (Web UI v2) under `web-next/`
-- Shell helpers under `scripts/` and `bench/` that ship with the repo
-- `Dockerfile`, `Dockerfile.api`, `k8s/` manifests, and GitHub Actions workflows that build or publish images
-- Misconfiguration or unsafe defaults in shipped YAML configs / demo credentials that lead to unintended exposure **of the scanner host or operator data**
+- Python code under `scanner/`, `api/`, and `agent/`;
+- the Next.js console under `web-next/`;
+- the Go discovery worker under `recon/`;
+- shell helpers shipped under `scripts/` and `bench/`;
+- Dockerfiles, Kubernetes manifests, and GitHub Actions workflows;
+- authentication, authorization, tenant isolation, provisioning, and remote
+  agent trust boundaries;
+- unsafe defaults that expose the scanner host, operator credentials, tenant
+  data, scan artifacts, or control-plane services;
+- packaging or release weaknesses in official GHCR images.
 
 ### Out of scope
 
-- **Findings produced by scans** (CVEs, misconfigurations, open ports on *your* targets). The tool is designed to report those; securing scanned infrastructure is the operator's responsibility.
-- **Use of the scanner without authorization** on networks you do not own or lack written permission to test. Only scan systems you are explicitly allowed to assess.
-- **Upstream tool vulnerabilities** (Nmap, naabu, dnsx, NSE scripts, base OS packages) unless we ship a clearly unsafe integration or fail to update pins after a fixed upstream release is available. Known accepted image exceptions are documented in [`.trivyignore`](../.trivyignore).
-- Denial-of-service against third-party targets caused solely by running documented scan profiles at documented rates (operator responsibility to choose legal targets and rates).
+- vulnerabilities and exposures discovered on operator-provided targets;
+- scanning systems without explicit authorization;
+- denial of service caused solely by intentionally aggressive scan settings
+  against third-party targets;
+- upstream vulnerabilities when Shapoclyack does not introduce an unsafe
+  integration and a fixed supported upstream release is not yet available;
+- findings that require already-compromised cluster-admin or host-root access
+  without crossing an additional documented trust boundary.
+
+Accepted image exceptions are documented in [`.trivyignore`](../.trivyignore)
+and must be reviewed when affected packages or base images change.
 
 ## Safe harbor
 
-We appreciate responsible disclosure. Good-faith research that:
+Good-faith research is welcome when it:
 
-- stays within the scope above,
-- avoids privacy violations, data destruction, or service disruption beyond what is needed to demonstrate the issue, and
-- gives us reasonable time to fix before public disclosure,
+- stays within the scope above;
+- avoids privacy violations, destructive actions, and unnecessary disruption;
+- uses the minimum data and traffic needed to demonstrate the issue;
+- gives maintainers reasonable time to remediate before public disclosure.
 
-will not be pursued as a policy violation by the maintainers.
+The maintainers will not treat such research as a project policy violation.
+This statement does not grant authorization to test infrastructure owned by
+third parties.
 
-## How we secure releases
+## Release security controls
 
-- **CI image gate:** Trivy fails the pipeline on fixable **CRITICAL** issues in the built image (`ignore-unfixed: true`; exceptions in `.trivyignore` are reviewed and time-bounded).
-- **SBOM + provenance:** Release images on GHCR include SPDX SBOM and SLSA provenance attestations (see [docker-publish workflow](workflows/docker-publish.yml)).
-- **Reproducible pins:** Base image digest, dnsx/naabu checksums, and NSE script commits are pinned in the `Dockerfile` (see [Third-party dependencies](../docs/third-party.md)).
-- **Least privilege in containers:** Scanner runs as non-root UID `1000` (`scanner`); API as UID `1000` (`octo`). Raw sockets use file capabilities on `naabu`/`nmap` only.
+Official release workflows include these controls:
 
-## Operator security notes
+- Ruff, compilation, unit, integration, and supported Python-version tests;
+- Web UI formatting, linting, type checking, tests, and static-export build;
+- Kubernetes manifest validation;
+- image build, smoke, end-to-end, and synthetic load checks;
+- Trivy reporting and a gate for fixable critical vulnerabilities;
+- SPDX SBOM generation and release provenance where configured;
+- pinned base image digests, tool checksums, and selected upstream revisions;
+- non-root runtime users and workload-specific Linux capabilities.
 
-The complete deployment and trust-boundary overview is in
-[Architecture](../docs/architecture.md) and the safe configuration guidance is
-in [Configuration](../docs/configuration.md).
+Passing CI is necessary but not sufficient. Security-sensitive changes must
+also document tenant impact, trust boundaries, compatibility, and any required
+operator migration.
 
-- Grant **`NET_RAW` / `NET_ADMIN`** only to scanner Jobs/CronJobs; the API Deployment drops all capabilities.
-- Do not expose the Docker socket to scanner or API pods.
-- Treat PVC data under `output/` / `state/` as **sensitive** (banners, CVE findings, hostnames).
-- Replace demo JWT secret and `*-change-me` API passwords before any shared or production use.
-- Prefer cluster Secrets (`shapoclyack-api`, `shapoclyack-alerts`) over committing credentials to YAML.
-- Pull images only from **`ghcr.io/onixus/shapoclyack-aio`**, **`shapoclyack-scanner`**, or **`shapoclyack-api`** and verify tags match [official releases](https://github.com/onixus/Shapoclyack/releases).
+## Operator security baseline
+
+The architecture and trust-boundary overview is in
+[Architecture](../docs/architecture.md). Configuration and deployment details
+are in [Configuration](../docs/configuration.md) and
+[Kubernetes](../k8s/README.md).
+
+At minimum:
+
+- replace demo JWT secrets, passwords, and provisioning keys before exposing the
+  service outside a trusted development environment;
+- store credentials in Kubernetes Secrets or an external secret manager;
+- restrict API, NATS, PostgreSQL, and ClickHouse network exposure;
+- grant `NET_RAW` or `NET_ADMIN` only to scanner workloads that require them;
+- never mount the Docker socket into scanner, agent, API, or Web workloads;
+- treat scan artifacts, endpoint inventory, banners, findings, and logs as
+  sensitive operational data;
+- enforce tenant membership and role checks server-side rather than trusting
+  client-supplied tenant identifiers;
+- use TLS and authenticated transport for remote agents and external service
+  integrations;
+- pin official image tags and review release notes before upgrading;
+- back up persistent data and test restoration before relying on retention or
+  migration procedures.
 
 ## Security updates
 
-Subscribe to [Releases](https://github.com/onixus/Shapoclyack/releases) and [GitHub Security Advisories](https://github.com/onixus/Shapoclyack/security/advisories) for this repository.
-Image rebuilds for dependency fixes are published under new patch/minor semver tags as needed.
+Subscribe to repository Releases and GitHub Security Advisories. Dependency or
+base-image fixes are published as new release tags; existing tags are not
+silently replaced as a substitute for a documented release.
