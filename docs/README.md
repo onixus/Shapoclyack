@@ -1,46 +1,84 @@
-# Documentation
+# Shapoclyack documentation
 
-This index is the stable entry point for Shapoclyack documentation. Commands
-assume the repository root unless a guide says otherwise.
+This directory is the stable entry point for operator, administrator,
+integrator, and developer documentation. Commands assume the repository root
+unless a guide explicitly says otherwise.
 
-## Operators
+## Start here
 
-| Guide | Use it for |
+| Goal | Guide |
 |---|---|
-| [Getting started](getting-started.md) | Start the stack, prepare targets, run and verify a scan |
-| [Configuration](configuration.md) | Select profiles, stages, protocols, rates, and enrichment |
-| [Web interface](ui.md) | Understand UI surfaces and refresh interface screenshots |
-| [Operations](operations.md) | Artifacts, retention, resume, scheduling, alerts, and observability |
-| [Troubleshooting](troubleshooting.md) | Diagnose startup, auth, scanner, broker, database, and UI issues |
-| [Kubernetes](../k8s/README.md) | Deploy the base and optional overlays |
+| Evaluate the platform locally | [Getting started](getting-started.md) |
+| Understand the system design | [Architecture](architecture.md) |
+| Configure scan profiles and integrations | [Configuration](configuration.md) |
+| Deploy on Kubernetes | [Kubernetes deployment](../k8s/README.md) |
+| Operate and monitor the platform | [Operations](operations.md) |
+| Diagnose a failure | [Troubleshooting](troubleshooting.md) |
+| Develop or contribute changes | [Development](development.md) |
 
-## Integrators and developers
+## Operator documentation
 
-| Guide | Use it for |
+| Guide | Scope |
 |---|---|
-| [Architecture](architecture.md) | Components, trust boundaries, and data flow |
-| [API and RBAC](api-and-rbac.md) | Authentication, roles, tenant scope, and endpoint groups |
-| [Development](development.md) | Local development, tests, builds, and contribution checks |
-| [Endpoint inventory backlog](../Agent_plan.md) | Lariska integration design and completed decisions |
-| [Roadmap](../ROADMAP.md) | Delivered and planned platform phases |
-| [Changelog](../CHANGELOG.md) | Release and unreleased changes |
-| [Third-party components](third-party.md) | Runtime dependencies and license considerations |
-| [Pulse backend](pulse-backend.md) | Optional Nmap alternative for OS/banner/CVE (GenDec Pulse) |
-| [Security policy](../.github/SECURITY.md) | Supported releases and vulnerability disclosure |
+| [Getting started](getting-started.md) | Local deployment, target preparation, first scan, and validation |
+| [Configuration](configuration.md) | Profiles, stages, protocols, rates, enrichment, and safe overrides |
+| [Web interface](ui.md) | Dashboard surfaces, workflows, and screenshot maintenance |
+| [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, and backup considerations |
+| [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, and UI diagnostics |
+| [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
+
+## Platform and integration documentation
+
+| Guide | Scope |
+|---|---|
+| [Architecture](architecture.md) | Components, trust boundaries, storage, messaging, and data flow |
+| [API and RBAC](api-and-rbac.md) | Authentication, roles, tenant isolation, principals, and endpoint groups |
+| [Third-party components](third-party.md) | Runtime dependencies, data sources, licenses, and redistribution notes |
+| [Security policy](../.github/SECURITY.md) | Supported versions, disclosure process, release controls, and operator guidance |
+
+## Engineering documentation
+
+| Guide | Scope |
+|---|---|
+| [Development](development.md) | Toolchains, local setup, tests, builds, documentation rules, and review checklist |
+| [Endpoint inventory plan](../Agent_plan.md) | Lariska integration design, delivered decisions, and remaining backlog |
+| [Roadmap](../ROADMAP.md) | Product phases and planned work |
+| [Changelog](../CHANGELOG.md) | Released and unreleased behavior changes |
+
+## Documentation ownership
+
+Documentation changes are part of the feature definition, not post-release
+cleanup. A change is incomplete when it modifies behavior without updating the
+corresponding guide.
+
+Use this ownership map:
+
+| Change type | Required documentation |
+|---|---|
+| User-visible behavior | Root README or `docs/ui.md`, plus the relevant operator guide |
+| API, role, or tenant behavior | `docs/api-and-rbac.md` |
+| Deployment or environment variables | `docs/configuration.md` and/or `k8s/README.md` |
+| Runtime lifecycle, storage, retention, or recovery | `docs/operations.md` |
+| Architecture or trust boundaries | `docs/architecture.md` and security policy when relevant |
+| Developer workflow or validation | `docs/development.md` |
+| Released behavior | `CHANGELOG.md`; update `ROADMAP.md` when a planned item is delivered |
 
 ## Documentation conventions
 
-- Examples use reserved documentation networks and `.test` domains.
-- Shell blocks are intended to be copied from the repository root.
-- Configuration snippets show only relevant keys; merge them into
-  `scanner/config/default.yaml` or an environment-specific file.
-- `Unreleased` features may exist on `main` but not in the latest image tag.
-  Confirm against [CHANGELOG.md](../CHANGELOG.md).
-- Secrets in examples are placeholders. Never reuse demo credentials or sample
-  keys in an exposed environment.
+- Use reserved documentation networks and `.test` domains in examples.
+- Write shell commands so they can be copied from the repository root.
+- Show only relevant configuration keys and state where they belong.
+- Label behavior that exists only on `main` and is not yet in a release.
+- Never include real credentials, targets, customer names, tokens, or internal
+  infrastructure details in examples or screenshots.
+- Prefer relative Markdown links for repository content.
+- Keep headings task-oriented and avoid duplicating the same procedure across
+  several files; link to the authoritative guide instead.
+- Verify commands, paths, image tags, and environment variable names against the
+  current code or manifests before merging.
 
 ## Version scope
 
-These guides describe `main` after release `shapoclyack-0.39-0805`. The release
-tag is the reference for immutable deployment behavior; `main` can include
-additional entries documented under `Unreleased`.
+These guides describe `main` after release `shapoclyack-0.39-0805`. Release tags
+are immutable deployment references; `main` may include additional behavior
+listed under `Unreleased` in [CHANGELOG.md](../CHANGELOG.md).
