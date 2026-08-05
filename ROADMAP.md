@@ -252,13 +252,13 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 
 | Priority | Est. effort | Theme | Scope |
 |----------|-------------|-------|-------|
-| **P0** | 1–2 sprints | Tenant-aware IAM | **Partly done** — user memberships (`user_tenants`, migration `0007`), server-derived tenant context (`require_tenant`), scoping for jobs/agents/assets/schedules/endpoint inventory, and negative cross-tenant tests are merged. **Remaining:** tag runs with a tenant and scope run artifacts, plus the UI tenant switcher |
+| **P0** | 1–2 sprints | Tenant-aware IAM | **Done** — user memberships (`user_tenants`, migration `0007`), server-derived tenant context (`require_tenant`), scoping for jobs/agents/assets/schedules/endpoint inventory **and runs/run artifacts** (`tenant.json` run marker), the header tenant switcher, and negative cross-tenant tests are merged |
 | **P1** | 2–4 sprints | Durable control plane | Move jobs and agents into PostgreSQL; formal state machine; leases; idempotency keys; extract the scheduler into its own worker or add leader election |
 | **P2** | 2–3 sprints | Asset event workflows | Finish [Phase 10.2–10.3](#phase-10--change-detection--alerting-at-asset-level): `events.asset.*`, routing policies, webhooks first, retries, DLQ, audit trail; then Jira/ServiceNow |
 | **P3** | parallel track | Scale & observability | Prometheus/OpenTelemetry, SLOs, ~~server-side pagination~~ (done, 3.2/3.3), 1k/10k/50k-asset test fixtures, ClickHouse/API/UI profiling, coverage gate + frontend tests in CI |
 | **P4** | — | Differentiating features | Web screenshots with retention/redaction (closes [9.3](#phase-9--exposure-fingerprinting)); TLS hostname/SAN-CN mismatch check; improved IP↔FQDN↔certificate correlation; ownership graph; risk-priority explanation |
 
-P0–P1 are prerequisites for safely running the platform at MSSP scale; P2 completes the EASM alerting loop already scaffolded in Phase 10; P3 is a parallel hardening track, not a blocking dependency; P4 is scope already flagged as deferred/out-of-scope in Phases 9–10 and can start once P0–P2 land.
+P0 is complete; P1 remains a prerequisite for safely running the platform at MSSP scale; P2 completes the EASM alerting loop already scaffolded in Phase 10; P3 is a parallel hardening track, not a blocking dependency; P4 is scope already flagged as deferred/out-of-scope in Phases 9–10 and can start once P0–P2 land.
 
 ### P3 breakdown — Scale & observability
 

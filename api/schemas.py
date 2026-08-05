@@ -34,6 +34,9 @@ class HealthResponse(BaseModel):
 
 class RunSummary(BaseModel):
     run_id: str
+    # Owning tenant (ROADMAP P0). Reads back as "default" for runs written
+    # before runs were tagged.
+    tenant_id: str = "default"
     profile: str | None = None
     started_at: str | None = None
     config: str | None = None
@@ -48,6 +51,7 @@ class RunSummary(BaseModel):
 
 class RunDetail(BaseModel):
     run_id: str
+    tenant_id: str = "default"
     meta: dict[str, Any] = Field(default_factory=dict)
     summary: dict[str, Any] | None = None
     diff: dict[str, Any] | None = None

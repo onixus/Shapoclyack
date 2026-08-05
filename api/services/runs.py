@@ -6,7 +6,13 @@ from typing import Any
 
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.services import pagination
+from api.services import tenants as tenants_service
 from api.settings import Settings
+
+# Marker file written into a run directory naming the tenant the run belongs to
+# (ROADMAP P0). Runs produced before this shipped have no marker and are read as
+# belonging to the default tenant — the tenant every pre-P0 install scanned as.
+RUN_TENANT_FILE = "tenant.json"
 
 
 def _load_json(path: Path) -> Any | None:
@@ -90,6 +96,41 @@ def _run_id_for(path: Path, settings: Settings) -> str:
     return path.name
 
 
+def read_run_tenant(run_dir: Path) -> str:
+    """Tenant that owns ``run_dir``.
+
+    Falls back to the default tenant when the marker is missing or unreadable —
+    runs written before P0, and any run produced by the plain ``scanner.main``
+    CLI outside the API, have no marker.
+    """
+    meta = _load_json(run_dir / RUN_TENANT_FILE)
+    if isinstance(meta, dict):
+        tenant_id = str(meta.get("tenant_id") or "").strip()
+        if tenant_id:
+            return tenant_id
+    return tenants_service.DEFAULT_TENANT_ID
+
+
+def write_run_tenant(
+    settings: Settings, run_id: str, tenant_id: str, *, job_id: str | None = None
+) -> bool:
+    """Tag a run directory with its owning tenant. Best-effort: returns False
+    when the run directory doesn't exist or the write fails, since losing the
+    marker must never fail a scan that otherwise succeeded (the run then reads
+    back as the default tenant)."""
+    run_dir = settings.output_dir / "runs" / run_id if run_id != "default" else settings.output_dir
+    if not run_dir.is_dir():
+        return False
+    payload: dict[str, Any] = {"tenant_id": tenant_id}
+    if job_id:
+        payload["job_id"] = job_id
+    try:
+        (run_dir / RUN_TENANT_FILE).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def list_runs(
     settings: Settings,
     *,
@@ -97,6 +138,7 @@ def list_runs(
     limit: int = pagination.DEFAULT_LIMIT,
     q: str | None = None,
     order: str | None = None,
+    tenant_id: str | None = None,
 ) -> tuple[list[RunSummary], int]:
     """Return ``(page, total_after_filtering)``.
 
@@ -106,11 +148,18 @@ def list_runs(
     ``summary.json`` are read for the requested page only, so listing stays
     O(page) instead of O(all runs). Sorting by a summary column would require
     reading every run and is deliberately not offered server-side.
+
+    ``tenant_id`` restricts the listing to runs owned by that tenant. Unlike the
+    other filters this one can't be answered from the directory name, so it
+    costs one small ``tenant.json`` read per run *before* slicing; pass ``None``
+    (platform admin, fleet-wide view) to skip those reads entirely.
     """
     run_dirs = _run_dirs(settings)
     if q:
         needle = q.strip().lower()
         run_dirs = [d for d in run_dirs if needle in _run_id_for(d, settings).lower()]
+    if tenant_id:
+        run_dirs = [d for d in run_dirs if read_run_tenant(d) == tenant_id]
     if (order or "").lower() == "asc":
         run_dirs = list(reversed(run_dirs))
     page_dirs, total = pagination.slice_page(run_dirs, offset=offset, limit=limit)
@@ -123,6 +172,7 @@ def list_runs(
         results.append(
             RunSummary(
                 run_id=run_id,
+                tenant_id=tenant_id or read_run_tenant(run_dir),
                 profile=meta.get("profile") if isinstance(meta, dict) else None,
                 started_at=meta.get("started_at") if isinstance(meta, dict) else None,
                 config=meta.get("config") if isinstance(meta, dict) else None,
@@ -140,18 +190,30 @@ def list_runs(
     return results, total
 
 
-def get_run_dir(settings: Settings, run_id: str) -> Path | None:
+def get_run_dir(settings: Settings, run_id: str, *, tenant_id: str | None = None) -> Path | None:
+    """Resolve a run directory, or ``None`` when it doesn't exist.
+
+    With ``tenant_id`` set, a run owned by another tenant also resolves to
+    ``None`` — callers turn that into the same 404 as a missing run, so an id
+    from a foreign tenant isn't confirmed to exist. Every run sub-resource
+    (hosts/ports/vulns/diff/artifacts) goes through here, so scoping this one
+    function scopes all of them.
+    """
     if run_id == "default":
         candidate = settings.output_dir
-        if candidate.is_dir():
-            return candidate
+        if not candidate.is_dir():
+            return None
+    else:
+        candidate = settings.output_dir / "runs" / run_id
+        if not candidate.is_dir():
+            return None
+    if tenant_id and read_run_tenant(candidate) != tenant_id:
         return None
-    candidate = settings.output_dir / "runs" / run_id
-    return candidate if candidate.is_dir() else None
+    return candidate
 
 
-def get_run_detail(settings: Settings, run_id: str) -> RunDetail | None:
-    run_dir = get_run_dir(settings, run_id)
+def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = None) -> RunDetail | None:
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
     artifacts = sorted(
@@ -161,6 +223,7 @@ def get_run_detail(settings: Settings, run_id: str) -> RunDetail | None:
     )
     return RunDetail(
         run_id=run_id,
+        tenant_id=read_run_tenant(run_dir),
         meta=_load_json(run_dir / "run_meta.json") or {},
         summary=_load_json(run_dir / "summary.json"),
         diff=_load_json(run_dir / "diff.json"),
@@ -184,8 +247,9 @@ def get_vulnerabilities(
     limit: int = 5000,
     host: str | None = None,
     port: str | None = None,
+    tenant_id: str | None = None,
 ) -> list[VulnerabilityItem] | None:
-    run_dir = get_run_dir(settings, run_id)
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
     raw = _load_json(run_dir / "vulnerabilities.json")
@@ -235,8 +299,10 @@ def get_vulnerabilities(
     return items[:limit]
 
 
-def get_hosts(settings: Settings, run_id: str, *, limit: int = 10000) -> list[AliveHostItem] | None:
-    run_dir = get_run_dir(settings, run_id)
+def get_hosts(
+    settings: Settings, run_id: str, *, limit: int = 10000, tenant_id: str | None = None
+) -> list[AliveHostItem] | None:
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
     geo = _geo_map(run_dir)
@@ -287,8 +353,10 @@ def get_hosts(settings: Settings, run_id: str, *, limit: int = 10000) -> list[Al
     return rows[:limit]
 
 
-def get_ports(settings: Settings, run_id: str, *, limit: int = 10000) -> list[PortAggregateItem] | None:
-    run_dir = get_run_dir(settings, run_id)
+def get_ports(
+    settings: Settings, run_id: str, *, limit: int = 10000, tenant_id: str | None = None
+) -> list[PortAggregateItem] | None:
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
 
@@ -358,13 +426,17 @@ def get_ports(settings: Settings, run_id: str, *, limit: int = 10000) -> list[Po
     return items[:limit]
 
 
-def resolve_artifact(settings: Settings, run_id: str, relative: str) -> Path | None:
+def resolve_artifact(
+    settings: Settings, run_id: str, relative: str, *, tenant_id: str | None = None
+) -> Path | None:
     """Resolve a run-relative artifact path to a real file, or ``None`` if the
     run/file doesn't exist or the path escapes the run directory. Rejects
     absolute paths and ``..`` segments (even if the HTTP layer normalizes URLs)
     and confirms the resolved target stays under ``run_dir``. Shared by the
-    text-preview and binary-download endpoints."""
-    run_dir = get_run_dir(settings, run_id)
+    text-preview and binary-download endpoints. ``tenant_id`` additionally
+    scopes the run itself, so artifacts of another tenant's run read as
+    missing."""
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
     rel = Path(relative)
@@ -380,8 +452,15 @@ def resolve_artifact(settings: Settings, run_id: str, relative: str) -> Path | N
     return target
 
 
-def read_artifact_text(settings: Settings, run_id: str, relative: str, *, max_bytes: int = 1_000_000) -> str | None:
-    target = resolve_artifact(settings, run_id, relative)
+def read_artifact_text(
+    settings: Settings,
+    run_id: str,
+    relative: str,
+    *,
+    max_bytes: int = 1_000_000,
+    tenant_id: str | None = None,
+) -> str | None:
+    target = resolve_artifact(settings, run_id, relative, tenant_id=tenant_id)
     if target is None:
         return None
     data = target.read_bytes()[:max_bytes]

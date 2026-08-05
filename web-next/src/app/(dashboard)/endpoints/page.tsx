@@ -17,7 +17,6 @@ import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useEndpointDevices, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
 import { useSystemStatus } from "@/hooks/use-system";
-import { useTenants } from "@/hooks/use-tenants";
 import type { EndpointDeviceInfo, EndpointReconciliationStatus } from "@/lib/api";
 import { ENDPOINT_RECONCILIATION_STATUS, SOFTWARE_CHANGE_STATUS } from "@/lib/config/statuses";
 import { useAuthStore } from "@/lib/auth-store";
@@ -93,14 +92,15 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
 }
 
 export default function EndpointsPage() {
-  const { canOperate } = useAuthStore();
   const [reconFilter, setReconFilter] = useState<string>(FILTER_ALL);
-  const [tenantId, setTenantId] = useState<string>("default");
   const [staleOnly, setStaleOnly] = useState(false);
 
+  // Tenant comes from the header switcher (ROADMAP P0) rather than a
+  // page-local selector, so every page agrees on which tenant is in view.
+  const { activeTenant } = useAuthStore();
+  const tenantId = activeTenant ?? "default";
+
   const staleHours = useSystemStatus().data?.endpoint_inventory.stale_hours ?? 48;
-  const tenantsQuery = useTenants(canOperate);
-  const tenants = tenantsQuery.data || [];
 
   const devicesQuery = useEndpointDevices(tenantId);
   const raw = useMemo(() => devicesQuery.data || [], [devicesQuery.data]);
@@ -254,20 +254,6 @@ export default function EndpointsPage() {
             <span>
               <span className="font-semibold text-amber-400">{stale}</span> stale
             </span>
-          ) : null}
-          {tenants.length > 1 ? (
-            <Select value={tenantId} onValueChange={setTenantId}>
-              <SelectTrigger className="h-8 w-[150px] border-slate-800 bg-slate-900 text-xs">
-                <SelectValue placeholder="Tenant" />
-              </SelectTrigger>
-              <SelectContent>
-                {tenants.map((t) => (
-                  <SelectItem key={t.tenant_id} value={t.tenant_id}>
-                    {t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
           ) : null}
           <Button
             variant="outline"

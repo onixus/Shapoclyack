@@ -13,6 +13,7 @@ import {
 function makeRun(overrides: Partial<RunSummary>): RunSummary {
   return {
     run_id: "run-1",
+    tenant_id: "default",
     profile: null,
     started_at: null,
     alive_hosts: null,

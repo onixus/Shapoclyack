@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from api.services import jobs as jobs_service
+from api.services import runs as runs_service
 from api.services.jobs import get_job, load_jobs
 from api.settings import Settings
 
@@ -79,3 +81,36 @@ def test_load_jobs_leaves_agent_jobs_and_terminal_jobs_untouched(tmp_path: Path)
     assert get_job("agent-running").status == "running"
     assert get_job("agent-queued").status == "queued"
     assert get_job("local-done").status == "succeeded"
+
+
+def test_local_run_is_tagged_with_the_jobs_tenant(tmp_path: Path, monkeypatch):
+    """A locally executed scan must leave an owning-tenant marker in its run
+    directory (ROADMAP P0). Without it the run reads back as `default` and
+    would show up in every tenant's run list."""
+    import subprocess
+    import types
+
+    state_dir = tmp_path / "state"
+    output_dir = tmp_path / "output"
+    run_dir = output_dir / "runs" / "20260805T101500Z"
+    run_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    (state_dir / "latest_run.json").write_text(
+        json.dumps({"run_id": "20260805T101500Z"}), encoding="utf-8"
+    )
+    _write_jobs_file(state_dir, [_base_job("job-1", execution="local", status="queued")])
+
+    settings = Settings(state_dir=state_dir, output_dir=output_dir)
+    load_jobs(settings)
+    jobs_service._JOBS["job-1"]["tenant_id"] = "ten_a"  # noqa: SLF001
+    jobs_service._JOBS["job-1"]["status"] = "queued"  # noqa: SLF001
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    jobs_service._run_job(settings, "job-1", ["true"])  # noqa: SLF001
+
+    assert get_job("job-1").status == "succeeded"
+    assert runs_service.read_run_tenant(run_dir) == "ten_a"

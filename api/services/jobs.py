@@ -18,6 +18,7 @@ from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
 from api.services import results_ingest
+from api.services import runs as runs_service
 from api.services import tenants as tenants_service
 from api.services.targets import parse_target_payload
 from api.settings import Settings
@@ -267,6 +268,10 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
         if status == "succeeded":
             job = get_job(job_id)
             tenant_id = job.tenant_id if job else tenants_service.DEFAULT_TENANT_ID
+            # Tag the run before the asset upsert: an untagged run reads back as
+            # the default tenant, which would leak it to every tenant's run list.
+            if run_id:
+                runs_service.write_run_tenant(settings, str(run_id), tenant_id, job_id=job_id)
             _upsert_assets_best_effort(settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None)
     except Exception as exc:  # noqa: BLE001
         logging.exception("Scan job %s failed", job_id)
@@ -520,9 +525,8 @@ def complete_job(
         try:
             results_ingest.extract_run_archive(archive_bytes, dest)
             results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
-            (dest / "tenant.json").write_text(
-                json.dumps({"tenant_id": job_tenant, "job_id": job_id}, indent=2) + "\n",
-                encoding="utf-8",
+            runs_service.write_run_tenant(
+                settings, str(resolved_run_id), job_tenant, job_id=job_id
             )
         except results_ingest.IngestError as exc:
             raise ValueError(str(exc)) from exc

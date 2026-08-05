@@ -2,6 +2,34 @@
 
 All notable changes to Shapoclyack are documented in this file.
 
+## Unreleased
+
+### Added
+
+- **Tenant-aware IAM — completed** (ROADMAP [P0](ROADMAP.md)) — runs are the
+  last resource to gain tenant scoping, and the console gained a tenant
+  switcher.
+  - The API tags each completed run with its owning tenant by writing
+    `tenant.json` into the run directory — from `_run_job` for local execution
+    and from `complete_job` for agent uploads (the latter already wrote the
+    file; both paths now share `runs_service.write_run_tenant`).
+  - `GET /api/runs` and every run sub-resource (`hosts`, `ports`,
+    `vulnerabilities`, `diff`, `artifacts/*`, `download/*`) moved from
+    `require_role` to `require_tenant` and are filtered by that marker. A run
+    in another tenant answers `404`, matching jobs/assets/schedules. A platform
+    admin who names no tenant keeps the fleet-wide view.
+  - `RunSummary`/`RunDetail` now carry `tenant_id`.
+  - Web UI: a tenant switcher in the header (`TenantSwitcher`) drives an
+    `activeTenant` in the auth store; an axios request interceptor attaches it
+    as `tenant_id` to every call that does not already name one, and switching
+    clears the React Query cache. The Endpoints page dropped its own
+    page-local tenant selector in favour of the global one.
+
+  **Compatibility:** a run without the marker reads as belonging to `default`,
+  so pre-existing runs and runs produced by invoking `scanner.main` outside the
+  API stay visible to the default tenant. There is no backfill — write
+  `tenant.json` by hand for historical runs that belong to a customer tenant.
+
 ## [0.39-0805] — 2026-08-05
 
 ### Changed
