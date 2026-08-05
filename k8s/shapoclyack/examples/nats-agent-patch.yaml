@@ -1,0 +1,13 @@
+# Pair with agent-deployment.example.yaml when using NATS job dispatch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          env:
+            - name: OCTO_NATS_URL
+              value: nats://shapoclyack-nats-client:4222

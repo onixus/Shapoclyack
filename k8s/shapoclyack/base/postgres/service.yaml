@@ -1,0 +1,36 @@
+# Headless Service for StatefulSet peer DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: shapoclyack-postgres
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: postgres
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: client
+      port: 5432
+      targetPort: client
+---
+# Stable ClusterIP for API: postgresql://shapoclyack-postgres-client:5432/shapoclyack
+apiVersion: v1
+kind: Service
+metadata:
+  name: shapoclyack-postgres-client
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: client
+      port: 5432
+      targetPort: client

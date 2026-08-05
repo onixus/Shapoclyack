@@ -2,7 +2,7 @@
 
 Secret resolution order:
   1. ``API_SECRET_KEY`` (plan name)
-  2. ``OCTO_JWT_SECRET`` (existing Octo-man env)
+  2. ``OCTO_JWT_SECRET`` (existing Shapoclyack env)
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def get_api_secret_key() -> str:
     return (
         os.environ.get("API_SECRET_KEY", "").strip()
         or os.environ.get("OCTO_JWT_SECRET", "").strip()
-        or "octo-man-dev-secret-change-me"
+        or "shapoclyack-dev-secret-change-me"
     )
 
 

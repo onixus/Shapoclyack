@@ -210,14 +210,14 @@ def test_update_asset_decommission_transition_logs_event(tmp_path, caplog):
     assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
     asset_id = ip_identity_key(tenant_id, "10.0.1.9")
 
-    with caplog.at_level(logging.INFO, logger="octo-man.assets"):
+    with caplog.at_level(logging.INFO, logger="shapoclyack.assets"):
         updated = assets_service.update_asset(settings, tenant_id, asset_id, {"status": "decommissioned"})
     assert updated["status"] == "decommissioned"
     assert any("decommissioned_host" in record.message for record in caplog.records)
 
     # A repeat PATCH once already decommissioned is a no-op, not a new event.
     caplog.clear()
-    with caplog.at_level(logging.INFO, logger="octo-man.assets"):
+    with caplog.at_level(logging.INFO, logger="shapoclyack.assets"):
         updated_again = assets_service.update_asset(settings, tenant_id, asset_id, {"status": "decommissioned"})
     assert updated_again["status"] == "decommissioned"
     assert not any("decommissioned_host" in record.message for record in caplog.records)

@@ -1,0 +1,37 @@
+# Companion to nats-ha-patch.yaml: supplies the clustered nats.conf.
+#
+# Strategic-merge patch — Kubernetes replaces the whole `nats.conf` string
+# value (ConfigMap data entries don't get merged field-by-field), so this
+# is the full config, not a diff. Keep it in sync with
+# base/nats/configmap.yaml if that file's non-cluster settings change.
+#
+# Apply together with nats-ha-patch.yaml (both patches, same overlay) —
+# see that file for the kustomization.yaml wiring.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shapoclyack-nats-config
+data:
+  nats.conf: |
+    port: 4222
+    http_port: 8222
+
+    jetstream {
+      store_dir: /data
+      max_mem: 256M
+      max_file: 4G
+    }
+
+    # $SERVER_NAME (pod name, e.g. shapoclyack-nats-0) keeps cluster peers
+    # distinct; set via downward API in statefulset.yaml.
+    server_name: $SERVER_NAME
+
+    cluster {
+      name: shapoclyack-nats
+      port: 6222
+      routes: [
+        nats://shapoclyack-nats-0.shapoclyack-nats:6222
+        nats://shapoclyack-nats-1.shapoclyack-nats:6222
+        nats://shapoclyack-nats-2.shapoclyack-nats:6222
+      ]
+    }

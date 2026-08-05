@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 
-from api.auth import AgentPrincipal, Role, TokenUser, get_settings, require_agent, require_role
+from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AgentClaimResponse,
@@ -130,9 +130,8 @@ async def upload_results(
 
 @router.get("/agents", response_model=Page[AgentInfo])
 def list_agents(
-    _: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     page: PageParams,
-    tenant_id: Annotated[str | None, Query()] = None,
 ) -> Page[AgentInfo]:
     items, total = agents_service.list_agents(
         offset=page.offset,
@@ -140,6 +139,9 @@ def list_agents(
         q=page.q,
         sort=page.sort,
         order=page.order,
-        tenant_id=tenant_id,
+        # Same rule as /jobs: fleet-wide for an unscoped platform admin.
+        tenant_id=None
+        if principal.is_platform_admin and not principal.tenant_requested
+        else principal.tenant_id,
     )
     return build_page(items, total, page)

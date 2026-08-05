@@ -60,7 +60,20 @@ export type Role = "viewer" | "operator" | "admin";
 export type Me = {
   username: string;
   role: Role;
+  /** Tenants this user may act in, and the one used when a request omits
+   * `tenant_id` (ROADMAP P0). The tenant switcher builds on these. */
+  tenants: string[];
+  default_tenant: string;
+  is_platform_admin: boolean;
 };
+
+/** The API resolves the tenant from the caller's memberships when the request
+ * omits `tenant_id` (ROADMAP P0). Until the tenant switcher lands, sending the
+ * literal "default" would 403 for a user whose tenants don't include it, so
+ * treat the placeholder as "let the server decide". */
+function tenantParam(tenantId?: string): Record<string, string> {
+  return tenantId && tenantId !== "default" ? { tenant_id: tenantId } : {};
+}
 
 export type RunSummary = {
   run_id: string;
@@ -567,7 +580,7 @@ export async function startScan(body: {
 
 export async function fetchSchedules(tenantId?: string, page?: PageParams) {
   try {
-    const params = pageSearchParams(page, tenantId ? { tenant_id: tenantId } : undefined);
+    const params = pageSearchParams(page, tenantParam(tenantId));
     const { data } = await api.get<Page<ScanSchedule>>(`/schedules?${params}`);
     return data;
   } catch (error) {
@@ -610,7 +623,7 @@ export async function fetchAssets(
   page?: PageParams,
 ) {
   try {
-    const params = pageSearchParams(page, { tenant_id: opts?.tenantId || "default" });
+    const params = pageSearchParams(page, tenantParam(opts?.tenantId));
     if (opts?.status) params.set("status", opts.status);
     const { data } = await api.get<Page<AssetSummary>>(`/assets?${params}`);
     return data;
@@ -621,7 +634,7 @@ export async function fetchAssets(
 
 export async function fetchAsset(assetId: string, tenantId = "default") {
   try {
-    const params = new URLSearchParams({ tenant_id: tenantId });
+    const params = new URLSearchParams(tenantParam(tenantId));
     const { data } = await api.get<AssetDetail>(`/assets/${encodeURIComponent(assetId)}?${params}`);
     return data;
   } catch (error) {
@@ -635,7 +648,7 @@ export async function fetchEndpointDevices(opts?: {
   assetId?: string;
 }) {
   try {
-    const params = new URLSearchParams({ tenant_id: opts?.tenantId || "default" });
+    const params = new URLSearchParams(tenantParam(opts?.tenantId));
     if (opts?.assetId) params.set("asset_id", opts.assetId);
     const { data } = await api.get<EndpointDeviceInfo[]>(`/endpoint/devices?${params}`);
     return data;
@@ -653,7 +666,7 @@ export async function fetchEndpointDevicesForAsset(assetId: string, tenantId = "
 
 export async function fetchAssetSoftware(assetId: string, tenantId = "default") {
   try {
-    const params = new URLSearchParams({ tenant_id: tenantId });
+    const params = new URLSearchParams(tenantParam(tenantId));
     const { data } = await api.get<EndpointSoftwareItemInfo[]>(
       `/assets/${encodeURIComponent(assetId)}/software?${params}`,
     );
@@ -665,7 +678,7 @@ export async function fetchAssetSoftware(assetId: string, tenantId = "default") 
 
 export async function fetchEndpointDeviceChanges(deviceId: string, tenantId = "default") {
   try {
-    const params = new URLSearchParams({ tenant_id: tenantId });
+    const params = new URLSearchParams(tenantParam(tenantId));
     const { data } = await api.get<EndpointSoftwareChangeInfo[]>(
       `/endpoint/devices/${encodeURIComponent(deviceId)}/changes?${params}`,
     );
@@ -682,7 +695,7 @@ export async function fetchRecentSoftwareChanges(opts?: {
   limit?: number;
 }) {
   try {
-    const params = new URLSearchParams({ tenant_id: opts?.tenantId || "default" });
+    const params = new URLSearchParams(tenantParam(opts?.tenantId));
     params.set("limit", String(opts?.limit ?? 50));
     const { data } = await api.get<EndpointSoftwareChangeFeedItem[]>(
       `/endpoint/changes?${params}`,
@@ -734,7 +747,7 @@ export async function updateConfig(overrides: Record<string, unknown>) {
  * or a one-way decommission). Backed by PATCH /api/assets/{id}. */
 export async function updateAsset(assetId: string, body: UpdateAssetBody, tenantId = "default") {
   try {
-    const params = new URLSearchParams({ tenant_id: tenantId });
+    const params = new URLSearchParams(tenantParam(tenantId));
     const { data } = await api.patch<AssetDetail>(
       `/assets/${encodeURIComponent(assetId)}?${params}`,
       body,

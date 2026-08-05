@@ -28,7 +28,15 @@ def test_login_and_me():
 
     me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 200
-    assert me.json() == {"username": "viewer", "role": "viewer"}
+    # /auth/me now also carries the tenant context the UI switcher needs (P0);
+    # a user with no memberships falls back to the default tenant.
+    assert me.json() == {
+        "username": "viewer",
+        "role": "viewer",
+        "tenants": ["default"],
+        "default_tenant": "default",
+        "is_platform_admin": False,
+    }
 
 
 def test_login_rejects_bad_password():

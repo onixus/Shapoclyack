@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Sequence
 
-LOG = logging.getLogger("octo-man.clickhouse")
+LOG = logging.getLogger("shapoclyack.clickhouse")
 
 VULN_TABLE = "shapoclyack.shapoclyack_vulnerabilities"
 PORTS_TABLE = "shapoclyack.shapoclyack_open_ports"

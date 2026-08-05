@@ -1,0 +1,38 @@
+# Scale NATS JetStream to a 3-node cluster for production HA.
+#
+# Base ships WITHOUT a cluster{} block — at replicas=1 a cluster block
+# listing unreachable peer routes keeps the server stuck retrying routes
+# and JetStream never reports ready. This patch bumps replica count; you
+# MUST also apply examples/nats-ha-configmap-patch.yaml in the same overlay
+# to supply the clustered nats.conf, or the extra pods will run standalone
+# (no shared JetStream state) instead of forming a cluster.
+#
+# Apply both patches via kustomize (see overlays/prod/kustomization.yaml):
+#   patches:
+#     - path: ../../examples/nats-ha-patch.yaml
+#     - path: ../../examples/nats-ha-configmap-patch.yaml
+# or ad hoc:
+#   kubectl patch statefulset shapoclyack-nats -n network-scan --type=merge \
+#     -p '{"spec":{"replicas":3}}'
+#
+# Pair with the API-side env below so JetStream streams replicate R3 instead
+# of staying single-copy (see examples/nats-api-patch.yaml for enabling NATS
+# itself):
+#   OCTO_NATS_STREAM_REPLICAS=3
+#
+# Note: PVC storage (5Gi per pod, base/nats/statefulset.yaml) is requested
+# per replica — a 3-node cluster requests 15Gi total, not 5Gi shared.
+#
+# podManagementPolicy must be Parallel: under the default OrderedReady
+# policy, pod N+1 isn't created until pod N is Ready — but pod N can't
+# reach Ready until the rest of the configured cluster peers (including
+# N+1) are up and JetStream has a meta leader. That's a bootstrap
+# deadlock (verified: nats-1 sits at 0/1 forever, nats-2 never even gets
+# created). Parallel starts all pods at once so they can find each other.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shapoclyack-nats
+spec:
+  replicas: 3
+  podManagementPolicy: Parallel

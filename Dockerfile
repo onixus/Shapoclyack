@@ -53,14 +53,14 @@ RUN --mount=type=secret,id=github_token,required=false \
     chmod 755 /out/pulse; \
     rm -rf /var/lib/apt/lists/*
 
-# Shapoclyack scanner image (Octo-man product pipeline).
+# Shapoclyack scanner pipeline image.
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
 FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-scanner" \
-      org.opencontainers.image.description="Octo-man scanner pipeline image published by Shapoclyack"
+      org.opencontainers.image.description="Shapoclyack scanner pipeline image"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \

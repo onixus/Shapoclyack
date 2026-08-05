@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Container packages are Shapoclyack-scoped (not the legacy Octo-man GHCR package).
+          # Container packages are Shapoclyack-scoped (the legacy octo-man GHCR package is gone).
           # Default scanner/aio images ship Pulse-only (no Nmap) -- see issue #97:
           # Nmap's NPSL license makes bundling it in the default distributed
           # artifacts a redistribution risk. A second `-nmap` tag is published

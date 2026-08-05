@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-LOG = logging.getLogger("octo-man.risk-scoring")
+LOG = logging.getLogger("shapoclyack.risk-scoring")
 
 SCORING_MODEL_VERSION = "mvp-1"
 

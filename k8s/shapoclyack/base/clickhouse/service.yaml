@@ -1,0 +1,44 @@
+# Headless Service for StatefulSet peer DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: shapoclyack-clickhouse
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: clickhouse
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native
+---
+# Stable ClusterIP for API / consumers:
+#   HTTP  http://shapoclyack-clickhouse-client:8123
+#   Native shapoclyack-clickhouse-client:9000
+apiVersion: v1
+kind: Service
+metadata:
+  name: shapoclyack-clickhouse-client
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: clickhouse
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native

@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shapoclyack-nats-config
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: nats
+data:
+  nats.conf: |
+    port: 4222
+    http_port: 8222
+
+    jetstream {
+      store_dir: /data
+      max_mem: 256M
+      max_file: 4G
+    }
+
+    # $SERVER_NAME (pod name, e.g. shapoclyack-nats-0) keeps cluster peers
+    # distinct; set via downward API in statefulset.yaml.
+    server_name: $SERVER_NAME
+
+    # No `cluster {}` block here on purpose: base runs replicas=1, and a
+    # cluster block listing unreachable peer routes (nats-1/nats-2 don't
+    # exist yet) keeps the server stuck retrying routes and JetStream never
+    # reports ready. Bump `spec.replicas` to 3 with examples/nats-ha-patch.yaml
+    # AND examples/nats-ha-configmap-patch.yaml (which supplies the clustered
+    # nats.conf) to form a real JetStream cluster; also set
+    # OCTO_NATS_STREAM_REPLICAS=3 on the API so streams replicate R3.

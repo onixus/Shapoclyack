@@ -32,7 +32,7 @@ def format_alert_message(
 ) -> str:
     sev = summary.get("vulnerabilities_by_severity") or {}
     lines = [
-        f"*Octo-man scan complete* (`{run_id}`)",
+        f"*Shapoclyack scan complete* (`{run_id}`)",
         f"Alive hosts: {summary.get('alive_hosts', 0)}",
         f"Open host:port: {summary.get('open_host_port_pairs', 0)}",
         (
@@ -266,7 +266,7 @@ def send_alerts(
         try:
             smtp_result = send_smtp_alert(
                 config.smtp,
-                subject=f"Octo-man scan complete ({run_id})",
+                subject=f"Shapoclyack scan complete ({run_id})",
                 text=text.replace("*", "").replace("`", ""),
             )
             result["smtp"] = smtp_result.get("status")

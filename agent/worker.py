@@ -1,4 +1,4 @@
-"""Poll the Octo-man API for agent jobs and run the local scanner.
+"""Poll the Shapoclyack API for agent jobs and run the local scanner.
 
 When OCTO_NATS_URL is set, jobs are pulled from JetStream subject ``jobs.scan``
 (durable consumer ``octo-agents``) via a long-lived connection instead of HTTP
@@ -317,7 +317,7 @@ class AgentNatsSession:
 
         self._nc = await nats.connect(
             self._nats_url,
-            name="octo-man-agent",
+            name="shapoclyack-agent",
             connect_timeout=self._connect_timeout,
             max_reconnect_attempts=-1,
             reconnect_time_wait=1,
@@ -572,7 +572,7 @@ def run_loop(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Octo-man remote scanner agent")
+    parser = argparse.ArgumentParser(description="Shapoclyack remote scanner agent")
     parser.add_argument(
         "--api-url",
         default=os.environ.get("OCTO_API_URL", "http://127.0.0.1:8080"),

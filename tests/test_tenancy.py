@@ -139,6 +139,19 @@ def test_cross_tenant_claim_denied(tmp_path, monkeypatch):
         json={"hostname": "b"},
     ).json()["agent_id"]
 
+    # P0: the operator now needs an explicit membership in ten_a; without one
+    # this POST is a 403 rather than a cross-tenant job.
+    assert client.post(
+        "/api/jobs",
+        headers={"Authorization": f"Bearer {operator}"},
+        json={"mode": "safe", "tenant_id": "ten_a"},
+    ).status_code == 403
+    assert client.put(
+        "/api/tenants/ten_a/members/operator",
+        headers={"Authorization": f"Bearer {admin}"},
+        json={"role": "operator"},
+    ).status_code == 200
+
     job = client.post(
         "/api/jobs",
         headers={"Authorization": f"Bearer {operator}"},

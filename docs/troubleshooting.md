@@ -6,7 +6,7 @@ Start with the narrowest failing layer and preserve the first useful error.
 
 ```bash
 kubectl -n network-scan get pods
-kubectl -n network-scan logs deploy/octo-man-api --tail=200
+kubectl -n network-scan logs deploy/shapoclyack-api --tail=200
 curl -v http://localhost:8080/api/health
 ```
 
@@ -65,9 +65,9 @@ An optional service is expected to be unavailable when its URL env var
 ```bash
 kubectl -n network-scan get pods -l app.kubernetes.io/component=nats
 kubectl -n network-scan get pods -l app.kubernetes.io/component=clickhouse
-kubectl -n network-scan port-forward svc/octo-man-nats-client 8222:8222 &
+kubectl -n network-scan port-forward svc/shapoclyack-nats-client 8222:8222 &
 curl http://localhost:8222/healthz
-kubectl -n network-scan port-forward svc/octo-man-clickhouse-client 8123:8123 &
+kubectl -n network-scan port-forward svc/shapoclyack-clickhouse-client 8123:8123 &
 curl http://localhost:8123/ping
 ```
 
@@ -92,7 +92,7 @@ forensics rather than deleting it before diagnosis.
 
 ```bash
 bash k8s/scripts/validate-kustomize.sh
-kubectl kustomize k8s/octo-man/overlays/dev
+kubectl kustomize k8s/shapoclyack/overlays/dev
 kubectl -n network-scan get events --sort-by=.lastTimestamp
 ```
 

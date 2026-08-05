@@ -49,7 +49,7 @@ export function Sidebar() {
                 <ShieldAlert className="h-5 w-5" />
               </div>
               <div>
-                <p className="text-base font-extrabold tracking-wider text-slate-100">OCTO-MAN</p>
+                <p className="text-base font-extrabold tracking-wider text-slate-100">SHAPOCLYACK</p>
                 <p className="text-[11px] font-medium tracking-tight text-slate-400">Cyber Recon & Exposure</p>
               </div>
             </div>

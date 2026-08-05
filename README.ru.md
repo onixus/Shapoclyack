@@ -42,7 +42,7 @@ scripts/dev-up.sh
 ```
 
 Скрипт поднимает локальный кластер kind, собирает all-in-one образ, загружает
-его в кластер и применяет `k8s/octo-man/overlays/kind-dev` (API, PostgreSQL,
+его в кластер и применяет `k8s/shapoclyack/overlays/kind-dev` (API, PostgreSQL,
 NATS, ClickHouse, Job/CronJob сканера).
 
 Откройте <http://localhost:8080>:
@@ -52,7 +52,7 @@ operator / operator-change-me
 ```
 
 Перед публикацией сервиса за пределами тестового контура замените demo-пароли и
-JWT secret (`k8s/octo-man/examples/api-secrets.example.yaml`).
+JWT secret (`k8s/shapoclyack/examples/api-secrets.example.yaml`).
 
 Остановить кластер:
 
@@ -99,7 +99,7 @@ Web UI включает:
 | `agent/` | Удалённый worker для выполнения jobs |
 | `web-next/` | Next.js 14 Web UI со static export |
 | `recon/` | Основа Go-worker для discovery |
-| `k8s/octo-man/` | Kubernetes base, overlays и examples |
+| `k8s/shapoclyack/` | Kubernetes base, overlays и examples |
 | `bench/` | Локальный benchmark discovery |
 | `tests/` | Unit, integration, load и e2e тесты |
 

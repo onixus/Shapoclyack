@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local / CI validation for Octo-man kustomize overlays.
+# Local / CI validation for Shapoclyack kustomize overlays.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,8 +9,8 @@ if ! command -v kubectl >/dev/null 2>&1; then
 fi
 
 for target in base overlays/dev overlays/prod overlays/api-readonly overlays/agents; do
-  echo "kustomize: octo-man/${target}"
-  kubectl kustomize "octo-man/${target}" > .kustomize-validate.out
+  echo "kustomize: shapoclyack/${target}"
+  kubectl kustomize "shapoclyack/${target}" > .kustomize-validate.out
 done
 
 rm -f .kustomize-validate.out

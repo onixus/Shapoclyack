@@ -103,6 +103,45 @@ curl http://localhost:8080/openapi.json
 - Do not accept a tenant identifier from a client without server-side
   authorization against the principal.
 
+## Tenant memberships
+
+Console users come from `OCTO_API_USERS`; which tenants they may act in comes
+from the `user_tenants` table, managed by a platform admin:
+
+```http
+GET    /api/tenants/{tenant_id}/members
+PUT    /api/tenants/{tenant_id}/members/{username}   {"role": "operator"}
+DELETE /api/tenants/{tenant_id}/members/{username}
+```
+
+`PUT` is idempotent and re-grants change the role. Membership rows hold no
+credential material.
+
+Every tenant-scoped route resolves its tenant server-side from the
+authenticated username. The `tenant_id` query parameter still exists, but it
+can now only *select among* tenants the caller already holds, and anything
+else is `403`:
+
+| Caller | Tenant used | Notes |
+|---|---|---|
+| Global role `admin` | Requested, else `default` | Platform admin — memberships do not constrain them; `/jobs`, `/agents`, and `/schedules` stay fleet-wide when no tenant is named |
+| Has memberships | Requested (must be granted), else their sole membership / `default` / first by name | Role inside the tenant comes from the membership row, so it can differ from the global role |
+| Has no memberships | `default` only | Pre-P0 behaviour, so existing single-tenant installations keep working; granting any membership opts the user into strict scoping |
+
+`GET /api/auth/me` returns `tenants`, `default_tenant`, and
+`is_platform_admin` for the caller; `GET /api/tenants` lists only the tenants
+the caller may act in, so an MSSP's customer list does not leak to a single
+customer's operator.
+
+A resource belonging to another tenant answers `404`, not `403`, on direct id
+lookups (`/jobs/{id}`, `/assets/{id}`, `/schedules/{id}`): a `403` would
+confirm the id exists to someone with no right to know it.
+
+**Not yet scoped:** runs and their artifacts (`/api/runs...`). Run directories
+carry no tenant — the scanner has no tenant concept and `run_meta.json` is
+written by it — so any authenticated viewer still sees every run. Tagging runs
+and scoping artifacts is the second half of this work.
+
 ## Artifact access
 
 Text artifacts can be previewed through the run artifact endpoint. Binary

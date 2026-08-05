@@ -1,10 +1,55 @@
 # Changelog
 
-All notable changes to the Octo-man product (hosted in Shapoclyack) are documented in this file.
+All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- **Retired the legacy `octo-man` product name.** Nothing of that product
+  remained apart from its name, so it is gone from code, manifests, docs, and
+  runtime strings: loggers (`octo-man.*` → `shapoclyack.*`), the FastAPI title,
+  NATS/agent client names, scanner User-Agents (`shapoclyack-octo-man/*` →
+  `shapoclyack/*`), DefectDojo product/engagement/test defaults, the PDF report
+  title, alert subjects, the Web UI sidebar, and `octo_man.html` →
+  `shapoclyack.html`. Kubernetes moved from `k8s/octo-man/` to
+  `k8s/shapoclyack/` with every `octo-man-*` object and
+  `app.kubernetes.io/{name,part-of}` label renamed, and the Postgres database
+  is now `shapoclyack`.
+  **Operator action, existing clusters only:** resource and database renames
+  create new objects, so run the one-time migration in
+  [k8s/README.md](k8s/README.md#upgrading-a-cluster-deployed-before-the-octo-man--shapoclyack-rename)
+  (`ALTER DATABASE octo_man RENAME TO shapoclyack;` plus an orphan-cascade
+  delete of the old objects). Self-hosted installations need nothing: the
+  sqlite default is now `shapoclyack.db` but falls back to an existing
+  `octo_man.db`. **Deliberately unchanged** (not product naming, and renaming
+  them would break running deployments): the `OCTO_*` environment variables,
+  the `octo_*` Prometheus metric names, the `network-scan` namespace, the
+  `octo` database user, and the already-Shapoclyack GHCR image names.
+  DefectDojo exports land under the product name `Shapoclyack` from now on —
+  set `defectdojo.product_name` back to `Octo-man` if you need findings to keep
+  flowing into the existing product.
+
 ### Added
+
+- **Tenant-aware IAM — foundation** (ROADMAP [P0](ROADMAP.md)) — new
+  `user_tenants` table (migration `0007_user_tenants`) binds console usernames
+  to tenants with a per-tenant role, managed by a platform admin via
+  `GET/PUT/DELETE /api/tenants/{tenant_id}/members[/{username}]`. Every
+  tenant-scoped route now derives its tenant from the authenticated user
+  instead of trusting the `tenant_id` query parameter, which can only select
+  among tenants the caller holds; anything else is `403`. Covers assets,
+  jobs, agents, schedules, and endpoint inventory, including the request
+  bodies of `POST /jobs` and `POST /schedules`. Cross-tenant lookups of a
+  known id answer `404` rather than `403` so the id's existence stays
+  private. `GET /api/auth/me` now returns `tenants`/`default_tenant`/
+  `is_platform_admin`, and `GET /api/tenants` lists only the caller's tenants
+  so an MSSP customer list cannot leak to one customer's operator.
+  **Behaviour change**: a user with memberships is confined to them; a user
+  with none keeps pre-P0 access to the `default` tenant, so existing
+  single-tenant installations are unaffected. Runs and their artifacts are
+  **not** scoped yet — run directories carry no tenant — and remain visible to
+  any authenticated viewer.
 
 - **Server-side pagination on every list endpoint** (ROADMAP
   [P3.2](ROADMAP.md)/[P3.3](ROADMAP.md)) — `GET /api/runs`, `/jobs`, `/agents`,
@@ -133,7 +178,7 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 - **NSE host batching could fail an entire group over one slow host** —
   `nse_hosts_per_scan` (nmap processes now scan one host each instead of
   batching up to 8 per invocation, `scanner/config/default.yaml` and
-  `k8s/octo-man/base/config/k8s.yaml`). Bundling several hosts into one nmap
+  `k8s/shapoclyack/base/config/k8s.yaml`). Bundling several hosts into one nmap
   invocation meant they shared the `nse_timeout_seconds` budget (hard-capped
   at 600s); a single host doing heavy `vulners`/`ssl-enum-ciphers` NSE work
   could blow that shared budget and fail every other host in the group, even
@@ -182,7 +227,7 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   schedules every 30s and starts jobs through the existing `jobs_service.start_scan`
   — skipping a tick if the schedule's previous job is still running. No new
   K8s CronJob/Deployment needed; the original single-tenant `scanner/scheduler.py`
-  and static `k8s/octo-man/base/cronjob.yaml` are unchanged for simple
+  and static `k8s/shapoclyack/base/cronjob.yaml` are unchanged for simple
   self-hosted deployments.
 
 ## [0.36-0723] — 2026-07-23
@@ -192,8 +237,8 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
 - **OS detection (`nmap -O`) silently failing as the non-root container user**
   — `docker-compose.yml`'s `shapoclyack` service only granted `NET_RAW`
   (missing `NET_ADMIN`, which nmap's libcap-ng-based privilege drop needs
-  alongside `NET_RAW` for `-O`), and `k8s/octo-man/base/api-deployment.yaml`'s
-  `api` container plus `k8s/octo-man/base/agents/agent-deployment.yaml` set
+  alongside `NET_RAW` for `-O`), and `k8s/shapoclyack/base/api-deployment.yaml`'s
+  `api` container plus `k8s/shapoclyack/base/agents/agent-deployment.yaml` set
   `allowPrivilegeEscalation: false`, which sets Linux's `no_new_privs` flag —
   this blocks the `setcap` file-capability grant on `nmap`/`naabu` outright,
   regardless of what's listed under `capabilities.add`. Brought all three in
@@ -402,7 +447,7 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   keyless, ~1.6k CVEs), plus `scripts/fetch-enrichment.sh` orchestrating all
   four sources (GeoIP auto-selects MaxMind GeoLite2-City when
   `MAXMIND_LICENSE_KEY` is set, else keyless DB-IP City Lite) with per-source
-  non-fatal failure handling. `k8s/octo-man/overlays/enrichment` adds a shared
+  non-fatal failure handling. `k8s/shapoclyack/overlays/enrichment` adds a shared
   ReadWriteMany PVC refreshed by a daily CronJob and mounted read-only into
   API/scan pods (plus a cold-start initContainer); `docker-compose.enrichment.yml`
   mirrors this for compose. `api/services/risk_scoring.py`'s EPSS/KEV scorer —
@@ -594,13 +639,13 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   endpoints — hooked from both local-mode and agent-upload scan completion in
   `api/services/jobs.py`. **Postgres is a hard dependency, not opt-in** like
   NATS/ClickHouse — API startup fails fast if `OCTO_POSTGRES_URL` is empty.
-  `k8s/octo-man/base/postgres/` + `docker-compose.postgres.yml` mirror the
+  `k8s/shapoclyack/base/postgres/` + `docker-compose.postgres.yml` mirror the
   ClickHouse deployment pattern; an `initContainer` runs `alembic upgrade head`
   before API replicas start.
 - **Phase 1 NATS retention + HA** — JetStream `JOBS`/`INGEST` streams now bound
   storage by default (`OCTO_NATS_JOBS_MAX_AGE_SECONDS`,
   `OCTO_NATS_INGEST_MAX_AGE_SECONDS`, `OCTO_NATS_INGEST_MAX_BYTES`; applied on
-  redeploy via `update_stream`, not just first creation); `k8s/octo-man/base/nats/`
+  redeploy via `update_stream`, not just first creation); `k8s/shapoclyack/base/nats/`
   ships a cluster-ready config (safe at `replicas=1`) — scale to 3 nodes with
   `examples/nats-ha-patch.yaml` + `OCTO_NATS_STREAM_REPLICAS=3` for JetStream R3
 - **Phase 1 NATS harden** — `docker-compose.nats.yml` auto-wires `OCTO_NATS_URL` + NATS
@@ -645,22 +690,22 @@ All notable changes to the Octo-man product (hosted in Shapoclyack) are document
   keys for short-lived JWTs (`tenant_id` claims); cross-tenant claim/upload denied;
   NATS messages carry `tenant_id` headers; NetworkPolicy + ExternalSecrets examples
 - **Phase 1 (NATS JetStream)** — opt-in via `OCTO_NATS_URL`:
-  - k8s StatefulSet/Services `octo-man-nats` (+ client Service)
+  - k8s StatefulSet/Services `shapoclyack-nats` (+ client Service)
   - API publishes agent jobs to `jobs.scan` and raw archives to `ingest.raw_results`
     (JetStream `Nats-Msg-Id` idempotency); filesystem extract unchanged for UI
   - Agent pull consumer (durable `octo-agents`) when NATS URL set; HTTP claim remains default
-  - Compose profile `nats`; example patches under `k8s/octo-man/examples/nats-*.yaml`
+  - Compose profile `nats`; example patches under `k8s/shapoclyack/examples/nats-*.yaml`
 
 ### Changed
 
 - Promoted discovery completeness knobs from `discovery-bench-realistic` into
-  prod configs (`scanner/config/default.yaml`, `k8s/octo-man/base/config/k8s.yaml`):
+  prod configs (`scanner/config/default.yaml`, `k8s/shapoclyack/base/config/k8s.yaml`):
   `discovery.verify` on, `adaptive.wave2_rate: 2500`, `batching.ipv4_prefix: 24`,
   smaller `max_targets_per_batch`; default `balanced.discover_rate` 6000 → 4000
 - Documented platform evolution roadmap ([ROADMAP.md](ROADMAP.md)): NATS JetStream,
   MSSP multi-tenancy, ClickHouse analytics, K8s autoscaling, Cloudflare/CT/Maddy,
   Shapoclyack Web UI v2 (`web-next/` — Next.js 14)
-- Updated [octo_man.html](octo_man.html) roadmap infographic to match
+- Updated [shapoclyack.html](shapoclyack.html) roadmap infographic to match
 
 ## [0.33] — 2026-07-16
 
@@ -681,7 +726,7 @@ GitHub release / tag: [`shapoclyack-0.33`](https://github.com/onixus/Shapoclyack
 ### Changed
 
 - **Container images are Shapoclyack-scoped** and no longer published under the legacy
-  `ghcr.io/onixus/octo-man*` package names:
+  `ghcr.io/onixus/shapoclyack*` package names:
   - `ghcr.io/onixus/shapoclyack-aio`
   - `ghcr.io/onixus/shapoclyack-scanner`
   - `ghcr.io/onixus/shapoclyack-api`
@@ -698,7 +743,7 @@ GitHub release / tag: [`shapoclyack-0.33`](https://github.com/onixus/Shapoclyack
 
 ### Upgrade notes
 
-- Pull `shapoclyack-*` images (do not use bare `ghcr.io/onixus/octo-man`)
+- Pull `shapoclyack-*` images (do not use bare `ghcr.io/onixus/shapoclyack`)
 - Update any local `image:` overrides to the new names
 - For production GeoIP: `MAXMIND_LICENSE_KEY=… ./scripts/fetch-geoip-db.sh` and point
   `enrichment.geoip.database` at the `.mmdb`
@@ -724,15 +769,15 @@ All-in-one release: Web UI can start scans by default.
 
 | Image (historical) | Tag |
 |-------|-----|
-| `ghcr.io/onixus/octo-man-aio` | `0.3.2.1`, `latest` |
-| `ghcr.io/onixus/octo-man-api` | `0.3.2.1`, `latest` |
-| `ghcr.io/onixus/octo-man-scanner` | `0.3.2.1`, `latest` |
+| `ghcr.io/onixus/shapoclyack-aio` | `0.3.2.1`, `latest` |
+| `ghcr.io/onixus/shapoclyack-api` | `0.3.2.1`, `latest` |
+| `ghcr.io/onixus/shapoclyack-scanner` | `0.3.2.1`, `latest` |
 
 ### Upgrade notes
 
 - Preferred local path: `docker compose up --build` → http://localhost:8080
-- Preferred cluster path: `kubectl apply -k k8s/octo-man/overlays/dev` (aio + UI job start)
-- For results-only API (no local scans): `kubectl apply -k k8s/octo-man/overlays/api-readonly`
+- Preferred cluster path: `kubectl apply -k k8s/shapoclyack/overlays/dev` (aio + UI job start)
+- For results-only API (no local scans): `kubectl apply -k k8s/shapoclyack/overlays/api-readonly`
 - Change default API demo passwords / set `OCTO_JWT_SECRET` before any real use
 
 ## [0.3.0] — 2026-07-16
@@ -750,7 +795,7 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
   - React dashboard (`web/`) served from the API image
   - Run catalog, vulnerabilities, diffs, artifacts, optional scan jobs
 - **Kubernetes primary runtime**
-  - kustomize under `k8s/octo-man` (Job, CronJob, API Deployment/Service, PVC)
+  - kustomize under `k8s/shapoclyack` (Job, CronJob, API Deployment/Service, PVC)
   - `dev` / `prod` overlays; Secrets and Ingress examples
   - `./k8s/scripts/validate-kustomize.sh` + CI kustomize job
 
@@ -765,15 +810,15 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
 
 | Image | Tag |
 |-------|-----|
-| `ghcr.io/onixus/octo-man` | `0.3.0`, `0.3`, `0`, `latest` |
-| `ghcr.io/onixus/octo-man-api` | `0.3.0`, `0.3`, `0`, `latest` |
+| `ghcr.io/onixus/shapoclyack` | `0.3.0`, `0.3`, `0`, `latest` |
+| `ghcr.io/onixus/shapoclyack-api` | `0.3.0`, `0.3`, `0`, `latest` |
 
 ### Upgrade notes
 
-- Deploy with `kubectl apply -k k8s/octo-man/overlays/dev` (or `prod`)
+- Deploy with `kubectl apply -k k8s/shapoclyack/overlays/dev` (or `prod`)
 - Change default API demo passwords / set `OCTO_JWT_SECRET` before any real use
 - Prefer cluster `CronJob` over the in-process scheduler
 
 ## [0.2.1] — 2026-07-15
 
-Inherited from pre-Shapoclyack Octo-man history (NSE `-Pn` fix, docs/infographic).
+Inherited from the pre-rename history (NSE `-Pn` fix, docs/infographic).

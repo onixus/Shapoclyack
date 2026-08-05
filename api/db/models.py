@@ -38,6 +38,35 @@ class Tenant(Base):
     created_at: Mapped[datetime]
 
 
+class UserTenant(Base):
+    """Which tenants a console user may act in, and with what role (P0).
+
+    Users themselves still come from ``OCTO_API_USERS`` (env/config) — this
+    table only binds an existing username to a tenant, so no credential
+    material lives here. A user with *no* rows keeps pre-P0 behaviour: access
+    to the ``default`` tenant with their configured global role.
+
+    ``role`` is the role **inside** this tenant and is independent of the
+    global role in the JWT; the global ``admin`` role means platform admin and
+    bypasses this table entirely (see api/services/memberships.py).
+    """
+
+    __tablename__ = "user_tenants"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(default="viewer")  # viewer | operator | admin
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("username", "tenant_id", name="uq_user_tenant"),
+    )
+
+
 class ProvisioningKey(Base):
     __tablename__ = "provisioning_keys"
 

@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from api.auth import AgentPrincipal, Role, TokenUser, require_agent, require_role
+from api.auth import AgentPrincipal, Role, TenantPrincipal, require_agent, require_tenant
 from api.schemas import (
     EndpointDeviceInfo,
     EndpointInventoryResponse,
@@ -18,7 +18,6 @@ from api.schemas import (
 )
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import metrics as metrics_service
-from api.services import tenants as tenants_service
 
 router = APIRouter(prefix="/endpoint", tags=["endpoint-inventory"])
 
@@ -67,23 +66,21 @@ def submit_inventory(
 
 @router.get("/devices", response_model=list[EndpointDeviceInfo])
 def list_devices(
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
-    tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     asset_id: Annotated[str | None, Query()] = None,
     device_status: Annotated[str | None, Query(pattern="^(active|stale)$")] = None,
 ) -> list[dict]:
     return endpoint_inventory_service.list_devices(
-        tenant_id, asset_id=asset_id, status=device_status
+        principal.tenant_id, asset_id=asset_id, status=device_status
     )
 
 
 @router.get("/devices/{device_id}", response_model=EndpointDeviceInfo)
 def get_device(
     device_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
-    tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
 ) -> dict:
-    device = endpoint_inventory_service.get_device(tenant_id, device_id)
+    device = endpoint_inventory_service.get_device(principal.tenant_id, device_id)
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
     return device
@@ -92,29 +89,26 @@ def get_device(
 @router.get("/devices/{device_id}/snapshots", response_model=list[EndpointSnapshotSummary])
 def list_snapshots(
     device_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
-    tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
 ) -> list[dict]:
-    return endpoint_inventory_service.list_snapshots(tenant_id, device_id)
+    return endpoint_inventory_service.list_snapshots(principal.tenant_id, device_id)
 
 
 @router.get("/devices/{device_id}/changes", response_model=list[EndpointSoftwareChangeInfo])
 def list_changes(
     device_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
-    tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
 ) -> list[dict]:
-    return endpoint_inventory_service.list_changes(tenant_id, device_id)
+    return endpoint_inventory_service.list_changes(principal.tenant_id, device_id)
 
 
 @router.get("/changes", response_model=list[EndpointSoftwareChangeFeedItem])
 def list_recent_changes(
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
-    tenant_id: Annotated[str, Query()] = tenants_service.DEFAULT_TENANT_ID,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     event_type: Annotated[str | None, Query()] = None,
 ) -> list[dict]:
     """Cross-device recent software-change feed (installed/removed/updated)."""
     return endpoint_inventory_service.list_recent_changes(
-        tenant_id, limit=limit, event_type=event_type
+        principal.tenant_id, limit=limit, event_type=event_type
     )

@@ -29,7 +29,7 @@ from typing import Any
 from .protocol import parse_endpoint
 from .utils import save_json
 
-LOG = logging.getLogger("octo-man.tls_probe")
+LOG = logging.getLogger("shapoclyack.tls_probe")
 
 # Common TLS ports when open_ports list is used as input.
 _DEFAULT_TLS_PORTS = frozenset({443, 8443, 9443, 4443, 10443, 6443})

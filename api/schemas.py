@@ -26,7 +26,7 @@ class Page(BaseModel, Generic[T]):
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
-    service: str = "octo-man-api"
+    service: str = "shapoclyack-api"
     nats: bool | None = None
     clickhouse: bool | None = None
     ch_ingest: dict[str, int] | None = None
@@ -255,6 +255,20 @@ class AgentCompleteRequest(BaseModel):
     exit_code: int = 0
     run_id: str | None = None
     error: str | None = None
+
+
+class MembershipInfo(BaseModel):
+    """One user's access to one tenant (ROADMAP P0)."""
+
+    username: str
+    tenant_id: str
+    role: Literal["viewer", "operator", "admin"]
+    created_at: str | None = None
+    created_by: str | None = None
+
+
+class GrantMembershipRequest(BaseModel):
+    role: Literal["viewer", "operator", "admin"] = "viewer"
 
 
 class TenantInfo(BaseModel):

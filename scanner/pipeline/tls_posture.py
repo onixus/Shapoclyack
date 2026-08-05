@@ -74,7 +74,7 @@ from .pulse_probe import load_pulse_tls_artifact
 from .tls_probe import _parse_tls_endpoints, probe_tls_endpoints, write_tls_probe_json
 from .utils import save_json, write_lines
 
-LOG = logging.getLogger("octo-man.tls_posture")
+LOG = logging.getLogger("shapoclyack.tls_posture")
 
 _WEAK_PROTOCOLS = ("SSLv2", "SSLv3", "TLSv1.0", "TLSv1.1")
 _WEAK_CIPHER_SUBSTRINGS = ("_RC4_", "_DES_", "_3DES_", "_NULL_", "_EXPORT_", "_anon_", "_MD5")

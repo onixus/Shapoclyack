@@ -144,5 +144,5 @@ python -m scanner.main \
 Also render deployment configuration before applying it:
 
 ```bash
-kubectl kustomize k8s/octo-man/overlays/dev >/dev/null
+kubectl kustomize k8s/shapoclyack/overlays/dev >/dev/null
 ```

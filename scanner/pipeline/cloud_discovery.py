@@ -29,9 +29,9 @@ import httpx
 from .config_schema import CloudDiscoveryConfig
 from .utils import save_json, write_lines
 
-LOG = logging.getLogger("octo-man.cloud-discovery")
+LOG = logging.getLogger("shapoclyack.cloud-discovery")
 
-USER_AGENT = "shapoclyack-octo-man/cloud-discovery"
+USER_AGENT = "shapoclyack/cloud-discovery"
 DEFAULT_WORDLIST_PATH = (
     Path(__file__).resolve().parents[2] / "scanner" / "data" / "wordlists" / "bucket-names-small.txt"
 )

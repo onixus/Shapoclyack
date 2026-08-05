@@ -56,8 +56,8 @@ development rewrites do not apply to `output: "export"` is expected.
 
 ```bash
 bash k8s/scripts/validate-kustomize.sh
-kubectl kustomize k8s/octo-man/overlays/dev >/dev/null
-kubectl kustomize k8s/octo-man/overlays/prod >/dev/null
+kubectl kustomize k8s/shapoclyack/overlays/dev >/dev/null
+kubectl kustomize k8s/shapoclyack/overlays/prod >/dev/null
 ```
 
 Examples are intentionally not applied by the base. Validate any example after

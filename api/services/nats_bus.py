@@ -26,7 +26,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-LOG = logging.getLogger("octo-man.nats")
+LOG = logging.getLogger("shapoclyack.nats")
 
 SUBJECT_JOBS_SCAN = "jobs.scan"
 SUBJECT_INGEST_RAW = "ingest.raw_results"  # legacy alias
@@ -116,7 +116,7 @@ class NatsBus:
             self._config.url,
             connect_timeout=self._config.connect_timeout,
             max_reconnect_attempts=5,
-            name="octo-man-api",
+            name="shapoclyack-api",
         )
         self._js = self._nc.jetstream()
 

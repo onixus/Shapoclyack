@@ -1,0 +1,45 @@
+# Headless Service for StatefulSet DNS (shapoclyack-nats-0.shapoclyack-nats).
+apiVersion: v1
+kind: Service
+metadata:
+  name: shapoclyack-nats
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: nats
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+    - name: monitor
+      port: 8222
+      targetPort: monitor
+    - name: cluster
+      port: 6222
+      targetPort: cluster
+---
+# Stable ClusterIP for API / agents: nats://shapoclyack-nats-client:4222
+apiVersion: v1
+kind: Service
+metadata:
+  name: shapoclyack-nats-client
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: nats
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+    - name: monitor
+      port: 8222
+      targetPort: monitor

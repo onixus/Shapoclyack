@@ -1,6 +1,6 @@
 name: Synthetic load test
 description: >
-  Build (optional) and run the Octo-man synthetic multi-target load harness
+  Build (optional) and run the Shapoclyack synthetic multi-target load harness
   (tests/load/run.sh) against nginx containers on a private Docker network.
   Validates ≥95% host/port coverage and emits duration / peak-RSS metrics.
 

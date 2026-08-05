@@ -81,7 +81,7 @@ in [Configuration](../docs/configuration.md).
 - Do not expose the Docker socket to scanner or API pods.
 - Treat PVC data under `output/` / `state/` as **sensitive** (banners, CVE findings, hostnames).
 - Replace demo JWT secret and `*-change-me` API passwords before any shared or production use.
-- Prefer cluster Secrets (`octo-man-api`, `octo-man-alerts`) over committing credentials to YAML.
+- Prefer cluster Secrets (`shapoclyack-api`, `shapoclyack-alerts`) over committing credentials to YAML.
 - Pull images only from **`ghcr.io/onixus/shapoclyack-aio`**, **`shapoclyack-scanner`**, or **`shapoclyack-api`** and verify tags match [official releases](https://github.com/onixus/Shapoclyack/releases).
 
 ## Security updates
