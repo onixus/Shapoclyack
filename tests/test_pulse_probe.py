@@ -10,7 +10,11 @@ from scanner.pipeline.pulse_probe import (
     parse_pulse_json,
     write_pulse_artifacts,
 )
-from scanner.pipeline.service_schema import ServiceRecord
+from scanner.pipeline.service_schema import (
+    ServiceRecord,
+    cves_to_extra_vulnerabilities,
+    finding_key,
+)
 
 
 SAMPLE_PULSE = {
@@ -77,6 +81,110 @@ def test_parse_pulse_json_services_os_cves():
     assert os_recs[0].confidence == 72
     assert len(cves) == 1
     assert cves[0].cve_id == "CVE-2023-0001"
+
+
+# Pulse's full finding taxonomy (pulse.scan.v2): a confirmed version match, an
+# unverified NVD keyword hit, and a CVE-less exposure observation.
+SAMPLE_FINDINGS = {
+    "meta": {"scanner": "pulse", "schema": "pulse.scan.v2", "ruleset": "2026.07.29-h1"},
+    "open": [],
+    "findings": [
+        {
+            "cve_id": "CVE-2021-44228",
+            "ip": "10.0.0.5",
+            "port": 8080,
+            "service": "http",
+            "cvss": 10.0,
+            "severity": "critical",
+            "title": "Log4Shell",
+            "finding_class": "version_cve",
+            "confidence": 90,
+            "requires_confirmation": False,
+            "evidence": "Server: Apache/2.4 log4j/2.14",
+            "ruleset_version": "2026.07.29-h1",
+            "epss": 0.97,
+            "in_kev": True,
+        },
+        {
+            "cve_id": "CVE-2019-0708",
+            "ip": "10.0.0.5",
+            "port": 3389,
+            "service": "rdp",
+            "cvss": 9.8,
+            "severity": "critical",
+            "title": "BlueKeep",
+            "finding_class": "keyword_cve",
+            "confidence": 40,
+            "requires_confirmation": True,
+        },
+        {
+            "cve_id": "",
+            "ip": "10.0.0.5",
+            "port": 445,
+            "service": "smb",
+            "cvss": 5.0,
+            "severity": "medium",
+            "title": "EternalBlue (SMBv1 RCE)",
+            "summary": "SMBv1 remote code execution.",
+            "finding_class": "exposure",
+            "confidence": 45,
+            "requires_confirmation": True,
+        },
+    ],
+    "stats": {},
+}
+
+
+def test_exposure_findings_survive_parsing():
+    """CVE-less classes used to be dropped outright, losing every
+    reachable-service observation Pulse makes."""
+    _, _, cves = parse_pulse_json(SAMPLE_FINDINGS)
+    assert [c.finding_class for c in cves] == ["version_cve", "keyword_cve", "exposure"]
+
+    exposure = cves[2]
+    assert exposure.cve_id == ""
+    assert exposure.requires_confirmation is True
+    assert exposure.confidence == 45
+
+
+def test_hypothesis_metadata_and_enrichment_reach_the_report_shape():
+    _, _, cves = parse_pulse_json(SAMPLE_FINDINGS)
+    rows = cves_to_extra_vulnerabilities(cves)
+
+    confirmed = rows[0]
+    assert confirmed["cve"] == "CVE-2021-44228"
+    assert confirmed["epss"] == 0.97
+    assert confirmed["in_kev"] is True
+    assert confirmed["requires_confirmation"] is False
+    assert confirmed["evidence"].startswith("Server:")
+
+    unverified = rows[1]
+    assert unverified["finding_class"] == "keyword_cve"
+    assert unverified["confidence"] == 40
+    assert unverified["requires_confirmation"] is True
+
+    # A CVE-less finding keeps an empty `cve` and is identified by a synthetic
+    # script_id, so the report dedupe and ClickHouse key stay distinct per
+    # port/title instead of collapsing every exposure on a host into one row.
+    exposure = rows[2]
+    assert exposure["cve"] == ""
+    assert exposure["script_id"] == "pulse:exposure:445:eternalblue-smbv1-rce"
+    assert exposure["severity"] == "medium"
+
+
+def test_finding_key_is_stable_and_distinct_per_port():
+    _, _, cves = parse_pulse_json(SAMPLE_FINDINGS)
+    exposure = cves[2]
+    assert finding_key(exposure) == finding_key(exposure.model_copy())
+    other_port = exposure.model_copy(update={"port": 139})
+    assert finding_key(other_port) != finding_key(exposure)
+    # A finding with a real CVE keys on the CVE itself.
+    assert finding_key(cves[0]) == "CVE-2021-44228"
+
+
+def test_rows_without_cve_or_class_are_still_skipped():
+    _, _, cves = parse_pulse_json({"findings": [{"ip": "10.0.0.5", "port": 22}]})
+    assert cves == []
 
 
 def test_write_and_load_artifacts(tmp_path: Path):

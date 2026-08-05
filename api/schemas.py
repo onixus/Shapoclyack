@@ -34,6 +34,9 @@ class HealthResponse(BaseModel):
 
 class RunSummary(BaseModel):
     run_id: str
+    # Owning tenant (ROADMAP P0). Reads back as "default" for runs written
+    # before runs were tagged.
+    tenant_id: str = "default"
     profile: str | None = None
     started_at: str | None = None
     config: str | None = None
@@ -48,6 +51,7 @@ class RunSummary(BaseModel):
 
 class RunDetail(BaseModel):
     run_id: str
+    tenant_id: str = "default"
     meta: dict[str, Any] = Field(default_factory=dict)
     summary: dict[str, Any] | None = None
     diff: dict[str, Any] | None = None
@@ -67,6 +71,18 @@ class VulnerabilityItem(BaseModel):
     country: str | None = None
     city: str | None = None
     country_iso: str | None = None
+    # Scanner-supplied finding taxonomy: "version_cve" (confirmed banner/version
+    # match), "keyword_cve" (unverified NVD keyword hit), "exposure" (reachable
+    # service, no CVE), "tls". Absent for nuclei/NSE findings.
+    finding_class: str | None = None
+    confidence: int | None = None
+    requires_confirmation: bool = False
+    epss: float | None = None
+    in_kev: bool = False
+    # Prioritisation, computed per request by api.services.risk_scoring.
+    contextual_score: float | None = None
+    cisa_decision: str | None = None
+    risk_explanation: str | None = None
 
 
 class AliveHostItem(BaseModel):

@@ -350,6 +350,86 @@ def test_agents_and_endpoint_devices_are_tenant_scoped(client):
     )
 
 
+def _seed_run(tmp_path: Path, run_id: str, *, tenant_id: str | None) -> Path:
+    """Write a minimal run directory, optionally tagged with an owning tenant.
+    An untagged run stands in for one written before P0."""
+    import json
+
+    run_dir = tmp_path / "output" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "summary.json").write_text(json.dumps({"alive_hosts": 1}), encoding="utf-8")
+    (run_dir / "alive_ips.txt").write_text("10.1.2.3\n", encoding="utf-8")
+    (run_dir / "vulnerabilities.json").write_text(
+        json.dumps([{"host": "10.1.2.3", "port": "443", "cve": "CVE-2024-0001"}]), encoding="utf-8"
+    )
+    if tenant_id is not None:
+        (run_dir / "tenant.json").write_text(json.dumps({"tenant_id": tenant_id}), encoding="utf-8")
+    return run_dir
+
+
+def test_runs_and_artifacts_are_not_readable_across_tenants(client, tmp_path):
+    _make_tenant(client, "ten_a")
+    _make_tenant(client, "ten_b")
+    _grant(client, "operator", "ten_a")
+    _seed_run(tmp_path, "run-a", tenant_id="ten_a")
+    _seed_run(tmp_path, "run-b", tenant_id="ten_b")
+    operator = _headers(client, "operator")
+
+    listed = client.get("/api/runs", headers=operator)
+    assert listed.status_code == 200
+    assert [r["run_id"] for r in listed.json()["items"]] == ["run-a"]
+
+    # Every run sub-resource is scoped, and a foreign run reads as missing
+    # rather than forbidden — a 403 would confirm the run id exists.
+    for path in (
+        "/api/runs/run-b",
+        "/api/runs/run-b/hosts",
+        "/api/runs/run-b/ports",
+        "/api/runs/run-b/vulnerabilities",
+        "/api/runs/run-b/diff",
+        "/api/runs/run-b/artifacts/summary.json",
+        "/api/runs/run-b/download/summary.json",
+    ):
+        assert client.get(path, headers=operator).status_code == 404, path
+
+    assert client.get("/api/runs/run-a/artifacts/summary.json", headers=operator).status_code == 200
+
+
+def test_untagged_runs_stay_with_the_default_tenant(client, tmp_path):
+    """Runs written before P0 carry no marker; they must remain readable in the
+    default tenant instead of vanishing from every listing."""
+    _make_tenant(client, "ten_a")
+    _grant(client, "operator", "ten_a")
+    _seed_run(tmp_path, "run-legacy", tenant_id=None)
+
+    scoped = client.get("/api/runs", headers=_headers(client, "operator"))
+    assert [r["run_id"] for r in scoped.json()["items"]] == []
+
+    # A viewer with no memberships still acts in the default tenant (pre-P0
+    # behaviour), so the legacy run stays visible there.
+    default_scoped = client.get("/api/runs", headers=_headers(client, "viewer"))
+    assert default_scoped.status_code == 200
+    items = default_scoped.json()["items"]
+    assert [r["run_id"] for r in items] == ["run-legacy"]
+    assert items[0]["tenant_id"] == "default"
+
+
+def test_platform_admin_sees_runs_from_every_tenant(client, tmp_path):
+    _make_tenant(client, "ten_a")
+    _make_tenant(client, "ten_b")
+    _seed_run(tmp_path, "run-a", tenant_id="ten_a")
+    _seed_run(tmp_path, "run-b", tenant_id="ten_b")
+    admin = _headers(client, "admin")
+
+    every = client.get("/api/runs", headers=admin).json()["items"]
+    assert {r["run_id"] for r in every} == {"run-a", "run-b"}
+    assert {r["tenant_id"] for r in every} == {"ten_a", "ten_b"}
+
+    scoped = client.get("/api/runs", headers=admin, params={"tenant_id": "ten_a"}).json()["items"]
+    assert [r["run_id"] for r in scoped] == ["run-a"]
+    assert client.get("/api/runs/run-b", headers=admin, params={"tenant_id": "ten_a"}).status_code == 404
+
+
 def test_platform_admin_still_sees_every_tenant(client):
     _make_tenant(client, "ten_a")
     _make_tenant(client, "ten_b")

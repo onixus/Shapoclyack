@@ -61,7 +61,7 @@ def test_transform_vulnerabilities_and_ports(monkeypatch):
     assert vuln_rows[0][5] >= 3  # asset_criticality high + ssh boost
     assert vuln_rows[0][7] in ("Attend", "Act", "Immediate")
     assert vuln_rows[0][8] > 0  # contextual_score
-    assert vuln_rows[0][9] == "mvp-1"
+    assert vuln_rows[0][9] == "mvp-2"
     assert isinstance(vuln_rows[0][10], datetime)
     assert vuln_rows[1][2] == "ssl-enum"
     # ports from findings + open_ports.txt

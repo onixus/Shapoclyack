@@ -1,4 +1,4 @@
-"""Unit tests for risk scoring (mvp-1)."""
+"""Unit tests for risk scoring (mvp-2)."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def test_score_log4shell_with_overlays():
     assert scored["asset_criticality"] == 4
     assert scored["cisa_decision"] == "Immediate"
     assert scored["contextual_score"] > 8.0
-    assert scored["scoring_model_version"] == "mvp-1"
+    assert scored["scoring_model_version"] == "mvp-2"
 
 
 def test_high_value_port_raises_criticality():
@@ -139,3 +139,101 @@ def test_get_scorer_hot_reloads_on_mtime_change(tmp_path: Path, monkeypatch):
         assert reloaded is not first
     finally:
         reset_scorer_for_tests(None)
+
+
+# --- scanner-supplied enrichment and confidence (mvp-2) -------------------------
+
+
+def test_scanner_epss_and_kev_beat_the_local_overlays():
+    """Pulse ships real EPSS/KEV per finding; the committed overlays are seed
+    stubs, so a finding that carries its own data must not be scored from an
+    empty overlay."""
+    scorer = RiskScoring()  # no overlays at all
+    scored = scorer.score_vulnerability(
+        {
+            "cve": "CVE-2021-44228",
+            "cvss4": 10.0,
+            "severity": "critical",
+            "port": "8080",
+            "finding_class": "version_cve",
+            "confidence": 90,
+            "epss": 0.97,
+            "in_kev": True,
+        }
+    )
+    assert scored["epss_score"] == 0.97
+    assert scored["exploit_active"] == 1
+    assert scored["cisa_decision"] == "Immediate"
+    assert "EPSS 0.97 (scanner)" in scored["risk_explanation"]
+    assert "in CISA KEV (scanner)" in scored["risk_explanation"]
+
+
+def test_overlay_still_used_when_the_finding_carries_nothing():
+    scorer = RiskScoring(epss={"CVE-1": 0.5}, kev={"CVE-1"})
+    scored = scorer.score_vulnerability({"cve": "CVE-1", "cvss": 8.0, "severity": "high"})
+    assert scored["epss_score"] == 0.5
+    assert scored["exploit_active"] == 1
+    assert "EPSS 0.50 (overlay)" in scored["risk_explanation"]
+
+
+def test_unconfirmed_finding_is_discounted_and_capped_below_act():
+    """An unverified keyword hit must not outrank a confirmed match or reach a
+    decision that would page someone (GenDec docs/findings.md)."""
+    scorer = RiskScoring()
+    item = {
+        "cve": "CVE-2019-0708",
+        "cvss": 9.8,
+        "severity": "critical",
+        "port": "3389",
+        "confidence": 40,
+        "requires_confirmation": True,
+        "finding_class": "keyword_cve",
+    }
+    unconfirmed = scorer.score_vulnerability(item)
+    confirmed = scorer.score_vulnerability(
+        {**item, "requires_confirmation": False, "finding_class": "version_cve", "confidence": 90}
+    )
+
+    assert confirmed["cisa_decision"] == "Act"
+    assert unconfirmed["cisa_decision"] == "Attend"
+    assert unconfirmed["contextual_score"] < confirmed["contextual_score"]
+    assert "unconfirmed keyword_cve (scanner confidence 40%)" in unconfirmed["risk_explanation"]
+    assert "capped at Attend" in unconfirmed["risk_explanation"]
+
+
+def test_exposure_finding_is_scored_without_a_cve():
+    scorer = RiskScoring()
+    scored = scorer.score_vulnerability(
+        {
+            "cve": "",
+            "script_id": "pulse:exposure:445:eternalblue-smbv1-rce",
+            "cvss": 5.0,
+            "severity": "medium",
+            "port": "445",
+            "finding_class": "exposure",
+            "confidence": 45,
+            "requires_confirmation": True,
+        }
+    )
+    assert scored["contextual_score"] > 0
+    assert scored["cisa_decision"] in ("Track", "Attend")
+    assert "unconfirmed exposure" in scored["risk_explanation"]
+
+
+def test_confirmed_finding_explains_without_a_confidence_note():
+    scorer = RiskScoring()
+    scored = scorer.score_vulnerability(
+        {"cve": "CVE-1", "cvss": 7.5, "severity": "high", "port": "443"}
+    )
+    explanation = scored["risk_explanation"]
+    assert explanation.startswith("CVSS 7.5")
+    assert "asset criticality" in explanation
+    assert "unconfirmed" not in explanation
+
+
+def test_explanation_names_the_criticality_source():
+    scorer = RiskScoring()
+    item = {"cve": "CVE-1", "cvss": 7.5, "severity": "high", "port": "443"}
+    assert "(heuristic)" in scorer.score_vulnerability(item)["risk_explanation"]
+    overridden = scorer.score_vulnerability(item, asset_criticality_override=4)
+    assert "asset criticality 4/4 (operator-set)" in overridden["risk_explanation"]

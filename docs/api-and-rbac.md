@@ -124,7 +124,7 @@ else is `403`:
 
 | Caller | Tenant used | Notes |
 |---|---|---|
-| Global role `admin` | Requested, else `default` | Platform admin — memberships do not constrain them; `/jobs`, `/agents`, and `/schedules` stay fleet-wide when no tenant is named |
+| Global role `admin` | Requested, else `default` | Platform admin — memberships do not constrain them; `/jobs`, `/agents`, `/schedules`, and `/runs` stay fleet-wide when no tenant is named |
 | Has memberships | Requested (must be granted), else their sole membership / `default` / first by name | Role inside the tenant comes from the membership row, so it can differ from the global role |
 | Has no memberships | `default` only | Pre-P0 behaviour, so existing single-tenant installations keep working; granting any membership opts the user into strict scoping |
 
@@ -134,13 +134,23 @@ the caller may act in, so an MSSP's customer list does not leak to a single
 customer's operator.
 
 A resource belonging to another tenant answers `404`, not `403`, on direct id
-lookups (`/jobs/{id}`, `/assets/{id}`, `/schedules/{id}`): a `403` would
-confirm the id exists to someone with no right to know it.
+lookups (`/jobs/{id}`, `/assets/{id}`, `/schedules/{id}`, `/runs/{id}` and its
+sub-resources): a `403` would confirm the id exists to someone with no right to
+know it.
 
-**Not yet scoped:** runs and their artifacts (`/api/runs...`). Run directories
-carry no tenant — the scanner has no tenant concept and `run_meta.json` is
-written by it — so any authenticated viewer still sees every run. Tagging runs
-and scoping artifacts is the second half of this work.
+### Run ownership
+
+The scanner itself has no tenant concept, so the API tags each completed run by
+writing `tenant.json` (`{"tenant_id": …}`) into the run directory — from
+`_run_job` for local execution and from `complete_job` for agent uploads. Run
+listings, sub-resources (`hosts`/`ports`/`vulnerabilities`/`diff`), and both
+artifact endpoints are filtered by that marker.
+
+A run **without** the marker reads as belonging to `default`: runs produced
+before this shipped, and any run created by invoking `scanner.main` directly
+outside the API, stay visible to the default tenant instead of disappearing.
+There is no backfill — if pre-existing runs belong to a customer tenant, write
+their `tenant.json` by hand before granting that customer access.
 
 ## Artifact access
 

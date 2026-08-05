@@ -2,6 +2,87 @@
 
 All notable changes to Shapoclyack are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- **Pulse `v0.2.7` → `v0.8.3`** — `PULSE_VERSION` in `Dockerfile` and
+  `Dockerfile.allinone`, plus `scripts/install-pulse.sh`, which had drifted a
+  release behind the images at `v0.2.6`. All three now name the same tag.
+
+  The pin had been stuck since July because GenDec's release pipeline stopped
+  attaching Linux tarballs: `v0.6.0` published no assets at all and
+  `v0.7.0`/`v0.8.0` only macOS ones, so there was nothing for the image build
+  to download. Fixed upstream in GenDec (onixus/GenDec#6 and follow-up), and
+  `v0.8.3` is the first release with the full asset set again.
+
+  Pulse's JSON contract is unchanged across the jump (`pulse.scan.v2`, same
+  top-level keys), and every flag the probe adapter passes still exists — but
+  the findings now carry **`epss` and `in_kev` per finding**, which the
+  `mvp-2` scoring below prefers over the local overlay stubs. On `v0.2.7`
+  those two fields were simply absent and scoring fell back to the overlays.
+
+  Not yet wired up from the six releases this skips: the Rhai audit-plugin
+  engine, Shodan/Censys threat intel, `--stream` NDJSON progress, and
+  `--diff-against` drift comparison.
+
+### Added
+
+- **Finding taxonomy and risk-priority explanation** (scoring model `mvp-1` →
+  **`mvp-2`**; closes the ROADMAP [P4](ROADMAP.md) "risk-priority explanation"
+  item). Pulse labels every finding as observation or hypothesis, and
+  Shapoclyack was throwing those labels away at the adapter boundary.
+  - `octo.cve.v1` gained `finding_class`, `confidence`,
+    `requires_confirmation`, `evidence`, `ruleset_version`, `epss`, and
+    `in_kev`, all carried into `vulnerabilities.json`.
+  - **CVE-less findings are no longer dropped.** `exposure` (reachable
+    service, no CVE claimed) and `tls` findings used to be discarded by the
+    parser; they now survive with a synthetic `script_id`
+    (`pulse:<class>:<port>:<slug>`) so each stays a distinct row in the report
+    dedupe and in ClickHouse instead of collapsing per host.
+  - Scoring prefers the finding's own EPSS/KEV data over the local
+    `OCTO_EPSS_DATABASE` / `OCTO_KEV_DATABASE` overlays, whose committed
+    defaults are seed stubs. The overlays still cover nuclei/NSE findings.
+  - Unconfirmed findings (`exposure`, `keyword_cve`, or anything the scanner
+    marks `requires_confirmation`) are discounted by their confidence and
+    capped below the `Act` decision, so an unverified keyword hit no longer
+    outranks a confirmed, KEV-listed vulnerability.
+  - Every finding now carries `contextual_score`, `cisa_decision`, and a
+    one-line `risk_explanation`; `GET /runs/{id}/vulnerabilities` returns them
+    (and orders by score), and the run's Findings tab renders the score,
+    decision, explanation, and `unconfirmed` / `KEV` badges.
+
+  **Expected change in numbers:** `potential_vulnerabilities` rises on Pulse
+  runs, because exposures that were silently discarded are now reported. The
+  new `summary.json` key `unconfirmed_findings` breaks out how much of the
+  total is hypothesis rather than confirmed vulnerability. No ClickHouse
+  schema change — the existing `cve_id` column already falls back to
+  `script_id` for findings without a CVE.
+
+- **Tenant-aware IAM — completed** (ROADMAP [P0](ROADMAP.md)) — runs are the
+  last resource to gain tenant scoping, and the console gained a tenant
+  switcher.
+  - The API tags each completed run with its owning tenant by writing
+    `tenant.json` into the run directory — from `_run_job` for local execution
+    and from `complete_job` for agent uploads (the latter already wrote the
+    file; both paths now share `runs_service.write_run_tenant`).
+  - `GET /api/runs` and every run sub-resource (`hosts`, `ports`,
+    `vulnerabilities`, `diff`, `artifacts/*`, `download/*`) moved from
+    `require_role` to `require_tenant` and are filtered by that marker. A run
+    in another tenant answers `404`, matching jobs/assets/schedules. A platform
+    admin who names no tenant keeps the fleet-wide view.
+  - `RunSummary`/`RunDetail` now carry `tenant_id`.
+  - Web UI: a tenant switcher in the header (`TenantSwitcher`) drives an
+    `activeTenant` in the auth store; an axios request interceptor attaches it
+    as `tenant_id` to every call that does not already name one, and switching
+    clears the React Query cache. The Endpoints page dropped its own
+    page-local tenant selector in favour of the global one.
+
+  **Compatibility:** a run without the marker reads as belonging to `default`,
+  so pre-existing runs and runs produced by invoking `scanner.main` outside the
+  API stay visible to the default tenant. There is no backfill — write
+  `tenant.json` by hand for historical runs that belong to a customer tenant.
+
 ## [0.39-0805] — 2026-08-05
 
 ### Changed

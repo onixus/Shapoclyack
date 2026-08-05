@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { LogOut, UserRound, Shield, Activity, Building2 } from "lucide-react";
+import { LogOut, UserRound, Shield, Activity } from "lucide-react";
+import { TenantSwitcher } from "@/components/layout/TenantSwitcher";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -46,11 +47,7 @@ export function TopHeader() {
       </div>
 
       <div className="flex items-center gap-3">
-        <div className="hidden items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-1 text-xs text-slate-300 sm:flex">
-          <Building2 className="h-3.5 w-3.5 text-sky-400" />
-          <span className="text-slate-400">Tenant:</span>
-          <span className="font-semibold text-slate-200">Default Global</span>
-        </div>
+        <TenantSwitcher />
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

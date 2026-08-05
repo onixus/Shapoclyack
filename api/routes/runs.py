@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from api.auth import Role, TokenUser, get_settings, require_role
+from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AliveHostItem,
@@ -21,16 +21,33 @@ from api.settings import Settings
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
+def _run_tenant_filter(principal: TenantPrincipal) -> str | None:
+    """Tenant a request may read runs from, or ``None`` for no restriction.
+
+    Mirrors the jobs/agents rule (ROADMAP P0): a platform admin who named no
+    tenant keeps the pre-P0 fleet-wide view, everyone else is pinned to the
+    tenant resolved from their memberships.
+    """
+    if principal.is_platform_admin and not principal.tenant_requested:
+        return None
+    return principal.tenant_id
+
+
 @router.get("", response_model=Page[RunSummary])
 def list_runs(
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
     page: PageParams,
 ) -> Page[RunSummary]:
     # `sort` is accepted for uniformity but ignored: runs are ordered by
     # run_id, the only key readable without opening every run's JSON.
     items, total = runs_service.list_runs(
-        settings, offset=page.offset, limit=page.limit, q=page.q, order=page.order
+        settings,
+        offset=page.offset,
+        limit=page.limit,
+        q=page.q,
+        order=page.order,
+        tenant_id=_run_tenant_filter(principal),
     )
     return build_page(items, total, page)
 
@@ -38,10 +55,10 @@ def list_runs(
 @router.get("/{run_id}", response_model=RunDetail)
 def get_run(
     run_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RunDetail:
-    detail = runs_service.get_run_detail(settings, run_id)
+    detail = runs_service.get_run_detail(settings, run_id, tenant_id=_run_tenant_filter(principal))
     if detail is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return detail
@@ -50,11 +67,13 @@ def get_run(
 @router.get("/{run_id}/hosts", response_model=list[AliveHostItem])
 def get_hosts(
     run_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
     limit: Annotated[int, Query(ge=1, le=20000)] = 10000,
 ) -> list[AliveHostItem]:
-    items = runs_service.get_hosts(settings, run_id, limit=limit)
+    items = runs_service.get_hosts(
+        settings, run_id, limit=limit, tenant_id=_run_tenant_filter(principal)
+    )
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return items
@@ -63,11 +82,13 @@ def get_hosts(
 @router.get("/{run_id}/ports", response_model=list[PortAggregateItem])
 def get_ports(
     run_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
     limit: Annotated[int, Query(ge=1, le=20000)] = 10000,
 ) -> list[PortAggregateItem]:
-    items = runs_service.get_ports(settings, run_id, limit=limit)
+    items = runs_service.get_ports(
+        settings, run_id, limit=limit, tenant_id=_run_tenant_filter(principal)
+    )
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return items
@@ -76,13 +97,20 @@ def get_ports(
 @router.get("/{run_id}/vulnerabilities", response_model=list[VulnerabilityItem])
 def get_vulnerabilities(
     run_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
     limit: Annotated[int, Query(ge=1, le=10000)] = 5000,
     host: Annotated[str | None, Query(description="Filter findings by target host/IP")] = None,
     port: Annotated[str | None, Query(description="Filter findings by port")] = None,
 ) -> list[VulnerabilityItem]:
-    items = runs_service.get_vulnerabilities(settings, run_id, limit=limit, host=host, port=port)
+    items = runs_service.get_vulnerabilities(
+        settings,
+        run_id,
+        limit=limit,
+        host=host,
+        port=port,
+        tenant_id=_run_tenant_filter(principal),
+    )
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return items
@@ -91,10 +119,10 @@ def get_vulnerabilities(
 @router.get("/{run_id}/diff")
 def get_diff(
     run_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
-    detail = runs_service.get_run_detail(settings, run_id)
+    detail = runs_service.get_run_detail(settings, run_id, tenant_id=_run_tenant_filter(principal))
     if detail is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     if detail.diff is None:
@@ -106,10 +134,12 @@ def get_diff(
 def get_artifact(
     run_id: str,
     artifact_path: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> str:
-    text = runs_service.read_artifact_text(settings, run_id, artifact_path)
+    text = runs_service.read_artifact_text(
+        settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
+    )
     if text is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     return text
@@ -133,14 +163,16 @@ _ARTIFACT_MEDIA_TYPES = {
 def download_artifact(
     run_id: str,
     artifact_path: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> FileResponse:
     """Binary-safe artifact download. Unlike the text endpoint above (which
     UTF-8-decodes and truncates to 1 MB — fine for previewing JSON/TXT but
     corrupts binaries like ``summary.pdf``), this streams the raw file with an
     attachment disposition and a content-type derived from its extension."""
-    target = runs_service.resolve_artifact(settings, run_id, artifact_path)
+    target = runs_service.resolve_artifact(
+        settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
+    )
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     media_type = _ARTIFACT_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream")

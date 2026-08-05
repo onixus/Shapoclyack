@@ -109,7 +109,7 @@ NVD online: set `NVD_API_KEY` or mount a key file readable by the scanner
 | `pulse/tls.json` | Pulse TLS cert posture (`octo.pulse_tls.v1`) |
 | `tls_posture.json` | Unified TLS findings (nmap / pulse-tls / probe) |
 | `os.json` | `octo.os.v1` OS guesses |
-| `pulse_cves.json` | Pulse CVE hits |
+| `pulse_cves.json` | Pulse findings (`octo.cve.v1`: version_cve / keyword_cve / exposure / tls) |
 | `pulse/raw.json` | Merged raw Pulse JSON |
 | `pulse/REPORT_PRIMARY` | Marker: report prefers Pulse services/OS |
 | `diff_pulse_nmap.json` | Shadow/hybrid comparison |
@@ -127,14 +127,14 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 
 ```dockerfile
 # stage pulse-bin downloads:
-#   pulse-v0.2.7-linux-amd64.tar.gz from onixus/GenDec releases
+#   pulse-v0.8.3-linux-amd64.tar.gz from onixus/GenDec releases
 COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 # + setcap cap_net_raw,cap_net_admin+eip
 ```
 
 | Arg / secret | Default | Meaning |
 |--------------|---------|---------|
-| `PULSE_VERSION` | `v0.2.7` | GenDec release tag |
+| `PULSE_VERSION` | `v0.8.3` | GenDec release tag |
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
@@ -143,7 +143,7 @@ Host install without Docker:
 
 ```bash
 scripts/install-pulse.sh                  # from release
-PULSE_VERSION=v0.2.7 scripts/install-pulse.sh
+PULSE_VERSION=v0.8.3 scripts/install-pulse.sh
 PULSE_FROM_SOURCE=1 scripts/install-pulse.sh  # cargo fallback
 ```
 
@@ -209,6 +209,39 @@ Default path (no nmap required):
 
 nmap-**vulners** / **vulscan** only run when `service_probe.backend` is
 `nmap` or `hybrid` and the profile uses `vuln_legacy` / `vuln-offline`.
+
+### Finding taxonomy and prioritisation
+
+Pulse separates observations from hypotheses (GenDec `docs/findings.md`) and
+labels every finding. Shapoclyack carries those labels through to scoring:
+
+| `finding_class` | Meaning | `cve` | Scored as |
+|-----------------|---------|-------|-----------|
+| `version_cve` | Banner/version matched a curated CVE rule | CVE-… | confirmed |
+| `keyword_cve` | NVD keyword search, unverified | CVE-… | unconfirmed |
+| `exposure` | Service reachable; no CVE claimed | empty | unconfirmed |
+| `tls` | Certificate / TLS posture | empty | confirmed |
+
+`exposure` and `tls` carry no CVE and are identified by a synthetic
+`script_id` (`pulse:<class>:<port>:<slug>`) so each stays a distinct row in
+the report dedupe and in ClickHouse.
+
+An **unconfirmed** finding is discounted by the scanner's own confidence
+(`contextual_score × (0.4 + 0.6 × confidence)`) and capped below `Act`, the
+SSVC decision that means "work this now". A high-CVSS keyword hit therefore
+ranks below a confirmed, KEV-listed one instead of above it.
+
+`epss` and `in_kev` supplied by Pulse win over the API's local
+`OCTO_EPSS_DATABASE` / `OCTO_KEV_DATABASE` overlays, which stay in play for
+nuclei/NSE findings that arrive without them.
+
+Every finding returned by `GET /api/runs/{id}/vulnerabilities` carries
+`contextual_score`, `cisa_decision`, and a one-line `risk_explanation` naming
+the factors behind them; the run's Findings tab renders all three.
+
+`summary.json` counts unconfirmed findings separately in
+`unconfirmed_findings` — they are still part of `potential_vulnerabilities`,
+which grew when exposures stopped being discarded.
 
 Nuclei skips cleanly if the binary or `templates_dir` is missing
 (host installs without the Docker bake). Disable with

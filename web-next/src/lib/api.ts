@@ -1,10 +1,29 @@
 import axios from "axios";
 
 const TOKEN_KEY = "shapoclyack_access_token";
+const TENANT_KEY = "shapoclyack_active_tenant";
 
 export function getAccessToken(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(TOKEN_KEY);
+}
+
+/** Tenant the console is currently acting in, or `null` for "let the server
+ * decide" — which for a platform admin means the fleet-wide view (ROADMAP P0).
+ * Survives reloads; `auth-store` drops it on login/hydrate if the signed-in
+ * user is not entitled to it. */
+export function getActiveTenant(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TENANT_KEY);
+}
+
+export function setActiveTenant(tenantId: string | null) {
+  if (typeof window === "undefined") return;
+  if (!tenantId) {
+    window.localStorage.removeItem(TENANT_KEY);
+    return;
+  }
+  window.localStorage.setItem(TENANT_KEY, tenantId);
 }
 
 export function setAccessToken(token: string | null) {
@@ -27,6 +46,22 @@ api.interceptors.request.use((config) => {
   const token = getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  // Attach the active tenant to every request unless the caller already named
+  // one (deep links like /assets/view?tenantId= still win). The server treats a
+  // missing tenant_id as "resolve from my memberships".
+  const tenantId = getActiveTenant();
+  if (tenantId) {
+    const params = config.params;
+    if (params instanceof URLSearchParams) {
+      if (!params.has("tenant_id")) params.set("tenant_id", tenantId);
+    } else if (params && typeof params === "object") {
+      if ((params as Record<string, unknown>).tenant_id == null) {
+        (params as Record<string, unknown>).tenant_id = tenantId;
+      }
+    } else {
+      config.params = { tenant_id: tenantId };
+    }
   }
   return config;
 });
@@ -68,15 +103,18 @@ export type Me = {
 };
 
 /** The API resolves the tenant from the caller's memberships when the request
- * omits `tenant_id` (ROADMAP P0). Until the tenant switcher lands, sending the
- * literal "default" would 403 for a user whose tenants don't include it, so
- * treat the placeholder as "let the server decide". */
+ * omits `tenant_id` (ROADMAP P0), and sending the literal "default" would 403
+ * for a user whose tenants don't include it — so treat that placeholder as
+ * "let the server decide", which the request interceptor then fills in with
+ * the active tenant when one is selected. */
 function tenantParam(tenantId?: string): Record<string, string> {
   return tenantId && tenantId !== "default" ? { tenant_id: tenantId } : {};
 }
 
 export type RunSummary = {
   run_id: string;
+  /** Owning tenant (ROADMAP P0); "default" for runs written before tagging. */
+  tenant_id: string;
   profile: string | null;
   started_at: string | null;
   alive_hosts: number | null;
@@ -108,6 +146,18 @@ export type Vulnerability = {
   country: string | null;
   city: string | null;
   country_iso: string | null;
+  /** Scanner finding taxonomy: "version_cve" (confirmed), "keyword_cve"
+   * (unverified NVD keyword hit), "exposure" (reachable service, no CVE),
+   * "tls". Null for nuclei/NSE findings. */
+  finding_class: string | null;
+  confidence: number | null;
+  requires_confirmation: boolean;
+  epss: number | null;
+  in_kev: boolean;
+  /** Prioritisation computed by the API (risk_scoring mvp-2). */
+  contextual_score: number | null;
+  cisa_decision: string | null;
+  risk_explanation: string | null;
 };
 
 export type AliveHost = {

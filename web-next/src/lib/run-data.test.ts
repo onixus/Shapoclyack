@@ -13,6 +13,7 @@ import {
 function makeRun(overrides: Partial<RunSummary>): RunSummary {
   return {
     run_id: "run-1",
+    tenant_id: "default",
     profile: null,
     started_at: null,
     alive_hosts: null,
@@ -39,6 +40,14 @@ function makeVuln(severity: string | null): Vulnerability {
     country: null,
     city: null,
     country_iso: null,
+    finding_class: null,
+    confidence: null,
+    requires_confirmation: false,
+    epss: null,
+    in_kev: false,
+    contextual_score: null,
+    cisa_decision: null,
+    risk_explanation: null,
   };
 }
 

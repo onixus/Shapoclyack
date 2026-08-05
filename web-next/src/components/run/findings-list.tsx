@@ -59,24 +59,50 @@ export function FindingsList({
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <p className="font-mono font-bold text-slate-100">
+                      <p className="flex flex-wrap items-center gap-2 font-mono font-bold text-slate-100">
                         {item.cve || item.script_id || "finding"}
                         {item.port ? (
-                          <span className="ml-2 text-sky-400 font-normal">:{item.port}</span>
+                          <span className="text-sky-400 font-normal">:{item.port}</span>
+                        ) : null}
+                        {item.requires_confirmation ? (
+                          <span
+                            className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-300"
+                            title="The scanner could not confirm this finding — treat it as triage signal, not a confirmed vulnerability."
+                          >
+                            unconfirmed
+                          </span>
+                        ) : null}
+                        {item.in_kev ? (
+                          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-300">
+                            KEV
+                          </span>
                         ) : null}
                       </p>
                       <p className="font-mono text-[11px] text-slate-400 mt-0.5">
                         {item.host || "unknown host"}
                         {formatLocation(item) ? ` · ${formatLocation(item)}` : ""}
                       </p>
+                      {item.risk_explanation ? (
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                          {item.risk_explanation}
+                        </p>
+                      ) : null}
                     </div>
-                    <span className="font-mono text-[11px] font-semibold text-slate-300">
-                      {item.cvss4 != null
-                        ? `CVSS4 ${item.cvss4}`
-                        : item.cvss != null
-                          ? `CVSS ${item.cvss}`
-                          : sev.toUpperCase()}
-                    </span>
+                    <div className="text-right">
+                      <span className="font-mono text-[11px] font-semibold text-slate-300">
+                        {item.cvss4 != null
+                          ? `CVSS4 ${item.cvss4}`
+                          : item.cvss != null
+                            ? `CVSS ${item.cvss}`
+                            : sev.toUpperCase()}
+                      </span>
+                      {item.contextual_score != null ? (
+                        <p className="mt-0.5 font-mono text-[10px] text-slate-400">
+                          risk {item.contextual_score.toFixed(1)}
+                          {item.cisa_decision ? ` · ${item.cisa_decision}` : ""}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
                 </li>
               ))}

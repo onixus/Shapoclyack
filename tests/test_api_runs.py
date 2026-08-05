@@ -220,6 +220,88 @@ def test_list_and_get_run(tmp_path: Path):
     assert "Scan Summary" in artifact.text
 
 
+def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path):
+    """Every finding is scored and explained on read (ROADMAP P4), and an
+    unconfirmed one is ranked below a confirmed exploited one no matter how
+    alarming its own CVSS looks."""
+    output = tmp_path / "output"
+    state = tmp_path / "state"
+    output.mkdir()
+    state.mkdir()
+    _write_run(output, "run-a")
+    (output / "runs" / "run-a" / "vulnerabilities.json").write_text(
+        json.dumps(
+            [
+                {
+                    "host": "10.0.0.1",
+                    "port": "3389",
+                    "cve": "CVE-2019-0708",
+                    "cvss": 9.8,
+                    "severity": "critical",
+                    "source": "pulse",
+                    "finding_class": "keyword_cve",
+                    "confidence": 40,
+                    "requires_confirmation": True,
+                },
+                {
+                    "host": "10.0.0.1",
+                    "port": "8080",
+                    "cve": "CVE-2021-44228",
+                    "cvss": 10.0,
+                    "severity": "critical",
+                    "source": "pulse",
+                    "finding_class": "version_cve",
+                    "confidence": 90,
+                    "epss": 0.97,
+                    "in_kev": True,
+                },
+                {
+                    "host": "10.0.0.1",
+                    "port": "445",
+                    "cve": "",
+                    "script_id": "pulse:exposure:445:eternalblue-smbv1-rce",
+                    "cvss": 5.0,
+                    "severity": "medium",
+                    "source": "pulse",
+                    "finding_class": "exposure",
+                    "confidence": 45,
+                    "requires_confirmation": True,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(output_dir=output, state_dir=state)
+    app = create_app()
+    from api.auth import get_settings
+
+    app.dependency_overrides = {get_settings: lambda: settings}
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {_token(client)}"}
+
+    payload = client.get("/api/runs/run-a/vulnerabilities", headers=headers).json()
+    assert [item["port"] for item in payload] == ["8080", "3389", "445"]
+
+    confirmed = payload[0]
+    assert confirmed["epss"] == 0.97
+    assert confirmed["in_kev"] is True
+    assert confirmed["cisa_decision"] == "Immediate"
+    assert "EPSS 0.97 (scanner)" in confirmed["risk_explanation"]
+
+    unverified = payload[1]
+    assert unverified["finding_class"] == "keyword_cve"
+    assert unverified["requires_confirmation"] is True
+    assert unverified["cisa_decision"] == "Attend"
+    assert unverified["contextual_score"] < confirmed["contextual_score"]
+
+    # The CVE-less exposure is present rather than dropped, and explained.
+    exposure = payload[2]
+    assert exposure["cve"] == ""
+    assert exposure["finding_class"] == "exposure"
+    assert "unconfirmed exposure" in exposure["risk_explanation"]
+
+
 def test_download_artifact_binary_intact(tmp_path: Path):
     client = _client(tmp_path)
     headers = {"Authorization": f"Bearer {_token(client)}"}
