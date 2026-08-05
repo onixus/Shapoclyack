@@ -4,6 +4,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- **Pulse `v0.2.7` → `v0.8.3`** — `PULSE_VERSION` in `Dockerfile` and
+  `Dockerfile.allinone`, plus `scripts/install-pulse.sh`, which had drifted a
+  release behind the images at `v0.2.6`. All three now name the same tag.
+
+  The pin had been stuck since July because GenDec's release pipeline stopped
+  attaching Linux tarballs: `v0.6.0` published no assets at all and
+  `v0.7.0`/`v0.8.0` only macOS ones, so there was nothing for the image build
+  to download. Fixed upstream in GenDec (onixus/GenDec#6 and follow-up), and
+  `v0.8.3` is the first release with the full asset set again.
+
+  Pulse's JSON contract is unchanged across the jump (`pulse.scan.v2`, same
+  top-level keys), and every flag the probe adapter passes still exists — but
+  the findings now carry **`epss` and `in_kev` per finding**, which the
+  `mvp-2` scoring below prefers over the local overlay stubs. On `v0.2.7`
+  those two fields were simply absent and scoring fell back to the overlays.
+
+  Not yet wired up from the six releases this skips: the Rhai audit-plugin
+  engine, Shodan/Censys threat intel, `--stream` NDJSON progress, and
+  `--diff-against` drift comparison.
+
 ### Added
 
 - **Finding taxonomy and risk-priority explanation** (scoring model `mvp-1` →
