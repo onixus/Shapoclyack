@@ -6,6 +6,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Finding taxonomy and risk-priority explanation** (scoring model `mvp-1` →
+  **`mvp-2`**; closes the ROADMAP [P4](ROADMAP.md) "risk-priority explanation"
+  item). Pulse labels every finding as observation or hypothesis, and
+  Shapoclyack was throwing those labels away at the adapter boundary.
+  - `octo.cve.v1` gained `finding_class`, `confidence`,
+    `requires_confirmation`, `evidence`, `ruleset_version`, `epss`, and
+    `in_kev`, all carried into `vulnerabilities.json`.
+  - **CVE-less findings are no longer dropped.** `exposure` (reachable
+    service, no CVE claimed) and `tls` findings used to be discarded by the
+    parser; they now survive with a synthetic `script_id`
+    (`pulse:<class>:<port>:<slug>`) so each stays a distinct row in the report
+    dedupe and in ClickHouse instead of collapsing per host.
+  - Scoring prefers the finding's own EPSS/KEV data over the local
+    `OCTO_EPSS_DATABASE` / `OCTO_KEV_DATABASE` overlays, whose committed
+    defaults are seed stubs. The overlays still cover nuclei/NSE findings.
+  - Unconfirmed findings (`exposure`, `keyword_cve`, or anything the scanner
+    marks `requires_confirmation`) are discounted by their confidence and
+    capped below the `Act` decision, so an unverified keyword hit no longer
+    outranks a confirmed, KEV-listed vulnerability.
+  - Every finding now carries `contextual_score`, `cisa_decision`, and a
+    one-line `risk_explanation`; `GET /runs/{id}/vulnerabilities` returns them
+    (and orders by score), and the run's Findings tab renders the score,
+    decision, explanation, and `unconfirmed` / `KEV` badges.
+
+  **Expected change in numbers:** `potential_vulnerabilities` rises on Pulse
+  runs, because exposures that were silently discarded are now reported. The
+  new `summary.json` key `unconfirmed_findings` breaks out how much of the
+  total is hypothesis rather than confirmed vulnerability. No ClickHouse
+  schema change — the existing `cve_id` column already falls back to
+  `script_id` for findings without a CVE.
+
 - **Tenant-aware IAM — completed** (ROADMAP [P0](ROADMAP.md)) — runs are the
   last resource to gain tenant scoping, and the console gained a tenant
   switcher.

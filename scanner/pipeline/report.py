@@ -345,6 +345,16 @@ def build_reports(
         "os_detected_hosts": len(best_os_by_host),
         "nse_script_findings": len(script_findings),
         "potential_vulnerabilities": len(vulnerabilities),
+        # Subset of the above the scanner itself flags as unconfirmed —
+        # reachable-service exposures and unverified keyword CVE hits. Counted
+        # in `potential_vulnerabilities` (they are potential by definition) but
+        # broken out so the headline number can be read honestly.
+        "unconfirmed_findings": sum(
+            1
+            for item in vulnerabilities
+            if item.get("requires_confirmation")
+            or str(item.get("finding_class") or "") in ("exposure", "keyword_cve")
+        ),
         "vulnerable_hosts": len(vulnerable_hosts),
         "vulnerabilities_by_severity": {
             sev: severity_counts.get(sev, 0) for sev in ("critical", "high", "medium", "low", "unknown")

@@ -146,6 +146,18 @@ export type Vulnerability = {
   country: string | null;
   city: string | null;
   country_iso: string | null;
+  /** Scanner finding taxonomy: "version_cve" (confirmed), "keyword_cve"
+   * (unverified NVD keyword hit), "exposure" (reachable service, no CVE),
+   * "tls". Null for nuclei/NSE findings. */
+  finding_class: string | null;
+  confidence: number | null;
+  requires_confirmation: boolean;
+  epss: number | null;
+  in_kev: boolean;
+  /** Prioritisation computed by the API (risk_scoring mvp-2). */
+  contextual_score: number | null;
+  cisa_decision: string | null;
+  risk_explanation: string | null;
 };
 
 export type AliveHost = {

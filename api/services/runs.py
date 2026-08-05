@@ -7,6 +7,7 @@ from typing import Any
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.services import pagination
 from api.services import tenants as tenants_service
+from api.services.risk_scoring import get_scorer
 from api.settings import Settings
 
 # Marker file written into a run directory naming the tenant the run belongs to
@@ -260,6 +261,13 @@ def get_vulnerabilities(
     host_filter = host.strip().lower() if host else None
     port_filter = port.strip() if port else None
     geo = _geo_map(run_dir)
+    # Prioritisation is computed here rather than read back from ClickHouse so
+    # it is available on every deployment, CH or not. The operator-set asset
+    # criticality is deliberately not looked up: that would be one Postgres
+    # query per distinct host on an interactive endpoint. The CH rows written
+    # at ingest do carry it, so their contextual_score can be the stricter of
+    # the two — the explanation says which criticality it used.
+    scorer = get_scorer()
     items: list[VulnerabilityItem] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -272,6 +280,8 @@ def get_vulnerabilities(
             continue
         host_key = str(entry_host or "")
         geo_hit = geo.get(host_key, {})
+        scored = scorer.score_vulnerability(entry)
+        confidence = entry.get("confidence")
         items.append(
             VulnerabilityItem(
                 host=entry_host,
@@ -286,10 +296,23 @@ def get_vulnerabilities(
                 country=entry.get("country") or geo_hit.get("country"),
                 city=entry.get("city") or geo_hit.get("city"),
                 country_iso=entry.get("country_iso") or geo_hit.get("country_iso"),
+                finding_class=entry.get("finding_class"),
+                confidence=int(confidence) if isinstance(confidence, (int, float)) else None,
+                requires_confirmation=bool(entry.get("requires_confirmation")),
+                epss=scored["epss_score"] or None,
+                in_kev=bool(scored["exploit_active"]),
+                contextual_score=scored["contextual_score"],
+                cisa_decision=scored["cisa_decision"],
+                risk_explanation=scored["risk_explanation"],
             )
         )
+    # Contextual score leads: it already folds in severity, EPSS, KEV, and the
+    # confidence discount, so an unconfirmed "critical" no longer outranks a
+    # confirmed exploited one. Severity/CVSS stay as tie-breakers for findings
+    # with no score at all.
     items.sort(
         key=lambda item: (
+            -(item.contextual_score or 0.0),
             _SEVERITY_RANK.get(str(item.severity or "unknown").lower(), 4),
             -(float(item.cvss4) if item.cvss4 is not None else (float(item.cvss) if item.cvss is not None else -1.0)),
             str(item.host or ""),

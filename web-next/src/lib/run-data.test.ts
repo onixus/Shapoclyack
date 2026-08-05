@@ -40,6 +40,14 @@ function makeVuln(severity: string | null): Vulnerability {
     country: null,
     city: null,
     country_iso: null,
+    finding_class: null,
+    confidence: null,
+    requires_confirmation: false,
+    epss: null,
+    in_kev: false,
+    contextual_score: null,
+    cisa_decision: null,
+    risk_explanation: null,
   };
 }
 

@@ -1,25 +1,38 @@
 """Risk scoring for ClickHouse vulnerability rows (Phase 3).
 
-Model ``mvp-1`` fills the enrichment columns that were stubs in ``mvp-0``:
+Model ``mvp-2`` scores each finding and explains the result:
 
 * ``base_cvss`` — prefer CVSS4, else legacy CVSS
-* ``epss_score`` — optional local CVE→EPSS overlay (else 0)
+* ``epss_score`` — the finding's own EPSS when the scanner supplied one
+  (Pulse ships real EPSS per finding), else the local CVE→EPSS overlay
 * ``asset_criticality`` — operator-set value from the Phase 7 asset inventory
   when available (``Asset.asset_criticality``), else 0–4 from severity / CVSS
   bands and high-value ports (Phase 9.4)
-* ``exploit_active`` — 1 if CVE is in optional CISA KEV overlay
+* ``exploit_active`` — 1 if the finding is flagged ``in_kev`` by the scanner or
+  the CVE is in the local CISA KEV overlay
 * ``cisa_decision`` — SSVC-lite Track / Attend / Act / Immediate
-* ``contextual_score`` — 0–10 blend of CVSS, EPSS, exploit, criticality
+* ``contextual_score`` — 0–10 blend of CVSS, EPSS, exploit, criticality,
+  discounted by scanner confidence for unconfirmed findings
+* ``risk_explanation`` — one line naming the factors that produced the above
+
+Confidence handling (ROADMAP P4 "risk-priority explanation"): Pulse separates
+observations from hypotheses and tells us which is which via ``finding_class``
+/ ``confidence`` / ``requires_confirmation`` (GenDec ``docs/findings.md``). An
+``exposure`` observation or an unverified ``keyword_cve`` must not be scored
+like a confirmed version match, so both are discounted by their confidence and
+capped below ``Act`` — the decision that would page someone.
 
 Overlays (JSON) are opt-in so the image stays redistributable:
 
 * ``OCTO_EPSS_DATABASE`` / default ``scanner/data/epss/epss-overlay.json``
 * ``OCTO_KEV_DATABASE`` / default ``scanner/data/kev/kev-overlay.json``
 
-The committed defaults are tiny seed stubs; a refresh job (``scripts/fetch-epss-db.sh``
-/ ``scripts/fetch-kev-db.sh``) rewrites them with the real feeds on a shared
-volume, and ``get_scorer`` hot-reloads changed overlays without a restart
-(``OCTO_ENRICHMENT_RELOAD_SECONDS``, default 60).
+The committed defaults are tiny seed stubs. They now matter less on the default
+scan path — findings that arrive with their own EPSS/KEV data no longer depend
+on them at all — but they still cover nuclei/NSE findings. A refresh job
+(``scripts/fetch-epss-db.sh`` / ``scripts/fetch-kev-db.sh``) rewrites them with
+the real feeds on a shared volume, and ``get_scorer`` hot-reloads changed
+overlays without a restart (``OCTO_ENRICHMENT_RELOAD_SECONDS``, default 60).
 """
 
 from __future__ import annotations
@@ -33,7 +46,18 @@ from typing import Any
 
 LOG = logging.getLogger("shapoclyack.risk-scoring")
 
-SCORING_MODEL_VERSION = "mvp-1"
+SCORING_MODEL_VERSION = "mvp-2"
+
+#: Finding classes the scanner cannot confirm on its own: an ``exposure`` is
+#: "this service is reachable", a ``keyword_cve`` is an unverified NVD keyword
+#: hit. Both are triage signal, never a confirmed vulnerability.
+_UNCONFIRMED_CLASSES = frozenset({"exposure", "keyword_cve"})
+
+#: Highest decision an unconfirmed finding may reach. ``Act``/``Immediate``
+#: mean "work this now", which no hypothesis has earned.
+_UNCONFIRMED_DECISION_CAP = "Attend"
+
+_DECISION_RANK = {"Track": 0, "Attend": 1, "Act": 2, "Immediate": 3}
 
 _SEVERITY_CRITICALITY = {
     "critical": 4,
@@ -182,6 +206,39 @@ class RiskScoring:
             return 1
         return 0
 
+    @staticmethod
+    def _item_epss(item: dict[str, Any]) -> float | None:
+        """EPSS the scanner attached to this finding, if any.
+
+        Pulse ships real EPSS data per finding; when it is present it beats the
+        local overlay, which on a default install is only a seed stub.
+        """
+        raw = item.get("epss")
+        if raw is None:
+            return None
+        try:
+            return max(0.0, min(1.0, float(raw)))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def confidence_factor(item: dict[str, Any]) -> tuple[float, bool]:
+        """``(multiplier, unconfirmed)`` for a finding's scanner confidence.
+
+        A confirmed finding is untouched. An unconfirmed one keeps a floor of
+        0.4 of its score even at zero confidence — a reachable-service
+        observation is still worth triaging, just never worth paging on.
+        """
+        finding_class = str(item.get("finding_class") or "").strip().lower()
+        unconfirmed = bool(item.get("requires_confirmation")) or finding_class in _UNCONFIRMED_CLASSES
+        if not unconfirmed:
+            return 1.0, False
+        try:
+            confidence = max(0, min(100, int(item.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            confidence = 0
+        return 0.4 + 0.6 * (confidence / 100.0), True
+
     def cisa_decision(
         self,
         *,
@@ -220,16 +277,41 @@ class RiskScoring:
         self, item: dict[str, Any], *, asset_criticality_override: int | None = None
     ) -> dict[str, Any]:
         cve = str(item.get("cve") or item.get("script_id") or "")
+        is_cve = cve.upper().startswith("CVE-")
         base = self.base_cvss(item)
-        epss = self.epss_score(cve) if cve.upper().startswith("CVE-") else 0.0
-        exploit = self.exploit_active(cve) if cve.upper().startswith("CVE-") else 0
+
+        epss_source = "none"
+        item_epss = self._item_epss(item)
+        if item_epss is not None:
+            epss, epss_source = item_epss, "scanner"
+        elif is_cve:
+            epss = self.epss_score(cve)
+            epss_source = "overlay" if epss else "none"
+        else:
+            epss = 0.0
+
+        if item.get("in_kev"):
+            exploit, kev_source = 1, "scanner"
+        elif is_cve and self.exploit_active(cve):
+            exploit, kev_source = 1, "overlay"
+        else:
+            exploit, kev_source = 0, "none"
+
         criticality = self.asset_criticality(item, base, override=asset_criticality_override)
+        factor, unconfirmed = self.confidence_factor(item)
         decision = self.cisa_decision(base_cvss=base, epss=epss, exploit_active=exploit)
-        contextual = self.contextual_score(
-            base_cvss=base,
-            epss=epss,
-            exploit_active=exploit,
-            asset_criticality=criticality,
+        capped = unconfirmed and _DECISION_RANK[decision] > _DECISION_RANK[_UNCONFIRMED_DECISION_CAP]
+        if capped:
+            decision = _UNCONFIRMED_DECISION_CAP
+        contextual = round(
+            self.contextual_score(
+                base_cvss=base,
+                epss=epss,
+                exploit_active=exploit,
+                asset_criticality=criticality,
+            )
+            * factor,
+            2,
         )
         return {
             "base_cvss": base,
@@ -239,7 +321,63 @@ class RiskScoring:
             "cisa_decision": decision,
             "contextual_score": contextual,
             "scoring_model_version": SCORING_MODEL_VERSION,
+            "risk_explanation": self._explain(
+                item,
+                base_cvss=base,
+                epss=epss,
+                epss_source=epss_source,
+                exploit_active=exploit,
+                kev_source=kev_source,
+                asset_criticality=criticality,
+                asset_criticality_override=asset_criticality_override,
+                factor=factor,
+                unconfirmed=unconfirmed,
+                capped=capped,
+                decision=decision,
+            ),
         }
+
+    @staticmethod
+    def _explain(
+        item: dict[str, Any],
+        *,
+        base_cvss: float,
+        epss: float,
+        epss_source: str,
+        exploit_active: int,
+        kev_source: str,
+        asset_criticality: int,
+        asset_criticality_override: int | None,
+        factor: float,
+        unconfirmed: bool,
+        capped: bool,
+        decision: str,
+    ) -> str:
+        """One line naming every factor that moved the score (ROADMAP P4).
+
+        Deliberately a plain string rather than structured factors: it is read
+        by a human deciding whether to act, and it has to survive into a PDF, a
+        ticket, and a table cell unchanged.
+        """
+        parts: list[str] = []
+        parts.append(f"CVSS {base_cvss:g}" if base_cvss else "no CVSS")
+        if epss:
+            parts.append(f"EPSS {epss:.2f} ({epss_source})")
+        if exploit_active:
+            parts.append(f"in CISA KEV ({kev_source})")
+        origin = "operator-set" if asset_criticality_override is not None else "heuristic"
+        parts.append(f"asset criticality {asset_criticality}/4 ({origin})")
+        if unconfirmed:
+            finding_class = str(item.get("finding_class") or "unconfirmed").strip().lower()
+            try:
+                confidence = int(item.get("confidence") or 0)
+            except (TypeError, ValueError):
+                confidence = 0
+            note = f"unconfirmed {finding_class} (scanner confidence {confidence}%) — score x{factor:.2f}"
+            if capped:
+                note += f", capped at {decision}"
+            parts.append(note)
+        return " · ".join(parts)
 
 
 _SCORER: RiskScoring | None = None

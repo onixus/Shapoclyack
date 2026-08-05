@@ -29,6 +29,7 @@ from typing import Any
 
 from .protocol import parse_endpoint
 from .service_schema import (
+    FINDING_CLASSES,
     CveRecord,
     OsMatchRank,
     OsRecord,
@@ -226,8 +227,15 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
         if not isinstance(row, dict):
             continue
         cve_id = str(row.get("cve_id") or "").strip()
-        if not cve_id:
+        finding_class = str(row.get("finding_class") or "").strip().lower()
+        # CVE-less classes (exposure / tls) used to be dropped here, which threw
+        # away every "this service is reachable" observation Pulse makes. Keep
+        # them when Pulse labelled them; a row with neither a CVE nor a class is
+        # still unusable and skipped.
+        if not cve_id and finding_class not in FINDING_CLASSES:
             continue
+        if not finding_class:
+            finding_class = "version_cve"
         try:
             port = int(row.get("port") or 0)
         except (TypeError, ValueError):
@@ -240,6 +248,15 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
         refs = row.get("refs") or []
         if not isinstance(refs, list):
             refs = []
+        epss_raw = row.get("epss")
+        try:
+            epss = float(epss_raw) if epss_raw is not None else None
+        except (TypeError, ValueError):
+            epss = None
+        try:
+            confidence = int(row.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0
         cves.append(
             CveRecord(
                 cve_id=cve_id,
@@ -253,6 +270,13 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
                 match_reason=str(row.get("match_reason") or ""),
                 source=str(row.get("source") or "pulse"),
                 refs=[str(r) for r in refs],
+                finding_class=finding_class,
+                confidence=max(0, min(100, confidence)),
+                requires_confirmation=bool(row.get("requires_confirmation")),
+                evidence=str(row.get("evidence") or ""),
+                ruleset_version=str(row.get("ruleset_version") or ""),
+                epss=epss,
+                in_kev=bool(row.get("in_kev")),
             )
         )
 
