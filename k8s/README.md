@@ -3,14 +3,14 @@
 This guide deploys Shapoclyack with Kustomize. For architecture, configuration,
 and operational context, start at [../docs/README.md](../docs/README.md).
 
-Primary cluster runtime for **shapoclyack-0.38-0729+**. Default control plane is the **all-in-one**
+Primary cluster runtime for **shapoclyack-0.39-0805+**. Default control plane is the **all-in-one**
 image with Web UI scan start enabled.
 
 | Image | Tag | Role |
 |-------|-----|------|
-| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.38-0729` | API + UI + scanner (**default** Deployment / Job / CronJob) |
-| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.38-0729` | Scanner-only (lighter Job/CronJob alternative) |
-| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.38-0729` | Thin API + UI (results-only overlay) |
+| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.39-0805` | API + UI + scanner (**default** Deployment / Job / CronJob) |
+| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.39-0805` | Scanner-only (lighter Job/CronJob alternative) |
+| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.39-0805` | Thin API + UI (results-only overlay) |
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 

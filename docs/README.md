@@ -41,6 +41,6 @@ assume the repository root unless a guide says otherwise.
 
 ## Version scope
 
-These guides describe `main` after release `shapoclyack-0.38-0729`. The release
+These guides describe `main` after release `shapoclyack-0.39-0805`. The release
 tag is the reference for immutable deployment behavior; `main` can include
 additional entries documented under `Unreleased`.
