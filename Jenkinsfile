@@ -160,13 +160,11 @@ pipeline {
     stage('Kustomize') {
       agent any
       steps {
-        // bitnami/kubectl держит kubectl как entrypoint, поэтому docker.inside()
-        // сюда не годится — запускаем скрипт явным docker run с bash.
-        sh '''
-          set -eu
-          docker run --rm -v "$WORKSPACE":/w -w /w --entrypoint bash \
-            bitnami/kubectl:1.31 k8s/scripts/validate-kustomize.sh
-        '''
+        // kubectl стоит в самом образе Jenkins (см. jenkins-local/Dockerfile).
+        // Контейнером тут не обойтись: bitnami/kubectl из Docker Hub выпилен
+        // ("not found" на 1.31), а registry.k8s.io/kubectl — distroless, в нём
+        // нет bash для запуска скрипта.
+        sh 'k8s/scripts/validate-kustomize.sh'
       }
     }
 
