@@ -226,18 +226,27 @@ def _build_command(
     return command
 
 
-def _upsert_assets_best_effort(settings: Settings, *, tenant_id: str, run_id: str | None) -> None:
+def _upsert_assets_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+) -> None:
     """Best-effort asset-registry upsert (Phase 7) — never fails the scan/upload.
 
     Covers both execution paths: local-mode scans land here from _run_job,
     agent-uploaded results land here from complete_job.
+
+    A failure here used to leave no trace outside the pod log: the job still
+    read as "succeeded", the scan artifacts were all present, and the asset list
+    was simply empty — so the only way to learn why was to catch the log before
+    the pod was replaced. Record the reason on the job instead.
     """
     if not run_id:
         return
     try:
         assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id=run_id)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logging.exception("Asset upsert failed for run %s (tenant=%s)", run_id, tenant_id)
+        if job_id:
+            _update_job(settings, job_id, asset_upsert_error=f"{type(exc).__name__}: {exc}"[:2000])
 
 
 def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
@@ -272,7 +281,9 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             # the default tenant, which would leak it to every tenant's run list.
             if run_id:
                 runs_service.write_run_tenant(settings, str(run_id), tenant_id, job_id=job_id)
-            _upsert_assets_best_effort(settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None)
+            _upsert_assets_best_effort(
+                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
+            )
     except Exception as exc:  # noqa: BLE001
         logging.exception("Scan job %s failed", job_id)
         _update_job(
@@ -530,7 +541,9 @@ def complete_job(
             )
         except results_ingest.IngestError as exc:
             raise ValueError(str(exc)) from exc
-        _upsert_assets_best_effort(settings, tenant_id=job_tenant, run_id=str(resolved_run_id))
+        _upsert_assets_best_effort(
+            settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+        )
 
     status = "succeeded" if exit_code == 0 else "failed"
     _update_job(

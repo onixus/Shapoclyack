@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Play, Terminal, ArrowUpRight, Cpu, Timer } from "lucide-react";
+import { Play, Terminal, ArrowUpRight, Cpu, Timer, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -66,7 +66,22 @@ export default function JobsPage() {
       {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => <StatusBadge value={row.original.status} map={JOB_STATUS} showPulse={row.original.status === "running"} />,
+        cell: ({ row }) => (
+          <span className="inline-flex items-center gap-1.5">
+            <StatusBadge value={row.original.status} map={JOB_STATUS} showPulse={row.original.status === "running"} />
+            {/* A succeeded scan whose asset upsert failed looks entirely clean
+                here; without this the empty asset list has no explanation. */}
+            {row.original.asset_upsert_error ? (
+              <span
+                role="img"
+                aria-label="Assets were not updated for this job"
+                title={`Assets were not updated: ${row.original.asset_upsert_error}`}
+              >
+                <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+              </span>
+            ) : null}
+          </span>
+        ),
       },
       {
         accessorKey: "mode",
