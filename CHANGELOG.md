@@ -4,6 +4,8 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.40-0806] — 2026-08-06
+
 ### Changed
 
 - **Pulse `v0.2.7` → `v0.8.3`** — `PULSE_VERSION` in `Dockerfile` and

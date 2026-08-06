@@ -79,6 +79,6 @@ Use this ownership map:
 
 ## Version scope
 
-These guides describe `main` after release `shapoclyack-0.39-0805`. Release tags
+These guides describe `main` after release `shapoclyack-0.40-0806`. Release tags
 are immutable deployment references; `main` may include additional behavior
 listed under `Unreleased` in [CHANGELOG.md](../CHANGELOG.md).
