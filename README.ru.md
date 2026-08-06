@@ -106,7 +106,7 @@ Web UI включает:
 ## Релиз и образы
 
 Документация привязана к релизу
-[`shapoclyack-0.39-0805`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.39-0805).
+[`shapoclyack-0.40-0806`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.40-0806).
 
 | Образ | Роль |
 |---|---|
