@@ -33,6 +33,37 @@ pipeline {
       }
     }
 
+    // Quality gate. Стоит до тестов и сборки образа намеренно: находка
+    // уровня ERROR роняет билд за пару минут, а не после часа сборки.
+    stage('SAST (semgrep)') {
+      agent any
+      steps {
+        sh '''
+          set -eu
+          RULES="--config p/security-audit --config p/secrets --config p/python"
+
+          # Проход 1 — полный отчёт, все severity, билд не роняет (--no-error).
+          # WARNING/INFO должны быть видны в артефакте, но не блокировать.
+          echo "[sast] полный отчёт"
+          docker run --rm -v "$WORKSPACE":/src -w /src semgrep/semgrep:latest \
+            semgrep scan $RULES --metrics=off --no-error \
+              --json --output semgrep.json
+
+          # Проход 2 — гейт. --severity ERROR оставляет только криты,
+          # --error переводит находки в ненулевой код возврата. Гейтим кодом
+          # возврата, а не разбором JSON: меньше движущихся частей.
+          echo "[sast] quality gate: блок при ERROR"
+          docker run --rm -v "$WORKSPACE":/src -w /src semgrep/semgrep:latest \
+            semgrep scan $RULES --metrics=off --severity ERROR --error
+        '''
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'semgrep.json', allowEmptyArchive: true
+        }
+      }
+    }
+
     stage('Tests') {
       matrix {
         axes {
