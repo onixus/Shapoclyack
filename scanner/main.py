@@ -155,6 +155,13 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             update={"ports": config.ports.model_copy(update=ports_updates)}
         )
 
+    # pulse (--cve-online) and scripts/fetch-cvss4-db.py both read NVD_API_KEY
+    # from the environment, and run_command hands the child our own environ, so
+    # exporting it here is all the plumbing the config-stored key needs. An
+    # operator-set env var wins: a k8s Secret should not lose to stored config.
+    if config.enrichment.cvss4.nvd_api_key and not os.environ.get("NVD_API_KEY", "").strip():
+        os.environ["NVD_API_KEY"] = config.enrichment.cvss4.nvd_api_key
+
     output_base = Path(config.runtime.output_dir)
     state_base = Path(config.runtime.state_dir)
     previous_alive_file = None

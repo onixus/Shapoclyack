@@ -448,6 +448,12 @@ class Cvss4Config(BaseModel):
     enabled: bool = True
     # Local CVE → CVSS v4 JSON map. Refresh with scripts/fetch-cvss4-db.py
     database: str = "scanner/data/cvss4/cvss4.json"
+    # NVD API key, raising NVD's rate limit from 5 req/30s to 50 req/30s for
+    # scripts/fetch-cvss4-db.py and for pulse's --cve-online lookups. Leave
+    # empty to keep using the NVD_API_KEY environment variable, which wins over
+    # this value: an operator-set env/Secret should not be silently overridden
+    # by a stored config. Never logged, and masked by the config API.
+    nvd_api_key: str = ""
 
 
 class GeoIpConfig(BaseModel):

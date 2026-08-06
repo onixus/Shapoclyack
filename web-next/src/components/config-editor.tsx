@@ -19,7 +19,7 @@ import { useConfig, useUpdateConfig } from "@/hooks/use-config";
 const TIMINGS = ["T0", "T1", "T2", "T3", "T4", "T5"];
 const SERVICE_BACKENDS = ["nmap", "pulse", "hybrid"];
 
-type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text";
+type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text" | "secret";
 
 function widgetFor(path: string): Widget {
   if (path.endsWith(".enabled") || path === "reporting.pdf_summary" || path === "service_probe.shadow") {
@@ -29,6 +29,7 @@ function widgetFor(path: string): Widget {
   if (path === "service_probe.backend" || path.endsWith(".service_backend")) return "backend";
   if (path === "nuclei.severities" || path === "nuclei.exclude_tags") return "list";
   if (path === "nuclei.templates_dir") return "text";
+  if (path.endsWith("_api_key")) return "secret";
   return "int";
 }
 
@@ -180,6 +181,16 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                               .filter(Boolean),
                           )
                         }
+                      />
+                    ) : widget === "secret" ? (
+                      <Input
+                        type="password"
+                        className="w-56 h-8 bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs placeholder:text-slate-600"
+                        value={String(values[path] ?? "")}
+                        disabled={!canEdit}
+                        autoComplete="off"
+                        placeholder="not set"
+                        onChange={(e) => setValue(path, e.target.value)}
                       />
                     ) : widget === "text" ? (
                       <Input

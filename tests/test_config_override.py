@@ -89,3 +89,33 @@ def test_deep_merge_via_effective_paths():
     # untouched sibling keys are preserved
     assert merged["nuclei"]["severities"] == ["critical"]
     assert merged["profiles"]["safe"]["top_ports"] == 250
+
+
+def test_validate_accepts_nvd_api_key():
+    data = cfg.unflatten({"enrichment.cvss4.nvd_api_key": "  a-key  "})
+    assert cfg.validate_overrides(data) is data
+    with pytest.raises(ValueError, match="expected a string"):
+        cfg.validate_overrides({"enrichment": {"cvss4": {"nvd_api_key": 1234}}})
+
+
+def test_masked_secret_does_not_overwrite_the_stored_key():
+    """The UI only ever sees the mask, so it echoes it back on unrelated edits.
+    That must not replace the real key with a row of bullets."""
+    stored = {"enrichment": {"cvss4": {"nvd_api_key": "real-key"}}}
+    incoming = cfg.unflatten(
+        {"enrichment.cvss4.nvd_api_key": cfg.SECRET_MASK, "nuclei.retries": 2}
+    )
+    out = cfg._restore_masked_secrets(stored, incoming)
+    assert out["enrichment"]["cvss4"]["nvd_api_key"] == "real-key"
+    assert out["nuclei"]["retries"] == 2
+
+
+def test_masked_secret_with_nothing_stored_is_dropped_not_persisted():
+    out = cfg._restore_masked_secrets({}, {"enrichment": {"cvss4": {"nvd_api_key": cfg.SECRET_MASK}}})
+    assert out == {}
+
+
+def test_empty_string_clears_the_stored_key():
+    stored = {"enrichment": {"cvss4": {"nvd_api_key": "real-key"}}}
+    out = cfg._restore_masked_secrets(stored, {"enrichment": {"cvss4": {"nvd_api_key": ""}}})
+    assert out["enrichment"]["cvss4"]["nvd_api_key"] == ""
