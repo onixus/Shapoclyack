@@ -20,7 +20,22 @@ else
 fi
 
 echo "==> Building ${IMAGE}"
-docker build -f Dockerfile.allinone -t "${IMAGE}" .
+# Pulse ships from a private repo, so the image build needs a GitHub token to
+# resolve the release asset. Dockerfile.allinone declares the secret with
+# required=false and falls back to the public download URL without it -- which
+# 404s for a private repo, so pass the token whenever one is available.
+BUILD_SECRET=()
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  BUILD_SECRET=(--secret "id=github_token,env=GITHUB_TOKEN")
+elif command -v gh >/dev/null 2>&1 && GITHUB_TOKEN="$(gh auth token 2>/dev/null)" && [ -n "${GITHUB_TOKEN}" ]; then
+  export GITHUB_TOKEN
+  BUILD_SECRET=(--secret "id=github_token,env=GITHUB_TOKEN")
+else
+  echo "    no GitHub token found (env GITHUB_TOKEN or 'gh auth token');" >&2
+  echo "    the Pulse download will fail while ${PULSE_GITHUB_REPO:-onixus/GenDec} is private" >&2
+fi
+
+docker build -f Dockerfile.allinone -t "${IMAGE}" "${BUILD_SECRET[@]}" .
 
 echo "==> Loading image into kind"
 kind load docker-image "${IMAGE}" --name "${CLUSTER_NAME}"
