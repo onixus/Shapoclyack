@@ -87,6 +87,21 @@ def _enum(choices: tuple[str, ...]) -> Callable[[Any], str]:
 
 _SERVICE_BACKENDS = ("nmap", "pulse", "hybrid")
 
+#: Placeholder returned instead of a stored secret, and accepted back on update
+#: to mean "leave the stored value alone".
+SECRET_MASK = "••••••••"
+
+
+def _secret(value: Any) -> str:
+    """A write-only string: any string is accepted, including "" to clear it."""
+    if not isinstance(value, str):
+        raise ValueError("expected a string")
+    return value.strip()
+
+
+#: Editable paths whose value must never be returned by the API.
+SECRET_PATHS: frozenset[str] = frozenset({"enrichment.cvss4.nvd_api_key"})
+
 
 # Static (non-profile) editable leaf paths → validator. Ranges mirror the
 # NucleiConfig pydantic bounds in scanner/pipeline/config_schema.py.
@@ -104,6 +119,7 @@ _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "reporting.pdf_summary": _as_bool,
     "service_probe.backend": _enum(_SERVICE_BACKENDS),
     "service_probe.shadow": _as_bool,
+    "enrichment.cvss4.nvd_api_key": _secret,
 }
 # Per-profile editable leaf → validator (path is profiles.<profile>.<leaf>).
 _PROFILE_SPEC: dict[str, Callable[[Any], Any]] = {
@@ -201,9 +217,29 @@ def get_overrides(settings: Settings) -> dict[str, Any]:
         return {}
 
 
+def _restore_masked_secrets(stored: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """The UI only ever sees SECRET_MASK for a set secret, so it sends the mask
+    back untouched on any unrelated edit. Treat that as "keep what is stored"
+    -- otherwise saving, say, a rate limit would overwrite the key with a row
+    of bullets. An empty string still clears it."""
+    stored_flat = _flatten(stored)
+    incoming_flat = _flatten(incoming)
+    changed = False
+    for path in SECRET_PATHS:
+        if incoming_flat.get(path) != SECRET_MASK:
+            continue
+        changed = True
+        if path in stored_flat:
+            incoming_flat[path] = stored_flat[path]
+        else:
+            del incoming_flat[path]
+    return unflatten(incoming_flat) if changed else incoming
+
+
 def set_overrides(settings: Settings, data: dict[str, Any], *, username: str | None = None) -> dict[str, Any]:
     """Validate against the whitelist AND the full merged schema, then persist.
     Raises ValueError on any validation failure (nothing is written)."""
+    data = _restore_masked_secrets(get_overrides(settings), data)
     validate_overrides(data)
     merged = _deep_merge(base_config_dict(settings), data)
     try:
@@ -251,9 +287,17 @@ def editable_snapshot(settings: Settings) -> dict[str, Any]:
     merged_flat = _flatten(merged)
     effective = {p: merged_flat.get(p) for p in EDITABLE_PATHS if p in merged_flat}
     defaults = {p: base_flat.get(p) for p in EDITABLE_PATHS if p in base_flat}
+    overrides_flat = _flatten(overrides)
+    # GET /config is viewer-readable, so secrets must never leave this process.
+    # A set secret reads back as SECRET_MASK; sending the mask back on update
+    # means "unchanged" (see set_overrides).
+    for path in SECRET_PATHS:
+        for bucket in (effective, defaults, overrides_flat):
+            if bucket.get(path):
+                bucket[path] = SECRET_MASK
     return {
         "editable_paths": EDITABLE_PATHS,
         "defaults": defaults,
         "effective": effective,
-        "overrides": _flatten(overrides),
+        "overrides": overrides_flat,
     }

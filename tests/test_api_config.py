@@ -5,6 +5,9 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from api.auth import get_settings
+from api.services import config_override
+from api.services.config_override import SECRET_MASK
 from tests.conftest import requires_postgres
 
 pytestmark = requires_postgres
@@ -65,3 +68,31 @@ def test_admin_update_rejects_invalid():
     # Out-of-range value.
     r = client.put("/api/config", headers=headers, json={"overrides": {"profiles.safe.top_ports": 0}})
     assert r.status_code == 422
+
+
+def test_nvd_api_key_is_never_returned_to_a_reader():
+    """GET /api/config is viewer-readable, so a stored key must come back masked
+    -- in every bucket, not just `overrides`."""
+    client = _client()
+    admin = {"Authorization": f"Bearer {_token(client, 'admin', 'admin-change-me')}"}
+    secret = "nvd-secret-value-under-test"
+    r = client.put("/api/config", headers=admin, json={"overrides": {"enrichment.cvss4.nvd_api_key": secret}})
+    assert r.status_code == 200, r.text
+
+    viewer = {"Authorization": f"Bearer {_token(client, 'viewer', 'viewer-change-me')}"}
+    r = client.get("/api/config", headers=viewer)
+    assert r.status_code == 200
+    assert secret not in r.text
+    assert r.json()["effective"]["enrichment.cvss4.nvd_api_key"] == SECRET_MASK
+
+    # An unrelated edit echoes the mask back; the stored key must survive it.
+    r = client.put(
+        "/api/config",
+        headers=admin,
+        json={"overrides": {"enrichment.cvss4.nvd_api_key": SECRET_MASK, "nuclei.retries": 3}},
+    )
+    assert r.status_code == 200, r.text
+    assert config_override.get_overrides(get_settings())["enrichment"]["cvss4"]["nvd_api_key"] == secret
+
+    # Clear it so the shared dev database does not keep a test key around.
+    client.put("/api/config", headers=admin, json={"overrides": {}})
