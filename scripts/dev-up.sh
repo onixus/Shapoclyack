@@ -45,6 +45,14 @@ kubectl apply -k k8s/shapoclyack/overlays/kind-dev
 
 echo "==> Waiting for rollout"
 kubectl -n "${NAMESPACE}" rollout status statefulset/shapoclyack-postgres --timeout=180s
+
+# The image tag is always :kind-dev and imagePullPolicy is IfNotPresent, so a
+# rebuild leaves the PodSpec byte-identical: `apply` reports "configured", no
+# pod is recreated, and `rollout status` returns success against the OLD
+# ReplicaSet. The script would print "Ready" over a lab still running the
+# previous build. Force the restart so a rebuild always reaches the cluster.
+echo "==> Restarting the API to pick up the rebuilt image"
+kubectl -n "${NAMESPACE}" rollout restart deployment/shapoclyack-api
 kubectl -n "${NAMESPACE}" rollout status deployment/shapoclyack-api --timeout=180s
 
 echo
