@@ -126,9 +126,13 @@ RUN set -eux; \
 # reason as NMAP_VULNERS_REF/VULSCAN_REF above.
 COPY --from=nuclei-build /out/nuclei /usr/local/bin/nuclei
 ARG NUCLEI_TEMPLATES_REF=v9.9.4
+# Shallow-clone the tag directly: a full clone pulls years of history that the
+# next line throws away, which took ~an hour and broke often enough on a flaky
+# link to block the build entirely. --branch resolves the same tag, so the
+# pinned tree is identical.
 RUN set -eux; \
-    git clone https://github.com/projectdiscovery/nuclei-templates.git /usr/share/nuclei-templates; \
-    git -C /usr/share/nuclei-templates checkout "${NUCLEI_TEMPLATES_REF}"; \
+    git clone --depth 1 --branch "${NUCLEI_TEMPLATES_REF}" \
+      https://github.com/projectdiscovery/nuclei-templates.git /usr/share/nuclei-templates; \
     rm -rf /usr/share/nuclei-templates/.git
 
 # See Dockerfile: naabu + Pulse need cap_net_raw,cap_net_admin; nmap too when present.
