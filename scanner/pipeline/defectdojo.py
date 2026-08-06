@@ -173,6 +173,9 @@ def _post_reimport(
         "Content-Type": content_type,
         "Accept": "application/json",
     }
+    # Opt-in escape hatch for self-signed DefectDojo in labs; verify_ssl
+    # defaults to True (config_schema.py) and must be turned off explicitly.
+    # nosemgrep: python.lang.security.unverified-ssl-context.unverified-ssl-context
     context = None if verify_ssl else ssl._create_unverified_context()  # noqa: S323
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:

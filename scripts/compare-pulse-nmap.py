@@ -23,8 +23,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from pathlib import Path
+
+# Parsing goes through defusedxml; the stdlib import stays for ET.ParseError.
+from defusedxml.ElementTree import fromstring as safe_fromstring
 
 # Allow running from repo root without install
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,7 +208,7 @@ def _run_nmap_cmd(cmd: list[str], base: Path, timeout: int) -> dict:
         raise RuntimeError(f"nmap wrote no XML: rc={proc.returncode} stderr={proc.stderr[-500:]}")
     open_ports = 0
     try:
-        root = ET.fromstring(xml_path.read_text(encoding="utf-8", errors="replace"))
+        root = safe_fromstring(xml_path.read_text(encoding="utf-8", errors="replace"))
         for port in root.findall(".//port"):
             state = port.find("state")
             if state is not None and state.attrib.get("state") == "open":

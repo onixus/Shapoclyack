@@ -4,9 +4,14 @@ import csv
 import json
 import os
 import re
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from collections import Counter
 from pathlib import Path
+
+# Parsing goes through defusedxml (entity-expansion DoS: nmap XML embeds
+# attacker-influenced banner/NSE text). The stdlib import stays for ET.Element
+# and ET.ParseError -- defusedxml.ElementTree does not export Element.
+from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from .cvss4 import Cvss4Database, enrich_vulnerabilities
 from .asn_enrich import AsnDatabase, enrich_hosts_asn
@@ -79,7 +84,7 @@ def _parse_nmap_xml(nmap_dir: Path) -> tuple[list[dict], list[dict], list[dict]]
 
     for xml_file in sorted(nmap_dir.rglob("*.xml")):
         try:
-            root = ET.fromstring(xml_file.read_text(encoding="utf-8"))
+            root = safe_fromstring(xml_file.read_text(encoding="utf-8"))
         except ET.ParseError:
             continue
         for host in root.findall("host"):
