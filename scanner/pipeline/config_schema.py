@@ -55,6 +55,26 @@ class ProfilePulseConfig(BaseModel):
     chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
 
 
+class ProfileNucleiConfig(BaseModel):
+    """Optional per-speed-profile nuclei knobs (override the global ``nuclei``).
+
+    Same shape and merge rule as ProfilePulseConfig: only non-None fields
+    replace the global NucleiConfig for that run. Exists because nuclei is by
+    far the longest stage once ports are actually found — ~8.9k templates
+    against every discovered web endpoint — so the speed profile has to be able
+    to reach it, not just discovery and port scanning.
+    """
+
+    severities: list[str] | None = None
+    exclude_tags: list[str] | None = None
+    max_targets: int | None = Field(default=None, ge=1, le=50_000)
+    concurrency: int | None = Field(default=None, ge=1, le=100)
+    rate_limit: int | None = Field(default=None, ge=1, le=10_000)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=60)
+    retries: int | None = Field(default=None, ge=0, le=5)
+    overall_timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+
+
 class ProfileConfig(BaseModel):
     discover_rate: int = Field(ge=1, le=100_000)
     port_rate: int = Field(ge=1, le=100_000)
@@ -67,6 +87,8 @@ class ProfileConfig(BaseModel):
     service_backend: Literal["nmap", "pulse", "hybrid"] | None = None
     # Phase 4.1: optional Pulse rate/OS knobs for this speed profile.
     pulse: ProfilePulseConfig = Field(default_factory=ProfilePulseConfig)
+    # Optional nuclei knobs for this speed profile (see ProfileNucleiConfig).
+    nuclei: ProfileNucleiConfig = Field(default_factory=ProfileNucleiConfig)
 
 
 class BatchingConfig(BaseModel):
@@ -372,6 +394,19 @@ def merge_pulse_config(
     for key, value in override.model_dump(exclude_none=True).items():
         data[key] = value
     return PulseProbeConfig.model_validate(data)
+
+
+def merge_nuclei_config(
+    base: NucleiConfig,
+    override: ProfileNucleiConfig | None,
+) -> NucleiConfig:
+    """Apply non-None profile.nuclei fields onto the global nuclei config."""
+    if override is None:
+        return base
+    data = base.model_dump()
+    for key, value in override.model_dump(exclude_none=True).items():
+        data[key] = value
+    return NucleiConfig.model_validate(data)
 
 
 @dataclass(frozen=True)

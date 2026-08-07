@@ -23,6 +23,11 @@ COPY requirements.txt requirements-api.txt /app/
 RUN pip install --no-cache-dir -r requirements-api.txt
 
 COPY scanner /app/scanner
+# Pristine copy of the committed enrichment seed. scripts/fetch-enrichment.sh
+# uses this as its floor: the runtime target is /app/scanner/data itself, so
+# when a shared enrichment volume is mounted there it shadows the baked seed
+# and the floor would have nothing to copy from.
+COPY scanner/data /opt/shapoclyack/seed-data
 COPY api /app/api
 COPY scripts /app/scripts
 COPY --from=web-build /web/out /app/web/dist

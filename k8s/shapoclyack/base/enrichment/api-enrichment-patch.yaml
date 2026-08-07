@@ -29,6 +29,15 @@ spec:
                   name: shapoclyack-geoip
                   key: maxmind_license_key
                   optional: true
+            # Same rationale as the enrichment-refresh CronJob: without a key
+            # NVD throttles to 5 req/30s, so an unkeyed cold-start fetch mostly
+            # gives up early and leaves the baked-in CVSS4 seed in place.
+            - name: NVD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nvd
+                  key: nvd_api_key
+                  optional: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

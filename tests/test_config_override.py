@@ -119,3 +119,31 @@ def test_empty_string_clears_the_stored_key():
     stored = {"enrichment": {"cvss4": {"nvd_api_key": "real-key"}}}
     out = cfg._restore_masked_secrets(stored, {"enrichment": {"cvss4": {"nvd_api_key": ""}}})
     assert out["enrichment"]["cvss4"]["nvd_api_key"] == ""
+
+
+def test_profile_nuclei_override_merges_and_is_scoped():
+    """profiles.<mode>.nuclei overrides the global block for that profile only.
+
+    nuclei dominates wall-clock once ports are found, so a speed profile has to
+    reach it. Only non-None fields apply; every other profile keeps the global
+    values.
+    """
+    import yaml
+
+    from scanner.pipeline.config_schema import load_config, merge_nuclei_config
+
+    with open("scanner/config/default.yaml", encoding="utf-8") as handle:
+        cfg = load_config(yaml.safe_load(handle))
+
+    assert "test" in cfg.profiles, "test profile missing from default.yaml"
+
+    merged = merge_nuclei_config(cfg.nuclei, cfg.profiles["test"].nuclei)
+    assert merged.concurrency == 50
+    assert merged.timeout_seconds == 5
+    assert merged.overall_timeout_seconds == 300
+    assert merged.severities == ["critical", "high"]
+    # Not overridden by the profile — must fall through to the global value.
+    assert merged.templates_dir == cfg.nuclei.templates_dir
+
+    untouched = merge_nuclei_config(cfg.nuclei, cfg.profiles["balanced"].nuclei)
+    assert untouched.model_dump() == cfg.nuclei.model_dump()

@@ -55,11 +55,19 @@ def _run_naabu(
         write_lines(output_file, [])
         return []
 
+    # -Pn: same reasoning as the nmap path in nse.py -- these hosts were already
+    # proven alive by the discovery phase, so naabu's own host discovery is pure
+    # duplication. Worse, when it fails it drops the host silently and the batch
+    # reports zero open ports: inside a container naabu falls back to a CONNECT
+    # scan ("non root privileges") whose discovery probes do not get through,
+    # which turned a scan of hosts with known-open 80/443/25/465/587 into an
+    # empty result with no error anywhere in the log.
     command = [
         "naabu",
         "-list",
         str(input_file),
         "-silent",
+        "-Pn",
         "-rate",
         str(rate),
         "-retries",

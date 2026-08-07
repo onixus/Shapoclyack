@@ -376,6 +376,7 @@ export default function SchedulesPage() {
                       <SelectItem value="safe">safe (500 pps · low load)</SelectItem>
                       <SelectItem value="balanced">balanced (2,000 pps · standard)</SelectItem>
                       <SelectItem value="fast">fast (5,000 pps · aggressive)</SelectItem>
+                      <SelectItem value="test">test (smoke test · top 100 ports, short nuclei)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

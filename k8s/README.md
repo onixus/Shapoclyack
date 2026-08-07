@@ -16,7 +16,10 @@ Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 
 For local labs, prefer `scripts/dev-up.sh` at the repo root — it builds the
 all-in-one image, loads it into a [kind](https://kind.sigs.k8s.io/) cluster,
-and applies `overlays/kind-dev`. Tear down with `scripts/dev-down.sh`.
+and applies `overlays/kind-dev`. Set `OVERLAY=kind-enrichment` for real
+enrichment data; with `OVERLAY` unset the script keeps whatever the cluster
+already runs, so a rebuild cannot silently strip enrichment from the API.
+Tear down with `scripts/dev-down.sh`.
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
@@ -71,12 +74,13 @@ k8s/shapoclyack/
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
 ├── base/config/k8s.yaml  # scanner ConfigMap source
 ├── base/agents/          # optional agent Deployment + VPA (not in default base)
-├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 RWX PVC + daily refresh CronJob
+├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
 ├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false
 ├── overlays/agents/      # remote agents (topology spread + VPA) + API agent-mode
 ├── overlays/enrichment/  # real GeoIP/EPSS/KEV/CVSS4 data, hot-reloaded, no restart needed
+├── overlays/kind-enrichment/ # kind-dev + enrichment, with the PVC dropped to RWO for local-path
 └── examples/             # Secrets / Ingress / agent / NATS enable patches
 ```
 
@@ -276,19 +280,40 @@ with:
 ```bash
 # Requires a StorageClass supporting ReadWriteMany (see pvc.yaml)
 kubectl apply -k k8s/shapoclyack/overlays/enrichment
+
+# On a local kind cluster instead — same thing, but the PVC drops to RWO
+# because kind only ships the RWO local-path provisioner:
+kubectl apply -k k8s/shapoclyack/overlays/kind-enrichment
 ```
 
 | Manifest | Behavior |
 |----------|----------|
 | `base/enrichment/pvc.yaml` | `enrichment-data` RWX PVC (2Gi) shared by every replica |
 | `base/enrichment/cronjob.yaml` | Daily 03:00 UTC `scripts/fetch-enrichment.sh` refresh into the PVC |
-| Overlay patches | API gets a cold-start `fetch-enrichment` initContainer + read-only volume mount + `OCTO_EPSS_DATABASE`/`OCTO_KEV_DATABASE`/`OCTO_GEOIP_DATABASE`/`OCTO_CVSS4_DATABASE`/`OCTO_ENRICHMENT_RELOAD_SECONDS`; the weekly scan CronJob gets the volume + GeoIP/CVSS4 env |
+| `base/enrichment/*-patch.yaml` | API gets a cold-start `fetch-enrichment` initContainer + read-only volume mount + `OCTO_EPSS_DATABASE`/`OCTO_KEV_DATABASE`/`OCTO_GEOIP_DATABASE`/`OCTO_CVSS4_DATABASE`/`OCTO_ENRICHMENT_RELOAD_SECONDS`; the weekly scan CronJob gets the volume + GeoIP/CVSS4 env |
+
+`base/enrichment/` is a kustomize **Component**, pulled in under `components:` rather
+than `resources:` — that is what lets both overlays reuse the same two patches.
 
 The API re-checks the EPSS/KEV files' mtimes at most once per
 `OCTO_ENRICHMENT_RELOAD_SECONDS` (default 60s) and reloads in place when the daily
 CronJob rewrites them — no pod restart needed. GeoIP source is automatic: MaxMind
 GeoLite2-City if `Secret shapoclyack-geoip` / key `maxmind_license_key` is set, else
 keyless DB-IP City Lite.
+
+The CVSS4 refresh calls the NVD API, which throttles anonymous callers to 5 req/30s —
+slow enough that an unkeyed refresh can hit the job's `activeDeadlineSeconds` and leave
+the seed stub in place. Set a key to get 50 req/30s:
+
+```bash
+kubectl create secret generic shapoclyack-nvd \
+  --from-literal=nvd_api_key=<your-key> -n network-scan
+```
+
+This is deliberately separate from the NVD key stored through the config API
+(`enrichment.cvss4.nvd_api_key`): that value is only exported into the environment of a
+running scan process (`scanner/main.py`), so it never reaches the enrichment fetch. An
+operator-set `NVD_API_KEY` also wins over the stored config value by design.
 
 ### 5. Observe / resume
 

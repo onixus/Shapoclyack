@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # Local dev cluster for Shapoclyack — replaces `docker compose up --build`.
 #
-# Builds the all-in-one image, loads it into a kind cluster, and applies
-# k8s/shapoclyack/overlays/kind-dev (dev resources + local image tag + NodePort).
+# Builds the all-in-one image, loads it into a kind cluster, and applies a
+# kind overlay (dev resources + local image tag + NodePort).
+#
+# Overlay selection:
+#   OVERLAY=kind-dev          base local lab (default on a fresh cluster)
+#   OVERLAY=kind-enrichment   ...plus real GeoIP/ASN/EPSS/KEV/CVSS4 data
+#
+# With OVERLAY unset the script keeps whatever the cluster already runs: if the
+# enrichment PVC is present it re-applies kind-enrichment. Applying kind-dev
+# over an enrichment deployment silently strips the API's enrichment volume,
+# initContainer and OCTO_*_DATABASE vars, leaving it to read the image's seed
+# again — a downgrade with no error and no obvious symptom.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,8 +50,27 @@ docker build -f Dockerfile.allinone -t "${IMAGE}" "${BUILD_SECRET[@]}" .
 echo "==> Loading image into kind"
 kind load docker-image "${IMAGE}" --name "${CLUSTER_NAME}"
 
-echo "==> Applying k8s/shapoclyack/overlays/kind-dev"
-kubectl apply -k k8s/shapoclyack/overlays/kind-dev
+# Resolve the overlay only now: the cluster has to exist before we can ask it
+# what is already deployed.
+if [ -n "${OVERLAY:-}" ]; then
+  echo "==> Overlay '${OVERLAY}' (from OVERLAY)"
+elif kubectl -n "${NAMESPACE}" get pvc enrichment-data >/dev/null 2>&1; then
+  OVERLAY="kind-enrichment"
+  echo "==> Overlay 'kind-enrichment' (enrichment-data PVC present; OVERLAY=kind-dev to drop it)"
+else
+  OVERLAY="kind-dev"
+  echo "==> Overlay 'kind-dev' (OVERLAY=kind-enrichment for real enrichment data)"
+fi
+
+OVERLAY_DIR="k8s/shapoclyack/overlays/${OVERLAY}"
+if [ ! -d "${OVERLAY_DIR}" ]; then
+  echo "unknown overlay '${OVERLAY}' — no such directory ${OVERLAY_DIR}" >&2
+  echo "available: $(ls k8s/shapoclyack/overlays | tr '\n' ' ')" >&2
+  exit 1
+fi
+
+echo "==> Applying ${OVERLAY_DIR}"
+kubectl apply -k "${OVERLAY_DIR}"
 
 echo "==> Waiting for rollout"
 kubectl -n "${NAMESPACE}" rollout status statefulset/shapoclyack-postgres --timeout=180s
@@ -55,8 +84,26 @@ echo "==> Restarting the API to pick up the rebuilt image"
 kubectl -n "${NAMESPACE}" rollout restart deployment/shapoclyack-api
 kubectl -n "${NAMESPACE}" rollout status deployment/shapoclyack-api --timeout=180s
 
+# The API tolerates a missing scan-targets Secret (its volume is optional), but
+# job.yaml / job-resume.yaml / cronjob.yaml mount it as required. Without it the
+# kubelet cannot create the scan pod at all: it sits in ContainerCreating until
+# activeDeadlineSeconds (1h here) kills the Job, taking the pod -- and therefore
+# every log and event -- with it, so the failure surfaces as a bare
+# DeadlineExceeded an hour later with nothing to read. Nothing inside the pod can
+# warn about this (no container ever starts), so check from out here.
+if ! kubectl -n "${NAMESPACE}" get secret scan-targets >/dev/null 2>&1; then
+  echo
+  echo "WARNING: Secret 'scan-targets' is missing -- the API is fine, but any" >&2
+  echo "         scan Job/CronJob will hang in ContainerCreating and then fail" >&2
+  echo "         with DeadlineExceeded. Create it before starting a scheduled scan:" >&2
+  echo "           kubectl apply -f k8s/shapoclyack/examples/scan-targets.secret.example.yaml" >&2
+  echo "         (edit ranges.txt in it first -- the example scans nothing)" >&2
+fi
+
 echo
-echo "Ready: http://localhost:8080"
+# 127.0.0.1, not localhost: kind publishes the NodePort on 0.0.0.0 (IPv4 only),
+# while localhost resolves to ::1 first on macOS -- which just gets refused.
+echo "Ready: http://127.0.0.1:8080"
 echo "Sign in as operator / operator-change-me"
 echo "Change the JWT secret and demo passwords before exposing this beyond a trusted lab."
 echo

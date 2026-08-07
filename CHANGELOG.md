@@ -4,6 +4,48 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- **Enrichment volume no longer starts empty, and CVSS v4 is a real database.**
+  On Kubernetes the enrichment PVC mounts at `/app/scanner/data` — the same path
+  the image bakes the seed data into — so the mount shadowed the seed and
+  `scripts/fetch-enrichment.sh`'s "floor" copy silently had nothing to read: its
+  source and destination were the same hidden directory. The images now keep a
+  pristine copy at `/opt/shapoclyack/seed-data` (override with
+  `OCTO_ENRICHMENT_SEED_DIR`) and the floor reads from there.
+
+  `scripts/fetch-cvss4-db.py` gained `--full` (page the whole NVD corpus, keep
+  every CVE carrying a genuine `cvssMetricV40`) and `--last-mod-days N`
+  (incremental, now what the daily refresh runs). Its previous default — refresh
+  a hardcoded 6-CVE list — produced an empty database on a fresh volume and
+  reported success, because none of those six have a CVSS v4 score in NVD at
+  all. A run that harvests nothing, or a `--full` that fails part-way, now
+  refuses to overwrite an existing database and exits non-zero; writes are
+  atomic (write-then-rename) so API replicas polling the file by mtime never
+  read a partial one. NVD's `cvssV4Severity` filter is unusable for selecting
+  v4-scored CVEs, so filtering happens client-side.
+
+  `scan-targets` is mounted as a required Secret by `job.yaml`, `job-resume.yaml`
+  and `cronjob.yaml` (unlike the API Deployment, where it is optional). When it
+  is missing the pod cannot be created at all and the Job sits in
+  `ContainerCreating` until `activeDeadlineSeconds` fails it — deleting the pod,
+  its logs and its events, so the only symptom is a bare `DeadlineExceeded` an
+  hour later. `scripts/dev-up.sh` now warns when the Secret is absent, and
+  `docs/troubleshooting.md` documents the signature.
+
+### Added
+
+- **`overlays/kind-enrichment`** — the local kind lab with real GeoIP/ASN/EPSS/
+  KEV/CVSS4 data. Identical to `overlays/enrichment` except the PVC drops to
+  `ReadWriteOnce`, since kind only ships the RWO local-path provisioner and an
+  RWX claim would stay `Pending` forever. `base/enrichment/` became a kustomize
+  Component so both overlays share the same patches instead of copying them.
+- **`NVD_API_KEY` wired into the enrichment fetch** from optional Secret
+  `shapoclyack-nvd` (key `nvd_api_key`), in both the refresh CronJob and the API
+  cold-start initContainer. This is deliberately separate from the key stored
+  through the config API (`enrichment.cvss4.nvd_api_key`), which is only ever
+  exported into a running scan process and never reached the fetch.
+
 ## [0.40-0806] — 2026-08-06
 
 ### Changed

@@ -146,7 +146,7 @@ class UpdateAssetRequest(BaseModel):
 
 
 class StartScanRequest(BaseModel):
-    mode: Literal["safe", "balanced", "fast"] = "balanced"
+    mode: Literal["safe", "balanced", "fast", "test"] = "balanced"
     delta: bool = False
     skip_nse: bool = False
     notify: bool = False
@@ -228,7 +228,7 @@ class CreateScheduleRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     cron: str | None = None
     interval_seconds: int | None = None
-    mode: Literal["safe", "balanced", "fast"] = "balanced"
+    mode: Literal["safe", "balanced", "fast", "test"] = "balanced"
     delta: bool = True
     skip_nse: bool = False
     notify: bool = False
@@ -244,7 +244,7 @@ class UpdateScheduleRequest(BaseModel):
     enabled: bool | None = None
     cron: str | None = None
     interval_seconds: int | None = None
-    mode: Literal["safe", "balanced", "fast"] | None = None
+    mode: Literal["safe", "balanced", "fast", "test"] | None = None
     delta: bool | None = None
     skip_nse: bool | None = None
     notify: bool | None = None

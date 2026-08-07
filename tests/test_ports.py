@@ -30,3 +30,39 @@ def test_flatten_custom_ports_strips_udp_prefix(tmp_path: Path):
 def test_naabu_entries_adds_protocol_suffix():
     entries = _naabu_entries("10.0.0.1:80\n10.0.0.2:443\n", "tcp")
     assert entries == ["10.0.0.1:80/tcp", "10.0.0.2:443/tcp"]
+
+
+def test_naabu_port_scan_skips_redundant_host_discovery(tmp_path, monkeypatch):
+    """The port scan must pass -Pn.
+
+    Hosts reaching this stage are already proven alive by discovery. Without
+    -Pn naabu repeats that discovery itself, and when its probes are blocked
+    (a CONNECT-scan fallback inside a container) it drops every host and
+    reports zero open ports without logging an error.
+    """
+    from scanner.pipeline import ports as ports_mod
+
+    captured: list[list[str]] = []
+
+    class _Result:
+        stdout = ""
+
+    def fake_run_command(command, **kwargs):
+        captured.append(command)
+        return _Result()
+
+    monkeypatch.setattr(ports_mod, "run_command", fake_run_command)
+    ports_mod._run_naabu(
+        alive_hosts=["10.0.0.1"],
+        batch_dir=tmp_path,
+        tag="t",
+        rate=1000,
+        timeout=60,
+        retries=1,
+        port_args=["-top-ports", "1000"],
+        protocol="tcp",
+        udp_probes=False,
+    )
+
+    assert captured, "naabu was never invoked"
+    assert "-Pn" in captured[0]

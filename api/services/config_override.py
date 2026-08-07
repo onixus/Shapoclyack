@@ -28,7 +28,7 @@ from scanner.pipeline.config_schema import ValidationError, load_config
 LOG = logging.getLogger(__name__)
 
 _SCOPE = "global"
-_PROFILES = ("safe", "balanced", "fast")
+_PROFILES = ("safe", "balanced", "fast", "test")
 _TIMINGS = {"T0", "T1", "T2", "T3", "T4", "T5"}
 _SEVERITIES = {"critical", "high", "medium", "low", "info"}
 _PROFILE_INT_MAX = 1_000_000
