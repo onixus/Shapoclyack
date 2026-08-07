@@ -18,6 +18,7 @@ from scanner.pipeline.config_schema import (
     AppConfig,
     format_validation_error,
     load_config,
+    merge_nuclei_config,
     merge_pulse_config,
     resolve_service_probe_backend,
 )
@@ -622,9 +623,14 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             fallback={"cve_findings": []},
         )
     else:
+        # Speed profile wins over the global nuclei block, same merge rule as
+        # profiles.<mode>.pulse — this is the stage that dominates runtime once
+        # ports are actually found, so a profile that cannot reach it is not
+        # really a speed profile.
+        nuclei_cfg = merge_nuclei_config(config.nuclei, profile.nuclei)
         nuclei_result = _run_stage(
             "nuclei",
-            lambda: run_nuclei_scan(open_ports, config.nuclei, paths.output_dir),
+            lambda: run_nuclei_scan(open_ports, nuclei_cfg, paths.output_dir),
         )
         checkpoint.mark_done("nuclei")
     nuclei_cve_findings = nuclei_result.get("cve_findings") or []

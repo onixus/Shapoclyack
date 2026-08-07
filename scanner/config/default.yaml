@@ -81,6 +81,41 @@ profiles:
       os_mode: sinfp
       banner: true
       cve: true
+  # Smoke-test profile: prove the pipeline end-to-end in minutes, not hours.
+  # Not for real assessments — coverage is deliberately traded for turnaround.
+  test:
+    discover_rate: 4000
+    port_rate: 3000
+    # Top 100 rather than 1000: enough to hit the usual web/mail ports that
+    # give the later stages something to chew on, without the long tail.
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: baseline
+    nse_concurrency: 4
+    nse_max_rate: 2000
+    pulse:
+      concurrency: 800
+      rate: 2000
+      adaptive: true
+      host_parallel: 16
+      os_mode: sinfp
+      banner: true
+      cve: true
+    nuclei:
+      # nuclei dominates wall-clock once ports are found (~8.9k templates per
+      # web endpoint), so this is where a test profile has to cut.
+      # Dropping "medium" is a real loss of findings and is only acceptable
+      # because this profile exists to answer "does the pipeline work?" —
+      # keep medium in safe/balanced/fast, where findings are the point.
+      severities: [critical, high]
+      concurrency: 50
+      rate_limit: 300
+      # Unresponsive endpoints are where the time goes; 5s over 10s roughly
+      # halves the worst case at the cost of missing very slow hosts.
+      timeout_seconds: 5
+      # Hard 5-minute cap on the stage, versus the global 30 minutes: a smoke
+      # test that can run for half an hour is not a smoke test.
+      overall_timeout_seconds: 300
 
 batching:
   # Split work into resumable batches so a single huge naabu command never

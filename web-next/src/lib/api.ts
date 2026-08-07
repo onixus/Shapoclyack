@@ -203,7 +203,7 @@ export type JobInfo = {
 };
 
 export type ScheduleScanOptions = {
-  mode: "safe" | "balanced" | "fast";
+  mode: "safe" | "balanced" | "fast" | "test";
   delta: boolean;
   skip_nse: boolean;
   notify: boolean;
@@ -238,7 +238,7 @@ export type CreateScheduleBody = {
   name: string;
   cron?: string | null;
   interval_seconds?: number | null;
-  mode: "safe" | "balanced" | "fast";
+  mode: "safe" | "balanced" | "fast" | "test";
   delta: boolean;
   skip_nse: boolean;
   notify: boolean;

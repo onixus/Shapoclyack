@@ -61,6 +61,28 @@ profiles:
       rate: 5000
       host_parallel: 32
       os_mode: sinfp
+  # Smoke-test profile — prove the pipeline end-to-end in minutes. Coverage is
+  # deliberately traded for turnaround; do not use it for real assessments.
+  # See scanner/config/default.yaml for the per-knob reasoning.
+  test:
+    discover_rate: 4000
+    port_rate: 3000
+    top_ports: 100
+    nmap_timing: T4
+    nse_profile: baseline
+    nse_concurrency: 4
+    nse_max_rate: 2000
+    pulse:
+      concurrency: 800
+      rate: 2000
+      host_parallel: 16
+      os_mode: sinfp
+    nuclei:
+      severities: [critical, high]
+      concurrency: 50
+      rate_limit: 300
+      timeout_seconds: 5
+      overall_timeout_seconds: 300
 
 batching:
   enabled: true
