@@ -256,11 +256,61 @@ pipeline {
         }
 
         stage('Load test') {
-          when { expression { return false } }
           steps {
-            // .github/actions/synthetic-load-test — composite action, прямого
-            // аналога нет. Портировать вызовом tests/load/ напрямую, когда дойдут руки.
-            echo 'skipped: synthetic-load-test не портирован'
+            // Порт .github/actions/synthetic-load-test с теми же параметрами,
+            // что и в ci.yml: 16 хостов, tests/load/config.yaml, без resume.
+            // Шаги build/upload-artifact из composite action не нужны — образ
+            // уже собран стадией выше, метрики кладём через archiveArtifacts.
+            //
+            // TMPDIR — по той же причине, что и в E2E: run.sh делает mktemp -d
+            // и монтирует этот путь в docker run на хостовый демон.
+            sh """
+              set -eu
+              mkdir -p "\$WORKSPACE/.load-tmp"
+              TMPDIR="\$WORKSPACE/.load-tmp" \
+              SCAN_TIMEOUT_SEC=2400 \
+              MIN_FRACTION=0.95 \
+              METRICS_COPY_TO="\$WORKSPACE/load-metrics.json" \
+                bash tests/load/run.sh ${IMAGE_TAG} --hosts 16 --config tests/load/config.yaml
+            """
+            // Гейт: composite action считал passed в job summary, здесь тот же
+            // разбор решает судьбу стадии. python3 есть в образе Jenkins.
+            sh '''
+              set -eu
+              python3 - "$WORKSPACE/load-metrics.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    sys.exit(f"[load] метрик нет: {path}")
+
+d = json.loads(path.read_text(encoding="utf-8"))
+rows = [
+    ("targets", d.get("target_count", d.get("host_count"))),
+    ("alive hosts", d.get("alive_hosts")),
+    ("open :80", d.get("open_port_matches")),
+    ("nmap services", d.get("nmap_open_services")),
+    ("duration, s", d.get("duration_sec")),
+    ("peak RSS, MiB", d.get("peak_rss_mb")),
+]
+for name, value in rows:
+    print(f"  {name:>16}: {value if value is not None else 'n/a'}")
+
+for item in d.get("failures") or []:
+    print(f"  FAIL: {item}")
+
+if not d.get("passed"):
+    sys.exit("[load] harness сообщил passed=false")
+print("[load] passed")
+PY
+            '''
+          }
+          post {
+            always {
+              archiveArtifacts artifacts: 'load-metrics.json', allowEmptyArchive: true
+              sh 'rm -rf "$WORKSPACE/.load-tmp" || true'
+            }
           }
         }
       }
