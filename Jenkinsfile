@@ -206,7 +206,22 @@ pipeline {
         }
 
         stage('E2E') {
-          steps { sh "bash tests/e2e/run.sh ${IMAGE_TAG}" }
+          steps {
+            // TMPDIR обязателен. run.sh делает mktemp -d и монтирует этот путь
+            // в docker run, но demon — хостовый: каталог из /tmp контейнера
+            // Jenkins на хосте не существует, Docker молча создаёт пустой, и
+            // скан падает с FileNotFoundError на scanner/config/default.yaml.
+            // Воркспейс смонтирован по одинаковому пути внутри и снаружи,
+            // поэтому mktemp внутри него виден обеим сторонам.
+            sh """
+              set -eu
+              mkdir -p "\$WORKSPACE/.e2e-tmp"
+              TMPDIR="\$WORKSPACE/.e2e-tmp" bash tests/e2e/run.sh ${IMAGE_TAG}
+            """
+          }
+          post {
+            always { sh 'rm -rf "$WORKSPACE/.e2e-tmp" || true' }
+          }
         }
 
         stage('Trivy') {
