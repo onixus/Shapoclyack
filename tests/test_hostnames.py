@@ -78,3 +78,45 @@ def test_enrich_discovery_hostnames_forward_only(tmp_path: Path, monkeypatch):
     assert called["ptr"] is False
     assert result["10.0.0.10"]["primary"] == "web.local"
     assert json.loads((tmp_path / "hostnames.json").read_text(encoding="utf-8"))["10.0.0.10"]["primary"] == "web.local"
+
+
+def test_sni_target_map_assigns_each_hostname_once():
+    """Targets carry a hostname so TLS gets SNI, but a name is used once.
+
+    Several IPs commonly share one name (round-robin, CDN). Handing that name
+    to the prober once per address just re-probes whichever address DNS
+    returns, duplicating one IP's records while the others go unprobed — so
+    the extra addresses keep their bare IP.
+    """
+    from scanner.pipeline.hostnames import sni_target_map
+
+    hostnames_map = {
+        "10.0.0.1": {"primary": "shared.example"},
+        "10.0.0.2": {"primary": "shared.example"},
+        "10.0.0.3": {"primary": "solo.example"},
+        "10.0.0.4": {},
+    }
+    mapping = sni_target_map(
+        ["10.0.0.4", "10.0.0.2", "10.0.0.1", "10.0.0.3"], hostnames_map
+    )
+
+    assert mapping["10.0.0.1"] == "shared.example"
+    assert mapping["10.0.0.2"] == "10.0.0.2"
+    assert mapping["10.0.0.3"] == "solo.example"
+    assert mapping["10.0.0.4"] == "10.0.0.4"
+
+    # Deterministic regardless of input order, so a resumed run picks the same
+    # IP to carry the shared name.
+    assert sni_target_map(["10.0.0.2", "10.0.0.1"], hostnames_map) == {
+        "10.0.0.1": "shared.example",
+        "10.0.0.2": "10.0.0.2",
+    }
+
+
+def test_sni_target_map_without_names_is_identity():
+    from scanner.pipeline.hostnames import sni_target_map
+
+    assert sni_target_map(["1.2.3.4", "5.6.7.8"], {}) == {
+        "1.2.3.4": "1.2.3.4",
+        "5.6.7.8": "5.6.7.8",
+    }

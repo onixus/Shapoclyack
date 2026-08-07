@@ -253,3 +253,46 @@ def test_service_record_roundtrip():
     assert d["schema_version"] == "octo.service.v1"
     again = ServiceRecord.model_validate(d)
     assert again.port == 443
+
+
+def test_run_pulse_probe_targets_hostname_for_sni(tmp_path: Path, monkeypatch):
+    """The chunk targets file carries hostnames where known.
+
+    Pulse connecting to a bare IP sends no SNI, so hosts serving multiple
+    certificates reject the handshake — no banner, no product, no version, and
+    therefore no CVE can ever match. Pulse accepts domains as targets and
+    reports both `host` and `ip` per row, so results stay IP-keyed.
+    """
+    from scanner.pipeline.pulse_probe import run_pulse_probe
+
+    captured: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run_command(command, **kwargs):
+        captured.append(command)
+        return _Completed()
+
+    monkeypatch.setattr("scanner.pipeline.pulse_probe.run_command", fake_run_command)
+    monkeypatch.setattr(
+        "scanner.pipeline.pulse_probe.resolve_pulse_bin", lambda _: "/usr/local/bin/pulse"
+    )
+
+    run_pulse_probe(
+        ["10.0.0.1:443/tcp", "10.0.0.2:443/tcp"],
+        output_dir=tmp_path,
+        hostnames_map={
+            "10.0.0.1": {"primary": "web.example"},
+            "10.0.0.2": {},
+        },
+    )
+
+    hosts_file = tmp_path / "pulse" / "chunk_0000.hosts.txt"
+    # write_lines sorts and dedupes, so compare as a set.
+    targets = set(hosts_file.read_text(encoding="utf-8").split())
+    assert targets == {"web.example", "10.0.0.2"}
+    assert "10.0.0.1" not in targets, "named host must be probed by name, not IP"
+    assert captured, "pulse was never invoked"

@@ -27,6 +27,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from .hostnames import sni_target_map
 from .protocol import parse_endpoint
 from .service_schema import (
     FINDING_CLASSES,
@@ -471,6 +472,7 @@ def run_pulse_probe(
     on_host_done: Callable[[str], None] | None = None,
     chunk_hosts: int = 64,
     report_primary: bool | None = None,
+    hostnames_map: dict[str, dict] | None = None,
 ) -> Path:
     """Run Pulse against hosts derived from open_ports; write artifacts.
 
@@ -479,6 +481,12 @@ def run_pulse_probe(
     ``report_primary``: when True, write ``pulse/REPORT_PRIMARY`` so report.py
     prefers services.json/os.json. When None, fall back to
     ``OCTO_SERVICE_BACKEND`` in {pulse, hybrid}.
+
+    ``hostnames_map``: discovery's IP → names map. Where a name is known it is
+    handed to pulse instead of the bare IP so its TLS ClientHello carries SNI --
+    see sni_target_map(). Everything downstream stays keyed by IP: pulse reports
+    both ``host`` and ``ip`` per row, and the parsers here key on ``ip``, so
+    grouping, checkpoints and resume are unaffected by the substitution.
     """
     pulse_bin = resolve_pulse_bin(bin_path)
     grouped = _group_tcp_ports(open_ports)
@@ -507,6 +515,15 @@ def run_pulse_probe(
         sync_report_primary_marker(pulse_dir, report_primary)
         return pulse_dir
 
+    sni_targets = sni_target_map(pending_hosts, hostnames_map or {})
+    named = sum(1 for ip, target in sni_targets.items() if target != ip)
+    if named:
+        logging.info(
+            "pulse_probe: probing %d/%d host(s) by hostname so TLS carries SNI",
+            named,
+            len(pending_hosts),
+        )
+
     # Global port union keeps one pulse invocation simpler; overscans closed
     # ports on hosts that don't share the full set — acceptable for MVP.
     # Chunk by hosts for timeout/resume.
@@ -522,7 +539,7 @@ def run_pulse_probe(
             continue
 
         hosts_file = pulse_dir / f"chunk_{idx:04d}.hosts.txt"
-        write_lines(hosts_file, host_chunk)
+        write_lines(hosts_file, [sni_targets.get(h, h) for h in host_chunk])
         ckpt = pulse_dir / f"chunk_{idx:04d}.ckpt"
         cmd = build_pulse_command(
             bin_path=pulse_bin,

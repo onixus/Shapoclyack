@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_schema import NucleiConfig
+from .hostnames import sni_target_map
 from .protocol import is_ipv6, parse_endpoint
 from .utils import run_command, save_json, write_lines
 
@@ -113,6 +114,24 @@ def _to_finding(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rekey_finding_to_ip(finding: dict[str, Any], target_to_ip: dict[str, str]) -> dict[str, Any]:
+    """Map a finding's host back to the IP it was discovered as.
+
+    Targets are built from hostnames where known (for SNI), so nuclei reports
+    the hostname. Everything else in the run -- open_ports, services, geoip,
+    report diffs -- is keyed by IP, so a hostname here would split one host into
+    two identities. nuclei's own ``ip`` field is preferred when present; the
+    target map covers the case where it is absent.
+    """
+    host = finding.get("host") or ""
+    bare = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    ip = target_to_ip.get(bare) or target_to_ip.get(host)
+    if ip:
+        finding["hostname"] = bare
+        finding["host"] = ip
+    return finding
+
+
 def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
     if not finding["cve"] or not finding["host"]:
         return []
@@ -143,8 +162,17 @@ def run_nuclei_scan(
     open_ports: list[str],
     config: NucleiConfig,
     output_dir: Path,
+    hostnames_map: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
-    """Run nuclei against already-open web ports. Never raises."""
+    """Run nuclei against already-open web ports. Never raises.
+
+    ``hostnames_map``: discovery's IP → names map. Targets are built from the
+    hostname where one is known so the TLS ClientHello carries SNI -- an
+    ``https://<ip>/`` target is rejected on the handshake by any host serving
+    multiple certificates, and every template then fails on transport without
+    running a single check. Findings are mapped back to the IP so the run keeps
+    one identity per host.
+    """
     result: dict[str, Any] = {
         "targets_considered": 0,
         "checked_count": 0,
@@ -182,7 +210,17 @@ def run_nuclei_scan(
 
     targets_file = output_dir / "nuclei_targets.txt"
     jsonl_file = output_dir / "nuclei_raw.jsonl"
-    urls = [_build_url(host, port, scheme) for host, port, scheme in candidates]
+    sni_targets = sni_target_map({host for host, _, _ in candidates}, hostnames_map or {})
+    target_to_ip = {target: ip for ip, target in sni_targets.items() if target != ip}
+    if target_to_ip:
+        LOG.info(
+            "nuclei: %d/%d endpoint host(s) targeted by hostname so TLS carries SNI",
+            len(target_to_ip),
+            len({host for host, _, _ in candidates}),
+        )
+    urls = [
+        _build_url(sni_targets.get(host, host), port, scheme) for host, port, scheme in candidates
+    ]
     write_lines(targets_file, urls)
     jsonl_file.unlink(missing_ok=True)
 
@@ -218,6 +256,13 @@ def run_nuclei_scan(
             if raw is None:
                 continue
             finding = _to_finding(raw)
+            # Prefer nuclei's own resolved ip; fall back to the target map.
+            raw_ip = str(raw.get("ip") or "").strip()
+            if raw_ip and finding["host"] and finding["host"] != raw_ip:
+                finding["hostname"] = finding["host"].rsplit(":", 1)[0]
+                finding["host"] = raw_ip
+            else:
+                finding = _rekey_finding_to_ip(finding, target_to_ip)
             findings.append(finding)
             cve_findings.extend(_to_vulnerability_rows(finding))
 

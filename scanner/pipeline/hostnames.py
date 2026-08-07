@@ -7,6 +7,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +133,36 @@ def primary_hostname(hostnames_map: dict[str, dict], host: str) -> str:
     if isinstance(names, list) and names:
         return str(names[0])
     return ""
+
+
+def sni_target_map(hosts: Iterable[str], hostnames_map: dict[str, dict]) -> dict[str, str]:
+    """IP → the target string to hand an external prober (pulse, nuclei).
+
+    Returns the hostname where one is known, otherwise the bare IP. This exists
+    for SNI: a TLS ClientHello built from an IP literal carries no server_name,
+    and any host that serves multiple certificates answers with a handshake
+    alert rather than a certificate. In practice that means every HTTPS service
+    probed by IP yields no banner, no product and no version — so no CVE can
+    ever match — and template scanners fail on transport before running a single
+    check.
+
+    A hostname is assigned to at most one IP. Several addresses routinely share
+    one name (round-robin, CDN); handing that name to the prober once per
+    address just re-probes whichever address DNS happens to return, producing
+    duplicate records for one IP while the others go unprobed. The remaining
+    addresses keep their bare IP, which is no worse than today's behavior.
+    Selection is deterministic (sorted) so a resumed run makes the same choice.
+    """
+    assigned: dict[str, str] = {}
+    claimed: set[str] = set()
+    for host in sorted(hosts):
+        name = primary_hostname(hostnames_map, host)
+        if name and name not in claimed:
+            claimed.add(name)
+            assigned[host] = name
+        else:
+            assigned[host] = host
+    return assigned
 
 
 def enrich_discovery_hostnames(

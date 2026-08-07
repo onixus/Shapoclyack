@@ -199,3 +199,67 @@ def test_run_nuclei_scan_truncates_over_max_targets(tmp_path: Path, monkeypatch)
     assert result["targets_considered"] == 5
     assert result["checked_count"] == 2
     assert result["truncated"] is True
+
+
+def test_run_nuclei_scan_targets_hostname_and_rekeys_findings_to_ip(tmp_path: Path, monkeypatch):
+    """Targets use the hostname (for SNI); findings come back keyed by IP.
+
+    An https://<ip>/ target is rejected on the TLS handshake by any host serving
+    more than one certificate, so every template fails on transport. Targeting
+    the hostname fixes that, but the rest of the run is keyed by IP — so a
+    finding must not arrive under a second identity.
+    """
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+
+    def fake_run_command(command, **kwargs):
+        jsonl = Path(command[command.index("-jsonl-export") + 1])
+        jsonl.write_text(
+            json.dumps(
+                {
+                    "host": "web.example:443",
+                    "port": "443",
+                    "template-id": "some-cve",
+                    "info": {
+                        "name": "x",
+                        "severity": "high",
+                        "classification": {"cve-id": ["CVE-2026-0001"]},
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return MagicMock()
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", fake_run_command)
+
+    config = NucleiConfig(enabled=True, templates_dir=str(templates_dir))
+    result = run_nuclei_scan(
+        ["10.0.0.1:443/tcp"],
+        config,
+        tmp_path,
+        {"10.0.0.1": {"primary": "web.example"}},
+    )
+
+    targets = (tmp_path / "nuclei_targets.txt").read_text(encoding="utf-8").split()
+    assert targets == ["https://web.example:443/"], "target must carry the hostname for SNI"
+
+    finding = result["findings"][0]
+    assert finding["host"] == "10.0.0.1", "finding must be keyed by IP, not hostname"
+    assert finding["hostname"] == "web.example"
+    assert result["cve_findings"][0]["host"] == "10.0.0.1"
+
+
+def test_run_nuclei_scan_without_hostnames_targets_ip(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", lambda *a, **k: MagicMock())
+
+    config = NucleiConfig(enabled=True, templates_dir=str(templates_dir))
+    run_nuclei_scan(["10.0.0.1:443/tcp"], config, tmp_path)
+
+    targets = (tmp_path / "nuclei_targets.txt").read_text(encoding="utf-8").split()
+    assert targets == ["https://10.0.0.1:443/"]

@@ -501,6 +501,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
                     on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
                     chunk_hosts=pulse_cfg.chunk_hosts,
                     report_primary=report_primary_pulse,
+                    hostnames_map=hostnames_map,
                 ),
             )
             checkpoint.mark_done("pulse")
@@ -630,7 +631,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         nuclei_cfg = merge_nuclei_config(config.nuclei, profile.nuclei)
         nuclei_result = _run_stage(
             "nuclei",
-            lambda: run_nuclei_scan(open_ports, nuclei_cfg, paths.output_dir),
+            lambda: run_nuclei_scan(open_ports, nuclei_cfg, paths.output_dir, hostnames_map),
         )
         checkpoint.mark_done("nuclei")
     nuclei_cve_findings = nuclei_result.get("cve_findings") or []
