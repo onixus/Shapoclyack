@@ -95,6 +95,11 @@ and applies `k8s/shapoclyack/overlays/kind-dev` — PostgreSQL, NATS, and
 ClickHouse are included (NATS/ClickHouse client wiring is opt-in via env vars,
 off by default). Tear down with `scripts/dev-down.sh`.
 
+For real GeoIP/ASN/EPSS/KEV/CVSS4 data instead of the seed files, run it as
+`OVERLAY=kind-enrichment scripts/dev-up.sh`. Once that PVC exists the script
+re-selects it on later runs unless `OVERLAY` says otherwise, so rebuilding
+cannot quietly drop the API back to the image's seed data.
+
 The scheduled Job/CronJob require a `scan-targets` Secret built from the files
 in step 2:
 

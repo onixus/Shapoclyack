@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # Local dev cluster for Shapoclyack — replaces `docker compose up --build`.
 #
-# Builds the all-in-one image, loads it into a kind cluster, and applies
-# k8s/shapoclyack/overlays/kind-dev (dev resources + local image tag + NodePort).
+# Builds the all-in-one image, loads it into a kind cluster, and applies a
+# kind overlay (dev resources + local image tag + NodePort).
+#
+# Overlay selection:
+#   OVERLAY=kind-dev          base local lab (default on a fresh cluster)
+#   OVERLAY=kind-enrichment   ...plus real GeoIP/ASN/EPSS/KEV/CVSS4 data
+#
+# With OVERLAY unset the script keeps whatever the cluster already runs: if the
+# enrichment PVC is present it re-applies kind-enrichment. Applying kind-dev
+# over an enrichment deployment silently strips the API's enrichment volume,
+# initContainer and OCTO_*_DATABASE vars, leaving it to read the image's seed
+# again — a downgrade with no error and no obvious symptom.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,8 +50,27 @@ docker build -f Dockerfile.allinone -t "${IMAGE}" "${BUILD_SECRET[@]}" .
 echo "==> Loading image into kind"
 kind load docker-image "${IMAGE}" --name "${CLUSTER_NAME}"
 
-echo "==> Applying k8s/shapoclyack/overlays/kind-dev"
-kubectl apply -k k8s/shapoclyack/overlays/kind-dev
+# Resolve the overlay only now: the cluster has to exist before we can ask it
+# what is already deployed.
+if [ -n "${OVERLAY:-}" ]; then
+  echo "==> Overlay '${OVERLAY}' (from OVERLAY)"
+elif kubectl -n "${NAMESPACE}" get pvc enrichment-data >/dev/null 2>&1; then
+  OVERLAY="kind-enrichment"
+  echo "==> Overlay 'kind-enrichment' (enrichment-data PVC present; OVERLAY=kind-dev to drop it)"
+else
+  OVERLAY="kind-dev"
+  echo "==> Overlay 'kind-dev' (OVERLAY=kind-enrichment for real enrichment data)"
+fi
+
+OVERLAY_DIR="k8s/shapoclyack/overlays/${OVERLAY}"
+if [ ! -d "${OVERLAY_DIR}" ]; then
+  echo "unknown overlay '${OVERLAY}' — no such directory ${OVERLAY_DIR}" >&2
+  echo "available: $(ls k8s/shapoclyack/overlays | tr '\n' ' ')" >&2
+  exit 1
+fi
+
+echo "==> Applying ${OVERLAY_DIR}"
+kubectl apply -k "${OVERLAY_DIR}"
 
 echo "==> Waiting for rollout"
 kubectl -n "${NAMESPACE}" rollout status statefulset/shapoclyack-postgres --timeout=180s

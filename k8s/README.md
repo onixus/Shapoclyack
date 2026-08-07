@@ -16,7 +16,10 @@ Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 
 For local labs, prefer `scripts/dev-up.sh` at the repo root — it builds the
 all-in-one image, loads it into a [kind](https://kind.sigs.k8s.io/) cluster,
-and applies `overlays/kind-dev`. Tear down with `scripts/dev-down.sh`.
+and applies `overlays/kind-dev`. Set `OVERLAY=kind-enrichment` for real
+enrichment data; with `OVERLAY` unset the script keeps whatever the cluster
+already runs, so a rebuild cannot silently strip enrichment from the API.
+Tear down with `scripts/dev-down.sh`.
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
