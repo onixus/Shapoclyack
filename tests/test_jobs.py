@@ -114,3 +114,71 @@ def test_local_run_is_tagged_with_the_jobs_tenant(tmp_path: Path, monkeypatch):
 
     assert get_job("job-1").status == "succeeded"
     assert runs_service.read_run_tenant(run_dir) == "ten_a"
+
+
+def test_failed_asset_upsert_is_recorded_on_the_job(tmp_path: Path, monkeypatch):
+    """The Phase 7 asset upsert is best-effort and must not fail the scan -- but
+    swallowing it silently left the job reading as a clean success with an empty
+    asset list, and the reason only in the pod log. Surface it on the job."""
+    import subprocess
+    import types
+
+    from api.services import assets as assets_service
+
+    state_dir = tmp_path / "state"
+    output_dir = tmp_path / "output"
+    (output_dir / "runs" / "20260806T193750Z").mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    (state_dir / "latest_run.json").write_text(
+        json.dumps({"run_id": "20260806T193750Z"}), encoding="utf-8"
+    )
+    _write_jobs_file(state_dir, [_base_job("job-2", execution="local", status="queued")])
+
+    settings = Settings(state_dir=state_dir, output_dir=output_dir)
+    load_jobs(settings)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("assets table is gone")
+
+    monkeypatch.setattr(assets_service, "upsert_assets_from_run", _boom)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    jobs_service._run_job(settings, "job-2", ["true"])  # noqa: SLF001
+
+    job = get_job("job-2")
+    # The scan itself still succeeded -- the upsert must not change that.
+    assert job.status == "succeeded"
+    assert job.exit_code == 0
+    assert job.asset_upsert_error == "RuntimeError: assets table is gone"
+
+
+def test_successful_asset_upsert_leaves_no_error_on_the_job(tmp_path: Path, monkeypatch):
+    import subprocess
+    import types
+
+    from api.services import assets as assets_service
+
+    state_dir = tmp_path / "state"
+    output_dir = tmp_path / "output"
+    (output_dir / "runs" / "20260806T193750Z").mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    (state_dir / "latest_run.json").write_text(
+        json.dumps({"run_id": "20260806T193750Z"}), encoding="utf-8"
+    )
+    _write_jobs_file(state_dir, [_base_job("job-3", execution="local", status="queued")])
+
+    settings = Settings(state_dir=state_dir, output_dir=output_dir)
+    load_jobs(settings)
+
+    monkeypatch.setattr(assets_service, "upsert_assets_from_run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    jobs_service._run_job(settings, "job-3", ["true"])  # noqa: SLF001
+
+    assert get_job("job-3").asset_upsert_error is None

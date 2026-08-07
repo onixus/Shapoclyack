@@ -197,6 +197,9 @@ export type JobInfo = {
   execution?: "local" | "agent";
   assigned_agent_id?: string | null;
   tenant_id?: string | null;
+  /** Set when the scan succeeded but the asset-registry upsert did not run, so
+   * a clean-looking job with an empty asset list has a visible reason. */
+  asset_upsert_error?: string | null;
 };
 
 export type ScheduleScanOptions = {

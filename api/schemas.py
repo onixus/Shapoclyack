@@ -176,6 +176,11 @@ class JobInfo(BaseModel):
     execution: Literal["local", "agent"] = "local"
     assigned_agent_id: str | None = None
     tenant_id: str = "default"
+    # Why the Phase 7 asset-registry upsert did not run for this job's run. The
+    # upsert is best-effort and deliberately never fails the scan, so without
+    # this the job reads as a clean success while the asset list stays empty --
+    # with the reason only ever in the pod log, gone with the pod.
+    asset_upsert_error: str | None = None
 
 
 class AgentRegisterRequest(BaseModel):
