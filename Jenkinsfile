@@ -97,7 +97,10 @@ pipeline {
                         ]) {
                           sh '''
                             set -eu
-                            apt-get update -qq && apt-get install -y --no-install-recommends gcc libpq-dev curl >/dev/null
+                            # Без apt намеренно: psycopg[binary] везёт libpq в
+                            # колесе, компилятор не нужен, а ожидание сервисов
+                            # сделано на stdlib. Раньше тут стоял apt-get, и
+                            # матрица падала, когда deb.debian.org не ответил.
                             pip install --quiet -r requirements-dev.txt
 
                             python -m compileall scanner api tests agent
@@ -108,7 +111,7 @@ pipeline {
                               sleep 1
                             done
                             for i in $(seq 1 60); do
-                              curl -fsS http://nats:8222/healthz >/dev/null 2>&1 && break
+                              python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
                               sleep 1
                             done
 
