@@ -174,6 +174,11 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY scanner /app/scanner
+# Pristine copy of the committed enrichment seed. scripts/fetch-enrichment.sh
+# uses this as its floor: the runtime target is /app/scanner/data itself, so
+# when a shared enrichment volume is mounted there it shadows the baked seed
+# and the floor would have nothing to copy from.
+COPY scanner/data /opt/shapoclyack/seed-data
 COPY agent /app/agent
 COPY scripts /app/scripts
 

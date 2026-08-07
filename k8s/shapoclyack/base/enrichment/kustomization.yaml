@@ -1,16 +1,27 @@
-# Optional enrichment-data component (not part of default base).
+# Optional enrichment component (not part of default base).
 # Enable via: kubectl apply -k k8s/shapoclyack/overlays/enrichment
+#         or: kubectl apply -k k8s/shapoclyack/overlays/kind-enrichment
+#
+# A Component rather than a plain resource dir so it can be layered onto more
+# than one overlay: patch paths inside a component resolve relative to this
+# directory, whereas an overlay may only reference patch files at or below
+# itself. That is what lets overlays/kind-enrichment reuse these two patches
+# instead of copying them.
 #
 # Sets its own namespace transformer (unlike base/agents/) since this
 # component's PVC/CronJob must land in the same namespace as the API pods
-# that mount enrichment-data by claimName — the overlay's own kustomization
-# has no namespace transformer, so without this the resources here would
-# default to "default" and the claimName reference would never resolve.
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
+# that mount enrichment-data by claimName — the overlays that include it have
+# no namespace transformer, so without this the resources here would default
+# to "default" and the claimName reference would never resolve.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
 
 namespace: network-scan
 
 resources:
   - pvc.yaml
   - cronjob.yaml
+
+patches:
+  - path: api-enrichment-patch.yaml
+  - path: cronjob-enrichment-patch.yaml

@@ -7,11 +7,15 @@ Start with the narrowest failing layer and preserve the first useful error.
 ```bash
 kubectl -n network-scan get pods
 kubectl -n network-scan logs deploy/shapoclyack-api --tail=200
-curl -v http://localhost:8080/api/health
+curl -v http://127.0.0.1:8080/api/health
 ```
 
 Check for a port collision on `8080`, invalid environment values, an
 unavailable PostgreSQL URL, or a read-only mounted output directory.
+
+If the pods are healthy but the curl fails to connect, try `127.0.0.1`
+explicitly before hunting a port collision: kind publishes the NodePort on
+`0.0.0.0` (IPv4 only), while `localhost` resolves to `::1` first on macOS.
 
 ## UI redirects to login
 
@@ -28,6 +32,27 @@ unavailable PostgreSQL URL, or a read-only mounted output directory.
 - in agent mode, confirm NATS/API connectivity and at least one online agent;
 - verify agent and job tenant IDs match;
 - inspect agent heartbeat and claim logs.
+
+## Scan Job fails with DeadlineExceeded and no logs
+
+`kubectl describe job` shows `Job was active longer than specified deadline`,
+`Events: <none>`, and there is no pod left to pull logs from.
+
+Check the `scan-targets` Secret first:
+
+```bash
+kubectl -n network-scan get secret scan-targets
+```
+
+`job.yaml`, `job-resume.yaml`, and `cronjob.yaml` mount it as a **required**
+volume (unlike the API Deployment, where it is optional). When it is missing the
+kubelet cannot create the pod at all — it stays in `ContainerCreating` until
+`activeDeadlineSeconds` (4h in base, 1h in the dev overlay) expires and the Job
+is failed, deleting the pod and its events along with it. So the hour of silence
+is the symptom, not a scan that ran and stalled. Create the Secret
+(`examples/scan-targets.secret.example.yaml`) and re-create the Job.
+
+Catch it early instead: `scripts/dev-up.sh` warns when the Secret is absent.
 
 ## Scanner finds no hosts
 

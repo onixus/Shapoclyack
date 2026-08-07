@@ -92,6 +92,57 @@ keep candidate/concurrency caps, and review their data-handling policies.
 The Kubernetes enrichment overlay provides a shared PVC and scheduled refresh.
 Placeholder fixture data is suitable only for tests.
 
+### CVSS v4 baseline and refresh
+
+`scanner/data/cvss4/cvss4.json` is committed and baked into every image as the
+baseline, then kept current in place — the daily refresh does not rebuild it:
+
+```bash
+# Baseline rebuild — pages the whole NVD corpus, run rarely and by hand.
+# Set NVD_API_KEY first: it is ~10x faster (50 vs 5 req/30s).
+python3 scripts/fetch-cvss4-db.py --full -o scanner/data/cvss4/cvss4.json
+
+# Incremental — what scripts/fetch-enrichment.sh runs daily.
+python3 scripts/fetch-cvss4-db.py --last-mod-days 8
+```
+
+Every mode merges into the existing file, so a CVE already scored is never
+dropped by a later run, and a `--full` rebuild that returns nothing (or fails
+mid-way) refuses to publish rather than replacing a good database with an empty
+one. `--seed` unions the image's committed baseline into an existing database,
+which is how a newer baseline reaches a volume that already has one — the seed
+"floor" in `fetch-enrichment.sh` only fires when the file is absent, and an
+incremental run only adds recently-modified CVEs.
+
+### NVD API: known traps
+
+Every one of these cost real debugging time. They are the reason the fetcher
+looks more defensive than a paging loop ought to.
+
+- **`cvssV4Severity` does not select v4-scored CVEs.** Querying it returns a
+  handful of results against a corpus where roughly a third of recent CVEs carry
+  `cvssMetricV40`. There is no server-side way to ask for "CVEs with a v4
+  score", so `--full` pages the entire corpus and filters client-side.
+- **Throttling arrives as a trickle, not a 429.** Under concurrency NVD stops
+  sending body bytes without closing the connection or returning an error code.
+  Sockets stay `ESTABLISHED` with frozen byte counters. A socket timeout cannot
+  catch this — it is per-operation, and the occasional few bytes reset it
+  forever — so `_read_bounded()` puts a wall-clock ceiling on the whole body.
+  Eight concurrent pages reliably triggered this within about five minutes;
+  four is the shipped default.
+- **HTTP 503 is routine**, not an outage. It appears mid-run under load and
+  clears on backoff, so it is retried like 429 rather than treated as fatal.
+- **Deep pagination is slow.** A 2000-CVE page is ~9 MB and takes NVD around
+  20 seconds to render, so a serial full rebuild is roughly an hour. Wall-clock
+  is dominated by that latency, not by the request rate — an API key raises the
+  ceiling from 5 to 50 req/30s but only cuts about a quarter off a serial run.
+- **Most older CVEs have no v4 score at all.** `CVE-2014-0160`, `CVE-2021-44228`
+  and friends carry only `cvssMetricV31`/`cvssMetricV2`. CVSS v3.x is
+  deliberately never substituted, since these scores are consumed downstream as
+  genuine v4 — so a fetch restricted to well-known old CVEs returns nothing.
+  About 1,900 entries do come from CVEs published before 2024, added
+  retroactively by CNAs, which is why `--full` does not skip the older corpus.
+
 ## Environment variables
 
 Core deployment variables:

@@ -43,6 +43,18 @@ spec:
                       name: shapoclyack-geoip
                       key: maxmind_license_key
                       optional: true
+                # Optional — scripts/fetch-cvss4-db.py works without it, but
+                # NVD throttles anonymous callers to 5 req/30s (50 with a key),
+                # which turns a full CVSS4 refresh into an activeDeadline
+                # timeout. The key stored via the config API never reaches this
+                # pod: it is only exported by scanner/main.py inside a scan
+                # process, so the Secret below is the only way to key the fetch.
+                - name: NVD_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-nvd
+                      key: nvd_api_key
+                      optional: true
               resources:
                 requests:
                   cpu: "250m"

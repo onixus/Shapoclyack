@@ -8,7 +8,8 @@ if ! command -v kubectl >/dev/null 2>&1; then
   exit 1
 fi
 
-for target in base overlays/dev overlays/prod overlays/api-readonly overlays/agents; do
+for target in base overlays/dev overlays/prod overlays/api-readonly overlays/agents \
+              overlays/enrichment overlays/kind-dev overlays/kind-enrichment; do
   echo "kustomize: shapoclyack/${target}"
   kubectl kustomize "shapoclyack/${target}" > .kustomize-validate.out
 done

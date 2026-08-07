@@ -1,0 +1,33 @@
+# Local kind lab WITH real enrichment data (GeoIP/EPSS/KEV/CVSS4), instead of
+# the small seed files baked into the image.
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/kind-enrichment
+#
+# This is overlays/kind-dev plus overlays/enrichment, with the one change that
+# makes the combination work on kind: the enrichment PVC drops to ReadWriteOnce
+# (see pvc-rwo-patch.yaml). Kept as its own overlay rather than folded into
+# kind-dev so the default `scripts/dev-up.sh` path stays offline-friendly — the
+# enrichment initContainer reaches out to NVD/EPSS/KEV/DB-IP on first start.
+#
+# Optional, but recommended before applying (unkeyed NVD is 5 req/30s):
+#   kubectl create secret generic shapoclyack-nvd \
+#     --from-literal=nvd_api_key=<your-key> -n network-scan
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../kind-dev
+
+components:
+  - ../../base/enrichment
+
+patches:
+  - path: pvc-rwo-patch.yaml
+
+# Repeated from overlays/kind-dev: an `images:` transformer only rewrites the
+# resources of the kustomization that declares it, so base/enrichment (pulled
+# in above, not through kind-dev) would otherwise keep the released ghcr tag
+# and fail ImagePullBackOff against a node loaded with locally-built images.
+images:
+  - name: ghcr.io/onixus/shapoclyack-aio
+    newTag: kind-dev

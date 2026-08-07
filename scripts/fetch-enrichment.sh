@@ -48,16 +48,28 @@ run() {
 
 mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev"
 
-# Floor: seed data ships in the image at $ROOT/scanner/data; copy anything
-# missing at DEST so scoring never runs with zero data even if every fetch
-# below fails (e.g. no network egress). GeoIP is intentionally excluded here —
-# see the header comment.
+# Floor: copy any missing seed file to DEST so scoring never runs with zero
+# data even if every fetch below fails (e.g. no network egress). GeoIP is
+# intentionally excluded here — see the header comment.
+#
+# The seed is read from a pristine copy the image keeps outside the runtime data
+# directory. In Kubernetes, DEST is /app/scanner/data — the very path the image
+# bakes the seed into — so an enrichment volume mounted there shadows it, and a
+# floor reading from $ROOT/scanner/data would find the same empty directory it
+# is trying to fill. Falls back to $ROOT/scanner/data for a plain source
+# checkout, where nothing is mounted and the two are genuinely the same tree.
+SEED_DIR="${OCTO_ENRICHMENT_SEED_DIR:-/opt/shapoclyack/seed-data}"
+if [[ ! -d "$SEED_DIR" ]]; then
+  SEED_DIR="$ROOT/scanner/data"
+fi
 for pair in \
   "cvss4/cvss4.json" \
   "epss/epss-overlay.json" \
   "kev/kev-overlay.json"; do
-  src="$ROOT/scanner/data/$pair"
+  src="$SEED_DIR/$pair"
   dst="$DEST/$pair"
+  # Same file (source checkout with no volume mounted): nothing to floor.
+  [[ "$src" -ef "$dst" ]] && continue
   if [[ -f "$src" && ! -f "$dst" ]]; then
     cp "$src" "$dst"
     echo "seeded $dst from committed overlay"
@@ -83,7 +95,18 @@ else
   run "asn (dbip)" "$ROOT/scripts/fetch-asn-db.sh" --provider dbip -o "$ASN_MMDB"
 fi
 
-run "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" -o "$DEST/cvss4/cvss4.json"
+# Incremental, not --full: the committed scanner/data/cvss4/cvss4.json (baked
+# into every image) is the baseline, and this only layers on what NVD changed
+# recently. A --full rebuild pages the entire 370k-CVE corpus and belongs in a
+# deliberate, keyed run -- not in a daily job with an activeDeadlineSeconds.
+# The 8-day window covers a missed run or two without re-walking history; the
+# script merges, so nothing already in the database is lost.
+# --seed carries the image's committed baseline onto a volume that already has
+# a database: the floor above only fires when the file is absent, so without
+# this an upgrade to an image with a bigger baseline would never reach an
+# existing volume. Existing entries always win over the baseline.
+run "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
+  --seed "$SEED_DIR/cvss4/cvss4.json" -o "$DEST/cvss4/cvss4.json"
 run "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
 run "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
 

@@ -109,14 +109,18 @@ kubectl create secret generic scan-targets -n network-scan \
 ## 5. Verify health
 
 ```bash
-curl --fail http://localhost:8080/api/health
+curl --fail http://127.0.0.1:8080/api/health
 ```
+
+Use `127.0.0.1` rather than `localhost` on the kind path: kind publishes the
+NodePort on `0.0.0.0` (IPv4 only), and on macOS `localhost` resolves to `::1`
+first, which is refused.
 
 The response reports API health and the configured state of NATS, ClickHouse,
 and ingest. A service shown as disabled is not an error when its `OCTO_NATS_URL`
 / `OCTO_CLICKHOUSE_URL` env var was left empty.
 
-Open <http://localhost:8080> and use the operator account for the first scan.
+Open <http://127.0.0.1:8080> and use the operator account for the first scan.
 
 ## 6. Start a scan
 

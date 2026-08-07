@@ -1,0 +1,13 @@
+# kind ships only the local-path provisioner, whose volumes are RWO — an RWX
+# claim stays Pending forever and every pod mounting it never starts. Downgrade
+# to ReadWriteOnce, which is safe here and only here: kind's default cluster is
+# a single node, so all replicas that mount enrichment-data land on it anyway.
+# Do NOT copy this patch into a multi-node overlay — there the RWO claim would
+# pin API replicas to whichever node the volume attached to.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: enrichment-data
+spec:
+  accessModes:
+    - ReadWriteOnce
