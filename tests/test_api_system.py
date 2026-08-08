@@ -2,28 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.auth import get_settings
-from tests.conftest import requires_postgres
+from tests.conftest import api_client, login, requires_postgres
 
 pytestmark = requires_postgres
 
 
-def _client() -> TestClient:
-    return TestClient(create_app())
-
-
-def _token(client: TestClient, username: str = "viewer", password: str = "viewer-change-me") -> str:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
-    assert response.status_code == 200
-    return response.json()["access_token"]
 
 
 def test_system_status_shape():
-    client = _client()
-    token = _token(client)
+    client = api_client()
+    token = login(client)
     response = client.get("/api/system", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     body = response.json()
@@ -65,8 +55,8 @@ def test_system_status_shape():
 
 
 def test_system_status_leaks_no_secrets():
-    client = _client()
-    token = _token(client)
+    client = api_client()
+    token = login(client)
     response = client.get("/api/system", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     raw = response.text
@@ -80,7 +70,7 @@ def test_system_status_leaks_no_secrets():
 
 
 def test_system_status_requires_auth():
-    client = _client()
+    client = api_client()
     assert client.get("/api/system").status_code == 401
 
 
@@ -88,8 +78,8 @@ def test_system_status_reflects_config_overrides():
     """A saved override for an editable stage must show up in the Pipeline
     Stages panel, not just in GET /config -- system_status previously read
     only the base YAML file and silently ignored the overrides table."""
-    client = _client()
-    admin_token = _token(client, "admin", "admin-change-me")
+    client = api_client()
+    admin_token = login(client, "admin")
     headers = {"Authorization": f"Bearer {admin_token}"}
 
     put_response = client.put(

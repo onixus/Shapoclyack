@@ -6,47 +6,25 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES, decode_jwt
-from api.services import agents as agents_service
-from api.services import jobs as jobs_service
 from api.services import nats_bus
 from api.services import results_ingest
-from api.services import tenants as tenants_service
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import configured_client, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
+# Agent-mode, JWT-only: no legacy OCTO_AGENT_TOKEN fallback.
+SETTINGS = {"job_execution_mode": "agent", "agent_token": "", "agent_jwt_expire_minutes": 120}
+
+
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        allow_scan_start=True,
-        job_execution_mode="agent",
-        agent_token="",
-        jwt_secret="test-secret",
-        agent_jwt_expire_minutes=120,
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **{**SETTINGS, **overrides})
 
 
 def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
-    settings = _settings(tmp_path, **overrides)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("api.auth.load_settings", lambda: settings)
-    monkeypatch.setattr("api.app.get_settings", lambda: settings)
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
-    tenants_service.configure(settings)
-    tenants_service.reset_for_tests()
-    return TestClient(create_app())
+    return configured_client(tmp_path, monkeypatch, **{**SETTINGS, **overrides})
 
 
 def test_v1_auth_exchange_returns_tenant_and_agent_claims(tmp_path, monkeypatch):

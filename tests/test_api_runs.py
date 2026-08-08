@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.settings import Settings
-from tests.conftest import requires_postgres
+from tests.conftest import auth_headers, login, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -148,15 +148,10 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(app)
 
 
-def _token(client: TestClient, username: str = "viewer", password: str = "viewer-change-me") -> str:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
-    assert response.status_code == 200
-    return response.json()["access_token"]
-
 
 def test_list_and_get_run(tmp_path: Path):
     client = _client(tmp_path)
-    token = _token(client)
+    token = login(client)
     headers = {"Authorization": f"Bearer {token}"}
 
     listed = client.get("/api/runs", headers=headers)
@@ -278,7 +273,7 @@ def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path)
 
     app.dependency_overrides = {get_settings: lambda: settings}
     client = TestClient(app)
-    headers = {"Authorization": f"Bearer {_token(client)}"}
+    headers = auth_headers(client)
 
     payload = client.get("/api/runs/run-a/vulnerabilities", headers=headers).json()
     assert [item["port"] for item in payload] == ["8080", "3389", "445"]
@@ -304,7 +299,7 @@ def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path)
 
 def test_download_artifact_binary_intact(tmp_path: Path):
     client = _client(tmp_path)
-    headers = {"Authorization": f"Bearer {_token(client)}"}
+    headers = auth_headers(client)
 
     resp = client.get("/api/runs/run-a/download/summary.pdf", headers=headers)
     assert resp.status_code == 200
@@ -322,7 +317,7 @@ def test_download_artifact_binary_intact(tmp_path: Path):
 
 def test_download_artifact_path_traversal_blocked(tmp_path: Path):
     client = _client(tmp_path)
-    headers = {"Authorization": f"Bearer {_token(client)}"}
+    headers = auth_headers(client)
     resp = client.get("/api/runs/run-a/download/..%2F..%2Fsecret.txt", headers=headers)
     assert resp.status_code == 404
 
@@ -337,7 +332,7 @@ def test_path_traversal_blocked(tmp_path: Path):
     assert read_artifact_text(settings, "run-a", "/etc/passwd") is None
 
     client = _client(tmp_path)
-    token = _token(client)
+    token = login(client)
     response = client.get(
         "/api/runs/run-a/artifacts/..%2F..%2Fsecret.txt",
         headers={"Authorization": f"Bearer {token}"},
