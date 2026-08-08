@@ -162,7 +162,9 @@ kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
 
 `GET /metrics` exposes the Prometheus series used by the dashboards and alerts
-referenced above. Endpoint-inventory series (all labels are low-cardinality —
+referenced above. Objectives, PromQL, and the error-budget policy built on these
+series are in [slo.md](slo.md); scrape wiring for Kubernetes is in
+[k8s/README.md](../k8s/README.md). Endpoint-inventory series (all labels are low-cardinality —
 no agent, device, asset, tenant, or product names):
 
 | Series | Use |

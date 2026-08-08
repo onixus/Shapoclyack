@@ -24,6 +24,7 @@ unless a guide explicitly says otherwise.
 | [Configuration](configuration.md) | Profiles, stages, protocols, rates, enrichment, and safe overrides |
 | [Web interface](ui.md) | Dashboard surfaces, workflows, and screenshot maintenance |
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, and backup considerations |
+| [Service level objectives](slo.md) | SLIs, targets, error-budget policy, and known measurement gaps |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, and UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
 

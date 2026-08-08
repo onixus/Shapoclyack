@@ -258,8 +258,13 @@ def require_agent(
 
     # Prefer agent JWT (typ=agent). Fall back to shared static token for labs.
     try:
+        # Routing peek only -- nothing here is trusted for authorization. A
+        # forged typ=agent merely sends the request into decode_agent_token(),
+        # which re-decodes against jwt_secret and re-checks typ; the legacy
+        # branch compares with hmac.compare_digest.
         unverified = jwt.decode(
             token,
+            # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
             options={"verify_signature": False, "verify_exp": False},
             algorithms=[settings.jwt_algorithm],
         )

@@ -30,6 +30,10 @@ JOB_DURATION_SECONDS = Histogram(
     "octo_job_duration_seconds",
     "Scan job duration from started_at to finished_at, in seconds.",
     ["status", "execution"],
+    # Explicit buckets: the prometheus_client default set tops out at 10s, so
+    # every real scan landed in +Inf and no quantile was computable (docs/slo.md
+    # SLO 4). Spans 30s (a small lab /24) to 8h (a large agent sweep).
+    buckets=(30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800),
     registry=REGISTRY,
 )
 JOBS_QUEUED = Gauge(

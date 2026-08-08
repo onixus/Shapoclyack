@@ -16,6 +16,13 @@ spec:
       labels:
         app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: api
+      annotations:
+        # Annotation-based scrapers (the common `kubernetes-pods` job) pick the
+        # API up with no extra objects. Inert when nothing scrapes. Operator
+        # users should apply examples/servicemonitor.example.yaml instead.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
     spec:
       serviceAccountName: api
       securityContext:

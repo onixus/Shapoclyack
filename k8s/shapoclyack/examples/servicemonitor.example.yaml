@@ -1,0 +1,37 @@
+# Prometheus Operator ServiceMonitor for the Shapoclyack API (ROADMAP P3.5).
+#
+# NOT part of `base/` — this needs the `monitoring.coreos.com/v1` CRDs, which
+# no manifest in this repository installs. Apply it only if you already run
+# kube-prometheus-stack (or another Prometheus Operator) in the cluster:
+#
+#   kubectl -n network-scan apply -f k8s/shapoclyack/examples/servicemonitor.example.yaml
+#
+# Adjust `metadata.labels` to whatever your Prometheus resource selects with
+# (`spec.serviceMonitorSelector`); kube-prometheus-stack's chart default is
+# `release: <helm-release-name>`. Without a matching label the object applies
+# cleanly and is silently ignored.
+#
+# `/metrics` is unauthenticated by design (standard Prometheus practice — see
+# api/services/metrics.py). Keep it off the public Ingress and restrict access
+# at the network layer; `examples/ingress.example.yaml` does not expose it.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: shapoclyack-api
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: api
+    # release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - network-scan
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http          # named port on Service shapoclyack-api (8080)
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

@@ -64,10 +64,15 @@ from __future__ import annotations
 
 import logging
 import re
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Parsing goes through defusedxml (entity-expansion DoS: nmap XML embeds
+# attacker-influenced banner/NSE text). The stdlib import stays for ET.Element
+# and ET.ParseError -- defusedxml.ElementTree does not export Element.
+from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from .config_schema import TlsPostureConfig
 from .pulse_probe import load_pulse_tls_artifact
@@ -215,7 +220,7 @@ def _iter_ssl_scripts(nmap_dir: Path) -> list[tuple[str, str, str, str]]:
 
     for xml_file in sorted(nmap_dir.rglob("*.xml")):
         try:
-            root = ET.fromstring(xml_file.read_text(encoding="utf-8"))
+            root = safe_fromstring(xml_file.read_text(encoding="utf-8"))
         except ET.ParseError:
             continue
         for host in root.findall("host"):
