@@ -178,5 +178,13 @@ Each of these limits what can honestly be claimed today:
   cardinality), so per-customer objectives are not derivable from `/metrics`.
 - **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be
   attributed to Postgres vs. ClickHouse vs. filesystem from metrics alone.
-- **No baseline at scale.** Targets 2, 4, and 5 should be re-derived once the
-  1k/10k/50k fixtures (P3.7) and the profiling pass (P3.8) exist.
+- **No baseline at scale.** Targets 2, 4, and 5 are still starting values. The
+  1k/10k/50k fixtures exist (`tests/fixtures/scale_seed.py`, P3.7) and the
+  query paths behind them have been profiled ([scale-profile.md](scale-profile.md),
+  P3.8) — but that pass calls the services in-process, so it excludes FastAPI
+  routing, serialization, auth, and the network, and it runs one query at a
+  time. Re-deriving the API-latency target still needs an end-to-end
+  measurement under concurrency. What the profiling did establish: the asset
+  list is no longer N+1-bound (77 ms for a 5000-row page at 50k assets), and
+  the ClickHouse diff helpers are bounded rather than fast — they refuse
+  above `max_rows` instead of returning a truncated, silently wrong diff.
