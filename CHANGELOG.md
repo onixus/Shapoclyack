@@ -4,6 +4,45 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **`overlays/kind-enrichment`** — the local kind lab with real GeoIP/ASN/EPSS/
+  KEV/CVSS4 data. Identical to `overlays/enrichment` except the PVC drops to
+  `ReadWriteOnce`, since kind only ships the RWO local-path provisioner and an
+  RWX claim would stay `Pending` forever. `base/enrichment/` became a kustomize
+  Component so both overlays share the same patches instead of copying them.
+- **`NVD_API_KEY` wired into the enrichment fetch** from optional Secret
+  `shapoclyack-nvd` (key `nvd_api_key`), in both the refresh CronJob and the API
+  cold-start initContainer. This is deliberately separate from the key stored
+  through the config API (`enrichment.cvss4.nvd_api_key`), which is only ever
+  exported into a running scan process and never reached the fetch.
+- **Prometheus scrape wiring** (ROADMAP P3.5). The API pod template now carries
+  `prometheus.io/scrape` / `port` / `path` annotations, so annotation-based
+  scrape configs pick `GET /metrics` up with no extra objects; the annotations
+  are inert when nothing scrapes them. For Prometheus Operator installations,
+  `k8s/shapoclyack/examples/servicemonitor.example.yaml` is a ready
+  `ServiceMonitor` — it stays in `examples/` because it needs the
+  `monitoring.coreos.com/v1` CRDs, which no manifest here installs and whose
+  absence must not break `kubectl apply` of `base/`. `k8s/README.md` documents
+  both paths plus a bare `scrape_configs` snippet, and states explicitly that
+  `/metrics` is unauthenticated by design and must stay off the Ingress.
+- **Service level objectives** — new [docs/slo.md](docs/slo.md) (ROADMAP P3.6):
+  seven SLIs with PromQL over the existing series (API availability and
+  latency, job success rate and duration, ClickHouse ingest lag and
+  correctness, endpoint-inventory acceptance), an error-budget policy, and
+  burn-rate alerting guidance. Targets are labelled as starting values rather
+  than measured commitments — there is no scale baseline until P3.7/P3.8 land.
+  The known-gaps section records what the metrics cannot currently support:
+  per-replica in-memory job gauges, no tenant label on any series, and no
+  tracing.
+
+### Changed
+
+- **`octo_job_duration_seconds` histogram buckets** are now explicit, spanning
+  30s to 8h. The `prometheus_client` default set stops at 10s, so every real
+  scan fell into `+Inf` and no duration quantile was computable. Existing
+  bucket series (`_bucket{le=...}`) change; `_count` and `_sum` do not.
+
 ### Fixed
 
 - **Enrichment volume no longer starts empty, and CVSS v4 is a real database.**
@@ -32,19 +71,32 @@ All notable changes to Shapoclyack are documented in this file.
   its logs and its events, so the only symptom is a bare `DeadlineExceeded` an
   hour later. `scripts/dev-up.sh` now warns when the Secret is absent, and
   `docs/troubleshooting.md` documents the signature.
+- **XML parsing hardened** — `scanner/pipeline/report.py`,
+  `scanner/pipeline/tls_posture.py`, and `scripts/compare-pulse-nmap.py` parse
+  nmap XML, which embeds attacker-influenced banner and NSE text, through
+  `defusedxml`. Python's `ElementTree` does not expand external entities, so
+  this closed an entity-expansion DoS surface rather than XXE. Two further
+  semgrep ERROR findings were reviewed and annotated as verified false
+  positives: the unverified JWT decode in `api/auth.py` is a routing peek at
+  the `typ` claim (a forged `typ=agent` only routes into `decode_agent_token()`,
+  which re-verifies against `jwt_secret`), and the unverified SSL context in
+  `defectdojo.py` is an opt-in escape hatch gated on `verify_ssl`, default
+  `True`. SAST gate: 5 ERROR findings → 0.
 
-### Added
+### CI
 
-- **`overlays/kind-enrichment`** — the local kind lab with real GeoIP/ASN/EPSS/
-  KEV/CVSS4 data. Identical to `overlays/enrichment` except the PVC drops to
-  `ReadWriteOnce`, since kind only ships the RWO local-path provisioner and an
-  RWX claim would stay `Pending` forever. `base/enrichment/` became a kustomize
-  Component so both overlays share the same patches instead of copying them.
-- **`NVD_API_KEY` wired into the enrichment fetch** from optional Secret
-  `shapoclyack-nvd` (key `nvd_api_key`), in both the refresh CronJob and the API
-  cold-start initContainer. This is deliberately separate from the key stored
-  through the config API (`enrichment.cvss4.nvd_api_key`), which is only ever
-  exported into a running scan process and never reached the fetch.
+- Jenkins pipeline fixes: kustomize validation installs `kubectl` into the
+  Jenkins image (`bitnami/kubectl:1.31` stopped resolving on Docker Hub, and
+  `registry.k8s.io/kubectl` is distroless and cannot run the bash validator);
+  the pytest stage no longer installs `gcc`/`libpq-dev`/`curl` via apt
+  (`psycopg[binary]` ships libpq, readiness waits use the stdlib), removing a
+  network dependency that broke the 3.12 matrix branch; the e2e and synthetic
+  load stages set `TMPDIR` into the workspace so `mktemp -d` produces a path
+  that resolves identically inside the Jenkins container and on the host the
+  Docker daemon runs on; and the synthetic load test now calls
+  `tests/load/run.sh` directly with the parameters the GitHub composite action
+  used (16 hosts, 2400s timeout, 0.95 pass fraction) and gates the stage on the
+  parsed metrics JSON.
 
 ## [0.40-0806] — 2026-08-06
 

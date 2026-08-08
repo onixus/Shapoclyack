@@ -81,7 +81,7 @@ k8s/shapoclyack/
 ├── overlays/agents/      # remote agents (topology spread + VPA) + API agent-mode
 ├── overlays/enrichment/  # real GeoIP/EPSS/KEV/CVSS4 data, hot-reloaded, no restart needed
 ├── overlays/kind-enrichment/ # kind-dev + enrichment, with the PVC dropped to RWO for local-path
-└── examples/             # Secrets / Ingress / agent / NATS enable patches
+└── examples/             # Secrets / Ingress / agent / NATS patches + ServiceMonitor
 ```
 
 ### NATS JetStream
@@ -146,6 +146,45 @@ API JWT secret.
 
 `GET /api/assets`, `GET /api/assets/{asset_id}` expose the cross-run
 registry; run-scoped endpoints under `/api/runs/*` are unaffected.
+
+### Metrics scraping (Prometheus)
+
+The API serves `GET /metrics` on the same port as everything else (`8080`,
+Service `shapoclyack-api`, named port `http`). There is **no Prometheus in this
+repository** — bring your own. Two wiring options, both already in the tree:
+
+| You run | Wiring | Action |
+|---|---|---|
+| An annotation-based scrape config (`kubernetes-pods` job) | `prometheus.io/scrape,port,path` on the API pod template in `base/api-deployment.yaml` | none — already applied |
+| Prometheus Operator / kube-prometheus-stack | `examples/servicemonitor.example.yaml` | `kubectl -n network-scan apply -f …`, and set a label your `serviceMonitorSelector` matches |
+
+The ServiceMonitor lives in `examples/` because it needs the
+`monitoring.coreos.com/v1` CRDs, which base does not install; applying base on a
+cluster without the operator must not fail. The pod annotations are inert when
+nothing scrapes them.
+
+Bare `scrape_configs` instead of either of the above:
+
+```yaml
+- job_name: shapoclyack-api
+  metrics_path: /metrics
+  kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names: [network-scan]
+  relabel_configs:
+    - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: shapoclyack-api;http
+```
+
+`/metrics` is **unauthenticated** by design (standard Prometheus practice —
+restrict at the network layer, not app auth). `examples/ingress.example.yaml`
+does not expose it; keep it that way, and reach it in a lab with
+`kubectl -n network-scan port-forward svc/shapoclyack-api 8080:8080`.
+
+Series reference and alert thresholds: [docs/slo.md](../docs/slo.md) and the
+observability section of [docs/operations.md](../docs/operations.md).
 
 ### Upgrading a cluster deployed before the `octo-man` → `shapoclyack` rename
 
