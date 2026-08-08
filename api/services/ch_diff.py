@@ -12,12 +12,34 @@ from typing import Any
 from api.services import clickhouse_client as ch
 from api.services.ch_transform import tenant_to_uuid
 
+# Both fetches materialize a whole tenant's history into a Python set, because
+# the diff below is a set difference — there is no correct way to answer it
+# from a truncated page. So the cap *refuses* instead of silently returning a
+# short set, which would report every missing key as "removed" and every later
+# re-observation as "new". Measured at 50k assets the two fetches pull 183k +
+# 200k rows in ~260 ms combined (ROADMAP P3.8, docs/scale-profile.md); the
+# tables accumulate across runs, so this grows with history, not just with
+# asset count. Callers that trip the cap should narrow with ``since``.
+MAX_DIFF_ROWS = 500_000
+
+
+def _guard(rows: list, max_rows: int, table: str) -> list:
+    if len(rows) > max_rows:
+        raise ch.ClickHouseError(
+            f"{table} returned more than max_rows={max_rows} for this tenant. "
+            "Refusing to build a diff from a truncated result — it would report "
+            "the dropped keys as removed. Narrow the window with `since`, or "
+            "raise max_rows deliberately."
+        )
+    return rows
+
 
 def fetch_tenant_cves(
     clickhouse_url: str,
     tenant_id: str,
     *,
     since: datetime | None = None,
+    max_rows: int = MAX_DIFF_ROWS,
 ) -> set[str]:
     """Return set of ``asset_ip|cve_id`` keys for a tenant from ClickHouse."""
     client = ch.get_client(clickhouse_url)
@@ -30,26 +52,35 @@ def fetch_tenant_cves(
     if since is not None:
         sql += " AND timestamp >= {since:DateTime}"
         params["since"] = since.replace(tzinfo=None)
+    # +1 so the cap can be detected rather than inferred from a full page.
+    sql += f" LIMIT {int(max_rows) + 1}"
     result = client.query(sql, parameters=params)
-    keys: set[str] = set()
-    for row in result.result_rows:
-        keys.add(f"{row[0]}|{row[1]}")
-    return keys
+    rows = _guard(result.result_rows, max_rows, "shapoclyack_vulnerabilities")
+    return {f"{row[0]}|{row[1]}" for row in rows}
 
 
 def fetch_tenant_ports(
     clickhouse_url: str,
     tenant_id: str,
+    *,
+    since: datetime | None = None,
+    max_rows: int = MAX_DIFF_ROWS,
 ) -> set[str]:
     """Return set of ``target_ip:port/protocol`` keys for a tenant."""
     client = ch.get_client(clickhouse_url)
     tid = str(tenant_to_uuid(tenant_id))
-    result = client.query(
+    sql = (
         "SELECT target_ip, port, protocol FROM shapoclyack.shapoclyack_open_ports "
-        "WHERE tenant_id = {tid:UUID}",
-        parameters={"tid": tid},
+        "WHERE tenant_id = {tid:UUID}"
     )
-    return {f"{row[0]}:{row[1]}/{row[2]}" for row in result.result_rows}
+    params: dict[str, Any] = {"tid": tid}
+    if since is not None:
+        sql += " AND timestamp >= {since:DateTime}"
+        params["since"] = since.replace(tzinfo=None)
+    sql += f" LIMIT {int(max_rows) + 1}"
+    result = client.query(sql, parameters=params)
+    rows = _guard(result.result_rows, max_rows, "shapoclyack_open_ports")
+    return {f"{row[0]}:{row[1]}/{row[2]}" for row in rows}
 
 
 def _cve_key_to_event(key: str) -> dict[str, Any]:

@@ -42,6 +42,7 @@ unless a guide explicitly says otherwise.
 | Guide | Scope |
 |---|---|
 | [Development](development.md) | Toolchains, local setup, tests, builds, documentation rules, and review checklist |
+| [Scale profile](scale-profile.md) | Measured query cost at 1k/10k/50k assets, the fixes it produced, and the `PARTITION BY` evaluation |
 | [Endpoint inventory plan](../Agent_plan.md) | Lariska integration design, delivered decisions, and remaining backlog |
 | [Roadmap](../ROADMAP.md) | Product phases and planned work |
 | [Changelog](../CHANGELOG.md) | Released and unreleased behavior changes |

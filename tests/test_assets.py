@@ -236,3 +236,73 @@ def test_update_asset_rejects_non_decommissioned_status(tmp_path):
 
     with pytest.raises(ValueError):
         assets_service.update_asset(settings, tenant_id, asset_id, {"status": "active"})
+
+
+@requires_postgres
+def test_list_assets_fetches_page_identifiers_in_one_query(tmp_path):
+    """ROADMAP P3.8: identifiers used to be fetched per asset, so a page of N
+    cost N+2 statements — invisible on a local socket, dominant over a network
+    (the dashboard's limit=5000 page issued 5002 statements). Counting
+    statements is the only way to keep the regression from creeping back."""
+    from sqlalchemy import event
+
+    from api.db.engine import get_engine
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    hosts = [
+        {"host": f"10.0.2.{i}", "names": [f"h{i}.example.com"]} for i in range(1, 21)
+    ]
+    _write_run(settings.output_dir, "run-batch", hosts)
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-batch")
+
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = get_engine(settings.postgres_url)
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        page, total = assets_service.list_assets(settings, tenant_id, limit=20)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert total == 20
+    assert len(page) == 20
+    # Every asset still resolves both of its identifiers.
+    assert all(row["identifier_count"] == 2 for row in page)
+    assert all(row["primary_identifier"].startswith("10.0.2.") for row in page)
+
+    identifier_selects = [
+        s for s in statements if "asset_identifiers" in s and s.strip().upper().startswith("SELECT")
+    ]
+    assert len(identifier_selects) == 1, f"expected one batched fetch, got {len(identifier_selects)}"
+
+
+@requires_postgres
+def test_list_assets_empty_page_skips_the_identifier_query(tmp_path):
+    from sqlalchemy import event
+
+    from api.db.engine import get_engine
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = get_engine(settings.postgres_url)
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        page, total = assets_service.list_assets(settings, tenant_id, limit=20)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert page == [] and total == 0
+    # An empty IN () list is either a syntax error or a full scan depending on
+    # the dialect, so the batch fetch must be skipped entirely.
+    assert not [
+        s for s in statements if "asset_identifiers" in s and s.strip().upper().startswith("SELECT")
+    ]

@@ -6,6 +6,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Scale profiling harness and results** — new `tests/fixtures/scale_profile.py`
+  and [docs/scale-profile.md](docs/scale-profile.md) (ROADMAP P3.8). Times the
+  ClickHouse diff helpers and the Postgres asset list over a P3.7 fixture at
+  1k/10k/50k assets, and reports the two machine-independent counts alongside
+  wall-clock: ClickHouse rows/bytes read from `system.query_log`, and Postgres
+  statements per call. The document records what was measured, the fixes it
+  produced, the `PARTITION BY` evaluation, and explicitly what it does not
+  cover (no end-to-end API latency, no concurrency, no UI, no ingest path).
+
 - **Scale test fixtures** — new `tests/fixtures/scale_seed.py` (ROADMAP P3.7):
   a CLI that bulk-loads N synthetic assets into the two stores that actually
   grow with asset count — Postgres `assets`/`asset_identifiers` and ClickHouse
@@ -49,6 +58,21 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **`GET /api/assets` no longer issues one query per returned row** (ROADMAP
+  P3.8). `list_assets` fetched each asset's identifiers in its own `SELECT`, so
+  the dashboard's `limit=5000` page cost 5002 statements and ~1.1 s at 50k
+  assets; identifiers for the whole page now come from a single `IN` query — 3
+  statements regardless of page size, and 77 ms for the same page. The default
+  100-row page went from 27.8 ms to 9.3 ms. No response-shape change.
+- **`ch_diff.fetch_tenant_cves` / `fetch_tenant_ports` are now bounded** by a
+  `max_rows` argument (default 500 000) and **raise** when a tenant exceeds it.
+  They materialize a tenant's whole history into a set to compute a set
+  difference, so a truncated result would report every dropped key as `removed`
+  and every later re-observation as new — failing is the safer outcome.
+  `fetch_tenant_ports` also gained the `since` parameter `fetch_tenant_cves`
+  already had, since narrowing the window is the remedy when the cap trips.
+  Both are helper-only today; the scanner's filesystem diff remains the default
+  path, so no runtime behaviour changes.
 - **`octo_job_duration_seconds` histogram buckets** are now explicit, spanning
   30s to 8h. The `prometheus_client` default set stops at 10s, so every real
   scan fell into `+Inf` and no duration quantile was computable. Existing

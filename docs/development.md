@@ -102,6 +102,28 @@ This is a *data* generator. `tests/load/run.sh` is the separate network-load
 harness that runs the scanner against live target containers; neither replaces
 the other.
 
+Do not point the test suite at a database holding a fixture:
+`tenants.reset_for_tests()` deletes every asset row, so tests and fixtures need
+separate databases or a reseed in between.
+
+### Profiling
+
+`tests/fixtures/scale_profile.py` times the query paths that grow with asset
+count — the ClickHouse tenant-wide diff helpers and the Postgres asset list —
+against an already-seeded fixture:
+
+```bash
+python -m tests.fixtures.scale_profile --assets 50000 --markdown
+```
+
+It reports wall-clock medians plus the two counts that do not depend on the
+machine: ClickHouse rows/bytes read (from `system.query_log`) and Postgres
+statements per call. The statement count is what catches an N+1 — those are
+sub-millisecond over a local socket and dominant over a real network.
+
+Recorded results and the conclusions drawn from them are in
+[scale-profile.md](scale-profile.md).
+
 ## Kubernetes and containers
 
 Validate manifests:

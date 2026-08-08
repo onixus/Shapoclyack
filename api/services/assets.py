@@ -188,6 +188,12 @@ def list_assets(
     Filtering, counting, and slicing all run in SQL (ROADMAP P3.2) — the
     identifier search is an EXISTS subquery rather than a post-filter over the
     fetched page, so `total` is honest and `limit` bounds work, not results.
+
+    Identifiers for the whole page are fetched in one ``IN`` query rather than
+    one query per asset (ROADMAP P3.8): the N+1 cost was invisible in wall-clock
+    against a local socket but made the dashboard's ``limit=5000`` page issue
+    5002 statements and take ~1.1 s, and every one of those round-trips is paid
+    again over a real network. See docs/scale-profile.md.
     """
     sort_column = ASSET_SORT_COLUMNS.get(sort or "", models.Asset.last_seen)
     direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
@@ -219,11 +225,19 @@ def list_assets(
             .limit(limit)
         ).scalars().all()
 
+        by_asset: dict[str, list[models.AssetIdentifier]] = {}
+        if assets:
+            page_ids = [asset.asset_id for asset in assets]
+            for identifier in session.execute(
+                select(models.AssetIdentifier).where(
+                    models.AssetIdentifier.asset_id.in_(page_ids)
+                )
+            ).scalars():
+                by_asset.setdefault(identifier.asset_id, []).append(identifier)
+
         results: list[dict] = []
         for asset in assets:
-            identifiers = session.execute(
-                select(models.AssetIdentifier).where(models.AssetIdentifier.asset_id == asset.asset_id)
-            ).scalars().all()
+            identifiers = by_asset.get(asset.asset_id, [])
             primary = next((i.identifier_value for i in identifiers if i.identifier_type == "ip"), None)
             results.append(
                 {
