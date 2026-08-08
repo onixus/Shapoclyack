@@ -4,27 +4,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.auth import get_settings
 from api.db import models
 from api.db.engine import get_session
 from api.services import tenants as tenants_service
 from scanner.pipeline.asset_identity import ip_identity_key
-from tests.conftest import requires_postgres
+from tests.conftest import api_client, login, requires_postgres
 
 pytestmark = requires_postgres
 
 
-def _client() -> TestClient:
-    return TestClient(create_app())
-
-
-def _token(client: TestClient, username: str, password: str) -> str:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
-    assert response.status_code == 200
-    return response.json()["access_token"]
 
 
 def _seed_asset(host_ip: str, *, asset_criticality: int | None = None) -> str:
@@ -49,8 +39,8 @@ def _seed_asset(host_ip: str, *, asset_criticality: int | None = None) -> str:
 
 def test_viewer_cannot_update_asset():
     asset_id = _seed_asset("10.0.9.1")
-    client = _client()
-    token = _token(client, "viewer", "viewer-change-me")
+    client = api_client()
+    token = login(client, "viewer")
     response = client.patch(
         f"/api/assets/{asset_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -61,8 +51,8 @@ def test_viewer_cannot_update_asset():
 
 def test_operator_can_update_asset():
     asset_id = _seed_asset("10.0.9.2")
-    client = _client()
-    token = _token(client, "operator", "operator-change-me")
+    client = api_client()
+    token = login(client, "operator")
     response = client.patch(
         f"/api/assets/{asset_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -89,8 +79,8 @@ def test_operator_can_update_asset():
 
 def test_update_asset_out_of_range_criticality_is_422():
     asset_id = _seed_asset("10.0.9.3")
-    client = _client()
-    token = _token(client, "operator", "operator-change-me")
+    client = api_client()
+    token = login(client, "operator")
     response = client.patch(
         f"/api/assets/{asset_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -101,8 +91,8 @@ def test_update_asset_out_of_range_criticality_is_422():
 
 def test_operator_can_decommission_asset():
     asset_id = _seed_asset("10.0.9.4")
-    client = _client()
-    token = _token(client, "operator", "operator-change-me")
+    client = api_client()
+    token = login(client, "operator")
     response = client.patch(
         f"/api/assets/{asset_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -114,8 +104,8 @@ def test_operator_can_decommission_asset():
 
 def test_update_asset_rejects_non_decommissioned_status():
     asset_id = _seed_asset("10.0.9.5")
-    client = _client()
-    token = _token(client, "operator", "operator-change-me")
+    client = api_client()
+    token = login(client, "operator")
     response = client.patch(
         f"/api/assets/{asset_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -125,8 +115,8 @@ def test_update_asset_rejects_non_decommissioned_status():
 
 
 def test_update_asset_unknown_id_is_404():
-    client = _client()
-    token = _token(client, "operator", "operator-change-me")
+    client = api_client()
+    token = login(client, "operator")
     response = client.patch(
         "/api/assets/does-not-exist",
         headers={"Authorization": f"Bearer {token}"},

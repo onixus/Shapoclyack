@@ -19,24 +19,13 @@ from api.app import create_app
 from api.db import models
 from api.db.engine import get_session
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        allow_scan_start=True,
-        agent_token="test-agent-token",
-        jwt_secret="test-secret",
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **overrides)
 
 
 @pytest.fixture()
@@ -64,16 +53,8 @@ def client(tmp_path, monkeypatch) -> TestClient:
     return TestClient(create_app())
 
 
-def _token(client: TestClient, username: str) -> str:
-    response = client.post(
-        "/api/auth/login", json={"username": username, "password": f"{username}-change-me"}
-    )
-    assert response.status_code == 200
-    return response.json()["access_token"]
-
-
 def _headers(client: TestClient, username: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(client, username)}"}
+    return {"Authorization": f"Bearer {login(client, username)}"}
 
 
 def _make_tenant(client: TestClient, tenant_id: str) -> None:

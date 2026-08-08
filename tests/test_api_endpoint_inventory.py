@@ -6,9 +6,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import configured_client, login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -26,47 +25,15 @@ def _load_fixture(name: str) -> dict:
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        agent_token="test-agent-token",
-        jwt_secret="test-secret",
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **overrides)
 
 
 def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
-    settings = _settings(tmp_path, **overrides)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("api.auth.load_settings", lambda: settings)
-    monkeypatch.setattr("api.app.get_settings", lambda: settings)
-
-    from api.services import endpoint_inventory as endpoint_inventory_service
-    from api.services import tenants as tenants_service
-
-    tenants_service.configure(settings)
-    tenants_service.reset_for_tests()
-    endpoint_inventory_service.configure(settings)
-    endpoint_inventory_service.reset_for_tests()
-    return TestClient(create_app())
+    return configured_client(tmp_path, monkeypatch, **overrides)
 
 
 def _agent_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-agent-token"}
-
-
-def _operator_token(client: TestClient) -> str:
-    response = client.post(
-        "/api/auth/login",
-        json={"username": "operator", "password": "operator-change-me"},
-    )
-    assert response.status_code == 200
-    return response.json()["access_token"]
 
 
 def test_valid_snapshot_returns_201(tmp_path, monkeypatch):
@@ -156,7 +123,7 @@ def test_device_status_is_served_and_filterable(tmp_path, monkeypatch):
     body = _load_fixture("endpoint_inventory_v1_valid.json")
     submit = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body)
     assert submit.status_code == 201
-    headers = {"Authorization": f"Bearer {_operator_token(client)}"}
+    headers = {"Authorization": f"Bearer {login(client, "operator")}"}
 
     active = client.get(
         "/api/endpoint/devices",
@@ -211,7 +178,7 @@ def test_read_endpoints_require_viewer_role_and_are_tenant_scoped(tmp_path, monk
     unauth = client.get("/api/endpoint/devices", params={"tenant_id": "default"})
     assert unauth.status_code == 401
 
-    token = _operator_token(client)
+    token = login(client, "operator")
     headers = {"Authorization": f"Bearer {token}"}
 
     listed = client.get("/api/endpoint/devices", headers=headers, params={"tenant_id": "default"})
@@ -271,7 +238,7 @@ def test_recent_changes_feed_returns_hostname_and_is_tenant_scoped(tmp_path, mon
     second = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=second_body)
     assert second.status_code == 201
 
-    token = _operator_token(client)
+    token = login(client, "operator")
     headers = {"Authorization": f"Bearer {token}"}
 
     unauth = client.get("/api/endpoint/changes", params={"tenant_id": "default"})
