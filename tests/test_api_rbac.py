@@ -2,28 +2,18 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.schemas import JobInfo
-from tests.conftest import requires_postgres
+from tests.conftest import api_client, login, requires_postgres
 
 pytestmark = requires_postgres
 
 
-def _client() -> TestClient:
-    return TestClient(create_app())
-
-
-def _token(client: TestClient, username: str, password: str) -> str:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
-    assert response.status_code == 200
-    return response.json()["access_token"]
 
 
 def test_viewer_cannot_start_jobs():
-    client = _client()
-    token = _token(client, "viewer", "viewer-change-me")
+    client = api_client()
+    token = login(client, "viewer")
     response = client.post(
         "/api/jobs",
         headers={"Authorization": f"Bearer {token}"},
@@ -33,8 +23,8 @@ def test_viewer_cannot_start_jobs():
 
 
 def test_operator_can_start_jobs():
-    client = _client()
-    token = _token(client, "operator", "operator-change-me")
+    client = api_client()
+    token = login(client, "operator")
 
     fake = JobInfo(
         job_id="abc123",

@@ -6,55 +6,22 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import configured_client, login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
+# Agent mode, but with the legacy shared token still configured.
+SETTINGS = {"job_execution_mode": "agent"}
+
+
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        allow_scan_start=True,
-        job_execution_mode="agent",
-        agent_token="test-agent-token",
-        agent_stale_seconds=120,
-        jwt_secret="test-secret",
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **{**SETTINGS, **overrides})
 
 
 def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
-    settings = _settings(tmp_path, **overrides)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("api.auth.load_settings", lambda: settings)
-    monkeypatch.setattr("api.app.get_settings", lambda: settings)
-    # Reset in-memory registries between tests via fresh app + load.
-    from api.services import agents as agents_service
-    from api.services import jobs as jobs_service
-    from api.services import tenants as tenants_service
-
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
-    tenants_service.configure(settings)
-    tenants_service.reset_for_tests()
-    return TestClient(create_app())
-
-
-def _operator_token(client: TestClient) -> str:
-    response = client.post(
-        "/api/auth/login",
-        json={"username": "operator", "password": "operator-change-me"},
-    )
-    assert response.status_code == 200
-    return response.json()["access_token"]
+    return configured_client(tmp_path, monkeypatch, **{**SETTINGS, **overrides})
 
 
 def _agent_headers() -> dict[str, str]:
@@ -87,7 +54,7 @@ def test_agent_register_heartbeat_and_list(tmp_path, monkeypatch):
     assert hb.status_code == 200
     assert hb.json()["status"] == "idle"
 
-    token = _operator_token(client)
+    token = login(client, "operator")
     listed = client.get("/api/agents", headers={"Authorization": f"Bearer {token}"})
     assert listed.status_code == 200
     body = listed.json()
@@ -104,7 +71,7 @@ def test_agent_claim_and_upload_results(tmp_path, monkeypatch):
     )
     agent_id = reg.json()["agent_id"]
 
-    token = _operator_token(client)
+    token = login(client, "operator")
     job = client.post(
         "/api/jobs",
         headers={"Authorization": f"Bearer {token}"},
@@ -188,7 +155,7 @@ def test_reject_path_traversal_archive(tmp_path, monkeypatch):
         json={"hostname": "worker"},
     )
     agent_id = reg.json()["agent_id"]
-    token = _operator_token(client)
+    token = login(client, "operator")
     job = client.post(
         "/api/jobs",
         headers={"Authorization": f"Bearer {token}"},
