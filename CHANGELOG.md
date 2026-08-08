@@ -6,6 +6,17 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Scale test fixtures** — new `tests/fixtures/scale_seed.py` (ROADMAP P3.7):
+  a CLI that bulk-loads N synthetic assets into the two stores that actually
+  grow with asset count — Postgres `assets`/`asset_identifiers` and ClickHouse
+  `shapoclyack_vulnerabilities`/`shapoclyack_open_ports`. Every row is derived
+  from `--seed` and the asset index, so runs are reproducible, reruns are
+  idempotent (`ON CONFLICT DO NOTHING` / `ReplacingMergeTree`), and a 10k
+  fixture is a byte-identical superset of the 1k one. `--purge` removes a
+  tenant's rows; the default tenant is `scale-test`, never `default`.
+  Complements `tests/load/run.sh`, which drives network load against live
+  containers and produces one run's worth of hosts, not a populated registry.
+
 - **`overlays/kind-enrichment`** — the local kind lab with real GeoIP/ASN/EPSS/
   KEV/CVSS4 data. Identical to `overlays/enrichment` except the PVC drops to
   `ReadWriteOnce`, since kind only ships the RWO local-path provisioner and an

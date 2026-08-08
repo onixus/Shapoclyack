@@ -178,5 +178,7 @@ Each of these limits what can honestly be claimed today:
   cardinality), so per-customer objectives are not derivable from `/metrics`.
 - **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be
   attributed to Postgres vs. ClickHouse vs. filesystem from metrics alone.
-- **No baseline at scale.** Targets 2, 4, and 5 should be re-derived once the
-  1k/10k/50k fixtures (P3.7) and the profiling pass (P3.8) exist.
+- **No baseline at scale.** Targets 2, 4, and 5 are still starting values. The
+  1k/10k/50k fixtures now exist (`tests/fixtures/scale_seed.py`, P3.7), so the
+  targets should be re-derived from an actual measurement once the profiling
+  pass (P3.8) runs them through the query paths.

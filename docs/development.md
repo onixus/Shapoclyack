@@ -69,6 +69,39 @@ npm run build
 rewrite warning for `output: "export"` is expected and does not indicate a
 production routing failure.
 
+## Scale fixtures
+
+`tests/fixtures/scale_seed.py` populates the two stores that grow with asset
+count — Postgres `assets`/`asset_identifiers` and the ClickHouse analytics
+tables — so pagination, search, and the tenant-wide diff queries can be
+measured at 1k, 10k, and 50k assets instead of on a handful of dev rows:
+
+```bash
+python -m tests.fixtures.scale_seed --assets 10000 \
+  --postgres-url "$OCTO_POSTGRES_URL" --clickhouse-url "$OCTO_CLICKHOUSE_URL"
+```
+
+Both URLs fall back to `OCTO_POSTGRES_URL` / `OCTO_CLICKHOUSE_URL`; add
+`--skip-postgres` or `--skip-clickhouse` to seed one store only. Rows are
+derived from `--seed` and the asset index, so a rerun with the same arguments
+is idempotent and a larger `--assets` value extends a smaller fixture rather
+than replacing it — a measurement stays comparable after growing the dataset.
+
+Clean up with the same tenant:
+
+```bash
+python -m tests.fixtures.scale_seed --purge --tenant scale-test
+```
+
+`--purge` is a tenant-scoped delete, which is why the default tenant is
+`scale-test` and not `default`. Point it at a tenant holding real scan data and
+that data is gone. On ClickHouse it submits an `ALTER TABLE … DELETE` mutation
+and returns before the parts are rewritten, so counts settle a moment later.
+
+This is a *data* generator. `tests/load/run.sh` is the separate network-load
+harness that runs the scanner against live target containers; neither replaces
+the other.
+
 ## Kubernetes and containers
 
 Validate manifests:
