@@ -190,6 +190,11 @@ Each of these limits what can honestly be claimed today:
   no longer sits in flight forever with the gauge stuck above zero. It is
   requeued or failed within `OCTO_JOB_LEASE_SECONDS`, and either way it now
   reaches the histogram or the counter above rather than nothing.
+- **Scheduler leadership is observable but unaliased.** `octo_scheduler_is_leader`
+  (ROADMAP P1.6) is 1 on exactly one replica. A sustained
+  `sum(octo_scheduler_is_leader) > 1` means two replicas both believe they
+  lead; `== 0` means recurring scans are not being dispatched at all. Neither
+  has an alert rule here yet.
 - **No per-tenant SLIs.** No metric carries a tenant label (deliberate —
   cardinality), so per-customer objectives are not derivable from `/metrics`.
 - **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be
