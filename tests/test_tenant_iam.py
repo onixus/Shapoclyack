@@ -37,13 +37,11 @@ def client(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.setattr("api.app.get_settings", lambda: settings)
 
     from api.services import agents as agents_service
-    from api.services import jobs as jobs_service
     from api.services import memberships as memberships_service
     from api.services import scan_schedules
     from api.services import tenants as tenants_service
 
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
+    agents_service.configure(settings)
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     memberships_service.configure(settings)

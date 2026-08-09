@@ -64,7 +64,7 @@ def test_tick_dispatches_due_schedule_once(settings, monkeypatch):
         return _fake_job(job_id, status="succeeded")
 
     monkeypatch.setattr(jobs_service, "start_scan", fake_start_scan)
-    monkeypatch.setattr(jobs_service, "get_job", lambda job_id: None)
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: None)
 
     dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=settings)
     dispatcher._tick()  # noqa: SLF001
@@ -83,7 +83,7 @@ def test_tick_skips_when_previous_job_still_running(settings, monkeypatch):
         sched["schedule_id"], job_id="running_job", ran_at=datetime.now(UTC) - timedelta(hours=1)
     )
 
-    monkeypatch.setattr(jobs_service, "get_job", lambda job_id: _fake_job(job_id, status="running"))
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: _fake_job(job_id, status="running"))
     started = []
     monkeypatch.setattr(
         jobs_service, "start_scan", lambda *a, **k: started.append(1) or _fake_job("x")
@@ -105,7 +105,7 @@ def test_tick_ignores_not_yet_due_schedule(settings, monkeypatch):
     monkeypatch.setattr(
         jobs_service, "start_scan", lambda *a, **k: started.append(1) or _fake_job("x")
     )
-    monkeypatch.setattr(jobs_service, "get_job", lambda job_id: None)
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: None)
 
     dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=settings)
     dispatcher._tick()  # noqa: SLF001

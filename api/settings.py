@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -95,6 +96,14 @@ class Settings:
     endpoint_change_retention_days: int = 365
     endpoint_retention_interval_seconds: int = 21600
     endpoint_retention_batch_size: int = 5000
+    # Identity of this API process in the shared control plane (ROADMAP P1.2).
+    # Local-mode jobs execute in a thread inside one specific replica, so the
+    # jobs table records which one; on startup a replica only reconciles the
+    # orphaned local jobs carrying its own id, instead of failing jobs another
+    # replica is still running. Defaults to the hostname (the pod name under
+    # Kubernetes). Jobs orphaned by a replica that never comes back under the
+    # same id are the reaper's job — ROADMAP P1.4.
+    instance_id: str = ""
 
 
 # Legacy sqlite filename from when the product was called "octo-man". Kept as a
@@ -194,4 +203,5 @@ def load_settings() -> Settings:
         endpoint_retention_batch_size=int(
             os.environ.get("OCTO_ENDPOINT_RETENTION_BATCH_SIZE", "5000")
         ),
+        instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
     )

@@ -170,10 +170,11 @@ slow-burn ticket (5 % in 6 h) are the usual starting pair.
 
 Each of these limits what can honestly be claimed today:
 
-- **Single-process gauges.** `octo_jobs_queued` / `octo_jobs_running` come from
-  the API's in-memory job store, so they reset to zero on restart and are
-  per-replica. Every manifest in `k8s/` runs `replicas: 1`; summing across
-  replicas will not be meaningful until jobs move into Postgres (ROADMAP P1).
+- ~~**Single-process gauges.**~~ Closed by ROADMAP P1.2: `octo_jobs_queued` /
+  `octo_jobs_running` are now counted in the shared `jobs` table, so every
+  replica reports the same queue depth and a restart no longer resets them.
+  Because every replica publishes the *same* cluster-wide number, aggregate
+  across replicas with `max()`, not `sum()`.
 - **No per-tenant SLIs.** No metric carries a tenant label (deliberate —
   cardinality), so per-customer objectives are not derivable from `/metrics`.
 - **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be

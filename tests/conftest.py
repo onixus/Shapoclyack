@@ -75,18 +75,17 @@ def make_settings(tmp_path: Path, **overrides: Any) -> "Settings":
 
 
 def reset_service_state(settings: "Settings") -> None:
-    """Clear the in-memory job/agent registries and re-seed the Postgres stores.
+    """Truncate the per-test Postgres stores and point the services at ``settings``.
 
-    Jobs and agents still live in module-level dicts (ROADMAP P1 moves them
-    into Postgres), so they leak between tests unless cleared explicitly.
+    Since ROADMAP P1.2 jobs and agents are rows like everything else, so
+    ``tenants.reset_for_tests`` clears them along with the tables they
+    reference — no module-level dicts left to clear.
     """
     from api.services import agents as agents_service
-    from api.services import jobs as jobs_service
     from api.services import scan_schedules
     from api.services import tenants as tenants_service
 
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
+    agents_service.configure(settings)
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     scan_schedules.configure(settings)

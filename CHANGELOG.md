@@ -4,7 +4,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- **Durable control plane: jobs and agents moved into PostgreSQL** (ROADMAP
+  P1.1/P1.2). Both registries were module-level dicts in the API process,
+  mirrored to `state/api_jobs.json` and `state/api_agents.json`. That gave
+  every API replica its own queue and its own view of the agent fleet, lost
+  anything not yet flushed when the process died, and serialised job claims
+  with a `threading.Lock` that a second replica never saw — two replicas could
+  hand the same queued job to two agents. New migration `0008_jobs_agents`
+  adds the `jobs` and `agents` tables; `claim_job` now takes the candidate row
+  with `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent claims get distinct
+  jobs. Job list/search/sort moved into SQL with the same query parameters and
+  `Page` envelope as before (no API change). Agent staleness stays *derived*
+  from `last_seen_at` instead of being written to the row, so one replica's
+  clock cannot freeze a "stale" flag that every other replica reads back.
+  **Upgrades need no manual step**: each legacy JSON file is imported once at
+  startup and renamed to `*.imported`.
+- **`octo_jobs_queued` / `octo_jobs_running` are now cluster-wide**, counted in
+  the `jobs` table rather than per-process, and no longer reset to zero on
+  restart — the "single-process gauges" gap in [docs/slo.md](docs/slo.md) is
+  closed. Every replica exports the same number, so aggregate with `max()`,
+  not `sum()`.
+
 ### Added
+
+- **`OCTO_INSTANCE_ID`** — identity of an API replica in the shared job queue,
+  defaulting to the hostname. Local-mode jobs run in a thread inside one
+  replica, so the row records its owner and a starting replica reconciles only
+  its *own* orphaned local jobs instead of failing scans other replicas are
+  still running. Jobs orphaned by a replica that never returns under the same
+  id need the lease reaper (ROADMAP P1.4).
 
 - **Scale profiling harness and results** — new `tests/fixtures/scale_profile.py`
   and [docs/scale-profile.md](docs/scale-profile.md) (ROADMAP P3.8). Times the

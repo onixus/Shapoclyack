@@ -37,6 +37,32 @@ In local execution mode, the API launches the scanner without the NATS job
 path. In agent mode, a worker claims the tenant-scoped job and reports
 completion through the API or configured broker.
 
+## Control-plane state
+
+Jobs and the agent registry are rows in PostgreSQL (`jobs`, `agents`), not
+process memory. Any API replica therefore sees the same queue and the same
+fleet, and a restart does not lose in-flight state. Claims are serialized in
+the database (`SELECT … FOR UPDATE SKIP LOCKED`), so two agents claiming at
+the same moment receive different jobs regardless of which replica each one
+talks to.
+
+Two properties still bind a job to one process:
+
+- A **local-mode** job executes in a thread inside the replica that accepted
+  it. That replica is recorded as the job's owner (`OCTO_INSTANCE_ID`,
+  defaulting to the hostname), and on startup a replica fails only its *own*
+  orphaned local jobs. A local job orphaned by a replica that never returns
+  under the same identity stays `running` until the lease reaper lands
+  (ROADMAP P1.4).
+- The **schedule dispatcher** runs in every replica without leader election, so
+  more than one replica can dispatch the same due schedule. Run a single API
+  replica, or disable the dispatcher on all but one
+  (`OCTO_SCHEDULER_DISPATCH_ENABLED=false`), until ROADMAP P1.6.
+
+Installations upgrading from a release that kept `state/api_jobs.json` and
+`state/api_agents.json` need no manual step: the API imports each file once at
+startup and renames it to `*.imported`.
+
 ## Scanner stages
 
 The main pipeline is intentionally staged so partial output can be inspected and

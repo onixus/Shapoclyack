@@ -254,12 +254,27 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | Priority | Est. effort | Theme | Scope |
 |----------|-------------|-------|-------|
 | **P0** | 1–2 sprints | Tenant-aware IAM | **Done** — user memberships (`user_tenants`, migration `0007`), server-derived tenant context (`require_tenant`), scoping for jobs/agents/assets/schedules/endpoint inventory **and runs/run artifacts** (`tenant.json` run marker), the header tenant switcher, and negative cross-tenant tests are merged |
-| **P1** | 2–4 sprints | Durable control plane | Move jobs and agents into PostgreSQL; formal state machine; leases; idempotency keys; extract the scheduler into its own worker or add leader election |
+| **P1** | 2–4 sprints | Durable control plane | ~~Move jobs and agents into PostgreSQL~~ (done, 1.1/1.2); formal state machine; leases; idempotency keys; extract the scheduler into its own worker or add leader election — see [breakdown](#p1-breakdown--durable-control-plane) |
 | **P2** | 2–3 sprints | Asset event workflows | Finish [Phase 10.2–10.3](#phase-10--change-detection--alerting-at-asset-level): `events.asset.*`, routing policies, webhooks first, retries, DLQ, audit trail; then Jira/ServiceNow |
 | **P3** | parallel track | Scale & observability | ~~Prometheus~~ (done, 3.4/3.5), OpenTelemetry, ~~SLOs~~ (done, 3.6), ~~server-side pagination~~ (done, 3.2/3.3), ~~1k/10k/50k-asset test fixtures~~ (done, 3.7), ~~ClickHouse/API profiling~~ (done, 3.8), ~~coverage gate + frontend tests in CI~~ (done, 3.0/3.1) |
 | **P4** | — | Differentiating features | Web screenshots with retention/redaction (closes [9.3](#phase-9--exposure-fingerprinting)); TLS hostname/SAN-CN mismatch check; improved IP↔FQDN↔certificate correlation; ownership graph; ~~risk-priority explanation~~ (done — `risk_explanation` from scoring model `mvp-2`, see [docs/pulse-backend.md](docs/pulse-backend.md)) |
 
-P0 is complete; P1 remains a prerequisite for safely running the platform at MSSP scale; P2 completes the EASM alerting loop already scaffolded in Phase 10; P3 is a parallel hardening track, not a blocking dependency; P4 is scope already flagged as deferred/out-of-scope in Phases 9–10 and can start once P0–P2 land.
+P0 is complete; P1 is in progress and remains a prerequisite for safely running the platform at MSSP scale; P2 completes the EASM alerting loop already scaffolded in Phase 10; P3 is a parallel hardening track, not a blocking dependency; P4 is scope already flagged as deferred/out-of-scope in Phases 9–10 and can start once P0–P2 land.
+
+### P1 breakdown — Durable control plane
+
+**Why this blocks MSSP scale:** every manifest in `k8s/` runs `replicas: 1`, and until 1.1/1.2 that was not a sizing choice but a correctness requirement — the job queue and the agent registry were per-process dicts, so a second replica meant a second control plane. 1.1/1.2 removed that constraint for *state*; leases (1.4) and dispatcher leader election (1.6) are what make a second replica actually safe to run.
+
+| ID | Task | Dir / surface | Action | Status |
+|----|------|---------------|--------|--------|
+| 1.1 | `jobs` / `agents` tables | `api/db/models.py`, `api/db/migrations/versions/0008_jobs_agents.py` | Tenant-scoped (FK to `tenants`) with the claim query's exact composite index (`execution, status, tenant_id, queued_at`). Agent `status` stores only what the agent reported; "stale" stays derived from `last_seen_at` on read, so one replica's clock cannot freeze a flag the others read back | **Done** |
+| 1.2 | Services over the DB | `api/services/{jobs,agents}.py`, `api/routes/jobs.py`, `api/services/schedule_dispatcher.py`, `api/settings.py` | Both services rewritten against SQLAlchemy; list/search/sort pushed into SQL with the P3.2 query parameters and `Page` envelope unchanged (no API change). `claim_job` takes the candidate row with `SELECT … FOR UPDATE SKIP LOCKED` — the guarantee the per-process `threading.Lock` stopped making the moment a second replica existed. Job gauges are now counted in the table, closing the "single-process gauges" gap in [docs/slo.md](docs/slo.md) (they are cluster-wide, so aggregate with `max()`, not `sum()`). Legacy `state/api_{jobs,agents}.json` are imported once at startup and renamed `*.imported`. New `OCTO_INSTANCE_ID` records which replica owns a local-mode job, so a restart fails only its own orphans instead of every other replica's running scans | **Done** |
+| 1.3 | Formal state machine | `api/services/jobs.py` | Validated transitions (`queued→claimed→running→{succeeded,failed,cancelled}`) instead of assigning status strings; reject illegal transitions rather than silently overwriting. Adds `cancelled`, which the API has never had | Planned |
+| 1.4 | Leases + reaper | `api/services/{jobs,agents}.py` | `claimed_until` extended by agent heartbeat; a sweep returns expired jobs to `queued` with an attempt counter and a retry cap. Also closes the 1.2 residual: a local job orphaned by a replica that never returns under the same `OCTO_INSTANCE_ID` currently stays `running` forever | Planned |
+| 1.5 | Idempotency keys | `api/routes/{jobs,agents}.py` | Idempotent result upload (a retried `/results` after a network timeout must not double-ingest a run) and idempotent scan start, so a client retry cannot queue the same scan twice | Planned |
+| 1.6 | Scheduler leader election | `api/services/schedule_dispatcher.py` | The dispatcher runs in-process in **every** replica with no coordination, so N replicas dispatch a due schedule N times. Postgres advisory lock (or extract the dispatcher into its own single-replica worker). Until this lands, run one API replica or set `OCTO_SCHEDULER_DISPATCH_ENABLED=false` on all but one | Planned |
+
+Suggested order: 1.3 → 1.4 (the state machine gives the reaper legal transitions to make) → 1.5 → 1.6 (independent of the rest; can run in parallel).
 
 ### P3 breakdown — Scale & observability
 

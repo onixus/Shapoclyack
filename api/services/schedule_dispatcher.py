@@ -63,7 +63,7 @@ class ScheduleDispatcher:
         last_job_id = sched.get("last_job_id")
         if not last_job_id:
             return False
-        job = jobs_service.get_job(last_job_id)
+        job = jobs_service.get_job(self._settings, last_job_id)
         return job is not None and job.status in _RUNNING_STATUSES
 
     def _tick(self) -> None:
