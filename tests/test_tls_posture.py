@@ -7,6 +7,7 @@ from xml.sax.saxutils import quoteattr
 
 from scanner.pipeline.config_schema import TlsPostureConfig
 from scanner.pipeline.tls_posture import (
+    _apply_hostname_mismatch,
     _parse_ssl_cert_output,
     _parse_ssl_enum_ciphers_output,
     check_tls_posture,
@@ -375,3 +376,79 @@ def test_mismatch_reaches_the_findings_text_file(tmp_path: Path):
     check_tls_posture(nmap_dir, ENABLED_CONFIG, tmp_path, now=NOW, hostnames=hostnames)
     lines = (tmp_path / "tls_posture_findings.txt").read_text(encoding="utf-8").splitlines()
     assert lines == ["10.0.0.25:443:cert_name_mismatch"]
+
+
+def test_nmap_mismatch_is_tagged_requires_confirmation(tmp_path: Path):
+    # nmap dials an address, so a virtual host may have answered with its
+    # default certificate; the finding stands but is not self-confirming.
+    nmap_dir = _nmap_run_with_cert(tmp_path, "10.0.0.26")
+    hostnames = {"10.0.0.26": {"forward": ["shop.other.test"], "reverse": []}}
+    result = check_tls_posture(
+        nmap_dir, ENABLED_CONFIG, tmp_path, now=NOW, hostnames=hostnames
+    )
+    issue = next(
+        i for i in result["findings"][0]["issues"] if i["kind"] == "cert_name_mismatch"
+    )
+    assert issue["requires_confirmation"] is True
+    assert "SNI" in issue["detail"]
+
+
+def test_probe_findings_are_judged_against_the_sni_they_asked_for(tmp_path: Path):
+    """A handshake that sent SNI is evidence about *that* name only — the
+    endpoint's other forward names may live on a different virtual host."""
+    findings = [
+        {
+            "host": "10.0.0.30",
+            "port": "443",
+            "sni": "shop.example.test",
+            "cert": {"subject_cn": "shop.example.test", "san": "DNS:shop.example.test"},
+            "issues": [],
+            "source": "pulse-tls-probe",
+        }
+    ]
+    hostnames = {
+        "10.0.0.30": {"forward": ["shop.example.test", "legacy.example.test"], "reverse": []}
+    }
+    added = _apply_hostname_mismatch(findings, hostnames, enabled=True)
+    assert added == 0
+    assert findings[0]["issues"] == []
+
+
+def test_probe_mismatch_under_sni_needs_no_confirmation(tmp_path: Path):
+    findings = [
+        {
+            "host": "10.0.0.31",
+            "port": "443",
+            "sni": "shop.example.test",
+            "cert": {"subject_cn": "other.example.net", "san": "DNS:other.example.net"},
+            "issues": [],
+            "source": "pulse-tls-probe",
+        }
+    ]
+    added = _apply_hostname_mismatch(findings, {}, enabled=True)
+    assert added == 1
+    issue = findings[0]["issues"][0]
+    assert issue["checked_names"] == ["shop.example.test"]
+    assert "requires_confirmation" not in issue
+
+
+def test_probe_fallback_sends_resolved_fqdn_as_sni(tmp_path: Path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_probe(open_ports, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("scanner.pipeline.tls_posture.probe_tls_endpoints", _fake_probe)
+    hostnames = {
+        "10.0.0.32": {"forward": ["shop.example.test"], "reverse": ["ptr.example.test"]}
+    }
+    check_tls_posture(
+        tmp_path / "nmap",
+        TlsPostureConfig(enabled=True, probe_fallback=True),
+        tmp_path,
+        now=NOW,
+        open_ports=["10.0.0.32:443"],
+        hostnames=hostnames,
+    )
+    assert captured["sni_by_host"] == {"10.0.0.32": "shop.example.test"}

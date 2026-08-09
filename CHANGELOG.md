@@ -28,12 +28,32 @@ All notable changes to Shapoclyack are documented in this file.
   from a certificate is the normal case and including it would have made this
   check fire on most of the internet. An endpoint reached only by IP, or a
   certificate whose names did not parse, yields **no** finding rather than a
-  mismatch. Controlled by `tls_posture.hostname_mismatch` (default `true`,
+  mismatch.
+
+  **SNI is treated as part of the evidence.** A server behind virtual hosting
+  answers a connection made to an *address* with its default certificate, which
+  says nothing about the name that was scanned — so the stdlib probe now sends
+  the resolved FQDN in SNI (`probe_tls_endpoints(sni_by_host=…)`) and records it
+  on the finding, and its certificate is judged against that name alone. Sources
+  that cannot report an SNI (nmap's `ssl-cert` against an IP target, Pulse)
+  still report the mismatch, tagged `requires_confirmation: true` — the
+  convention already used for Pulse's legacy protocol probe — because a genuine
+  misconfiguration and a default-vhost answer are indistinguishable without
+  re-probing by name. Controlled by `tls_posture.hostname_mismatch` (default `true`,
   inside the already opt-in `tls_posture` stage, and editable from the admin
   configurator); findings-only as before, never merged into scan scope.
 - The optional DER certificate path in `tls_probe.py` now renders SAN entries as
   `DNS:name` / `IP Address:addr` instead of `cryptography`'s
   `<DNSName(value='…')>` repr, so every source hands the name check one shape.
+  Wrapper forms that still arrive that way (Pulse emits `DNSName("app.local")`)
+  are unwrapped before matching rather than compared verbatim, and a host
+  reported in Pulse's display form (`app.local (10.0.0.5)`) is parsed down to
+  the name — in both cases the unparsed string would have matched nothing and
+  invented a mismatch.
+- The admin configurator now renders **any** boolean setting as a checkbox
+  instead of only paths ending in `.enabled`. A boolean drawn as a number input
+  sends `0`/`1`, which the API's boolean validator rejects, so the setting could
+  be displayed but never changed.
 
 ### Changed
 

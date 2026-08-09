@@ -55,6 +55,14 @@ per-source parsing is done:
     follows RFC 6125 wildcard rules. See ``cert_names.py`` for why PTR names
     are excluded and why an IP-only endpoint yields no finding.
 
+    Virtual hosting makes SNI part of the evidence: a connection made to an
+    address gets the default vhost's certificate. The stdlib probe therefore
+    sends the resolved FQDN in SNI and records it (``sni``), and that name is
+    the only one its certificate is judged against. Sources that did not record
+    an SNI (nmap against an IP target, Pulse) still report the mismatch, tagged
+    ``requires_confirmation`` -- it cannot be told apart from a default-vhost
+    answer without re-probing with the name.
+
 SAFETY: disabled by default (``tls_posture.enabled = false``). The set of
 host:port endpoints inspected is capped by ``max_targets`` -- past the cap,
 remaining endpoints are skipped and the run is flagged "truncated" rather
@@ -66,7 +74,6 @@ scan scope or asset identity (same non-escalation principle as
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 import re
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
@@ -79,7 +86,7 @@ from typing import Any
 # and ET.ParseError -- defusedxml.ElementTree does not export Element.
 from defusedxml.ElementTree import fromstring as safe_fromstring
 
-from .cert_names import expected_names, hostname_mismatch
+from .cert_names import dns_name_from, expected_names, hostname_mismatch
 from .config_schema import TlsPostureConfig
 from .pulse_probe import load_pulse_tls_artifact
 from .tls_probe import _parse_tls_endpoints, probe_tls_endpoints, write_tls_probe_json
@@ -636,6 +643,16 @@ def _apply_hostname_mismatch(
     stdlib probe) get the identical check against the identical expected-name
     set -- the sources disagree about cert *formatting*, not about what a
     certificate is for.
+
+    WHAT SNI DOES TO THIS CHECK: a server behind virtual hosting answers a
+    connection made to an *address* with its default certificate, which says
+    nothing about the name the operator scanned. Where the collector recorded
+    the name it sent in SNI (``sni``, the stdlib probe), that name is the only
+    fair thing to judge the certificate against. Where it did not (nmap's
+    ssl-cert against an IP target, Pulse), the mismatch is still worth
+    reporting but cannot be told apart from a default-vhost answer, so it is
+    tagged ``requires_confirmation`` -- the convention this module already uses
+    for Pulse's legacy protocol probe.
     """
     if not enabled:
         return 0
@@ -647,24 +664,33 @@ def _apply_hostname_mismatch(
         if issues is None:
             continue
         host = str(finding.get("host") or "")
-        names = expected_names(lookup.get(host))
-        # The endpoint may also be *named* by the record itself: the probe path
-        # keys on whatever ``open_ports`` held, and a Pulse row carries the host
-        # it dialled. When that is an FQDN rather than an address, it is the
-        # name the scan actually asked for -- the strongest expectation there is.
-        for candidate in (host, finding.get("host_display")):
-            name = str(candidate or "").strip().lower().rstrip(".")
-            if not name or name in names:
-                continue
-            try:
-                ipaddress.ip_address(name)
-            except ValueError:
-                names.append(name)
+
+        # The handshake asked for a specific name: judge that name alone.
+        sni = dns_name_from(finding.get("sni") or "")
+        if sni:
+            names = [sni]
+            confirmed_by_sni = True
+        else:
+            names = expected_names(lookup.get(host))
+            # The endpoint may also be *named* by the record itself: the probe
+            # path keys on whatever ``open_ports`` held, and a Pulse row carries
+            # the host it dialled (in a display form such as "app.local
+            # (10.0.0.5)", hence the parse). A value that is not a DNS name
+            # yields no expectation rather than one nothing can satisfy.
+            for candidate in (host, finding.get("host_display")):
+                name = dns_name_from(candidate or "")
+                if name and name not in names:
+                    names.append(name)
+            confirmed_by_sni = False
+
         issue = hostname_mismatch(finding.get("cert"), names)
         if issue is None:
             continue
         if any(i.get("kind") == "cert_name_mismatch" for i in issues):
             continue
+        if not confirmed_by_sni:
+            issue["requires_confirmation"] = True
+            issue["detail"] += " (no SNI recorded: a virtual host may have answered with its default certificate)"
         issues.append(issue)
         added += 1
     return added
@@ -816,8 +842,17 @@ def check_tls_posture(
 
     considered = _parse_tls_endpoints(open_ports, set(config.probe_tls_ports))
     truncated = len(considered) > config.max_targets
+    # Send the FQDN that resolved to each address in SNI: dialling an address
+    # gets the default virtual host's certificate, which cannot answer "does
+    # this endpoint serve the right certificate for the name we scanned".
+    sni_by_host = {
+        ip: names[0]
+        for ip, entry in (hostnames or {}).items()
+        if (names := expected_names(entry))
+    }
     probe_findings = probe_tls_endpoints(
         open_ports,
+        sni_by_host=sni_by_host,
         max_targets=config.max_targets,
         timeout_seconds=config.probe_timeout_seconds,
         concurrency=config.probe_concurrency,

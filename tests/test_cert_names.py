@@ -4,6 +4,7 @@ import pytest
 
 from scanner.pipeline.cert_names import (
     cert_names,
+    dns_name_from,
     expected_names,
     hostname_mismatch,
     matches_name,
@@ -144,3 +145,44 @@ class TestHostnameMismatch:
         )
         assert with_san is not None
         assert with_san["cn_only"] is False
+
+
+class TestWrappedAndDisplayForms:
+    def test_pulse_dnsname_wrapper_is_unwrapped(self):
+        # Pulse hands SAN entries back in their constructor form; left wrapped,
+        # the whole string becomes the "certificate name" and invents a mismatch.
+        names = cert_names({"subject_cn": "other.local", "san": ['DNSName("app.local")']})
+        assert "app.local" in names["dns"]
+
+    def test_cryptography_repr_wrapper_is_unwrapped(self):
+        names = cert_names({"san": ["<DNSName(value='app.local')>"]})
+        assert names["dns"] == ["app.local"]
+
+    def test_wrapped_ipaddress_is_an_ip_identity(self):
+        names = cert_names({"san": ['IPAddress("10.0.0.1")']})
+        assert names["ip"] == ["10.0.0.1"]
+        assert names["dns"] == []
+
+    def test_wrapped_san_covering_the_expected_name_is_not_a_mismatch(self):
+        assert (
+            hostname_mismatch(
+                {"subject_cn": "other.local", "san": ['DNSName("app.local")']},
+                ["app.local"],
+            )
+            is None
+        )
+
+    def test_dns_name_from_display_form(self):
+        assert dns_name_from("app.local (10.0.0.5)") == "app.local"
+        assert dns_name_from("APP.Local.") == "app.local"
+
+    def test_dns_name_from_rejects_non_names(self):
+        assert dns_name_from("10.0.0.5") == ""
+        assert dns_name_from("localhost") == ""  # single label, not an FQDN
+        assert dns_name_from("") == ""
+        assert dns_name_from("not a name at all") == ""
+
+    def test_expected_names_drops_values_that_are_not_names(self):
+        assert expected_names({"forward": ["app.local (10.0.0.5)", "ok.example.com"]}) == [
+            "ok.example.com"
+        ]

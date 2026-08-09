@@ -46,6 +46,24 @@ _COMMON_NAME_RE = re.compile(r"commonName=([^/,]+)")
 _SAN_DNS_PREFIXES = ("dns", "dns name")
 _SAN_IP_PREFIXES = ("ip", "ip address", "ipaddress")
 
+# Pulse (and older cryptography reprs) can hand back a SAN entry still wrapped
+# in its constructor form: ``DNSName("app.local")``, ``IPAddress('10.0.0.1')``,
+# or ``<DNSName(value='app.local')>``. Unwrap to the value before matching --
+# left alone, the whole wrapper becomes the "certificate name" and every
+# comparison against it fails, inventing a mismatch.
+_SAN_WRAPPER_RE = re.compile(
+    r"^<?\s*(?P<type>[A-Za-z]+)\s*\(\s*(?:value\s*=\s*)?(?P<quote>['\"])"
+    r"(?P<value>.*?)(?P=quote)\s*\)\s*>?$"
+)
+
+# A conservative DNS-name shape: labels of letters/digits/hyphen (or a leading
+# "*" wildcard label), at least two labels. Used to reject anything that is not
+# a name before it is treated as one -- see ``dns_name_from`` below.
+_DNS_NAME_RE = re.compile(
+    r"^(?:\*|[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?)"
+    r"(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?)+$"
+)
+
 
 def _normalize_dns(name: str) -> str:
     return name.strip().rstrip(".").lower()
@@ -54,6 +72,52 @@ def _normalize_dns(name: str) -> str:
 def _split_san(raw: str) -> list[str]:
     """Split a SAN blob on commas -- every source joins entries that way."""
     return [part.strip() for part in re.split(r"[,\n]", raw) if part.strip()]
+
+
+def _unwrap_san_entry(entry: str) -> str:
+    """``DNSName("a.b")`` -> ``DNS:a.b``; anything else is returned unchanged."""
+    match = _SAN_WRAPPER_RE.match(entry.strip())
+    if not match:
+        return entry
+    value = match.group("value").strip()
+    if not value:
+        return entry
+    kind = match.group("type").strip().lower()
+    if kind in ("ipaddress", "ipaddr", "ip"):
+        return f"IP Address:{value}"
+    if kind in ("dnsname", "dns"):
+        return f"DNS:{value}"
+    # An unknown wrapper (RFC822Name, UniformResourceIdentifier, ...) is not a
+    # host identity; hand back a typed form the caller will then ignore.
+    return f"{kind}:{value}"
+
+
+def is_dns_name(value: str) -> bool:
+    """True when ``value`` has the shape of a DNS name (not an IP, not prose)."""
+    candidate = _normalize_dns(value)
+    if not candidate or len(candidate) > 253:
+        return False
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    else:
+        return False
+    return bool(_DNS_NAME_RE.match(candidate))
+
+
+def dns_name_from(raw: str) -> str:
+    """Pull a usable DNS name out of a display string, or return ``""``.
+
+    Pulse reports the host it dialled in a display form -- ``app.local
+    (10.0.0.5)`` -- and the whole string is not a name. Take the first
+    whitespace-separated token and accept it only if it actually looks like a
+    DNS name, so a value we cannot interpret produces no expectation rather
+    than a comparison nothing can satisfy.
+    """
+    token = _normalize_dns(str(raw or "")).split()[0] if str(raw or "").strip() else ""
+    token = token.strip("()[],")
+    return token if is_dns_name(token) else ""
 
 
 def _subject_common_name(cert: dict[str, Any]) -> str:
@@ -109,6 +173,7 @@ def cert_names(cert: dict[str, Any] | None) -> dict[str, list[str]]:
         entries = []
 
     for entry in entries:
+        entry = _unwrap_san_entry(entry)
         kind, _, value = entry.partition(":")
         if not value:
             kind, value = "dns", entry
@@ -139,6 +204,12 @@ def matches_name(cert_name: str, hostname: str) -> bool:
     ``example.com`` nor ``a.b.example.com``. Partial-label wildcards
     (``w*.example.com``) are not honoured -- they are rejected by modern
     clients, so treating them as a match would under-report.
+
+    LIMIT: the public-suffix guard below counts labels rather than consulting a
+    Public Suffix List, so ``*.com`` is refused but ``*.co.uk`` or
+    ``*.github.io`` would be honoured. Bundling a PSL would add a dataset with
+    its own staleness problem for a certificate no public CA will issue, and
+    the failure mode is a *suppressed* mismatch rather than a false one.
     """
     cert_name = _normalize_dns(cert_name)
     hostname = _normalize_dns(hostname)
@@ -182,12 +253,9 @@ def expected_names(entry: dict[str, Any] | None) -> list[str]:
     out: list[str] = []
     for name in forward:
         normalized = _normalize_dns(str(name))
-        if not normalized or normalized in out:
+        if not normalized or normalized in out or not is_dns_name(normalized):
             continue
-        try:
-            ipaddress.ip_address(normalized)
-        except ValueError:
-            out.append(normalized)
+        out.append(normalized)
     return out
 
 

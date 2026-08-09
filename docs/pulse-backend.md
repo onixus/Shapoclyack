@@ -210,6 +210,15 @@ that fails to mention `ec2-1-2-3-4.compute.amazonaws.com` is normal, not a findi
 An endpoint reached only by IP has nothing to compare against and produces no
 finding at all.
 
+**SNI is part of the evidence.** A server behind virtual hosting answers a
+connection made to an *address* with its default certificate, which says
+nothing about the name you scanned. The stdlib probe therefore sends the
+resolved FQDN in SNI and records it in the finding's `sni` field, and its
+certificate is judged against that name only. Sources that did not record an
+SNI — nmap's `ssl-cert` against an IP target, and Pulse — still report the
+mismatch, but tagged `requires_confirmation: true`: without re-probing with the
+name, a genuine misconfiguration and a default-vhost answer look identical.
+
 ```yaml
 tls_posture:
   enabled: true
