@@ -50,10 +50,11 @@ not an authorization control.
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
 
-`POST /api/jobs/{job_id}/cancel` (operator) cancels a job that has not started
-executing — `queued`, or `claimed` by an agent that has not reported starting.
-It answers `409` for a job that is already `running` or finished, because there
-is no channel to stop a scan in flight, and `404` for a job in another tenant.
+`POST /api/jobs/{job_id}/cancel` (operator) cancels a `queued` job — one no
+executor has taken yet, so refusing to hand it out is a real stop. It answers
+`409` once the job is `claimed`, `running`, or finished (an agent that has
+claimed a job scans without asking again, so cancelling then would report a
+stop that never happened), and `404` for a job in another tenant.
 The job's status becomes `cancelled` and the reason is recorded in `error`. See
 the job lifecycle in [architecture.md](architecture.md#job-lifecycle) for the
 full state set.
@@ -68,8 +69,18 @@ and never expire; reuse one only for the request it named.
 form field with the same intent on the upload side: repeating an upload that
 already landed returns the stored outcome (200), rather than the 422 a second
 completion would otherwise get. A second upload that *disagrees* with the
-stored one answers **409**. Agents that send no key still get replay detection
-from the natural key (same agent, same job, same exit code).
+stored one answers **409**, as does a duplicate that arrives while the first is
+still being ingested — retry it once the first request finishes. Agents that
+send no key still get replay detection from the natural key (same agent, same
+job, same exit code).
+
+The same endpoint accepts the `attempt` returned by the claim
+(`AgentClaimResponse.attempt`). It is a fencing token: if the job's lease
+expired and it was handed out again, an upload carrying the older attempt
+answers **409** rather than overwriting the run of the attempt that replaced
+it. This matters because a restarted worker keeps its `agent_id`, so the agent
+identity alone cannot tell the two apart. Agents that omit it are unfenced,
+exactly as before.
 
 `POST /api/endpoint/inventory` is the only agent-authenticated write in that
 group and carries contract-specific limits: `411` when `Content-Length` is

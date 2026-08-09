@@ -30,12 +30,13 @@ def test_terminal_states_never_move_again(terminal):
         assert not job_states.can_transition(terminal, target)
 
 
-def test_a_running_job_cannot_be_cancelled():
-    """There is no channel to stop an in-flight scan (see job_states' module
-    docstring), so cancelling one would report a stop that never happened."""
-    assert not job_states.can_transition(job_states.RUNNING, job_states.CANCELLED)
+def test_only_a_queued_job_can_be_cancelled():
+    """Nothing can stop work already handed to an executor — an agent that has
+    claimed a job starts scanning without asking the API again — so cancelling
+    anything past `queued` would report a stop that never happened."""
     assert job_states.can_transition(job_states.QUEUED, job_states.CANCELLED)
-    assert job_states.can_transition(job_states.CLAIMED, job_states.CANCELLED)
+    assert not job_states.can_transition(job_states.CLAIMED, job_states.CANCELLED)
+    assert not job_states.can_transition(job_states.RUNNING, job_states.CANCELLED)
 
 
 def test_check_transition_names_the_job_and_the_move():

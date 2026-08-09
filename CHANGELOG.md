@@ -15,7 +15,9 @@ All notable changes to Shapoclyack are documented in this file.
   new. `claimed` covers the window between an agent taking a job and reporting
   that the scan started (its first heartbeat naming the job promotes it to
   `running`); it used to be indistinguishable from `running`, hiding exactly
-  the case the P1.4 lease reaper needs to see. `cancelled` is terminal and set
+  the case the P1.4 lease reaper needs to see. `started_at` now records when the
+  agent reported starting rather than when it claimed, so job durations no
+  longer include the claim-to-heartbeat delay. `cancelled` is terminal and set
   by the new endpoint below. **API consumers:** `JobInfo.status` can now return
   `claimed` and `cancelled`; the Web UI renders both.
 - `octo_jobs_running` counts `claimed` jobs as well as `running` ones — a
@@ -62,8 +64,23 @@ All notable changes to Shapoclyack are documented in this file.
   so no agent upgrade is required; the bundled agent derives its key from the
   job rather than randomising it, so a restarted process computes the same one.
   An upload for a **cancelled** job is still refused — cancellation is an
-  operator decision, not an outcome to replay. New metric
-  `octo_job_idempotent_replays_total{operation}`.
+  operator decision, not an outcome to replay. A duplicate arriving *while* the
+  first upload is still being ingested also answers 409 (retry once it
+  finishes) rather than letting two handlers extract into the same run
+  directory. New metric `octo_job_idempotent_replays_total{operation}`.
+- **Attempt fencing on result upload.** The claim response now carries an
+  `attempt` number, which the agent echoes back with its results. A lease that
+  expired and was reissued bumps it, so a straggling upload from the previous
+  attempt is refused (**409**) instead of overwriting the run the current
+  attempt is producing — a restarted worker keeps its `agent_id`, so agent
+  identity alone could not tell the two apart. Agents that omit the field are
+  unfenced, exactly as before.
+- **The bundled agent now heartbeats for the whole scan** rather than once at
+  the start. The heartbeat is what renews the server-side lease, so without this
+  any scan longer than `OCTO_JOB_LEASE_SECONDS` would be requeued and handed to
+  a second agent while the first was still scanning the same targets. Interval
+  is 60s against the 300s default lease; a failed heartbeat is retried on the
+  next tick rather than aborting the scan.
 - The **schedule dispatcher** now keys each dispatch on the schedule's own due
   time, so replicas that all wake for the same tick create one job instead of
   one each. This bounds — but does not replace — the missing leader election
@@ -90,15 +107,16 @@ All notable changes to Shapoclyack are documented in this file.
   **Set `OCTO_JOB_LEASE_SECONDS` comfortably above your agents' heartbeat
   interval** — too low and healthy scans get requeued underneath a working
   agent.
-- **`POST /api/jobs/{job_id}/cancel`** (operator; ROADMAP P1.3) — cancels a job
-  that has not started executing, which the API previously had no way to do: a
-  queued scan could only be waited out. Legal from `queued` and from `claimed`;
-  a `running` job answers **409**, because nothing can stop an in-flight scan
-  today (a local job is a subprocess owned by one replica's thread, an agent job
-  runs in another process entirely) and marking the row cancelled would report a
-  stop that never happened — that needs the P1.4 lease/heartbeat channel. A job
-  in another tenant answers 404. The reason is recorded in the job's `error`.
-  API-only for now: the Web UI shows the new statuses but has no cancel action.
+- **`POST /api/jobs/{job_id}/cancel`** (operator; ROADMAP P1.3) — cancels a
+  queued job, which the API previously had no way to do: a queued scan could
+  only be waited out. Legal **only** from `queued`, where nothing has taken the
+  job and refusing to hand it out is a real stop. A `claimed` or `running` job
+  answers **409**: an agent that has claimed a job starts scanning without
+  asking the API again, so cancelling then would show a stop that never happened
+  while the targets were still being scanned. An abandoned claimed job is the
+  lease reaper's business instead. A job in another tenant answers 404. The
+  reason is recorded in the job's `error`. API-only for now: the Web UI shows
+  the new statuses but has no cancel action.
 - **`OCTO_INSTANCE_ID`** — identity of an API replica in the shared job queue,
   defaulting to the hostname. Local-mode jobs run in a thread inside one
   replica, so the row records its owner and a starting replica reconciles only

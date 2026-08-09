@@ -55,7 +55,7 @@ every write (`api/services/job_states.py`) rather than assigned:
 queued ─┬─→ claimed ─┬─→ running ──→ succeeded | failed
         │            └─→ succeeded | failed
         ├─→ running ──→ succeeded | failed        (local execution)
-        └─→ cancelled                             (also from claimed)
+        └─→ cancelled                             (nothing has taken it yet)
 
 claimed | running ──→ queued                      (lease expired, see below)
 ```
@@ -64,9 +64,11 @@ claimed | running ──→ queued                      (lease expired, see belo
   on it; the agent's first heartbeat naming the job promotes it to `running`.
   Local jobs skip the state — the API process is the worker.
 - `cancelled` is set by `POST /api/jobs/{job_id}/cancel` and is only available
-  before execution starts. A `running` job cannot be cancelled: nothing can
-  stop an in-flight scan today, so the API answers 409 instead of recording a
-  stop that never happened.
+  while the job is still `queued`. Once an agent has claimed a job it starts
+  scanning without asking the API again, and nothing can stop a scan in flight,
+  so cancelling a `claimed` or `running` job would show a stop that never
+  happened while the targets were still being scanned — the API answers 409
+  instead. A job abandoned by its agent is handled by the lease sweep below.
 - Terminal states never move again, so a result upload retried after a network
   timeout cannot rewrite the outcome. Such a retry is recognised as a replay
   and answered with the stored result (see below), not with an error.

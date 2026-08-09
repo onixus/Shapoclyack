@@ -55,10 +55,13 @@ def test_the_same_key_starts_one_scan(settings):
     first = jobs_service.start_scan(
         settings, StartScanRequest(mode="balanced"), username="admin", idempotency_key="req-1"
     )
-    second = jobs_service.start_scan(
-        settings, StartScanRequest(mode="balanced"), username="admin", idempotency_key="req-1"
-    )
-    assert second.job_id == first.job_id
+    # The service refuses the insert and hands back what the key already made;
+    # the route turns that into a 200 (see the HTTP test below).
+    with pytest.raises(jobs_service.IdempotentReplay) as replay:
+        jobs_service.start_scan(
+            settings, StartScanRequest(mode="balanced"), username="admin", idempotency_key="req-1"
+        )
+    assert replay.value.job.job_id == first.job_id
 
     _, total = jobs_service.list_jobs(settings)
     assert total == 1
@@ -141,19 +144,50 @@ def test_a_keyless_retry_is_still_recognised(settings):
 
 
 def test_an_upload_for_a_cancelled_job_is_still_refused(settings):
-    """Cancellation is a decision, not an outcome to replay: the agent's result
-    must not quietly resurrect a job the operator stopped."""
-    from api.services import job_states
-
+    """A job can only be cancelled while queued, so no agent legitimately holds
+    one — but if a result does arrive for it, cancellation must not be quietly
+    replaced by an outcome."""
     job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
-    jobs_service.claim_job(settings, "agent-1")
     jobs_service.cancel_job(settings, job.job_id, username="operator")
 
-    with pytest.raises(job_states.InvalidJobTransition):
+    with pytest.raises(PermissionError):
         jobs_service.complete_job(
             settings, job.job_id, agent_id="agent-1", exit_code=0, idempotency_key="upload-1"
         )
     assert get_job(settings, job.job_id).status == "cancelled"
+
+
+def test_a_late_upload_from_a_replaced_attempt_is_fenced(settings):
+    """The lease expired, the job was requeued, and the same agent claimed it
+    again (a restarted worker keeps its id). The first attempt's result must
+    not overwrite the run the second one is producing."""
+    from datetime import timedelta
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    first_claim = jobs_service.claim_job(settings, "agent-1")
+    assert first_claim.attempt == 1
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job.job_id)
+        row.claimed_until = jobs_service._now() - timedelta(seconds=1)  # noqa: SLF001
+    jobs_service.reap_expired_leases(settings)
+    second_claim = jobs_service.claim_job(settings, "agent-1")
+    assert second_claim.attempt == 2
+
+    with pytest.raises(jobs_service.StaleAttempt):
+        jobs_service.complete_job(
+            settings, job.job_id, agent_id="agent-1", exit_code=0, attempt=first_claim.attempt
+        )
+    assert get_job(settings, job.job_id).status == "claimed"
+
+    # The current attempt still completes normally.
+    done = jobs_service.complete_job(
+        settings, job.job_id, agent_id="agent-1", exit_code=0, attempt=second_claim.attempt
+    )
+    assert done.status == "succeeded"
 
 
 def test_retried_scan_start_over_http_returns_the_first_job(tmp_path, monkeypatch):
@@ -200,3 +234,47 @@ def test_retried_results_upload_over_http_is_not_an_error(tmp_path, monkeypatch)
     assert _upload("upload-1").status_code == 200
     # A genuinely different completion is a conflict, not a silent overwrite.
     assert _upload("upload-2", exit_code="1").status_code == 409
+
+
+def test_a_duplicate_upload_arriving_mid_ingest_is_told_to_retry(settings):
+    """Two handlers must not extract into the same run directory. The key is
+    reserved inside the locked transaction, so the second request finds it and
+    is told to come back rather than racing the first."""
+    from api.db import models
+    from api.db.engine import get_session
+
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    jobs_service.claim_job(settings, "agent-1")
+    # Stand in for "the first request is still ingesting": key reserved, job
+    # not yet terminal.
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Job, job.job_id).results_idempotency_key = "upload-1"
+
+    with pytest.raises(jobs_service.ResultsInFlight):
+        jobs_service.complete_job(
+            settings, job.job_id, agent_id="agent-1", exit_code=0, idempotency_key="upload-1"
+        )
+
+
+def test_a_failed_upload_releases_its_reservation(settings):
+    """Otherwise the agent's retry would meet its own abandoned reservation and
+    409 forever."""
+    from api.db import models
+    from api.db.engine import get_session
+
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    jobs_service.claim_job(settings, "agent-1")
+
+    with pytest.raises(ValueError):
+        # Ingestion refuses the archive, so this upload never terminalizes.
+        jobs_service.complete_job(
+            settings,
+            job.job_id,
+            agent_id="agent-1",
+            exit_code=0,
+            archive_bytes=b"not a tar archive",
+            idempotency_key="upload-1",
+        )
+
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.Job, job.job_id).results_idempotency_key is None

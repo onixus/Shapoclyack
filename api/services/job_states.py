@@ -26,12 +26,16 @@ reaper fails the job instead of requeueing it.
 
 Transitions deliberately *not* here:
 
-- ``running → cancelled``. There is no channel to stop an in-flight scan: a
-  local job is a ``subprocess`` owned by one replica's thread, and an agent job
-  runs in another process entirely. Marking such a row cancelled would report a
-  stop that never happened. Cancellation is offered before execution starts;
-  what the reaper does to an abandoned running job is fail it, which is a
-  statement about the executor, not a claim to have stopped the scan.
+- ``running → cancelled`` **and** ``claimed → cancelled``. There is no channel
+  to stop work already handed to an executor: a local job is a ``subprocess``
+  owned by one replica's thread, an agent job runs in another process, and an
+  agent that has claimed a job starts scanning without ever asking the API
+  again. Cancelling either would report a stop that never happened while the
+  scan still hit the targets. Cancellation is therefore only offered while the
+  job is still ``queued`` — nothing has taken it, so refusing to hand it out is
+  a real stop. An abandoned ``claimed`` job is the reaper's business (P1.4),
+  and what the reaper does is fail it, which is a statement about the executor
+  rather than a claim to have stopped a scan.
 - Same-state moves (``succeeded → succeeded``). A second terminal write is a
   duplicate delivery, and rejecting it is what makes the retry safe until the
   idempotency keys in P1.5 land.
@@ -64,7 +68,7 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     # heartbeat, so claimed → terminal has to be legal without passing through
     # running. Back to queued is the P1.4 reaper returning a job whose executor
     # stopped renewing its lease.
-    CLAIMED: frozenset({RUNNING, SUCCEEDED, FAILED, CANCELLED, QUEUED}),
+    CLAIMED: frozenset({RUNNING, SUCCEEDED, FAILED, QUEUED}),
     RUNNING: frozenset({SUCCEEDED, FAILED, QUEUED}),
     SUCCEEDED: frozenset(),
     FAILED: frozenset(),

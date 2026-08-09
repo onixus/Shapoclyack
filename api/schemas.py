@@ -227,6 +227,11 @@ class AgentClaimResponse(BaseModel):
     export_defectdojo: bool = False
     inputs: dict[str, str] = Field(default_factory=dict)
     tenant_id: str = "default"
+    # Fencing token for this hand-out (ROADMAP P1.4/P1.5). Echo it back on the
+    # results upload; the API rejects an upload carrying a stale attempt, which
+    # is how a late result from a lease that already expired is kept from
+    # overwriting the run of the attempt that replaced it.
+    attempt: int = 1
 
 
 class CreateScheduleRequest(BaseModel):

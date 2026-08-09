@@ -103,12 +103,19 @@ def start_job(
         # existed" — the scan was accepted by the earlier call, not this one.
         existing = jobs_service.find_by_idempotency_key(settings, tenant_id=tenant_id, key=key)
         if existing is not None:
+            jobs_service.note_start_replay()
             response.status_code = status.HTTP_200_OK
             return existing
     try:
         return jobs_service.start_scan(
             settings, body, username=principal.username, idempotency_key=key or None
         )
+    except jobs_service.IdempotentReplay as replay:
+        # Two requests with one key raced past the lookup above; the database
+        # picked a winner and this one accepted nothing either.
+        jobs_service.note_start_replay()
+        response.status_code = status.HTTP_200_OK
+        return replay.job
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:

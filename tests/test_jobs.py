@@ -235,13 +235,18 @@ def test_cancel_stops_a_queued_job_and_rejects_the_agents_late_upload(settings):
         jobs_service.cancel_job(settings, job.job_id, username="operator")
 
 
-def test_cancel_refuses_a_running_job(settings):
-    """There is no kill channel to an in-flight scan, so the API must not claim
-    to have stopped one (see api/services/job_states.py)."""
+def test_cancel_refuses_a_job_an_agent_already_holds(settings):
+    """An agent that has claimed a job starts scanning without asking the API
+    again, so cancelling it would report a stop that never happened while the
+    scan went on hitting the targets (see api/services/job_states.py)."""
     job = _start_agent_job(settings)
     jobs_service.claim_job(settings, "agent-1")
-    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
 
+    with pytest.raises(job_states.InvalidJobTransition):
+        jobs_service.cancel_job(settings, job.job_id, username="operator")
+    assert get_job(settings, job.job_id).status == "claimed"
+
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
     with pytest.raises(job_states.InvalidJobTransition):
         jobs_service.cancel_job(settings, job.job_id, username="operator")
     assert get_job(settings, job.job_id).status == "running"
@@ -267,7 +272,8 @@ def test_claimed_jobs_count_as_running_in_the_queue_gauges(settings):
     assert metrics_service.JOBS_QUEUED._value.get() == 0  # noqa: SLF001
     assert metrics_service.JOBS_RUNNING._value.get() == 1  # noqa: SLF001
 
-    jobs_service.cancel_job(settings, job.job_id, username="operator")
+    jobs_service.complete_job(settings, job.job_id, agent_id="agent-1", exit_code=0)
+    assert metrics_service.JOBS_RUNNING._value.get() == 0  # noqa: SLF001
 
 
 def test_local_run_is_tagged_with_the_jobs_tenant(settings, monkeypatch):

@@ -25,7 +25,11 @@ LOG = logging.getLogger("shapoclyack.job-reaper")
 class JobReaper:
     def __init__(self, *, settings: Settings, poll_interval_seconds: float | None = None) -> None:
         self._settings = settings
-        self._poll_interval = poll_interval_seconds or float(settings.job_reaper_interval_seconds)
+        # Floored here as well as in Settings: a caller constructing this
+        # directly (tests, an embedder) must not be able to spin the loop.
+        self._poll_interval = max(
+            1.0, poll_interval_seconds or float(settings.job_reaper_interval_seconds)
+        )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._stats = {"ticks": 0, "requeued": 0, "failed": 0, "errors": 0}

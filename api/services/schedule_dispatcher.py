@@ -97,9 +97,15 @@ class ScheduleDispatcher:
         # still race on the schedule's bookkeeping — it only stops the duplicate
         # *scans*, which is the part that costs money and hits the target.
         key = f"schedule:{sched['schedule_id']}:{sched.get('next_run_at') or now.isoformat()}"
-        job = jobs_service.start_scan(
-            self._settings, request, username="scheduler", idempotency_key=key
-        )
+        try:
+            job = jobs_service.start_scan(
+                self._settings, request, username="scheduler", idempotency_key=key
+            )
+        except jobs_service.IdempotentReplay as replay:
+            # Another replica won this tick. Its job is the tick's job; record
+            # it here too so the schedule's bookkeeping still moves forward if
+            # the winner failed between starting the scan and recording it.
+            job = replay.job
         scan_schedules.record_dispatch(sched["schedule_id"], job_id=job.job_id, ran_at=now)
         self._stats["dispatched"] += 1
         LOG.info("Dispatched schedule %s -> job %s", sched["schedule_id"], job.job_id)

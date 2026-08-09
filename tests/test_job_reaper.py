@@ -173,3 +173,37 @@ def test_reaper_worker_ticks_and_reports_what_it_did(settings):
 def test_the_reaper_can_be_disabled(settings):
     settings.job_reaper_enabled = False
     assert job_reaper.start_worker(settings) is None
+
+
+def test_giving_up_on_a_job_is_visible_to_the_completion_slo(settings):
+    """docs/slo.md says lease-exhausted jobs land on the failure side of the
+    job-completion ratio; if the reaper wrote the row without observing it, the
+    success ratio would look best exactly when executors are dying."""
+    from api.services import metrics as metrics_service
+
+    settings.job_max_attempts = 1
+    job = _start_and_claim(settings)
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
+    _expire_lease(settings, job.job_id)
+
+    def _observations() -> float:
+        for metric in metrics_service.REGISTRY.collect():
+            if metric.name != "octo_job_duration_seconds":
+                continue
+            for sample in metric.samples:
+                if sample.name.endswith("_count") and sample.labels == {
+                    "status": "failed",
+                    "execution": "agent",
+                }:
+                    return sample.value
+        return 0.0
+
+    before = _observations()
+    assert jobs_service.reap_expired_leases(settings)["failed"] == 1
+    assert _observations() == before + 1
+
+
+def test_the_poll_interval_cannot_be_zero(settings):
+    """A mistyped 0 would turn the sweep into a busy loop holding row locks."""
+    settings.job_reaper_interval_seconds = 0
+    assert job_reaper.JobReaper(settings=settings)._poll_interval >= 1.0  # noqa: SLF001

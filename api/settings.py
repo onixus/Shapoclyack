@@ -222,5 +222,10 @@ def load_settings() -> Settings:
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),
         job_reaper_enabled=os.environ.get("OCTO_JOB_REAPER_ENABLED", "true").lower()
         in {"1", "true", "yes"},
-        job_reaper_interval_seconds=int(os.environ.get("OCTO_JOB_REAPER_INTERVAL_SECONDS", "60")),
+        # Floored: the reaper's tick is a locking query over the jobs table, so
+        # a mistyped 0 or a negative value would turn Event.wait() into a busy
+        # loop hammering the database rather than "sweep more often".
+        job_reaper_interval_seconds=max(
+            5, int(os.environ.get("OCTO_JOB_REAPER_INTERVAL_SECONDS", "60"))
+        ),
     )
