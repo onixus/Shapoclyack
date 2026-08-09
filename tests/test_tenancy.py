@@ -6,56 +6,27 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api.app import create_app
-from api.services import agents as agents_service
-from api.services import jobs as jobs_service
-from api.services import tenants as tenants_service
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import configured_client, login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
+# Agent-mode, JWT-only: no legacy OCTO_AGENT_TOKEN fallback.
+SETTINGS = {"job_execution_mode": "agent", "agent_token": "", "agent_jwt_expire_minutes": 30}
+
+
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        allow_scan_start=True,
-        job_execution_mode="agent",
-        agent_token="",  # JWT-only mode
-        agent_stale_seconds=120,
-        agent_jwt_expire_minutes=30,
-        jwt_secret="test-secret",
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **{**SETTINGS, **overrides})
 
 
 def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
-    settings = _settings(tmp_path, **overrides)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("api.auth.load_settings", lambda: settings)
-    monkeypatch.setattr("api.app.get_settings", lambda: settings)
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
-    tenants_service.configure(settings)
-    tenants_service.reset_for_tests()
-    return TestClient(create_app())
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
-    assert response.status_code == 200
-    return response.json()["access_token"]
+    return configured_client(tmp_path, monkeypatch, **{**SETTINGS, **overrides})
 
 
 def test_create_tenant_and_provisioning_key_exchange(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    admin = _login(client, "admin", "admin-change-me")
+    admin = login(client, "admin")
 
     created = client.post(
         "/api/tenants",
@@ -101,8 +72,8 @@ def test_create_tenant_and_provisioning_key_exchange(tmp_path, monkeypatch):
 
 def test_cross_tenant_claim_denied(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, agent_token="legacy-shared")
-    admin = _login(client, "admin", "admin-change-me")
-    operator = _login(client, "operator", "operator-change-me")
+    admin = login(client, "admin")
+    operator = login(client, "operator")
 
     client.post(
         "/api/tenants",
@@ -178,7 +149,7 @@ def test_cross_tenant_claim_denied(tmp_path, monkeypatch):
 
 def test_revoked_provisioning_key_rejected(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    admin = _login(client, "admin", "admin-change-me")
+    admin = login(client, "admin")
     client.post(
         "/api/tenants",
         headers={"Authorization": f"Bearer {admin}"},
@@ -199,7 +170,7 @@ def test_revoked_provisioning_key_rejected(tmp_path, monkeypatch):
 
 def test_operator_cannot_create_tenant(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    operator = _login(client, "operator", "operator-change-me")
+    operator = login(client, "operator")
     response = client.post(
         "/api/tenants",
         headers={"Authorization": f"Bearer {operator}"},

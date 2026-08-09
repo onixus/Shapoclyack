@@ -158,6 +158,7 @@ Core deployment variables:
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
 | `OCTO_JOB_EXECUTION_MODE` | `local` or `agent` |
+| `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
 | `OCTO_ASSET_STALE_DAYS` | Age threshold for stale assets |
 

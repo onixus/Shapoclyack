@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from api.services import jobs as jobs_service
 from api.services import metrics
-from api.settings import Settings
+from api.services import tenants as tenants_service
+from tests.conftest import make_settings, requires_postgres
 
 
 def test_render_exposes_registered_metric_families():
@@ -34,9 +36,13 @@ def test_render_exposes_registered_metric_families():
         assert name in text, f"{name} missing from /metrics output"
 
 
+@requires_postgres
 def test_job_terminal_transition_records_duration_and_gauges(tmp_path: Path):
-    jobs_service._JOBS.clear()  # noqa: SLF001 -- isolate from other tests' global job state
-    state_dir = tmp_path / "state"
+    settings = make_settings(tmp_path, state_dir=tmp_path / "state")
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()  # isolate from other tests' job rows
+    tenants_service.load_tenants(settings)
+    state_dir = settings.state_dir
     state_dir.mkdir(parents=True, exist_ok=True)
     job_id = "metrics-job-1"
     (state_dir / "api_jobs.json").write_text(
@@ -60,7 +66,6 @@ def test_job_terminal_transition_records_duration_and_gauges(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    settings = Settings(state_dir=state_dir)
     # load_jobs reconciles orphaned *local* jobs to "failed" on startup; use
     # "agent" execution here so the fixture's "running" status survives load,
     # matching the terminal-transition path this test exercises.
@@ -72,7 +77,7 @@ def test_job_terminal_transition_records_duration_and_gauges(tmp_path: Path):
         settings,
         job_id,
         status="succeeded",
-        finished_at="2026-07-24T13:00:30+00:00",
+        finished_at=datetime(2026, 7, 24, 13, 0, 30),
         exit_code=0,
     )
 

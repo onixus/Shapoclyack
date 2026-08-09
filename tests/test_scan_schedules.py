@@ -10,18 +10,13 @@ import pytest
 from api.services import scan_schedules
 from api.services import tenants as tenants_service
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        postgres_url=POSTGRES_URL,
-    )
+    return make_settings(tmp_path)
 
 
 @pytest.fixture()

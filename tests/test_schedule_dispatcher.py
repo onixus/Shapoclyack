@@ -13,18 +13,13 @@ from api.services import scan_schedules
 from api.services import schedule_dispatcher
 from api.services import tenants as tenants_service
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        postgres_url=POSTGRES_URL,
-    )
+    return make_settings(tmp_path)
 
 
 @pytest.fixture()
@@ -69,7 +64,7 @@ def test_tick_dispatches_due_schedule_once(settings, monkeypatch):
         return _fake_job(job_id, status="succeeded")
 
     monkeypatch.setattr(jobs_service, "start_scan", fake_start_scan)
-    monkeypatch.setattr(jobs_service, "get_job", lambda job_id: None)
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: None)
 
     dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=settings)
     dispatcher._tick()  # noqa: SLF001
@@ -88,7 +83,7 @@ def test_tick_skips_when_previous_job_still_running(settings, monkeypatch):
         sched["schedule_id"], job_id="running_job", ran_at=datetime.now(UTC) - timedelta(hours=1)
     )
 
-    monkeypatch.setattr(jobs_service, "get_job", lambda job_id: _fake_job(job_id, status="running"))
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: _fake_job(job_id, status="running"))
     started = []
     monkeypatch.setattr(
         jobs_service, "start_scan", lambda *a, **k: started.append(1) or _fake_job("x")
@@ -110,7 +105,7 @@ def test_tick_ignores_not_yet_due_schedule(settings, monkeypatch):
     monkeypatch.setattr(
         jobs_service, "start_scan", lambda *a, **k: started.append(1) or _fake_job("x")
     )
-    monkeypatch.setattr(jobs_service, "get_job", lambda job_id: None)
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: None)
 
     dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=settings)
     dispatcher._tick()  # noqa: SLF001

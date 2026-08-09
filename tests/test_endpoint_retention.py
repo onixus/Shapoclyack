@@ -14,21 +14,13 @@ from api.schemas import EndpointInventorySnapshotRequest, EndpointSoftwareItem
 from api.services import endpoint_inventory, endpoint_retention
 from api.services import tenants as tenants_service
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **overrides)
 
 
 @pytest.fixture()

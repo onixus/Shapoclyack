@@ -298,3 +298,80 @@ class AssetTag(Base):
     value: Mapped[str]
 
     __table_args__ = (UniqueConstraint("asset_id", "key", name="uq_asset_tag_key"),)
+
+
+class Agent(Base):
+    """Registered remote scanning agent (ROADMAP P1.1).
+
+    Was a module-level dict in ``api/services/agents.py`` mirrored to
+    ``state/api_agents.json``: a second API replica saw its own registry, and
+    concurrent writers raced on a whole-file rewrite. The row is the registry
+    now; the JSON file is imported once at startup and then retired.
+
+    ``status`` here is the last *reported* state (idle | busy | error).
+    "stale" is never stored — it is derived on read from ``last_seen_at``
+    against ``OCTO_AGENT_STALE_SECONDS``, so staleness cannot get frozen into
+    the table by whichever replica happened to write last.
+    """
+
+    __tablename__ = "agents"
+
+    agent_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
+    hostname: Mapped[str] = mapped_column(default="")
+    version: Mapped[str] = mapped_column(default="")
+    labels: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(default="idle")
+    current_job_id: Mapped[str | None] = mapped_column(default=None)
+    detail: Mapped[str | None] = mapped_column(default=None)
+    registered_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+
+    __table_args__ = (Index("ix_agents_tenant_last_seen", "tenant_id", "last_seen_at"),)
+
+
+class Job(Base):
+    """Scan job — the control plane's unit of work (ROADMAP P1.1).
+
+    Replaces the ``_JOBS`` dict + ``state/api_jobs.json`` dump, which lost
+    every unflushed update on restart and gave each API replica a private
+    queue. With the queue in Postgres, ``claim_job`` can serialise agent
+    claims with ``SELECT … FOR UPDATE SKIP LOCKED`` instead of a per-process
+    ``threading.Lock`` that a second replica never sees.
+
+    ``execution`` splits the two lifecycles: ``local`` jobs run in a thread
+    inside the API process, ``agent`` jobs on a remote worker. ``owner_id``
+    records which API instance started a local job, so a restart only
+    reconciles its *own* orphans (see ``api/services/jobs.py``).
+
+    Timestamps are naive UTC, matching the other tables here; the API
+    serialises them back to ISO-8601 with a ``Z`` suffix.
+    """
+
+    __tablename__ = "jobs"
+
+    job_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
+    status: Mapped[str] = mapped_column(default="queued")  # queued|running|succeeded|failed
+    execution: Mapped[str] = mapped_column(default="local")  # local | agent
+    mode: Mapped[str] = mapped_column(default="balanced")
+    run_id: Mapped[str | None] = mapped_column(default=None, index=True)
+    command: Mapped[list] = mapped_column(JSON, default=list)
+    scan_options: Mapped[dict] = mapped_column(JSON, default=dict)
+    target_counts: Mapped[dict | None] = mapped_column(JSON, default=None)
+    requested_by: Mapped[str] = mapped_column(default="")
+    assigned_agent_id: Mapped[str | None] = mapped_column(default=None, index=True)
+    owner_id: Mapped[str | None] = mapped_column(default=None)
+    queued_at: Mapped[datetime]
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    exit_code: Mapped[int | None] = mapped_column(default=None)
+    error: Mapped[str | None] = mapped_column(default=None)
+    asset_upsert_error: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index("ix_jobs_tenant_status", "tenant_id", "status"),
+        # The claim query's exact predicate: queued agent jobs of one tenant,
+        # oldest first.
+        Index("ix_jobs_claim", "execution", "status", "tenant_id", "queued_at"),
+    )

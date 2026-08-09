@@ -17,8 +17,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 def list_jobs(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     page: PageParams,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> Page[JobInfo]:
     items, total = jobs_service.list_jobs(
+        settings,
         offset=page.offset,
         limit=page.limit,
         q=page.q,
@@ -37,8 +39,9 @@ def list_jobs(
 def get_job(
     job_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> JobInfo:
-    job = jobs_service.get_job(job_id)
+    job = jobs_service.get_job(settings, job_id)
     # A job in another tenant is reported as missing, not forbidden: a 403
     # would confirm the id exists to someone with no right to know.
     if job is None or (not principal.is_platform_admin and job.tenant_id != principal.tenant_id):

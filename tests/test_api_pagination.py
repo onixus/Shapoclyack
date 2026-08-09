@@ -12,60 +12,22 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        allow_scan_start=True,
-        agent_token="test-agent-token",
-        jwt_secret="test-secret",
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **overrides)
 
 
 def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
-    settings = _settings(tmp_path, **overrides)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("api.auth.load_settings", lambda: settings)
-    monkeypatch.setattr("api.app.get_settings", lambda: settings)
-
-    from api.services import agents as agents_service
-    from api.services import assets as assets_service  # noqa: F401 - imported for symmetry
-    from api.services import jobs as jobs_service
-    from api.services import scan_schedules
-    from api.services import tenants as tenants_service
-
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
-    tenants_service.configure(settings)
-    tenants_service.reset_for_tests()
-    scan_schedules.configure(settings)
-    scan_schedules.reset_for_tests()
-    return TestClient(create_app())
-
-
-def _operator_token(client: TestClient) -> str:
-    response = client.post(
-        "/api/auth/login", json={"username": "operator", "password": "operator-change-me"}
-    )
-    assert response.status_code == 200
-    return response.json()["access_token"]
+    return configured_client(tmp_path, monkeypatch, **overrides)
 
 
 def _headers(client: TestClient) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_operator_token(client)}"}
+    return auth_headers(client, "operator")
 
 
 def _seed_runs(settings_output: Path, count: int) -> None:

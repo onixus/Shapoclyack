@@ -100,7 +100,6 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
     from api.app import create_app
     from api.settings import Settings
     from api.services import agents as agents_service
-    from api.services import jobs as jobs_service
     from api.services import tenants as tenants_service
 
     settings = Settings(
@@ -117,8 +116,7 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
     settings.state_dir.mkdir(parents=True)
     monkeypatch.setattr("api.auth.load_settings", lambda: settings)
     monkeypatch.setattr("api.app.get_settings", lambda: settings)
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
+    agents_service.configure(settings)
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     client = TestClient(create_app())

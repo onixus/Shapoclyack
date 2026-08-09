@@ -6,55 +6,22 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api.app import create_app
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import configured_client, login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
 
+# Agent mode, but with the legacy shared token still configured.
+SETTINGS = {"job_execution_mode": "agent"}
+
+
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(
-        output_dir=tmp_path / "output",
-        state_dir=tmp_path / "state",
-        config_path=Path("scanner/config/default.yaml"),
-        allow_scan_start=True,
-        job_execution_mode="agent",
-        agent_token="test-agent-token",
-        agent_stale_seconds=120,
-        jwt_secret="test-secret",
-        postgres_url=POSTGRES_URL,
-    )
-    for key, value in overrides.items():
-        setattr(base, key, value)
-    return base
+    return make_settings(tmp_path, **{**SETTINGS, **overrides})
 
 
 def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
-    settings = _settings(tmp_path, **overrides)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("api.auth.load_settings", lambda: settings)
-    monkeypatch.setattr("api.app.get_settings", lambda: settings)
-    # Reset in-memory registries between tests via fresh app + load.
-    from api.services import agents as agents_service
-    from api.services import jobs as jobs_service
-    from api.services import tenants as tenants_service
-
-    jobs_service._JOBS.clear()  # noqa: SLF001
-    agents_service._agents.clear()  # noqa: SLF001
-    tenants_service.configure(settings)
-    tenants_service.reset_for_tests()
-    return TestClient(create_app())
-
-
-def _operator_token(client: TestClient) -> str:
-    response = client.post(
-        "/api/auth/login",
-        json={"username": "operator", "password": "operator-change-me"},
-    )
-    assert response.status_code == 200
-    return response.json()["access_token"]
+    return configured_client(tmp_path, monkeypatch, **{**SETTINGS, **overrides})
 
 
 def _agent_headers() -> dict[str, str]:
@@ -87,12 +54,67 @@ def test_agent_register_heartbeat_and_list(tmp_path, monkeypatch):
     assert hb.status_code == 200
     assert hb.json()["status"] == "idle"
 
-    token = _operator_token(client)
+    token = login(client, "operator")
     listed = client.get("/api/agents", headers={"Authorization": f"Bearer {token}"})
     assert listed.status_code == 200
     body = listed.json()
     assert body["total"] == 1
     assert body["items"][0]["hostname"] == "edge-1"
+
+
+def test_stale_agents_are_searchable_and_sortable_by_the_status_returned(tmp_path, monkeypatch):
+    """`status` is derived: the row keeps what the agent reported, the response
+    says "stale" past agent_stale_seconds. Search and sort must run against the
+    value the caller actually sees, or ?q=stale would match nothing and
+    sort=status would order the page by invisible values."""
+    from datetime import UTC, datetime, timedelta
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    for hostname in ("fresh-1", "old-1"):
+        client.post("/api/agent/register", headers=_agent_headers(), json={"hostname": hostname})
+
+    with get_session(settings.postgres_url) as session:
+        row = session.query(models.Agent).filter_by(hostname="old-1").one()
+        row.last_seen_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            seconds=settings.agent_stale_seconds + 60
+        )
+        stale_id = row.agent_id
+
+    headers = {"Authorization": f"Bearer {login(client, 'operator')}"}
+    found = client.get("/api/agents?q=stale", headers=headers).json()
+    assert [item["agent_id"] for item in found["items"]] == [stale_id]
+    assert found["total"] == 1
+
+    ordered = client.get("/api/agents?sort=status&order=asc", headers=headers).json()
+    assert [item["status"] for item in ordered["items"]] == ["idle", "stale"]
+
+
+def test_legacy_agent_import_rehomes_an_unknown_tenant(tmp_path, monkeypatch):
+    """load_agents runs inside create_app(). tenant_id is a FK, so an agent whose
+    tenant is gone -- a tenant database restored separately from the state
+    volume, say -- would fail startup and do it again on every restart. Re-home
+    it instead, as the job importer does."""
+    import json
+
+    from api.services import agents as agents_service
+
+    client = _client(tmp_path, monkeypatch)  # seeds the default tenant
+    settings = _settings(tmp_path)
+    (settings.state_dir / "api_agents.json").write_text(
+        json.dumps([{"agent_id": "orphan-1", "hostname": "h", "tenant_id": "ten_deleted"}]),
+        encoding="utf-8",
+    )
+
+    agents_service.load_agents(settings)
+
+    imported = agents_service.get_agent("orphan-1")
+    assert imported is not None
+    assert imported.tenant_id == "default"
+    assert client.app is not None  # the app that seeded the tenant is still usable
 
 
 def test_agent_claim_and_upload_results(tmp_path, monkeypatch):
@@ -104,7 +126,7 @@ def test_agent_claim_and_upload_results(tmp_path, monkeypatch):
     )
     agent_id = reg.json()["agent_id"]
 
-    token = _operator_token(client)
+    token = login(client, "operator")
     job = client.post(
         "/api/jobs",
         headers={"Authorization": f"Bearer {token}"},
@@ -188,7 +210,7 @@ def test_reject_path_traversal_archive(tmp_path, monkeypatch):
         json={"hostname": "worker"},
     )
     agent_id = reg.json()["agent_id"]
-    token = _operator_token(client)
+    token = login(client, "operator")
     job = client.post(
         "/api/jobs",
         headers={"Authorization": f"Bearer {token}"},
