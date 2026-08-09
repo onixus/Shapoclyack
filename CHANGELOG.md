@@ -47,6 +47,27 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Job leases and an expiry reaper** (ROADMAP P1.4; migration
+  `0009_job_leases`). A job handed to an executor had no deadline, so "the
+  worker is still scanning" and "the worker died three hours ago" looked
+  identical in the table and the row stayed in flight forever. Every
+  claimed/running job now carries `claimed_until`, renewed by the agent
+  heartbeat — or, for local jobs, by a thread running beside the scan, which is
+  what finally closes the P1.2 residual: the renewals stop with the replica, so
+  an orphaned local job stops looking attended. A sweep every
+  `OCTO_JOB_REAPER_INTERVAL_SECONDS` (60) puts expired **agent** jobs back on
+  the queue until `OCTO_JOB_MAX_ATTEMPTS` (3) hand-outs are used and fails them
+  after that, so a target that kills whatever picks it up cannot cycle through
+  the fleet; expired **local** jobs are failed outright, since no other replica
+  could ever pick them up. The sweep runs in every replica and needs no leader
+  election — expiry is a property of the row, and candidates are taken with
+  `FOR UPDATE SKIP LOCKED`. New settings `OCTO_JOB_LEASE_SECONDS` (300),
+  `OCTO_JOB_MAX_ATTEMPTS`, `OCTO_JOB_REAPER_ENABLED`,
+  `OCTO_JOB_REAPER_INTERVAL_SECONDS`; new metric
+  `octo_job_lease_expired_total{outcome}`; `JobInfo` gained `attempts`.
+  **Set `OCTO_JOB_LEASE_SECONDS` comfortably above your agents' heartbeat
+  interval** — too low and healthy scans get requeued underneath a working
+  agent.
 - **`POST /api/jobs/{job_id}/cancel`** (operator; ROADMAP P1.3) — cancels a job
   that has not started executing, which the API previously had no way to do: a
   queued scan could only be waited out. Legal from `queued` and from `claimed`;

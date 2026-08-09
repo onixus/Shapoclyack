@@ -35,10 +35,17 @@ explicitly before hunting a port collision: kind publishes the NodePort on
 
 A job stuck in `claimed` is a distinct symptom: an agent took it and never
 reported starting, so the worker most likely died between the claim and its
-first heartbeat. Nothing reclaims it automatically yet (ROADMAP P1.4) — close
-it with `POST /api/jobs/{job_id}/cancel` and start the scan again. That
-endpoint only stops jobs that have not started executing: once the status is
-`running`, it answers 409, because there is no way to stop a scan in flight.
+first heartbeat. The lease sweep handles that on its own within
+`OCTO_JOB_LEASE_SECONDS` — the job returns to `queued` for another agent, and
+its `attempts` counter goes up. To close it immediately instead, use
+`POST /api/jobs/{job_id}/cancel`; that endpoint only stops jobs which have not
+started executing, and answers 409 once the status is `running`.
+
+Jobs that bounce between `queued` and `claimed` and then fail with *"Lease
+expired after N attempt(s)"* are killing whichever agent picks them up. Check
+the agent pod for OOM kills or crashes before raising `OCTO_JOB_MAX_ATTEMPTS`.
+The opposite symptom — healthy scans being requeued mid-run — means
+`OCTO_JOB_LEASE_SECONDS` is too close to the agent's heartbeat interval.
 
 ## Scan Job fails with DeadlineExceeded and no logs
 

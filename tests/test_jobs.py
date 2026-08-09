@@ -312,6 +312,9 @@ class _NoopThread:
     def start(self) -> None:
         pass
 
+    def join(self, timeout: float | None = None) -> None:
+        """`_run_job` also spawns a lease-renewal thread (P1.4) and joins it."""
+
 
 def test_failed_asset_upsert_is_recorded_on_the_job(settings, monkeypatch):
     """The Phase 7 asset upsert is best-effort and must not fail the scan -- but

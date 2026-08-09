@@ -27,7 +27,9 @@ import subprocess
 import sys
 import threading
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +90,7 @@ def _to_info(row: models.Job) -> JobInfo:
         assigned_agent_id=row.assigned_agent_id,
         tenant_id=row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
         asset_upsert_error=row.asset_upsert_error,
+        attempts=row.attempts or 0,
     )
 
 
@@ -127,6 +130,7 @@ def load_jobs(settings: Settings) -> None:
             job_states.check_transition(row.job_id, row.status, job_states.FAILED)
             row.status = job_states.FAILED
             row.finished_at = now
+            row.claimed_until = None
             row.error = "Interrupted by API process restart before completion"
     if orphans:
         _log.info("Reconciled %d orphaned local job(s) after restart", len(orphans))
@@ -292,6 +296,11 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
             return
         if "status" in fields:
             job_states.check_transition(job_id, row.status, str(fields["status"]))
+            if fields["status"] in job_states.TERMINAL:
+                # A finished job holds no lease. Cleared here rather than at
+                # each terminal call site so the reaper can never see a
+                # leftover deadline on a row it has no business touching.
+                fields.setdefault("claimed_until", None)
         for key, value in fields.items():
             setattr(row, key, value)
         session.flush()
@@ -469,17 +478,160 @@ def _upsert_assets_best_effort(
             _update_job(settings, job_id, asset_upsert_error=f"{type(exc).__name__}: {exc}"[:2000])
 
 
+def _lease_deadline(settings: Settings) -> datetime:
+    return _now() + timedelta(seconds=max(settings.job_lease_seconds, 1))
+
+
+def renew_lease(settings: Settings, job_id: str, *, agent_id: str | None = None) -> bool:
+    """Push a job's lease deadline forward. Returns whether it applied.
+
+    The proof of life for an in-flight job: agents renew from their heartbeat,
+    local jobs from a thread beside the scan (``_renewing_lease``). Only jobs
+    that are actually in flight are touched, and when ``agent_id`` is given it
+    must be the agent holding the job — a stray heartbeat naming someone else's
+    job must not keep that job alive.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None or row.status not in job_states.IN_FLIGHT:
+            return False
+        if agent_id is not None and row.assigned_agent_id != agent_id:
+            return False
+        row.claimed_until = _lease_deadline(settings)
+        return True
+
+
+@contextmanager
+def _renewing_lease(settings: Settings, job_id: str) -> Iterator[None]:
+    """Keep a local job's lease alive for as long as this process runs it.
+
+    A local scan has no heartbeat to ride on — it is a ``subprocess`` in a
+    thread — so without this its lease would lapse mid-scan and the reaper
+    would fail a job that is running perfectly well. Renewing from beside the
+    scan is also what finally closes the P1.2 residual: if this replica dies,
+    the renewals stop with it and the job stops looking attended.
+
+    Failures are logged, not raised: a database blip during a two-hour scan
+    should cost a renewal, not the scan.
+    """
+    stop = threading.Event()
+    # Renew several times per lease so a single missed tick is not fatal.
+    interval = max(settings.job_lease_seconds / 3.0, 1.0)
+
+    def _loop() -> None:
+        while not stop.wait(interval):
+            try:
+                if not renew_lease(settings, job_id):
+                    return  # Terminal already — nothing left to hold.
+            except Exception:  # noqa: BLE001
+                _log.warning("Lease renewal failed for job %s", job_id, exc_info=True)
+
+    thread = threading.Thread(target=_loop, name=f"octo-lease-{job_id}", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+
+def reap_expired_leases(settings: Settings) -> dict[str, int]:
+    """Sweep jobs whose executor stopped renewing, and return what was done.
+
+    An expired lease means the executor is gone rather than slow — it had the
+    whole lease window, several renewal intervals, to say otherwise. What
+    happens next differs by execution mode:
+
+    - **agent** jobs go back to ``queued`` for another worker, until
+      ``job_max_attempts`` hand-outs have been used. A target that kills
+      whatever picks it up would otherwise cycle through the fleet forever.
+    - **local** jobs are failed outright. Their only executor was the thread in
+      the process that died; no other replica will ever pick the row up, so
+      requeueing it would just park it in the queue for good.
+
+    Safe to run in every replica (there is no leader election until P1.6): rows
+    are taken with ``FOR UPDATE SKIP LOCKED``, so two reapers sweeping at once
+    handle different jobs rather than the same one twice.
+    """
+    now = _now()
+    outcome = {"requeued": 0, "failed": 0}
+    requeued_agent_jobs: list[str] = []
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(models.Job)
+            .where(
+                models.Job.status.in_(tuple(job_states.IN_FLIGHT)),
+                models.Job.claimed_until.is_not(None),
+                models.Job.claimed_until < now,
+            )
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+        for row in rows:
+            retriable = row.execution == "agent" and row.attempts < settings.job_max_attempts
+            if retriable:
+                job_states.check_transition(row.job_id, row.status, job_states.QUEUED)
+                row.status = job_states.QUEUED
+                row.assigned_agent_id = None
+                row.claimed_until = None
+                # The attempt never produced a run, so it must not be counted
+                # as a started job by the duration histogram.
+                row.started_at = None
+                outcome["requeued"] += 1
+                requeued_agent_jobs.append(row.job_id)
+                _log.warning(
+                    "Requeued job %s: lease expired after attempt %d/%d",
+                    row.job_id,
+                    row.attempts,
+                    settings.job_max_attempts,
+                )
+            else:
+                job_states.check_transition(row.job_id, row.status, job_states.FAILED)
+                row.status = job_states.FAILED
+                row.finished_at = now
+                row.claimed_until = None
+                row.error = (
+                    f"Lease expired after {row.attempts} attempt(s): the {row.execution} "
+                    "executor stopped reporting and never returned"
+                )
+                outcome["failed"] += 1
+                _log.warning(
+                    "Failed job %s: lease expired after %d attempt(s) (execution=%s)",
+                    row.job_id,
+                    row.attempts,
+                    row.execution,
+                )
+    for name, count in outcome.items():
+        if count:
+            metrics_service.JOB_LEASE_EXPIRED_TOTAL.labels(outcome=name).inc(count)
+    if outcome["requeued"] or outcome["failed"]:
+        _refresh_job_gauges(settings)
+    # Republished after the transaction commits, so an agent cannot claim the
+    # offer before the row is actually back on the queue.
+    if settings.nats_url:
+        for job_id in requeued_agent_jobs:
+            _publish_job_offer(settings, job_id)
+    return outcome
+
+
 def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
     try:
         # A local job goes queued → running with no claim step: this process is
         # the worker. If it was cancelled while the thread was still starting,
         # the transition is rejected and the scan never launches.
-        _update_job(settings, job_id, status=job_states.RUNNING, started_at=_now())
+        _update_job(
+            settings,
+            job_id,
+            status=job_states.RUNNING,
+            started_at=_now(),
+            claimed_until=_lease_deadline(settings),
+            attempts=1,
+        )
     except job_states.InvalidJobTransition as exc:
         _log.info("Not starting job %s: %s", job_id, exc)
         return
     try:
-        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        with _renewing_lease(settings, job_id):
+            completed = subprocess.run(command, check=False, capture_output=True, text=True)
         # Best-effort: read latest_run.json after completion.
         run_id = None
         pointer = settings.state_dir / "latest_run.json"
@@ -690,6 +842,10 @@ def claim_job(
         row.status = job_states.CLAIMED
         row.assigned_agent_id = agent_id
         row.started_at = _now()
+        # The lease starts at the claim, not at the first heartbeat: an agent
+        # that dies between the two is exactly the case P1.4 has to catch.
+        row.claimed_until = _lease_deadline(settings)
+        row.attempts = (row.attempts or 0) + 1
         if not row.run_id:
             row.run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         session.flush()
@@ -713,19 +869,25 @@ def claim_job(
 
 
 def mark_running(settings: Settings, job_id: str, *, agent_id: str) -> None:
-    """Promote a claimed job to running when its agent reports working on it.
+    """Record an agent's heartbeat for the job it is working on.
 
-    Called from the agent heartbeat, which names the job the worker is on. Any
-    other state is left alone: repeated heartbeats during a scan would
+    Two things ride on this one signal: a claimed job is promoted to running,
+    and an in-flight job's lease is pushed forward (P1.4) — the heartbeat is
+    the only regular evidence the API gets that a remote worker is still alive.
+
+    Any other state is left alone: repeated heartbeats during a scan would
     otherwise attempt running → running, and a heartbeat arriving after the
     results upload must not resurrect a finished job. A heartbeat from an agent
     that does not hold the job is ignored outright.
     """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id)
-        if row is None or row.status != job_states.CLAIMED:
+        if row is None or row.status not in job_states.IN_FLIGHT:
             return
         if row.assigned_agent_id != agent_id:
+            return
+        row.claimed_until = _lease_deadline(settings)
+        if row.status != job_states.CLAIMED:
             return
         row.status = job_states.RUNNING
         if row.started_at is None:
@@ -760,6 +922,7 @@ def cancel_job(
         job_states.check_transition(job_id, row.status, job_states.CANCELLED)
         row.status = job_states.CANCELLED
         row.finished_at = _now()
+        row.claimed_until = None
         row.error = f"Cancelled by {username}"[:2000]
     _refresh_job_gauges(settings)
     result = get_job(settings, job_id)

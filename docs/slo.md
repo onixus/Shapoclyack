@@ -90,6 +90,12 @@ increments means jobs are being lost, and that is worse than a failure rate.
 out with a worker, so folding it into `octo_jobs_queued` would read as a
 backlog nothing is working on.
 
+`octo_job_lease_expired_total{outcome="requeued"}` is the fleet-health signal
+underneath the ratio above: a rising rate means agents are dying mid-job and
+their work is being handed to someone else. `outcome="failed"` means a job
+exhausted `OCTO_JOB_MAX_ATTEMPTS` (or was a local job whose replica died) and
+was given up on — those *do* land in the failure side of SLO 3.
+
 ### 4. Job duration
 
 ```promql
@@ -180,6 +186,10 @@ Each of these limits what can honestly be claimed today:
   replica reports the same queue depth and a restart no longer resets them.
   Because every replica publishes the *same* cluster-wide number, aggregate
   across replicas with `max()`, not `sum()`.
+- ~~**Jobs can be lost silently.**~~ Closed by ROADMAP P1.4: an abandoned job
+  no longer sits in flight forever with the gauge stuck above zero. It is
+  requeued or failed within `OCTO_JOB_LEASE_SECONDS`, and either way it now
+  reaches the histogram or the counter above rather than nothing.
 - **No per-tenant SLIs.** No metric carries a tenant label (deliberate —
   cardinality), so per-customer objectives are not derivable from `/metrics`.
 - **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be

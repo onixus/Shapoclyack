@@ -56,6 +56,8 @@ queued ─┬─→ claimed ─┬─→ running ──→ succeeded | failed
         │            └─→ succeeded | failed
         ├─→ running ──→ succeeded | failed        (local execution)
         └─→ cancelled                             (also from claimed)
+
+claimed | running ──→ queued                      (lease expired, see below)
 ```
 
 - `claimed` means an agent has taken the job but has not yet reported working
@@ -69,14 +71,36 @@ queued ─┬─→ claimed ─┬─→ running ──→ succeeded | failed
   timeout is rejected rather than rewriting the outcome (idempotent upload
   itself is ROADMAP P1.5).
 
+### Leases
+
+Every job handed to an executor carries a deadline (`claimed_until`) that the
+executor must keep pushing forward: agents on each heartbeat, local jobs from a
+renewal thread running beside the scan. A lapsed lease therefore means the
+executor is gone rather than slow — it had the whole window, several renewal
+intervals, to say otherwise.
+
+A background sweep (`OCTO_JOB_REAPER_INTERVAL_SECONDS`, default 60s) acts on
+what it finds:
+
+- **agent** jobs go back to `queued` for another worker, until
+  `OCTO_JOB_MAX_ATTEMPTS` hand-outs are used up; past that they are failed, so
+  a target that kills whatever picks it up cannot cycle through the fleet;
+- **local** jobs are failed outright — their only executor was a thread in the
+  process that died, so no other replica would ever pick the row up.
+
+The sweep runs in every replica and needs no leader election: expiry is a
+property of the row, and candidates are taken with `FOR UPDATE SKIP LOCKED`.
+`octo_job_lease_expired_total{outcome}` counts what it did. Tune the lease with
+`OCTO_JOB_LEASE_SECONDS` (default 300) — it must stay comfortably above the
+agent heartbeat interval, or live scans get reaped.
+
 Two properties still bind a job to one process:
 
 - A **local-mode** job executes in a thread inside the replica that accepted
   it. That replica is recorded as the job's owner (`OCTO_INSTANCE_ID`,
   defaulting to the hostname), and on startup a replica fails only its *own*
-  orphaned local jobs. A local job orphaned by a replica that never returns
-  under the same identity stays `running` until the lease reaper lands
-  (ROADMAP P1.4).
+  orphaned local jobs. A local job orphaned by a replica that never comes back
+  under the same identity is caught by the lease sweep above instead.
 - The **schedule dispatcher** runs in every replica without leader election, so
   more than one replica can dispatch the same due schedule. Run a single API
   replica, or disable the dispatcher on all but one

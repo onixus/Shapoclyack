@@ -19,13 +19,19 @@ Two states are new here:
     A terminal state the API never had. An operator could only wait for a
     queued scan to be picked up.
 
+``claimed | running → queued`` is the P1.4 reaper putting a job back after its
+executor stopped renewing the lease. It is the one backwards move in the table,
+and it is bounded: each hand-out increments ``attempts``, and past the cap the
+reaper fails the job instead of requeueing it.
+
 Transitions deliberately *not* here:
 
 - ``running → cancelled``. There is no channel to stop an in-flight scan: a
   local job is a ``subprocess`` owned by one replica's thread, and an agent job
   runs in another process entirely. Marking such a row cancelled would report a
   stop that never happened. Cancellation is offered before execution starts;
-  stopping a running scan needs the lease/heartbeat work in P1.4.
+  what the reaper does to an abandoned running job is fail it, which is a
+  statement about the executor, not a claim to have stopped the scan.
 - Same-state moves (``succeeded → succeeded``). A second terminal write is a
   duplicate delivery, and rejecting it is what makes the retry safe until the
   idempotency keys in P1.5 land.
@@ -56,9 +62,10 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     QUEUED: frozenset({CLAIMED, RUNNING, FAILED, CANCELLED}),
     # An agent that finishes fast can upload results before its first
     # heartbeat, so claimed → terminal has to be legal without passing through
-    # running.
-    CLAIMED: frozenset({RUNNING, SUCCEEDED, FAILED, CANCELLED}),
-    RUNNING: frozenset({SUCCEEDED, FAILED}),
+    # running. Back to queued is the P1.4 reaper returning a job whose executor
+    # stopped renewing its lease.
+    CLAIMED: frozenset({RUNNING, SUCCEEDED, FAILED, CANCELLED, QUEUED}),
+    RUNNING: frozenset({SUCCEEDED, FAILED, QUEUED}),
     SUCCEEDED: frozenset(),
     FAILED: frozenset(),
     CANCELLED: frozenset(),

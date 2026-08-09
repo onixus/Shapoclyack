@@ -183,6 +183,10 @@ class JobInfo(BaseModel):
     # this the job reads as a clean success while the asset list stays empty --
     # with the reason only ever in the pod log, gone with the pod.
     asset_upsert_error: str | None = None
+    # How many times this job has been handed to an executor (ROADMAP P1.4).
+    # Above 1 means an earlier attempt's lease expired and the reaper put the
+    # job back on the queue.
+    attempts: int = 0
 
 
 class AgentRegisterRequest(BaseModel):
@@ -386,6 +390,11 @@ class RuntimeInfo(BaseModel):
     asset_stale_days: int
     endpoint_inventory_enabled: bool = True
     endpoint_stale_hours: int = 48
+    # Job leases (ROADMAP P1.4): how long an unattended job survives before the
+    # reaper acts, and how many hand-outs it gets first.
+    job_lease_seconds: int = 300
+    job_max_attempts: int = 3
+    job_reaper_enabled: bool = True
 
 
 class InventoryCounts(BaseModel):

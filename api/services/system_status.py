@@ -194,6 +194,9 @@ def runtime_info(settings: Settings) -> dict[str, Any]:
         "asset_stale_days": settings.asset_stale_days,
         "endpoint_inventory_enabled": settings.endpoint_inventory_enabled,
         "endpoint_stale_hours": settings.endpoint_stale_hours,
+        "job_lease_seconds": settings.job_lease_seconds,
+        "job_max_attempts": settings.job_max_attempts,
+        "job_reaper_enabled": settings.job_reaper_enabled,
     }
 
 
