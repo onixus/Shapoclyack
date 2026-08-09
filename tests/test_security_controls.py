@@ -55,8 +55,15 @@ def test_tampered_signature_is_rejected(tmp_path, monkeypatch):
     header, payload, signature = token.split(".")
     # Flip one character of the signature; the header and claims stay valid, so
     # this passes any check that parses the token without verifying it.
-    flipped = "A" if signature[-1] != "A" else "B"
-    forged = f"{header}.{payload}.{signature[:-1]}{flipped}"
+    #
+    # Flip the *first* character, not the last: base64url of a 32-byte HS256
+    # signature is 43 characters, whose final character carries only 2
+    # significant bits, so four different characters there decode to the same
+    # signature bytes. Editing it produced a still-valid token roughly one run
+    # in sixteen, and the assertion below failed with no tampering having
+    # happened.
+    flipped = "A" if signature[0] != "A" else "B"
+    forged = f"{header}.{payload}.{flipped}{signature[1:]}"
 
     response = client.get("/api/auth/me", headers=bearer(forged))
     assert response.status_code == 401

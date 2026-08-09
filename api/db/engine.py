@@ -5,13 +5,16 @@ Mirrors api/services/clickhouse_client.py's lazy-singleton-by-url pattern.
 
 from __future__ import annotations
 
+import logging
 import threading
 from contextlib import contextmanager
 from typing import Iterator
 
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+_log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _engine: Engine | None = None
 _engine_url: str | None = None
@@ -45,6 +48,28 @@ def get_session(url: str) -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def insert_if_absent(session: Session, row: object, key: str) -> bool:
+    """Add ``row``, tolerating another writer inserting the same key first.
+
+    Used by the P1.2 startup imports of the pre-Postgres JSON state files.
+    Those run inside ``create_app()`` in *every* replica at once, so a
+    check-then-insert can lose the race: without a SAVEPOINT the resulting
+    IntegrityError would abort the whole transaction and take API startup down
+    with it, on every restart. Scoping the failure to the one row makes losing
+    the race a no-op — the row the winner inserted is the same row.
+
+    Returns True when this session inserted it.
+    """
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except IntegrityError:
+        _log.debug("Row %s already inserted by another writer; skipping", key)
+        return False
+    return True
 
 
 def reset_for_tests() -> None:

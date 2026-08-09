@@ -29,7 +29,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 
 from api.db import models
-from api.db.engine import get_session
+from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
 from api.services import assets as assets_service
@@ -161,33 +161,32 @@ def _import_legacy_jobs(settings: Settings, path: Path) -> None:
                 )
                 tenant_id = tenants_service.DEFAULT_TENANT_ID
             options = dict(item.get("scan_options") or {})
-            session.add(
-                models.Job(
-                    job_id=job_id,
-                    tenant_id=tenant_id,
-                    status=str(item.get("status") or "queued"),
-                    execution=str(item.get("execution") or "local"),
-                    mode=str(item.get("mode") or options.get("mode") or "balanced"),
-                    run_id=item.get("run_id"),
-                    command=list(item.get("command") or []),
-                    scan_options=options,
-                    target_counts=item.get("target_counts"),
-                    requested_by=str(item.get("requested_by") or ""),
-                    assigned_agent_id=item.get("assigned_agent_id"),
-                    # Pre-P1 jobs have no owner; load_jobs treats NULL as
-                    # "this replica" so they still get reconciled once.
-                    owner_id=None,
-                    queued_at=_parse_iso(item.get("queued_at"))
-                    or _parse_iso(item.get("started_at"))
-                    or _now(),
-                    started_at=_parse_iso(item.get("started_at")),
-                    finished_at=_parse_iso(item.get("finished_at")),
-                    exit_code=item.get("exit_code"),
-                    error=item.get("error"),
-                    asset_upsert_error=item.get("asset_upsert_error"),
-                )
+            row = models.Job(
+                job_id=job_id,
+                tenant_id=tenant_id,
+                status=str(item.get("status") or "queued"),
+                execution=str(item.get("execution") or "local"),
+                mode=str(item.get("mode") or options.get("mode") or "balanced"),
+                run_id=item.get("run_id"),
+                command=list(item.get("command") or []),
+                scan_options=options,
+                target_counts=item.get("target_counts"),
+                requested_by=str(item.get("requested_by") or ""),
+                assigned_agent_id=item.get("assigned_agent_id"),
+                # Pre-P1 jobs have no owner; load_jobs treats NULL as
+                # "this replica" so they still get reconciled once.
+                owner_id=None,
+                queued_at=_parse_iso(item.get("queued_at"))
+                or _parse_iso(item.get("started_at"))
+                or _now(),
+                started_at=_parse_iso(item.get("started_at")),
+                finished_at=_parse_iso(item.get("finished_at")),
+                exit_code=item.get("exit_code"),
+                error=item.get("error"),
+                asset_upsert_error=item.get("asset_upsert_error"),
             )
-            imported += 1
+            if insert_if_absent(session, row, job_id):
+                imported += 1
     try:
         path.replace(path.with_suffix(path.suffix + ".imported"))
     except OSError:

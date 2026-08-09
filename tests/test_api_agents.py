@@ -62,6 +62,61 @@ def test_agent_register_heartbeat_and_list(tmp_path, monkeypatch):
     assert body["items"][0]["hostname"] == "edge-1"
 
 
+def test_stale_agents_are_searchable_and_sortable_by_the_status_returned(tmp_path, monkeypatch):
+    """`status` is derived: the row keeps what the agent reported, the response
+    says "stale" past agent_stale_seconds. Search and sort must run against the
+    value the caller actually sees, or ?q=stale would match nothing and
+    sort=status would order the page by invisible values."""
+    from datetime import UTC, datetime, timedelta
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    for hostname in ("fresh-1", "old-1"):
+        client.post("/api/agent/register", headers=_agent_headers(), json={"hostname": hostname})
+
+    with get_session(settings.postgres_url) as session:
+        row = session.query(models.Agent).filter_by(hostname="old-1").one()
+        row.last_seen_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            seconds=settings.agent_stale_seconds + 60
+        )
+        stale_id = row.agent_id
+
+    headers = {"Authorization": f"Bearer {login(client, 'operator')}"}
+    found = client.get("/api/agents?q=stale", headers=headers).json()
+    assert [item["agent_id"] for item in found["items"]] == [stale_id]
+    assert found["total"] == 1
+
+    ordered = client.get("/api/agents?sort=status&order=asc", headers=headers).json()
+    assert [item["status"] for item in ordered["items"]] == ["idle", "stale"]
+
+
+def test_legacy_agent_import_rehomes_an_unknown_tenant(tmp_path, monkeypatch):
+    """load_agents runs inside create_app(). tenant_id is a FK, so an agent whose
+    tenant is gone -- a tenant database restored separately from the state
+    volume, say -- would fail startup and do it again on every restart. Re-home
+    it instead, as the job importer does."""
+    import json
+
+    from api.services import agents as agents_service
+
+    client = _client(tmp_path, monkeypatch)  # seeds the default tenant
+    settings = _settings(tmp_path)
+    (settings.state_dir / "api_agents.json").write_text(
+        json.dumps([{"agent_id": "orphan-1", "hostname": "h", "tenant_id": "ten_deleted"}]),
+        encoding="utf-8",
+    )
+
+    agents_service.load_agents(settings)
+
+    imported = agents_service.get_agent("orphan-1")
+    assert imported is not None
+    assert imported.tenant_id == "default"
+    assert client.app is not None  # the app that seeded the tenant is still usable
+
+
 def test_agent_claim_and_upload_results(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     reg = client.post(

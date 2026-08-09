@@ -17,16 +17,17 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 
 from api.db import models
-from api.db.engine import get_session
+from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentInfo
 from api.services import pagination
+from api.services import tenants as tenants_service
 from api.settings import Settings
 
 _settings: Settings | None = None
@@ -73,6 +74,7 @@ def load_agents(settings: Settings) -> None:
     if not isinstance(raw, list):
         return
 
+    known_tenants = {tenant["tenant_id"] for tenant in tenants_service.list_tenants()}
     imported = 0
     with get_session(settings.postgres_url) as session:
         for item in raw:
@@ -83,23 +85,36 @@ def load_agents(settings: Settings) -> None:
                 continue
             now = _now()
             status = str(item.get("status") or "idle")
-            session.add(
-                models.Agent(
-                    agent_id=agent_id,
-                    tenant_id=str(item.get("tenant_id") or "default"),
-                    hostname=str(item.get("hostname") or ""),
-                    version=str(item.get("version") or ""),
-                    labels=dict(item.get("labels") or {}),
-                    # "stale" was a derived value that the old code persisted;
-                    # it is not a reported status, so it does not survive.
-                    status="idle" if status == "stale" else status,
-                    current_job_id=item.get("current_job_id"),
-                    detail=item.get("detail"),
-                    registered_at=_parse_iso(item.get("registered_at")) or now,
-                    last_seen_at=_parse_iso(item.get("last_seen_at")) or now,
+            tenant_id = str(item.get("tenant_id") or tenants_service.DEFAULT_TENANT_ID)
+            if tenant_id not in known_tenants:
+                # The column is a FK, and this runs inside create_app(): an
+                # agent whose tenant is gone (a tenant DB restored separately
+                # from the state volume, say) would otherwise fail startup and
+                # do it again on every restart. Re-home it, as the job
+                # importer does.
+                _log.warning(
+                    "Legacy agent %s references unknown tenant %s; importing under %s",
+                    agent_id,
+                    tenant_id,
+                    tenants_service.DEFAULT_TENANT_ID,
                 )
+                tenant_id = tenants_service.DEFAULT_TENANT_ID
+            row = models.Agent(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                hostname=str(item.get("hostname") or ""),
+                version=str(item.get("version") or ""),
+                labels=dict(item.get("labels") or {}),
+                # "stale" was a derived value that the old code persisted;
+                # it is not a reported status, so it does not survive.
+                status="idle" if status == "stale" else status,
+                current_job_id=item.get("current_job_id"),
+                detail=item.get("detail"),
+                registered_at=_parse_iso(item.get("registered_at")) or now,
+                last_seen_at=_parse_iso(item.get("last_seen_at")) or now,
             )
-            imported += 1
+            if insert_if_absent(session, row, agent_id):
+                imported += 1
     _retire(path)
     if imported:
         _log.info("Imported %d agent(s) from the pre-P1 registry at %s", imported, path)
@@ -219,15 +234,29 @@ def heartbeat(
 AGENT_SORT_FIELDS = ("hostname", "agent_id", "status", "last_seen_at", "registered_at", "tenant_id")
 AGENT_QUERY_FIELDS = ("agent_id", "hostname", "version", "status", "tenant_id", "current_job_id")
 
-AGENT_SORT_COLUMNS = {
-    # Unnamed agents sort by their id rather than sinking to the bottom.
-    "hostname": func.coalesce(func.nullif(models.Agent.hostname, ""), models.Agent.agent_id),
-    "agent_id": models.Agent.agent_id,
-    "status": models.Agent.status,
-    "last_seen_at": models.Agent.last_seen_at,
-    "registered_at": models.Agent.registered_at,
-    "tenant_id": models.Agent.tenant_id,
-}
+def _reported_status_expr() -> Any:
+    """The status the API will actually return, as SQL.
+
+    ``status`` on the row is what the agent last reported; the response says
+    "stale" once ``last_seen_at`` is older than ``agent_stale_seconds``. That
+    derivation has to happen inside the query too, or searching for "stale"
+    would match nothing and ``sort=status`` would order the page by values the
+    caller never sees.
+    """
+    cutoff = _now() - timedelta(seconds=_require_settings().agent_stale_seconds)
+    return case((models.Agent.last_seen_at < cutoff, "stale"), else_=models.Agent.status)
+
+
+def _sort_columns() -> dict[str, Any]:
+    return {
+        # Unnamed agents sort by their id rather than sinking to the bottom.
+        "hostname": func.coalesce(func.nullif(models.Agent.hostname, ""), models.Agent.agent_id),
+        "agent_id": models.Agent.agent_id,
+        "status": _reported_status_expr(),
+        "last_seen_at": models.Agent.last_seen_at,
+        "registered_at": models.Agent.registered_at,
+        "tenant_id": models.Agent.tenant_id,
+    }
 
 
 def list_agents(
@@ -242,13 +271,13 @@ def list_agents(
     """Return ``(page, total_after_filtering)`` — filtered, counted, and sliced
     in SQL (ROADMAP P3.2 semantics, P1.2 storage).
 
-    ``status`` is the one field that cannot be pushed down: the stored value is
-    what the agent reported, while the API reports "stale" for an agent past
-    ``agent_stale_seconds``. Sorting and searching on it therefore use the
-    stored value; the derived one only appears in the response.
+    Both the search and the sort run against the *reported* status (see
+    ``_reported_status_expr``), so a page ordered or filtered by status matches
+    what the response body says.
     """
     settings = _require_settings()
-    column = AGENT_SORT_COLUMNS.get(sort or "", AGENT_SORT_COLUMNS["hostname"])
+    columns = _sort_columns()
+    column = columns.get(sort or "", columns["hostname"])
     # Matches pagination.apply_sort: descending unless "asc" is asked for.
     direction = column.asc() if (order or "").lower() == "asc" else column.desc()
 
@@ -263,7 +292,7 @@ def list_agents(
                     func.lower(models.Agent.agent_id).like(needle),
                     func.lower(models.Agent.hostname).like(needle),
                     func.lower(models.Agent.version).like(needle),
-                    func.lower(models.Agent.status).like(needle),
+                    func.lower(_reported_status_expr()).like(needle),
                     func.lower(models.Agent.tenant_id).like(needle),
                     func.lower(func.coalesce(models.Agent.current_job_id, "")).like(needle),
                 )
