@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.settings import Settings
-from tests.conftest import configured_client, login, make_settings, requires_postgres
+from tests.conftest import auth_headers, configured_client, login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -123,7 +123,7 @@ def test_device_status_is_served_and_filterable(tmp_path, monkeypatch):
     body = _load_fixture("endpoint_inventory_v1_valid.json")
     submit = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body)
     assert submit.status_code == 201
-    headers = {"Authorization": f"Bearer {login(client, "operator")}"}
+    headers = auth_headers(client, "operator")
 
     active = client.get(
         "/api/endpoint/devices",

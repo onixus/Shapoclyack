@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.settings import Settings
-from tests.conftest import configured_client, login, make_settings, requires_postgres
+from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -27,7 +27,7 @@ def _client(tmp_path: Path, monkeypatch, **overrides: object) -> TestClient:
 
 
 def _headers(client: TestClient) -> dict[str, str]:
-    return {"Authorization": f"Bearer {login(client, "operator")}"}
+    return auth_headers(client, "operator")
 
 
 def _seed_runs(settings_output: Path, count: int) -> None:
