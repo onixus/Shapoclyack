@@ -155,6 +155,14 @@ class AgentClient:
 
         add_field("agent_id", agent_id)
         add_field("exit_code", str(exit_code))
+        # Identifies this completion (server-side ROADMAP P1.5). Derived rather
+        # than random so a retry — including one from a restarted process —
+        # computes the same key and is recognised as a replay instead of
+        # colliding with the upload that already landed.
+        add_field(
+            "idempotency_key",
+            f"{agent_id}:{job_id}:{run_id or ''}:{exit_code}",
+        )
         if run_id:
             add_field("run_id", run_id)
         if error:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
@@ -82,6 +82,8 @@ def start_job(
     body: StartScanRequest,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: Annotated[Settings, Depends(get_settings)],
+    response: Response,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> JobInfo:
     # The body's tenant_id is advisory: outside of a platform admin it may
     # only name the tenant the caller already resolved into, so a scan can
@@ -94,8 +96,19 @@ def start_job(
         )
     tenant_id = requested if (requested and principal.is_platform_admin) else principal.tenant_id
     body = body.model_copy(update={"tenant_id": tenant_id})
+    key = (idempotency_key or "").strip()[:200]
+    if key:
+        # A retry after a timeout must not queue a second scan of the same
+        # targets (ROADMAP P1.5). 200 rather than 202 says "this already
+        # existed" — the scan was accepted by the earlier call, not this one.
+        existing = jobs_service.find_by_idempotency_key(settings, tenant_id=tenant_id, key=key)
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return existing
     try:
-        return jobs_service.start_scan(settings, body, username=principal.username)
+        return jobs_service.start_scan(
+            settings, body, username=principal.username, idempotency_key=key or None
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:

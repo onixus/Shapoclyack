@@ -58,6 +58,19 @@ The job's status becomes `cancelled` and the reason is recorded in `error`. See
 the job lifecycle in [architecture.md](architecture.md#job-lifecycle) for the
 full state set.
 
+`POST /api/jobs` accepts an optional **`Idempotency-Key`** header. A retry
+carrying a key an earlier request already used returns that job with **200**
+instead of **202** — nothing was accepted this time — so a client that retries
+after a timeout cannot queue the same scan twice. Keys are scoped per tenant
+and never expire; reuse one only for the request it named.
+
+`POST /api/agent/jobs/{job_id}/results` accepts an optional `idempotency_key`
+form field with the same intent on the upload side: repeating an upload that
+already landed returns the stored outcome (200), rather than the 422 a second
+completion would otherwise get. A second upload that *disagrees* with the
+stored one answers **409**. Agents that send no key still get replay detection
+from the natural key (same agent, same job, same exit code).
+
 `POST /api/endpoint/inventory` is the only agent-authenticated write in that
 group and carries contract-specific limits: `411` when `Content-Length` is
 absent, `413` when the body or a bounded field exceeds its limit, `429` on the

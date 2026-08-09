@@ -104,6 +104,11 @@ async def upload_results(
     error: Annotated[str | None, Form()] = None,
     run_id: Annotated[str | None, Form()] = None,
     archive: UploadFile | None = File(None),
+    # Optional (ROADMAP P1.5): identifies *this completion*, so a retry after a
+    # network timeout is answered with the stored outcome instead of an error.
+    # Sent as a form field rather than a header because the agent already
+    # builds this request as multipart.
+    idempotency_key: Annotated[str | None, Form()] = None,
 ) -> JobInfo:
     agent = agents_service.get_agent(agent_id)
     if agent is None:
@@ -125,11 +130,15 @@ async def upload_results(
             run_id=run_id,
             archive_bytes=archive_bytes,
             tenant_id=principal.tenant_id,
+            idempotency_key=(idempotency_key or "").strip()[:200] or None,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except jobs_service.ResultsConflict as exc:
+        # Same job, different completion — not a replay of the one that landed.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

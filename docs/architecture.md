@@ -68,8 +68,26 @@ claimed | running ──→ queued                      (lease expired, see belo
   stop an in-flight scan today, so the API answers 409 instead of recording a
   stop that never happened.
 - Terminal states never move again, so a result upload retried after a network
-  timeout is rejected rather than rewriting the outcome (idempotent upload
-  itself is ROADMAP P1.5).
+  timeout cannot rewrite the outcome. Such a retry is recognised as a replay
+  and answered with the stored result (see below), not with an error.
+
+### Idempotency
+
+Both writes that create work accept a client-supplied key, because the failure
+that matters is not a duplicate *request* but a lost *response*:
+
+- `POST /api/jobs` with an `Idempotency-Key` header creates at most one job per
+  (tenant, key). Uniqueness is a database constraint, not a read-then-insert —
+  two replicas serving the same retry would both read "no such key".
+- `POST /api/agent/jobs/{id}/results` with an `idempotency_key` field returns
+  the stored outcome when the same completion is uploaded twice, and 409 when a
+  second upload contradicts the first. Without a key, the natural key (same
+  agent, same job, same exit code) serves the same purpose for older agents.
+
+The schedule dispatcher uses the first of these: it keys each dispatch on the
+schedule's own due time, so replicas that all wake for the same tick produce
+one job rather than one each. That bounds the damage of having no leader
+election, but does not replace it — see the dispatcher note below.
 
 ### Leases
 
@@ -102,7 +120,10 @@ Two properties still bind a job to one process:
   orphaned local jobs. A local job orphaned by a replica that never comes back
   under the same identity is caught by the lease sweep above instead.
 - The **schedule dispatcher** runs in every replica without leader election, so
-  more than one replica can dispatch the same due schedule. Run a single API
+  every replica wakes for the same due schedule. Duplicate *scans* are already
+  prevented — each dispatch is keyed on the schedule's due time, so the losers
+  get the winner's job back (see Idempotency above) — but the replicas still
+  all poll and still race on the schedule's own bookkeeping. Run a single API
   replica, or disable the dispatcher on all but one
   (`OCTO_SCHEDULER_DISPATCH_ENABLED=false`), until ROADMAP P1.6.
 

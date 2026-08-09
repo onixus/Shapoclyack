@@ -57,14 +57,18 @@ def test_tick_dispatches_due_schedule_once(settings, monkeypatch):
     )
 
     started: list[str] = []
+    keys: list[str | None] = []
 
-    def fake_start_scan(_settings, request, *, username):
+    def fake_start_scan(_settings, request, *, username, idempotency_key=None):
         job_id = f"job_{len(started)}"
         started.append(job_id)
+        keys.append(idempotency_key)
         return _fake_job(job_id, status="succeeded")
 
     monkeypatch.setattr(jobs_service, "start_scan", fake_start_scan)
     monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: None)
+
+    due_at = scan_schedules.get_schedule(sched["schedule_id"])["next_run_at"]
 
     dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=settings)
     dispatcher._tick()  # noqa: SLF001
@@ -72,6 +76,10 @@ def test_tick_dispatches_due_schedule_once(settings, monkeypatch):
     assert started == ["job_0"]
     updated = scan_schedules.get_schedule(sched["schedule_id"])
     assert updated["last_job_id"] == "job_0"
+    # Keyed on the schedule's due time, not this replica's clock (P1.5), so a
+    # second replica dispatching the same tick computes the same key and the
+    # idempotent start hands back the job instead of scanning twice.
+    assert keys == [f"schedule:{sched['schedule_id']}:{due_at}"]
 
 
 def test_tick_skips_when_previous_job_still_running(settings, monkeypatch):

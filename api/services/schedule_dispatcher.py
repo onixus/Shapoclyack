@@ -90,7 +90,16 @@ class ScheduleDispatcher:
             **sched["scan_options"],
             **sched["targets"],
         )
-        job = jobs_service.start_scan(self._settings, request, username="scheduler")
+        # Keyed on the schedule's own due time, not on this replica's clock, so
+        # every replica dispatching the same tick computes the same key and
+        # only one job is created (ROADMAP P1.5). This does not replace leader
+        # election (P1.6): the replicas still all wake up, still all query, and
+        # still race on the schedule's bookkeeping — it only stops the duplicate
+        # *scans*, which is the part that costs money and hits the target.
+        key = f"schedule:{sched['schedule_id']}:{sched.get('next_run_at') or now.isoformat()}"
+        job = jobs_service.start_scan(
+            self._settings, request, username="scheduler", idempotency_key=key
+        )
         scan_schedules.record_dispatch(sched["schedule_id"], job_id=job.job_id, ran_at=now)
         self._stats["dispatched"] += 1
         LOG.info("Dispatched schedule %s -> job %s", sched["schedule_id"], job.job_id)

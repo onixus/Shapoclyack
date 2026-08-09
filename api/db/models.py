@@ -364,6 +364,12 @@ class Job(Base):
     requested_by: Mapped[str] = mapped_column(default="")
     assigned_agent_id: Mapped[str | None] = mapped_column(default=None, index=True)
     owner_id: Mapped[str | None] = mapped_column(default=None)
+    # Idempotency (ROADMAP P1.5). `idempotency_key` is the client's name for
+    # the scan request, unique per tenant; `results_idempotency_key` records
+    # which completion produced the terminal state, so a replayed upload is
+    # recognisable as a replay rather than a conflicting second result.
+    idempotency_key: Mapped[str | None] = mapped_column(default=None)
+    results_idempotency_key: Mapped[str | None] = mapped_column(default=None)
     # Lease (ROADMAP P1.4): the deadline the job's executor keeps pushing
     # forward while it is alive. NULL whenever the job is not out with one.
     claimed_until: Mapped[datetime | None] = mapped_column(default=None)
@@ -385,4 +391,7 @@ class Job(Base):
         # The reaper's predicate: in-flight jobs whose lease has lapsed. It
         # runs on every replica on a timer, so it must not scan the table.
         Index("ix_jobs_lease", "status", "claimed_until"),
+        # Uniqueness is the point, not the lookup: two replicas serving the
+        # same retry would both read "no such key" and both insert.
+        Index("uq_jobs_tenant_idempotency_key", "tenant_id", "idempotency_key", unique=True),
     )

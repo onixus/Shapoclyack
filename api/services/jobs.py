@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
@@ -680,7 +681,27 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             _update_job(settings, job_id, error=str(exc)[:2000])
 
 
-def start_scan(settings: Settings, request: StartScanRequest, *, username: str) -> JobInfo:
+def find_by_idempotency_key(settings: Settings, *, tenant_id: str, key: str) -> JobInfo | None:
+    """The job a previous request with this key created, if any (P1.5)."""
+    if not key:
+        return None
+    with get_session(settings.postgres_url) as session:
+        row = session.execute(
+            select(models.Job).where(
+                models.Job.tenant_id == tenant_id,
+                models.Job.idempotency_key == key,
+            )
+        ).scalars().first()
+        return _to_info(row) if row else None
+
+
+def start_scan(
+    settings: Settings,
+    request: StartScanRequest,
+    *,
+    username: str,
+    idempotency_key: str | None = None,
+) -> JobInfo:
     if not settings.allow_scan_start:
         raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
 
@@ -731,12 +752,26 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         # Only local jobs are bound to this process; an agent job is claimable
         # by any worker and must not be reconciled when this replica restarts.
         owner_id=settings.instance_id if execution == "local" else None,
+        idempotency_key=(idempotency_key or None),
         queued_at=_now(),
     )
-    with get_session(settings.postgres_url) as session:
-        session.add(row)
-        session.flush()
-        info = _to_info(row)
+    try:
+        with get_session(settings.postgres_url) as session:
+            session.add(row)
+            session.flush()
+            info = _to_info(row)
+    except IntegrityError:
+        # Lost the race on (tenant_id, idempotency_key): another replica — or
+        # this one, serving the client's retry concurrently — already created
+        # the job. The caller wanted one scan for this key and there is one.
+        existing = find_by_idempotency_key(
+            settings, tenant_id=tenant_id, key=idempotency_key or ""
+        )
+        if existing is None:
+            raise
+        metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(operation="start").inc()
+        _log.info("Idempotent scan start: key already created job %s", existing.job_id)
+        return existing
     _refresh_job_gauges(settings)
 
     if execution == "local":
@@ -930,6 +965,47 @@ def cancel_job(
     return result
 
 
+class ResultsConflict(ValueError):
+    """A second upload for a finished job that is not a replay of the first."""
+
+
+def _classify_replay(
+    row: models.Job, *, exit_code: int, idempotency_key: str | None
+) -> JobInfo | None:
+    """Decide whether an upload for an already-finished job is a replay.
+
+    Returns the stored outcome for a replay, raises ``ResultsConflict`` for an
+    upload that contradicts it, and returns ``None`` when this is not a replay
+    question at all (a cancelled job, say) so the caller's normal transition
+    check produces the error.
+
+    With a key, the comparison is exact. Without one — older agents, and the
+    legacy shared-token path — the fallback is the natural key: the same agent
+    reporting the same exit code for a job it still owns is the retry we are
+    trying to survive, and it cannot be confused with a different result,
+    because a different result carries a different exit code.
+    """
+    if row.status == job_states.CANCELLED:
+        return None
+    if idempotency_key:
+        if row.results_idempotency_key == idempotency_key:
+            return _replayed(row)
+        if row.results_idempotency_key:
+            raise ResultsConflict(
+                f"Job {row.job_id} already has results from a different upload"
+            )
+        return None
+    if row.exit_code == exit_code:
+        return _replayed(row)
+    return None
+
+
+def _replayed(row: models.Job) -> JobInfo:
+    metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(operation="results").inc()
+    _log.info("Replayed results upload for job %s; returning the stored outcome", row.job_id)
+    return _to_info(row)
+
+
 def complete_job(
     settings: Settings,
     job_id: str,
@@ -940,7 +1016,17 @@ def complete_job(
     run_id: str | None = None,
     archive_bytes: bytes | None = None,
     tenant_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> JobInfo:
+    """Record an agent's result upload. Replays return the original outcome.
+
+    P1.3 made a second upload an error, which is right for a *different*
+    result but wrong for the case that actually happens: the upload succeeded
+    and the response never made it back, so the agent sends the same bytes
+    again. Under P1.5 that replay is answered with the job as it already
+    stands — no re-extraction, no second NATS publish, no error for the agent
+    to interpret. Two uploads that genuinely disagree still conflict.
+    """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id)
         if row is None:
@@ -953,6 +1039,10 @@ def complete_job(
         if tenant_id is not None and job_tenant != tenant_id:
             raise PermissionError("Cross-tenant job access denied")
         status = job_states.SUCCEEDED if exit_code == 0 else job_states.FAILED
+        if row.status in job_states.TERMINAL:
+            replay = _classify_replay(row, exit_code=exit_code, idempotency_key=idempotency_key)
+            if replay is not None:
+                return replay
         # Checked before the archive is ingested, not after: a duplicate upload
         # for a job that already finished — or one an operator cancelled while
         # the agent was still working — must not overwrite the run directory
@@ -999,6 +1089,9 @@ def complete_job(
         exit_code=exit_code,
         run_id=str(resolved_run_id) if resolved_run_id else None,
         error=(error[:2000] if error else None),
+        # Recorded with the outcome, so a later upload can be told apart from
+        # the one that produced it.
+        results_idempotency_key=(idempotency_key or None),
     )
     agents_service.touch_job(agent_id, None, status="idle")
     result = get_job(settings, job_id)

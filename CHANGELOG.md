@@ -47,6 +47,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Idempotency keys for scan start and result upload** (ROADMAP P1.5;
+  migration `0010_job_idempotency`). The failure worth designing for is not a
+  duplicate request but a lost response: the write landed and the client never
+  found out. `POST /api/jobs` now honours an **`Idempotency-Key`** header and
+  creates at most one job per (tenant, key) — uniqueness is a database
+  constraint, since two replicas serving the same retry would both read "no
+  such key" — answering **200** rather than 202 for the replay, because nothing
+  was accepted that time. `POST /api/agent/jobs/{job_id}/results` takes an
+  optional `idempotency_key` form field and replays the stored outcome instead
+  of the 422 that P1.3 gives a second completion, with **409** when a second
+  upload genuinely contradicts the first. Agents that send no key still get
+  replay detection from the natural key (same agent, same job, same exit code),
+  so no agent upgrade is required; the bundled agent derives its key from the
+  job rather than randomising it, so a restarted process computes the same one.
+  An upload for a **cancelled** job is still refused — cancellation is an
+  operator decision, not an outcome to replay. New metric
+  `octo_job_idempotent_replays_total{operation}`.
+- The **schedule dispatcher** now keys each dispatch on the schedule's own due
+  time, so replicas that all wake for the same tick create one job instead of
+  one each. This bounds — but does not replace — the missing leader election
+  (P1.6): the replicas still all poll, and still race on the schedule's own
+  `last_run_at`/`next_run_at` bookkeeping.
 - **Job leases and an expiry reaper** (ROADMAP P1.4; migration
   `0009_job_leases`). A job handed to an executor had no deadline, so "the
   worker is still scanning" and "the worker died three hours ago" looked
