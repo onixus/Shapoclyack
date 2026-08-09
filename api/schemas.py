@@ -163,7 +163,9 @@ class StartScanRequest(BaseModel):
 
 class JobInfo(BaseModel):
     job_id: str
-    status: Literal["queued", "running", "succeeded", "failed"]
+    # `claimed` (an agent holds the job but has not reported starting) and
+    # `cancelled` are ROADMAP P1.3 additions — see api/services/job_states.py.
+    status: Literal["queued", "claimed", "running", "succeeded", "failed", "cancelled"]
     run_id: str | None = None
     mode: str
     command: list[str]
@@ -181,6 +183,10 @@ class JobInfo(BaseModel):
     # this the job reads as a clean success while the asset list stays empty --
     # with the reason only ever in the pod log, gone with the pod.
     asset_upsert_error: str | None = None
+    # How many times this job has been handed to an executor (ROADMAP P1.4).
+    # Above 1 means an earlier attempt's lease expired and the reaper put the
+    # job back on the queue.
+    attempts: int = 0
 
 
 class AgentRegisterRequest(BaseModel):
@@ -221,6 +227,11 @@ class AgentClaimResponse(BaseModel):
     export_defectdojo: bool = False
     inputs: dict[str, str] = Field(default_factory=dict)
     tenant_id: str = "default"
+    # Fencing token for this hand-out (ROADMAP P1.4/P1.5). Echo it back on the
+    # results upload; the API rejects an upload carrying a stale attempt, which
+    # is how a late result from a lease that already expired is kept from
+    # overwriting the run of the attempt that replaced it.
+    attempt: int = 1
 
 
 class CreateScheduleRequest(BaseModel):
@@ -384,6 +395,11 @@ class RuntimeInfo(BaseModel):
     asset_stale_days: int
     endpoint_inventory_enabled: bool = True
     endpoint_stale_hours: int = 48
+    # Job leases (ROADMAP P1.4): how long an unattended job survives before the
+    # reaper acts, and how many hand-outs it gets first.
+    job_lease_seconds: int = 300
+    job_max_attempts: int = 3
+    job_reaper_enabled: bool = True
 
 
 class InventoryCounts(BaseModel):

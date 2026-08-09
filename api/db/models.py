@@ -352,7 +352,9 @@ class Job(Base):
 
     job_id: Mapped[str] = mapped_column(primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
-    status: Mapped[str] = mapped_column(default="queued")  # queued|running|succeeded|failed
+    # Lifecycle and legal transitions live in api/services/job_states.py; the
+    # column stays a plain string so adding a state does not need a migration.
+    status: Mapped[str] = mapped_column(default="queued")
     execution: Mapped[str] = mapped_column(default="local")  # local | agent
     mode: Mapped[str] = mapped_column(default="balanced")
     run_id: Mapped[str | None] = mapped_column(default=None, index=True)
@@ -362,6 +364,18 @@ class Job(Base):
     requested_by: Mapped[str] = mapped_column(default="")
     assigned_agent_id: Mapped[str | None] = mapped_column(default=None, index=True)
     owner_id: Mapped[str | None] = mapped_column(default=None)
+    # Idempotency (ROADMAP P1.5). `idempotency_key` is the client's name for
+    # the scan request, unique per tenant; `results_idempotency_key` records
+    # which completion produced the terminal state, so a replayed upload is
+    # recognisable as a replay rather than a conflicting second result.
+    idempotency_key: Mapped[str | None] = mapped_column(default=None)
+    results_idempotency_key: Mapped[str | None] = mapped_column(default=None)
+    # Lease (ROADMAP P1.4): the deadline the job's executor keeps pushing
+    # forward while it is alive. NULL whenever the job is not out with one.
+    claimed_until: Mapped[datetime | None] = mapped_column(default=None)
+    # Incremented every time the job is handed to an executor, so the reaper
+    # can stop requeueing one that kills whatever picks it up.
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     queued_at: Mapped[datetime]
     started_at: Mapped[datetime | None] = mapped_column(default=None)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
@@ -374,4 +388,10 @@ class Job(Base):
         # The claim query's exact predicate: queued agent jobs of one tenant,
         # oldest first.
         Index("ix_jobs_claim", "execution", "status", "tenant_id", "queued_at"),
+        # The reaper's predicate: in-flight jobs whose lease has lapsed. It
+        # runs on every replica on a timer, so it must not scan the table.
+        Index("ix_jobs_lease", "status", "claimed_until"),
+        # Uniqueness is the point, not the lookup: two replicas serving the
+        # same retry would both read "no such key" and both insert.
+        Index("uq_jobs_tenant_idempotency_key", "tenant_id", "idempotency_key", unique=True),
     )

@@ -47,6 +47,22 @@ JOBS_RUNNING = Gauge(
     registry=REGISTRY,
 )
 
+JOB_LEASE_EXPIRED_TOTAL = Counter(
+    "octo_job_lease_expired_total",
+    "Jobs whose executor stopped renewing its lease, by what the reaper did "
+    "(requeued, failed).",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
+JOB_IDEMPOTENT_REPLAYS_TOTAL = Counter(
+    "octo_job_idempotent_replays_total",
+    "Requests recognised as a replay of one already applied, by operation "
+    "(start, results).",
+    ["operation"],
+    registry=REGISTRY,
+)
+
 NATS_CONSUMER_PENDING = Gauge(
     "octo_nats_consumer_pending",
     "JetStream durable consumer pending message count (consumer lag).",

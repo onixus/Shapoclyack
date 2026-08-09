@@ -68,7 +68,11 @@ export default function JobsPage() {
         header: "Status",
         cell: ({ row }) => (
           <span className="inline-flex items-center gap-1.5">
-            <StatusBadge value={row.original.status} map={JOB_STATUS} showPulse={row.original.status === "running"} />
+            <StatusBadge
+              value={row.original.status}
+              map={JOB_STATUS}
+              showPulse={row.original.status === "running" || row.original.status === "claimed"}
+            />
             {/* A succeeded scan whose asset upsert failed looks entirely clean
                 here; without this the empty asset list has no explanation. */}
             {row.original.asset_upsert_error ? (

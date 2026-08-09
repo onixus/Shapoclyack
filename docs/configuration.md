@@ -162,6 +162,15 @@ Core deployment variables:
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
 | `OCTO_ASSET_STALE_DAYS` | Age threshold for stale assets |
 
+Job leases and the reaper (see [architecture.md](architecture.md#leases)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_JOB_LEASE_SECONDS` | `300` | How long a claimed/running job survives without its executor renewing. Keep it well above the agent heartbeat interval — too low and live scans are requeued under a working agent |
+| `OCTO_JOB_MAX_ATTEMPTS` | `3` | Hand-outs a job gets before an expired lease fails it instead of requeueing it |
+| `OCTO_JOB_REAPER_ENABLED` | `true` | Run the expiry sweep in this replica. Safe in all replicas; disabling it everywhere means abandoned jobs stay in flight forever |
+| `OCTO_JOB_REAPER_INTERVAL_SECONDS` | `60` | Sweep interval |
+
 Endpoint inventory (Lariska ingestion):
 
 | Variable | Default | Purpose |

@@ -28,7 +28,14 @@ function makeAgent(overrides: Partial<AgentInfo>): AgentInfo {
 
 describe("status maps", () => {
   it("cover every expected status value", () => {
-    expect(Object.keys(JOB_STATUS).sort()).toEqual(["failed", "queued", "running", "succeeded"]);
+    expect(Object.keys(JOB_STATUS).sort()).toEqual([
+      "cancelled",
+      "claimed",
+      "failed",
+      "queued",
+      "running",
+      "succeeded",
+    ]);
     expect(Object.keys(AGENT_STATUS).sort()).toEqual(["busy", "error", "idle", "offline", "stale"]);
     expect(Object.keys(TENANT_STATUS).sort()).toEqual(["active", "disabled"]);
     expect(Object.keys(ASSET_STATUS).sort()).toEqual(["active", "decommissioned", "stale"]);

@@ -10,8 +10,13 @@ flushed to the file died with the process.
 The table is the queue now. ``claim_job`` takes a row lock
 (``SELECT … FOR UPDATE SKIP LOCKED``) so concurrent claims across replicas
 hand out distinct jobs, and every status change is a committed UPDATE rather
-than a whole-file rewrite. Formal state-machine validation, leases, and
-idempotency keys are the next slices (ROADMAP P1.3-P1.5).
+than a whole-file rewrite.
+
+Since P1.3 every status write goes through ``api/services/job_states.py``:
+statuses are no longer assigned, they are *transitioned*, and an illegal move
+(a late upload for a job that already failed, a second terminal write) raises
+instead of silently overwriting. Leases and idempotency keys are the next
+slices (ROADMAP P1.4-P1.5).
 """
 
 from __future__ import annotations
@@ -22,11 +27,14 @@ import subprocess
 import sys
 import threading
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
@@ -34,6 +42,7 @@ from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
 from api.services import assets as assets_service
 from api.services import config_override as config_override_service
+from api.services import job_states
 from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
@@ -82,6 +91,7 @@ def _to_info(row: models.Job) -> JobInfo:
         assigned_agent_id=row.assigned_agent_id,
         tenant_id=row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
         asset_upsert_error=row.asset_upsert_error,
+        attempts=row.attempts or 0,
     )
 
 
@@ -109,7 +119,8 @@ def load_jobs(settings: Settings) -> None:
         orphans = session.execute(
             select(models.Job).where(
                 models.Job.execution == "local",
-                models.Job.status.in_(("queued", "running")),
+                # `claimed` is an agent-only state, so it cannot appear here.
+                models.Job.status.in_((job_states.QUEUED, job_states.RUNNING)),
                 or_(
                     models.Job.owner_id == settings.instance_id,
                     models.Job.owner_id.is_(None),
@@ -117,8 +128,10 @@ def load_jobs(settings: Settings) -> None:
             )
         ).scalars().all()
         for row in orphans:
-            row.status = "failed"
+            job_states.check_transition(row.job_id, row.status, job_states.FAILED)
+            row.status = job_states.FAILED
             row.finished_at = now
+            row.claimed_until = None
             row.error = "Interrupted by API process restart before completion"
     if orphans:
         _log.info("Reconciled %d orphaned local job(s) after restart", len(orphans))
@@ -270,10 +283,29 @@ def reset_for_tests(settings: Settings) -> None:
 
 
 def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
+    """Apply ``fields`` to a job row, validating any status change.
+
+    Validation lives here rather than at each call site so a future writer
+    cannot reintroduce a bare assignment: every path that moves a job — local
+    executor, agent claim, result upload, restart reconciliation, cancel — goes
+    through this function. Use ``force_status`` for the rare repair/test case
+    that must ignore the lifecycle.
+    """
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.Job, job_id)
+        # Locked, not just read: two writers racing on one job (an operator
+        # cancelling while the local executor starts it, say) would otherwise
+        # both validate against the same stale status and the later commit
+        # would win regardless of what the earlier one decided.
+        row = session.get(models.Job, job_id, with_for_update=True)
         if row is None:
             return
+        if "status" in fields:
+            job_states.check_transition(job_id, row.status, str(fields["status"]))
+            if fields["status"] in job_states.TERMINAL:
+                # A finished job holds no lease. Cleared here rather than at
+                # each terminal call site so the reaper can never see a
+                # leftover deadline on a row it has no business touching.
+                fields.setdefault("claimed_until", None)
         for key, value in fields.items():
             setattr(row, key, value)
         session.flush()
@@ -284,6 +316,23 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
         )
     if snapshot is not None:
         _record_job_metrics(settings, *snapshot)
+
+
+def force_status(settings: Settings, job_id: str, status: str, **fields: Any) -> None:
+    """Set a status without lifecycle validation.
+
+    The escape hatch for tests that need to stage a state directly, and for an
+    operator repair where the row is already wrong. Nothing in the request path
+    may call this — use the transitions in ``job_states``.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None:
+            return
+        row.status = status
+        for key, value in fields.items():
+            setattr(row, key, value)
+    _refresh_job_gauges(settings)
 
 
 def _record_job_metrics(
@@ -308,17 +357,21 @@ def _refresh_job_gauges(settings: Settings) -> None:
     These are now counted in the shared table rather than per-process, so two
     replicas no longer report two different queue depths for the same queue —
     one of the known gaps called out in docs/slo.md.
+
+    ``claimed`` (P1.3) counts as running: the job is out with a worker and no
+    longer waiting, so folding it into the queue depth would read as a backlog
+    that nothing is working on.
     """
     with get_session(settings.postgres_url) as session:
         counts = dict(
             session.execute(
                 select(models.Job.status, func.count())
-                .where(models.Job.status.in_(("queued", "running")))
+                .where(models.Job.status.in_(tuple(job_states.ACTIVE)))
                 .group_by(models.Job.status)
             ).all()
         )
-    metrics_service.JOBS_QUEUED.set(counts.get("queued", 0))
-    metrics_service.JOBS_RUNNING.set(counts.get("running", 0))
+    metrics_service.JOBS_QUEUED.set(counts.get(job_states.QUEUED, 0))
+    metrics_service.JOBS_RUNNING.set(sum(counts.get(s, 0) for s in job_states.IN_FLIGHT))
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
@@ -430,10 +483,167 @@ def _upsert_assets_best_effort(
             _update_job(settings, job_id, asset_upsert_error=f"{type(exc).__name__}: {exc}"[:2000])
 
 
-def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
-    _update_job(settings, job_id, status="running", started_at=_now())
+def _lease_deadline(settings: Settings) -> datetime:
+    return _now() + timedelta(seconds=max(settings.job_lease_seconds, 1))
+
+
+def renew_lease(settings: Settings, job_id: str, *, agent_id: str | None = None) -> bool:
+    """Push a job's lease deadline forward. Returns whether it applied.
+
+    The proof of life for an in-flight job: agents renew from their heartbeat,
+    local jobs from a thread beside the scan (``_renewing_lease``). Only jobs
+    that are actually in flight are touched, and when ``agent_id`` is given it
+    must be the agent holding the job — a stray heartbeat naming someone else's
+    job must not keep that job alive.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None or row.status not in job_states.IN_FLIGHT:
+            return False
+        if agent_id is not None and row.assigned_agent_id != agent_id:
+            return False
+        row.claimed_until = _lease_deadline(settings)
+        return True
+
+
+@contextmanager
+def _renewing_lease(settings: Settings, job_id: str) -> Iterator[None]:
+    """Keep a local job's lease alive for as long as this process runs it.
+
+    A local scan has no heartbeat to ride on — it is a ``subprocess`` in a
+    thread — so without this its lease would lapse mid-scan and the reaper
+    would fail a job that is running perfectly well. Renewing from beside the
+    scan is also what finally closes the P1.2 residual: if this replica dies,
+    the renewals stop with it and the job stops looking attended.
+
+    Failures are logged, not raised: a database blip during a two-hour scan
+    should cost a renewal, not the scan.
+    """
+    stop = threading.Event()
+    # Renew several times per lease so a single missed tick is not fatal.
+    interval = max(settings.job_lease_seconds / 3.0, 1.0)
+
+    def _loop() -> None:
+        while not stop.wait(interval):
+            try:
+                if not renew_lease(settings, job_id):
+                    return  # Terminal already — nothing left to hold.
+            except Exception:  # noqa: BLE001
+                _log.warning("Lease renewal failed for job %s", job_id, exc_info=True)
+
+    thread = threading.Thread(target=_loop, name=f"octo-lease-{job_id}", daemon=True)
+    thread.start()
     try:
-        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+
+def reap_expired_leases(settings: Settings) -> dict[str, int]:
+    """Sweep jobs whose executor stopped renewing, and return what was done.
+
+    An expired lease means the executor is gone rather than slow — it had the
+    whole lease window, several renewal intervals, to say otherwise. What
+    happens next differs by execution mode:
+
+    - **agent** jobs go back to ``queued`` for another worker, until
+      ``job_max_attempts`` hand-outs have been used. A target that kills
+      whatever picks it up would otherwise cycle through the fleet forever.
+    - **local** jobs are failed outright. Their only executor was the thread in
+      the process that died; no other replica will ever pick the row up, so
+      requeueing it would just park it in the queue for good.
+
+    Safe to run in every replica (there is no leader election until P1.6): rows
+    are taken with ``FOR UPDATE SKIP LOCKED``, so two reapers sweeping at once
+    handle different jobs rather than the same one twice.
+    """
+    now = _now()
+    outcome = {"requeued": 0, "failed": 0}
+    requeued_agent_jobs: list[str] = []
+    # (execution, started_at) per job failed here, so the duration histogram
+    # sees them once the transaction commits. Without this, giving up on a job
+    # would be invisible to SLO 3 exactly when executors are dying.
+    failed_for_metrics: list[tuple[str, datetime | None]] = []
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(models.Job)
+            .where(
+                models.Job.status.in_(tuple(job_states.IN_FLIGHT)),
+                models.Job.claimed_until.is_not(None),
+                models.Job.claimed_until < now,
+            )
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+        for row in rows:
+            retriable = row.execution == "agent" and row.attempts < settings.job_max_attempts
+            if retriable:
+                job_states.check_transition(row.job_id, row.status, job_states.QUEUED)
+                row.status = job_states.QUEUED
+                row.assigned_agent_id = None
+                row.claimed_until = None
+                # The attempt never produced a run, so it must not be counted
+                # as a started job by the duration histogram.
+                row.started_at = None
+                outcome["requeued"] += 1
+                requeued_agent_jobs.append(row.job_id)
+                _log.warning(
+                    "Requeued job %s: lease expired after attempt %d/%d",
+                    row.job_id,
+                    row.attempts,
+                    settings.job_max_attempts,
+                )
+            else:
+                job_states.check_transition(row.job_id, row.status, job_states.FAILED)
+                row.status = job_states.FAILED
+                row.finished_at = now
+                row.claimed_until = None
+                row.error = (
+                    f"Lease expired after {row.attempts} attempt(s): the {row.execution} "
+                    "executor stopped reporting and never returned"
+                )
+                outcome["failed"] += 1
+                failed_for_metrics.append((row.execution or "local", row.started_at))
+                _log.warning(
+                    "Failed job %s: lease expired after %d attempt(s) (execution=%s)",
+                    row.job_id,
+                    row.attempts,
+                    row.execution,
+                )
+    for name, count in outcome.items():
+        if count:
+            metrics_service.JOB_LEASE_EXPIRED_TOTAL.labels(outcome=name).inc(count)
+    for execution, started_at in failed_for_metrics:
+        _record_job_metrics(settings, job_states.FAILED, execution, started_at, now)
+    if outcome["requeued"] or outcome["failed"]:
+        _refresh_job_gauges(settings)
+    # Republished after the transaction commits, so an agent cannot claim the
+    # offer before the row is actually back on the queue.
+    if settings.nats_url:
+        for job_id in requeued_agent_jobs:
+            _publish_job_offer(settings, job_id)
+    return outcome
+
+
+def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
+    try:
+        # A local job goes queued → running with no claim step: this process is
+        # the worker. If it was cancelled while the thread was still starting,
+        # the transition is rejected and the scan never launches.
+        _update_job(
+            settings,
+            job_id,
+            status=job_states.RUNNING,
+            started_at=_now(),
+            claimed_until=_lease_deadline(settings),
+            attempts=1,
+        )
+    except job_states.InvalidJobTransition as exc:
+        _log.info("Not starting job %s: %s", job_id, exc)
+        return
+    try:
+        with _renewing_lease(settings, job_id):
+            completed = subprocess.run(command, check=False, capture_output=True, text=True)
         # Best-effort: read latest_run.json after completion.
         run_id = None
         pointer = settings.state_dir / "latest_run.json"
@@ -442,7 +652,7 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
                 run_id = json.loads(pointer.read_text(encoding="utf-8")).get("run_id")
             except json.JSONDecodeError:
                 run_id = None
-        status = "succeeded" if completed.returncode == 0 else "failed"
+        status = job_states.SUCCEEDED if completed.returncode == 0 else job_states.FAILED
         error = None
         if completed.returncode != 0:
             error = (completed.stderr or completed.stdout or f"exit {completed.returncode}")[:2000]
@@ -455,7 +665,7 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             run_id=str(run_id) if run_id else None,
             error=error,
         )
-        if status == "succeeded":
+        if status == job_states.SUCCEEDED:
             job = get_job(settings, job_id)
             tenant_id = job.tenant_id if job else tenants_service.DEFAULT_TENANT_ID
             # Tag the run before the asset upsert: an untagged run reads back as
@@ -467,16 +677,59 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logging.exception("Scan job %s failed", job_id)
-        _update_job(
-            settings,
-            job_id,
-            status="failed",
-            finished_at=_now(),
-            error=str(exc)[:2000],
-        )
+        try:
+            _update_job(
+                settings,
+                job_id,
+                status=job_states.FAILED,
+                finished_at=_now(),
+                error=str(exc)[:2000],
+            )
+        except job_states.InvalidJobTransition:
+            # The scan itself finished and the job is already terminal — this
+            # is post-completion bookkeeping (run tagging) blowing up. Record it
+            # without rewriting the outcome the scan actually had.
+            _update_job(settings, job_id, error=str(exc)[:2000])
 
 
-def start_scan(settings: Settings, request: StartScanRequest, *, username: str) -> JobInfo:
+class IdempotentReplay(Exception):
+    """A scan start whose key already created a job. Carries that job.
+
+    An exception rather than a return value because the caller has to answer
+    differently (200, not 202): nothing was accepted by this request.
+    """
+
+    def __init__(self, job: JobInfo) -> None:
+        super().__init__(f"Idempotency key already started job {job.job_id}")
+        self.job = job
+
+
+def note_start_replay() -> None:
+    """Count a scan-start request answered from an existing job."""
+    metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(operation="start").inc()
+
+
+def find_by_idempotency_key(settings: Settings, *, tenant_id: str, key: str) -> JobInfo | None:
+    """The job a previous request with this key created, if any (P1.5)."""
+    if not key:
+        return None
+    with get_session(settings.postgres_url) as session:
+        row = session.execute(
+            select(models.Job).where(
+                models.Job.tenant_id == tenant_id,
+                models.Job.idempotency_key == key,
+            )
+        ).scalars().first()
+        return _to_info(row) if row else None
+
+
+def start_scan(
+    settings: Settings,
+    request: StartScanRequest,
+    *,
+    username: str,
+    idempotency_key: str | None = None,
+) -> JobInfo:
     if not settings.allow_scan_start:
         raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
 
@@ -509,7 +762,7 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
     row = models.Job(
         job_id=job_id,
         tenant_id=tenant_id,
-        status="queued",
+        status=job_states.QUEUED,
         execution=execution,
         mode=request.mode,
         run_id=run_id,
@@ -527,12 +780,28 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
         # Only local jobs are bound to this process; an agent job is claimable
         # by any worker and must not be reconciled when this replica restarts.
         owner_id=settings.instance_id if execution == "local" else None,
+        idempotency_key=(idempotency_key or None),
         queued_at=_now(),
     )
-    with get_session(settings.postgres_url) as session:
-        session.add(row)
-        session.flush()
-        info = _to_info(row)
+    try:
+        with get_session(settings.postgres_url) as session:
+            session.add(row)
+            session.flush()
+            info = _to_info(row)
+    except IntegrityError:
+        # Lost the race on (tenant_id, idempotency_key): another replica — or
+        # this one, serving the client's retry concurrently — already created
+        # the job. The caller wanted one scan for this key and there is one.
+        existing = find_by_idempotency_key(
+            settings, tenant_id=tenant_id, key=idempotency_key or ""
+        )
+        if existing is None:
+            raise
+        _log.info("Idempotent scan start: key already created job %s", existing.job_id)
+        # Raised rather than returned so the caller can answer 200 here too:
+        # this request accepted nothing, exactly like the sequential replay the
+        # route detects before calling in.
+        raise IdempotentReplay(existing) from None
     _refresh_job_gauges(settings)
 
     if execution == "local":
@@ -630,9 +899,23 @@ def claim_job(
         if row is None:
             return None
 
-        row.status = "running"
+        # `claimed`, not `running` (P1.3): the agent owns the job but has not
+        # reported working on it. Its first heartbeat naming this job promotes
+        # it (see mark_running), which is also the signal the P1.4 reaper needs
+        # to tell "taken by a worker that died" from "actually scanning".
+        job_states.check_transition(row.job_id, row.status, job_states.CLAIMED)
+        row.status = job_states.CLAIMED
         row.assigned_agent_id = agent_id
-        row.started_at = _now()
+        # `started_at` deliberately stays unset until the agent reports
+        # starting (mark_running). Stamping it here would fold the
+        # claim-to-heartbeat delay into every job-duration observation, and
+        # would show a job that never ran as having executed.
+        row.started_at = None
+        # The lease starts at the claim, not at the first heartbeat: an agent
+        # that dies between the two is exactly the case P1.4 has to catch.
+        row.claimed_until = _lease_deadline(settings)
+        row.attempts = (row.attempts or 0) + 1
+        attempt = row.attempts
         if not row.run_id:
             row.run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         session.flush()
@@ -649,10 +932,142 @@ def claim_job(
             export_defectdojo=bool(opts.get("export_defectdojo", False)),
             inputs=_read_job_inputs(settings, claimed_id),
             tenant_id=row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
+            # The fencing token for this hand-out: a lease that expired and was
+            # reissued bumps it, so a late upload from the previous attempt can
+            # be told apart from the current one even when both come from the
+            # same agent_id (a restarted worker keeps its id).
+            attempt=attempt,
         )
     _refresh_job_gauges(settings)
     agents_service.touch_job(agent_id, claimed_id, status="busy")
     return response
+
+
+def mark_running(settings: Settings, job_id: str, *, agent_id: str) -> None:
+    """Record an agent's heartbeat for the job it is working on.
+
+    Two things ride on this one signal: a claimed job is promoted to running,
+    and an in-flight job's lease is pushed forward (P1.4) — the heartbeat is
+    the only regular evidence the API gets that a remote worker is still alive.
+
+    Any other state is left alone: repeated heartbeats during a scan would
+    otherwise attempt running → running, and a heartbeat arriving after the
+    results upload must not resurrect a finished job. A heartbeat from an agent
+    that does not hold the job is ignored outright.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None or row.status not in job_states.IN_FLIGHT:
+            return
+        if row.assigned_agent_id != agent_id:
+            return
+        row.claimed_until = _lease_deadline(settings)
+        if row.status != job_states.CLAIMED:
+            return
+        row.status = job_states.RUNNING
+        if row.started_at is None:
+            row.started_at = _now()
+    _refresh_job_gauges(settings)
+
+
+def cancel_job(
+    settings: Settings,
+    job_id: str,
+    *,
+    username: str,
+    tenant_id: str | None = None,
+) -> JobInfo:
+    """Cancel a job nothing has picked up yet.
+
+    Legal only from ``queued``. Once an agent has claimed a job it starts
+    scanning without asking the API again, so cancelling a ``claimed`` (or
+    ``running``) job would show a stop that never happened while the scan went
+    on hitting the targets — see ``job_states``. An abandoned claimed job is
+    handled by the lease reaper instead.
+
+    The reason is stored in ``error`` rather than a new column: it is the field
+    the UI and API already surface for "why did this job end this way".
+    """
+    with get_session(settings.postgres_url) as session:
+        # Locked for the same reason as _update_job: a local job's executor
+        # thread may be transitioning the very same row to running right now,
+        # and cancelling a job that has already started is exactly the outcome
+        # this endpoint must never report.
+        row = session.get(models.Job, job_id, with_for_update=True)
+        if row is None:
+            raise LookupError("Job not found")
+        job_tenant = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
+        if tenant_id is not None and job_tenant != tenant_id:
+            raise PermissionError("Cross-tenant job access denied")
+        job_states.check_transition(job_id, row.status, job_states.CANCELLED)
+        row.status = job_states.CANCELLED
+        row.finished_at = _now()
+        row.claimed_until = None
+        row.error = f"Cancelled by {username}"[:2000]
+    _refresh_job_gauges(settings)
+    result = get_job(settings, job_id)
+    assert result is not None
+    return result
+
+
+class ResultsConflict(ValueError):
+    """A second upload for a finished job that is not a replay of the first."""
+
+
+class ResultsInFlight(ResultsConflict):
+    """A duplicate upload arrived while the first one is still being ingested."""
+
+
+class StaleAttempt(ValueError):
+    """An upload from a lease that has already expired and been reissued."""
+
+
+def _release_results_reservation(settings: Settings, job_id: str, key: str) -> None:
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id, with_for_update=True)
+        # Only clear our own reservation, and only while the job is still
+        # unfinished: once it is terminal the key is the record of what
+        # produced that outcome, not a reservation.
+        if row is not None and row.status not in job_states.TERMINAL:
+            if row.results_idempotency_key == key:
+                row.results_idempotency_key = None
+
+
+def _classify_replay(
+    row: models.Job, *, exit_code: int, idempotency_key: str | None
+) -> JobInfo | None:
+    """Decide whether an upload for an already-finished job is a replay.
+
+    Returns the stored outcome for a replay, raises ``ResultsConflict`` for an
+    upload that contradicts it, and returns ``None`` when this is not a replay
+    question at all (a cancelled job, say) so the caller's normal transition
+    check produces the error.
+
+    With a key, the comparison is exact. Without one — older agents, and the
+    legacy shared-token path — the fallback is the natural key: the same agent
+    reporting the same exit code for a job it still owns is the retry we are
+    trying to survive, and it cannot be confused with a different result,
+    because a different result carries a different exit code.
+    """
+    if row.status == job_states.CANCELLED:
+        return None
+    if idempotency_key:
+        if row.results_idempotency_key == idempotency_key:
+            return _replayed(row)
+        if row.results_idempotency_key:
+            raise ResultsConflict(
+                f"Job {row.job_id} already has results from a different upload"
+            )
+        return None
+    if row.exit_code == exit_code:
+        return _replayed(row)
+    return None
+
+
+def _replayed(row: models.Job) -> JobInfo:
+    metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(operation="results").inc()
+    _log.info("Replayed results upload for job %s; returning the stored outcome", row.job_id)
+    return _to_info(row)
 
 
 def complete_job(
@@ -665,9 +1080,29 @@ def complete_job(
     run_id: str | None = None,
     archive_bytes: bytes | None = None,
     tenant_id: str | None = None,
+    idempotency_key: str | None = None,
+    attempt: int | None = None,
 ) -> JobInfo:
+    """Record an agent's result upload. Replays return the original outcome.
+
+    P1.3 made a second upload an error, which is right for a *different*
+    result but wrong for the case that actually happens: the upload succeeded
+    and the response never made it back, so the agent sends the same bytes
+    again. Under P1.5 that replay is answered with the job as it already
+    stands — no re-extraction, no second NATS publish, no error for the agent
+    to interpret. Two uploads that genuinely disagree still conflict.
+
+    ``attempt`` is the fencing token from the claim response. A lease that
+    expired and was reissued bumped it, so an upload carrying an older value is
+    a straggler from an attempt that has already been replaced — and since a
+    restarted worker keeps its ``agent_id``, that is the only way to tell the
+    two apart. Omitted by pre-P1.5 agents, which are then unfenced.
+    """
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.Job, job_id)
+        # Locked for the whole check: concurrent uploads for the same job must
+        # be decided one at a time, or both would read a non-terminal row and
+        # both go on to extract the archive.
+        row = session.get(models.Job, job_id, with_for_update=True)
         if row is None:
             raise LookupError("Job not found")
         if row.execution != "agent":
@@ -677,51 +1112,85 @@ def complete_job(
         job_tenant = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
         if tenant_id is not None and job_tenant != tenant_id:
             raise PermissionError("Cross-tenant job access denied")
-        if row.status not in {"running", "queued"}:
-            raise ValueError(f"Job is already {row.status}")
+        if attempt is not None and attempt != (row.attempts or 0):
+            raise StaleAttempt(
+                f"Job {job_id} is on attempt {row.attempts}; upload is from attempt {attempt}"
+            )
+        status = job_states.SUCCEEDED if exit_code == 0 else job_states.FAILED
+        if row.status in job_states.TERMINAL:
+            replay = _classify_replay(row, exit_code=exit_code, idempotency_key=idempotency_key)
+            if replay is not None:
+                return replay
+        elif idempotency_key:
+            if row.results_idempotency_key == idempotency_key:
+                # Same key, job not finished: the first request holding this key
+                # is still ingesting. Answering 409 tells the client to retry
+                # rather than letting two handlers extract into one run
+                # directory and race to terminalize the job.
+                raise ResultsInFlight(
+                    f"An upload with this key is already being processed for job {job_id}"
+                )
+            # Reserve the key inside the locked transaction, so the duplicate
+            # above can recognise it. Cleared again if this upload fails.
+            row.results_idempotency_key = idempotency_key
+        # Checked before the archive is ingested, not after: a duplicate upload
+        # for a job that already finished — or one an operator cancelled while
+        # the agent was still working — must not overwrite the run directory
+        # and re-publish to NATS before being rejected.
+        job_states.check_transition(job_id, row.status, status)
         resolved_run_id = run_id or row.run_id
 
-    if archive_bytes:
-        if not resolved_run_id:
-            raise ValueError("run_id required when uploading results")
-        # Gateway: validate + publish to ingest.raw_results (idempotent Msg-Id).
-        if settings.nats_url:
+    try:
+        if archive_bytes:
+            if not resolved_run_id:
+                raise ValueError("run_id required when uploading results")
+            # Gateway: validate + publish to ingest.raw_results (idempotent Msg-Id).
+            if settings.nats_url:
+                try:
+                    results_ingest.publish_raw_results(
+                        nats_url=settings.nats_url,
+                        job_id=job_id,
+                        run_id=str(resolved_run_id),
+                        agent_id=agent_id,
+                        exit_code=exit_code,
+                        archive_bytes=archive_bytes,
+                        error=error,
+                        tenant_id=job_tenant,
+                    )
+                except results_ingest.IngestError as exc:
+                    raise ValueError(str(exc)) from exc
+            dest = settings.output_dir / "runs" / str(resolved_run_id)
             try:
-                results_ingest.publish_raw_results(
-                    nats_url=settings.nats_url,
-                    job_id=job_id,
-                    run_id=str(resolved_run_id),
-                    agent_id=agent_id,
-                    exit_code=exit_code,
-                    archive_bytes=archive_bytes,
-                    error=error,
-                    tenant_id=job_tenant,
+                results_ingest.extract_run_archive(archive_bytes, dest)
+                results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
+                runs_service.write_run_tenant(
+                    settings, str(resolved_run_id), job_tenant, job_id=job_id
                 )
             except results_ingest.IngestError as exc:
                 raise ValueError(str(exc)) from exc
-        dest = settings.output_dir / "runs" / str(resolved_run_id)
-        try:
-            results_ingest.extract_run_archive(archive_bytes, dest)
-            results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
-            runs_service.write_run_tenant(
-                settings, str(resolved_run_id), job_tenant, job_id=job_id
+            _upsert_assets_best_effort(
+                settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
             )
-        except results_ingest.IngestError as exc:
-            raise ValueError(str(exc)) from exc
-        _upsert_assets_best_effort(
-            settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
-        )
 
-    status = "succeeded" if exit_code == 0 else "failed"
-    _update_job(
-        settings,
-        job_id,
-        status=status,
-        finished_at=_now(),
-        exit_code=exit_code,
-        run_id=str(resolved_run_id) if resolved_run_id else None,
-        error=(error[:2000] if error else None),
-    )
+        _update_job(
+            settings,
+            job_id,
+            status=status,
+            finished_at=_now(),
+            exit_code=exit_code,
+            run_id=str(resolved_run_id) if resolved_run_id else None,
+            error=(error[:2000] if error else None),
+            # Recorded with the outcome, so a later upload can be told apart from
+            # the one that produced it.
+            results_idempotency_key=(idempotency_key or None),
+        )
+    except Exception:
+        # The reservation above is only meaningful while this upload is in
+        # flight. Releasing it lets the agent retry with the same key instead
+        # of meeting its own abandoned reservation forever.
+        if idempotency_key:
+            _release_results_reservation(settings, job_id, idempotency_key)
+        raise
     agents_service.touch_job(agent_id, None, status="idle")
     result = get_job(settings, job_id)
     assert result is not None

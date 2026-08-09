@@ -185,7 +185,8 @@ export type PortAggregate = {
 
 export type JobInfo = {
   job_id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  /** `claimed` = an agent holds the job but has not reported starting it. */
+  status: "queued" | "claimed" | "running" | "succeeded" | "failed" | "cancelled";
   run_id: string | null;
   mode: string;
   started_at: string | null;
@@ -200,6 +201,9 @@ export type JobInfo = {
   /** Set when the scan succeeded but the asset-registry upsert did not run, so
    * a clean-looking job with an empty asset list has a visible reason. */
   asset_upsert_error?: string | null;
+  /** Hand-outs to an executor. Above 1 means an earlier attempt's lease
+   * expired and the job was requeued. */
+  attempts?: number;
 };
 
 export type ScheduleScanOptions = {

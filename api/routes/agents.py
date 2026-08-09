@@ -44,6 +44,7 @@ def register_agent(
 def heartbeat(
     body: AgentHeartbeatRequest,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentInfo:
     info = agents_service.heartbeat(
         body.agent_id,
@@ -55,6 +56,11 @@ def heartbeat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     if info.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+    # The agent naming a job it holds is the only evidence the API gets that
+    # the scan actually started, so it is what promotes claimed → running
+    # (ROADMAP P1.3). Any other state is left alone by mark_running.
+    if body.current_job_id:
+        jobs_service.mark_running(settings, body.current_job_id, agent_id=body.agent_id)
     return info
 
 
@@ -98,6 +104,14 @@ async def upload_results(
     error: Annotated[str | None, Form()] = None,
     run_id: Annotated[str | None, Form()] = None,
     archive: UploadFile | None = File(None),
+    # Optional (ROADMAP P1.5): identifies *this completion*, so a retry after a
+    # network timeout is answered with the stored outcome instead of an error.
+    # Sent as a form field rather than a header because the agent already
+    # builds this request as multipart.
+    idempotency_key: Annotated[str | None, Form()] = None,
+    # Fencing token from the claim response (ROADMAP P1.4/P1.5). Optional, so
+    # pre-P1.5 agents keep working — unfenced, as they were.
+    attempt: Annotated[int | None, Form()] = None,
 ) -> JobInfo:
     agent = agents_service.get_agent(agent_id)
     if agent is None:
@@ -119,11 +133,20 @@ async def upload_results(
             run_id=run_id,
             archive_bytes=archive_bytes,
             tenant_id=principal.tenant_id,
+            idempotency_key=(idempotency_key or "").strip()[:200] or None,
+            attempt=attempt,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except jobs_service.StaleAttempt as exc:
+        # The lease for that attempt expired and the job was handed out again;
+        # this result belongs to a scan that has since been replaced.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except jobs_service.ResultsConflict as exc:
+        # Same job, different completion — or the same one still being ingested.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

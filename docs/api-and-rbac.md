@@ -41,7 +41,7 @@ not an authorization control.
 |---|---|
 | `/api/auth` | Login and current principal |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
-| `/api/jobs` | Start and monitor scan jobs |
+| `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
 | `/api/assets` | Persistent asset inventory and metadata |
 | `/api/endpoint` | Endpoint device and software inventory |
@@ -49,6 +49,38 @@ not an authorization control.
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
+
+`POST /api/jobs/{job_id}/cancel` (operator) cancels a `queued` job — one no
+executor has taken yet, so refusing to hand it out is a real stop. It answers
+`409` once the job is `claimed`, `running`, or finished (an agent that has
+claimed a job scans without asking again, so cancelling then would report a
+stop that never happened), and `404` for a job in another tenant.
+The job's status becomes `cancelled` and the reason is recorded in `error`. See
+the job lifecycle in [architecture.md](architecture.md#job-lifecycle) for the
+full state set.
+
+`POST /api/jobs` accepts an optional **`Idempotency-Key`** header. A retry
+carrying a key an earlier request already used returns that job with **200**
+instead of **202** — nothing was accepted this time — so a client that retries
+after a timeout cannot queue the same scan twice. Keys are scoped per tenant
+and never expire; reuse one only for the request it named.
+
+`POST /api/agent/jobs/{job_id}/results` accepts an optional `idempotency_key`
+form field with the same intent on the upload side: repeating an upload that
+already landed returns the stored outcome (200), rather than the 422 a second
+completion would otherwise get. A second upload that *disagrees* with the
+stored one answers **409**, as does a duplicate that arrives while the first is
+still being ingested — retry it once the first request finishes. Agents that
+send no key still get replay detection from the natural key (same agent, same
+job, same exit code).
+
+The same endpoint accepts the `attempt` returned by the claim
+(`AgentClaimResponse.attempt`). It is a fencing token: if the job's lease
+expired and it was handed out again, an upload carrying the older attempt
+answers **409** rather than overwriting the run of the attempt that replaced
+it. This matters because a restarted worker keeps its `agent_id`, so the agent
+identity alone cannot tell the two apart. Agents that omit it are unfenced,
+exactly as before.
 
 `POST /api/endpoint/inventory` is the only agent-authenticated write in that
 group and carries contract-specific limits: `411` when `Content-Length` is

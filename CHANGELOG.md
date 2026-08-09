@@ -6,6 +6,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Job statuses are now a validated state machine** (ROADMAP P1.3). The
+  lifecycle lives in one place (`api/services/job_states.py`) and is enforced on
+  every status write, instead of each call site assigning a string: an illegal
+  move raises rather than overwriting, so a `/results` upload retried after a
+  network timeout can no longer rewrite a job that already finished — and it is
+  rejected *before* the archive is extracted and re-published. Two states are
+  new. `claimed` covers the window between an agent taking a job and reporting
+  that the scan started (its first heartbeat naming the job promotes it to
+  `running`); it used to be indistinguishable from `running`, hiding exactly
+  the case the P1.4 lease reaper needs to see. `started_at` now records when the
+  agent reported starting rather than when it claimed, so job durations no
+  longer include the claim-to-heartbeat delay. `cancelled` is terminal and set
+  by the new endpoint below. **API consumers:** `JobInfo.status` can now return
+  `claimed` and `cancelled`; the Web UI renders both.
+- `octo_jobs_running` counts `claimed` jobs as well as `running` ones — a
+  claimed job is out with a worker, so leaving it in `octo_jobs_queued` would
+  read as a backlog nothing is working on. `cancelled` jobs are not observed by
+  `octo_job_duration_seconds`, so an operator's decision does not count against
+  the job-completion SLO ([docs/slo.md](docs/slo.md)).
+
 - **Durable control plane: jobs and agents moved into PostgreSQL** (ROADMAP
   P1.1/P1.2). Both registries were module-level dicts in the API process,
   mirrored to `state/api_jobs.json` and `state/api_agents.json`. That gave
@@ -29,6 +49,74 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Idempotency keys for scan start and result upload** (ROADMAP P1.5;
+  migration `0010_job_idempotency`). The failure worth designing for is not a
+  duplicate request but a lost response: the write landed and the client never
+  found out. `POST /api/jobs` now honours an **`Idempotency-Key`** header and
+  creates at most one job per (tenant, key) — uniqueness is a database
+  constraint, since two replicas serving the same retry would both read "no
+  such key" — answering **200** rather than 202 for the replay, because nothing
+  was accepted that time. `POST /api/agent/jobs/{job_id}/results` takes an
+  optional `idempotency_key` form field and replays the stored outcome instead
+  of the 422 that P1.3 gives a second completion, with **409** when a second
+  upload genuinely contradicts the first. Agents that send no key still get
+  replay detection from the natural key (same agent, same job, same exit code),
+  so no agent upgrade is required; the bundled agent derives its key from the
+  job rather than randomising it, so a restarted process computes the same one.
+  An upload for a **cancelled** job is still refused — cancellation is an
+  operator decision, not an outcome to replay. A duplicate arriving *while* the
+  first upload is still being ingested also answers 409 (retry once it
+  finishes) rather than letting two handlers extract into the same run
+  directory. New metric `octo_job_idempotent_replays_total{operation}`.
+- **Attempt fencing on result upload.** The claim response now carries an
+  `attempt` number, which the agent echoes back with its results. A lease that
+  expired and was reissued bumps it, so a straggling upload from the previous
+  attempt is refused (**409**) instead of overwriting the run the current
+  attempt is producing — a restarted worker keeps its `agent_id`, so agent
+  identity alone could not tell the two apart. Agents that omit the field are
+  unfenced, exactly as before.
+- **The bundled agent now heartbeats for the whole scan** rather than once at
+  the start. The heartbeat is what renews the server-side lease, so without this
+  any scan longer than `OCTO_JOB_LEASE_SECONDS` would be requeued and handed to
+  a second agent while the first was still scanning the same targets. Interval
+  is 60s against the 300s default lease; a failed heartbeat is retried on the
+  next tick rather than aborting the scan.
+- The **schedule dispatcher** now keys each dispatch on the schedule's own due
+  time, so replicas that all wake for the same tick create one job instead of
+  one each. This bounds — but does not replace — the missing leader election
+  (P1.6): the replicas still all poll, and still race on the schedule's own
+  `last_run_at`/`next_run_at` bookkeeping.
+- **Job leases and an expiry reaper** (ROADMAP P1.4; migration
+  `0009_job_leases`). A job handed to an executor had no deadline, so "the
+  worker is still scanning" and "the worker died three hours ago" looked
+  identical in the table and the row stayed in flight forever. Every
+  claimed/running job now carries `claimed_until`, renewed by the agent
+  heartbeat — or, for local jobs, by a thread running beside the scan, which is
+  what finally closes the P1.2 residual: the renewals stop with the replica, so
+  an orphaned local job stops looking attended. A sweep every
+  `OCTO_JOB_REAPER_INTERVAL_SECONDS` (60) puts expired **agent** jobs back on
+  the queue until `OCTO_JOB_MAX_ATTEMPTS` (3) hand-outs are used and fails them
+  after that, so a target that kills whatever picks it up cannot cycle through
+  the fleet; expired **local** jobs are failed outright, since no other replica
+  could ever pick them up. The sweep runs in every replica and needs no leader
+  election — expiry is a property of the row, and candidates are taken with
+  `FOR UPDATE SKIP LOCKED`. New settings `OCTO_JOB_LEASE_SECONDS` (300),
+  `OCTO_JOB_MAX_ATTEMPTS`, `OCTO_JOB_REAPER_ENABLED`,
+  `OCTO_JOB_REAPER_INTERVAL_SECONDS`; new metric
+  `octo_job_lease_expired_total{outcome}`; `JobInfo` gained `attempts`.
+  **Set `OCTO_JOB_LEASE_SECONDS` comfortably above your agents' heartbeat
+  interval** — too low and healthy scans get requeued underneath a working
+  agent.
+- **`POST /api/jobs/{job_id}/cancel`** (operator; ROADMAP P1.3) — cancels a
+  queued job, which the API previously had no way to do: a queued scan could
+  only be waited out. Legal **only** from `queued`, where nothing has taken the
+  job and refusing to hand it out is a real stop. A `claimed` or `running` job
+  answers **409**: an agent that has claimed a job starts scanning without
+  asking the API again, so cancelling then would show a stop that never happened
+  while the targets were still being scanned. An abandoned claimed job is the
+  lease reaper's business instead. A job in another tenant answers 404. The
+  reason is recorded in the job's `error`. API-only for now: the Web UI shows
+  the new statuses but has no cancel action.
 - **`OCTO_INSTANCE_ID`** — identity of an API replica in the shared job queue,
   defaulting to the hostname. Local-mode jobs run in a thread inside one
   replica, so the row records its owner and a starting replica reconciles only

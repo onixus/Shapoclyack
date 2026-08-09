@@ -27,6 +27,7 @@ from api.services import ch_ingest_worker
 from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
+from api.services import job_reaper
 from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
@@ -49,9 +50,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     schedule_dispatcher.start_worker(settings)
     endpoint_retention.start_worker(settings)
+    # Safe in every replica, unlike the dispatcher above: expiry is a property
+    # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
+    job_reaper.start_worker(settings)
     try:
         yield
     finally:
+        job_reaper.stop_worker()
         endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()

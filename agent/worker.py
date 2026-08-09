@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -22,12 +23,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from agent import __version__
 
 LOG = logging.getLogger("octo-agent")
+
+# Well under the server's OCTO_JOB_LEASE_SECONDS default (300): the lease has
+# to survive a few missed heartbeats, not just one.
+HEARTBEAT_INTERVAL_SECONDS = 60.0
 
 SUBJECT_JOBS_SCAN = "jobs.scan"
 STREAM_JOBS = "JOBS"
@@ -140,6 +146,7 @@ class AgentClient:
         run_id: str | None,
         error: str | None,
         archive_path: Path | None,
+        attempt: int | None = None,
     ) -> dict[str, Any]:
         boundary = f"----octoagent{int(time.time() * 1000)}"
         parts: list[bytes] = []
@@ -155,6 +162,18 @@ class AgentClient:
 
         add_field("agent_id", agent_id)
         add_field("exit_code", str(exit_code))
+        # Identifies this completion (server-side ROADMAP P1.5). Derived rather
+        # than random so a retry — including one from a restarted process —
+        # computes the same key and is recognised as a replay instead of
+        # colliding with the upload that already landed.
+        add_field(
+            "idempotency_key",
+            f"{agent_id}:{job_id}:{run_id or ''}:{exit_code}",
+        )
+        # Fencing token from the claim response: the server rejects an upload
+        # from an attempt whose lease has already expired and been reissued.
+        if attempt is not None:
+            add_field("attempt", str(attempt))
         if run_id:
             add_field("run_id", run_id)
         if error:
@@ -253,6 +272,37 @@ def _run_scan(
     return 0, None, archive_path
 
 
+@contextlib.contextmanager
+def _busy_heartbeats(
+    client: AgentClient, *, agent_id: str, job_id: str, interval: float
+) -> Iterator[None]:
+    """Keep reporting this job for as long as the scan runs.
+
+    The server leases in-flight jobs and treats a lapsed lease as a dead worker
+    (ROADMAP P1.4), and the heartbeat is what renews it. One heartbeat at the
+    start would therefore have any scan longer than the lease requeued and
+    handed to a second agent while the first is still scanning the same
+    targets. Failures are logged and retried on the next tick — a blip in the
+    control plane must not abort a running scan.
+    """
+    stop = threading.Event()
+
+    def _loop() -> None:
+        while not stop.wait(interval):
+            try:
+                client.heartbeat(agent_id, status="busy", current_job_id=job_id)
+            except Exception:  # noqa: BLE001
+                LOG.warning("Heartbeat failed for job %s", job_id, exc_info=True)
+
+    thread = threading.Thread(target=_loop, name=f"octo-heartbeat-{job_id}", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+
+
 def _execute_job(
     client: AgentClient,
     *,
@@ -260,20 +310,25 @@ def _execute_job(
     job: dict[str, Any],
     config: Path,
     output_dir: Path,
+    heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
 ) -> None:
     LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
     client.heartbeat(agent_id, status="busy", current_job_id=job["job_id"])
     with tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp:
         workdir = Path(tmp)
-        exit_code, error, archive = _run_scan(
-            config=config,
-            job=job,
-            workdir=workdir,
-            output_dir=output_dir,
-        )
+        with _busy_heartbeats(
+            client, agent_id=agent_id, job_id=job["job_id"], interval=heartbeat_interval
+        ):
+            exit_code, error, archive = _run_scan(
+                config=config,
+                job=job,
+                workdir=workdir,
+                output_dir=output_dir,
+            )
         client.upload_results(
             job["job_id"],
             agent_id=agent_id,
+            attempt=job.get("attempt"),
             exit_code=exit_code,
             run_id=str(job["run_id"]),
             error=error,

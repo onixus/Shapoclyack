@@ -15,13 +15,17 @@ import threading
 from datetime import UTC, datetime
 
 from api.schemas import StartScanRequest
+from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import scan_schedules
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.schedule-dispatcher")
 
-_RUNNING_STATUSES = {"queued", "running"}
+# Overlap protection: a schedule whose previous job has not reached a terminal
+# state yet is skipped. Sourced from job_states so a new non-terminal state
+# (P1.3 added `claimed`) cannot silently start counting as "finished".
+_RUNNING_STATUSES = set(job_states.ACTIVE)
 
 
 class ScheduleDispatcher:
@@ -86,7 +90,22 @@ class ScheduleDispatcher:
             **sched["scan_options"],
             **sched["targets"],
         )
-        job = jobs_service.start_scan(self._settings, request, username="scheduler")
+        # Keyed on the schedule's own due time, not on this replica's clock, so
+        # every replica dispatching the same tick computes the same key and
+        # only one job is created (ROADMAP P1.5). This does not replace leader
+        # election (P1.6): the replicas still all wake up, still all query, and
+        # still race on the schedule's bookkeeping — it only stops the duplicate
+        # *scans*, which is the part that costs money and hits the target.
+        key = f"schedule:{sched['schedule_id']}:{sched.get('next_run_at') or now.isoformat()}"
+        try:
+            job = jobs_service.start_scan(
+                self._settings, request, username="scheduler", idempotency_key=key
+            )
+        except jobs_service.IdempotentReplay as replay:
+            # Another replica won this tick. Its job is the tick's job; record
+            # it here too so the schedule's bookkeeping still moves forward if
+            # the winner failed between starting the scan and recording it.
+            job = replay.job
         scan_schedules.record_dispatch(sched["schedule_id"], job_id=job.job_id, ran_at=now)
         self._stats["dispatched"] += 1
         LOG.info("Dispatched schedule %s -> job %s", sched["schedule_id"], job.job_id)

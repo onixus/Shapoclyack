@@ -19,8 +19,12 @@ const IN_PROGRESS = "bg-amber-500/20 text-amber-300 border border-amber-500/30 h
 export const JOB_STATUS: Record<JobInfo["status"], StatusStyle> = {
   succeeded: { label: "succeeded", className: SUCCESS },
   running: { label: "running", className: IN_PROGRESS },
+  // Held by an agent that has not reported starting yet: in flight, but not
+  // yet scanning, so it reads as in-progress with a lighter treatment.
+  claimed: { label: "claimed", className: "bg-amber-500/10 text-amber-400 border border-amber-500/30 font-semibold" },
   failed: { label: "failed", variant: "destructive", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold" },
   queued: { label: "queued", variant: "secondary", className: "bg-slate-800 text-slate-300 border border-slate-700 font-semibold" },
+  cancelled: { label: "cancelled", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
 };
 
 export type AgentEffectiveStatus = AgentInfo["status"] | "offline";

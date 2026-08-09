@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import JobInfo, Page, StartScanRequest
+from api.services import job_states
 from api.services import jobs as jobs_service
 from api.settings import Settings
 
@@ -49,11 +50,40 @@ def get_job(
     return job
 
 
+@router.post("/{job_id}/cancel", response_model=JobInfo)
+def cancel_job(
+    job_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> JobInfo:
+    """Cancel a job that has not started executing (ROADMAP P1.3).
+
+    Answers 409 for a job that is already running or finished: cancellation
+    only prevents execution, it cannot stop a scan already in flight.
+    """
+    try:
+        return jobs_service.cancel_job(
+            settings,
+            job_id,
+            username=principal.username,
+            # A platform admin may cancel in any tenant; everyone else is
+            # pinned, and the mismatch is reported as 404 below so the id is
+            # not confirmed to someone with no right to know it exists.
+            tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+        )
+    except (LookupError, PermissionError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found") from exc
+    except job_states.InvalidJobTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.post("", response_model=JobInfo, status_code=status.HTTP_202_ACCEPTED)
 def start_job(
     body: StartScanRequest,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: Annotated[Settings, Depends(get_settings)],
+    response: Response,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> JobInfo:
     # The body's tenant_id is advisory: outside of a platform admin it may
     # only name the tenant the caller already resolved into, so a scan can
@@ -66,8 +96,26 @@ def start_job(
         )
     tenant_id = requested if (requested and principal.is_platform_admin) else principal.tenant_id
     body = body.model_copy(update={"tenant_id": tenant_id})
+    key = (idempotency_key or "").strip()[:200]
+    if key:
+        # A retry after a timeout must not queue a second scan of the same
+        # targets (ROADMAP P1.5). 200 rather than 202 says "this already
+        # existed" — the scan was accepted by the earlier call, not this one.
+        existing = jobs_service.find_by_idempotency_key(settings, tenant_id=tenant_id, key=key)
+        if existing is not None:
+            jobs_service.note_start_replay()
+            response.status_code = status.HTTP_200_OK
+            return existing
     try:
-        return jobs_service.start_scan(settings, body, username=principal.username)
+        return jobs_service.start_scan(
+            settings, body, username=principal.username, idempotency_key=key or None
+        )
+    except jobs_service.IdempotentReplay as replay:
+        # Two requests with one key raced past the lookup above; the database
+        # picked a winner and this one accepted nothing either.
+        jobs_service.note_start_replay()
+        response.status_code = status.HTTP_200_OK
+        return replay.job
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:

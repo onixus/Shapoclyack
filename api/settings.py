@@ -104,6 +104,20 @@ class Settings:
     # Kubernetes). Jobs orphaned by a replica that never comes back under the
     # same id are the reaper's job — ROADMAP P1.4.
     instance_id: str = ""
+    # Job leases (ROADMAP P1.4). A claimed/running job carries a deadline that
+    # its executor must keep pushing forward: agents on every heartbeat, local
+    # jobs from a renewal thread beside the scan. Once it lapses the job is
+    # provably unattended — the executor is gone, not slow — and the reaper
+    # requeues it (agent jobs) or fails it (local jobs, whose only executor was
+    # the dead process). The default is deliberately several times the agent's
+    # heartbeat interval so an ordinary hiccup does not steal a live job.
+    job_lease_seconds: int = 300
+    # How many times a job may be handed out before the reaper stops requeueing
+    # it and fails it instead. Counted per claim, so a target that reliably
+    # kills its worker cannot cycle forever.
+    job_max_attempts: int = 3
+    job_reaper_enabled: bool = True
+    job_reaper_interval_seconds: int = 60
 
 
 # Legacy sqlite filename from when the product was called "octo-man". Kept as a
@@ -204,4 +218,14 @@ def load_settings() -> Settings:
             os.environ.get("OCTO_ENDPOINT_RETENTION_BATCH_SIZE", "5000")
         ),
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
+        job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
+        job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),
+        job_reaper_enabled=os.environ.get("OCTO_JOB_REAPER_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        # Floored: the reaper's tick is a locking query over the jobs table, so
+        # a mistyped 0 or a negative value would turn Event.wait() into a busy
+        # loop hammering the database rather than "sweep more often".
+        job_reaper_interval_seconds=max(
+            5, int(os.environ.get("OCTO_JOB_REAPER_INTERVAL_SECONDS", "60"))
+        ),
     )
