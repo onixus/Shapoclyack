@@ -219,3 +219,38 @@ def test_check_tls_posture_truncation_counts_findings_only_endpoints(tmp_path: P
     assert result["source"] == "pulse-tls"
     assert result["truncated"] is True
     assert result["checked_count"] == 2
+
+
+def test_pulse_source_gets_hostname_mismatch_from_the_dialled_host(tmp_path: Path):
+    """P4.1 runs on every source. A Pulse row names the host it dialled, so the
+    check works even when the IP has no ``hostnames.json`` entry."""
+    nmap_dir = tmp_path / "nmap"
+    nmap_dir.mkdir()
+    pulse_dir = tmp_path / "pulse"
+    pulse_dir.mkdir()
+    (pulse_dir / "tls.json").write_text(
+        json.dumps(
+            {
+                "tls": [
+                    {
+                        "ip": "10.0.0.1",
+                        "host": "shop.example.test",
+                        "port": 443,
+                        "subject_cn": "other.example.net",
+                        "san": ["other.example.net"],
+                        "self_signed": False,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = TlsPostureConfig(enabled=True)
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    result = check_tls_posture(nmap_dir, cfg, tmp_path, now=now)
+    assert result["source"] == "pulse-tls"
+    issue = next(
+        i for i in result["findings"][0]["issues"] if i["kind"] == "cert_name_mismatch"
+    )
+    assert issue["checked_names"] == ["shop.example.test"]
+    assert issue["cert_names"] == ["other.example.net"]

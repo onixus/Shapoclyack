@@ -290,8 +290,16 @@ def _cert_from_der(der: bytes) -> dict[str, Any]:
     san_list: list[str] = []
     try:
         ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+        # Rendered in the same "TYPE:value" form the stdlib and nmap paths use,
+        # rather than cryptography's ``<DNSName(value='x')>`` repr, so the P4.1
+        # name check reads one shape whatever produced the certificate.
         for name in ext.value:  # type: ignore[union-attr]
-            san_list.append(str(name))
+            if isinstance(name, x509.DNSName):
+                san_list.append(f"DNS:{name.value}")
+            elif isinstance(name, x509.IPAddress):
+                san_list.append(f"IP Address:{name.value}")
+            else:
+                san_list.append(str(name))
     except Exception:  # noqa: BLE001 — no SAN or unreadable
         pass
 

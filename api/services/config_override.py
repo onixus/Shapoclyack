@@ -108,6 +108,7 @@ SECRET_PATHS: frozenset[str] = frozenset({"enrichment.cvss4.nvd_api_key"})
 _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "fingerprint.enabled": _as_bool,
     "tls_posture.enabled": _as_bool,
+    "tls_posture.hostname_mismatch": _as_bool,
     "nuclei.enabled": _as_bool,
     "nuclei.severities": _severities,
     "nuclei.exclude_tags": _str_list,

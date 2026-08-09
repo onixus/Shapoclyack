@@ -598,6 +598,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
                 config.tls_posture,
                 paths.output_dir,
                 open_ports=open_ports,
+                hostnames=hostnames_map,
             ),
         )
         checkpoint.mark_done("tls_posture")

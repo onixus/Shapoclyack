@@ -287,3 +287,91 @@ def test_parse_ssl_enum_ciphers_output():
     assert tls12["ciphers"] == [
         {"name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "grade": "A"}
     ]
+
+
+# --- P4.1: hostname / SAN-CN mismatch --------------------------------------
+
+SAN_CERT_OUTPUT = """Subject: commonName=example.com
+Issuer: commonName=R3/organizationName=Let's Encrypt
+Subject Alternative Name: DNS:example.com, DNS:www.example.com
+Public Key type: rsa
+Public Key bits: 2048
+Not valid before: 2026-05-01T00:00:00
+Not valid after:  2027-05-01T23:59:59
+"""
+
+NOW = datetime(2026, 7, 22, tzinfo=timezone.utc)
+
+
+def _nmap_run_with_cert(tmp_path: Path, host: str, cert_output: str = SAN_CERT_OUTPUT) -> Path:
+    nmap_dir = tmp_path / "nmap" / "tcp"
+    nmap_dir.mkdir(parents=True, exist_ok=True)
+    _write_nmap_xml(nmap_dir / f"{host}.xml", host, "443", [("ssl-cert", cert_output)])
+    return tmp_path / "nmap"
+
+
+def test_hostname_mismatch_flagged_from_nmap_source(tmp_path: Path):
+    nmap_dir = _nmap_run_with_cert(tmp_path, "10.0.0.20")
+    hostnames = {"10.0.0.20": {"forward": ["shop.other.test"], "reverse": [], "names": ["shop.other.test"]}}
+    result = check_tls_posture(
+        nmap_dir, ENABLED_CONFIG, tmp_path, now=NOW, hostnames=hostnames
+    )
+    issue = next(
+        i for i in result["findings"][0]["issues"] if i["kind"] == "cert_name_mismatch"
+    )
+    assert issue["severity"] == "medium"
+    assert issue["checked_names"] == ["shop.other.test"]
+    assert issue["cert_names"] == ["example.com", "www.example.com"]
+
+
+def test_hostname_match_produces_no_finding(tmp_path: Path):
+    nmap_dir = _nmap_run_with_cert(tmp_path, "10.0.0.21")
+    hostnames = {"10.0.0.21": {"forward": ["www.example.com"], "reverse": [], "names": ["www.example.com"]}}
+    result = check_tls_posture(
+        nmap_dir, ENABLED_CONFIG, tmp_path, now=NOW, hostnames=hostnames
+    )
+    assert result["findings"][0]["issues"] == []
+
+
+def test_ptr_only_hostname_is_not_a_mismatch(tmp_path: Path):
+    # A reverse name is assigned by the address-block owner, not the service
+    # owner; it is not an expectation the certificate has to satisfy.
+    nmap_dir = _nmap_run_with_cert(tmp_path, "10.0.0.22")
+    hostnames = {
+        "10.0.0.22": {
+            "forward": [],
+            "reverse": ["ec2-10-0-0-22.compute.test"],
+            "names": ["ec2-10-0-0-22.compute.test"],
+        }
+    }
+    result = check_tls_posture(
+        nmap_dir, ENABLED_CONFIG, tmp_path, now=NOW, hostnames=hostnames
+    )
+    assert result["findings"][0]["issues"] == []
+
+
+def test_no_hostnames_map_skips_the_check(tmp_path: Path):
+    nmap_dir = _nmap_run_with_cert(tmp_path, "10.0.0.23")
+    result = check_tls_posture(nmap_dir, ENABLED_CONFIG, tmp_path, now=NOW)
+    assert result["findings"][0]["issues"] == []
+
+
+def test_hostname_mismatch_can_be_disabled(tmp_path: Path):
+    nmap_dir = _nmap_run_with_cert(tmp_path, "10.0.0.24")
+    hostnames = {"10.0.0.24": {"forward": ["shop.other.test"], "reverse": []}}
+    result = check_tls_posture(
+        nmap_dir,
+        TlsPostureConfig(enabled=True, hostname_mismatch=False),
+        tmp_path,
+        now=NOW,
+        hostnames=hostnames,
+    )
+    assert result["findings"][0]["issues"] == []
+
+
+def test_mismatch_reaches_the_findings_text_file(tmp_path: Path):
+    nmap_dir = _nmap_run_with_cert(tmp_path, "10.0.0.25")
+    hostnames = {"10.0.0.25": {"forward": ["shop.other.test"], "reverse": []}}
+    check_tls_posture(nmap_dir, ENABLED_CONFIG, tmp_path, now=NOW, hostnames=hostnames)
+    lines = (tmp_path / "tls_posture_findings.txt").read_text(encoding="utf-8").splitlines()
+    assert lines == ["10.0.0.25:443:cert_name_mismatch"]

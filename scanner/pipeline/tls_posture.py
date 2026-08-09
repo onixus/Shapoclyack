@@ -46,10 +46,14 @@ fail-soft by construction: any field or line that doesn't match is skipped
 or set to ``None`` rather than raising. A parse miss silently yields fewer
 findings, never a crash.
 
-OUT OF SCOPE: hostname/SAN-CN mismatch checking (comparing the certificate's
-name(s) against the scanned target) is explicitly not implemented by this
-module -- see the Phase 9.2 plan. Only cert expiry, the self-signed
-heuristic, and weak protocol/cipher findings are produced.
+P4.1 adds one more finding, applied uniformly to all three sources after the
+per-source parsing is done:
+
+  * ``cert_name_mismatch`` (medium) -- the certificate's DNS identities (CN +
+    SAN) cover none of the FQDNs the scan used to reach the endpoint. The
+    expected names are the *forward* half of ``hostnames.json`` only; matching
+    follows RFC 6125 wildcard rules. See ``cert_names.py`` for why PTR names
+    are excluded and why an IP-only endpoint yields no finding.
 
 SAFETY: disabled by default (``tls_posture.enabled = false``). The set of
 host:port endpoints inspected is capped by ``max_targets`` -- past the cap,
@@ -62,6 +66,7 @@ scan scope or asset identity (same non-escalation principle as
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
@@ -74,6 +79,7 @@ from typing import Any
 # and ET.ParseError -- defusedxml.ElementTree does not export Element.
 from defusedxml.ElementTree import fromstring as safe_fromstring
 
+from .cert_names import expected_names, hostname_mismatch
 from .config_schema import TlsPostureConfig
 from .pulse_probe import load_pulse_tls_artifact
 from .tls_probe import _parse_tls_endpoints, probe_tls_endpoints, write_tls_probe_json
@@ -618,6 +624,52 @@ def findings_from_pulse_tls(
     return ordered
 
 
+def _apply_hostname_mismatch(
+    findings: list[dict[str, Any]],
+    hostnames_map: dict[str, Any] | None,
+    *,
+    enabled: bool,
+) -> int:
+    """Add ``cert_name_mismatch`` issues in place; return how many were added.
+
+    Runs after per-source parsing so all three sources (nmap NSE, Pulse TLS,
+    stdlib probe) get the identical check against the identical expected-name
+    set -- the sources disagree about cert *formatting*, not about what a
+    certificate is for.
+    """
+    if not enabled:
+        return 0
+
+    lookup = hostnames_map or {}
+    added = 0
+    for finding in findings:
+        issues = finding.get("issues")
+        if issues is None:
+            continue
+        host = str(finding.get("host") or "")
+        names = expected_names(lookup.get(host))
+        # The endpoint may also be *named* by the record itself: the probe path
+        # keys on whatever ``open_ports`` held, and a Pulse row carries the host
+        # it dialled. When that is an FQDN rather than an address, it is the
+        # name the scan actually asked for -- the strongest expectation there is.
+        for candidate in (host, finding.get("host_display")):
+            name = str(candidate or "").strip().lower().rstrip(".")
+            if not name or name in names:
+                continue
+            try:
+                ipaddress.ip_address(name)
+            except ValueError:
+                names.append(name)
+        issue = hostname_mismatch(finding.get("cert"), names)
+        if issue is None:
+            continue
+        if any(i.get("kind") == "cert_name_mismatch" for i in issues):
+            continue
+        issues.append(issue)
+        added += 1
+    return added
+
+
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
 
     save_json(output_dir / "tls_posture.json", result)
@@ -637,6 +689,7 @@ def check_tls_posture(
     output_dir: Path,
     now: datetime | None = None,
     open_ports: list[str] | None = None,
+    hostnames: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build TLS posture findings from nmap NSE, Pulse TLS JSON, or stdlib probe.
 
@@ -644,6 +697,10 @@ def check_tls_posture(
       1. nmap ``ssl-cert`` / ``ssl-enum-ciphers`` (richest cipher grades)
       2. Pulse ``pulse/tls.json`` / ``pulse/raw.json`` ``tls`` array
       3. stdlib ``tls_probe`` when ``probe_fallback`` and ``open_ports`` set
+
+    ``hostnames`` is the ``hostnames.json`` map (ip -> forward/reverse names);
+    without it the P4.1 ``cert_name_mismatch`` check has nothing to compare
+    against and is skipped.
     """
     now = now or datetime.now(timezone.utc)
     result: dict[str, Any] = {
@@ -699,6 +756,8 @@ def check_tls_posture(
                 }
             )
 
+        _apply_hostname_mismatch(findings, hostnames, enabled=config.hostname_mismatch)
+
         result["checked_count"] = len(findings)
         result["findings"] = findings
         result["truncated"] = truncated
@@ -725,6 +784,9 @@ def check_tls_posture(
             max_targets=config.max_targets,
         )
         if pulse_findings:
+            _apply_hostname_mismatch(
+                pulse_findings, hostnames, enabled=config.hostname_mismatch
+            )
             result["targets_considered"] = min(len(target_keys) or len(pulse_findings), config.max_targets)
             result["checked_count"] = len(pulse_findings)
             result["findings"] = pulse_findings
@@ -763,6 +825,7 @@ def check_tls_posture(
         tls_ports=set(config.probe_tls_ports),
         now=now,
     )
+    _apply_hostname_mismatch(probe_findings, hostnames, enabled=config.hostname_mismatch)
     write_tls_probe_json(output_dir, probe_findings)
 
     result["targets_considered"] = min(len(considered), config.max_targets)
