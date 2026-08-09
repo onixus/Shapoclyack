@@ -48,9 +48,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             clickhouse_url=settings.clickhouse_url,
             settings=settings,
         )
+    # Started in every replica, but dispatches only in the one holding the
+    # advisory lock (ROADMAP P1.6).
     schedule_dispatcher.start_worker(settings)
     endpoint_retention.start_worker(settings)
-    # Safe in every replica, unlike the dispatcher above: expiry is a property
+    # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
     try:

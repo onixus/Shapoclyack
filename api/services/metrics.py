@@ -120,6 +120,11 @@ ENDPOINT_RETENTION_DELETED_TOTAL = Counter(
     ["table"],
     registry=REGISTRY,
 )
+SCHEDULER_IS_LEADER = Gauge(
+    "octo_scheduler_is_leader",
+    "1 when this replica holds the schedule-dispatcher advisory lock (ROADMAP P1.6).",
+    registry=REGISTRY,
+)
 ENDPOINT_RETENTION_RUN_DURATION_SECONDS = Histogram(
     "octo_endpoint_retention_run_duration_seconds",
     "Duration of one endpoint-inventory retention sweep in seconds.",

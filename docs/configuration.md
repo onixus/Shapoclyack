@@ -171,6 +171,13 @@ Job leases and the reaper (see [architecture.md](architecture.md#leases)):
 | `OCTO_JOB_REAPER_ENABLED` | `true` | Run the expiry sweep in this replica. Safe in all replicas; disabling it everywhere means abandoned jobs stay in flight forever |
 | `OCTO_JOB_REAPER_INTERVAL_SECONDS` | `60` | Sweep interval |
 
+Recurring-scan dispatcher (see
+[architecture.md](architecture.md#schedule-dispatcher-leadership)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SCHEDULER_DISPATCH_ENABLED` | `true` | Start the dispatcher thread in this replica. Safe to leave on everywhere: only the replica holding the advisory lock dispatches. Disabling it in *every* replica stops recurring scans entirely |
+
 Endpoint inventory (Lariska ingestion):
 
 | Variable | Default | Purpose |

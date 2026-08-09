@@ -6,6 +6,14 @@ that's due — reusing 100% of the existing job/target/execution machinery.
 Structured like ``api.services.ch_ingest_worker``: a daemon thread with a
 crash-restart loop, started/stopped from the FastAPI lifespan instead of a
 separate K8s Deployment/CronJob per tenant.
+
+The thread runs in every replica but only one replica dispatches: each tick
+first asks ``api.services.leader_lock`` for the schedule-dispatcher advisory
+lock and does nothing without it (ROADMAP P1.6). That replaces the previous
+"run one API replica or set ``OCTO_SCHEDULER_DISPATCH_ENABLED=false`` on all
+but one" operational rule. P1.5 idempotency keys stay load-bearing underneath:
+leadership is not fenced, so a brief overlap during a handover must be a no-op
+rather than a second scan.
 """
 
 from __future__ import annotations
@@ -17,7 +25,9 @@ from datetime import UTC, datetime
 from api.schemas import StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
+from api.services import metrics as metrics_service
 from api.services import scan_schedules
+from api.services.leader_lock import SCHEDULE_DISPATCHER_LOCK_ID, LeaderLock
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.schedule-dispatcher")
@@ -34,11 +44,26 @@ class ScheduleDispatcher:
         self._poll_interval = poll_interval_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._stats = {"ticks": 0, "dispatched": 0, "skipped_overlap": 0, "errors": 0}
+        self._lock = LeaderLock(
+            settings.postgres_url,
+            object_id=SCHEDULE_DISPATCHER_LOCK_ID,
+            name="schedule dispatcher",
+        )
+        self._stats = {
+            "ticks": 0,
+            "dispatched": 0,
+            "skipped_overlap": 0,
+            "skipped_not_leader": 0,
+            "errors": 0,
+        }
 
     @property
     def stats(self) -> dict[str, int]:
-        return dict(self._stats)
+        return {**self._stats, "is_leader": int(self._lock.is_leader)}
+
+    @property
+    def is_leader(self) -> bool:
+        return self._lock.is_leader
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -46,22 +71,37 @@ class ScheduleDispatcher:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="octo-schedule-dispatcher", daemon=True)
         self._thread.start()
-        LOG.info("Schedule dispatcher started (poll_interval=%.0fs)", self._poll_interval)
+        LOG.info(
+            "Schedule dispatcher started (poll_interval=%.0fs, dispatches only while leader)",
+            self._poll_interval,
+        )
 
     def stop(self, *, join_timeout: float = 5.0) -> None:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=join_timeout)
-        LOG.info("Schedule dispatcher stopped stats=%s", self._stats)
+        # After the thread is joined, so the loop cannot re-acquire behind us.
+        self._lock.release()
+        metrics_service.SCHEDULER_IS_LEADER.set(0)
+        LOG.info("Schedule dispatcher stopped stats=%s", self.stats)
 
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                self._tick()
+                if self._lead():
+                    self._tick()
             except Exception:  # noqa: BLE001
                 self._stats["errors"] += 1
                 LOG.exception("Schedule dispatch tick failed")
             self._stop.wait(self._poll_interval)
+
+    def _lead(self) -> bool:
+        """Re-evaluate leadership every tick — it can be lost at any moment."""
+        leader = self._lock.acquire()
+        metrics_service.SCHEDULER_IS_LEADER.set(int(leader))
+        if not leader:
+            self._stats["skipped_not_leader"] += 1
+        return leader
 
     def _job_still_running(self, sched: dict) -> bool:
         last_job_id = sched.get("last_job_id")
@@ -92,10 +132,11 @@ class ScheduleDispatcher:
         )
         # Keyed on the schedule's own due time, not on this replica's clock, so
         # every replica dispatching the same tick computes the same key and
-        # only one job is created (ROADMAP P1.5). This does not replace leader
-        # election (P1.6): the replicas still all wake up, still all query, and
-        # still race on the schedule's bookkeeping — it only stops the duplicate
-        # *scans*, which is the part that costs money and hits the target.
+        # only one job is created (ROADMAP P1.5). Since P1.6 only the leader
+        # gets here at all, but the key stays load-bearing: leadership is not
+        # fenced, so an old leader that has not yet noticed it lost the lock can
+        # briefly overlap with the new one, and this is what makes that overlap
+        # a no-op instead of a second scan.
         key = f"schedule:{sched['schedule_id']}:{sched.get('next_run_at') or now.isoformat()}"
         try:
             job = jobs_service.start_scan(
