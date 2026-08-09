@@ -234,3 +234,52 @@ def test_reject_path_traversal_archive(tmp_path, monkeypatch):
         files={"archive": ("run.tar.gz", buf.getvalue(), "application/gzip")},
     )
     assert bad.status_code == 422
+
+
+def test_operator_cancels_a_queued_job_but_not_one_already_running(tmp_path, monkeypatch):
+    """POST /jobs/{id}/cancel (ROADMAP P1.3) only prevents execution: once the
+    agent reports the scan started there is no channel to stop it, so the API
+    answers 409 rather than marking a stop that never happened."""
+    client = _client(tmp_path, monkeypatch)
+    agent_id = client.post(
+        "/api/agent/register", headers=_agent_headers(), json={"hostname": "worker"}
+    ).json()["agent_id"]
+    token = login(client, "operator")
+    auth = {"Authorization": f"Bearer {token}"}
+
+    first = client.post("/api/jobs", headers=auth, json={"mode": "safe"}).json()["job_id"]
+    cancelled = client.post(f"/api/jobs/{first}/cancel", headers=auth)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["error"] == "Cancelled by operator"
+
+    # A cancelled job is no longer claimable.
+    assert client.post(
+        f"/api/agent/jobs/claim?agent_id={agent_id}", headers=_agent_headers()
+    ).status_code == 204
+
+    second = client.post("/api/jobs", headers=auth, json={"mode": "safe"}).json()["job_id"]
+    client.post(f"/api/agent/jobs/claim?agent_id={agent_id}", headers=_agent_headers())
+    assert client.get(f"/api/jobs/{second}", headers=auth).json()["status"] == "claimed"
+
+    # The heartbeat naming the job is what promotes claimed → running.
+    client.post(
+        "/api/agent/heartbeat",
+        headers=_agent_headers(),
+        json={"agent_id": agent_id, "status": "busy", "current_job_id": second},
+    )
+    assert client.get(f"/api/jobs/{second}", headers=auth).json()["status"] == "running"
+
+    conflict = client.post(f"/api/jobs/{second}/cancel", headers=auth)
+    assert conflict.status_code == 409
+
+    assert client.post("/api/jobs/nope/cancel", headers=auth).status_code == 404
+
+
+def test_viewer_cannot_cancel_a_job(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    operator = {"Authorization": f"Bearer {login(client, 'operator')}"}
+    job_id = client.post("/api/jobs", headers=operator, json={"mode": "safe"}).json()["job_id"]
+
+    viewer = {"Authorization": f"Bearer {login(client, 'viewer')}"}
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=viewer).status_code == 403

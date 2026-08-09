@@ -10,8 +10,13 @@ flushed to the file died with the process.
 The table is the queue now. ``claim_job`` takes a row lock
 (``SELECT … FOR UPDATE SKIP LOCKED``) so concurrent claims across replicas
 hand out distinct jobs, and every status change is a committed UPDATE rather
-than a whole-file rewrite. Formal state-machine validation, leases, and
-idempotency keys are the next slices (ROADMAP P1.3-P1.5).
+than a whole-file rewrite.
+
+Since P1.3 every status write goes through ``api/services/job_states.py``:
+statuses are no longer assigned, they are *transitioned*, and an illegal move
+(a late upload for a job that already failed, a second terminal write) raises
+instead of silently overwriting. Leases and idempotency keys are the next
+slices (ROADMAP P1.4-P1.5).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
 from api.services import assets as assets_service
 from api.services import config_override as config_override_service
+from api.services import job_states
 from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
@@ -109,7 +115,8 @@ def load_jobs(settings: Settings) -> None:
         orphans = session.execute(
             select(models.Job).where(
                 models.Job.execution == "local",
-                models.Job.status.in_(("queued", "running")),
+                # `claimed` is an agent-only state, so it cannot appear here.
+                models.Job.status.in_((job_states.QUEUED, job_states.RUNNING)),
                 or_(
                     models.Job.owner_id == settings.instance_id,
                     models.Job.owner_id.is_(None),
@@ -117,7 +124,8 @@ def load_jobs(settings: Settings) -> None:
             )
         ).scalars().all()
         for row in orphans:
-            row.status = "failed"
+            job_states.check_transition(row.job_id, row.status, job_states.FAILED)
+            row.status = job_states.FAILED
             row.finished_at = now
             row.error = "Interrupted by API process restart before completion"
     if orphans:
@@ -270,10 +278,20 @@ def reset_for_tests(settings: Settings) -> None:
 
 
 def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
+    """Apply ``fields`` to a job row, validating any status change.
+
+    Validation lives here rather than at each call site so a future writer
+    cannot reintroduce a bare assignment: every path that moves a job — local
+    executor, agent claim, result upload, restart reconciliation, cancel — goes
+    through this function. Use ``force_status`` for the rare repair/test case
+    that must ignore the lifecycle.
+    """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id)
         if row is None:
             return
+        if "status" in fields:
+            job_states.check_transition(job_id, row.status, str(fields["status"]))
         for key, value in fields.items():
             setattr(row, key, value)
         session.flush()
@@ -284,6 +302,23 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
         )
     if snapshot is not None:
         _record_job_metrics(settings, *snapshot)
+
+
+def force_status(settings: Settings, job_id: str, status: str, **fields: Any) -> None:
+    """Set a status without lifecycle validation.
+
+    The escape hatch for tests that need to stage a state directly, and for an
+    operator repair where the row is already wrong. Nothing in the request path
+    may call this — use the transitions in ``job_states``.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None:
+            return
+        row.status = status
+        for key, value in fields.items():
+            setattr(row, key, value)
+    _refresh_job_gauges(settings)
 
 
 def _record_job_metrics(
@@ -308,17 +343,21 @@ def _refresh_job_gauges(settings: Settings) -> None:
     These are now counted in the shared table rather than per-process, so two
     replicas no longer report two different queue depths for the same queue —
     one of the known gaps called out in docs/slo.md.
+
+    ``claimed`` (P1.3) counts as running: the job is out with a worker and no
+    longer waiting, so folding it into the queue depth would read as a backlog
+    that nothing is working on.
     """
     with get_session(settings.postgres_url) as session:
         counts = dict(
             session.execute(
                 select(models.Job.status, func.count())
-                .where(models.Job.status.in_(("queued", "running")))
+                .where(models.Job.status.in_(tuple(job_states.ACTIVE)))
                 .group_by(models.Job.status)
             ).all()
         )
-    metrics_service.JOBS_QUEUED.set(counts.get("queued", 0))
-    metrics_service.JOBS_RUNNING.set(counts.get("running", 0))
+    metrics_service.JOBS_QUEUED.set(counts.get(job_states.QUEUED, 0))
+    metrics_service.JOBS_RUNNING.set(sum(counts.get(s, 0) for s in job_states.IN_FLIGHT))
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
@@ -431,7 +470,14 @@ def _upsert_assets_best_effort(
 
 
 def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
-    _update_job(settings, job_id, status="running", started_at=_now())
+    try:
+        # A local job goes queued → running with no claim step: this process is
+        # the worker. If it was cancelled while the thread was still starting,
+        # the transition is rejected and the scan never launches.
+        _update_job(settings, job_id, status=job_states.RUNNING, started_at=_now())
+    except job_states.InvalidJobTransition as exc:
+        _log.info("Not starting job %s: %s", job_id, exc)
+        return
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         # Best-effort: read latest_run.json after completion.
@@ -442,7 +488,7 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
                 run_id = json.loads(pointer.read_text(encoding="utf-8")).get("run_id")
             except json.JSONDecodeError:
                 run_id = None
-        status = "succeeded" if completed.returncode == 0 else "failed"
+        status = job_states.SUCCEEDED if completed.returncode == 0 else job_states.FAILED
         error = None
         if completed.returncode != 0:
             error = (completed.stderr or completed.stdout or f"exit {completed.returncode}")[:2000]
@@ -455,7 +501,7 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             run_id=str(run_id) if run_id else None,
             error=error,
         )
-        if status == "succeeded":
+        if status == job_states.SUCCEEDED:
             job = get_job(settings, job_id)
             tenant_id = job.tenant_id if job else tenants_service.DEFAULT_TENANT_ID
             # Tag the run before the asset upsert: an untagged run reads back as
@@ -467,13 +513,19 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logging.exception("Scan job %s failed", job_id)
-        _update_job(
-            settings,
-            job_id,
-            status="failed",
-            finished_at=_now(),
-            error=str(exc)[:2000],
-        )
+        try:
+            _update_job(
+                settings,
+                job_id,
+                status=job_states.FAILED,
+                finished_at=_now(),
+                error=str(exc)[:2000],
+            )
+        except job_states.InvalidJobTransition:
+            # The scan itself finished and the job is already terminal — this
+            # is post-completion bookkeeping (run tagging) blowing up. Record it
+            # without rewriting the outcome the scan actually had.
+            _update_job(settings, job_id, error=str(exc)[:2000])
 
 
 def start_scan(settings: Settings, request: StartScanRequest, *, username: str) -> JobInfo:
@@ -509,7 +561,7 @@ def start_scan(settings: Settings, request: StartScanRequest, *, username: str) 
     row = models.Job(
         job_id=job_id,
         tenant_id=tenant_id,
-        status="queued",
+        status=job_states.QUEUED,
         execution=execution,
         mode=request.mode,
         run_id=run_id,
@@ -630,7 +682,12 @@ def claim_job(
         if row is None:
             return None
 
-        row.status = "running"
+        # `claimed`, not `running` (P1.3): the agent owns the job but has not
+        # reported working on it. Its first heartbeat naming this job promotes
+        # it (see mark_running), which is also the signal the P1.4 reaper needs
+        # to tell "taken by a worker that died" from "actually scanning".
+        job_states.check_transition(row.job_id, row.status, job_states.CLAIMED)
+        row.status = job_states.CLAIMED
         row.assigned_agent_id = agent_id
         row.started_at = _now()
         if not row.run_id:
@@ -655,6 +712,61 @@ def claim_job(
     return response
 
 
+def mark_running(settings: Settings, job_id: str, *, agent_id: str) -> None:
+    """Promote a claimed job to running when its agent reports working on it.
+
+    Called from the agent heartbeat, which names the job the worker is on. Any
+    other state is left alone: repeated heartbeats during a scan would
+    otherwise attempt running → running, and a heartbeat arriving after the
+    results upload must not resurrect a finished job. A heartbeat from an agent
+    that does not hold the job is ignored outright.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None or row.status != job_states.CLAIMED:
+            return
+        if row.assigned_agent_id != agent_id:
+            return
+        row.status = job_states.RUNNING
+        if row.started_at is None:
+            row.started_at = _now()
+    _refresh_job_gauges(settings)
+
+
+def cancel_job(
+    settings: Settings,
+    job_id: str,
+    *,
+    username: str,
+    tenant_id: str | None = None,
+) -> JobInfo:
+    """Cancel a job that has not started executing yet.
+
+    Legal from ``queued`` (nothing has picked it up) and ``claimed`` (an agent
+    holds it but has not reported starting). A ``running`` job is refused: see
+    ``job_states`` — there is no channel to stop an in-flight scan, and marking
+    the row cancelled would claim a stop that never happened.
+
+    The reason is stored in ``error`` rather than a new column: it is the field
+    the UI and API already surface for "why did this job end this way".
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        if row is None:
+            raise LookupError("Job not found")
+        job_tenant = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
+        if tenant_id is not None and job_tenant != tenant_id:
+            raise PermissionError("Cross-tenant job access denied")
+        job_states.check_transition(job_id, row.status, job_states.CANCELLED)
+        row.status = job_states.CANCELLED
+        row.finished_at = _now()
+        row.error = f"Cancelled by {username}"[:2000]
+    _refresh_job_gauges(settings)
+    result = get_job(settings, job_id)
+    assert result is not None
+    return result
+
+
 def complete_job(
     settings: Settings,
     job_id: str,
@@ -677,8 +789,12 @@ def complete_job(
         job_tenant = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
         if tenant_id is not None and job_tenant != tenant_id:
             raise PermissionError("Cross-tenant job access denied")
-        if row.status not in {"running", "queued"}:
-            raise ValueError(f"Job is already {row.status}")
+        status = job_states.SUCCEEDED if exit_code == 0 else job_states.FAILED
+        # Checked before the archive is ingested, not after: a duplicate upload
+        # for a job that already finished — or one an operator cancelled while
+        # the agent was still working — must not overwrite the run directory
+        # and re-publish to NATS before being rejected.
+        job_states.check_transition(job_id, row.status, status)
         resolved_run_id = run_id or row.run_id
 
     if archive_bytes:
@@ -712,7 +828,6 @@ def complete_job(
             settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
         )
 
-    status = "succeeded" if exit_code == 0 else "failed"
     _update_job(
         settings,
         job_id,

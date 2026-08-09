@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from api.services import agents as agents_service
+from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
@@ -128,7 +129,10 @@ def test_restart_does_not_fail_another_replicas_local_jobs(settings):
     started = jobs_service.start_scan(
         settings, StartScanRequest(mode="balanced"), username="admin"
     )
-    jobs_service._update_job(settings, started.job_id, status="running")  # noqa: SLF001
+    # force_status, not a transition: the job's own thread may already have
+    # moved it, and this test only needs the row staged as another replica's
+    # in-flight local job.
+    jobs_service.force_status(settings, started.job_id, "running")
 
     settings.instance_id = "replica-b"
     load_jobs(settings)
@@ -173,6 +177,97 @@ def test_claim_is_scoped_to_the_agents_tenant(settings):
     agents_service.register_agent(agent_id="agent-default", tenant_id="default")
 
     assert jobs_service.claim_job(settings, "agent-default") is None
+
+
+def _start_agent_job(settings, *, agent_id: str = "agent-1"):
+    from api.schemas import StartScanRequest
+
+    settings.job_execution_mode = "agent"
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    agents_service.register_agent(agent_id=agent_id, tenant_id="default")
+    return job
+
+
+def test_claim_parks_the_job_in_claimed_until_the_agent_reports_starting(settings):
+    """P1.3 splits the old single `running` state: between the claim and the
+    agent's first heartbeat, nobody has said the scan started, and that gap is
+    exactly what the P1.4 reaper has to be able to see."""
+    job = _start_agent_job(settings)
+    jobs_service.claim_job(settings, "agent-1")
+    assert get_job(settings, job.job_id).status == "claimed"
+
+    # A heartbeat from an agent that does not hold the job changes nothing.
+    agents_service.register_agent(agent_id="agent-2", tenant_id="default")
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-2")
+    assert get_job(settings, job.job_id).status == "claimed"
+
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
+    assert get_job(settings, job.job_id).status == "running"
+
+    # Heartbeats keep arriving for the whole scan; they must stay no-ops.
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
+    assert get_job(settings, job.job_id).status == "running"
+
+
+def test_a_second_result_upload_is_rejected_instead_of_overwriting(settings):
+    """An agent retrying after a network timeout used to be able to rewrite the
+    outcome of a job that had already finished."""
+    job = _start_agent_job(settings)
+    jobs_service.claim_job(settings, "agent-1")
+    jobs_service.complete_job(settings, job.job_id, agent_id="agent-1", exit_code=0)
+    assert get_job(settings, job.job_id).status == "succeeded"
+
+    with pytest.raises(job_states.InvalidJobTransition):
+        jobs_service.complete_job(settings, job.job_id, agent_id="agent-1", exit_code=1)
+    assert get_job(settings, job.job_id).status == "succeeded"
+
+
+def test_cancel_stops_a_queued_job_and_rejects_the_agents_late_upload(settings):
+    job = _start_agent_job(settings)
+    cancelled = jobs_service.cancel_job(settings, job.job_id, username="operator")
+    assert cancelled.status == "cancelled"
+    assert cancelled.error == "Cancelled by operator"
+    assert cancelled.finished_at is not None
+
+    # A cancelled job is off the queue for good.
+    assert jobs_service.claim_job(settings, "agent-1") is None
+    with pytest.raises(job_states.InvalidJobTransition):
+        jobs_service.cancel_job(settings, job.job_id, username="operator")
+
+
+def test_cancel_refuses_a_running_job(settings):
+    """There is no kill channel to an in-flight scan, so the API must not claim
+    to have stopped one (see api/services/job_states.py)."""
+    job = _start_agent_job(settings)
+    jobs_service.claim_job(settings, "agent-1")
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
+
+    with pytest.raises(job_states.InvalidJobTransition):
+        jobs_service.cancel_job(settings, job.job_id, username="operator")
+    assert get_job(settings, job.job_id).status == "running"
+
+
+def test_cancel_is_tenant_scoped(settings):
+    job = _start_agent_job(settings)
+    tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    with pytest.raises(PermissionError):
+        jobs_service.cancel_job(settings, job.job_id, username="operator", tenant_id="ten_a")
+    assert get_job(settings, job.job_id).status == "queued"
+
+
+def test_claimed_jobs_count_as_running_in_the_queue_gauges(settings):
+    """A claimed job is out with a worker, not waiting — counting it as queued
+    would read as a backlog nothing is working on (docs/slo.md)."""
+    from api.services import metrics as metrics_service
+
+    job = _start_agent_job(settings)
+    assert metrics_service.JOBS_QUEUED._value.get() == 1  # noqa: SLF001
+
+    jobs_service.claim_job(settings, "agent-1")
+    assert metrics_service.JOBS_QUEUED._value.get() == 0  # noqa: SLF001
+    assert metrics_service.JOBS_RUNNING._value.get() == 1  # noqa: SLF001
+
+    jobs_service.cancel_job(settings, job.job_id, username="operator")
 
 
 def test_local_run_is_tagged_with_the_jobs_tenant(settings, monkeypatch):
@@ -236,7 +331,7 @@ def test_failed_asset_upsert_is_recorded_on_the_job(settings, monkeypatch):
     )
     load_jobs(settings)
     # load_jobs just reconciled the imported orphan; put it back on the queue.
-    jobs_service._update_job(settings, "job-2", status="queued", finished_at=None, error=None)  # noqa: SLF001
+    jobs_service.force_status(settings, "job-2", "queued", finished_at=None, error=None)
 
     def _boom(*_a, **_k):
         raise RuntimeError("assets table is gone")
@@ -270,7 +365,7 @@ def test_successful_asset_upsert_leaves_no_error_on_the_job(settings, monkeypatc
         settings.state_dir, [_base_job("job-3", execution="local", status="queued")]
     )
     load_jobs(settings)
-    jobs_service._update_job(settings, "job-3", status="queued", finished_at=None, error=None)  # noqa: SLF001
+    jobs_service.force_status(settings, "job-3", "queued", finished_at=None, error=None)
 
     monkeypatch.setattr(assets_service, "upsert_assets_from_run", lambda *a, **k: None)
     monkeypatch.setattr(

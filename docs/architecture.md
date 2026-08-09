@@ -46,6 +46,29 @@ the database (`SELECT … FOR UPDATE SKIP LOCKED`), so two agents claiming at
 the same moment receive different jobs regardless of which replica each one
 talks to.
 
+### Job lifecycle
+
+A job holds one of six states, and the moves between them are validated on
+every write (`api/services/job_states.py`) rather than assigned:
+
+```text
+queued ─┬─→ claimed ─┬─→ running ──→ succeeded | failed
+        │            └─→ succeeded | failed
+        ├─→ running ──→ succeeded | failed        (local execution)
+        └─→ cancelled                             (also from claimed)
+```
+
+- `claimed` means an agent has taken the job but has not yet reported working
+  on it; the agent's first heartbeat naming the job promotes it to `running`.
+  Local jobs skip the state — the API process is the worker.
+- `cancelled` is set by `POST /api/jobs/{job_id}/cancel` and is only available
+  before execution starts. A `running` job cannot be cancelled: nothing can
+  stop an in-flight scan today, so the API answers 409 instead of recording a
+  stop that never happened.
+- Terminal states never move again, so a result upload retried after a network
+  timeout is rejected rather than rewriting the outcome (idempotent upload
+  itself is ROADMAP P1.5).
+
 Two properties still bind a job to one process:
 
 - A **local-mode** job executes in a thread inside the replica that accepted

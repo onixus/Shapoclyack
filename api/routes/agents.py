@@ -44,6 +44,7 @@ def register_agent(
 def heartbeat(
     body: AgentHeartbeatRequest,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentInfo:
     info = agents_service.heartbeat(
         body.agent_id,
@@ -55,6 +56,11 @@ def heartbeat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     if info.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+    # The agent naming a job it holds is the only evidence the API gets that
+    # the scan actually started, so it is what promotes claimed → running
+    # (ROADMAP P1.3). Any other state is left alone by mark_running.
+    if body.current_job_id:
+        jobs_service.mark_running(settings, body.current_job_id, agent_id=body.agent_id)
     return info
 
 

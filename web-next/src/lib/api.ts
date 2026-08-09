@@ -185,7 +185,8 @@ export type PortAggregate = {
 
 export type JobInfo = {
   job_id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  /** `claimed` = an agent holds the job but has not reported starting it. */
+  status: "queued" | "claimed" | "running" | "succeeded" | "failed" | "cancelled";
   run_id: string | null;
   mode: string;
   started_at: string | null;

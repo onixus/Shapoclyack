@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import JobInfo, Page, StartScanRequest
+from api.services import job_states
 from api.services import jobs as jobs_service
 from api.settings import Settings
 
@@ -47,6 +48,33 @@ def get_job(
     if job is None or (not principal.is_platform_admin and job.tenant_id != principal.tenant_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
+
+
+@router.post("/{job_id}/cancel", response_model=JobInfo)
+def cancel_job(
+    job_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> JobInfo:
+    """Cancel a job that has not started executing (ROADMAP P1.3).
+
+    Answers 409 for a job that is already running or finished: cancellation
+    only prevents execution, it cannot stop a scan already in flight.
+    """
+    try:
+        return jobs_service.cancel_job(
+            settings,
+            job_id,
+            username=principal.username,
+            # A platform admin may cancel in any tenant; everyone else is
+            # pinned, and the mismatch is reported as 404 below so the id is
+            # not confirmed to someone with no right to know it exists.
+            tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+        )
+    except (LookupError, PermissionError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found") from exc
+    except job_states.InvalidJobTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("", response_model=JobInfo, status_code=status.HTTP_202_ACCEPTED)

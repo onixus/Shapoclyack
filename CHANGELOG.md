@@ -6,6 +6,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Job statuses are now a validated state machine** (ROADMAP P1.3). The
+  lifecycle lives in one place (`api/services/job_states.py`) and is enforced on
+  every status write, instead of each call site assigning a string: an illegal
+  move raises rather than overwriting, so a `/results` upload retried after a
+  network timeout can no longer rewrite a job that already finished — and it is
+  rejected *before* the archive is extracted and re-published. Two states are
+  new. `claimed` covers the window between an agent taking a job and reporting
+  that the scan started (its first heartbeat naming the job promotes it to
+  `running`); it used to be indistinguishable from `running`, hiding exactly
+  the case the P1.4 lease reaper needs to see. `cancelled` is terminal and set
+  by the new endpoint below. **API consumers:** `JobInfo.status` can now return
+  `claimed` and `cancelled`; the Web UI renders both.
+- `octo_jobs_running` counts `claimed` jobs as well as `running` ones — a
+  claimed job is out with a worker, so leaving it in `octo_jobs_queued` would
+  read as a backlog nothing is working on. `cancelled` jobs are not observed by
+  `octo_job_duration_seconds`, so an operator's decision does not count against
+  the job-completion SLO ([docs/slo.md](docs/slo.md)).
+
 - **Durable control plane: jobs and agents moved into PostgreSQL** (ROADMAP
   P1.1/P1.2). Both registries were module-level dicts in the API process,
   mirrored to `state/api_jobs.json` and `state/api_agents.json`. That gave
@@ -29,6 +47,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **`POST /api/jobs/{job_id}/cancel`** (operator; ROADMAP P1.3) — cancels a job
+  that has not started executing, which the API previously had no way to do: a
+  queued scan could only be waited out. Legal from `queued` and from `claimed`;
+  a `running` job answers **409**, because nothing can stop an in-flight scan
+  today (a local job is a subprocess owned by one replica's thread, an agent job
+  runs in another process entirely) and marking the row cancelled would report a
+  stop that never happened — that needs the P1.4 lease/heartbeat channel. A job
+  in another tenant answers 404. The reason is recorded in the job's `error`.
+  API-only for now: the Web UI shows the new statuses but has no cancel action.
 - **`OCTO_INSTANCE_ID`** — identity of an API replica in the shared job queue,
   defaulting to the hostname. Local-mode jobs run in a thread inside one
   replica, so the row records its owner and a starting replica reconciles only

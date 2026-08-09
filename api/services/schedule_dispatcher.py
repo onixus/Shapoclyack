@@ -15,13 +15,17 @@ import threading
 from datetime import UTC, datetime
 
 from api.schemas import StartScanRequest
+from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import scan_schedules
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.schedule-dispatcher")
 
-_RUNNING_STATUSES = {"queued", "running"}
+# Overlap protection: a schedule whose previous job has not reached a terminal
+# state yet is skipped. Sourced from job_states so a new non-terminal state
+# (P1.3 added `claimed`) cannot silently start counting as "finished".
+_RUNNING_STATUSES = set(job_states.ACTIVE)
 
 
 class ScheduleDispatcher:

@@ -352,7 +352,9 @@ class Job(Base):
 
     job_id: Mapped[str] = mapped_column(primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
-    status: Mapped[str] = mapped_column(default="queued")  # queued|running|succeeded|failed
+    # Lifecycle and legal transitions live in api/services/job_states.py; the
+    # column stays a plain string so adding a state does not need a migration.
+    status: Mapped[str] = mapped_column(default="queued")
     execution: Mapped[str] = mapped_column(default="local")  # local | agent
     mode: Mapped[str] = mapped_column(default="balanced")
     run_id: Mapped[str | None] = mapped_column(default=None, index=True)

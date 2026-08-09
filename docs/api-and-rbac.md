@@ -41,7 +41,7 @@ not an authorization control.
 |---|---|
 | `/api/auth` | Login and current principal |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
-| `/api/jobs` | Start and monitor scan jobs |
+| `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
 | `/api/assets` | Persistent asset inventory and metadata |
 | `/api/endpoint` | Endpoint device and software inventory |
@@ -49,6 +49,14 @@ not an authorization control.
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
+
+`POST /api/jobs/{job_id}/cancel` (operator) cancels a job that has not started
+executing — `queued`, or `claimed` by an agent that has not reported starting.
+It answers `409` for a job that is already `running` or finished, because there
+is no channel to stop a scan in flight, and `404` for a job in another tenant.
+The job's status becomes `cancelled` and the reason is recorded in `error`. See
+the job lifecycle in [architecture.md](architecture.md#job-lifecycle) for the
+full state set.
 
 `POST /api/endpoint/inventory` is the only agent-authenticated write in that
 group and carries contract-specific limits: `411` when `Content-Length` is

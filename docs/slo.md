@@ -81,9 +81,14 @@ sum(rate(octo_job_duration_seconds_count[30d]))
 
 The histogram observes only terminal jobs (`succeeded` / `failed`), and only
 when both `started_at` and `finished_at` are present — a job killed before it
-recorded a finish time is invisible here. Cross-check against
+recorded a finish time is invisible here. A `cancelled` job (ROADMAP P1.3) is
+deliberately not observed: it never executed, so counting it would charge an
+operator's decision against the success ratio. Cross-check against
 `octo_jobs_running`: a gauge stuck above zero with no matching histogram
 increments means jobs are being lost, and that is worse than a failure rate.
+`octo_jobs_running` counts both `running` and `claimed` jobs — a claimed job is
+out with a worker, so folding it into `octo_jobs_queued` would read as a
+backlog nothing is working on.
 
 ### 4. Job duration
 

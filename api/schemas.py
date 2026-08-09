@@ -163,7 +163,9 @@ class StartScanRequest(BaseModel):
 
 class JobInfo(BaseModel):
     job_id: str
-    status: Literal["queued", "running", "succeeded", "failed"]
+    # `claimed` (an agent holds the job but has not reported starting) and
+    # `cancelled` are ROADMAP P1.3 additions — see api/services/job_states.py.
+    status: Literal["queued", "claimed", "running", "succeeded", "failed", "cancelled"]
     run_id: str | None = None
     mode: str
     command: list[str]

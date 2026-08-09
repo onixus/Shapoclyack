@@ -33,6 +33,13 @@ explicitly before hunting a port collision: kind publishes the NodePort on
 - verify agent and job tenant IDs match;
 - inspect agent heartbeat and claim logs.
 
+A job stuck in `claimed` is a distinct symptom: an agent took it and never
+reported starting, so the worker most likely died between the claim and its
+first heartbeat. Nothing reclaims it automatically yet (ROADMAP P1.4) — close
+it with `POST /api/jobs/{job_id}/cancel` and start the scan again. That
+endpoint only stops jobs that have not started executing: once the status is
+`running`, it answers 409, because there is no way to stop a scan in flight.
+
 ## Scan Job fails with DeadlineExceeded and no logs
 
 `kubectl describe job` shows `Job was active longer than specified deadline`,
