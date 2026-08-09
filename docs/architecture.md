@@ -114,20 +114,34 @@ property of the row, and candidates are taken with `FOR UPDATE SKIP LOCKED`.
 `OCTO_JOB_LEASE_SECONDS` (default 300) — it must stay comfortably above the
 agent heartbeat interval, or live scans get reaped.
 
-Two properties still bind a job to one process:
+One property still binds a job to one process: a **local-mode** job executes in
+a thread inside the replica that accepted it. That replica is recorded as the
+job's owner (`OCTO_INSTANCE_ID`, defaulting to the hostname), and on startup a
+replica fails only its *own* orphaned local jobs. A local job orphaned by a
+replica that never comes back under the same identity is caught by the lease
+sweep above instead.
 
-- A **local-mode** job executes in a thread inside the replica that accepted
-  it. That replica is recorded as the job's owner (`OCTO_INSTANCE_ID`,
-  defaulting to the hostname), and on startup a replica fails only its *own*
-  orphaned local jobs. A local job orphaned by a replica that never comes back
-  under the same identity is caught by the lease sweep above instead.
-- The **schedule dispatcher** runs in every replica without leader election, so
-  every replica wakes for the same due schedule. Duplicate *scans* are already
-  prevented — each dispatch is keyed on the schedule's due time, so the losers
-  get the winner's job back (see Idempotency above) — but the replicas still
-  all poll and still race on the schedule's own bookkeeping. Run a single API
-  replica, or disable the dispatcher on all but one
-  (`OCTO_SCHEDULER_DISPATCH_ENABLED=false`), until ROADMAP P1.6.
+### Schedule dispatcher leadership
+
+The dispatcher thread starts in every replica, but only the one holding a
+Postgres **session-scoped advisory lock** dispatches; the rest re-try the lock
+each tick and do nothing else (`api/services/leader_lock.py`, ROADMAP P1.6).
+`octo_scheduler_is_leader` is 1 on exactly one replica — a fleet-wide `sum()`
+that is not 1 is the signal something is wrong.
+
+A session lock rather than a leader row with a lease: the lock lives in the
+connection, so a leader that crashes, is OOM-killed, or is partitioned away has
+its lock dropped by Postgres when its backend ends. There is no expiry to wait
+out and no lease duration to tune wrong — a follower's next tick simply
+succeeds. The cost is one connection held out of the pool per replica, and one
+caveat: **the lock is not a fence**. Between a leader's backend dying and the
+leader's own process noticing, two replicas can briefly believe they lead. The
+P1.5 idempotency key on each dispatch (keyed on the schedule's due time) is what
+makes that overlap a no-op instead of a second scan, so it stays load-bearing.
+
+On SQLite — the fallback `postgres_url` for tests and no-DB deployments — there
+are no advisory locks and no second replica to coordinate with, so the process
+always leads.
 
 Installations upgrading from a release that kept `state/api_jobs.json` and
 `state/api_agents.json` need no manual step: the API imports each file once at

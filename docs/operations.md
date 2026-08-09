@@ -63,6 +63,12 @@ The API dispatcher skips a schedule tick while its previous job is still
 running. Use this behavior to prevent overlapping long scans; it is not a
 replacement for capacity planning.
 
+The dispatcher runs in every API replica but dispatches only in the one holding
+its advisory lock, so multiple replicas need no special configuration — see
+[architecture.md](architecture.md#schedule-dispatcher-leadership). Confirm which
+replica leads with `octo_scheduler_is_leader` on `/metrics`; the fleet-wide sum
+should always be exactly 1.
+
 ## Diffs and events
 
 Run diffs compare current and previous compatible results. Normalized events

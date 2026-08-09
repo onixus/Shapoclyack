@@ -37,6 +37,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **The schedule dispatcher elects a leader** (ROADMAP P1.6, new
+  `api/services/leader_lock.py`). Its thread still starts in every replica, but
+  each tick first takes a session-scoped Postgres advisory lock and does
+  nothing without it — so exactly one replica polls for due schedules and
+  writes their `last_run_at`/`next_run_at` bookkeeping. **This retires the
+  operational rule** that you must run a single API replica, or set
+  `OCTO_SCHEDULER_DISPATCH_ENABLED=false` on all but one; leave the knob on
+  everywhere. A session lock rather than a leader row with a lease because the
+  lock lives in the connection: a leader that crashes, is OOM-killed, or is
+  partitioned away has it dropped by Postgres when its backend ends, so there
+  is no expiry to wait out and a follower's next tick simply wins. It is
+  deliberately **not** a fence — a dying leader and its successor can briefly
+  overlap — which is why the P1.5 idempotency key on each dispatch stays
+  load-bearing. Costs one pooled connection per replica. New
+  `octo_scheduler_is_leader`: it is 1 on exactly one replica, so a fleet-wide
+  `sum()` other than 1 is the signal something is wrong. On the SQLite fallback
+  URL there are no advisory locks and no second replica, so the process always
+  leads.
 - **Job statuses are now a validated state machine** (ROADMAP P1.3). The
   lifecycle lives in one place (`api/services/job_states.py`) and is enforced on
   every status write, instead of each call site assigning a string: an illegal
@@ -114,9 +132,9 @@ All notable changes to Shapoclyack are documented in this file.
   next tick rather than aborting the scan.
 - The **schedule dispatcher** now keys each dispatch on the schedule's own due
   time, so replicas that all wake for the same tick create one job instead of
-  one each. This bounds — but does not replace — the missing leader election
-  (P1.6): the replicas still all poll, and still race on the schedule's own
-  `last_run_at`/`next_run_at` bookkeeping.
+  one each. P1.6 (above) means only the leader ticks at all, but this key stays
+  load-bearing: leadership is not fenced, so a dying leader and its successor
+  can briefly overlap.
 - **Job leases and an expiry reaper** (ROADMAP P1.4; migration
   `0009_job_leases`). A job handed to an executor had no deadline, so "the
   worker is still scanning" and "the worker died three hours ago" looked
