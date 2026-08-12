@@ -95,14 +95,35 @@ OCTO_NATS_URL=nats://shapoclyack-nats-client:4222
 
 Example patches: `examples/nats-api-patch.yaml`, `examples/nats-agent-patch.yaml`.
 
-Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream `INGEST`).
+Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream
+`INGEST`), `events.asset.{tenant_id}.{kind}` (stream `EVENTS`).
+
+**Asset events (Phase 10.2):** after every successful run the API publishes the
+run's `diff.json` events — `new_asset`, `new_open_port`, `new_cve`,
+`cert_expiring` — plus `decommissioned_host` when an operator decommissions an
+asset. Subscribe per tenant with `events.asset.acme.>` or across tenants by kind
+with `events.asset.*.new_cve`. The stream is `LIMITS` retention, not
+`WORK_QUEUE`: one event is meant to reach several independent consumers, so a
+webhook bridge does not consume it away from a ticket bridge. Publishing is
+best-effort — a broker outage costs notifications, not data, since the events
+stay in the run's `diff.json`. Turn it off with `OCTO_ASSET_EVENTS_ENABLED=false`
+without disabling job dispatch or result ingest on the same broker.
 
 **Retention:** streams are bounded by default (`JOBS` max age 24h, `INGEST` max
-age 7d / max bytes 10GiB) so a stalled agent or disabled ClickHouse worker
-can't grow JetStream storage without limit. Override on the API deployment:
+age 7d / max bytes 10GiB, `EVENTS` max age 30d / max bytes 1GiB) so a stalled
+agent, disabled ClickHouse worker or absent event consumer can't grow JetStream
+storage without limit. Override on the API deployment:
 `OCTO_NATS_JOBS_MAX_AGE_SECONDS`, `OCTO_NATS_INGEST_MAX_AGE_SECONDS`,
-`OCTO_NATS_INGEST_MAX_BYTES`. Limits apply to existing streams on API restart
+`OCTO_NATS_INGEST_MAX_BYTES`, `OCTO_NATS_EVENTS_MAX_AGE_SECONDS`,
+`OCTO_NATS_EVENTS_MAX_BYTES`. Limits apply to existing streams on API restart
 (via JetStream `update_stream`), not just first creation.
+
+`EVENTS` also sets a 24h JetStream duplicate window
+(`OCTO_NATS_EVENTS_DEDUPE_SECONDS`): event ids are derived from
+tenant+run+kind+host+port+CVE, so a results upload retried after a network
+timeout republishes the same ids and JetStream drops them. The window is longer
+than JetStream's 2-minute default because that is shorter than the gap between
+an upload and its retry.
 
 **HA:** base runs a single NATS pod (fine for dev/lab). The cluster config is
 already in `base/nats/configmap.yaml` — apply `examples/nats-ha-patch.yaml`

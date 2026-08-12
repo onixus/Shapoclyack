@@ -125,6 +125,14 @@ SCHEDULER_IS_LEADER = Gauge(
     "1 when this replica holds the schedule-dispatcher advisory lock (ROADMAP P1.6).",
     registry=REGISTRY,
 )
+ASSET_EVENTS_PUBLISHED_TOTAL = Counter(
+    "octo_asset_events_published_total",
+    "Asset-level events by kind and publish outcome (ROADMAP Phase 10.2). "
+    "outcome=skipped means the broker was disabled or unreachable, so the "
+    "events exist only in the run's diff.json.",
+    ["kind", "outcome"],
+    registry=REGISTRY,
+)
 ENDPOINT_RETENTION_RUN_DURATION_SECONDS = Histogram(
     "octo_endpoint_retention_run_duration_seconds",
     "Duration of one endpoint-inventory retention sweep in seconds.",

@@ -14,6 +14,66 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Asset event bus** (ROADMAP P2 / Phase 10.2) — the asset-level events that
+  Phase 10.1 normalized into each run's `diff.json` are now published to NATS
+  JetStream on `events.asset.{tenant_id}.{kind}`: `new_asset`, `new_open_port`,
+  `new_cve`, `cert_expiring` after every successful run, plus
+  `decommissioned_host` when an operator decommissions an asset through
+  `PATCH /assets/{id}`. Until now those events existed only inside a run
+  artifact and a pod log, with nothing able to subscribe to them; this is the
+  substrate 10.3 (webhooks, ticketing) consumes.
+
+  The tenant token comes **before** the kind because a routing policy is
+  per-tenant first — the common subscription is `events.asset.acme.>`, while a
+  cross-tenant consumer still gets `events.asset.*.new_cve`. The new `EVENTS`
+  stream uses `LIMITS` retention rather than `WORK_QUEUE`: one event legitimately
+  has several independent consumers, and a work queue would let whichever
+  connected first consume it away from the others. Defaults: 30d max age, 1GiB
+  max bytes, 24h duplicate window (`OCTO_NATS_EVENTS_*`).
+
+  Publishing lives in the API, not in `scanner/pipeline/alerts.py` as the
+  roadmap originally sketched. The scanner is also the agent's payload and has
+  no tenant context — the tenant is a property of the job, resolved by the API —
+  so publishing there would have meant handing broker credentials to every
+  remote worker. The API's post-run hook covers local-mode scans and agent
+  uploads from the same place. `alerts.py` keeps its per-run SMTP/webhook
+  digest; that is a human summary, not the machine event stream.
+
+  Delivery is best-effort and never fails a scan: a run whose artifacts are on
+  disk and whose assets are registered must not be reported as failed because
+  the broker blinked. What did not go out is visible on the new
+  `octo_asset_events_published_total{kind,outcome}` counter, and the payload is
+  still in `diff.json`. The publish loop runs inside the agent's upload request,
+  so it is bounded twice over: a 30s batch deadline, and an abort after three
+  consecutive failures — a broker that accepts connections but fails every
+  publish costs the job seconds, not minutes. Event ids are derived from tenant+run+kind+host+port+CVE
+  instead of randomised, so a results upload replayed through the P1.5
+  idempotency path republishes identical ids and JetStream drops the duplicates;
+  the run id is part of that identity on purpose, so the same finding in a
+  *later* run stays a new occurrence rather than being suppressed after it comes
+  back. A run is capped at `OCTO_ASSET_EVENTS_MAX_PER_RUN` (default 1000) events
+  with the overflow logged and counted — a first scan of a fresh /16 is
+  otherwise one alert storm. The cap keeps the most actionable kinds first
+  (`new_cve`, then `cert_expiring`, then ports, then bare host discoveries),
+  because `report_diff.py` emits every `new_asset` ahead of everything else and
+  a plain head-cap would let a scope expansion bury the findings the bus exists
+  to deliver. `OCTO_ASSET_EVENTS_ENABLED=false` silences the stream without
+  disabling job dispatch and result ingest on the same broker.
+
+### Changed
+
+- **`tenant_id` is now validated on tenant creation** — `[A-Za-z0-9]` followed
+  by up to 63 more of `[A-Za-z0-9_-]`, and the prefix `h_` is reserved.
+  `POST /api/tenants` answers 422 for anything else (it previously accepted any
+  non-empty string up to the column width). The id is not just a key: it is a
+  token in `ingest.results.{tenant_id}` and now `events.asset.{tenant_id}.{kind}`,
+  and the old subject sanitizer mapped every disallowed character to `_`, so
+  `acme.eu` and `acme_eu` shared one subject — a subscription or NATS ACL scoped
+  to one of them also received the other's messages. Ids that predate the
+  validation keep working: they are published under a reserved
+  `h_<sha256[:32]>` token instead of being mangled into a neighbour's subject,
+  and every conforming id keeps the subject name it has today.
+
 - **TLS certificate name mismatch** (ROADMAP P4.1) — new `cert_name_mismatch`
   (medium) finding in `tls_posture.json`, closing the hostname/SAN-CN gap that
   Phase 9.2 explicitly left out of scope. A certificate is flagged when its DNS
