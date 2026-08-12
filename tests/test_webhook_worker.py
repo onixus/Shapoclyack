@@ -125,6 +125,39 @@ def test_dispatcher_tick_accumulates_outcomes_and_reports_the_queue(monkeypatch)
     assert len(pruned) == 1
 
 
+def test_first_prune_does_not_depend_on_host_uptime(monkeypatch):
+    """monotonic() counts from the host's boot, not from this process's start.
+
+    Seeding "last pruned" with 0.0 therefore made the first sweep wait for the
+    *machine's* uptime to pass the interval — deferred on a freshly booted node,
+    immediate on a long-lived one. A newly booted CI runner is exactly the first
+    case, which is how this was caught.
+    """
+    monkeypatch.setattr(
+        webhook_worker.webhooks,
+        "dispatch_once",
+        lambda: {"attempted": 0, "delivered": 0, "retrying": 0, "dead": 0},
+    )
+    monkeypatch.setattr(webhook_worker.webhooks, "queue_depth", lambda: {})
+    pruned: list[int] = []
+    monkeypatch.setattr(
+        webhook_worker.webhooks, "prune_deliveries", lambda: pruned.append(1) or 0
+    )
+    # A host up for five seconds — far below the one-hour retention interval.
+    clock = iter([5.0, 6.0, 5.0 + webhook_worker._PRUNE_INTERVAL_SECONDS])
+    monkeypatch.setattr(webhook_worker.time, "monotonic", lambda: next(clock))
+
+    dispatcher = webhook_worker.WebhookDispatcher(settings=Settings())
+    dispatcher._tick()
+    assert len(pruned) == 1, "first tick must sweep whatever the host's uptime is"
+
+    dispatcher._tick()
+    assert len(pruned) == 1, "second tick is inside the interval"
+
+    dispatcher._tick()
+    assert len(pruned) == 2, "an interval later it sweeps again"
+
+
 def test_dispatcher_tick_failure_is_counted_not_fatal(monkeypatch):
     dispatcher = webhook_worker.WebhookDispatcher(settings=Settings())
 

@@ -170,7 +170,13 @@ class WebhookDispatcher:
         self._poll_interval = max(1.0, float(settings.webhook_dispatch_interval_seconds))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._last_prune = 0.0
+        # None, not 0.0: monotonic() counts from an arbitrary origin — the
+        # host's boot on Linux — so "0.0 means never pruned" made the first
+        # sweep wait until the *machine's* uptime passed the interval. On a
+        # freshly booted node that silently deferred it; on a long-lived one it
+        # ran immediately. None makes "never pruned" explicit, so the first
+        # tick sweeps regardless of how long the host has been up.
+        self._last_prune: float | None = None
         self._stats = {"ticks": 0, "attempted": 0, "delivered": 0, "retrying": 0, "dead": 0, "errors": 0}
 
     @property
@@ -215,7 +221,7 @@ class WebhookDispatcher:
         for status, count in webhooks.queue_depth().items():
             metrics.WEBHOOK_DELIVERY_QUEUE.labels(status=status).set(count)
         now = time.monotonic()
-        if now - self._last_prune >= _PRUNE_INTERVAL_SECONDS:
+        if self._last_prune is None or now - self._last_prune >= _PRUNE_INTERVAL_SECONDS:
             self._last_prune = now
             webhooks.prune_deliveries()
 
