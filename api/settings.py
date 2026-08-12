@@ -66,15 +66,6 @@ class Settings:
     # Asset lifecycle: active assets not re-observed within this many days flip
     # to "stale" at the end of every ingest (api/services/assets.py).
     asset_stale_days: int = 14
-    # Publish Phase 10.1 asset events to events.asset.{tenant}.{kind} (Phase
-    # 10.2). Requires nats_url — with no broker there is nowhere to publish and
-    # the flag is inert. Kept separately switchable so an operator can silence
-    # the event stream without also disabling job dispatch and result ingest,
-    # which share the same broker.
-    asset_events_enabled: bool = True
-    # Per-run publish cap; the overflow is logged and counted, never silently
-    # dropped, and diff.json always holds the full set.
-    asset_events_max_per_run: int = 1000
     # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
     # default since postgres_url always resolves (sqlite fallback), unlike
     # the opt-in NATS/ClickHouse sidecars.
@@ -183,9 +174,6 @@ def load_settings() -> Settings:
         in {"1", "true", "yes"},
         postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip() or _default_sqlite_url(),
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
-        asset_events_enabled=os.environ.get("OCTO_ASSET_EVENTS_ENABLED", "true").lower()
-        in ("1", "true", "yes", "on"),
-        asset_events_max_per_run=int(os.environ.get("OCTO_ASSET_EVENTS_MAX_PER_RUN", "1000")),
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         endpoint_inventory_enabled=os.environ.get("OCTO_ENDPOINT_INVENTORY_ENABLED", "true").lower()

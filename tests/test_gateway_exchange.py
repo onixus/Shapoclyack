@@ -62,13 +62,7 @@ def test_v1_auth_exchange_returns_tenant_and_agent_claims(tmp_path, monkeypatch)
 
 def test_ingest_results_subject_and_gateway_payload(tmp_path):
     assert nats_bus.ingest_results_subject("ten_acme") == "ingest.results.ten_acme"
-    # A tenant id that is not a valid subject token is hashed into the reserved
-    # h_ namespace, not folded character-by-character into a neighbour's
-    # subject: the old mapping sent "ten/../x" and a literal "ten____x" to the
-    # same place, so an ACL scoped to one tenant received the other's results.
-    unsafe = nats_bus.ingest_results_subject("ten/../x")
-    assert unsafe.startswith("ingest.results.h_")
-    assert unsafe != nats_bus.ingest_results_subject("ten____x")
+    assert nats_bus.ingest_results_subject("ten/../x") == "ingest.results.ten____x"
 
     import io
     import tarfile

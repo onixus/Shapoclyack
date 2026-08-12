@@ -180,45 +180,6 @@ The current UI displays a default global tenant context. API clients must still
 send and validate tenant scope explicitly where the endpoint contract requires
 it.
 
-## Asset events
-
-A finished run's `diff.json` carries a normalized list of asset-level changes
-(`new_asset`, `new_open_port`, `new_cve`, `cert_expiring`). The API publishes
-each of them to JetStream on `events.asset.{tenant_id}.{kind}`, together with
-`decommissioned_host` when an operator decommissions an asset through
-`PATCH /assets/{id}`. Consumers subscribe per tenant (`events.asset.acme.>`) or
-per kind across tenants (`events.asset.*.new_cve`).
-
-Publishing happens in the API rather than in the scanner because the tenant is
-a property of the job, not of the scan: the scanner is also the agent's
-payload, so publishing there would mean handing broker credentials to every
-remote worker and having it guess at a tenant the API already authorized. Both
-execution paths converge on the same post-run hook, so a locally executed scan
-and an agent upload emit the same events.
-
-Delivery is best-effort and never fails a scan. An event that could not be
-published is counted on `octo_asset_events_published_total{outcome="skipped"}`
-(broker off, unreachable, or the batch abandoned) or `{outcome="error"}`, and
-its payload is still in the run's `diff.json` — a broker outage costs
-notifications, not data. The publish loop is bounded by a batch deadline and
-aborts after three consecutive failures, because it runs inside the request
-that completes a job: the job is not terminal until it returns, so a broker
-that accepts connections and then fails every publish must cost seconds, not
-minutes.
-
-Because the tenant id is a subject token, it is constrained at creation to
-`[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Ids predating that check are published under
-a reserved `h_<hash>` token rather than being folded onto a neighbour's
-subject, so a subscription or NATS ACL scoped to one tenant cannot receive
-another's events.
-
-Event ids are derived from tenant, run, kind, host, port and CVE rather than
-randomised, so a results upload replayed through the idempotency path
-republishes identical ids and JetStream's duplicate window drops them. The run
-id is deliberately part of that identity: the same finding seen by a later run
-is a genuine re-occurrence, and collapsing it would suppress the signal that
-something came back after remediation.
-
 ## Storage boundaries
 
 PostgreSQL is the primary transactional store. ClickHouse is an optional
