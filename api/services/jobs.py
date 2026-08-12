@@ -40,6 +40,7 @@ from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agents as agents_service
+from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import config_override as config_override_service
 from api.services import job_states
@@ -483,6 +484,35 @@ def _upsert_assets_best_effort(
             _update_job(settings, job_id, asset_upsert_error=f"{type(exc).__name__}: {exc}"[:2000])
 
 
+def _publish_asset_events_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+) -> None:
+    """Best-effort publish of the run's Phase 10.1 events (Phase 10.2).
+
+    Called from the same two places as ``_upsert_assets_best_effort`` and for
+    the same reason — those are the only two points where a finished run's
+    artifacts are on disk under a known tenant, whether the scan ran locally or
+    came up from an agent.
+
+    Deliberately quieter than the asset upsert on failure: an empty asset list
+    is a broken installation worth recording on the job, while an unpublished
+    event is a missed notification whose payload is still in ``diff.json``.
+    """
+    if not run_id or not settings.asset_events_enabled or not settings.nats_url:
+        return
+    try:
+        asset_events.publish_run_events(
+            nats_url=settings.nats_url,
+            run_dir=settings.output_dir / "runs" / run_id,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            job_id=job_id,
+            max_events=settings.asset_events_max_per_run,
+        )
+    except Exception:  # noqa: BLE001
+        logging.exception("Asset event publish failed for run %s (tenant=%s)", run_id, tenant_id)
+
+
 def _lease_deadline(settings: Settings) -> datetime:
     return _now() + timedelta(seconds=max(settings.job_lease_seconds, 1))
 
@@ -673,6 +703,9 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             if run_id:
                 runs_service.write_run_tenant(settings, str(run_id), tenant_id, job_id=job_id)
             _upsert_assets_best_effort(
+                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
+            )
+            _publish_asset_events_best_effort(
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
     except Exception as exc:  # noqa: BLE001
@@ -1169,6 +1202,9 @@ def complete_job(
             except results_ingest.IngestError as exc:
                 raise ValueError(str(exc)) from exc
             _upsert_assets_best_effort(
+                settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+            )
+            _publish_asset_events_best_effort(
                 settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
             )
 

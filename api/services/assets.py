@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import asset_events
 from api.services import runs as runs_service
 from api.settings import Settings
 from scanner.pipeline.asset_identity import (
@@ -332,7 +333,10 @@ def update_asset(
         for field in ("owner_email", "business_unit", "asset_criticality"):
             if field in updates:
                 setattr(asset, field, updates[field])
-        if updates.get("status") == _MANUAL_STATUS and previous_status != _MANUAL_STATUS:
+        decommissioned = (
+            updates.get("status") == _MANUAL_STATUS and previous_status != _MANUAL_STATUS
+        )
+        if decommissioned:
             asset.status = _MANUAL_STATUS
             LOG.info(
                 "asset_event kind=decommissioned_host tenant_id=%s asset_id=%s previous_status=%s",
@@ -340,4 +344,40 @@ def update_asset(
                 asset_id,
                 previous_status,
             )
-    return get_asset(settings, tenant_id, asset_id)
+    updated = get_asset(settings, tenant_id, asset_id)
+    if decommissioned:
+        # Published after the session closes, so a broker that hangs cannot
+        # hold the row's transaction open — and after the read, so the event
+        # can name the host the asset is known by.
+        _publish_decommissioned(settings, tenant_id, asset_id, updated, previous_status)
+    return updated
+
+
+def _publish_decommissioned(
+    settings: Settings,
+    tenant_id: str,
+    asset_id: str,
+    asset: dict | None,
+    previous_status: str | None,
+) -> None:
+    """Best-effort ``decommissioned_host`` publish (Phase 10.2). Never raises —
+    the operator's PATCH succeeded either way, and the log line above stays the
+    record of it."""
+    if not settings.asset_events_enabled or not settings.nats_url:
+        return
+    identifiers = (asset or {}).get("identifiers") or []
+    host = next(
+        (i["identifier_value"] for i in identifiers if i.get("identifier_type") == "ip"),
+        None,
+    ) or (identifiers[0]["identifier_value"] if identifiers else None)
+    try:
+        asset_events.publish_asset_status_event(
+            nats_url=settings.nats_url,
+            tenant_id=tenant_id,
+            kind="decommissioned_host",
+            asset_id=asset_id,
+            host=host,
+            data={"previous_status": previous_status},
+        )
+    except Exception:  # noqa: BLE001
+        LOG.exception("decommissioned_host publish failed tenant=%s asset=%s", tenant_id, asset_id)
