@@ -7,9 +7,19 @@ const SECRET_MASK = "••••••••";
 
 /** The API masks a stored secret, so that is what the editor is handed. */
 const CONFIG = {
-  editable_paths: ["enrichment.cvss4.nvd_api_key", "nuclei.retries"],
-  defaults: { "nuclei.retries": 1 },
-  effective: { "enrichment.cvss4.nvd_api_key": SECRET_MASK, "nuclei.retries": 1 },
+  editable_paths: [
+    "enrichment.cvss4.nvd_api_key",
+    "nuclei.retries",
+    // A boolean whose path does not end in ".enabled" — it must still get a
+    // checkbox, since a number input would send 0/1 and the API rejects that.
+    "tls_posture.hostname_mismatch",
+  ],
+  defaults: { "nuclei.retries": 1, "tls_posture.hostname_mismatch": true },
+  effective: {
+    "enrichment.cvss4.nvd_api_key": SECRET_MASK,
+    "nuclei.retries": 1,
+    "tls_posture.hostname_mismatch": true,
+  },
   overrides: {},
 };
 
@@ -39,6 +49,13 @@ describe("ConfigEditor secret fields", () => {
     renderEditor();
     const input = screen.getByDisplayValue("1");
     expect(input).not.toHaveAttribute("type", "password");
+  });
+
+  it("renders any boolean setting as a checkbox, not a number input", () => {
+    renderEditor();
+    const box = screen.getByRole("checkbox");
+    expect(box).toHaveAttribute("data-state", "checked");
+    expect(screen.queryByDisplayValue("true")).toBeNull();
   });
 
   it("disables the key field for a user who cannot edit", () => {

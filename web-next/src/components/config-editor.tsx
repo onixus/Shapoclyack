@@ -21,7 +21,13 @@ const SERVICE_BACKENDS = ["nmap", "pulse", "hybrid"];
 
 type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text" | "secret";
 
-function widgetFor(path: string): Widget {
+// `value` is the effective (or default) value the API reported for this path.
+// Any boolean gets a checkbox: the name-based list below only ever covered the
+// toggles that existed when it was written, and a boolean rendered as a number
+// input sends 0/1, which the API's `_as_bool` validator rejects — so a
+// mis-typed control makes the setting unchangeable, not merely ugly.
+function widgetFor(path: string, value?: unknown): Widget {
+  if (typeof value === "boolean") return "bool";
   if (path.endsWith(".enabled") || path === "reporting.pdf_summary" || path === "service_probe.shadow") {
     return "bool";
   }
@@ -117,7 +123,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
             <p className="mb-2 text-xs font-mono font-bold uppercase tracking-wider text-sky-400">{group}</p>
             <div className="grid gap-3 sm:grid-cols-2">
               {groupPaths.map((path) => {
-                const widget = widgetFor(path);
+                const widget = widgetFor(path, values[path] ?? data?.defaults?.[path]);
                 const leaf = path.split(".").slice(group.startsWith("profile") ? 2 : 1).join(".");
                 return (
                   <div key={path} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800/80 bg-slate-950/60 px-3 py-2">
