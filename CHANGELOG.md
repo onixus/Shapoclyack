@@ -14,6 +14,115 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Outbound webhooks for asset events** (ROADMAP P2 / Phase 10.3, webhook
+  half) — the first consumer of the 10.2 event stream. Per-tenant subscriptions
+  (`POST /api/webhooks`) carry the routing policy: which event kinds, and a
+  `min_severity` floor that applies to the kinds which actually have a severity
+  (`new_cve`) and deliberately does **not** swallow port changes or
+  decommissions that have none. A JetStream durable consumer
+  (`octo-webhook-fanout` on `events.asset.>`) turns matching events into rows
+  and acks; a separate dispatcher drains them. The split is the point: a slow
+  receiver can never stall consumption of the event stream, and the POST happens
+  outside any transaction so a hanging receiver holds no database connection.
+
+  `webhook_deliveries` (migration `0011`) is retry queue, dead-letter queue and
+  audit trail in one table, because those are the same rows under different
+  predicates. Retries are exponential and capped
+  (`OCTO_WEBHOOK_MAX_ATTEMPTS`, default 6 attempts over ~15 minutes); 5xx,
+  timeouts, 408 and 429 are retried, while every other 4xx is dead-lettered on
+  the first attempt — replaying an unchanged body that the receiver called
+  malformed only spends the retry budget to get the same answer.
+  `GET /api/webhooks/deliveries?status=dead` is the DLQ view and
+  `POST /api/webhooks/deliveries/{id}/retry` replays one; both work with the
+  broker down, since a delivery is a row and carries its own payload. The
+  dispatcher runs in **every** replica without leader election, like the P1.4
+  reaper: claims are taken with `FOR UPDATE SKIP LOCKED` and each claim pushes a
+  visibility timeout forward, so replicas divide the queue and a replica that
+  dies mid-POST releases its delivery instead of stranding it.
+
+  Deliveries are signed by default: a secret is generated at creation, returned
+  exactly once, and write-only afterwards (`has_secret`, plus
+  `POST /api/webhooks/{id}/rotate-secret`). `X-Shapoclyack-Signature` is an HMAC
+  over `{timestamp}.{body}` with the timestamp *inside* the MAC, so a receiver
+  rejecting stale timestamps cannot be defeated by replaying an old body under a
+  new one. Signing is what you opt out of, not into: an unsigned webhook is a
+  URL anyone who learns it can forge "this host just grew a critical CVE" into.
+
+  Webhook URLs are operator-supplied and this service sits inside the network it
+  scans, so a target resolving to a loopback, private, link-local or otherwise
+  non-global address is refused — that is the SSRF shape where an integration is
+  really a probe of the cluster's own internals, cloud metadata service
+  included. The check runs at write time *and* immediately before every POST (a
+  name can start resolving inward later), redirects are not followed, and
+  `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` opts an on-cluster receiver back in.
+  Writes need the tenant `admin` role rather than `operator`: sending a tenant's
+  exposure data to an address of the creator's choosing is closer to granting
+  access than to scheduling a scan. New metrics:
+  `octo_webhook_deliveries_total{outcome}`,
+  `octo_webhook_delivery_duration_seconds`,
+  `octo_webhook_delivery_queue{status}`. Ticketing bridges (Jira/ServiceNow) are
+  the remaining half of 10.3 and reuse this queue as another transport.
+
+- **Asset event bus** (ROADMAP P2 / Phase 10.2) — the asset-level events that
+  Phase 10.1 normalized into each run's `diff.json` are now published to NATS
+  JetStream on `events.asset.{tenant_id}.{kind}`: `new_asset`, `new_open_port`,
+  `new_cve`, `cert_expiring` after every successful run, plus
+  `decommissioned_host` when an operator decommissions an asset through
+  `PATCH /assets/{id}`. Until now those events existed only inside a run
+  artifact and a pod log, with nothing able to subscribe to them; this is the
+  substrate 10.3 (webhooks, ticketing) consumes.
+
+  The tenant token comes **before** the kind because a routing policy is
+  per-tenant first — the common subscription is `events.asset.acme.>`, while a
+  cross-tenant consumer still gets `events.asset.*.new_cve`. The new `EVENTS`
+  stream uses `LIMITS` retention rather than `WORK_QUEUE`: one event legitimately
+  has several independent consumers, and a work queue would let whichever
+  connected first consume it away from the others. Defaults: 30d max age, 1GiB
+  max bytes, 24h duplicate window (`OCTO_NATS_EVENTS_*`).
+
+  Publishing lives in the API, not in `scanner/pipeline/alerts.py` as the
+  roadmap originally sketched. The scanner is also the agent's payload and has
+  no tenant context — the tenant is a property of the job, resolved by the API —
+  so publishing there would have meant handing broker credentials to every
+  remote worker. The API's post-run hook covers local-mode scans and agent
+  uploads from the same place. `alerts.py` keeps its per-run SMTP/webhook
+  digest; that is a human summary, not the machine event stream.
+
+  Delivery is best-effort and never fails a scan: a run whose artifacts are on
+  disk and whose assets are registered must not be reported as failed because
+  the broker blinked. What did not go out is visible on the new
+  `octo_asset_events_published_total{kind,outcome}` counter, and the payload is
+  still in `diff.json`. The publish loop runs inside the agent's upload request,
+  so it is bounded twice over: a 30s batch deadline, and an abort after three
+  consecutive failures — a broker that accepts connections but fails every
+  publish costs the job seconds, not minutes. Event ids are derived from tenant+run+kind+host+port+CVE
+  instead of randomised, so a results upload replayed through the P1.5
+  idempotency path republishes identical ids and JetStream drops the duplicates;
+  the run id is part of that identity on purpose, so the same finding in a
+  *later* run stays a new occurrence rather than being suppressed after it comes
+  back. A run is capped at `OCTO_ASSET_EVENTS_MAX_PER_RUN` (default 1000) events
+  with the overflow logged and counted — a first scan of a fresh /16 is
+  otherwise one alert storm. The cap keeps the most actionable kinds first
+  (`new_cve`, then `cert_expiring`, then ports, then bare host discoveries),
+  because `report_diff.py` emits every `new_asset` ahead of everything else and
+  a plain head-cap would let a scope expansion bury the findings the bus exists
+  to deliver. `OCTO_ASSET_EVENTS_ENABLED=false` silences the stream without
+  disabling job dispatch and result ingest on the same broker.
+
+### Changed
+
+- **`tenant_id` is now validated on tenant creation** — `[A-Za-z0-9]` followed
+  by up to 63 more of `[A-Za-z0-9_-]`, and the prefix `h_` is reserved.
+  `POST /api/tenants` answers 422 for anything else (it previously accepted any
+  non-empty string up to the column width). The id is not just a key: it is a
+  token in `ingest.results.{tenant_id}` and now `events.asset.{tenant_id}.{kind}`,
+  and the old subject sanitizer mapped every disallowed character to `_`, so
+  `acme.eu` and `acme_eu` shared one subject — a subscription or NATS ACL scoped
+  to one of them also received the other's messages. Ids that predate the
+  validation keep working: they are published under a reserved
+  `h_<sha256[:32]>` token instead of being mangled into a neighbour's subject,
+  and every conforming id keeps the subject name it has today.
+
 - **TLS certificate name mismatch** (ROADMAP P4.1) — new `cert_name_mismatch`
   (medium) finding in `tls_posture.json`, closing the hostname/SAN-CN gap that
   Phase 9.2 explicitly left out of scope. A certificate is flagged when its DNS

@@ -1,17 +1,21 @@
 """NATS JetStream bus for job dispatch and raw-result ingest (Phase 1).
 
 Subjects (streams created on connect when missing):
-  - jobs.scan          → stream JOBS
-  - ingest.raw_results → stream INGEST
+  - jobs.scan                        → stream JOBS
+  - ingest.raw_results               → stream INGEST
+  - events.asset.{tenant}.{kind}     → stream EVENTS (Phase 10.2)
 
 Set OCTO_NATS_URL to enable. Empty URL keeps legacy HTTP-only agent flow.
 
 Retention / HA overrides (all optional, applied on every connect via
 JetStream ``update_stream``, so changing them takes effect on redeploy):
-  - OCTO_NATS_JOBS_MAX_AGE_SECONDS   (default 86400 / 24h)
-  - OCTO_NATS_INGEST_MAX_AGE_SECONDS (default 604800 / 7d)
-  - OCTO_NATS_INGEST_MAX_BYTES       (default 10GiB)
-  - OCTO_NATS_STREAM_REPLICAS        (default 1; set 3 on a 3-node cluster)
+  - OCTO_NATS_JOBS_MAX_AGE_SECONDS      (default 86400 / 24h)
+  - OCTO_NATS_INGEST_MAX_AGE_SECONDS    (default 604800 / 7d)
+  - OCTO_NATS_INGEST_MAX_BYTES          (default 10GiB)
+  - OCTO_NATS_EVENTS_MAX_AGE_SECONDS    (default 2592000 / 30d)
+  - OCTO_NATS_EVENTS_MAX_BYTES          (default 1GiB)
+  - OCTO_NATS_EVENTS_DEDUPE_SECONDS     (default 86400 / 24h)
+  - OCTO_NATS_STREAM_REPLICAS           (default 1; set 3 on a 3-node cluster)
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -31,9 +36,11 @@ LOG = logging.getLogger("shapoclyack.nats")
 SUBJECT_JOBS_SCAN = "jobs.scan"
 SUBJECT_INGEST_RAW = "ingest.raw_results"  # legacy alias
 # Per-tenant gateway subject (TASK 4): ingest.results.{tenant_id}
+# Per-tenant asset events (Phase 10.2): events.asset.{tenant_id}.{kind}
 
 STREAM_JOBS = "JOBS"
 STREAM_INGEST = "INGEST"
+STREAM_EVENTS = "EVENTS"
 
 # Durable pull consumer for remote agents (queue group = fair dispatch).
 CONSUMER_AGENTS = "octo-agents"
@@ -43,6 +50,17 @@ CONSUMER_AGENTS = "octo-agents"
 _DEFAULT_JOBS_MAX_AGE_SECONDS = 24 * 3600
 _DEFAULT_INGEST_MAX_AGE_SECONDS = 7 * 24 * 3600
 _DEFAULT_INGEST_MAX_BYTES = 10 * 1024 * 1024 * 1024  # 10GB
+# Asset events are small JSON envelopes and are kept far longer than raw
+# results: a webhook consumer that was down for a weekend should still be able
+# to replay what changed, and 30d also gives an operator a queryable change
+# history without a second store.
+_DEFAULT_EVENTS_MAX_AGE_SECONDS = 30 * 24 * 3600
+_DEFAULT_EVENTS_MAX_BYTES = 1024 * 1024 * 1024  # 1GB
+# JetStream's own duplicate window defaults to 2 minutes, which is shorter than
+# the gap between an upload and its retry after a network timeout — the exact
+# case the Phase 10.1 event ids exist to collapse. 24h covers a replayed
+# results upload without keeping the dedupe table alive for the stream's life.
+_DEFAULT_EVENTS_DEDUPE_SECONDS = 24 * 3600
 # JetStream replication factor (R). 1 = single node (default/dev). Set to 3 on
 # a 3+ node NATS cluster (e.g. prod overlay) for stream-level HA.
 _DEFAULT_STREAM_REPLICAS = 1
@@ -153,6 +171,28 @@ class NatsBus:
                 # or is disabled; oldest raw results are discarded past this.
                 max_age=float(ingest_max_age),
                 max_bytes=ingest_max_bytes,
+                num_replicas=stream_replicas,
+            )
+        )
+        # Asset-level events (Phase 10.2). LIMITS retention, not WORK_QUEUE:
+        # unlike a job offer, one event legitimately has several independent
+        # consumers (a webhook fan-out, a ticket bridge, an operator's replay),
+        # and WORK_QUEUE would let whichever one connected first consume it
+        # away from the others.
+        await self._ensure_stream(
+            StreamConfig(
+                name=STREAM_EVENTS,
+                subjects=["events.>"],
+                retention=RetentionPolicy.LIMITS,
+                storage=StorageType.FILE,
+                max_msgs=1_000_000,
+                max_age=float(
+                    _int_env("OCTO_NATS_EVENTS_MAX_AGE_SECONDS", _DEFAULT_EVENTS_MAX_AGE_SECONDS)
+                ),
+                max_bytes=_int_env("OCTO_NATS_EVENTS_MAX_BYTES", _DEFAULT_EVENTS_MAX_BYTES),
+                duplicate_window=float(
+                    _int_env("OCTO_NATS_EVENTS_DEDUPE_SECONDS", _DEFAULT_EVENTS_DEDUPE_SECONDS)
+                ),
                 num_replicas=stream_replicas,
             )
         )
@@ -313,15 +353,76 @@ class NatsBus:
         )
         return ok
 
+    def publish_asset_event(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
+        """Publish one asset event to ``events.asset.{tenant_id}.{kind}``."""
+        tenant_id = str(envelope.get("tenant_id") or "default")
+        kind = str(envelope.get("kind") or "unknown")
+        return self.publish_json(
+            asset_event_subject(tenant_id, kind),
+            envelope,
+            msg_id=str(envelope.get("event_id") or "") or None,
+            headers={"tenant_id": tenant_id, "event_kind": kind},
+            retries=retries,
+        )
+
 
 _BUS: NatsBus | None = None
 _BUS_LOCK = threading.Lock()
 
 
+# A token that needs no encoding: ASCII alphanumerics plus - and _, which carry
+# no meaning to NATS. Everything else (notably ``.``, ``*`` and ``>``) is a
+# separator or wildcard and would reshape the subject tree rather than name a
+# leaf in it.
+_SUBJECT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Reserved prefix for the encoded form of a token that is not representable
+# directly. `tenants.create_tenant` rejects ids starting with it, so an encoded
+# token can never collide with a literal one.
+_ENCODED_TOKEN_PREFIX = "h_"
+
+
+def is_subject_token(value: str) -> bool:
+    """Whether ``value`` can be a NATS subject token verbatim."""
+    return bool(_SUBJECT_TOKEN_RE.match(value or ""))
+
+
+def _subject_token(value: str, fallback: str) -> str:
+    """Encode one subject token injectively.
+
+    Replacing every disallowed character with ``_`` (the previous behaviour)
+    was *not* injective: tenants ``acme.eu`` and ``acme_eu`` both collapsed to
+    ``acme_eu``, so a consumer or a NATS ACL scoped to one tenant's subject
+    would have received the other tenant's messages. Tenant ids are now
+    validated at creation, but ids predating that validation still exist, so
+    anything unrepresentable is hashed into the reserved ``h_`` namespace
+    instead of being mangled into a neighbour's subject.
+
+    A conforming id is used verbatim, so every subject in an existing
+    deployment keeps the exact name it has today.
+    """
+    value = value or ""
+    if is_subject_token(value) and not value.startswith(_ENCODED_TOKEN_PREFIX):
+        return value
+    if not value:
+        return fallback
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+    LOG.warning(
+        "Tenant id %r is not a valid NATS subject token; publishing under %s%s instead",
+        value,
+        _ENCODED_TOKEN_PREFIX,
+        digest,
+    )
+    return f"{_ENCODED_TOKEN_PREFIX}{digest}"
+
+
 def ingest_results_subject(tenant_id: str) -> str:
     """NATS subject ``ingest.results.{tenant_id}`` with safe token."""
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (tenant_id or "default"))
-    return f"ingest.results.{safe or 'default'}"
+    return f"ingest.results.{_subject_token(tenant_id, 'default')}"
+
+
+def asset_event_subject(tenant_id: str, kind: str) -> str:
+    """NATS subject ``events.asset.{tenant_id}.{kind}`` with safe tokens."""
+    return f"events.asset.{_subject_token(tenant_id, 'default')}.{_subject_token(kind, 'unknown')}"
 
 
 def ingest_msg_id(*, job_id: str, run_id: str, archive_sha256: str) -> str:

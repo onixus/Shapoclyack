@@ -12,6 +12,7 @@ if ``settings.postgres_url`` is empty rather than silently disabling anything.
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -26,6 +27,10 @@ from api.settings import Settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 DEFAULT_TENANT_ID = "default"
+
+# See _validate_tenant_id: the id doubles as a NATS subject token.
+_TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_RESERVED_TENANT_PREFIX = "h_"
 
 _settings: Settings | None = None
 
@@ -116,6 +121,8 @@ def reset_for_tests() -> None:
         session.query(models.AssetTag).delete()
         session.query(models.Asset).delete()
         session.query(models.ScanSchedule).delete()
+        session.query(models.WebhookDelivery).delete()
+        session.query(models.WebhookSubscription).delete()
         session.query(models.ProvisioningKey).delete()
         session.query(models.Tenant).delete()
 
@@ -136,12 +143,36 @@ def get_tenant(tenant_id: str) -> dict[str, Any] | None:
         return _tenant_to_dict(row) if row else None
 
 
+def _validate_tenant_id(tid: str) -> None:
+    """Constrain tenant ids to what a NATS subject token can carry verbatim.
+
+    The id is a *routing* identifier, not just a key: it becomes a token in
+    ``ingest.results.{tenant_id}`` and ``events.asset.{tenant_id}.{kind}``.
+    Accepting arbitrary text meant two distinguishable tenants could share one
+    subject (``acme.eu`` and ``acme_eu``), so a subscription or NATS ACL scoped
+    to one of them would also receive the other's messages. Rejecting at
+    creation is the cheap half of that fix; nats_bus encodes the ids that
+    predate this check.
+
+    ``h_`` is reserved as the prefix of that encoded form, so a literal id can
+    never be mistaken for an encoded one.
+    """
+    if not _TENANT_ID_RE.match(tid):
+        raise ValueError(
+            "tenant_id must be 1-64 characters of A-Z, a-z, 0-9, '-' or '_' "
+            "and start with an alphanumeric"
+        )
+    if tid.startswith(_RESERVED_TENANT_PREFIX):
+        raise ValueError(f"tenant_id must not start with {_RESERVED_TENANT_PREFIX!r} (reserved)")
+
+
 def create_tenant(*, name: str, tenant_id: str | None = None) -> dict[str, Any]:
     settings = _require_settings()
     name = name.strip()
     if not name:
         raise ValueError("tenant name required")
     tid = (tenant_id or "").strip() or f"ten_{uuid.uuid4().hex[:12]}"
+    _validate_tenant_id(tid)
     with get_session(settings.postgres_url) as session:
         if session.get(models.Tenant, tid) is not None:
             raise ValueError(f"tenant_id already exists: {tid}")

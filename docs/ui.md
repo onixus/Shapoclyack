@@ -45,48 +45,6 @@ Do not equate every row with a confirmed CVE. `finding_class`, `confidence`, `re
 
 The current console still contains scanner- and operations-oriented surfaces such as jobs, runs, agents, and schedules. The target product UX moves toward risk, asset, vulnerability-lifecycle, remediation, and MSSP views. That target is intentionally documented in [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md), not mixed into this current-state guide.
 
-## Screenshots
-
-Interface screenshots must be captured from the current commit with synthetic `.test` domains and RFC 5737 documentation addresses. Never use production targets, tenant names, user identities, or tokens.
-
-Expected files:
-
-```text
-docs/images/ui-dashboard.png
-docs/images/ui-assets.png
-docs/images/ui-attack-surface.png
-docs/images/ui-endpoints.png
-docs/images/ui-jobs.png
-docs/images/ui-run-report.png
-docs/images/ui-system.png
-```
-
-The Markdown below intentionally renders only files that exist in the repository. Regenerate all images as one set after a material UI change.
-
-<!-- UI_SCREENSHOTS_START -->
-
-Screenshots are pending capture from a browser environment that can reach the locally built application.
-
-<!-- UI_SCREENSHOTS_END -->
-
-## Reproducible capture
-
-1. Build the current UI:
-
-   ```bash
-   cd web-next
-   npm ci
-   npm run build
-   ```
-
-2. Start the AIO stack with a synthetic dataset or a mock API whose response types match `web-next/src/lib/api.ts`.
-3. Use a 1440×900 viewport at 100% scale.
-4. Sign in with a disposable admin account and select a synthetic tenant.
-5. Wait for all loading indicators to settle.
-6. Capture the routes represented by the expected files above as PNG without browser chrome.
-7. Inspect every image for secrets, real environment data, tenant/customer names, and tokens.
-8. Place images under `docs/images/` and replace the pending block with relative image links.
-
 ## UI development
 
 ```bash

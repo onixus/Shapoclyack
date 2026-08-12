@@ -7,11 +7,11 @@ Shapoclyack separates control-plane state, scan execution, analytical results, a
 | Component | Responsibility | Persistent data |
 |---|---|---|
 | Web UI | Operator workflows, tenant selection, and visualization | Browser JWT only |
-| FastAPI API | Auth, tenant scope, jobs, schedules, assets, reports, config | PostgreSQL and run artifacts |
+| FastAPI API | Auth, tenant scope, jobs, schedules, assets, reports, webhooks, config | PostgreSQL and run artifacts |
 | Scanner | Discovery, probing, enrichment, diff, and report generation | Run and checkpoint directories |
 | Remote agent | Claim jobs, execute scanner, upload results | Local temporary work |
-| PostgreSQL | OLTP state, tenants, memberships, jobs, agents, inventory, schedules, overrides | Database volume |
-| NATS JetStream | Job, ingest, and optional event messaging with durable delivery | JetStream volume |
+| PostgreSQL | OLTP state, tenants, memberships, jobs, agents, inventory, schedules, webhook queue/audit, overrides | Database volume |
+| NATS JetStream | Job, ingest, asset-event, and integration messaging with durable delivery | JetStream volume |
 | ClickHouse | Vulnerability and port analytics across runs | ClickHouse volume |
 
 ## Data flow
@@ -29,6 +29,12 @@ flowchart TD
     N --> C["ClickHouse ingest"]
     A --> R
     A --> C
+    A --> E["Asset event publisher"]
+    E --> N
+    N --> F["Webhook fan-out"]
+    F --> P
+    P --> D["Webhook dispatcher"]
+    D --> X["External receiver"]
 ```
 
 In local execution mode, the API launches the scanner without the NATS job path. In agent mode, a worker claims the tenant-scoped job and reports completion through the API or configured broker.
@@ -114,19 +120,54 @@ The current model provides contextual prioritization for run findings. The broad
 - Platform admins may use fleet-wide views where the API explicitly permits them.
 - Agent JWTs carry agent identity and tenant context.
 - The API is authoritative for tenant scope; a client-provided `tenant_id` is only a selector among tenants already granted to the principal.
-- Jobs, assets, schedules, runs, provisioning keys, endpoint inventory, and agent claims are tenant-bound.
+- Jobs, assets, schedules, runs, provisioning keys, endpoint inventory, agent claims, webhook subscriptions, and webhook deliveries are tenant-bound.
 - Direct lookup of another tenant's resource returns `404` where revealing existence would leak information.
 - The Web UI exposes a global tenant switcher and clears cached query data when tenant context changes.
+
+Tenant IDs created through the current API are constrained to a route- and NATS-safe representation. Legacy IDs that cannot be embedded injectively in NATS subjects use a reserved hash token rather than lossy character replacement, preventing two tenant IDs from collapsing onto one routing subject.
 
 Completed run directories carry `tenant.json`. Historical/direct scanner runs without that marker are treated as belonging to `default` for backward compatibility.
 
 See [API and RBAC](api-and-rbac.md) for endpoint-level authorization behavior.
 
+## Asset events
+
+A finished run's `diff.json` carries normalized asset-level changes: `new_asset`, `new_open_port`, `new_cve`, and `cert_expiring`. The API also emits `decommissioned_host` when an operator moves an asset to the decommissioned state.
+
+The API publishes these events to JetStream on `events.asset.{tenant_token}.{kind}`. Publishing belongs in the control plane rather than the scanner because tenant identity is a property of the authorized job; remote scanner workers do not need broker authority merely to produce findings.
+
+Publishing is best-effort and does not turn an otherwise successful scan into a failed job when the broker is unavailable. The full change set remains in `diff.json`, while `octo_asset_events_published_total{kind,outcome}` records published, errored, or skipped notifications.
+
+The synchronous publish path is bounded by a batch deadline and stops after repeated broker failures. A per-run cap prioritizes actionable event kinds before truncation so a large wave of newly discovered hosts cannot crowd all `new_cve` events out of the notification budget.
+
+Event IDs are content-derived and include tenant, run, kind, host, port, protocol, and finding identity where applicable. This makes upload retries idempotent inside JetStream's duplicate window while preserving a genuinely new occurrence in a later run.
+
+## Outbound webhooks
+
+Outbound webhooks are the first consumer of the asset-event stream. A tenant subscription contains routing policy such as event kinds and an optional minimum severity for event types that actually have severity.
+
+Two workers deliberately separate broker consumption from network delivery:
+
+1. a durable JetStream consumer (`octo-webhook-fanout` on `events.asset.>`) validates each envelope, materializes matching deliveries in PostgreSQL, and acknowledges the message;
+2. a dispatcher claims due rows and sends HTTP requests outside the database transaction.
+
+This split keeps slow or broken receivers from creating JetStream consumer lag and prevents a hanging HTTP request from holding a database connection.
+
+`webhook_deliveries` is intentionally the retry queue, dead-letter queue, and audit trail in one table. Pending rows carry `next_attempt_at`; exhausted or non-retryable rows become `dead`; delivered rows remain as delivery history until retention removes them. Replay of a dead delivery does not require the broker because the row contains the payload.
+
+The dispatcher runs in every API replica. It does not need leader election: due rows are claimed with `FOR UPDATE SKIP LOCKED`, and a visibility timeout moves the claim deadline forward so replicas divide work and abandoned claims become eligible again.
+
+Retry classification is bounded and explicit: timeouts, 5xx, 408, and 429 retry with capped exponential backoff; other 4xx responses are dead-lettered immediately rather than replaying the same malformed request until the budget is exhausted.
+
+Webhook payloads are signed by default with HMAC over `{timestamp}.{body}`. The secret is generated at subscription creation, returned once, stored write-only from the API perspective, and rotatable. Receivers should validate both the signature and timestamp freshness.
+
+Webhook targets are checked for SSRF at configuration time and again before delivery. Loopback, link-local, private, metadata-style, and otherwise non-global destinations are rejected by default; redirects are not followed. `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` is an explicit deployment opt-in for trusted on-cluster receivers.
+
 ## Storage boundaries
 
-PostgreSQL is the primary transactional store. ClickHouse is an analytical projection, not the source of truth for users, memberships, jobs, or asset lifecycle. Run artifacts remain on filesystem/PVC storage so operators can inspect raw tool output and downloadable reports.
+PostgreSQL is the primary transactional store. ClickHouse is an analytical projection, not the source of truth for users, memberships, jobs, webhook state, or asset lifecycle. Run artifacts remain on filesystem/PVC storage so operators can inspect raw tool output and downloadable reports.
 
-NATS JetStream is a messaging layer, not the authoritative database for job state. Durable streams support asynchronous work and optional integration/event delivery, while business state remains persisted in PostgreSQL or run artifacts as appropriate.
+NATS JetStream is a messaging layer, not the authoritative database for job or delivery state. Durable streams carry asynchronous work and asset events; business state remains persisted in PostgreSQL or run artifacts as appropriate.
 
 ## Trust boundaries
 
@@ -135,7 +176,7 @@ NATS JetStream is a messaging layer, not the authoritative database for job stat
 | Browser → API | JWT, server-side tenant/role checks, TLS at ingress, no secret values in status responses |
 | Agent → API/broker | Provisioning exchange, short-lived agent JWT, tenant match, claim fencing |
 | API → databases | Dedicated credentials, network policy, least privilege |
-| API → external integrations | Explicit configuration, bounded retries/timeouts, secret handling, destination validation |
+| API → external integrations | Tenant-admin authorization for writes, signed payloads, bounded retries/timeouts, write-only secrets, destination validation |
 | Scanner → targets | Explicit scope, rate caps, timeouts, isolated workers |
 | Artifacts → UI | Path validation, tenant authorization, binary-safe download endpoint |
 | External enrichment | Opt-in providers, candidate caps, timeouts, fail-soft parsing |

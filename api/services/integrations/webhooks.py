@@ -1,0 +1,799 @@
+"""Webhook subscriptions, routing policy and the delivery queue (Phase 10.3).
+
+The database half of the integration: which tenant wants which events where
+(``webhook_subscriptions``), and every attempt to get one there
+(``webhook_deliveries`` — queue, dead-letter queue and audit trail in one
+table, see the model docstring).
+
+Nothing here opens a socket: ``delivery.py`` owns the wire, this module owns
+the state machine around it. That split is what lets the dispatch loop be
+tested end-to-end against a stub transport, and it is why a receiver that
+hangs cannot hold a database transaction open — a delivery is *claimed* in one
+short transaction, POSTed outside any transaction, and recorded in a second.
+"""
+
+from __future__ import annotations
+
+import logging
+import secrets
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any, Callable
+
+from sqlalchemy import delete, func, or_, select
+
+from api.db import models
+from api.db.engine import get_session, insert_if_absent
+from api.services import asset_events, metrics, pagination
+from api.services import tenants as tenants_service
+from api.services.integrations import delivery as delivery_transport
+from api.settings import Settings
+from scanner.pipeline.report import SEVERITY_ORDER
+
+LOG = logging.getLogger("shapoclyack.webhooks")
+
+_settings: Settings | None = None
+
+# Kinds whose payload carries a severity, and so are subject to min_severity.
+# Every other kind is delivered regardless of the filter: "critical only" is a
+# statement about vulnerabilities, and silently swallowing a decommission or a
+# newly opened port because it has no CVSS would be a filter nobody asked for.
+_SEVERITY_BEARING_KINDS = ("new_cve",)
+
+DELIVERY_STATUSES = ("pending", "delivered", "dead")
+
+# Synthetic kind for POST /webhooks/{id}/test. Not in EVENT_KINDS on purpose:
+# it can never come off the event bus, only from an operator pressing "test".
+TEST_EVENT_KIND = "test"
+
+
+def configure(settings: Settings) -> None:
+    global _settings
+    _settings = settings
+
+
+def _require_settings() -> Settings:
+    assert _settings is not None, "webhooks.configure() not called"
+    return _settings
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat().replace("+00:00", "Z") if dt else None
+
+
+def reset_for_tests() -> None:
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        session.query(models.WebhookDelivery).delete()
+        session.query(models.WebhookSubscription).delete()
+
+
+# --------------------------------------------------------------------------
+# Subscriptions
+# --------------------------------------------------------------------------
+
+
+def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
+    """Serialise a subscription. The secret is never part of the result.
+
+    Only ``has_secret`` is exposed: the value is write-only, as with any shared
+    secret an operator pastes into a form. It is shown exactly once, in the
+    response to the request that set it (see ``create_subscription``).
+    """
+    return {
+        "subscription_id": row.subscription_id,
+        "tenant_id": row.tenant_id,
+        "name": row.name,
+        "url": row.url,
+        "enabled": row.enabled,
+        "event_kinds": list(row.event_kinds or []),
+        "min_severity": row.min_severity,
+        "has_secret": bool(row.secret),
+        "headers": dict(row.headers or {}),
+        "created_at": _iso(row.created_at),
+        "created_by": row.created_by,
+        "updated_at": _iso(row.updated_at),
+        "last_delivery_at": _iso(row.last_delivery_at),
+        "last_status": row.last_status,
+    }
+
+
+def _validate_event_kinds(kinds: list[str] | None) -> list[str]:
+    if not kinds:
+        return []
+    cleaned: list[str] = []
+    for raw in kinds:
+        kind = str(raw).strip()
+        if kind not in asset_events.EVENT_KINDS:
+            raise ValueError(
+                f"unknown event kind {kind!r}; known kinds: {', '.join(asset_events.EVENT_KINDS)}"
+            )
+        if kind not in cleaned:
+            cleaned.append(kind)
+    return cleaned
+
+
+def _validate_min_severity(value: str | None) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    severity = str(value).strip().lower()
+    if severity not in SEVERITY_ORDER:
+        raise ValueError(
+            f"unknown severity {value!r}; expected one of {', '.join(SEVERITY_ORDER)}"
+        )
+    return severity
+
+
+def create_subscription(
+    *,
+    tenant_id: str,
+    name: str,
+    url: str,
+    event_kinds: list[str] | None = None,
+    min_severity: str | None = None,
+    secret: str | None = None,
+    headers: dict[str, Any] | None = None,
+    enabled: bool = True,
+    created_by: str | None = None,
+) -> dict[str, Any]:
+    """Create a subscription. The returned dict carries ``secret`` once.
+
+    A generated secret is the default rather than an option: an unsigned
+    webhook is a URL anyone who learns it can forge events into, and making
+    signing the thing you opt *out* of is the safer default for a stream that
+    says "this host just grew a critical CVE".
+    """
+    settings = _require_settings()
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("webhook name required")
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise ValueError(f"Unknown tenant_id: {tenant_id}")
+
+    url = delivery_transport.validate_url(
+        url, allow_private=settings.webhook_allow_private_targets
+    )
+    kinds = _validate_event_kinds(event_kinds)
+    severity = _validate_min_severity(min_severity)
+    clean_headers = delivery_transport.sanitize_headers(headers)
+    secret_value = (secret or "").strip() or secrets.token_urlsafe(32)
+
+    now = _now()
+    row = models.WebhookSubscription(
+        subscription_id=f"wh_{uuid.uuid4().hex[:12]}",
+        tenant_id=tenant_id,
+        name=name,
+        url=url,
+        enabled=bool(enabled),
+        event_kinds=kinds,
+        min_severity=severity,
+        secret=secret_value,
+        headers=clean_headers,
+        created_at=now,
+        created_by=created_by,
+        updated_at=now,
+    )
+    with get_session(settings.postgres_url) as session:
+        existing = session.execute(
+            select(func.count())
+            .select_from(models.WebhookSubscription)
+            .where(models.WebhookSubscription.tenant_id == tenant_id)
+        ).scalar_one()
+        if existing >= settings.webhook_max_subscriptions_per_tenant:
+            raise ValueError(
+                f"tenant {tenant_id} already has {existing} webhooks "
+                f"(limit {settings.webhook_max_subscriptions_per_tenant})"
+            )
+        session.add(row)
+        session.flush()
+        result = _subscription_to_dict(row)
+    result["secret"] = secret_value
+    return result
+
+
+SUBSCRIPTION_SORT_COLUMNS = {
+    "created_at": models.WebhookSubscription.created_at,
+    "name": models.WebhookSubscription.name,
+    "url": models.WebhookSubscription.url,
+    "enabled": models.WebhookSubscription.enabled,
+    "last_delivery_at": models.WebhookSubscription.last_delivery_at,
+    "tenant_id": models.WebhookSubscription.tenant_id,
+}
+
+
+def list_subscriptions(
+    tenant_id: str | None = None,
+    *,
+    offset: int = 0,
+    limit: int = pagination.DEFAULT_LIMIT,
+    q: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    settings = _require_settings()
+    sort_column = SUBSCRIPTION_SORT_COLUMNS.get(sort or "", models.WebhookSubscription.created_at)
+    direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
+
+    with get_session(settings.postgres_url) as session:
+        filters = []
+        if tenant_id:
+            filters.append(models.WebhookSubscription.tenant_id == tenant_id)
+        if q and q.strip():
+            needle = f"%{q.strip().lower()}%"
+            filters.append(
+                or_(
+                    func.lower(models.WebhookSubscription.name).like(needle),
+                    func.lower(models.WebhookSubscription.url).like(needle),
+                    func.lower(models.WebhookSubscription.subscription_id).like(needle),
+                )
+            )
+        total = session.execute(
+            select(func.count()).select_from(models.WebhookSubscription).where(*filters)
+        ).scalar_one()
+        rows = session.execute(
+            select(models.WebhookSubscription)
+            .where(*filters)
+            .order_by(direction, models.WebhookSubscription.subscription_id)
+            .offset(offset)
+            .limit(limit)
+        ).scalars().all()
+    return [_subscription_to_dict(row) for row in rows], total
+
+
+def get_subscription(subscription_id: str) -> dict[str, Any] | None:
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookSubscription, subscription_id)
+        return _subscription_to_dict(row) if row else None
+
+
+def update_subscription(subscription_id: str, **fields: Any) -> dict[str, Any] | None:
+    settings = _require_settings()
+    rotated: str | None = None
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookSubscription, subscription_id)
+        if row is None:
+            return None
+        if "name" in fields:
+            name = str(fields["name"]).strip()
+            if not name:
+                raise ValueError("webhook name required")
+            row.name = name
+        if "url" in fields:
+            row.url = delivery_transport.validate_url(
+                str(fields["url"]), allow_private=settings.webhook_allow_private_targets
+            )
+        if "enabled" in fields:
+            row.enabled = bool(fields["enabled"])
+        if "event_kinds" in fields:
+            row.event_kinds = _validate_event_kinds(fields["event_kinds"])
+        if "min_severity" in fields:
+            row.min_severity = _validate_min_severity(fields["min_severity"])
+        if "headers" in fields:
+            row.headers = delivery_transport.sanitize_headers(fields["headers"])
+        if "secret" in fields:
+            # An explicit empty string clears signing; a non-empty value sets
+            # it; ``rotate_secret`` (below) is the "give me a new one" path.
+            rotated = str(fields["secret"] or "")
+            row.secret = rotated or None
+        row.updated_at = _now()
+        session.flush()
+        result = _subscription_to_dict(row)
+    if rotated:
+        result["secret"] = rotated
+    return result
+
+
+def rotate_secret(subscription_id: str) -> dict[str, Any] | None:
+    """Generate a fresh signing secret and return it once."""
+    return update_subscription(subscription_id, secret=secrets.token_urlsafe(32))
+
+
+def delete_subscription(subscription_id: str) -> bool:
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookSubscription, subscription_id)
+        if row is None:
+            return False
+        # Deliveries cascade with the subscription: the audit trail is "what did
+        # we send to this endpoint", and the endpoint is gone. A tenant-level
+        # export before deletion is a reporting feature, not a retention one.
+        session.execute(
+            delete(models.WebhookDelivery).where(
+                models.WebhookDelivery.subscription_id == subscription_id
+            )
+        )
+        session.delete(row)
+        return True
+
+
+# --------------------------------------------------------------------------
+# Routing policy
+# --------------------------------------------------------------------------
+
+
+def event_severity(envelope: dict[str, Any]) -> str | None:
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return None
+    severity = data.get("severity")
+    return str(severity).strip().lower() if severity else None
+
+
+def matches(subscription: dict[str, Any], envelope: dict[str, Any]) -> bool:
+    """Whether one event should be delivered to one subscription."""
+    if not subscription.get("enabled"):
+        return False
+    kind = str(envelope.get("kind") or "")
+    kinds = subscription.get("event_kinds") or []
+    if kinds and kind not in kinds:
+        return False
+    minimum = subscription.get("min_severity")
+    if minimum and kind in _SEVERITY_BEARING_KINDS:
+        severity = event_severity(envelope) or "unknown"
+        if SEVERITY_ORDER.get(severity, 0) < SEVERITY_ORDER.get(minimum, 0):
+            return False
+    return True
+
+
+# --------------------------------------------------------------------------
+# Delivery queue
+# --------------------------------------------------------------------------
+
+
+def _delivery_to_dict(row: models.WebhookDelivery) -> dict[str, Any]:
+    return {
+        "delivery_id": row.delivery_id,
+        "tenant_id": row.tenant_id,
+        "subscription_id": row.subscription_id,
+        "event_id": row.event_id,
+        "event_kind": row.event_kind,
+        "status": row.status,
+        "attempts": row.attempts,
+        "next_attempt_at": _iso(row.next_attempt_at),
+        "last_status_code": row.last_status_code,
+        "last_error": row.last_error,
+        "created_at": _iso(row.created_at),
+        "updated_at": _iso(row.updated_at),
+        "delivered_at": _iso(row.delivered_at),
+    }
+
+
+def _build_payload(
+    *, delivery_id: str, subscription_id: str, envelope: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "delivery_id": delivery_id,
+        "subscription_id": subscription_id,
+        "tenant_id": envelope.get("tenant_id"),
+        "kind": envelope.get("kind"),
+        "event_id": envelope.get("event_id"),
+        "occurred_at": envelope.get("occurred_at"),
+        "event": envelope,
+    }
+
+
+def enqueue_event(envelope: dict[str, Any]) -> list[str]:
+    """Fan one asset event out to the tenant's matching subscriptions.
+
+    Returns the ids of the deliveries created. Re-enqueueing the same
+    ``(subscription, event_id)`` is a no-op rather than a second call: the
+    JetStream consumer is at-least-once, and a redelivered message must not
+    page anyone twice.
+    """
+    settings = _require_settings()
+    tenant_id = str(envelope.get("tenant_id") or "").strip()
+    kind = str(envelope.get("kind") or "").strip()
+    event_id = str(envelope.get("event_id") or "").strip()
+    if not tenant_id or not kind or not event_id:
+        LOG.debug("Ignoring asset event without tenant/kind/event_id: %r", envelope)
+        return []
+
+    now = _now()
+    created: list[str] = []
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(models.WebhookSubscription).where(
+                models.WebhookSubscription.tenant_id == tenant_id,
+                models.WebhookSubscription.enabled.is_(True),
+            )
+        ).scalars().all()
+        if not rows:
+            return []
+        existing = set(
+            session.execute(
+                select(models.WebhookDelivery.subscription_id).where(
+                    models.WebhookDelivery.event_id == event_id,
+                    models.WebhookDelivery.subscription_id.in_(
+                        [row.subscription_id for row in rows]
+                    ),
+                )
+            ).scalars().all()
+        )
+        for row in rows:
+            if row.subscription_id in existing:
+                continue
+            if not matches(_subscription_to_dict(row), envelope):
+                continue
+            delivery_id = f"whd_{uuid.uuid4().hex[:16]}"
+            queued = models.WebhookDelivery(
+                delivery_id=delivery_id,
+                tenant_id=tenant_id,
+                subscription_id=row.subscription_id,
+                event_id=event_id,
+                event_kind=kind,
+                payload=_build_payload(
+                    delivery_id=delivery_id,
+                    subscription_id=row.subscription_id,
+                    envelope=envelope,
+                ),
+                status="pending",
+                attempts=0,
+                # Due immediately; the dispatcher picks it up on its next tick.
+                next_attempt_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            # The SELECT above catches the ordinary redelivery; the unique
+            # constraint catches two replicas fanning out the same event at
+            # once. Inserting inside a SAVEPOINT keeps that race a no-op for
+            # one row instead of aborting the whole batch's transaction.
+            if insert_if_absent(session, queued, f"{row.subscription_id}:{event_id}"):
+                created.append(delivery_id)
+        session.flush()
+    for _ in created:
+        metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="queued").inc()
+    return created
+
+
+def enqueue_test_delivery(subscription_id: str, *, requested_by: str | None = None) -> str | None:
+    """Queue a synthetic ping so an operator can prove the receiver works.
+
+    It goes through the same queue, signing and retry path as a real event —
+    a "test" that took a shortcut would prove only that the shortcut works.
+    """
+    settings = _require_settings()
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookSubscription, subscription_id)
+        if row is None:
+            return None
+        delivery_id = f"whd_{uuid.uuid4().hex[:16]}"
+        event_id = f"test-{uuid.uuid4().hex[:16]}"
+        envelope = {
+            "kind": TEST_EVENT_KIND,
+            "tenant_id": row.tenant_id,
+            "event_id": event_id,
+            "occurred_at": _iso(now),
+            "source": "operator",
+            "data": {"requested_by": requested_by, "subscription_id": subscription_id},
+        }
+        session.add(
+            models.WebhookDelivery(
+                delivery_id=delivery_id,
+                tenant_id=row.tenant_id,
+                subscription_id=subscription_id,
+                event_id=event_id,
+                event_kind=TEST_EVENT_KIND,
+                payload=_build_payload(
+                    delivery_id=delivery_id,
+                    subscription_id=subscription_id,
+                    envelope=envelope,
+                ),
+                status="pending",
+                attempts=0,
+                next_attempt_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="queued").inc()
+    return delivery_id
+
+
+DELIVERY_SORT_COLUMNS = {
+    "created_at": models.WebhookDelivery.created_at,
+    "updated_at": models.WebhookDelivery.updated_at,
+    "status": models.WebhookDelivery.status,
+    "attempts": models.WebhookDelivery.attempts,
+    "event_kind": models.WebhookDelivery.event_kind,
+}
+
+
+def list_deliveries(
+    *,
+    tenant_id: str | None = None,
+    subscription_id: str | None = None,
+    status: str | None = None,
+    offset: int = 0,
+    limit: int = pagination.DEFAULT_LIMIT,
+    q: str | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """The audit trail, and — filtered to ``status="dead"`` — the DLQ view."""
+    settings = _require_settings()
+    if status and status not in DELIVERY_STATUSES:
+        raise ValueError(f"unknown status {status!r}; expected one of {', '.join(DELIVERY_STATUSES)}")
+    sort_column = DELIVERY_SORT_COLUMNS.get(sort or "", models.WebhookDelivery.created_at)
+    direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
+
+    with get_session(settings.postgres_url) as session:
+        filters = []
+        if tenant_id:
+            filters.append(models.WebhookDelivery.tenant_id == tenant_id)
+        if subscription_id:
+            filters.append(models.WebhookDelivery.subscription_id == subscription_id)
+        if status:
+            filters.append(models.WebhookDelivery.status == status)
+        if q and q.strip():
+            needle = f"%{q.strip().lower()}%"
+            filters.append(
+                or_(
+                    func.lower(models.WebhookDelivery.event_kind).like(needle),
+                    func.lower(models.WebhookDelivery.event_id).like(needle),
+                    func.lower(models.WebhookDelivery.delivery_id).like(needle),
+                )
+            )
+        total = session.execute(
+            select(func.count()).select_from(models.WebhookDelivery).where(*filters)
+        ).scalar_one()
+        rows = session.execute(
+            select(models.WebhookDelivery)
+            .where(*filters)
+            .order_by(direction, models.WebhookDelivery.delivery_id)
+            .offset(offset)
+            .limit(limit)
+        ).scalars().all()
+    return [_delivery_to_dict(row) for row in rows], total
+
+
+def get_delivery(delivery_id: str) -> dict[str, Any] | None:
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookDelivery, delivery_id)
+        return _delivery_to_dict(row) if row else None
+
+
+def requeue_delivery(delivery_id: str) -> dict[str, Any] | None:
+    """Take one delivery back out of the DLQ.
+
+    ``attempts`` is reset, so a redelivery gets the full retry ladder again
+    rather than dying on its first failure — the operator requeues *because*
+    something changed at the receiver, and the previous attempt count describes
+    the old state of the world. The count that was reached is preserved in the
+    log line, and every attempt is still bounded by ``webhook_max_attempts``.
+    """
+    settings = _require_settings()
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookDelivery, delivery_id)
+        if row is None:
+            return None
+        if row.status == "pending":
+            return _delivery_to_dict(row)
+        LOG.info(
+            "Requeueing webhook delivery %s (was %s after %s attempts)",
+            delivery_id,
+            row.status,
+            row.attempts,
+        )
+        row.status = "pending"
+        row.attempts = 0
+        row.next_attempt_at = now
+        row.updated_at = now
+        session.flush()
+        return _delivery_to_dict(row)
+
+
+def backoff_seconds(attempts: int, settings: Settings) -> int:
+    """Delay before attempt ``attempts + 1``, exponential and capped."""
+    exponent = max(0, attempts - 1)
+    # Cap the exponent before shifting: attempts is bounded by max_attempts in
+    # practice, but a requeued row read from the database is not a value this
+    # function should trust into a 2**large.
+    exponent = min(exponent, 20)
+    return min(
+        settings.webhook_retry_base_seconds * (2**exponent),
+        settings.webhook_retry_max_seconds,
+    )
+
+
+def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.WebhookDelivery]:
+    """Take up to ``limit`` due deliveries, marking them in-flight.
+
+    ``SELECT … FOR UPDATE SKIP LOCKED`` (a no-op on SQLite, which has one
+    writer anyway) keeps two API replicas dividing the queue instead of both
+    POSTing the same delivery. The claim also pushes ``next_attempt_at``
+    forward by a visibility timeout, so a replica that dies mid-POST releases
+    the row after that window rather than stranding it.
+    """
+    settings = _require_settings()
+    rows = session.execute(
+        select(models.WebhookDelivery)
+        .where(
+            models.WebhookDelivery.status == "pending",
+            models.WebhookDelivery.next_attempt_at <= now,
+        )
+        .order_by(models.WebhookDelivery.next_attempt_at)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    ).scalars().all()
+    visibility = timedelta(seconds=max(30, settings.webhook_timeout_seconds * 3))
+    for row in rows:
+        row.attempts += 1
+        row.next_attempt_at = now + visibility
+        row.updated_at = now
+    session.flush()
+    return rows
+
+
+def _record_result(
+    *,
+    delivery_id: str,
+    result: delivery_transport.DeliveryResult,
+    now: datetime,
+) -> str:
+    """Write one attempt's outcome back. Returns the resulting status."""
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookDelivery, delivery_id)
+        if row is None:  # pragma: no cover - deleted mid-flight
+            return "gone"
+        row.last_status_code = result.status_code
+        row.last_error = result.error
+        row.updated_at = now
+        if result.ok:
+            row.status = "delivered"
+            row.delivered_at = now
+            row.next_attempt_at = None
+        elif result.retryable and row.attempts < settings.webhook_max_attempts:
+            row.status = "pending"
+            row.next_attempt_at = now + timedelta(seconds=backoff_seconds(row.attempts, settings))
+        else:
+            row.status = "dead"
+            row.next_attempt_at = None
+        status = row.status
+
+        subscription = session.get(models.WebhookSubscription, row.subscription_id)
+        if subscription is not None:
+            subscription.last_delivery_at = now
+            subscription.last_status = "delivered" if result.ok else (result.error or "failed")[:200]
+        session.flush()
+    return status
+
+
+def dispatch_once(
+    *,
+    limit: int | None = None,
+    post: Callable[..., delivery_transport.DeliveryResult] | None = None,
+) -> dict[str, int]:
+    """One dispatch tick: claim due deliveries, POST them, record outcomes.
+
+    ``post`` is injectable so the retry/DLQ state machine can be tested without
+    a listening socket. Returns counts by outcome.
+    """
+    settings = _require_settings()
+    send = post or delivery_transport.post
+    outcome = {"attempted": 0, "delivered": 0, "retrying": 0, "dead": 0}
+
+    now = _now()
+    claimed: list[tuple[str, str, dict[str, Any], str | None, dict[str, Any], str, str, str]] = []
+    with get_session(settings.postgres_url) as session:
+        for row in _claim_due(session, now=now, limit=limit or settings.webhook_dispatch_batch_size):
+            subscription = session.get(models.WebhookSubscription, row.subscription_id)
+            if subscription is None:  # pragma: no cover - FK cascade should prevent this
+                continue
+            claimed.append(
+                (
+                    row.delivery_id,
+                    subscription.url,
+                    dict(row.payload or {}),
+                    subscription.secret,
+                    dict(subscription.headers or {}),
+                    row.tenant_id,
+                    row.event_kind,
+                    row.event_id,
+                )
+            )
+
+    for (
+        delivery_id,
+        url,
+        payload,
+        secret,
+        headers,
+        tenant_id,
+        event_kind,
+        event_id,
+    ) in claimed:
+        outcome["attempted"] += 1
+        try:
+            body, request_headers = delivery_transport.build_request(
+                payload=payload,
+                secret=secret,
+                extra_headers=headers,
+                delivery_id=delivery_id,
+                tenant_id=tenant_id,
+                event_kind=event_kind,
+                event_id=event_id,
+            )
+            result = send(
+                url,
+                body,
+                request_headers,
+                timeout_seconds=settings.webhook_timeout_seconds,
+                allow_private=settings.webhook_allow_private_targets,
+            )
+        except Exception as exc:  # noqa: BLE001 - a bug here must not stall the queue
+            LOG.exception("Webhook delivery %s raised before/while sending", delivery_id)
+            result = delivery_transport.DeliveryResult(
+                ok=False,
+                status_code=None,
+                error=f"{type(exc).__name__}: {exc}"[:500],
+                # Not retryable: this is our own failure to build a request, and
+                # it will fail identically on every attempt.
+                retryable=False,
+            )
+        metrics.WEBHOOK_DELIVERY_DURATION_SECONDS.observe(result.duration_seconds)
+        status = _record_result(delivery_id=delivery_id, result=result, now=_now())
+        if status == "delivered":
+            outcome["delivered"] += 1
+            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="delivered").inc()
+        elif status == "pending":
+            outcome["retrying"] += 1
+            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="retrying").inc()
+        elif status == "dead":
+            outcome["dead"] += 1
+            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="dead").inc()
+            LOG.warning(
+                "Webhook delivery %s dead-lettered (kind=%s status_code=%s error=%s)",
+                delivery_id,
+                event_kind,
+                result.status_code,
+                result.error,
+            )
+    return outcome
+
+
+def queue_depth() -> dict[str, int]:
+    """Rows per status — the gauge the dispatcher reports each tick."""
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(models.WebhookDelivery.status, func.count())
+            .group_by(models.WebhookDelivery.status)
+        ).all()
+    counts = {status: 0 for status in DELIVERY_STATUSES}
+    for status, count in rows:
+        counts[str(status)] = int(count)
+    return counts
+
+
+def prune_deliveries(*, now: datetime | None = None) -> int:
+    """Delete terminal deliveries past the retention window. 0 days disables it.
+
+    Pending rows are never pruned regardless of age: one still due is work, and
+    one stuck due to a clock jump is a bug worth seeing rather than tidying
+    away.
+    """
+    settings = _require_settings()
+    days = settings.webhook_delivery_retention_days
+    if days <= 0:
+        return 0
+    cutoff = (now or _now()) - timedelta(days=days)
+    with get_session(settings.postgres_url) as session:
+        result = session.execute(
+            delete(models.WebhookDelivery).where(
+                models.WebhookDelivery.status.in_(("delivered", "dead")),
+                models.WebhookDelivery.updated_at < cutoff,
+            )
+        )
+    deleted = int(result.rowcount or 0)
+    if deleted:
+        LOG.info("Pruned %s webhook deliveries older than %s days", deleted, days)
+    return deleted

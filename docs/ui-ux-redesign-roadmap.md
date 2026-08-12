@@ -103,48 +103,9 @@ Dashboard
 
 ---
 
-# GitHub work breakdown
-
-Implementation is tracked under [Epic #134](https://github.com/onixus/Shapoclyack/issues/134).
-
-## Frontend
-
-| Priority | Issue | Scope |
-|---|---|---|
-| P0 | [#135](https://github.com/onixus/Shapoclyack/issues/135) | Risk Dashboard |
-| P0 | [#136](https://github.com/onixus/Shapoclyack/issues/136) | Asset-centric security view |
-| P0 | [#137](https://github.com/onixus/Shapoclyack/issues/137) | Vulnerability Center and lifecycle UI |
-| P1 | [#138](https://github.com/onixus/Shapoclyack/issues/138) | Remediation workflow and integrations |
-| P2 | [#139](https://github.com/onixus/Shapoclyack/issues/139) | Exposure Management and MSSP views |
-
-## Backend dependencies
-
-| Priority | Issue | Scope | Enables |
-|---|---|---|---|
-| P0 | [#144](https://github.com/onixus/Shapoclyack/issues/144) | Risk scoring engine and API | #135, #137 |
-| P0 | [#145](https://github.com/onixus/Shapoclyack/issues/145) | Vulnerability lifecycle and SLA model | #137, #138 |
-| P1 | [#146](https://github.com/onixus/Shapoclyack/issues/146) | Asset business context and risk enrichment | #135, #136 |
-
-Dependency order:
-
-```
-#144 Risk Engine --------+----> #135 Risk Dashboard
-                         +----> #137 Vulnerability Center
-
-#145 Lifecycle + SLA ----+----> #137 Vulnerability Center
-                         +----> #138 Remediation Workflow
-
-#146 Asset Context ------+----> #136 Asset View
-                         +----> #135 Risk Dashboard
-
-#135 + #136 + #137 + #138 ----> #139 Exposure/MSSP
-```
-
----
-
 # Phase P0 - Core VM experience
 
-## Risk Dashboard — #135
+## Risk Dashboard
 
 Create executive dashboard.
 
@@ -169,11 +130,9 @@ Acceptance criteria:
 - User understands current risk without opening scan results.
 - Risk changes are visible over time.
 
-Backend dependencies: #144, #146.
-
 ---
 
-## Asset-centric UI — #136
+## Asset-centric UI
 
 Asset page:
 
@@ -197,11 +156,9 @@ Required features:
 - software inventory view;
 - historical changes.
 
-Backend dependency: #146.
-
 ---
 
-## Vulnerability Center — #137
+## Vulnerability Center
 
 Replace simple findings list with lifecycle management.
 
@@ -219,8 +176,6 @@ Required fields:
 - evidence
 - detection source
 - first/last seen
-
-Backend dependencies: #144, #145.
 
 ---
 
@@ -242,13 +197,11 @@ VERIFYING
 CLOSED
 ```
 
-The authoritative state machine and SLA behavior are implemented by #145.
-
 ---
 
 # Phase P1 - Enterprise workflows
 
-## Remediation Board — #138
+## Remediation Board
 
 Kanban workflow:
 
@@ -273,8 +226,6 @@ Features:
 - comments;
 - evidence attachment;
 - exception handling.
-
-Backend dependency: #145.
 
 ---
 
@@ -316,13 +267,11 @@ Asset critical   HIGH
 Final risk       CRITICAL
 ```
 
-Risk calculation and explanation are implemented by #144.
-
 ---
 
 # Phase P2 - Advanced Exposure Management
 
-## Attack Surface — #139
+## Attack Surface
 
 Add:
 
@@ -333,7 +282,7 @@ Add:
 
 ---
 
-## Threat Intelligence — #139
+## Threat Intelligence
 
 Integrate:
 
@@ -344,7 +293,7 @@ Integrate:
 
 ---
 
-## MSSP view — #139
+## MSSP view
 
 Multi-tenant dashboard:
 
@@ -413,18 +362,16 @@ Create reusable components:
 
 ---
 
-# Backend contract requirements
+# Backend dependencies
 
 Required APIs:
 
-- risk score API (#144);
-- vulnerability lifecycle API (#145);
-- SLA model (#145);
-- remediation state model (#145);
-- ticket integration API (#138 backend scope);
-- business context API (#146).
-
-API contracts must remain tenant-scoped and return enough explanation data for the UI to show why a score, SLA state or remediation status exists rather than merely displaying an opaque value.
+- risk score API;
+- vulnerability lifecycle API;
+- SLA model;
+- remediation state model;
+- ticket integration API;
+- business context API.
 
 ---
 
@@ -438,23 +385,6 @@ Create common patterns:
 - timeline components;
 - tables with filtering;
 - export patterns.
-
----
-
-# Delivery order
-
-Recommended implementation sequence:
-
-1. #144 Risk Engine API
-2. #145 Vulnerability lifecycle + SLA
-3. #146 Asset business context
-4. #136 Asset-centric view
-5. #137 Vulnerability Center
-6. #135 Risk Dashboard
-7. #138 Remediation workflow
-8. #139 Exposure Management / MSSP
-
-This order deliberately builds the domain model before polishing screens that depend on it. Otherwise the frontend becomes a museum of mocked cards waiting for data contracts.
 
 ---
 

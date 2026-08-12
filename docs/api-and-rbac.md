@@ -45,8 +45,9 @@ not an authorization control.
 | `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
 | `/api/assets` | Persistent asset inventory and metadata |
 | `/api/endpoint` | Endpoint device and software inventory |
-| `/api/tenants` | Tenant lifecycle and provisioning keys |
+| `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
+| `/api/webhooks` | Outbound webhook subscriptions, their delivery trail, and the dead-letter queue |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
 
@@ -91,10 +92,36 @@ routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
 filter.
 
+### Webhooks
+
+Reading webhooks and their deliveries takes the tenant `operator` role;
+**creating, editing, deleting, rotating a secret, sending a test and replaying
+a delivery all take tenant `admin`**. A subscription forwards this tenant's
+exposure data to an address of the creator's choosing, so creating one is
+closer to granting access than to scheduling a scan.
+
+| Route | Role | Notes |
+|---|---|---|
+| `GET /api/webhooks` | operator | Page of subscriptions; the signing secret is never included |
+| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, or the per-tenant limit. The generated `secret` is in this response only |
+| `PATCH`/`DELETE /api/webhooks/{id}` | admin | Deleting takes that subscription's delivery history with it |
+| `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new secret once |
+| `POST /api/webhooks/{id}/test` | admin | **202** — a signed `test` delivery is *queued*, not confirmed. Poll the deliveries list for the outcome |
+| `GET /api/webhooks/{id}/deliveries` | operator | Audit trail for one subscription |
+| `GET /api/webhooks/deliveries?status=dead` | operator | The dead-letter queue (`status` is `pending`, `delivered` or `dead`; anything else is `422`) |
+| `POST /api/webhooks/deliveries/{id}/retry` | admin | Requeues a dead delivery with a fresh attempt budget; needs no broker |
+
+A webhook in another tenant answers `404`, not `403` — as for jobs, schedules
+and runs, the id's existence is not the caller's business. Receivers verify
+`X-Shapoclyack-Signature` (`sha256=` HMAC over `{timestamp}.{body}`, the
+timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
+`X-Shapoclyack-Event-Id` as the deduplication key.
+
 ## Pagination
 
-`GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`, and `/api/schedules`
-return a page envelope rather than a bare array:
+`GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`, `/api/schedules`,
+and `/api/webhooks` (plus the delivery lists) return a page envelope rather
+than a bare array:
 
 ```json
 { "items": [], "total": 0, "offset": 0, "limit": 100, "has_more": false }

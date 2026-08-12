@@ -282,6 +282,70 @@ class ScheduleInfo(BaseModel):
     created_by: str | None = None
 
 
+class CreateWebhookRequest(BaseModel):
+    """New outbound webhook subscription (ROADMAP Phase 10.3)."""
+
+    tenant_id: str | None = None
+    name: str = Field(min_length=1, max_length=128)
+    url: str = Field(min_length=1, max_length=2048)
+    # Empty/omitted = every asset event kind.
+    event_kinds: list[str] | None = None
+    # Applies to the kinds that carry a severity (new_cve); others are
+    # delivered regardless.
+    min_severity: Literal["low", "medium", "high", "critical"] | None = None
+    # Omitted = a signing secret is generated and returned once.
+    secret: str | None = Field(default=None, max_length=512)
+    headers: dict[str, str] | None = None
+    enabled: bool = True
+
+
+class UpdateWebhookRequest(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    enabled: bool | None = None
+    event_kinds: list[str] | None = None
+    min_severity: Literal["low", "medium", "high", "critical"] | None = None
+    headers: dict[str, str] | None = None
+
+
+class WebhookInfo(BaseModel):
+    subscription_id: str
+    tenant_id: str
+    name: str
+    url: str
+    enabled: bool
+    event_kinds: list[str]
+    min_severity: str | None = None
+    has_secret: bool = False
+    headers: dict[str, str] = Field(default_factory=dict)
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    last_delivery_at: str | None = None
+    last_status: str | None = None
+    # Present only in the response that created or rotated it — the value is
+    # write-only afterwards.
+    secret: str | None = None
+
+
+class WebhookDeliveryInfo(BaseModel):
+    """One delivery attempt chain: queue entry, DLQ row and audit record."""
+
+    delivery_id: str
+    tenant_id: str
+    subscription_id: str
+    event_id: str
+    event_kind: str
+    status: str
+    attempts: int
+    next_attempt_at: str | None = None
+    last_status_code: int | None = None
+    last_error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    delivered_at: str | None = None
+
+
 class AgentCompleteRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128)
     exit_code: int = 0
