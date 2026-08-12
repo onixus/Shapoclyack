@@ -6,8 +6,10 @@
 # instead relies on Go's own module checksum database (GOSUMDB, on by default)
 # to verify every downloaded module cryptographically — arguably stronger than
 # a hand-copied release sha256, and needs no manual checksum bookkeeping here.
-FROM golang:1.25-bookworm AS nuclei-build
-ARG NUCLEI_VERSION=v3.9.0
+FROM golang:1.26-bookworm AS nuclei-build
+# v3.11.1 is the first release that pins kin-openapi >= 0.144.0
+# (GHSA-r277-6w6q-xmqw); do not downgrade below it.
+ARG NUCLEI_VERSION=v3.11.1
 RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
 
 # Pulse CLI from GenDec GitHub Release (see GenDec docs/release.md).

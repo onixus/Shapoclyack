@@ -9,14 +9,7 @@
 # ProjectDiscovery rebuilds with patched Go — revisit and bump the pins then.
 CVE-2025-68121
 
-# GHSA-r277-6w6q-xmqw — github.com/getkin/kin-openapi: ValidationHandler.Load()
-# fail-open auth bypass via NoopAuthenticationFunc default, fixed in kin-openapi
-# 0.144.0. Pulled in transitively by nuclei's go.mod (still pinned to 0.132.0 as
-# of the latest tagged release, v3.11.0 — the fix landed on nuclei's dev branch
-# but hasn't shipped in a release yet). Not exploitable here: nuclei only imports
-# kin-openapi's openapi3/openapi3gen packages to parse target OpenAPI/Swagger
-# specs for its input format (pkg/input/formats/openapi, pkg/input/formats/swagger)
-# — it never constructs an openapi3filter.ValidationHandler, so the vulnerable
-# fail-open code path is unreachable in this binary. Revisit once ProjectDiscovery
-# ships a nuclei release with kin-openapi >= 0.144.0.
-GHSA-r277-6w6q-xmqw
+# GHSA-r277-6w6q-xmqw (kin-openapi fail-open auth bypass) is NOT ignored here:
+# nuclei v3.11.1 pins kin-openapi 0.144.0, which carries the fix, and that is
+# the version the nuclei-build stage compiles (see Dockerfile ARG
+# NUCLEI_VERSION). Do not re-add it as an exception — bump nuclei instead.
