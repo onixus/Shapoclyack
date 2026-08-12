@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,35 @@ EVENT_KINDS = (
 # logged rather than silently dropped. diff.json keeps the full list.
 DEFAULT_MAX_EVENTS_PER_RUN = 1000
 
+# Order the cap keeps when a run overflows it. report_diff.py emits events in
+# artifact order — every new_asset, then ports, then CVEs — so a plain head-cap
+# let a scope expansion fill all 1000 slots with bare host discoveries and drop
+# every new_cve behind them, which is the one kind the alert bus exists for.
+# Ranked most to least actionable; ties keep report_diff's order, which already
+# sorts vulnerabilities by severity.
+_KIND_PRIORITY = {
+    "new_cve": 0,
+    "cert_expiring": 1,
+    "decommissioned_host": 2,
+    "new_open_port": 3,
+    "new_asset": 4,
+}
+
+# Bounds on the publish loop. It runs inside the agent's result-upload request
+# and inside the local scan thread, both of which hold a job that is not
+# terminal until it returns: with a broker that accepts the connection but
+# fails every publish, an uncapped 1000-envelope loop would keep that job in
+# flight for many minutes. A publish that has to be abandoned is exactly the
+# case diff.json exists for.
+DEFAULT_PUBLISH_DEADLINE_SECONDS = 30.0
+# Consecutive failures after which the broker is treated as demonstrably
+# unavailable and the rest of the batch is abandoned without being tried.
+_FAILURE_STREAK_ABORT = 3
+# One retry, not publish_json's default three: an event is best-effort and
+# content-deduped, so a slow retry ladder costs the job more than the event is
+# worth.
+_PUBLISH_RETRIES = 1
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -84,6 +114,11 @@ def event_id(tenant_id: str, event: dict[str, Any]) -> str:
         str(event.get("kind") or ""),
         str(event.get("host") or ""),
         str(event.get("port") or ""),
+        # A host can newly expose tcp/443 and udp/443 in one run (scan mode
+        # ``tcp_udp``); without the protocol both occurrences hash the same and
+        # JetStream would drop the second as a duplicate while the publisher
+        # reported success.
+        str(event.get("protocol") or ""),
         str(event.get("cve") or event.get("script_id") or event.get("issue_kind") or ""),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:48]
@@ -112,8 +147,7 @@ def build_events(
     if not isinstance(raw, list):
         return [], 0
 
-    envelopes: list[dict[str, Any]] = []
-    dropped = 0
+    accepted: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -121,9 +155,19 @@ def build_events(
         if kind not in EVENT_KINDS:
             LOG.debug("Skipping asset event with unknown kind %r (run=%s)", kind, run_id)
             continue
-        if len(envelopes) >= max(1, max_events):
-            dropped += 1
-            continue
+        accepted.append(item)
+
+    limit = max(1, max_events)
+    dropped = max(0, len(accepted) - limit)
+    if dropped:
+        # Stable sort: within a kind, report_diff's ordering (severity-first for
+        # vulnerabilities) is preserved.
+        accepted.sort(key=lambda item: _KIND_PRIORITY.get(str(item.get("kind")), len(_KIND_PRIORITY)))
+        accepted = accepted[:limit]
+
+    envelopes: list[dict[str, Any]] = []
+    for item in accepted:
+        kind = str(item["kind"])
         data = {key: value for key, value in item.items() if key != "kind"}
         envelope = {
             "kind": kind,
@@ -144,34 +188,66 @@ def build_events(
 def publish_events(
     nats_url: str,
     envelopes: list[dict[str, Any]],
+    *,
+    deadline_seconds: float = DEFAULT_PUBLISH_DEADLINE_SECONDS,
 ) -> int:
     """Publish envelopes to ``events.asset.{tenant}.{kind}``. Returns the count published.
 
-    Never raises: every failure path is counted on
-    ``octo_asset_events_published_total{outcome="error"}`` and logged.
+    Never raises, and never runs longer than ``deadline_seconds``: every failure
+    path is counted on ``octo_asset_events_published_total`` (``error`` for a
+    publish that was attempted and failed, ``skipped`` for one abandoned with
+    the broker unreachable) and logged. The caller holds a job that stays
+    non-terminal until this returns, so an unbounded loop over a broker that
+    accepts connections but fails publishes would be paid for by the job, not
+    by the event.
     """
     if not envelopes:
         return 0
     bus = nats_bus.get_bus(nats_url)
     if bus is None:
-        for envelope in envelopes:
-            metrics.ASSET_EVENTS_PUBLISHED_TOTAL.labels(
-                kind=envelope["kind"], outcome="skipped"
-            ).inc()
+        _count_abandoned(envelopes)
         return 0
 
+    started = time.monotonic()
     published = 0
-    for envelope in envelopes:
+    failure_streak = 0
+    for index, envelope in enumerate(envelopes):
+        if failure_streak >= _FAILURE_STREAK_ABORT:
+            LOG.warning(
+                "Abandoning %s asset events after %s consecutive publish failures",
+                len(envelopes) - index,
+                failure_streak,
+            )
+            _count_abandoned(envelopes[index:])
+            break
+        if time.monotonic() - started > deadline_seconds:
+            LOG.warning(
+                "Asset event publish exceeded %.0fs; abandoning %s of %s events",
+                deadline_seconds,
+                len(envelopes) - index,
+                len(envelopes),
+            )
+            _count_abandoned(envelopes[index:])
+            break
         kind = envelope["kind"]
         try:
-            ok = bus.publish_asset_event(envelope)
+            ok = bus.publish_asset_event(envelope, retries=_PUBLISH_RETRIES)
         except Exception:  # noqa: BLE001
             LOG.exception("Asset event publish raised (kind=%s run=%s)", kind, envelope.get("run_id"))
             ok = False
-        outcome = "published" if ok else "error"
-        metrics.ASSET_EVENTS_PUBLISHED_TOTAL.labels(kind=kind, outcome=outcome).inc()
+        metrics.ASSET_EVENTS_PUBLISHED_TOTAL.labels(
+            kind=kind, outcome="published" if ok else "error"
+        ).inc()
         published += int(ok)
+        failure_streak = 0 if ok else failure_streak + 1
     return published
+
+
+def _count_abandoned(envelopes: list[dict[str, Any]]) -> None:
+    for envelope in envelopes:
+        metrics.ASSET_EVENTS_PUBLISHED_TOTAL.labels(
+            kind=envelope.get("kind", "unknown"), outcome="skipped"
+        ).inc()
 
 
 def load_run_diff(run_dir: Path) -> dict[str, Any]:
@@ -241,9 +317,14 @@ def publish_asset_status_event(
     """Publish a single non-run event (the 10.1 ``decommissioned_host`` case).
 
     Unlike run events this one has no ``run_id`` — it originates at an operator
-    write, not a scan — so its id is keyed on the asset and kind instead. A
-    repeated PATCH cannot reach here: ``assets.update_asset`` only calls it on
-    the actual status transition.
+    write, not a scan — so its id is keyed on the asset and kind instead. It
+    deliberately excludes the timestamp: ``update_asset`` locks the row, so two
+    concurrent PATCHes produce one transition, but a lock is a database
+    guarantee and this is the publish side of it — a timestamped id would make
+    JetStream accept both messages for one logical transition and hand a
+    consumer two tickets. The 24h duplicate window is also why a decommission,
+    reversal and second decommission inside one day collapses to one event; a
+    status that flaps that fast is not a change worth paging on twice.
     """
     if not nats_url or kind not in EVENT_KINDS:
         return False
@@ -260,6 +341,6 @@ def publish_asset_status_event(
         "data": data or {},
     }
     envelope["event_id"] = hashlib.sha256(
-        f"{tenant_id}|{asset_id}|{kind}|{envelope['occurred_at']}".encode("utf-8")
+        f"{tenant_id}|{asset_id}|{kind}".encode("utf-8")
     ).hexdigest()[:48]
     return publish_events(nats_url, [envelope]) == 1

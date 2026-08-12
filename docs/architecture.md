@@ -198,8 +198,19 @@ and an agent upload emit the same events.
 
 Delivery is best-effort and never fails a scan. An event that could not be
 published is counted on `octo_asset_events_published_total{outcome="skipped"}`
-(broker off or unreachable) or `{outcome="error"}`, and its payload is still in
-the run's `diff.json` — a broker outage costs notifications, not data.
+(broker off, unreachable, or the batch abandoned) or `{outcome="error"}`, and
+its payload is still in the run's `diff.json` — a broker outage costs
+notifications, not data. The publish loop is bounded by a batch deadline and
+aborts after three consecutive failures, because it runs inside the request
+that completes a job: the job is not terminal until it returns, so a broker
+that accepts connections and then fails every publish must cost seconds, not
+minutes.
+
+Because the tenant id is a subject token, it is constrained at creation to
+`[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Ids predating that check are published under
+a reserved `h_<hash>` token rather than being folded onto a neighbour's
+subject, so a subscription or NATS ACL scoped to one tenant cannot receive
+another's events.
 
 Event ids are derived from tenant, run, kind, host, port and CVE rather than
 randomised, so a results upload replayed through the idempotency path

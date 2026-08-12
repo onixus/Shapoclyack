@@ -1204,9 +1204,14 @@ def complete_job(
             _upsert_assets_best_effort(
                 settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
             )
-            _publish_asset_events_best_effort(
-                settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
-            )
+            # Gated on the outcome, matching the local path. An agent may attach
+            # diagnostics to a *failed* run, and a partial diff read as a change
+            # set would alert on hosts and ports that a broken scan simply
+            # failed to observe — a disappearance is not a discovery.
+            if status == job_states.SUCCEEDED:
+                _publish_asset_events_best_effort(
+                    settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+                )
 
         _update_job(
             settings,

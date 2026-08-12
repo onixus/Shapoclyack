@@ -326,7 +326,11 @@ def update_asset(
     if "status" in updates and updates["status"] not in (None, _MANUAL_STATUS):
         raise ValueError(f"status may only be manually set to {_MANUAL_STATUS!r}")
     with get_session(settings.postgres_url) as session:
-        asset = session.get(models.Asset, asset_id)
+        # Locked for the read-modify-write: two concurrent decommission PATCHes
+        # would otherwise both read "active" and both count as the transition,
+        # emitting the event twice for one logical change. (SQLite, the no-Postgres
+        # fallback, has no row locks and no concurrent writer to need them.)
+        asset = session.get(models.Asset, asset_id, with_for_update=True)
         if asset is None or asset.tenant_id != tenant_id:
             return None
         previous_status = asset.status

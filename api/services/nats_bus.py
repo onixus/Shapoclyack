@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -352,7 +353,7 @@ class NatsBus:
         )
         return ok
 
-    def publish_asset_event(self, envelope: dict[str, Any]) -> bool:
+    def publish_asset_event(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
         """Publish one asset event to ``events.asset.{tenant_id}.{kind}``."""
         tenant_id = str(envelope.get("tenant_id") or "default")
         kind = str(envelope.get("kind") or "unknown")
@@ -361,6 +362,7 @@ class NatsBus:
             envelope,
             msg_id=str(envelope.get("event_id") or "") or None,
             headers={"tenant_id": tenant_id, "event_kind": kind},
+            retries=retries,
         )
 
 
@@ -368,12 +370,49 @@ _BUS: NatsBus | None = None
 _BUS_LOCK = threading.Lock()
 
 
+# A token that needs no encoding: ASCII alphanumerics plus - and _, which carry
+# no meaning to NATS. Everything else (notably ``.``, ``*`` and ``>``) is a
+# separator or wildcard and would reshape the subject tree rather than name a
+# leaf in it.
+_SUBJECT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Reserved prefix for the encoded form of a token that is not representable
+# directly. `tenants.create_tenant` rejects ids starting with it, so an encoded
+# token can never collide with a literal one.
+_ENCODED_TOKEN_PREFIX = "h_"
+
+
+def is_subject_token(value: str) -> bool:
+    """Whether ``value`` can be a NATS subject token verbatim."""
+    return bool(_SUBJECT_TOKEN_RE.match(value or ""))
+
+
 def _subject_token(value: str, fallback: str) -> str:
-    """Sanitize one subject token: ``.``, ``*`` and ``>`` are NATS wildcards and
-    separators, so a tenant id containing them would silently widen or reshape
-    the subject tree rather than name a leaf in it."""
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (value or ""))
-    return safe or fallback
+    """Encode one subject token injectively.
+
+    Replacing every disallowed character with ``_`` (the previous behaviour)
+    was *not* injective: tenants ``acme.eu`` and ``acme_eu`` both collapsed to
+    ``acme_eu``, so a consumer or a NATS ACL scoped to one tenant's subject
+    would have received the other tenant's messages. Tenant ids are now
+    validated at creation, but ids predating that validation still exist, so
+    anything unrepresentable is hashed into the reserved ``h_`` namespace
+    instead of being mangled into a neighbour's subject.
+
+    A conforming id is used verbatim, so every subject in an existing
+    deployment keeps the exact name it has today.
+    """
+    value = value or ""
+    if is_subject_token(value) and not value.startswith(_ENCODED_TOKEN_PREFIX):
+        return value
+    if not value:
+        return fallback
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+    LOG.warning(
+        "Tenant id %r is not a valid NATS subject token; publishing under %s%s instead",
+        value,
+        _ENCODED_TOKEN_PREFIX,
+        digest,
+    )
+    return f"{_ENCODED_TOKEN_PREFIX}{digest}"
 
 
 def ingest_results_subject(tenant_id: str) -> str:
