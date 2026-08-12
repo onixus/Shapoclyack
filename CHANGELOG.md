@@ -14,6 +14,55 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Outbound webhooks for asset events** (ROADMAP P2 / Phase 10.3, webhook
+  half) — the first consumer of the 10.2 event stream. Per-tenant subscriptions
+  (`POST /api/webhooks`) carry the routing policy: which event kinds, and a
+  `min_severity` floor that applies to the kinds which actually have a severity
+  (`new_cve`) and deliberately does **not** swallow port changes or
+  decommissions that have none. A JetStream durable consumer
+  (`octo-webhook-fanout` on `events.asset.>`) turns matching events into rows
+  and acks; a separate dispatcher drains them. The split is the point: a slow
+  receiver can never stall consumption of the event stream, and the POST happens
+  outside any transaction so a hanging receiver holds no database connection.
+
+  `webhook_deliveries` (migration `0011`) is retry queue, dead-letter queue and
+  audit trail in one table, because those are the same rows under different
+  predicates. Retries are exponential and capped
+  (`OCTO_WEBHOOK_MAX_ATTEMPTS`, default 6 attempts over ~15 minutes); 5xx,
+  timeouts, 408 and 429 are retried, while every other 4xx is dead-lettered on
+  the first attempt — replaying an unchanged body that the receiver called
+  malformed only spends the retry budget to get the same answer.
+  `GET /api/webhooks/deliveries?status=dead` is the DLQ view and
+  `POST /api/webhooks/deliveries/{id}/retry` replays one; both work with the
+  broker down, since a delivery is a row and carries its own payload. The
+  dispatcher runs in **every** replica without leader election, like the P1.4
+  reaper: claims are taken with `FOR UPDATE SKIP LOCKED` and each claim pushes a
+  visibility timeout forward, so replicas divide the queue and a replica that
+  dies mid-POST releases its delivery instead of stranding it.
+
+  Deliveries are signed by default: a secret is generated at creation, returned
+  exactly once, and write-only afterwards (`has_secret`, plus
+  `POST /api/webhooks/{id}/rotate-secret`). `X-Shapoclyack-Signature` is an HMAC
+  over `{timestamp}.{body}` with the timestamp *inside* the MAC, so a receiver
+  rejecting stale timestamps cannot be defeated by replaying an old body under a
+  new one. Signing is what you opt out of, not into: an unsigned webhook is a
+  URL anyone who learns it can forge "this host just grew a critical CVE" into.
+
+  Webhook URLs are operator-supplied and this service sits inside the network it
+  scans, so a target resolving to a loopback, private, link-local or otherwise
+  non-global address is refused — that is the SSRF shape where an integration is
+  really a probe of the cluster's own internals, cloud metadata service
+  included. The check runs at write time *and* immediately before every POST (a
+  name can start resolving inward later), redirects are not followed, and
+  `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` opts an on-cluster receiver back in.
+  Writes need the tenant `admin` role rather than `operator`: sending a tenant's
+  exposure data to an address of the creator's choosing is closer to granting
+  access than to scheduling a scan. New metrics:
+  `octo_webhook_deliveries_total{outcome}`,
+  `octo_webhook_delivery_duration_seconds`,
+  `octo_webhook_delivery_queue{status}`. Ticketing bridges (Jira/ServiceNow) are
+  the remaining half of 10.3 and reuse this queue as another transport.
+
 - **Asset event bus** (ROADMAP P2 / Phase 10.2) — the asset-level events that
   Phase 10.1 normalized into each run's `diff.json` are now published to NATS
   JetStream on `events.asset.{tenant_id}.{kind}`: `new_asset`, `new_open_port`,

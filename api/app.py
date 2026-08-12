@@ -21,6 +21,7 @@ from api.routes import config as config_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import system as system_routes
+from api.routes import webhooks as webhooks_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
 from api.services import ch_ingest_worker
@@ -28,6 +29,8 @@ from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
 from api.services import job_reaper
+from api.services.integrations import webhook_worker
+from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
@@ -55,9 +58,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
+    # Same reasoning as the reaper: due-ness is a property of the delivery row
+    # and claims are taken with FOR UPDATE SKIP LOCKED, so every replica may
+    # dispatch (ROADMAP Phase 10.3).
+    webhook_worker.start_worker(settings)
     try:
         yield
     finally:
+        webhook_worker.stop_worker()
         job_reaper.stop_worker()
         endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
@@ -73,6 +81,7 @@ def create_app() -> FastAPI:
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
     endpoint_inventory_service.configure(settings)
+    webhooks_service.configure(settings)
 
     app = FastAPI(
         title="Shapoclyack API",
@@ -140,6 +149,8 @@ def create_app() -> FastAPI:
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
     app.include_router(schedules_routes.router, prefix="/api")
+    if settings.webhooks_enabled:
+        app.include_router(webhooks_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:
         app.include_router(endpoint_inventory_routes.router, prefix="/api")
 

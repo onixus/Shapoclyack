@@ -289,6 +289,96 @@ class EndpointSoftwareChange(Base):
     )
 
 
+class WebhookSubscription(Base):
+    """Outbound webhook for asset events (ROADMAP P2 / Phase 10.3).
+
+    The routing policy is the row itself: ``event_kinds`` (empty = every kind)
+    and ``min_severity`` (applied only to the kinds that carry a severity, i.e.
+    ``new_cve``) decide whether an event on ``events.asset.{tenant}.{kind}``
+    becomes a delivery. Keeping the policy in Postgres rather than in a NATS
+    consumer's filter subject is what lets an operator change it through the
+    API without touching the broker, and what makes the per-tenant scoping the
+    same scoping every other table here uses.
+
+    ``secret`` is the HMAC key the receiver verifies with; it is stored in
+    plaintext because a signature has to be *computed*, not compared — a hash
+    would make it unusable — and it is redacted on every read path (see
+    ``api/services/integrations/webhooks.py``). It is a shared secret for a
+    URL the operator controls, not a credential for this system.
+    """
+
+    __tablename__ = "webhook_subscriptions"
+
+    subscription_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    url: Mapped[str]
+    enabled: Mapped[bool] = mapped_column(default=True)
+    # [] means "every kind"; validated against asset_events.EVENT_KINDS on write.
+    event_kinds: Mapped[list] = mapped_column(JSON, default=list)
+    min_severity: Mapped[str | None] = mapped_column(default=None)
+    secret: Mapped[str | None] = mapped_column(default=None)
+    # Static headers merged into every request (e.g. an API gateway token).
+    headers: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_delivery_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_status: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index("ix_webhook_subscriptions_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+
+class WebhookDelivery(Base):
+    """One attempt-carrying delivery of one event to one subscription (10.3).
+
+    This single table is the retry queue, the dead-letter queue and the audit
+    trail at once, because they are the same rows seen through different
+    predicates: ``status="pending"`` with a due ``next_attempt_at`` is the
+    queue, ``status="dead"`` is the DLQ, and every row that ever existed is the
+    trail of what this installation sent where. Splitting them would mean
+    copying a row between tables on every state change and losing the history
+    of the attempts that led there.
+
+    ``(subscription_id, event_id)`` is unique: JetStream is at-least-once, so
+    the fan-out consumer can legitimately see the same event twice, and a
+    redelivery must not turn into a second webhook call.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    delivery_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    subscription_id: Mapped[str] = mapped_column(
+        ForeignKey("webhook_subscriptions.subscription_id", ondelete="CASCADE"), index=True
+    )
+    event_id: Mapped[str]
+    event_kind: Mapped[str]
+    # The exact body that was (or will be) POSTed, so a redelivery from the DLQ
+    # sends what the event said at the time and not a re-derived approximation.
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(default="pending")  # pending|delivered|dead
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_status_code: Mapped[int | None] = mapped_column(default=None)
+    last_error: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    delivered_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "event_id", name="uq_webhook_delivery_event"),
+        # The dispatcher's predicate: due pending rows, oldest first. It runs on
+        # every replica on a short timer, so it must not scan the table.
+        Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),
+        Index("ix_webhook_deliveries_tenant_status", "tenant_id", "status", "created_at"),
+    )
+
+
 class AssetTag(Base):
     __tablename__ = "asset_tags"
 

@@ -75,6 +75,41 @@ class Settings:
     # Per-run publish cap; the overflow is logged and counted, never silently
     # dropped, and diff.json always holds the full set.
     asset_events_max_per_run: int = 1000
+    # Outbound webhooks for asset events (Phase 10.3). The fan-out consumer
+    # needs nats_url (that is where the events are); the delivery loop does
+    # not, so a disabled broker still lets an operator replay a dead delivery
+    # from the DLQ. Flag is separate from asset_events_enabled: publishing the
+    # stream and calling out to third parties are different blast radii.
+    webhooks_enabled: bool = True
+    # Whether *this* process runs the delivery loop. Separate from the feature
+    # flag above so an installation can keep the API surface (subscriptions,
+    # DLQ, audit trail) while confining outbound HTTP to selected replicas —
+    # and so tests can exercise the endpoints without a thread POSTing in the
+    # background.
+    webhook_dispatch_enabled: bool = True
+    # Attempts (including the first) before a delivery is dead-lettered.
+    webhook_max_attempts: int = 6
+    # Exponential backoff between attempts: base * 2**(attempts-1), capped.
+    # 30s → 1m → 2m → 4m → 8m, so the six attempts span ~15 minutes.
+    webhook_retry_base_seconds: int = 30
+    webhook_retry_max_seconds: int = 3600
+    # Per-request timeout. Short on purpose: a receiver that needs longer than
+    # this is doing work in the request instead of queueing it, and the
+    # dispatcher thread is shared by every tenant's deliveries.
+    webhook_timeout_seconds: int = 10
+    webhook_dispatch_interval_seconds: int = 5
+    webhook_dispatch_batch_size: int = 50
+    # Delivered/dead rows are pruned past this; the audit trail is bounded, not
+    # infinite. 0 disables pruning.
+    webhook_delivery_retention_days: int = 30
+    # A webhook URL is operator-supplied and this service sits inside the
+    # network it scans, so by default a target resolving to a loopback, private,
+    # link-local or otherwise non-global address is refused: that is the SSRF
+    # shape where the "integration" is really a probe of the cluster's own
+    # internals. Set true for an on-cluster receiver reached by service DNS.
+    webhook_allow_private_targets: bool = False
+    # Bound on how much fan-out one event can cause per tenant.
+    webhook_max_subscriptions_per_tenant: int = 20
     # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
     # default since postgres_url always resolves (sqlite fallback), unlike
     # the opt-in NATS/ClickHouse sidecars.
@@ -186,6 +221,36 @@ def load_settings() -> Settings:
         asset_events_enabled=os.environ.get("OCTO_ASSET_EVENTS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
         asset_events_max_per_run=int(os.environ.get("OCTO_ASSET_EVENTS_MAX_PER_RUN", "1000")),
+        webhooks_enabled=os.environ.get("OCTO_WEBHOOKS_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+        webhook_dispatch_enabled=os.environ.get("OCTO_WEBHOOK_DISPATCH_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+        webhook_max_attempts=max(1, int(os.environ.get("OCTO_WEBHOOK_MAX_ATTEMPTS", "6"))),
+        webhook_retry_base_seconds=max(
+            1, int(os.environ.get("OCTO_WEBHOOK_RETRY_BASE_SECONDS", "30"))
+        ),
+        webhook_retry_max_seconds=max(
+            1, int(os.environ.get("OCTO_WEBHOOK_RETRY_MAX_SECONDS", "3600"))
+        ),
+        webhook_timeout_seconds=max(1, int(os.environ.get("OCTO_WEBHOOK_TIMEOUT_SECONDS", "10"))),
+        # Floored like the reaper's interval: a mistyped 0 would turn the
+        # dispatcher's Event.wait() into a busy loop against the database.
+        webhook_dispatch_interval_seconds=max(
+            1, int(os.environ.get("OCTO_WEBHOOK_DISPATCH_INTERVAL_SECONDS", "5"))
+        ),
+        webhook_dispatch_batch_size=max(
+            1, int(os.environ.get("OCTO_WEBHOOK_DISPATCH_BATCH_SIZE", "50"))
+        ),
+        webhook_delivery_retention_days=max(
+            0, int(os.environ.get("OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS", "30"))
+        ),
+        webhook_allow_private_targets=os.environ.get(
+            "OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS", "false"
+        ).lower()
+        in ("1", "true", "yes", "on"),
+        webhook_max_subscriptions_per_tenant=max(
+            1, int(os.environ.get("OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT", "20"))
+        ),
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         endpoint_inventory_enabled=os.environ.get("OCTO_ENDPOINT_INVENTORY_ENABLED", "true").lower()

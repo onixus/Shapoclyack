@@ -121,6 +121,8 @@ def reset_for_tests() -> None:
         session.query(models.AssetTag).delete()
         session.query(models.Asset).delete()
         session.query(models.ScanSchedule).delete()
+        session.query(models.WebhookDelivery).delete()
+        session.query(models.WebhookSubscription).delete()
         session.query(models.ProvisioningKey).delete()
         session.query(models.Tenant).delete()
 

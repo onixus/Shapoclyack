@@ -219,6 +219,53 @@ id is deliberately part of that identity: the same finding seen by a later run
 is a genuine re-occurrence, and collapsing it would suppress the signal that
 something came back after remediation.
 
+## Outbound webhooks
+
+The first consumer of that stream is the per-tenant webhook fan-out
+(`api/services/integrations/`). Two independent workers sit between the event
+bus and a receiver:
+
+- a JetStream durable pull consumer (`octo-webhook-fanout` on `events.asset.>`)
+  that turns each event into rows in `webhook_deliveries` and acks — it never
+  makes an HTTP call, so a slow receiver cannot stall consumption of the
+  stream;
+- a dispatcher that drains the due end of that queue on a short timer.
+
+The dispatcher runs in **every** replica without leader election, like the job
+reaper: due-ness is a property of the row, and claims are taken with
+`SELECT … FOR UPDATE SKIP LOCKED`, so concurrent dispatchers divide the queue
+instead of duplicating it. A claim also pushes `next_attempt_at` forward by a
+visibility timeout, so a replica that dies mid-POST releases the delivery
+rather than stranding it. The POST itself happens outside any transaction: a
+receiver that hangs must not hold a database connection open.
+
+`webhook_deliveries` is the retry queue, the dead-letter queue and the audit
+trail at once, because those are the same rows under different predicates —
+`status="pending"` with a due timestamp is the queue, `status="dead"` is the
+DLQ, and the whole table is the record of what this installation sent where.
+Retries are exponential and capped (`OCTO_WEBHOOK_MAX_ATTEMPTS`); a 5xx, a
+timeout, a 408 or a 429 is retried, while any other 4xx is dead-lettered
+immediately, since replaying an unchanged request that the receiver called
+malformed only spends the retry budget to get the same answer. An operator
+replays the DLQ with `POST /api/webhooks/deliveries/{id}/retry`, which needs no
+broker — the payload is in the row.
+
+Deliveries are signed: `X-Shapoclyack-Signature: sha256=…` is an HMAC over
+`{timestamp}.{body}` with the subscription's secret, and the timestamp is
+*inside* the MAC so a receiver that rejects stale timestamps cannot be defeated
+by replaying an old body under a new one. The secret is generated at creation
+and returned exactly once; afterwards it is write-only (`has_secret`), and
+`POST /api/webhooks/{id}/rotate-secret` issues a new one.
+
+Webhook URLs are operator-supplied and this service sits inside the network it
+scans, so a target is resolved and refused when it lands on a loopback,
+private, link-local or otherwise non-global address — the SSRF shape where an
+"integration" is really a probe of the cluster's own internals, including the
+cloud metadata service. The check runs both when a subscription is written and
+again immediately before every POST (a name can start resolving inward later),
+redirects are not followed, and `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` opts
+an on-cluster receiver back in.
+
 ## Storage boundaries
 
 PostgreSQL is the primary transactional store. ClickHouse is an optional
