@@ -45,7 +45,7 @@ not an authorization control.
 | `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
 | `/api/assets` | Persistent asset inventory and metadata |
 | `/api/endpoint` | Endpoint device and software inventory |
-| `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
+| `/api/tenants` | Tenant lifecycle and provisioning keys |
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |

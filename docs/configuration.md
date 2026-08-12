@@ -161,8 +161,6 @@ Core deployment variables:
 | `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
 | `OCTO_ASSET_STALE_DAYS` | Age threshold for stale assets |
-| `OCTO_ASSET_EVENTS_ENABLED` | Publish asset-level events to `events.asset.{tenant}.{kind}` after each run (default `true`; inert without `OCTO_NATS_URL`) |
-| `OCTO_ASSET_EVENTS_MAX_PER_RUN` | Per-run publish cap (default `1000`); the overflow is logged and counted, and `diff.json` always keeps the full set |
 
 Job leases and the reaper (see [architecture.md](architecture.md#leases)):
 
