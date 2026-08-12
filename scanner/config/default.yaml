@@ -376,11 +376,16 @@ service_probe:
 # missing (Pulse backend / --skip-nse): prefer pulse/tls.json from Pulse, else
 # if probe_fallback is true open a stdlib TLS handshake on probe_tls_ports.
 # Opt-in; findings only, never merged into scan scope.
-# Hostname/SAN-CN mismatch is out of scope (see tls_posture.py).
+# hostname_mismatch (P4.1) flags cert_name_mismatch when the certificate's
+# CN/SAN covers none of the FQDNs the scan used to reach the endpoint. It
+# compares against the *forward* names in hostnames.json only (PTR names are
+# assigned by the address-block owner, not the service owner), so an IP-only
+# target produces no finding rather than a false one.
 tls_posture:
   enabled: false
   max_targets: 2000
   expiring_soon_days: 30
+  hostname_mismatch: true
   probe_fallback: true
   probe_timeout_seconds: 5.0
   probe_concurrency: 20

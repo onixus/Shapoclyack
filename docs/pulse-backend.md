@@ -193,6 +193,38 @@ tls_posture:
 Artifacts: `tls_posture.json` (same shape; `source` field), plus
 `tls_probe.json` when the fallback ran.
 
+### Certificate name mismatch (P4.1)
+
+Whichever source produced the certificate, one more check runs over the
+result: `cert_name_mismatch` (medium) when the certificate's DNS identities
+(subject CN plus every `DNS:` SAN) cover none of the names the scan used to
+reach the endpoint. Matching follows RFC 6125 — a leftmost `*` covers exactly
+one label, so `*.example.com` matches `www.example.com` but not
+`example.com` or `a.b.example.com`.
+
+The expected names come from the **forward** half of `hostnames.json` (the
+FQDNs that resolved to this IP) plus, on the Pulse/probe paths, the hostname
+the scan actually dialled. PTR names are deliberately excluded: a reverse name
+belongs to whoever owns the address block, not the service, so a certificate
+that fails to mention `ec2-1-2-3-4.compute.amazonaws.com` is normal, not a finding.
+An endpoint reached only by IP has nothing to compare against and produces no
+finding at all.
+
+**SNI is part of the evidence.** A server behind virtual hosting answers a
+connection made to an *address* with its default certificate, which says
+nothing about the name you scanned. The stdlib probe therefore sends the
+resolved FQDN in SNI and records it in the finding's `sni` field, and its
+certificate is judged against that name only. Sources that did not record an
+SNI — nmap's `ssl-cert` against an IP target, and Pulse — still report the
+mismatch, but tagged `requires_confirmation: true`: without re-probing with the
+name, a genuine misconfiguration and a default-vhost answer look identical.
+
+```yaml
+tls_posture:
+  enabled: true
+  hostname_mismatch: true       # default true
+```
+
 Full cipher-suite enumeration (nmap grade A–F) still needs nmap NSE or a
 future dedicated enumerator. Cert DER field extraction is richer when the
 optional `cryptography` package is installed (API image).

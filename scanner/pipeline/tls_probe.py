@@ -185,13 +185,23 @@ def _probe_one(
     timeout: float,
     expiring_soon_days: int,
     now: datetime,
+    sni: str | None = None,
 ) -> dict[str, Any] | None:
+    """Handshake with one endpoint. ``sni`` overrides the name sent in SNI.
+
+    Connecting to an address makes the server answer with its *default* virtual
+    host's certificate, which says nothing about the name the operator actually
+    scanned. When a name for this address is known, ask for it -- otherwise the
+    certificate collected here cannot support a name check (the caller reads
+    the ``sni`` field back to decide exactly that).
+    """
+    server_hostname = sni or host
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+            with ctx.wrap_socket(sock, server_hostname=server_hostname) as ssock:
                 proto = ssock.version()  # e.g. TLSv1.3
                 cipher = ssock.cipher()  # (name, proto, bits)
                 peercert = ssock.getpeercert()
@@ -238,6 +248,7 @@ def _probe_one(
                 return {
                     "host": host,
                     "port": str(port),
+                    "sni": server_hostname,
                     "cert": cert_out or None,
                     "cipher_versions": (
                         [{"version": proto, "ciphers": [cname], "least_strength": None}]
@@ -290,8 +301,16 @@ def _cert_from_der(der: bytes) -> dict[str, Any]:
     san_list: list[str] = []
     try:
         ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+        # Rendered in the same "TYPE:value" form the stdlib and nmap paths use,
+        # rather than cryptography's ``<DNSName(value='x')>`` repr, so the P4.1
+        # name check reads one shape whatever produced the certificate.
         for name in ext.value:  # type: ignore[union-attr]
-            san_list.append(str(name))
+            if isinstance(name, x509.DNSName):
+                san_list.append(f"DNS:{name.value}")
+            elif isinstance(name, x509.IPAddress):
+                san_list.append(f"IP Address:{name.value}")
+            else:
+                san_list.append(str(name))
     except Exception:  # noqa: BLE001 — no SAN or unreadable
         pass
 
@@ -329,8 +348,14 @@ def probe_tls_endpoints(
     expiring_soon_days: int = 30,
     tls_ports: set[int] | None = None,
     now: datetime | None = None,
+    sni_by_host: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Probe open ports for TLS; return finding dicts compatible with tls_posture."""
+    """Probe open ports for TLS; return finding dicts compatible with tls_posture.
+
+    ``sni_by_host`` maps an address to the name to send in SNI (the FQDN that
+    resolved to it). Without an entry the address itself is used, and the row's
+    ``sni`` field records which it was.
+    """
     now = now or datetime.now(timezone.utc)
     endpoints = _parse_tls_endpoints(open_ports, tls_ports)
     if not endpoints:
@@ -347,6 +372,7 @@ def probe_tls_endpoints(
                 timeout=timeout_seconds,
                 expiring_soon_days=expiring_soon_days,
                 now=now,
+                sni=(sni_by_host or {}).get(host),
             ): (host, port)
             for host, port in endpoints
         }

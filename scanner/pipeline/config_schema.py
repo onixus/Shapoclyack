@@ -617,12 +617,19 @@ class TlsPostureConfig(BaseModel):
 
     ``max_targets`` caps endpoints per run (truncated flag past the cap).
     Findings are reported only (``tls_posture.json``) -- never merged into
-    scan scope. Hostname/SAN-CN mismatch is out of scope.
+    scan scope.
+
+    ``hostname_mismatch`` (P4.1) adds the ``cert_name_mismatch`` finding when
+    a certificate's CN/SAN covers none of the FQDNs the scan used to reach the
+    endpoint. It needs the forward names in ``hostnames.json`` -- with
+    ``discovery.hostnames.forward`` off, or for an IP-only target, there is no
+    expected name and the check stays silent (see ``cert_names.py``).
     """
 
     enabled: bool = False
     max_targets: int = Field(default=2000, ge=1, le=50_000)
     expiring_soon_days: int = Field(default=30, ge=1, le=365)
+    hostname_mismatch: bool = True
     # Phase 4: stdlib TLS probe when nmap SSL scripts are absent.
     probe_fallback: bool = True
     probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
