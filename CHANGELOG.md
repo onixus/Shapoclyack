@@ -4,6 +4,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Security
+
+- **nuclei bumped v3.9.0 → v3.11.1**, and the `GHSA-r277-6w6q-xmqw` exception
+  dropped from `.trivyignore`. That advisory (kin-openapi fail-open auth bypass)
+  was suppressed in CI because no nuclei release had shipped the fix yet;
+  v3.11.1 pins `kin-openapi` 0.144.0, so the vulnerable dependency is gone from
+  the image instead of hidden from the Trivy gate.
+
 ### Added
 
 - **TLS certificate name mismatch** (ROADMAP P4.1) — new `cert_name_mismatch`
