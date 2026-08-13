@@ -259,21 +259,38 @@ def set_overrides(settings: Settings, data: dict[str, Any], *, username: str | N
     return data
 
 
-def effective_config_path(settings: Settings, job_id: str) -> str:
+def effective_config_path(
+    settings: Settings, job_id: str, extra: dict[str, Any] | None = None
+) -> str:
     """Path to the config a scan should use: the base file when there are no
-    overrides, else a freshly-written merged file under the writable state dir.
-    Never raises — falls back to the base path on any error."""
+    overrides and no ``extra``, else a freshly-written merged file under the
+    writable state dir.
+
+    ``extra`` is a nested override deep-merged *after* the stored installation
+    overrides — a per-job addition the configurator does not hold, currently
+    the selected brute-force wordlist path (see ``api/services/jobs.py``). Unlike
+    the stored overrides it is not whitelist-checked here, so callers must build
+    it themselves from validated inputs, never from client-supplied config.
+
+    Never raises — falls back to the base path on any error. ``extra`` is the
+    exception: a job that asked for a specific wordlist must not silently run
+    without it, so a failure to write the merged file with ``extra`` present is
+    re-raised for the caller to surface."""
+    overrides = get_overrides(settings)
+    if not overrides and not extra:
+        return str(settings.config_path)
     try:
-        overrides = get_overrides(settings)
-        if not overrides:
-            return str(settings.config_path)
         merged = _deep_merge(base_config_dict(settings), overrides)
+        if extra:
+            merged = _deep_merge(merged, extra)
         dest_dir = settings.state_dir / "effective-config"
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"{job_id}.yaml"
         dest.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
         return str(dest)
     except Exception:  # noqa: BLE001
+        if extra:
+            raise
         LOG.warning("config_override: effective_config_path failed; using base config", exc_info=True)
         return str(settings.config_path)
 

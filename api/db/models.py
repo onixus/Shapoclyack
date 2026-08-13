@@ -390,6 +390,46 @@ class AssetTag(Base):
     __table_args__ = (UniqueConstraint("asset_id", "key", name="uq_asset_tag_key"),)
 
 
+class Wordlist(Base):
+    """A tenant-uploaded wordlist for subdomain/bucket brute force (Phase 8.2).
+
+    ``ct.brute_force.wordlist_file`` and ``cloud.wordlist_file`` in the scanner
+    config point at a path on disk, which forces operators to bake custom
+    wordlists into the image or a mounted volume. This stores the list itself
+    in Postgres, like the config overrides and tenant stores, so it survives
+    restarts and reaches every replica; at local scan start the selected row is
+    materialized to a file under the state dir and that path is injected into
+    the job's effective config.
+
+    ``content`` is the already-normalized newline-joined body (lowercased,
+    de-duplicated, comments/blank lines stripped — the same shape
+    ``hostnames._load_wordlist`` would have produced), so the scanner reads it
+    verbatim. ``sha256`` is over that normalized body, for dedupe and display.
+    """
+
+    __tablename__ = "wordlists"
+
+    wordlist_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    # subdomain | bucket — which brute-force stage the list feeds. Kept as a
+    # plain string so a new kind does not need a migration.
+    kind: Mapped[str] = mapped_column(default="subdomain")
+    content: Mapped[str]
+    line_count: Mapped[int] = mapped_column(default=0)
+    sha256: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        # One name per tenant, so a scan can select a wordlist by a stable
+        # human name and re-uploading under the same name is an update.
+        UniqueConstraint("tenant_id", "name", name="uq_wordlist_tenant_name"),
+    )
+
+
 class Agent(Base):
     """Registered remote scanning agent (ROADMAP P1.1).
 

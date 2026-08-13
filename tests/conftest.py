@@ -84,6 +84,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import agents as agents_service
     from api.services import scan_schedules
     from api.services import tenants as tenants_service
+    from api.services import wordlists as wordlists_service
     from api.services.integrations import webhooks as webhooks_service
 
     agents_service.configure(settings)
@@ -93,6 +94,7 @@ def reset_service_state(settings: "Settings") -> None:
     scan_schedules.reset_for_tests()
     webhooks_service.configure(settings)
     webhooks_service.reset_for_tests()
+    wordlists_service.configure(settings)
 
 
 def api_client() -> "TestClient":

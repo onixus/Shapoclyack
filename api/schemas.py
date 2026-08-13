@@ -159,6 +159,10 @@ class StartScanRequest(BaseModel):
     domains: str | None = None
     ports: str | None = None
     ports_udp: str | None = None
+    # A tenant-uploaded brute-force wordlist to run this scan with (Phase 8.2).
+    # Local execution only: it enables ct.brute_force with the uploaded list.
+    # Rejected in agent mode, where the scanner runs its own mounted config.
+    wordlist_id: str | None = None
 
 
 class JobInfo(BaseModel):
@@ -344,6 +348,19 @@ class WebhookDeliveryInfo(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     delivered_at: str | None = None
+
+
+class WordlistInfo(BaseModel):
+    """A tenant-uploaded brute-force wordlist — metadata only, never the body."""
+
+    wordlist_id: str
+    tenant_id: str
+    name: str
+    kind: str
+    line_count: int
+    sha256: str
+    created_at: str | None = None
+    created_by: str | None = None
 
 
 class AgentCompleteRequest(BaseModel):

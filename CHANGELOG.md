@@ -14,6 +14,23 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Tenant-uploaded brute-force wordlists** (Phase 8.2, UI-managed) — the
+  subdomain and cloud-bucket brute-force stages already took a `wordlist_file`
+  path, which only an operator with filesystem access to the scanner could set.
+  Operators can now upload a wordlist through the API/UI (`POST /api/wordlists`,
+  or the new **Wordlists** page) and select it per scan
+  (`StartScanRequest.wordlist_id`). The body is normalized to the scanner's own
+  on-disk shape (lowercased, de-duplicated, blank/comment lines dropped) and
+  stored per tenant in Postgres (migration `0012`), so it survives restarts and
+  reaches every replica. At local scan start the selected row is materialized to
+  a job-scoped file under the state dir and injected into the job's effective
+  config: a `subdomain` list turns on `ct.brute_force`, a `bucket` list turns on
+  cloud discovery. Local execution only — a remote agent runs its own mounted
+  config, so a `wordlist_id` on an agent-mode scan is rejected rather than
+  silently ignored. Caps via `OCTO_WORDLIST_MAX_WORDS` (default 50000) and
+  `OCTO_WORDLIST_MAX_BODY_BYTES` (default 8 MiB); reads/lists never expose the
+  body, only metadata.
+
 - **Outbound webhooks for asset events** (ROADMAP P2 / Phase 10.3, webhook
   half) — the first consumer of the 10.2 event stream. Per-tenant subscriptions
   (`POST /api/webhooks`) carry the routing policy: which event kinds, and a

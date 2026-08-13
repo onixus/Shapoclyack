@@ -69,7 +69,9 @@ and rate limits should be pinned in production.
 Optional modules include:
 
 - CT-log subdomain collection;
-- wordlist-based subdomain discovery;
+- wordlist-based subdomain discovery (built-in list, an operator-set
+  `ct.brute_force.wordlist_file` path, or a tenant-uploaded wordlist selected
+  per scan — see below);
 - Cloudflare zone import;
 - ASN/prefix discovery via RIPEstat;
 - public cloud-resource candidate checks;
@@ -78,6 +80,20 @@ Optional modules include:
 
 Several modules query third-party infrastructure. Enable them deliberately,
 keep candidate/concurrency caps, and review their data-handling policies.
+
+### Tenant-uploaded wordlists
+
+Operators can upload custom brute-force dictionaries through the API/UI
+(`POST /api/wordlists`, or the **Wordlists** page) instead of baking a file
+into the image or a mounted volume. A wordlist is stored per tenant, normalized
+to the scanner's on-disk shape (lowercased, de-duplicated, blank/comment lines
+dropped), and selected per scan via `StartScanRequest.wordlist_id`. Selecting a
+`subdomain` list enables `ct.brute_force` for that scan with the uploaded list;
+a `bucket` list enables cloud-storage discovery. This is **local-execution
+only** — a remote agent runs its own mounted config and never sees the uploaded
+file, so a `wordlist_id` on an agent-mode scan is rejected. Caps:
+`OCTO_WORDLIST_MAX_WORDS` (default 50000) and `OCTO_WORDLIST_MAX_BODY_BYTES`
+(default 8 MiB).
 
 ## Enrichment sources
 
