@@ -22,6 +22,7 @@ from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import system as system_routes
 from api.routes import webhooks as webhooks_routes
+from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
 from api.services import ch_ingest_worker
@@ -38,6 +39,7 @@ from api.services import nats_bus
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
 from api.services import tenants as tenants_service
+from api.services import wordlists as wordlists_service
 
 
 @asynccontextmanager
@@ -82,6 +84,7 @@ def create_app() -> FastAPI:
     memberships_service.configure(settings)
     endpoint_inventory_service.configure(settings)
     webhooks_service.configure(settings)
+    wordlists_service.configure(settings)
 
     app = FastAPI(
         title="Shapoclyack API",
@@ -149,6 +152,7 @@ def create_app() -> FastAPI:
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
     app.include_router(schedules_routes.router, prefix="/api")
+    app.include_router(wordlists_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:

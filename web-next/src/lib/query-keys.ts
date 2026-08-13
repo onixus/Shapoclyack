@@ -26,6 +26,7 @@ export const queryKeys = {
     ["run", runId, "vulns", { host: filters?.host ?? null, port: filters?.port ?? null }] as const,
   jobs: ["jobs"] as const,
   jobsPage: (page?: PageParams) => ["jobs", pageKey(page)] as const,
+  wordlists: (tenantId: string | null) => ["wordlists", tenantId] as const,
   schedules: ["schedules"] as const,
   schedulesPage: (tenantId: string | undefined, page?: PageParams) =>
     ["schedules", tenantId ?? null, pageKey(page)] as const,

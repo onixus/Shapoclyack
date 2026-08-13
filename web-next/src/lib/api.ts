@@ -615,6 +615,56 @@ export async function fetchJobs(page?: PageParams) {
   }
 }
 
+export type WordlistKind = "subdomain" | "bucket";
+
+export type WordlistInfo = {
+  wordlist_id: string;
+  tenant_id: string;
+  name: string;
+  kind: WordlistKind;
+  line_count: number;
+  sha256: string;
+  created_at: string | null;
+  created_by: string | null;
+};
+
+// The request interceptor attaches the active tenant to every call, so these
+// need no explicit tenant param — list/upload/delete all act in the caller's
+// current tenant, the same way jobs and schedules do.
+export async function fetchWordlists() {
+  try {
+    const { data } = await api.get<WordlistInfo[]>("/wordlists");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function uploadWordlist(input: {
+  file: File;
+  kind: WordlistKind;
+  name?: string;
+}) {
+  try {
+    const form = new FormData();
+    form.append("file", input.file);
+    form.append("kind", input.kind);
+    if (input.name) form.append("name", input.name);
+    const { data } = await api.post<WordlistInfo>("/wordlists", form);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteWordlist(wordlistId: string) {
+  try {
+    await api.delete(`/wordlists/${wordlistId}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function startScan(body: {
   mode: string;
   delta: boolean;
@@ -626,6 +676,7 @@ export async function startScan(body: {
   ports?: string;
   ports_udp?: string;
   tenant_id?: string;
+  wordlist_id?: string;
 }) {
   try {
     const { data } = await api.post<JobInfo>("/jobs", body);

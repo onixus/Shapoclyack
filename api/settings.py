@@ -128,6 +128,12 @@ class Settings:
     # 15 MiB covers the worst case allowed by the per-field limits above
     # (5000 items x ~6 bounded 512-byte strings).
     endpoint_inventory_max_body_bytes: int = 15 * 1024 * 1024
+    # Tenant-uploaded brute-force wordlists (Phase 8.2). The word cap mirrors
+    # BruteForceSubdomainConfig.max_candidates' ceiling — a list longer than the
+    # scanner would ever iterate is a mistake, not a feature. The byte cap is
+    # enforced before the body is read into memory.
+    wordlist_max_words: int = 50_000
+    wordlist_max_body_bytes: int = 8 * 1024 * 1024
     # Server-side endpoint staleness (S9, decision 7). Mirrors the 48h value
     # the asset card already used client-side; a device whose last accepted
     # inventory is older than this reports status "stale".
@@ -278,6 +284,10 @@ def load_settings() -> Settings:
         ),
         endpoint_inventory_max_body_bytes=int(
             os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES", str(15 * 1024 * 1024))
+        ),
+        wordlist_max_words=int(os.environ.get("OCTO_WORDLIST_MAX_WORDS", "50000")),
+        wordlist_max_body_bytes=int(
+            os.environ.get("OCTO_WORDLIST_MAX_BODY_BYTES", str(8 * 1024 * 1024))
         ),
         endpoint_stale_hours=int(os.environ.get("OCTO_ENDPOINT_STALE_HOURS", "48")),
         endpoint_retention_enabled=os.environ.get("OCTO_ENDPOINT_RETENTION_ENABLED", "true").lower()

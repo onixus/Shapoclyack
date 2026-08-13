@@ -50,6 +50,7 @@ from api.services import pagination
 from api.services import results_ingest
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
+from api.services import wordlists as wordlists_service
 from api.services.targets import parse_target_payload
 from api.settings import Settings
 
@@ -430,6 +431,40 @@ def _prepare_target_inputs(
     return inputs_dir, counts or None, extra
 
 
+def _wordlist_overrides(
+    settings: Settings, job_id: str, tenant_id: str, wordlist_id: str | None
+) -> dict | None:
+    """Materialize a tenant's selected brute-force wordlist to a job-scoped file
+    and return the config override that points the matching stage at it.
+
+    Returns ``None`` when no wordlist was requested. Raises ``ValueError`` when
+    the id is unknown or belongs to another tenant — selecting a wordlist that
+    cannot be found must fail the scan request, not run it without one.
+
+    Selecting a *subdomain* list turns on the CT/brute-force discovery stage
+    (``ct.enabled`` + ``ct.brute_force.enabled``) with the uploaded list; a
+    *bucket* list turns on cloud discovery. Enabling ``ct`` also lets its
+    configured providers run (default ``crtsh``, a passive third-party CT-log
+    query) — brute force is nested under that stage and cannot run without it.
+    """
+    if not wordlist_id:
+        return None
+    resolved = wordlists_service.get_for_scan(wordlist_id, tenant_id=tenant_id)
+    if resolved is None:
+        raise ValueError(f"Unknown wordlist_id: {wordlist_id}")
+    kind, content = resolved
+
+    dest_dir = settings.state_dir / "wordlists"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{job_id}.txt"
+    dest.write_text(content + "\n", encoding="utf-8")
+    path = str(dest)
+
+    if kind == "bucket":
+        return {"cloud": {"enabled": True, "wordlist_file": path}}
+    return {"ct": {"enabled": True, "brute_force": {"enabled": True, "wordlist_file": path}}}
+
+
 def _build_command(
     settings: Settings,
     request: StartScanRequest,
@@ -785,8 +820,19 @@ def start_scan(
     # their own mounted config, so overrides don't reach them — they keep the
     # base config (documented limitation).
     if execution == "local":
-        config_path = config_override_service.effective_config_path(settings, job_id)
+        extra = _wordlist_overrides(settings, job_id, tenant_id, request.wordlist_id)
+        config_path = config_override_service.effective_config_path(settings, job_id, extra)
     else:
+        if request.wordlist_id:
+            # A custom wordlist lives in the API's Postgres and is materialized
+            # onto the API pod's filesystem; a remote agent runs its own mounted
+            # config and never sees it. Rather than silently ignore the request,
+            # refuse it — the same class of limitation as installation overrides
+            # not reaching agents.
+            raise ValueError(
+                "wordlist_id is only supported in local execution mode, "
+                "not with remote agents"
+            )
         config_path = str(settings.config_path)
     command = _build_command(
         settings, request, run_id=run_id, target_args=target_args, config_path=config_path

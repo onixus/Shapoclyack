@@ -1,4 +1,5 @@
 import {
+  BookText,
   CalendarDays,
   Database,
   FileText,
@@ -18,6 +19,7 @@ export const NAV = [
   { href: "/agents", label: "Agents", icon: Server },
   { href: "/jobs", label: "Jobs", icon: CalendarDays },
   { href: "/schedules", label: "Schedules", icon: Timer },
+  { href: "/wordlists", label: "Wordlists", icon: BookText },
   { href: "/runs", label: "Runs", icon: Play },
   { href: "/assets", label: "Assets", icon: Database },
   { href: "/endpoints", label: "Endpoints", icon: Laptop },

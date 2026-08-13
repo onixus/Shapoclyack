@@ -29,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { useJobs, useStartScan } from "@/hooks/use-jobs";
+import { useWordlists } from "@/hooks/use-wordlists";
 import { usePagination } from "@/hooks/use-pagination";
 import { useSystemStatus } from "@/hooks/use-system";
 import { type JobInfo } from "@/lib/api";
@@ -46,7 +47,9 @@ export default function JobsPage() {
   const [domains, setDomains] = useState("");
   const [ports, setPorts] = useState("");
   const [portsUdp, setPortsUdp] = useState("");
+  const [wordlistId, setWordlistId] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const NO_WORDLIST = "__none__";
 
   // Server-side paging/search/sort (ROADMAP P3.3): the job list is unbounded.
   const pagination = usePagination({ sort: "started_at", order: "desc" });
@@ -55,6 +58,7 @@ export default function JobsPage() {
   const mutation = useStartScan();
   const { data: systemStatus } = useSystemStatus();
   const serviceBackend = systemStatus?.scan_config.service_backend;
+  const { data: wordlists } = useWordlists(canOperate);
 
   const columns = useMemo<ColumnDef<JobInfo>[]>(
     () => [
@@ -167,6 +171,7 @@ export default function JobsPage() {
       domains: domains.trim() || undefined,
       ports: ports.trim() || undefined,
       ports_udp: portsUdp.trim() || undefined,
+      wordlist_id: wordlistId || undefined,
     });
   }
 
@@ -288,6 +293,36 @@ export default function JobsPage() {
               placeholder={"53,123,161"}
               spellCheck={false}
             />
+          </div>
+
+          <div className="grid gap-2 md:col-span-2">
+            <Label htmlFor="scan-wordlist" className="text-slate-300 font-semibold">
+              Brute-force Wordlist (Optional)
+            </Label>
+            <Select
+              value={wordlistId || NO_WORDLIST}
+              onValueChange={(v) => setWordlistId(v === NO_WORDLIST ? "" : v)}
+            >
+              <SelectTrigger id="scan-wordlist" className="bg-slate-950 border-slate-800 text-slate-200">
+                <SelectValue placeholder="None — no dictionary brute force" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value={NO_WORDLIST}>None — no dictionary brute force</SelectItem>
+                {(wordlists ?? []).map((wl) => (
+                  <SelectItem key={wl.wordlist_id} value={wl.wordlist_id}>
+                    {wl.name} · {wl.kind} · {wl.line_count.toLocaleString()} entries
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-slate-500">
+              Selecting a list enables dictionary brute force for this scan (subdomain or bucket
+              discovery). Manage lists on the{" "}
+              <Link href="/wordlists" className="text-sky-400 hover:underline">
+                Wordlists
+              </Link>{" "}
+              page. Local execution only — rejected in agent mode.
+            </p>
           </div>
         </div>
 
