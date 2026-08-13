@@ -199,6 +199,9 @@ Each of these limits what can honestly be claimed today:
   cardinality), so per-customer objectives are not derivable from `/metrics`.
 - **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be
   attributed to Postgres vs. ClickHouse vs. filesystem from metrics alone.
+  Scanner runs now write per-stage wall-clock to `stage_timings.json` (see
+  [scan-performance.md](scan-performance.md)); that is process-local, not a
+  Prometheus series.
 - **No baseline at scale.** Targets 2, 4, and 5 are still starting values. The
   1k/10k/50k fixtures exist (`tests/fixtures/scale_seed.py`, P3.7) and the
   query paths behind them have been profiled ([scale-profile.md](scale-profile.md),

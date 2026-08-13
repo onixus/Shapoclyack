@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -55,7 +56,12 @@ from scanner.pipeline.report import build_reports
 from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
 from scanner.pipeline.run_context import resolve_run_paths, write_run_meta
+from scanner.pipeline.stage_timing import StageTimer
 from scanner.pipeline.utils import load_json, load_yaml, read_lines, setup_logging, write_lines
+
+# Active run timer (set for the duration of _run_pipeline). ContextVar so the
+# pulse+nse ThreadPoolExecutor workers still see the same collector.
+_STAGE_TIMER: ContextVar[StageTimer | None] = ContextVar("stage_timer", default=None)
 
 
 def parse_args() -> argparse.Namespace:
@@ -110,14 +116,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _run_stage(stage: str, func):  # type: ignore[no-untyped-def]
-    try:
-        return func()
-    except Exception as exc:  # noqa: BLE001
-        raise StageFailureError(stage, exc) from exc
+def _run_stage(stage: str, func, timer: StageTimer | None = None):  # type: ignore[no-untyped-def]
+    def _call():  # type: ignore[no-untyped-def]
+        try:
+            return func()
+        except Exception as exc:  # noqa: BLE001
+            raise StageFailureError(stage, exc) from exc
+
+    active = timer if timer is not None else _STAGE_TIMER.get()
+    if active is not None:
+        return active.run(stage, _call)
+    return _call()
 
 
 def _run_pipeline(args: argparse.Namespace) -> int:
+    timer = StageTimer()
+    token = _STAGE_TIMER.set(timer)
+    output_dirs: list[Path] = []
+    try:
+        return _run_pipeline_body(args, timer, output_dirs)
+    finally:
+        if output_dirs:
+            try:
+                timer.write(output_dirs[0])
+            except Exception:  # noqa: BLE001
+                logging.exception("Failed to write stage_timings.json")
+        _STAGE_TIMER.reset(token)
+
+
+def _run_pipeline_body(
+    args: argparse.Namespace,
+    timer: StageTimer,
+    output_dirs: list[Path],
+) -> int:
     raw = load_yaml(Path(args.config))
     try:
         config: AppConfig = load_config(raw)
@@ -200,6 +231,8 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
+    # So stage_timings.json is written even if a later stage fails.
+    output_dirs.append(paths.output_dir)
 
     setup_logging(
         paths.logs_dir / "pipeline.log",
@@ -243,6 +276,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     scope_ips = list(contract.valid_ips_or_cidr)
 
     if args.resume and checkpoint.is_done("cloudflare"):
+        timer.skip("cloudflare")
         cf_result = load_json(
             paths.output_dir / "cloudflare_dns.json",
             fallback={"fqdns": [], "ips": []},
@@ -258,6 +292,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         scope_ips = sorted(set(scope_ips + list(cf_result.get("ips") or [])))
 
     if args.resume and checkpoint.is_done("ct"):
+        timer.skip("ct")
         ct_result = load_json(
             paths.output_dir / "ct_subdomains.json",
             fallback={"subdomains": []},
@@ -279,6 +314,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     # Phase 8.1: ASN/BGP org mapping (after CT so it can also see CT-expanded
     # domains via base_domains_from_fqdns). Adds IP ranges, not FQDNs.
     if args.resume and checkpoint.is_done("asn"):
+        timer.skip("asn")
         asn_result = load_json(
             paths.output_dir / "asn_discovery.json",
             fallback={"ip_ranges": []},
@@ -296,7 +332,9 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     # Phase 8.3: cloud storage bucket enumeration (asset-inventory finding,
     # not scope-expanding -- see module docstring). Domains only; no merge
     # into scope_ips/scope_fqdns, so --resume just needs to skip re-running.
-    if not (args.resume and checkpoint.is_done("cloud")):
+    if args.resume and checkpoint.is_done("cloud"):
+        timer.skip("cloud")
+    else:
         cloud_domains = config.discovery.cloud.domains or base_domains_from_fqdns(scope_fqdns)
         _run_stage(
             "cloud",
@@ -305,6 +343,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         checkpoint.mark_done("cloud")
 
     if args.resume and checkpoint.is_done("resolve"):
+        timer.skip("resolve")
         resolved_ips = read_lines(paths.output_dir / "resolved_ips.txt")
     else:
         resolved_ips = _run_stage(
@@ -316,7 +355,9 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     # Phase 8.4: typosquat / dangling-CNAME domain monitoring (findings-only,
     # non-escalating -- see domain_monitor.py module docstring). Runs after
     # resolve so the dangling-CNAME check sees the final in-scope FQDN list.
-    if not (args.resume and checkpoint.is_done("domain_monitor")):
+    if args.resume and checkpoint.is_done("domain_monitor"):
+        timer.skip("domain_monitor")
+    else:
         dm_config = config.discovery.domain_monitor
         dm_domains = dm_config.domains or base_domains_from_fqdns(scope_fqdns)
         _run_stage(
@@ -347,26 +388,31 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     previous_alive = load_previous_alive(previous_alive_file)
     previous_source = str(previous_alive_file) if previous_alive_file else ""
     if args.resume and checkpoint.is_done("discover"):
+        timer.skip("discover")
         alive_hosts = sorted(set(read_lines(alive_file)))
     else:
-        alive_hosts = run_discovery_stage(
-            all_targets=all_targets,
-            config=config,
-            profile=profile,
-            output_dir=paths.output_dir,
-            alive_file=alive_file,
-            timeout=timeout,
-            retries=retries,
-            checkpoint=checkpoint,
-            resume=args.resume,
-            make_batches=make_batches,
-            seed_alive=seed_alive,
-            previous_alive=previous_alive,
-            previous_alive_source=previous_source,
+        alive_hosts = _run_stage(
+            "discover",
+            lambda: run_discovery_stage(
+                all_targets=all_targets,
+                config=config,
+                profile=profile,
+                output_dir=paths.output_dir,
+                alive_file=alive_file,
+                timeout=timeout,
+                retries=retries,
+                checkpoint=checkpoint,
+                resume=args.resume,
+                make_batches=make_batches,
+                seed_alive=seed_alive,
+                previous_alive=previous_alive,
+                previous_alive_source=previous_source,
+            ),
         )
 
     hostnames_file = paths.output_dir / "hostnames.json"
     if args.resume and checkpoint.is_done("discover-hostnames"):
+        timer.skip("discover-hostnames")
         hostnames_map: dict = load_json(hostnames_file, fallback={})
     else:
         hostnames_map = _run_stage(
@@ -383,50 +429,61 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     open_file = paths.output_dir / "open_ports.txt"
     if args.resume and checkpoint.is_done("ports"):
+        timer.skip("ports")
         open_ports = sorted(set(read_lines(open_file)))
     else:
-        open_set: set[str] = set(read_lines(open_file)) if args.resume else set()
-        custom_ports_file = Path(config.ports.custom_ports_file)
-        custom_udp_ports_file = Path(config.ports.custom_udp_ports_file)
-        port_cfg = config.ports
-        batches = make_batches(alive_hosts)
-        run_batches_parallel(
-            stage="ports",
-            batches=batches,
-            done_ids=checkpoint.done_items("ports"),
-            concurrency=runtime.ports_concurrency,
-            process_batch=lambda bid, members: fast_port_scan(
-                members,
-                output_dir=paths.output_dir,
-                rate=profile.port_rate,
-                top_ports=profile.top_ports,
-                top_udp_ports=port_cfg.top_udp_ports,
-                timeout=timeout,
-                retries=retries,
-                protocol_mode=port_cfg.protocol,
-                custom_ports_file=custom_ports_file,
-                custom_udp_ports_file=custom_udp_ports_file,
-                udp_probes=port_cfg.udp_probes,
-                tag=bid,
-            ),
-            aggregate=open_set,
-            aggregate_file=open_file,
-            checkpoint=checkpoint,
-            checkpoint_key="ports",
-        )
-        checkpoint.mark_done("ports")
-        open_ports = sorted(open_set)
 
-    alive_hosts = verify_alive_without_ports(
-        alive_hosts=alive_hosts,
-        open_ports=open_ports,
-        config=config,
-        profile=profile,
-        output_dir=paths.output_dir,
-        timeout=timeout,
-        retries=retries,
-    )
-    write_lines(alive_file, alive_hosts)
+        def _ports_stage() -> list[str]:
+            open_set: set[str] = set(read_lines(open_file)) if args.resume else set()
+            custom_ports_file = Path(config.ports.custom_ports_file)
+            custom_udp_ports_file = Path(config.ports.custom_udp_ports_file)
+            port_cfg = config.ports
+            batches = make_batches(alive_hosts)
+            run_batches_parallel(
+                stage="ports",
+                batches=batches,
+                done_ids=checkpoint.done_items("ports"),
+                concurrency=runtime.ports_concurrency,
+                process_batch=lambda bid, members: fast_port_scan(
+                    members,
+                    output_dir=paths.output_dir,
+                    rate=profile.port_rate,
+                    top_ports=profile.top_ports,
+                    top_udp_ports=port_cfg.top_udp_ports,
+                    timeout=timeout,
+                    retries=retries,
+                    protocol_mode=port_cfg.protocol,
+                    custom_ports_file=custom_ports_file,
+                    custom_udp_ports_file=custom_udp_ports_file,
+                    udp_probes=port_cfg.udp_probes,
+                    tag=bid,
+                ),
+                aggregate=open_set,
+                aggregate_file=open_file,
+                checkpoint=checkpoint,
+                checkpoint_key="ports",
+            )
+            checkpoint.mark_done("ports")
+            return sorted(open_set)
+
+        open_ports = _run_stage("ports", _ports_stage)
+
+    def _verify_alive() -> list[str]:
+        verified = verify_alive_without_ports(
+            alive_hosts=alive_hosts,
+            open_ports=open_ports,
+            config=config,
+            profile=profile,
+            output_dir=paths.output_dir,
+            timeout=timeout,
+            retries=retries,
+        )
+        write_lines(alive_file, verified)
+        return verified
+
+    # Default config enables discovery.verify — can re-probe hosts with no open
+    # ports and dominate wall-clock after the ports stage; keep it visible.
+    alive_hosts = _run_stage("verify_alive", _verify_alive)
 
     skip_nse = args.skip_nse or runtime.skip_nse
     nmap_dir = paths.output_dir / "nmap"
@@ -470,6 +527,8 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     if skip_nse:
         logging.info("Skipping service probe / NSE stage (skip_nse: ports-only L1)")
+        timer.skip("pulse", "skip_nse")
+        timer.skip("nse", "skip_nse")
         nmap_dir.mkdir(parents=True, exist_ok=True)
     else:
         pulse_pending = run_pulse and not (args.resume and checkpoint.is_done("pulse"))
@@ -539,9 +598,11 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             # both run (shadow/hybrid). Run them concurrently instead of
             # paying the full sum of both wall-clocks; CheckpointStore is
             # thread-safe and the two stages write to disjoint output paths.
+            # Note: stages_sum_sec can exceed pipeline_wall_sec when concurrent.
+            # copy_context so StageTimer ContextVar is visible in worker threads.
             with ThreadPoolExecutor(max_workers=2) as pool:
-                pulse_future = pool.submit(_do_pulse)
-                nse_future = pool.submit(_do_nse)
+                pulse_future = pool.submit(copy_context().run, _do_pulse)
+                nse_future = pool.submit(copy_context().run, _do_nse)
                 pulse_exc: Exception | None = None
                 nse_exc: Exception | None = None
                 try:
@@ -559,13 +620,19 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         else:
             if run_pulse:
                 if not pulse_pending:
+                    timer.skip("pulse")
                     logging.info("Skipping Pulse probe (checkpoint)")
                 else:
                     _do_pulse()
+            else:
+                timer.skip("pulse", "backend")
             if run_nmap_nse:
                 if nse_pending:
                     nmap_dir = _do_nse()
+                else:
+                    timer.skip("nse")
             else:
+                timer.skip("nse", "backend")
                 nmap_dir.mkdir(parents=True, exist_ok=True)
 
         # Shadow / hybrid: compare Pulse vs Nmap coverage when both sides exist.
@@ -586,11 +653,15 @@ def _run_pipeline(args: argparse.Namespace) -> int:
                     ),
                 )
                 checkpoint.mark_done("pulse_shadow")
+        elif args.resume and checkpoint.is_done("pulse_shadow"):
+            timer.skip("pulse_shadow")
 
     # Phase 9.2 + Pulse Phase 4: TLS/certificate posture (findings-only,
     # non-escalating -- see tls_posture.py). Prefers nmap ssl-cert/ssl-enum-ciphers;
     # else Pulse pulse/tls.json; else probe_fallback stdlib handshake (tls_probe).
-    if not (args.resume and checkpoint.is_done("tls_posture")):
+    if args.resume and checkpoint.is_done("tls_posture"):
+        timer.skip("tls_posture")
+    else:
         _run_stage(
             "tls_posture",
             lambda: check_tls_posture(
@@ -607,7 +678,9 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     # scope-expanding -- see fingerprint.py module docstring). Runs against
     # already-open web ports from the ports stage; --resume just skips
     # re-running.
-    if not (args.resume and checkpoint.is_done("fingerprint")):
+    if args.resume and checkpoint.is_done("fingerprint"):
+        timer.skip("fingerprint")
+    else:
         _run_stage(
             "fingerprint",
             lambda: fingerprint_hosts_sync(open_ports, config.fingerprint, paths.output_dir),
@@ -619,6 +692,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     # CVE-tagged matches feed into build_reports alongside Pulse/NSE vulns.
     # Under --resume, reload prior result from disk (reports still regenerate).
     if args.resume and checkpoint.is_done("nuclei"):
+        timer.skip("nuclei")
         nuclei_result = load_json(
             paths.output_dir / "nuclei.json",
             fallback={"cve_findings": []},
@@ -644,25 +718,28 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     cvss4_database = os.environ.get("OCTO_CVSS4_DATABASE", "").strip() or enrichment.cvss4.database
     geoip_database = os.environ.get("OCTO_GEOIP_DATABASE", "").strip() or enrichment.geoip.database
     asn_database = os.environ.get("OCTO_ASN_DATABASE", "").strip() or enrichment.asn.database
-    build_reports(
-        output_dir=paths.output_dir,
-        total_targets=len(all_targets),
-        alive_hosts=alive_hosts,
-        open_ports=open_ports,
-        nmap_dir=nmap_dir,
-        hostnames_map=hostnames_map,
-        markdown_summary=reporting.markdown_summary,
-        html_summary=reporting.html_summary,
-        csv_export=reporting.csv_export,
-        json_export=reporting.json_export,
-        cvss4_enabled=enrichment.cvss4.enabled,
-        cvss4_database=cvss4_database,
-        geoip_enabled=enrichment.geoip.enabled,
-        geoip_database=geoip_database,
-        asn_enabled=enrichment.asn.enabled,
-        asn_database=asn_database,
-        extra_vulnerabilities=nuclei_cve_findings,
-        report_primary=report_primary_pulse,
+    _run_stage(
+        "report",
+        lambda: build_reports(
+            output_dir=paths.output_dir,
+            total_targets=len(all_targets),
+            alive_hosts=alive_hosts,
+            open_ports=open_ports,
+            nmap_dir=nmap_dir,
+            hostnames_map=hostnames_map,
+            markdown_summary=reporting.markdown_summary,
+            html_summary=reporting.html_summary,
+            csv_export=reporting.csv_export,
+            json_export=reporting.json_export,
+            cvss4_enabled=enrichment.cvss4.enabled,
+            cvss4_database=cvss4_database,
+            geoip_enabled=enrichment.geoip.enabled,
+            geoip_database=geoip_database,
+            asn_enabled=enrichment.asn.enabled,
+            asn_database=asn_database,
+            extra_vulnerabilities=nuclei_cve_findings,
+            report_primary=report_primary_pulse,
+        ),
     )
     checkpoint.mark_done("report")
 
