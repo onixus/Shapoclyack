@@ -63,11 +63,24 @@ def test_prod_refuses_every_default_and_names_them_all(clean_env: pytest.MonkeyP
         load_settings()
 
     message = str(excinfo.value)
-    # All three at once: an operator fixing them one restart at a time would
+    # Both at once: an operator fixing them one restart at a time would
     # otherwise learn about the next only after redeploying.
     assert "OCTO_JWT_SECRET" in message
-    assert "OCTO_API_USERS" in message
     assert "OCTO_API_CORS" in message
+
+
+def test_console_accounts_are_not_checked_here(clean_env: pytest.MonkeyPatch) -> None:
+    """Since #156 accounts live in Postgres, so an unset OCTO_API_USERS is normal.
+
+    Only the database can tell an install with a real admin from one with none;
+    that check is users_service.bootstrap(), which runs once the store is up.
+    """
+    _configure_prod(clean_env)
+    clean_env.delenv("OCTO_API_USERS", raising=False)
+
+    settings = load_settings()
+
+    assert settings.env == ENV_PROD
 
 
 def test_refusal_never_echoes_configured_values(clean_env: pytest.MonkeyPatch) -> None:
@@ -111,14 +124,6 @@ def test_prod_accepts_the_secret_from_api_secret_key(clean_env: pytest.MonkeyPat
     clean_env.setenv("API_SECRET_KEY", "a-real-and-sufficiently-long-secret")
 
     assert load_settings().jwt_secret == "a-real-and-sufficiently-long-secret"
-
-
-def test_prod_refuses_default_users(clean_env: pytest.MonkeyPatch) -> None:
-    _configure_prod(clean_env)
-    clean_env.delenv("OCTO_API_USERS", raising=False)
-
-    with pytest.raises(InsecureConfigurationError, match="OCTO_API_USERS"):
-        load_settings()
 
 
 def test_prod_refuses_wildcard_cors(clean_env: pytest.MonkeyPatch) -> None:

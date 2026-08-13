@@ -162,10 +162,51 @@ curl http://localhost:8080/openapi.json
 - Do not accept a tenant identifier from a client without server-side
   authorization against the principal.
 
+## Console accounts
+
+Accounts live in the Postgres `users` table (migration `0013`). Passwords are
+stored as bcrypt hashes and **only** as bcrypt hashes: before #156 the store was
+the `OCTO_API_USERS` environment variable and a password was compared as
+plaintext whenever the configured value did not start with `$2`.
+
+```http
+GET    /api/users                               # admin
+POST   /api/users                               # admin  {"username","password","role"}
+PUT    /api/users/{username}/password           # admin — reset, no old password needed
+PUT    /api/users/{username}/role               # admin
+PUT    /api/users/{username}/disabled           # admin  {"disabled": true}
+DELETE /api/users/{username}                    # admin
+POST   /api/auth/password                       # any role — change your own
+```
+
+`POST /api/auth/password` re-verifies the current password even though the
+caller already holds a valid token: a token proves "can act as this user right
+now", which a stolen one also proves; the password proves rather more.
+
+No response carries a password or a hash — `UserInfo` has no field for one.
+
+**Disabling beats deleting.** A disabled account keeps its tenant memberships
+and its history, so revoking access does not silently discard grants that would
+have to be recreated from memory. Deleting cascades the memberships (FK from
+migration `0013`), so no grant outlives the account it was made for.
+
+**Last-admin guards.** Disabling, demoting or deleting the only remaining
+enabled admin answers `409`: the resulting installation can only be recovered by
+editing the database by hand. Deleting the account you are signed in as is
+refused for the same reason.
+
+`OCTO_API_USERS` survives as a **one-time bootstrap input**: on a first start
+with an empty table its entries are imported (plaintext hashed on the way in)
+and the variable stops being consulted. A later edit to it is ignored — two
+sources of truth is the state this change exists to leave. The built-in demo
+accounts are never imported, and exist only under `OCTO_ENV=dev`; a `prod`
+install with neither an account nor that variable refuses to start. See
+[configuration.md](configuration.md#startup-safety-octo_env).
+
 ## Tenant memberships
 
-Console users come from `OCTO_API_USERS`; which tenants they may act in comes
-from the `user_tenants` table, managed by a platform admin:
+Which tenants a user may act in comes from the `user_tenants` table, managed by
+a platform admin:
 
 ```http
 GET    /api/tenants/{tenant_id}/members

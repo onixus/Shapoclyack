@@ -230,13 +230,19 @@ def _resolve_env() -> str:
     return raw
 
 
-def _validate_production(settings: Settings, *, using_default_users: bool) -> None:
+def _validate_production(settings: Settings) -> None:
     """Refuse to start when prod configuration is still the published default.
 
     Every problem is reported at once: an operator fixing these one restart at a
     time learns about the next one only after redeploying, so the list is the
     whole checklist. Messages name the variable and how to fill it and never
     echo a configured value — this text reaches logs and terminals.
+
+    Console accounts are **not** checked here. Since #156 they live in Postgres,
+    so an unset ``OCTO_API_USERS`` is the normal steady state rather than a
+    misconfiguration, and only the database can tell an installation with a real
+    admin from one with none. That check is
+    :func:`api.services.users.bootstrap`, which runs once the store is up.
     """
     problems: list[str] = []
 
@@ -247,13 +253,6 @@ def _validate_production(settings: Settings, *, using_default_users: bool) -> No
             "    Generate one with: openssl rand -hex 32\n"
             "    Every API replica must share the same value — a per-replica secret\n"
             "    invalidates the tokens issued by the others."
-        )
-
-    if using_default_users:
-        problems.append(
-            "OCTO_API_USERS is unset, so the built-in demo accounts would be active\n"
-            "    (their passwords are published in this repository).\n"
-            '    Supply a JSON list of {"username": ..., "password": ..., "role": ...}.'
         )
 
     # Any "*" in the list, not just a bare ["*"]: the wildcard matches every
@@ -279,15 +278,17 @@ def _validate_production(settings: Settings, *, using_default_users: bool) -> No
 def load_settings() -> Settings:
     env = _resolve_env()
 
+    # Since #156 this is a one-time bootstrap input, not the account store:
+    # api/services/users.py imports it into Postgres on a first start and stops
+    # consulting it afterwards. The built-in list is kept as the marker for
+    # "nothing was configured" — users_service refuses to import it.
     users_raw = os.environ.get("OCTO_API_USERS", "").strip()
     users = DEFAULT_USERS
-    using_default_users = True
     if users_raw:
         parsed = json.loads(users_raw)
         if not isinstance(parsed, list) or not parsed:
             raise ValueError("OCTO_API_USERS must be a non-empty JSON list")
         users = parsed
-        using_default_users = False
 
     origins = os.environ.get("OCTO_API_CORS", "*").strip()
     cors = [part.strip() for part in origins.split(",") if part.strip()] or ["*"]
@@ -413,7 +414,7 @@ def load_settings() -> Settings:
     )
 
     if settings.env == ENV_PROD:
-        _validate_production(settings, using_default_users=using_default_users)
+        _validate_production(settings)
         if settings.agent_token:
             # A warning, not a refusal: the legacy shared token still works and
             # maps to tenant_id=default (Phase 2), so refusing would break a

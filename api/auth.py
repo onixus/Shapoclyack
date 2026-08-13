@@ -97,25 +97,29 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def _user_password_matches(stored: str, provided: str) -> bool:
-    # Support bcrypt hashes ($2…) or plaintext bootstrap passwords from env/defaults.
-    if stored.startswith("$2"):
-        return verify_password(provided, stored)
-    return stored == provided
-
-
 def authenticate_user(settings: Settings, username: str, password: str) -> TokenUser | None:
-    for user in settings.users:
-        if user.get("username") != username:
-            continue
-        if not _user_password_matches(str(user.get("password", "")), password):
-            return None
-        try:
-            role = Role(str(user.get("role", "viewer")))
-        except ValueError:
-            return None
-        return TokenUser(username=username, role=role)
-    return None
+    """Verify console credentials against the Postgres users table (#156).
+
+    Before #156 this walked ``settings.users`` and accepted a **plaintext**
+    password whenever the configured value did not start with ``$2``. Both are
+    gone: the store is a table, and it holds bcrypt hashes only.
+
+    ``settings`` is still taken so the signature and the call sites are
+    unchanged, and because the service resolves its session factory from it.
+    """
+    from api.services import users as users_service
+
+    record = users_service.authenticate(username, password)
+    if record is None:
+        return None
+    try:
+        role = Role(str(record.get("role", "viewer")))
+    except ValueError:
+        # An unknown role is a broken row, not a viewer. Refusing the login is
+        # the safe reading: granting the lowest role would silently turn a
+        # typo'd "admn" into a working, quietly-downgraded account.
+        return None
+    return TokenUser(username=str(record["username"]), role=role)
 
 
 def create_access_token(settings: Settings, user: TokenUser) -> str:

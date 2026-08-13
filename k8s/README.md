@@ -281,9 +281,11 @@ kubectl apply -f k8s/shapoclyack/examples/api-secrets.example.yaml
 Base kustomization also generates a **dev-only** `shapoclyack-api` JWT secret
 (`shapoclyack-dev-secret-change-me`). Replacing it is no longer advice: since
 [#155](https://github.com/onixus/Shapoclyack/issues/155) the API **refuses to
-start** while the JWT secret is still that default, while `OCTO_API_USERS` is
-unset (demo accounts), or while CORS allows `*`. The pod will `CrashLoopBackOff`
-with a message naming each unset variable:
+start** while the JWT secret is still that default or while CORS allows `*`, and
+since [#156](https://github.com/onixus/Shapoclyack/issues/156) also while no
+console account exists — `OCTO_API_USERS` seeds the first one, after which
+accounts are managed through `/api/users`. The pod will `CrashLoopBackOff` with
+a message naming what is missing:
 
 ```bash
 kubectl -n network-scan logs deploy/shapoclyack-api

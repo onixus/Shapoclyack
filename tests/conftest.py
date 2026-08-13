@@ -69,6 +69,12 @@ def make_settings(tmp_path: Path, **overrides: Any) -> "Settings":
     from api.settings import Settings
 
     base = Settings(
+        # Matches the OCTO_ENV=dev set at import: the suite logs in as the demo
+        # accounts, and since #156 those are seeded into the users table only in
+        # a dev environment. Left at the "prod" dataclass default, create_app()
+        # would refuse to start for having no console account — correctly, but
+        # in every test.
+        env="dev",
         output_dir=tmp_path / "output",
         state_dir=tmp_path / "state",
         config_path=Path("scanner/config/default.yaml"),
@@ -93,12 +99,19 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import agents as agents_service
     from api.services import scan_schedules
     from api.services import tenants as tenants_service
+    from api.services import users as users_service
     from api.services import wordlists as wordlists_service
     from api.services.integrations import webhooks as webhooks_service
 
     agents_service.configure(settings)
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
+    # Users are cleared here and re-seeded by create_app()'s bootstrap, which
+    # runs after this in configured_client(). Clearing them cascades the
+    # user_tenants grants (FK, migration 0013), so a membership from a previous
+    # test cannot survive its user.
+    users_service.configure(settings)
+    users_service.reset_for_tests()
     scan_schedules.configure(settings)
     scan_schedules.reset_for_tests()
     webhooks_service.configure(settings)
