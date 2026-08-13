@@ -83,6 +83,23 @@ class VulnerabilityItem(BaseModel):
     contextual_score: float | None = None
     cisa_decision: str | None = None
     risk_explanation: str | None = None
+    # NIST SP 800-30 assessment (scoring model nist-1). `risk_level` is the
+    # verdict from Table I-2; `contextual_score` above stays a continuous 0-10
+    # sort key so a table can order rows within a level.
+    risk_level: str | None = None
+    likelihood: str | None = None
+    impact: str | None = None
+    # Does exploit code exist, or is this only theoretical: attacked /
+    # weaponized / proof_of_concept / unproven / theoretical / unknown.
+    # "unknown" means no exploit-intelligence source is configured — which is
+    # deliberately not the same answer as "theoretical".
+    exploit_maturity: str | None = None
+    # Named sources behind the maturity call, e.g. ["cisa-kev", "nuclei-match"],
+    # so a reader can check the claim instead of trusting it.
+    exploit_evidence: list[str] = Field(default_factory=list)
+    # True when a working check fired against this host, rather than the level
+    # being inferred from a list keyed by CVE.
+    exploit_verified_on_host: bool = False
 
 
 class AliveHostItem(BaseModel):

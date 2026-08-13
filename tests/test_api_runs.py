@@ -282,7 +282,13 @@ def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path)
     assert confirmed["epss"] == 0.97
     assert confirmed["in_kev"] is True
     assert confirmed["cisa_decision"] == "Immediate"
-    assert "EPSS 0.97 (scanner)" in confirmed["risk_explanation"]
+    assert "EPSS 0.970 (scanner)" in confirmed["risk_explanation"]
+    # The NIST assessment reaches the API, not just the scorer (#144).
+    assert confirmed["risk_level"] == "very_high"
+    assert confirmed["likelihood"] == "very_high"
+    assert confirmed["impact"] == "very_high"
+    assert confirmed["exploit_maturity"] == "attacked"
+    assert any("cisa-kev" in source for source in confirmed["exploit_evidence"])
 
     unverified = payload[1]
     assert unverified["finding_class"] == "keyword_cve"
