@@ -159,16 +159,54 @@ looks more defensive than a paging loop ought to.
   About 1,900 entries do come from CVEs published before 2024, added
   retroactively by CNAs, which is why `--full` does not skip the older corpus.
 
+## Startup safety: `OCTO_ENV`
+
+The API runs as **`prod`** unless told otherwise, and a `prod` process **refuses
+to start** while any of the following is still at its built-in default:
+
+| Refusal | Why |
+|---|---|
+| `OCTO_JWT_SECRET` (or `API_SECRET_KEY`) unset, empty, or equal to the shipped default | The default is published in this repository, so anyone can mint a valid admin token |
+| `OCTO_API_USERS` unset | The built-in `admin`/`operator`/`viewer` demo accounts would be active, with passwords that are also in this repository |
+| `OCTO_API_CORS` containing `*` (including when unset, which means `*`) | With credentials in play, any page a logged-in operator visits could call this API with their session. A `*` listed beside real origins is refused too — the wildcard matches everything regardless of what sits next to it |
+
+The point is that *"forgot to configure"* and *"configured"* must not look alike.
+All problems are reported in one message, so fixing them does not take one
+redeploy per variable, and the message names variables and never prints values —
+it lands in logs and terminals.
+
+```bash
+OCTO_ENV=dev
+```
+
+`dev` allows every default above and is meant for a laptop, a kind cluster, or
+the test suite. The `dev` overlay (`k8s/shapoclyack/overlays/dev`, inherited by
+`kind-dev`) sets it; `base` and the `prod` overlay deliberately do not. Any other
+value is rejected outright rather than guessed in either direction — a
+misspelled `prodution` must not silently disable the checks.
+
+A set `OCTO_AGENT_TOKEN` **warns** rather than refuses: the legacy shared token
+still works and maps to `tenant_id=default`, so refusing would break a working
+install over a design preference rather than a published credential. Prefer
+per-tenant provisioning keys (`POST /api/auth/agent/token`).
+
+> Related, not yet covered: plaintext passwords in `OCTO_API_USERS` are still
+> accepted for bootstrap ([#156](https://github.com/onixus/Shapoclyack/issues/156)),
+> and `OCTO_POSTGRES_URL` still falls back to local SQLite when unset.
+
 ## Environment variables
 
 Core deployment variables:
 
 | Variable | Purpose |
 |---|---|
+| `OCTO_ENV` | `prod` (default) or `dev`. `prod` refuses to start on built-in defaults — see [above](#startup-safety-octo_env) |
 | `OCTO_CONFIG` | Scanner YAML path |
 | `OCTO_OUTPUT_DIR` | Per-run output root |
 | `OCTO_STATE_DIR` | Checkpoint and scheduler state |
-| `OCTO_JWT_SECRET` | User JWT signing secret |
+| `OCTO_JWT_SECRET` | User JWT signing secret. **Required in `prod`**; must be identical across API replicas |
+| `OCTO_API_USERS` | Console accounts as a JSON list. **Required in `prod`** |
+| `OCTO_API_CORS` | Comma-separated allowed origins. **Must not be `*` in `prod`** |
 | `OCTO_POSTGRES_URL` | Primary database connection |
 | `OCTO_NATS_URL` | JetStream connection; empty disables NATS |
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |

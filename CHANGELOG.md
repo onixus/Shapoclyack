@@ -6,6 +6,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Fail-closed startup configuration** (#155) — **breaking for deployments that
+  relied on the built-in defaults.** The API now reads `OCTO_ENV`, defaulting to
+  `prod`, and a `prod` process refuses to start while the JWT secret is unset or
+  still the value published in this repository, while `OCTO_API_USERS` is unset
+  (which would leave the `admin`/`operator`/`viewer` demo accounts active), or
+  while `OCTO_API_CORS` allows `*`. Previously all three were silent defaults, so
+  "forgot to configure" and "configured" produced an identical, working start.
+
+  The refusal lists every problem at once — fixing them one restart at a time is
+  the failure mode a per-variable check would create — and names variables
+  rather than printing values, since the text lands in logs and terminals. A
+  `*` listed *beside* real origins is refused too: the wildcard matches every
+  origin regardless of what sits next to it.
+
+  `OCTO_ENV=dev` allows the defaults and is set by the `dev` overlay (inherited
+  by `kind-dev`, so `scripts/dev-up.sh` is unaffected) and by the test suite,
+  which uses the demo accounts by design. `base` and the `prod` overlay
+  deliberately do not set it. An unrecognised `OCTO_ENV` is rejected rather than
+  guessed in either direction. A set `OCTO_AGENT_TOKEN` warns but does not
+  refuse — the legacy shared token still works, and breaking a running install
+  over a design preference is not the same as refusing a published credential.
+
+  Migrations are unaffected (the Alembic initContainer does not import API
+  settings), as are the agent and scanner. See
+  `docs/configuration.md#startup-safety-octo_env`.
+
 - **nuclei bumped v3.9.0 → v3.11.1**, and the `GHSA-r277-6w6q-xmqw` exception
   dropped from `.trivyignore`. That advisory (kin-openapi fail-open auth bypass)
   was suppressed in CI because no nuclei release had shipped the fix yet;

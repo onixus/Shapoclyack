@@ -1,0 +1,20 @@
+# Declares the local lab a development environment (#155).
+#
+# Without this the API refuses to start, which is the intended behaviour for
+# base/ and the prod overlay: an install that never set a JWT secret, never
+# replaced the demo accounts and left CORS at "*" must not come up quietly. A
+# kind cluster on a laptop is the one place those defaults are the point, so the
+# exception is declared here — in the dev overlay, visible in a diff — rather
+# than by making the check lenient for everyone.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: OCTO_ENV
+              value: "dev"

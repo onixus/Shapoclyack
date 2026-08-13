@@ -34,7 +34,11 @@ The default users are for local evaluation only:
 | `operator` | `operator-change-me` | operator |
 | `admin` | `admin-change-me` | admin |
 
-Do not bind the demo configuration to a public address.
+Do not bind the demo configuration to a public address. These accounts only
+exist when the API runs with `OCTO_ENV=dev`, which the `dev`/`kind-dev` overlays
+set and `scripts/dev-up.sh` therefore inherits. Anywhere else the API refuses to
+start until the JWT secret, the accounts and the CORS origins are set — see
+[Startup safety](configuration.md#startup-safety-octo_env).
 
 ## 2. Prepare targets
 

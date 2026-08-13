@@ -35,6 +35,11 @@ configMapGenerator:
       - k8s.yaml=config/k8s.yaml
 
 secretGenerator:
+  # Dev-only placeholders. The API refuses to start on this JWT secret unless
+  # OCTO_ENV=dev (#155), so overriding it is enforced rather than merely
+  # documented. The literal stays because removing it would make the
+  # Deployment's secretKeyRef unresolvable — a kubelet CreateContainerConfigError
+  # instead of a startup message that names the variable and how to fill it.
   - name: shapoclyack-api
     literals:
       - jwt_secret=shapoclyack-dev-secret-change-me
