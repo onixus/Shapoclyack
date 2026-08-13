@@ -38,13 +38,44 @@ class Tenant(Base):
     created_at: Mapped[datetime]
 
 
+class User(Base):
+    """A console account (#156). Postgres-backed, replacing ``OCTO_API_USERS``.
+
+    Passwords are stored **only** as bcrypt hashes, using the same
+    ``passlib`` context as ``ProvisioningKey.key_hash`` — one hashing scheme in
+    the codebase, not two. There is deliberately no plaintext column and no
+    plaintext acceptance in ``authenticate_user``: the pre-#156 env-backed
+    store compared plaintext whenever the configured value did not start with
+    ``$2``.
+
+    ``disabled_at`` rather than a row delete, so revoking access keeps the
+    audit trail and the ``user_tenants`` memberships intact — re-enabling is
+    then a decision, not a re-grant of every tenant. ``password_changed_at``
+    records rotation for #157's auth audit; it is set on every password write.
+    """
+
+    __tablename__ = "users"
+
+    username: Mapped[str] = mapped_column(primary_key=True)
+    # bcrypt only. Empty string means "cannot authenticate" and is what the
+    # 0013 migration backfills for usernames that had memberships but no
+    # account — see the migration for why those rows exist.
+    password_hash: Mapped[str] = mapped_column(default="")
+    role: Mapped[str] = mapped_column(default="viewer")  # viewer | operator | admin
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    disabled_at: Mapped[datetime | None] = mapped_column(default=None)
+    password_changed_at: Mapped[datetime | None] = mapped_column(default=None)
+    created_by: Mapped[str | None] = mapped_column(default=None)
+
+
 class UserTenant(Base):
     """Which tenants a console user may act in, and with what role (P0).
 
-    Users themselves still come from ``OCTO_API_USERS`` (env/config) — this
-    table only binds an existing username to a tenant, so no credential
-    material lives here. A user with *no* rows keeps pre-P0 behaviour: access
-    to the ``default`` tenant with their configured global role.
+    Since #156 ``username`` is a real FK to :class:`User`; before that it was a
+    plain string because users lived in ``OCTO_API_USERS`` and there was no
+    table to point at. A user with *no* rows keeps pre-P0 behaviour: access to
+    the ``default`` tenant with their configured global role.
 
     ``role`` is the role **inside** this tenant and is independent of the
     global role in the JWT; the global ``admin`` role means platform admin and
@@ -54,7 +85,9 @@ class UserTenant(Base):
     __tablename__ = "user_tenants"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(index=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
     tenant_id: Mapped[str] = mapped_column(
         ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
     )

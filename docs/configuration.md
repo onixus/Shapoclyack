@@ -167,8 +167,8 @@ to start** while any of the following is still at its built-in default:
 | Refusal | Why |
 |---|---|
 | `OCTO_JWT_SECRET` (or `API_SECRET_KEY`) unset, empty, or equal to the shipped default | The default is published in this repository, so anyone can mint a valid admin token |
-| `OCTO_API_USERS` unset | The built-in `admin`/`operator`/`viewer` demo accounts would be active, with passwords that are also in this repository |
 | `OCTO_API_CORS` containing `*` (including when unset, which means `*`) | With credentials in play, any page a logged-in operator visits could call this API with their session. A `*` listed beside real origins is refused too — the wildcard matches everything regardless of what sits next to it |
+| **No console account exists** — the `users` table is empty and `OCTO_API_USERS` is unset (checked at startup, once the database is up) | The built-in demo accounts are not seeded in `prod`; their passwords are published in this repository. An install nobody can log into is a failure whether it is reported at startup or discovered at the login form |
 
 The point is that *"forgot to configure"* and *"configured"* must not look alike.
 All problems are reported in one message, so fixing them does not take one
@@ -190,9 +190,13 @@ still works and maps to `tenant_id=default`, so refusing would break a working
 install over a design preference rather than a published credential. Prefer
 per-tenant provisioning keys (`POST /api/auth/agent/token`).
 
-> Related, not yet covered: plaintext passwords in `OCTO_API_USERS` are still
-> accepted for bootstrap ([#156](https://github.com/onixus/Shapoclyack/issues/156)),
-> and `OCTO_POSTGRES_URL` still falls back to local SQLite when unset.
+The first two are checked in `load_settings()` from the environment alone. The
+third needs the database and therefore runs at startup
+(`api/services/users.py:bootstrap`) — only the table can tell an installation
+with a real admin from one with none.
+
+> Related, not yet covered: `OCTO_POSTGRES_URL` still falls back to local SQLite
+> when unset, which is the same fail-open shape as the defaults above.
 
 ## Environment variables
 
@@ -205,7 +209,7 @@ Core deployment variables:
 | `OCTO_OUTPUT_DIR` | Per-run output root |
 | `OCTO_STATE_DIR` | Checkpoint and scheduler state |
 | `OCTO_JWT_SECRET` | User JWT signing secret. **Required in `prod`**; must be identical across API replicas |
-| `OCTO_API_USERS` | Console accounts as a JSON list. **Required in `prod`** |
+| `OCTO_API_USERS` | **One-time bootstrap only** since #156. Accounts live in the Postgres `users` table; this JSON list is imported on a first start with an empty table and ignored afterwards. Manage accounts through `/api/users` — see [api-and-rbac.md](api-and-rbac.md#console-accounts) |
 | `OCTO_API_CORS` | Comma-separated allowed origins. **Must not be `*` in `prod`** |
 | `OCTO_POSTGRES_URL` | Primary database connection |
 | `OCTO_NATS_URL` | JetStream connection; empty disables NATS |

@@ -21,6 +21,7 @@ from api.routes import config as config_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import system as system_routes
+from api.routes import users as users_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse
@@ -39,6 +40,7 @@ from api.services import nats_bus
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
 from api.services import tenants as tenants_service
+from api.services import users as users_service
 from api.services import wordlists as wordlists_service
 
 
@@ -78,6 +80,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     settings = get_settings()
     tenants_service.load_tenants(settings)
+    # After the tenant store (it shares the session factory), and before any
+    # router is mounted: a prod install with no console account refuses here
+    # rather than serving a login form nobody can get through (#156).
+    users_service.bootstrap(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
     scan_schedules.configure(settings)
@@ -153,6 +159,7 @@ def create_app() -> FastAPI:
     app.include_router(config_routes.router, prefix="/api")
     app.include_router(schedules_routes.router, prefix="/api")
     app.include_router(wordlists_routes.router, prefix="/api")
+    app.include_router(users_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:

@@ -34,11 +34,14 @@ The default users are for local evaluation only:
 | `operator` | `operator-change-me` | operator |
 | `admin` | `admin-change-me` | admin |
 
-Do not bind the demo configuration to a public address. These accounts only
-exist when the API runs with `OCTO_ENV=dev`, which the `dev`/`kind-dev` overlays
-set and `scripts/dev-up.sh` therefore inherits. Anywhere else the API refuses to
-start until the JWT secret, the accounts and the CORS origins are set — see
-[Startup safety](configuration.md#startup-safety-octo_env).
+Do not bind the demo configuration to a public address. These accounts are
+seeded into the `users` table only when the API runs with `OCTO_ENV=dev`, which
+the `dev`/`kind-dev` overlays set and `scripts/dev-up.sh` therefore inherits.
+Anywhere else the API refuses to start until the JWT secret, the CORS origins
+and a real account are supplied — see
+[Startup safety](configuration.md#startup-safety-octo_env). Change a password
+with `POST /api/auth/password`; add accounts through `/api/users`
+([api-and-rbac.md](../docs/api-and-rbac.md#console-accounts)).
 
 ## 2. Prepare targets
 

@@ -391,6 +391,52 @@ class GrantMembershipRequest(BaseModel):
     role: Literal["viewer", "operator", "admin"] = "viewer"
 
 
+class UserInfo(BaseModel):
+    """A console account (#156). Carries no password material by construction."""
+
+    username: str
+    role: Literal["viewer", "operator", "admin"]
+    disabled: bool = False
+    # False for an account backfilled by migration 0013 from an orphan
+    # membership: it exists and can be granted tenants, but cannot log in until
+    # an admin sets a password.
+    has_password: bool = True
+    created_at: str | None = None
+    updated_at: str | None = None
+    disabled_at: str | None = None
+    password_changed_at: str | None = None
+    created_by: str | None = None
+
+
+# 12 characters is a floor rather than a policy, and 72 bytes is bcrypt's own
+# limit — beyond it the tail of what the operator typed is silently ignored,
+# which would make a longer password decorative rather than stronger.
+_PASSWORD = Field(min_length=12, max_length=72)
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = _PASSWORD
+    role: Literal["viewer", "operator", "admin"] = "viewer"
+
+
+class SetUserPasswordRequest(BaseModel):
+    password: str = _PASSWORD
+
+
+class SetUserRoleRequest(BaseModel):
+    role: Literal["viewer", "operator", "admin"]
+
+
+class SetUserDisabledRequest(BaseModel):
+    disabled: bool
+
+
+class ChangeOwnPasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = _PASSWORD
+
+
 class TenantInfo(BaseModel):
     tenant_id: str
     name: str
