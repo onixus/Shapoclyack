@@ -175,14 +175,26 @@ the inference instead of having to trust it.
 
 ## What this model does not do
 
-- **No temporal decay.** A CVE published yesterday and one from 2015 with the
-  same evidence score the same. Exposure duration belongs to the asset timeline.
-- **No exploit-chaining or attack-path analysis.** Each finding is scored alone;
-  two Moderates that combine into a domain takeover are still two Moderates.
-- **No data-classification input.** Asset criticality is a single 0–4 dial;
-  `owner` / `business_service` / data class are [#146](https://github.com/onixus/Shapoclyack/issues/146).
-- **No compensating controls.** A WAF in front of a vulnerable service does not
-  lower likelihood here, because nothing in the pipeline observes one.
-- **Reachability is the CVSS vector's, not the network's.** `AV:N` says the
+Each of these is a real gap with its own issue, not a silent approximation.
+
+- **Reachability is the CVSS vector's, not the network's**
+  ([#171](https://github.com/onixus/Shapoclyack/issues/171)). `AV:N` says the
   vulnerability is network-exploitable in the abstract; whether *this* host is
-  internet-facing is not yet an input.
+  internet-facing is not yet an input, so an exposed service and the same
+  service behind the perimeter get the same likelihood.
+- **No temporal input**
+  ([#172](https://github.com/onixus/Shapoclyack/issues/172)). A CVE published
+  yesterday and one from 2015 with the same evidence score the same. Note that
+  the fix is a modifier that only ever raises risk — an unpatched old flaw does
+  not become safer for having been ignored. How long a finding has been open is
+  an SLA question ([#145](https://github.com/onixus/Shapoclyack/issues/145)),
+  not a risk one.
+- **No exploit-chaining, and no compensating controls**
+  ([#173](https://github.com/onixus/Shapoclyack/issues/173)). Each finding is
+  scored alone: two Moderates that combine into a domain takeover are still two
+  Moderates, and a WAF in front of a vulnerable service does not lower
+  likelihood because nothing in the pipeline observes one.
+- **No data-classification input**
+  ([#146](https://github.com/onixus/Shapoclyack/issues/146)). Asset criticality
+  is a single 0–4 dial; `owner` / `business_service` / data class are that
+  issue's scope.
