@@ -6,13 +6,54 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Console accounts moved to Postgres; plaintext passwords no longer
+  authenticate** (#156) — **breaking.** Accounts live in a `users` table
+  (migration `0013`) instead of the `OCTO_API_USERS` environment variable, and
+  `authenticate_user` verifies bcrypt only. Previously it compared **plaintext**
+  whenever the stored value did not start with `$2`, a password could not be
+  rotated without editing a Secret and restarting every pod, nothing recorded
+  who changed an account, and disabling one user meant rewriting the whole JSON.
+
+  New admin surface `/api/users` (create, list, reset password, change role,
+  disable, delete) plus `POST /api/auth/password`, which any role may call to
+  rotate their own password. It re-verifies the current password even though the
+  caller holds a valid token: a token proves "can act as this user right now",
+  which a stolen one also proves. No response carries a password or a hash.
+
+  Disabling is preferred to deleting — memberships and history survive a
+  revocation — and deleting cascades memberships through the new FK, so no grant
+  outlives its account. Disabling, demoting or deleting the last enabled admin
+  answers `409`; that installation would only be recoverable by hand.
+
+  `OCTO_API_USERS` becomes a **one-time bootstrap input**: imported into an
+  empty table on a first start (plaintext hashed on the way in), ignored
+  afterwards. The built-in demo accounts are never imported — their passwords
+  are published in this repository, so seeding them would re-open through the
+  table what #155 closed at the environment level. They are seeded only under
+  `OCTO_ENV=dev`. A `prod` install with neither an account nor the variable
+  refuses to start, which supersedes #155's "`OCTO_API_USERS` unset" refusal:
+  an unset variable is now the normal steady state, and only the database can
+  tell an install with a real admin from one with none.
+
+  Migration `0013` backfills a **disabled, password-less** account for every
+  username that had a `user_tenants` row but no account, so the new FK can be
+  added without either failing on orphans or silently deleting grants an
+  operator made deliberately. Those rows cannot authenticate and are visible in
+  `GET /api/users`.
+
+  Also fixes an adjacent fault the tests surfaced: passlib *raises* on an
+  unrecognisable hash rather than returning false, so a row left over from the
+  plaintext era would have produced a `500` on login instead of a `401`.
+
 - **Fail-closed startup configuration** (#155) — **breaking for deployments that
   relied on the built-in defaults.** The API now reads `OCTO_ENV`, defaulting to
   `prod`, and a `prod` process refuses to start while the JWT secret is unset or
-  still the value published in this repository, while `OCTO_API_USERS` is unset
-  (which would leave the `admin`/`operator`/`viewer` demo accounts active), or
-  while `OCTO_API_CORS` allows `*`. Previously all three were silent defaults, so
-  "forgot to configure" and "configured" produced an identical, working start.
+  still the value published in this repository, or while `OCTO_API_CORS` allows
+  `*`. (The third default of this shape, the built-in demo accounts, is refused
+  by #156 above — at startup rather than here, because after that change only
+  the database can tell a configured install from an unconfigured one.)
+  Previously these were silent defaults, so "forgot to configure" and
+  "configured" produced an identical, working start.
 
   The refusal lists every problem at once — fixing them one restart at a time is
   the failure mode a per-variable check would create — and names variables
