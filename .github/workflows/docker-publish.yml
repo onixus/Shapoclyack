@@ -107,11 +107,11 @@ jobs:
           # Private GenDec release assets for Pulse binary stage.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
-          # No PULSE_VERSION override here: the Dockerfiles' own ARG default is
-          # the single source of truth (avoid this workflow silently pinning a
-          # stale Pulse release out from under a Dockerfile bump).
+          # Release images intentionally override the Dockerfile default so the
+          # component matrix for this Shapoclyack release is explicit here.
           build-args: |
             INSTALL_NMAP=${{ matrix.install_nmap }}
+            PULSE_VERSION=v0.9.1
           cache-from: type=gha,scope=${{ matrix.name }}
           # mode=max + multi-platform (linux/amd64,linux/arm64) on the larger
           # images (esp. aio) regularly hangs/fails "preparing build cache for
