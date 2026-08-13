@@ -21,12 +21,14 @@ yet production-ready.
 | **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | Largest un-started scope |
+| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | S1–S7 + S9 merged; S8, S10 deferred |
 
-Track A is capability; Track B is operability; Track C is product framing. They are
-independent — Track A being **Done** says nothing about B or C, and a reader who checked
-only the phase tables would conclude the opposite. Tracks B and C are tracked as GitHub
-issues rather than expanded here, so this file stays a map and the issues stay the
-source of truth for their own scope.
+Track A is capability; Track B is operability; Track C is product framing; Track D is a
+separate integration contract that deliberately does not reuse the scan-result path. They
+are independent — Track A being **Done** says nothing about the others, and a reader who
+checked only the phase tables would conclude the opposite. Tracks B and C are tracked as
+GitHub issues and Track D in its own file, rather than expanded here, so this file stays a
+map and each source stays authoritative for its own scope.
 
 ---
 
@@ -354,6 +356,7 @@ read as one list than as five *Partial* rows spread over 40 KB:
 | IP↔FQDN↔certificate correlation | [P4.2](#p4-breakdown--differentiating-features) | Feeds Track C's asset model ([#146](https://github.com/onixus/Shapoclyack/issues/146)) |
 | Ownership graph | [P4.3](#p4-breakdown--differentiating-features) | Needs 4.2 first, else it is a re-skin |
 | Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Single home** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it |
+| Endpoint-inventory NATS event (S8), cross-repo e2e test (S10) | [Agent_plan.md](Agent_plan.md) (Track D) | Deferred there, not part of any phase; listed here only so the remainder is countable in one place |
 
 Everything else in Phases 1–11 and P0–P3 is merged.
 
