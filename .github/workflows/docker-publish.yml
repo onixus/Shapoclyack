@@ -30,11 +30,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Container packages are Shapoclyack-scoped (the legacy octo-man GHCR package is gone).
-          # Default scanner/aio images ship Pulse-only (no Nmap) -- see issue #97:
-          # Nmap's NPSL license makes bundling it in the default distributed
-          # artifacts a redistribution risk. A second `-nmap` tag is published
-          # alongside for anyone who explicitly wants the legacy NSE path.
           - name: scanner
             dockerfile: Dockerfile
             image: ghcr.io/onixus/shapoclyack-scanner
@@ -104,22 +99,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
           provenance: mode=max
-          # Private GenDec release assets for Pulse binary stage.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
-          # No PULSE_VERSION override here: the Dockerfiles' own ARG default is
-          # the single source of truth (avoid this workflow silently pinning a
-          # stale Pulse release out from under a Dockerfile bump).
           build-args: |
             INSTALL_NMAP=${{ matrix.install_nmap }}
+            PULSE_VERSION=v0.9.1
           cache-from: type=gha,scope=${{ matrix.name }}
-          # mode=max + multi-platform (linux/amd64,linux/arm64) on the larger
-          # images (esp. aio) regularly hangs/fails "preparing build cache for
-          # export" with ERROR: not_found -- a known buildx/BuildKit issue
-          # (moby/buildkit#6008, #4628) triggered by mode=max cache size on
-          # big images. mode=min exports far less (final layers only) and
-          # avoids it; ignore-error=true means a cache-export failure (which
-          # happens strictly after the image itself is already pushed, see
-          # the "pushing manifest ... done" step above) no longer fails the
-          # whole job -- it only costs a colder cache on the next build.
           cache-to: type=gha,mode=min,scope=${{ matrix.name }},ignore-error=true
