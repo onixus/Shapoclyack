@@ -91,11 +91,13 @@ def test_get_for_scan_is_tenant_scoped(settings: Settings):
     info = wordlists.create_wordlist(
         tenant_id="ten_a", name="subs", kind="subdomain", raw_content="www\napi\n"
     )
-    # Right tenant sees kind + body; a different tenant sees nothing.
-    assert wordlists.get_for_scan(info["wordlist_id"], tenant_id="ten_a") == (
-        "subdomain",
-        "www\napi",
-    )
+    # Right tenant sees body + provenance; a different tenant sees nothing.
+    resolved = wordlists.get_for_scan(info["wordlist_id"], tenant_id="ten_a")
+    assert resolved is not None
+    assert resolved.kind == "subdomain"
+    assert resolved.content == "www\napi"
+    assert resolved.name == "subs"
+    assert resolved.wordlist_id == info["wordlist_id"]
     assert wordlists.get_for_scan(info["wordlist_id"], tenant_id="default") is None
 
 
@@ -220,9 +222,9 @@ def test_subdomain_wordlist_enables_brute_force_in_effective_config(settings, mo
         username="admin",
     )
     cfg = yaml.safe_load(_config_path_from(job).read_text())
-    assert cfg["ct"]["enabled"] is True
-    assert cfg["ct"]["brute_force"]["enabled"] is True
-    materialized = Path(cfg["ct"]["brute_force"]["wordlist_file"])
+    assert cfg["discovery"]["ct"]["enabled"] is True
+    assert cfg["discovery"]["ct"]["brute_force"]["enabled"] is True
+    materialized = Path(cfg["discovery"]["ct"]["brute_force"]["wordlist_file"])
     assert materialized.read_text().split() == ["www", "api"]
 
 
@@ -237,8 +239,8 @@ def test_bucket_wordlist_enables_cloud_discovery(settings, monkeypatch):
         username="admin",
     )
     cfg = yaml.safe_load(_config_path_from(job).read_text())
-    assert cfg["cloud"]["enabled"] is True
-    assert Path(cfg["cloud"]["wordlist_file"]).read_text().split() == ["assets", "backup"]
+    assert cfg["discovery"]["cloud"]["enabled"] is True
+    assert Path(cfg["discovery"]["cloud"]["wordlist_file"]).read_text().split() == ["assets", "backup"]
 
 
 def test_unknown_wordlist_id_fails_the_scan(settings, monkeypatch):
