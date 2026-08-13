@@ -10,9 +10,34 @@ Visual overview: [shapoclyack.html](shapoclyack.html) · Release history: [CHANG
 
 ---
 
+## How to read this file
+
+The project runs **three tracks**, and this file historically described only the first —
+which is why a nearly all-**Done** roadmap can coexist with an installation that is not
+yet production-ready.
+
+| Track | What it answers | Where it lives | State |
+|-------|-----------------|----------------|-------|
+| **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
+| **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
+| **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | Largest un-started scope |
+
+Track A is capability; Track B is operability; Track C is product framing. They are
+independent — Track A being **Done** says nothing about B or C, and a reader who checked
+only the phase tables would conclude the opposite. Tracks B and C are tracked as GitHub
+issues rather than expanded here, so this file stays a map and the issues stay the
+source of truth for their own scope.
+
+---
+
 ## Current baseline (done)
 
-Shipped through **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33)**:
+Shipped through **[shapoclyack-0.40-0806](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.40-0806)**.
+`api/__init__.py` and the `k8s/` manifests already carry **`0.41-0812`**, but that tag was
+never cut and `main` has since moved past it (wordlists, stage timings, scan intents all sit
+under `## Unreleased`) — closing [#160](https://github.com/onixus/Shapoclyack/issues/160)
+means deciding whether 0.41 is re-cut from current `main` or re-bumped. Note that GHCR
+images are built by `gh release create`, **not** by pushing a tag.
 
 | Area | Status |
 |------|--------|
@@ -200,7 +225,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 |----|------|---------------|--------|--------|
 | 9.1 | Tech stack fingerprinting | `scanner/pipeline/fingerprint.py` (new) | One HTTP GET per already-open web port (reuses `open_ports.txt`, no new port scan) → small built-in CDN/WAF header signature set (Cloudflare, Akamai, Sucuri, Imperva/Incapsula, CloudFront, Fastly) + CMS/framework header/body markers (WordPress, Drupal, Joomla, Next.js, generic PHP); opt-in (`fingerprint.enabled`), capped by `max_targets`/`concurrency`/`body_max_bytes` (streamed read); findings reported to `fingerprint.json`/`fingerprint_matches.txt`, never merged into scan scope | **Done** |
 | 9.2 | TLS / certificate posture | `scanner/pipeline/tls_posture.py` (new) | Parses the free-text `output` of nmap's own `ssl-cert`/`ssl-enum-ciphers` NSE scripts (already written to `nmap/tcp/*.xml` by the `nse` stage) — no new scan, no TLS-handshake dependency. Findings: `cert_expired`/`cert_expiring_soon` (validity window vs. `expiring_soon_days`), `self_signed` (subject/issuer commonName heuristic, tagged `heuristic`, not certain), `weak_protocol`/`weak_cipher_grade`/`weak_cipher_name` (from `ssl-enum-ciphers`, now added to the `vuln`/`service_specific` NSE profiles). Opt-in (`tls_posture.enabled`), capped by `max_targets`; findings reported to `tls_posture.json`/`tls_posture_findings.txt`, never merged into scan scope. Since nmap's script output is free text rather than a stable schema, parsing is fail-soft (unparseable fields/lines are skipped, never raise). Hostname/SAN-CN mismatch checking was deferred here and landed later as [P4.1](#p4-breakdown--differentiating-features) (`cert_name_mismatch`). | **Done** |
-| 9.3 | Web asset screenshots | new worker (optional) | Visual inventory for UI review | **Planned** |
+| 9.3 | Web asset screenshots | new worker (optional) | Visual inventory for UI review. **Tracked as [P4.4](#p4-breakdown--differentiating-features)**, which owns the scope this row opened — the capture is the easy half, and the retention/redaction/access-control work that makes it shippable is stated there. Kept here as a pointer, not a second work item | **Planned → [P4.4](#p4-breakdown--differentiating-features)** |
 | 9.4 | Business-context criticality | `api/services/risk_scoring.py`, `api/services/assets.py`, `api/routes/assets.py` | Operator-set `asset_criticality` (0–4) via new `PATCH /assets/{asset_id}`; `ch_transform.vulnerabilities_to_rows` looks it up per host (batched, one query per distinct host per ingest batch) and it wins outright over the port/severity heuristic in `risk_scoring.py` when set; falls back to the existing heuristic when unset or when Postgres/tenant context isn't available (e.g. unit tests, no-DB deployments) | **Done** |
 
 ### Phase 10 — Change Detection & Alerting at Asset Level
@@ -317,6 +342,86 @@ Suggested order: 4.1 (done, no dependencies) → 4.2 → 4.3 (needs 4.2's cluste
 
 ---
 
+## Track A — what is actually left
+
+The phase tables above are mostly **Done**, so the remaining capability scope is easier to
+read as one list than as five *Partial* rows spread over 40 KB:
+
+| Item | Tracked as | Note |
+|------|-----------|------|
+| Jira / ServiceNow ticket creation + DefectDojo export | [10.3](#phase-10--change-detection--alerting-at-asset-level) = [P2](#next-priority-order-post-phase-11) | Further transports over the delivery queue webhooks already built; overlaps Track C's ticket integrations ([#138](https://github.com/onixus/Shapoclyack/issues/138)) — build the queue side once |
+| OpenTelemetry tracing | [P3](#p3-breakdown--scale--observability) | The only P3 item left; [3.9](#p3-breakdown--scale--observability) stage timings answer the cheap half of the same question |
+| IP↔FQDN↔certificate correlation | [P4.2](#p4-breakdown--differentiating-features) | Feeds Track C's asset model ([#146](https://github.com/onixus/Shapoclyack/issues/146)) |
+| Ownership graph | [P4.3](#p4-breakdown--differentiating-features) | Needs 4.2 first, else it is a re-skin |
+| Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Single home** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it |
+
+Everything else in Phases 1–11 and P0–P3 is merged.
+
+## Track B — Production readiness (GA blockers)
+
+**Source of truth:** [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154), milestone `GA`.
+Summarized here because Track A's phase tables give no signal about it.
+
+**Why it is a track and not a checklist:** the first four items below share one failure
+mode — the installation is **fail-open**. A deployment brought up from the README without
+overriding anything starts with a published JWT secret ([api/settings.py:31](api/settings.py:31)),
+`CORS=["*"]` ([api/settings.py:38](api/settings.py:38)) and the built-in `admin`/`operator`
+accounts ([api/settings.py:10](api/settings.py:10)), and `authenticate_user` accepts a
+**plaintext** password whenever the stored string is not a bcrypt hash
+([api/auth.py:100](api/auth.py:100)). Nothing about that start is distinguishable from a
+configured one. "Forgot to configure" and "configured" must not look alike.
+
+| Issue | Theme | Est. | Note |
+|-------|-------|------|------|
+| [#155](https://github.com/onixus/Shapoclyack/issues/155) | Fail-closed config — refuse to start on default secrets / `CORS=*` | 3–5 d | Introduces `OCTO_ENV`, defaulting to `prod` |
+| [#156](https://github.com/onixus/Shapoclyack/issues/156) | Users into Postgres, no plaintext passwords | ~1 sprint | Table slot already exists: `user_tenants` (migration `0007`) references `username` with no FK |
+| [#157](https://github.com/onixus/Shapoclyack/issues/157) | Login brute-force protection + auth audit | ~0.5 sprint | No rate limit on `POST /api/auth/login` today; counter must be in Postgres to hold across replicas |
+| [#158](https://github.com/onixus/Shapoclyack/issues/158) | Automated backup + **rehearsed** restore | ~1 sprint | `docs/operations.md` describes intent; no CronJob, no restore script, no measured RPO/RTO. Also covers the missing PodDisruptionBudget and `examples/`-only NetworkPolicy |
+| [#159](https://github.com/onixus/Shapoclyack/issues/159) | Safe upgrade — migrations out of the initContainer, PDB, rollback | ~0.5 sprint | Alembic runs in **every** replica's initContainer ([api-deployment.yaml:36](k8s/shapoclyack/base/api-deployment.yaml:36)); [P1.6](#p1-breakdown--durable-control-plane) removed the `replicas: 1` guard that made this safe. Second schema path via `create_all` ([api/db/engine.py:34](api/db/engine.py:34)) |
+| [#151](https://github.com/onixus/Shapoclyack/issues/151) | Outbound webhook SSRF / credential-leak hardening | ~1 sprint | Release blocker — webhooks ([10.3](#phase-10--change-detection--alerting-at-asset-level)) ship *in* GA, not after |
+| [#160](https://github.com/onixus/Shapoclyack/issues/160) | Cut the release, empty `## Unreleased` | ~1 d | Last, after the rest is merged. See the [baseline note](#current-baseline-done) — the issue's "last tag is 0.33" is stale |
+
+Order: #155 and #158 are independent and go first; #156 → #157 in sequence; #159 in
+parallel; #160 last. **Wave 1** (after the blockers, not yet filed as issues):
+[#152](https://github.com/onixus/Shapoclyack/issues/152) webhook state-machine
+correctness; end-to-end API latency under concurrency — objectives 2, 4 and 5 in
+[docs/slo.md](docs/slo.md) are still starting values because [3.8](#p3-breakdown--scale--observability)
+profiled query paths in-process; alert rules as code (PromQL exists in `docs/slo.md`,
+no `PrometheusRule` manifests, and `octo_scheduler_is_leader` has no alert on either
+`> 1` or `== 0`); data-growth bounds (ClickHouse has no TTL — [3.8](#p3-breakdown--scale--observability)
+named TTL the right tool and rejected `PARTITION BY` as semantic — plus artifact
+retention on disk); and a load run at ≥2 API replicas, which P1 made legal but nobody
+has exercised.
+
+## Track C — Vulnerability Management product
+
+**Source of truth:** [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134) and
+[docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md).
+
+**Why it is not just UI work:** the redesign's premise is that a security manager can
+answer "what is our risk, who owns it, what breaches SLA" without starting a scan. The
+platform today has no representation of *ownership of remediation*, *vulnerability
+lifecycle state*, or *SLA* — so the three backend issues are the real scope and the five
+UI issues render what they produce. This is the largest un-started body of work in the
+project, and none of it appears in Track A.
+
+| Issue | Layer | Scope |
+|-------|-------|-------|
+| [#144](https://github.com/onixus/Shapoclyack/issues/144) | Backend | Explainable risk-scoring engine: deterministic, versioned policy, per-finding and per-asset score, breakdown returned by the API, historical snapshots for trends. Partially prefigured by scoring model `mvp-2` / `risk_explanation` ([docs/pulse-backend.md](docs/pulse-backend.md)) |
+| [#145](https://github.com/onixus/Shapoclyack/issues/145) | Backend | Vulnerability lifecycle (`OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`) + SLA policy by asset criticality. A state machine over findings — the pattern exists for jobs in [P1.3](#p1-breakdown--durable-control-plane) |
+| [#146](https://github.com/onixus/Shapoclyack/issues/146) | Backend | Asset business context: owner, business service, environment, data classification, exposure level; CMDB/AD-ready. Extends the operator-set fields from [9.4](#phase-9--exposure-fingerprinting)/[11.1](#phase-11--web-ui-v2-attack-surface-view) and consumes [P4.2](#p4-breakdown--differentiating-features) identity |
+| [#135](https://github.com/onixus/Shapoclyack/issues/135) | UI | Risk dashboard (needs #144) |
+| [#136](https://github.com/onixus/Shapoclyack/issues/136) | UI | Asset-centric security view (needs #146) |
+| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | Vulnerability Center + lifecycle (needs #145) |
+| [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | Remediation workflow + ticket integrations (needs #145; **shares scope with [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2** — Jira/ServiceNow belong to one delivery queue, built once) |
+| [#139](https://github.com/onixus/Shapoclyack/issues/139) | UI | Exposure Management + MSSP views |
+
+Backend before UI: #144/#145/#146 → their dependent UI issues. Two overlaps with Track A
+are worth resolving before either starts, so the work is not built twice: ticketing
+(#138 ↔ 10.3/P2) and asset identity (#146 ↔ P4.2).
+
+---
+
 ## Status legend
 
 | Status | Meaning |
@@ -324,5 +429,13 @@ Suggested order: 4.1 (done, no dependencies) → 4.2 → 4.3 (needs 4.2's cluste
 | **Done** | Merged to `main` (may be ahead of the last tagged release — see [CHANGELOG.md](CHANGELOG.md) `## Unreleased` for what hasn't shipped in a tag yet) |
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
+| **Partial** | Some sub-items merged, named remainder still open (e.g. [10.3](#phase-10--change-detection--alerting-at-asset-level)) |
 
-Phases 1–8 are **Done** (merged to `main`); Phase 9 is partially done (9.1, 9.2, 9.4); Phase 10 is partially done (10.1); Phase 11 is **Done** (11.1–11.6 — asset card, attack-surface graph, exec dashboard, reports, system status, editable configurator).
+**Track A status:** Phases 1–8 are **Done** (1–6, 7, 8.1–8.6); Phase 9 is done except
+[9.3](#phase-9--exposure-fingerprinting), which is now tracked as [P4.4](#p4-breakdown--differentiating-features);
+Phase 10 is done except the ticketing half of [10.3](#phase-10--change-detection--alerting-at-asset-level);
+Phase 11 is **Done** (11.1–11.6). P0, P1 and P3 are **Done** (P3 except OpenTelemetry);
+P2 and P4 carry the remainder listed under [Track A — what is actually left](#track-a--what-is-actually-left).
+
+**Track B and C statuses live in their issues**, not here — a status duplicated in two
+places is a status that will disagree with itself. This file links; the issues decide.
