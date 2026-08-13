@@ -10,9 +10,36 @@ Visual overview: [shapoclyack.html](shapoclyack.html) · Release history: [CHANG
 
 ---
 
+## How to read this file
+
+The project runs **three tracks**, and this file historically described only the first —
+which is why a nearly all-**Done** roadmap can coexist with an installation that is not
+yet production-ready.
+
+| Track | What it answers | Where it lives | State |
+|-------|-----------------|----------------|-------|
+| **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
+| **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
+| **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | Largest un-started scope |
+| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | S1–S7 + S9 merged; S8, S10 deferred |
+
+Track A is capability; Track B is operability; Track C is product framing; Track D is a
+separate integration contract that deliberately does not reuse the scan-result path. They
+are independent — Track A being **Done** says nothing about the others, and a reader who
+checked only the phase tables would conclude the opposite. Tracks B and C are tracked as
+GitHub issues and Track D in its own file, rather than expanded here, so this file stays a
+map and each source stays authoritative for its own scope.
+
+---
+
 ## Current baseline (done)
 
-Shipped through **[shapoclyack-0.33](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.33)**:
+Shipped through **[shapoclyack-0.40-0806](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.40-0806)**.
+`api/__init__.py` and the `k8s/` manifests already carry **`0.41-0812`**, but that tag was
+never cut and `main` has since moved past it (wordlists, stage timings, scan intents all sit
+under `## Unreleased`) — closing [#160](https://github.com/onixus/Shapoclyack/issues/160)
+means deciding whether 0.41 is re-cut from current `main` or re-bumped. Note that GHCR
+images are built by `gh release create`, **not** by pushing a tag.
 
 | Area | Status |
 |------|--------|
@@ -179,15 +206,16 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** surface assets the customer never declared — the defining trait of EASM vs. seed-list scanning.
 
-**Status:** **Done** (8.1–8.5). 8.3's original "public cloud ranges by org tag" half was dropped as not honestly implementable — AWS/GCP publish IP ranges tagged by service+region, not by customer organization; there is no public API that attributes a cloud IP to a specific org.
+**Status:** **Done** (8.1–8.6). 8.3's original "public cloud ranges by org tag" half was dropped as not honestly implementable — AWS/GCP publish IP ranges tagged by service+region, not by customer organization; there is no public API that attributes a cloud IP to a specific org.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 8.1 | ASN / WHOIS / BGP org mapping | `scanner/pipeline/asn_discovery.py` (new) | Seed domain → resolved IP → ASN → announced prefixes via RIPEstat's free keyless API; hard-capped at `max_total_ips` (default 4096) since one ASN can span far more than one org's infra | **Done** |
-| 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py` | Adds an `otx` (AlienVault OTX passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in wordlist brute-force pass (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`, concurrency/candidate-capped) | **Done** |
+| 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py`, `api/routes/wordlists.py`, `api/services/wordlists.py`, migration `0012`, `web-next/.../wordlists` | Adds an `otx` (AlienVault OTX passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in wordlist brute-force pass (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`, concurrency/candidate-capped). Tenant-uploaded wordlists now live in Postgres per tenant (`POST /api/wordlists` + Wordlists page), selected per scan via `StartScanRequest.wordlist_id`: a `subdomain` list turns on `ct.brute_force`, a `bucket` list turns on cloud discovery, materialized to a job-scoped file and merged **not** fail-soft (a scan that asked for a wordlist must not run without one). Body normalized/de-duped on write, reads return metadata only, capped by `OCTO_WORDLIST_MAX_BODY_BYTES`/`OCTO_WORDLIST_MAX_WORDS`; agent mode 422s `wordlist_id` (materialized on the API pod, unreachable by a remote worker's mounted config) | **Done** |
 | 8.3 | Cloud resource discovery | `scanner/pipeline/cloud_discovery.py` (new) | S3/GCS/Azure Blob bucket + container enumeration via unauthenticated HEAD/GET against public provider endpoints; org tokens × wordlist candidates, hard-capped at `max_candidates` (default 500) and `concurrency` (default 10) since checks hit shared third-party cloud infrastructure, not the target's own hosts; findings reported, never merged into scan scope | **Done** |
 | 8.4 | Typosquat / domain monitoring | `scanner/pipeline/domain_monitor.py` (new) | Look-alike domain candidates (omission/transposition/keyboard-adjacent/doubling/homoglyph/TLD-swap generators) resolved via passive dnsx A/AAAA lookups only — same risk class as `ct.brute_force`, never merged into scan scope; plus a dangling-CNAME/subdomain-takeover heuristic over the org's own in-scope FQDNs (CNAME target matches a known vulnerable-service suffix AND has no A/AAAA record) that flags the pattern + non-resolution only and never confirms an actual takeover | **Done** |
 | 8.5 | Continuous org-level scheduling | `api/db/models.py` (`ScanSchedule`), `api/services/scan_schedules.py`, `api/services/schedule_dispatcher.py`, `api/routes/schedules.py` | Per-tenant `scan_schedules` table (cron or fixed-interval, target set + scan options); an in-process dispatcher thread (started from the API `lifespan`, same pattern as the ClickHouse ingest worker — no per-tenant K8s CronJob) polls due schedules and calls the existing `jobs_service.start_scan`, skipping a tick if the schedule's previous job is still running. `CRUD via `/api/schedules` (operator role; delete is admin-only). API-only this iteration, no web-next UI. The original `scanner/scheduler.py`/static `cronjob.yaml` remain as-is for simple single-tenant self-hosts. | **Done** |
+| 8.6 | Scan intents for jobs & schedules | `api/services/scan_intents.py` (new), `api/services/jobs.py`, `api/routes/schedules.py`, `web-next/.../{jobs,schedules}`, [docs/scan-performance.md](docs/scan-performance.md) | Product-level "what work to do", orthogonal to the speed profile (`mode`: safe/balanced/fast = how hard to hit the network). `intent` picks which pipeline stages + nuclei floor run so operators can schedule **inventory** often (ports-only L1, `--skip-nse`, nuclei off, top_ports 100) and **full** assessments rarely (default pipeline, nuclei critical/high/medium) without hand-editing YAML — plus **vuln** (full probe + nuclei critical/high only) and **delta** (full + `--delta` discovery refresh). When set, intent owns `skip_nse`/`delta`/nuclei/top_ports and explicit legacy flags are ignored; when omitted, legacy `skip_nse`/`delta` apply as before. Wired into both ad-hoc jobs and schedules with a human-readable summary in `scan_options` | **Done** |
 
 ### Phase 9 — Exposure Fingerprinting
 
@@ -199,7 +227,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 |----|------|---------------|--------|--------|
 | 9.1 | Tech stack fingerprinting | `scanner/pipeline/fingerprint.py` (new) | One HTTP GET per already-open web port (reuses `open_ports.txt`, no new port scan) → small built-in CDN/WAF header signature set (Cloudflare, Akamai, Sucuri, Imperva/Incapsula, CloudFront, Fastly) + CMS/framework header/body markers (WordPress, Drupal, Joomla, Next.js, generic PHP); opt-in (`fingerprint.enabled`), capped by `max_targets`/`concurrency`/`body_max_bytes` (streamed read); findings reported to `fingerprint.json`/`fingerprint_matches.txt`, never merged into scan scope | **Done** |
 | 9.2 | TLS / certificate posture | `scanner/pipeline/tls_posture.py` (new) | Parses the free-text `output` of nmap's own `ssl-cert`/`ssl-enum-ciphers` NSE scripts (already written to `nmap/tcp/*.xml` by the `nse` stage) — no new scan, no TLS-handshake dependency. Findings: `cert_expired`/`cert_expiring_soon` (validity window vs. `expiring_soon_days`), `self_signed` (subject/issuer commonName heuristic, tagged `heuristic`, not certain), `weak_protocol`/`weak_cipher_grade`/`weak_cipher_name` (from `ssl-enum-ciphers`, now added to the `vuln`/`service_specific` NSE profiles). Opt-in (`tls_posture.enabled`), capped by `max_targets`; findings reported to `tls_posture.json`/`tls_posture_findings.txt`, never merged into scan scope. Since nmap's script output is free text rather than a stable schema, parsing is fail-soft (unparseable fields/lines are skipped, never raise). Hostname/SAN-CN mismatch checking was deferred here and landed later as [P4.1](#p4-breakdown--differentiating-features) (`cert_name_mismatch`). | **Done** |
-| 9.3 | Web asset screenshots | new worker (optional) | Visual inventory for UI review | **Planned** |
+| 9.3 | Web asset screenshots | new worker (optional) | Visual inventory for UI review. **Tracked as [P4.4](#p4-breakdown--differentiating-features)**, which owns the scope this row opened — the capture is the easy half, and the retention/redaction/access-control work that makes it shippable is stated there. Kept here as a pointer, not a second work item | **Planned → [P4.4](#p4-breakdown--differentiating-features)** |
 | 9.4 | Business-context criticality | `api/services/risk_scoring.py`, `api/services/assets.py`, `api/routes/assets.py` | Operator-set `asset_criticality` (0–4) via new `PATCH /assets/{asset_id}`; `ch_transform.vulnerabilities_to_rows` looks it up per host (batched, one query per distinct host per ingest batch) and it wins outright over the port/severity heuristic in `risk_scoring.py` when set; falls back to the existing heuristic when unset or when Postgres/tenant context isn't available (e.g. unit tests, no-DB deployments) | **Done** |
 
 ### Phase 10 — Change Detection & Alerting at Asset Level
@@ -278,7 +306,7 @@ Suggested order: ~~1.3 → 1.4 → 1.5 → 1.6~~ — **all of P1 is Done.**
 
 ### P3 breakdown — Scale & observability
 
-**Current state:** `GET /metrics` (Prometheus) now exposes HTTP/job/CH-ingest/NATS-lag metrics (3.4), is scrape-wired for both annotation-based and Prometheus-Operator setups (3.5), and has documented objectives in [docs/slo.md](docs/slo.md) (3.6); no OpenTelemetry tracing; server-side pagination landed on all five list endpoints and their UI tables (3.2/3.3); 1k/10k/50k-asset fixtures exist as `tests/fixtures/scale_seed.py` (3.7) alongside the separate network-load harness in `tests/load/`, and the query paths have been profiled through them (3.8, [docs/scale-profile.md](docs/scale-profile.md)) — end-to-end API latency under concurrency has not; frontend Vitest tests exist (`web-next/src/components/*.test.tsx`) and run in CI (3.0); coverage gate wired via `pytest-cov` at `--cov-fail-under=74` (3.1); ClickHouse queries in `ch_diff.py` do full-table scans with no `LIMIT`, and both CH tables lack `PARTITION BY`.
+**Current state:** `GET /metrics` (Prometheus) now exposes HTTP/job/CH-ingest/NATS-lag metrics (3.4), is scrape-wired for both annotation-based and Prometheus-Operator setups (3.5), and has documented objectives in [docs/slo.md](docs/slo.md) (3.6); per-stage scan wall-clock is recorded to `stage_timings.json` (3.9, [docs/scan-performance.md](docs/scan-performance.md)); no OpenTelemetry tracing; server-side pagination landed on all five list endpoints and their UI tables (3.2/3.3); 1k/10k/50k-asset fixtures exist as `tests/fixtures/scale_seed.py` (3.7) alongside the separate network-load harness in `tests/load/`, and the query paths have been profiled through them (3.8, [docs/scale-profile.md](docs/scale-profile.md)) — end-to-end API latency under concurrency has not; frontend Vitest tests exist (`web-next/src/components/*.test.tsx`) and run in CI (3.0); coverage gate wired via `pytest-cov` at `--cov-fail-under=74` (3.1); ClickHouse queries in `ch_diff.py` do full-table scans with no `LIMIT`, and both CH tables lack `PARTITION BY`.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
@@ -290,9 +318,10 @@ Suggested order: ~~1.3 → 1.4 → 1.5 → 1.6~~ — **all of P1 is Done.**
 | 3.5 | K8s scrape wiring | `k8s/shapoclyack/base/api-deployment.yaml`, `examples/servicemonitor.example.yaml` (new), `k8s/README.md` | `prometheus.io/scrape,port,path` annotations on the API pod template (inert without a scraper, works with the common `kubernetes-pods` job) + a Prometheus Operator `ServiceMonitor` in `examples/` — it needs `monitoring.coreos.com/v1` CRDs that base does not install, so base must stay applicable without the operator. README documents both plus a bare `scrape_configs` snippet, and states `/metrics` is unauthenticated by design and must not reach the Ingress | **Done** |
 | 3.6 | SLOs | `docs/slo.md` (new) | Seven SLIs with PromQL over the 3.4 series (API availability/latency, job success/duration, ingest lag + correctness, endpoint acceptance), error-budget policy, burn-rate alerting, and a known-gaps section (per-replica in-memory job gauges, no tenant label, no tracing, no scale baseline). Targets are explicitly starting values pending 3.7/3.8. Also fixes `octo_job_duration_seconds`, whose default buckets stopped at 10s and put every real scan in `+Inf` | **Done** |
 | 3.7 | Scale test fixtures (1k/10k/50k) | `tests/fixtures/scale_seed.py` (new), `tests/test_scale_seed.py` | Bulk-insert CLI for Postgres `assets`/`asset_identifiers` + ClickHouse `shapoclyack_vulnerabilities`/`shapoclyack_open_ports` at N scale. Every row derives from `--seed` and the asset index, so runs reproduce, reruns are idempotent (`ON CONFLICT DO NOTHING` / `ReplacingMergeTree` dedupe), and a 10k fixture is a byte-identical superset of the 1k one — a 3.8 measurement stays comparable after growing the dataset. Realistic distributions where they affect the queries under test: a shared CVE pool (so CVEs repeat across hosts), a common-port pool (the CH `ORDER BY` key), a status mix, and timestamps spread over `--days-back` (so `PARTITION BY` has something to partition). Row generation is pure — no DB, no clock — and unit-tested in CI; `--purge` is tenant-scoped and defaults to tenant `scale-test`, never `default` | **Done** |
+| 3.9 | Per-stage wall-clock timings | `scanner/pipeline/stage_timing.py` (new), `scanner/main.py`, `docs/scan-performance.md` (new), `tests/load/run.sh` | Records each pipeline stage's duration to `stage_timings.json` so a slow scan can be diagnosed by stage without more hardware or the (still-open) OpenTelemetry work — a lighter answer to the same "where does wall-clock go" question. Documents the inventory/vuln/full intents (see [8.6](#phase-8--outside-in-continuous-discovery)) and delta defaults. Also fixes the load-test peak-RSS monitor that exited before the scanner container started and always reported 0 MiB | **Done** |
 | 3.8 | ClickHouse/API/UI profiling at scale | `tests/fixtures/scale_profile.py` (new), `docs/scale-profile.md` (new), `api/services/assets.py`, `api/services/ch_diff.py` | Measured at 1k/10k/50k. **(a)** `list_assets` fetched identifiers one query per row — 5002 statements and ~1.1 s for the dashboard's `limit=5000` page; now one batched `IN` per page, 3 statements flat and 77 ms at 50k. **(b)** The CH diff helpers read a tenant's whole history into a Python set (382k rows / ~460 ms at 50k, and growing with history, not just asset count); server time is only 2–5 ms of that, so they are now bounded by `max_rows` (default 500k) which **raises** rather than truncates — a short set would report dropped keys as removed — and `fetch_tenant_ports` gained the `since` filter its CVE counterpart had. Diffing server-side is the real fix and belongs with whatever wires the helper up; nothing calls it today. **(c)** `PARTITION BY` **evaluated and rejected**: `toYYYYMM(timestamp)` is not a tuning change but a semantic one, since `ReplacingMergeTree` dedupes per partition — verified on CH 24.3, the same key across two months collapses to 1 row unpartitioned and 2 partitioned, turning "current state" into monthly history. `PARTITION BY tenant_id` is redundant (already the leading sorting-key column) and would fragment parts. `TTL` is the tool for bounding growth. Both queries read exactly the rows they return, so there is no pruning to win | **Done** |
 
-Suggested order: 3.0 → 3.1 (cheap, CI-only, independent) → 3.4 (metrics — prerequisite for 3.6, useful for 3.8) → 3.2/3.3 (pagination, can run alongside 3.4) → 3.7 → 3.8 → 3.5/3.6 close it out. **All of 3.0–3.8 are Done.** The remaining P3 scope is OpenTelemetry tracing, which stays open. Note that 3.8 profiled the *query paths* in-process, so it does not by itself re-derive the API-latency targets in [docs/slo.md](docs/slo.md) — that needs an end-to-end measurement through FastAPI under concurrency; see the "What this does not cover" section of [docs/scale-profile.md](docs/scale-profile.md).
+Suggested order: 3.0 → 3.1 (cheap, CI-only, independent) → 3.4 (metrics — prerequisite for 3.6, useful for 3.8) → 3.2/3.3 (pagination, can run alongside 3.4) → 3.7 → 3.8 → 3.5/3.6 close it out; 3.9 (stage timings) landed later, independent of the ordering. **All of 3.0–3.9 are Done.** The remaining P3 scope is OpenTelemetry tracing, which stays open — 3.9's `stage_timings.json` is a lighter per-stage diagnostic, not a replacement for distributed tracing. Note that 3.8 profiled the *query paths* in-process, so it does not by itself re-derive the API-latency targets in [docs/slo.md](docs/slo.md) — that needs an end-to-end measurement through FastAPI under concurrency; see the "What this does not cover" section of [docs/scale-profile.md](docs/scale-profile.md).
 
 ### P4 breakdown — Differentiating features
 
@@ -315,6 +344,87 @@ Suggested order: 4.1 (done, no dependencies) → 4.2 → 4.3 (needs 4.2's cluste
 
 ---
 
+## Track A — what is actually left
+
+The phase tables above are mostly **Done**, so the remaining capability scope is easier to
+read as one list than as five *Partial* rows spread over 40 KB:
+
+| Item | Tracked as | Note |
+|------|-----------|------|
+| Jira / ServiceNow ticket creation + DefectDojo export | [10.3](#phase-10--change-detection--alerting-at-asset-level) = [P2](#next-priority-order-post-phase-11) | Further transports over the delivery queue webhooks already built; overlaps Track C's ticket integrations ([#138](https://github.com/onixus/Shapoclyack/issues/138)) — build the queue side once |
+| OpenTelemetry tracing | [P3](#p3-breakdown--scale--observability) | The only P3 item left; [3.9](#p3-breakdown--scale--observability) stage timings answer the cheap half of the same question |
+| IP↔FQDN↔certificate correlation | [P4.2](#p4-breakdown--differentiating-features) | Feeds Track C's asset model ([#146](https://github.com/onixus/Shapoclyack/issues/146)) |
+| Ownership graph | [P4.3](#p4-breakdown--differentiating-features) | Needs 4.2 first, else it is a re-skin |
+| Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Single home** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it |
+| Endpoint-inventory NATS event (S8), cross-repo e2e test (S10) | [Agent_plan.md](Agent_plan.md) (Track D) | Deferred there, not part of any phase; listed here only so the remainder is countable in one place |
+
+Everything else in Phases 1–11 and P0–P3 is merged.
+
+## Track B — Production readiness (GA blockers)
+
+**Source of truth:** [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154), milestone `GA`.
+Summarized here because Track A's phase tables give no signal about it.
+
+**Why it is a track and not a checklist:** the first four items below share one failure
+mode — the installation is **fail-open**. A deployment brought up from the README without
+overriding anything starts with a published JWT secret ([api/settings.py:31](api/settings.py:31)),
+`CORS=["*"]` ([api/settings.py:38](api/settings.py:38)) and the built-in `admin`/`operator`
+accounts ([api/settings.py:10](api/settings.py:10)), and `authenticate_user` accepts a
+**plaintext** password whenever the stored string is not a bcrypt hash
+([api/auth.py:100](api/auth.py:100)). Nothing about that start is distinguishable from a
+configured one. "Forgot to configure" and "configured" must not look alike.
+
+| Issue | Theme | Est. | Note |
+|-------|-------|------|------|
+| [#155](https://github.com/onixus/Shapoclyack/issues/155) | Fail-closed config — refuse to start on default secrets / `CORS=*` | 3–5 d | Introduces `OCTO_ENV`, defaulting to `prod` |
+| [#156](https://github.com/onixus/Shapoclyack/issues/156) | Users into Postgres, no plaintext passwords | ~1 sprint | Table slot already exists: `user_tenants` (migration `0007`) references `username` with no FK |
+| [#157](https://github.com/onixus/Shapoclyack/issues/157) | Login brute-force protection + auth audit | ~0.5 sprint | No rate limit on `POST /api/auth/login` today; counter must be in Postgres to hold across replicas |
+| [#158](https://github.com/onixus/Shapoclyack/issues/158) | Automated backup + **rehearsed** restore | ~1 sprint | `docs/operations.md` describes intent; no CronJob, no restore script, no measured RPO/RTO. Also covers the missing PodDisruptionBudget and `examples/`-only NetworkPolicy |
+| [#159](https://github.com/onixus/Shapoclyack/issues/159) | Safe upgrade — migrations out of the initContainer, PDB, rollback | ~0.5 sprint | Alembic runs in **every** replica's initContainer ([api-deployment.yaml:36](k8s/shapoclyack/base/api-deployment.yaml:36)); [P1.6](#p1-breakdown--durable-control-plane) removed the `replicas: 1` guard that made this safe. Second schema path via `create_all` ([api/db/engine.py:34](api/db/engine.py:34)) |
+| [#151](https://github.com/onixus/Shapoclyack/issues/151) | Outbound webhook SSRF / credential-leak hardening | ~1 sprint | Release blocker — webhooks ([10.3](#phase-10--change-detection--alerting-at-asset-level)) ship *in* GA, not after |
+| [#160](https://github.com/onixus/Shapoclyack/issues/160) | Cut the release, empty `## Unreleased` | ~1 d | Last, after the rest is merged. See the [baseline note](#current-baseline-done) — the issue's "last tag is 0.33" is stale |
+
+Order: #155 and #158 are independent and go first; #156 → #157 in sequence; #159 in
+parallel; #160 last. **Wave 1** (after the blockers, not yet filed as issues):
+[#152](https://github.com/onixus/Shapoclyack/issues/152) webhook state-machine
+correctness; end-to-end API latency under concurrency — objectives 2, 4 and 5 in
+[docs/slo.md](docs/slo.md) are still starting values because [3.8](#p3-breakdown--scale--observability)
+profiled query paths in-process; alert rules as code (PromQL exists in `docs/slo.md`,
+no `PrometheusRule` manifests, and `octo_scheduler_is_leader` has no alert on either
+`> 1` or `== 0`); data-growth bounds (ClickHouse has no TTL — [3.8](#p3-breakdown--scale--observability)
+named TTL the right tool and rejected `PARTITION BY` as semantic — plus artifact
+retention on disk); and a load run at ≥2 API replicas, which P1 made legal but nobody
+has exercised.
+
+## Track C — Vulnerability Management product
+
+**Source of truth:** [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134) and
+[docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md).
+
+**Why it is not just UI work:** the redesign's premise is that a security manager can
+answer "what is our risk, who owns it, what breaches SLA" without starting a scan. The
+platform today has no representation of *ownership of remediation*, *vulnerability
+lifecycle state*, or *SLA* — so the three backend issues are the real scope and the five
+UI issues render what they produce. This is the largest un-started body of work in the
+project, and none of it appears in Track A.
+
+| Issue | Layer | Scope |
+|-------|-------|-------|
+| [#144](https://github.com/onixus/Shapoclyack/issues/144) | Backend | Explainable risk-scoring engine: deterministic, versioned policy, per-finding and per-asset score, breakdown returned by the API, historical snapshots for trends. Partially prefigured by scoring model `mvp-2` / `risk_explanation` ([docs/pulse-backend.md](docs/pulse-backend.md)) |
+| [#145](https://github.com/onixus/Shapoclyack/issues/145) | Backend | Vulnerability lifecycle (`OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`) + SLA policy by asset criticality. A state machine over findings — the pattern exists for jobs in [P1.3](#p1-breakdown--durable-control-plane) |
+| [#146](https://github.com/onixus/Shapoclyack/issues/146) | Backend | Asset business context: owner, business service, environment, data classification, exposure level; CMDB/AD-ready. Extends the operator-set fields from [9.4](#phase-9--exposure-fingerprinting)/[11.1](#phase-11--web-ui-v2-attack-surface-view) and consumes [P4.2](#p4-breakdown--differentiating-features) identity |
+| [#135](https://github.com/onixus/Shapoclyack/issues/135) | UI | Risk dashboard (needs #144) |
+| [#136](https://github.com/onixus/Shapoclyack/issues/136) | UI | Asset-centric security view (needs #146) |
+| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | Vulnerability Center + lifecycle (needs #145) |
+| [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | Remediation workflow + ticket integrations (needs #145; **shares scope with [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2** — Jira/ServiceNow belong to one delivery queue, built once) |
+| [#139](https://github.com/onixus/Shapoclyack/issues/139) | UI | Exposure Management + MSSP views |
+
+Backend before UI: #144/#145/#146 → their dependent UI issues. Two overlaps with Track A
+are worth resolving before either starts, so the work is not built twice: ticketing
+(#138 ↔ 10.3/P2) and asset identity (#146 ↔ P4.2).
+
+---
+
 ## Status legend
 
 | Status | Meaning |
@@ -322,5 +432,13 @@ Suggested order: 4.1 (done, no dependencies) → 4.2 → 4.3 (needs 4.2's cluste
 | **Done** | Merged to `main` (may be ahead of the last tagged release — see [CHANGELOG.md](CHANGELOG.md) `## Unreleased` for what hasn't shipped in a tag yet) |
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
+| **Partial** | Some sub-items merged, named remainder still open (e.g. [10.3](#phase-10--change-detection--alerting-at-asset-level)) |
 
-Phases 1–8 are **Done** (merged to `main`); Phase 9 is partially done (9.1, 9.2, 9.4); Phase 10 is partially done (10.1); Phase 11 is **Done** (11.1–11.6 — asset card, attack-surface graph, exec dashboard, reports, system status, editable configurator).
+**Track A status:** Phases 1–8 are **Done** (1–6, 7, 8.1–8.6); Phase 9 is done except
+[9.3](#phase-9--exposure-fingerprinting), which is now tracked as [P4.4](#p4-breakdown--differentiating-features);
+Phase 10 is done except the ticketing half of [10.3](#phase-10--change-detection--alerting-at-asset-level);
+Phase 11 is **Done** (11.1–11.6). P0, P1 and P3 are **Done** (P3 except OpenTelemetry);
+P2 and P4 carry the remainder listed under [Track A — what is actually left](#track-a--what-is-actually-left).
+
+**Track B and C statuses live in their issues**, not here — a status duplicated in two
+places is a status that will disagree with itself. This file links; the issues decide.
