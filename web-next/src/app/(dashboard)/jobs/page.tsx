@@ -32,14 +32,17 @@ import { useJobs, useStartScan } from "@/hooks/use-jobs";
 import { useWordlists } from "@/hooks/use-wordlists";
 import { usePagination } from "@/hooks/use-pagination";
 import { useSystemStatus } from "@/hooks/use-system";
-import { type JobInfo } from "@/lib/api";
+import { type JobInfo, type ScanIntent } from "@/lib/api";
 import { JOB_STATUS } from "@/lib/config/statuses";
 import { runDetailHref } from "@/lib/run-data";
 import { useAuthStore } from "@/lib/auth-store";
 
+const NO_INTENT = "__none__";
+
 export default function JobsPage() {
   const { canOperate } = useAuthStore();
   const [mode, setMode] = useState("balanced");
+  const [intent, setIntent] = useState<ScanIntent | "">("inventory");
   const [delta, setDelta] = useState(false);
   const [skipNse, setSkipNse] = useState(false);
   const [notify, setNotify] = useState(false);
@@ -93,8 +96,22 @@ export default function JobsPage() {
       },
       {
         accessorKey: "mode",
-        header: "Profile Mode",
-        cell: ({ getValue }) => <span className="uppercase text-[11px] font-bold tracking-wider text-slate-300">{String(getValue())}</span>,
+        header: "Profile",
+        cell: ({ row }) => {
+          const intentVal = row.original.scan_options?.intent;
+          return (
+            <span className="flex flex-col gap-0.5">
+              <span className="uppercase text-[11px] font-bold tracking-wider text-slate-300">
+                {row.original.mode}
+              </span>
+              {typeof intentVal === "string" && intentVal ? (
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-400/90">
+                  {intentVal}
+                </span>
+              ) : null}
+            </span>
+          );
+        },
       },
       {
         accessorKey: "run_id",
@@ -164,8 +181,10 @@ export default function JobsPage() {
   function startConfirmed() {
     mutation.mutate({
       mode,
+      intent: intent || null,
+      // When intent is set, server owns skip_nse/nuclei; delta still applies for inventory/vuln/full.
       delta,
-      skip_nse: skipNse,
+      skip_nse: intent ? false : skipNse,
       notify,
       ranges: ranges.trim() || undefined,
       domains: domains.trim() || undefined,
@@ -205,7 +224,31 @@ export default function JobsPage() {
 
         <div className="grid gap-5 md:grid-cols-2">
           <div className="grid gap-2">
-            <Label htmlFor="scan-mode" className="text-slate-300 font-semibold">Scan Profile Mode</Label>
+            <Label htmlFor="scan-intent" className="text-slate-300 font-semibold">
+              Scan Intent
+            </Label>
+            <Select
+              value={intent || NO_INTENT}
+              onValueChange={(v) => setIntent(v === NO_INTENT ? "" : (v as ScanIntent))}
+            >
+              <SelectTrigger id="scan-intent" className="bg-slate-950 border-slate-800 text-slate-200">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value="inventory">inventory — ports only, fast recheck</SelectItem>
+                <SelectItem value="vuln">vuln — probe + nuclei critical/high</SelectItem>
+                <SelectItem value="full">full — assessment-grade pipeline</SelectItem>
+                <SelectItem value="delta">delta — full + incremental discovery</SelectItem>
+                <SelectItem value={NO_INTENT}>legacy — manual flags only</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-slate-500">
+              Intent chooses stages (what to run). Profile mode chooses rate (how hard).
+            </p>
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="scan-mode" className="text-slate-300 font-semibold">Speed Profile</Label>
             <Select value={mode} onValueChange={setMode}>
               <SelectTrigger id="scan-mode" className="bg-slate-950 border-slate-800 text-slate-200">
                 <SelectValue />
@@ -214,24 +257,30 @@ export default function JobsPage() {
                 <SelectItem value="safe">safe (500 pps · low load)</SelectItem>
                 <SelectItem value="balanced">balanced (2,000 pps · standard)</SelectItem>
                 <SelectItem value="fast">fast (5,000 pps · aggressive)</SelectItem>
-                <SelectItem value="test">test (smoke test · top 100 ports, short nuclei)</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
-          <div className="flex flex-wrap items-end gap-5 text-xs text-slate-300">
-            <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-              <Checkbox checked={delta} onCheckedChange={(checked) => setDelta(checked === true)} className="border-slate-700" />
-              Delta Mode (Incremental)
-            </Label>
+          <div className="flex flex-wrap items-end gap-5 text-xs text-slate-300 md:col-span-2">
             <Label className="flex items-center gap-2 font-semibold cursor-pointer">
               <Checkbox
-                checked={skipNse}
-                onCheckedChange={(checked) => setSkipNse(checked === true)}
+                checked={intent === "delta" ? true : delta}
+                disabled={intent === "delta"}
+                onCheckedChange={(checked) => setDelta(checked === true)}
                 className="border-slate-700"
               />
-              Ports only (no service/OS/CVE probe)
+              Delta discovery (incremental)
             </Label>
+            {!intent ? (
+              <Label className="flex items-center gap-2 font-semibold cursor-pointer">
+                <Checkbox
+                  checked={skipNse}
+                  onCheckedChange={(checked) => setSkipNse(checked === true)}
+                  className="border-slate-700"
+                />
+                Ports only (no service/OS/CVE probe)
+              </Label>
+            ) : null}
             <Label className="flex items-center gap-2 font-semibold cursor-pointer">
               <Checkbox
                 checked={notify}
@@ -340,7 +389,9 @@ export default function JobsPage() {
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent className="bg-slate-900 border-slate-800 text-slate-100">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-slate-100">Start {mode.toUpperCase()} scan job?</AlertDialogTitle>
+            <AlertDialogTitle className="text-slate-100">
+              Start {intent ? `${intent} / ${mode}` : mode.toUpperCase()} scan job?
+            </AlertDialogTitle>
             <AlertDialogDescription className="text-slate-400 text-xs">
               {noTargets
                 ? "No custom targets specified — scanner will proceed using configured server target inputs."

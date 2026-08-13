@@ -12,7 +12,7 @@ from api.services import scan_schedules
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
 _TARGET_KEYS = ("ranges", "domains", "ports", "ports_udp")
-_SCAN_OPTION_KEYS = ("mode", "delta", "skip_nse", "notify", "export_defectdojo")
+_SCAN_OPTION_KEYS = ("mode", "intent", "delta", "skip_nse", "notify", "export_defectdojo")
 
 
 def _require_own_schedule(schedule_id: str, principal: TenantPrincipal) -> dict:

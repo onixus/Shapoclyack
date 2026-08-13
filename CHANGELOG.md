@@ -14,6 +14,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Scan intents on jobs and schedules** — product control for *what work* a
+  scan does (`inventory` / `vuln` / `full` / `delta`), orthogonal to speed
+  `mode`. Maps to CLI flags and per-job config overlays (nuclei floor,
+  top_ports, skip_nse) so operators can schedule fast inventory often and full
+  assessments rarely without editing YAML. UI selectors on Jobs and Schedules;
+  persisted in `scan_options`. See `docs/scan-performance.md` and
+  `api/services/scan_intents.py`.
+
 - **Scanner stage wall-clock timings** — each run writes `stage_timings.json`
   (per-stage duration, skipped/error status, top stages) and a ranked summary
   line in `pipeline.log`. Design notes for scan intents / delta without adding
