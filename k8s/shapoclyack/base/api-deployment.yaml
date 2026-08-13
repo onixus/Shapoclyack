@@ -35,7 +35,7 @@ spec:
       # ClickHouse's CREATE TABLE IF NOT EXISTS init-SQL is.
       initContainers:
         - name: migrate
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.40-0806
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
           imagePullPolicy: IfNotPresent
           command: ["alembic", "-c", "api/db/alembic.ini", "upgrade", "head"]
           env:
@@ -53,7 +53,7 @@ spec:
                 - ALL
       containers:
         - name: api
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.40-0806
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
