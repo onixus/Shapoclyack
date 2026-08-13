@@ -376,16 +376,19 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 
 | Issue | Theme | Est. | Note |
 |-------|-------|------|------|
-| [#155](https://github.com/onixus/Shapoclyack/issues/155) | Fail-closed config — refuse to start on default secrets / `CORS=*` | 3–5 d | Introduces `OCTO_ENV`, defaulting to `prod` |
-| [#156](https://github.com/onixus/Shapoclyack/issues/156) | Users into Postgres, no plaintext passwords | ~1 sprint | Table slot already exists: `user_tenants` (migration `0007`) references `username` with no FK |
+| ~~[#155](https://github.com/onixus/Shapoclyack/issues/155)~~ | Fail-closed config — refuse to start on default secrets / `CORS=*` | **Done** | `OCTO_ENV` defaults to `prod`; refuses on the default JWT secret or any `*` in CORS. The accounts half moved to startup with #156 |
+| ~~[#156](https://github.com/onixus/Shapoclyack/issues/156)~~ | Users into Postgres, no plaintext passwords | **Done** | `users` table (migration `0013`) with a real FK from `user_tenants`; bcrypt only; `/api/users` + `POST /api/auth/password`; `OCTO_API_USERS` demoted to a one-time bootstrap import |
 | [#157](https://github.com/onixus/Shapoclyack/issues/157) | Login brute-force protection + auth audit | ~0.5 sprint | No rate limit on `POST /api/auth/login` today; counter must be in Postgres to hold across replicas |
 | [#158](https://github.com/onixus/Shapoclyack/issues/158) | Automated backup + **rehearsed** restore | ~1 sprint | `docs/operations.md` describes intent; no CronJob, no restore script, no measured RPO/RTO. Also covers the missing PodDisruptionBudget and `examples/`-only NetworkPolicy |
 | [#159](https://github.com/onixus/Shapoclyack/issues/159) | Safe upgrade — migrations out of the initContainer, PDB, rollback | ~0.5 sprint | Alembic runs in **every** replica's initContainer ([api-deployment.yaml:36](k8s/shapoclyack/base/api-deployment.yaml:36)); [P1.6](#p1-breakdown--durable-control-plane) removed the `replicas: 1` guard that made this safe. Second schema path via `create_all` ([api/db/engine.py:34](api/db/engine.py:34)) |
 | [#151](https://github.com/onixus/Shapoclyack/issues/151) | Outbound webhook SSRF / credential-leak hardening | ~1 sprint | Release blocker — webhooks ([10.3](#phase-10--change-detection--alerting-at-asset-level)) ship *in* GA, not after |
 | [#160](https://github.com/onixus/Shapoclyack/issues/160) | Cut the release, empty `## Unreleased` | ~1 d | Last, after the rest is merged. See the [baseline note](#current-baseline-done) — the issue's "last tag is 0.33" is stale |
 
-Order: #155 and #158 are independent and go first; #156 → #157 in sequence; #159 in
-parallel; #160 last. **Wave 1** (after the blockers, not yet filed as issues):
+Order: ~~#155~~ and #158 are independent and went first; ~~#156~~ → **#157 is next** in
+sequence; #159 in parallel; #160 last. A fourth item of the same fail-open shape was
+found while doing #155 and is now [#174](https://github.com/onixus/Shapoclyack/issues/174):
+`OCTO_POSTGRES_URL` silently falls back to local SQLite, which quietly gives every replica
+its own control plane. **Wave 1** (after the blockers, not yet filed as issues):
 [#152](https://github.com/onixus/Shapoclyack/issues/152) webhook state-machine
 correctness; end-to-end API latency under concurrency — objectives 2, 4 and 5 in
 [docs/slo.md](docs/slo.md) are still starting values because [3.8](#p3-breakdown--scale--observability)
@@ -410,7 +413,7 @@ project, and none of it appears in Track A.
 
 | Issue | Layer | Scope |
 |-------|-------|-------|
-| [#144](https://github.com/onixus/Shapoclyack/issues/144) | Backend | Explainable risk-scoring engine: deterministic, versioned policy, per-finding and per-asset score, breakdown returned by the API, historical snapshots for trends. Partially prefigured by scoring model `mvp-2` / `risk_explanation` ([docs/pulse-backend.md](docs/pulse-backend.md)) |
+| ~~[#144](https://github.com/onixus/Shapoclyack/issues/144)~~ | Backend | **Done** — scoring model `nist-1`: NIST SP 800-30 likelihood × impact through Table I-2, exploit maturity (`attacked`/`weaponized`/`proof_of_concept`/`unproven`/`theoretical`/`unknown`) with a named evidence trail, and asset criticality moved onto the impact axis where it can change the verdict. Methodology and its stated limits: [docs/risk-scoring.md](docs/risk-scoring.md). Remaining scope split out as [#171](https://github.com/onixus/Shapoclyack/issues/171) (network exposure), [#172](https://github.com/onixus/Shapoclyack/issues/172) (temporal), [#173](https://github.com/onixus/Shapoclyack/issues/173) (chaining, compensating controls). Historical score snapshots for trend charts are **not** done |
 | [#145](https://github.com/onixus/Shapoclyack/issues/145) | Backend | Vulnerability lifecycle (`OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`) + SLA policy by asset criticality. A state machine over findings — the pattern exists for jobs in [P1.3](#p1-breakdown--durable-control-plane) |
 | [#146](https://github.com/onixus/Shapoclyack/issues/146) | Backend | Asset business context: owner, business service, environment, data classification, exposure level; CMDB/AD-ready. Extends the operator-set fields from [9.4](#phase-9--exposure-fingerprinting)/[11.1](#phase-11--web-ui-v2-attack-surface-view) and consumes [P4.2](#p4-breakdown--differentiating-features) identity |
 | [#135](https://github.com/onixus/Shapoclyack/issues/135) | UI | Risk dashboard (needs #144) |
