@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scanner.pipeline.pulse_probe import parse_pulse_json, write_pulse_artifacts  # noqa: E402
-from scanner.pipeline.pulse_shadow import compare_pulse_nmap, write_pulse_nmap_diff  # noqa: E402
+from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff  # noqa: E402
 
 
 def _which(env_key: str, default: str) -> str:
@@ -269,7 +269,7 @@ def main() -> int:
     out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"==> compare Pulse vs Nmap")
+    print("==> compare Pulse vs Nmap")
     print(f"    targets: {targets}")
     print(f"    ports:   {args.ports}")
     print(f"    pulse:   {pulse_bin}")

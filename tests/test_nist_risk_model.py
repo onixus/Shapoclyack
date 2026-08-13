@@ -1,0 +1,344 @@
+"""The NIST SP 800-30 model (nist-1) and exploit maturity (#144).
+
+These tests are written as claims about *behaviour an operator relies on*,
+not about arithmetic. The three that matter most:
+
+* a severe vulnerability nobody has ever demonstrated must not outrank a
+  moderate one being exploited right now;
+* asset criticality must be able to change the verdict, in both directions;
+* "no exploit-intelligence source configured" must never be reported as
+  "no exploit exists".
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from api.services import nist_risk
+from api.services.exploit_evidence import (
+    ATTACKED,
+    PROOF_OF_CONCEPT,
+    THEORETICAL,
+    UNKNOWN,
+    UNPROVEN,
+    WEAPONIZED,
+    ExploitEvidence,
+)
+from api.services.risk_scoring import (
+    RiskScoring,
+    apply_criticality,
+    epss_pct,
+    exploitability_pct,
+    impact_pct,
+)
+from api.services.risk_scoring import _parse_vector as parse_vector
+
+# A "worst case" v4 vector: network, low complexity, no privileges or
+# interaction, full impact on all three of C/I/A.
+V4_WORST = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+# Local access, high privileges, user interaction, limited impact.
+V4_AWKWARD = "CVSS:4.0/AV:L/AC:H/AT:P/PR:H/UI:A/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"
+V3_WORST = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+
+# A populated overlay, so "absent from the overlay" means "no public exploit
+# known" rather than "nothing was configured".
+POPULATED = ExploitEvidence(overlay={"CVE-OTHER-1": (WEAPONIZED, ("metasploit",))})
+
+
+def _scorer(**kwargs) -> RiskScoring:
+    kwargs.setdefault("exploits", POPULATED)
+    return RiskScoring(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# The Table I-2 transcription
+# ---------------------------------------------------------------------------
+
+
+def test_risk_matrix_is_asymmetric_as_the_standard_defines_it():
+    """The asymmetry is the reason the table is transcribed, not computed."""
+    # Certain, but nothing of value at stake.
+    assert nist_risk.risk_level(nist_risk.VERY_HIGH, nist_risk.VERY_LOW) == nist_risk.VERY_LOW
+    # Catastrophic, but essentially impossible.
+    assert nist_risk.risk_level(nist_risk.VERY_LOW, nist_risk.VERY_HIGH) == nist_risk.LOW
+    assert nist_risk.risk_level(nist_risk.VERY_HIGH, nist_risk.VERY_HIGH) == nist_risk.VERY_HIGH
+    assert nist_risk.risk_level(nist_risk.MODERATE, nist_risk.HIGH) == nist_risk.MODERATE
+
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        (100, nist_risk.VERY_HIGH),
+        (96, nist_risk.VERY_HIGH),
+        (95, nist_risk.HIGH),
+        (80, nist_risk.HIGH),
+        (79, nist_risk.MODERATE),
+        (21, nist_risk.MODERATE),
+        (20, nist_risk.LOW),
+        (5, nist_risk.LOW),
+        (4, nist_risk.VERY_LOW),
+        (0, nist_risk.VERY_LOW),
+    ],
+)
+def test_semi_quantitative_bands_match_table_d2(score, expected):
+    assert nist_risk.level_for(score) == expected
+
+
+# ---------------------------------------------------------------------------
+# CVSS vector → the two axes
+# ---------------------------------------------------------------------------
+
+
+def test_vector_parsing_drops_not_defined_metrics():
+    parsed = parse_vector("CVSS:4.0/AV:N/AC:L/E:X/CR:X")
+    assert parsed["AV"] == "N"
+    assert "E" not in parsed  # X means "not defined", i.e. no information
+
+
+def test_malformed_vector_degrades_instead_of_raising():
+    assert parse_vector("not a vector at all") == {}
+    assert parse_vector("") == {}
+
+
+def test_exploitability_separates_reachable_from_awkward():
+    reachable, source = exploitability_pct(parse_vector(V4_WORST), 10.0)
+    awkward, _ = exploitability_pct(parse_vector(V4_AWKWARD), 10.0)
+    assert source == "cvss-vector"
+    assert reachable == 100.0
+    assert awkward < 20.0
+
+
+def test_v3_vector_is_not_penalised_for_lacking_attack_requirements():
+    """AT is v4-only; treating its absence as 'requirements exist' would make
+    every v3 finding look harder to exploit than its v4 equivalent."""
+    v3, _ = exploitability_pct(parse_vector(V3_WORST), 10.0)
+    v4, _ = exploitability_pct(parse_vector(V4_WORST), 10.0)
+    assert v3 == v4 == 100.0
+
+
+def test_missing_vector_falls_back_to_the_score_and_says_so():
+    value, source = exploitability_pct({}, 10.0)
+    assert source == "cvss-score"
+    # Compressed toward the middle: an unknown vector is not evidence of easy
+    # exploitation, so a perfect CVSS must not imply perfect reachability.
+    assert value < 100.0
+
+
+def test_impact_reads_v4_and_v3_metric_names():
+    assert impact_pct(parse_vector(V4_WORST), 0.0)[0] == 100.0
+    assert impact_pct(parse_vector(V3_WORST), 0.0)[0] == 100.0
+    assert impact_pct(parse_vector(V4_AWKWARD), 0.0)[0] < 40.0
+
+
+def test_epss_scaling_is_not_linear():
+    """EPSS is extremely skewed; a linear rescale would flatten every real
+    finding to nearly zero."""
+    assert epss_pct(0.0005) < 1.0
+    assert epss_pct(0.1) == pytest.approx(20.0)
+    assert epss_pct(0.5) == 100.0
+    assert epss_pct(0.99) == 100.0  # saturates rather than overflowing
+
+
+# ---------------------------------------------------------------------------
+# Asset criticality — the user-visible ask
+# ---------------------------------------------------------------------------
+
+
+def test_criticality_two_is_neutral():
+    """An installation that never sets criticality gets the pure technical
+    assessment, not a silent penalty."""
+    assert apply_criticality(50.0, 2) == 50.0
+
+
+def test_criticality_moves_impact_in_both_directions():
+    assert apply_criticality(50.0, 4) == 70.0
+    assert apply_criticality(50.0, 0) == 30.0
+
+
+def test_criticality_changes_the_verdict_not_just_the_number():
+    """The mvp-2 failure this replaces: criticality was worth 0.5 of 10 points,
+    so it could never move a finding between levels."""
+    scorer = _scorer(kev={"CVE-KEV-1"})
+    item = {"cve": "CVE-KEV-1", "cvss4": 9.8, "cvss4_vector": V4_WORST}
+
+    crown_jewel = scorer.score_vulnerability(item, asset_criticality_override=4)
+    lab_box = scorer.score_vulnerability(item, asset_criticality_override=0)
+
+    assert crown_jewel["risk_level"] == nist_risk.VERY_HIGH
+    assert lab_box["risk_level"] != crown_jewel["risk_level"]
+    assert crown_jewel["contextual_score"] > lab_box["contextual_score"]
+
+
+def test_criticality_appears_in_the_explanation_with_its_direction():
+    scorer = _scorer()
+    # Mid-range impact metrics, so the shift has room to show. Against a vector
+    # already at 100 the clamp applies and the explanation says "no shift",
+    # which is the honest report rather than a claimed increase that did not
+    # happen — asserted separately below.
+    mid = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:L/SC:N/SI:N/SA:N"
+    raised = scorer.score_vulnerability(
+        {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": mid}, asset_criticality_override=4
+    )
+    lowered = scorer.score_vulnerability(
+        {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": mid}, asset_criticality_override=0
+    )
+
+    assert "asset criticality 4/4 (operator-set) raised it" in raised["risk_explanation"]
+    assert "asset criticality 0/4 (operator-set) lowered it" in lowered["risk_explanation"]
+
+
+def test_criticality_at_the_impact_ceiling_reports_no_shift_rather_than_a_fake_one():
+    scorer = _scorer()
+    scored = scorer.score_vulnerability(
+        {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST}, asset_criticality_override=4
+    )
+    assert "no shift" in scored["risk_explanation"]
+
+
+# ---------------------------------------------------------------------------
+# Exploit maturity — PoC or theory
+# ---------------------------------------------------------------------------
+
+
+def test_kev_is_attacked_and_reaches_very_high_likelihood():
+    scorer = _scorer(kev={"CVE-KEV-1"})
+    scored = scorer.score_vulnerability({"cve": "CVE-KEV-1", "cvss4": 9.8, "cvss4_vector": V4_WORST})
+    assert scored["exploit_maturity"] == ATTACKED
+    assert scored["likelihood"] == nist_risk.VERY_HIGH
+    assert any("cisa-kev" in source for source in scored["exploit_evidence"])
+
+
+def test_theoretical_finding_cannot_outrank_an_exploited_one():
+    """The headline correction over mvp-2, where CVSS dominated the sum."""
+    scorer = _scorer(kev={"CVE-EXPLOITED"}, epss={"CVE-EXPLOITED": 0.4})
+
+    theoretical = scorer.score_vulnerability(
+        {"cve": "CVE-THEORY", "cvss4": 10.0, "cvss4_vector": V4_WORST},
+        asset_criticality_override=2,
+    )
+    exploited = scorer.score_vulnerability(
+        # Deliberately milder: lower CVSS, weaker impact metrics.
+        {"cve": "CVE-EXPLOITED", "cvss4": 5.0, "cvss4_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:N"},
+        asset_criticality_override=2,
+    )
+
+    assert theoretical["exploit_maturity"] == THEORETICAL
+    assert exploited["exploit_maturity"] == ATTACKED
+    assert exploited["contextual_score"] > theoretical["contextual_score"]
+
+
+def test_theoretical_is_capped_below_high_likelihood_despite_a_perfect_vector():
+    scorer = _scorer()
+    scored = scorer.score_vulnerability({"cve": "CVE-THEORY", "cvss4": 10.0, "cvss4_vector": V4_WORST})
+    assert scored["likelihood"] in (nist_risk.VERY_LOW, nist_risk.LOW)
+
+
+def test_a_matched_nuclei_template_is_proof_of_concept_verified_on_host():
+    """A template that fired here is evidence about this finding, not about the
+    CVE in the abstract."""
+    scorer = _scorer()
+    scored = scorer.score_vulnerability(
+        {"cve": "CVE-1", "cvss4": 6.5, "cvss4_vector": V4_WORST, "template_id": "CVE-1"}
+    )
+    assert scored["exploit_maturity"] == PROOF_OF_CONCEPT
+    assert scored["exploit_verified_on_host"] is True
+    assert "nuclei-match" in scored["exploit_evidence"]
+
+
+def test_corpus_only_template_is_labelled_differently_from_a_match():
+    """A template's existence is weaker evidence than a template firing, and the
+    two must be distinguishable by the reader."""
+    scorer = RiskScoring(exploits=ExploitEvidence(nuclei_cves=frozenset({"CVE-1"})))
+    scored = scorer.score_vulnerability({"cve": "CVE-1", "cvss4": 6.5, "cvss4_vector": V4_WORST})
+    assert scored["exploit_maturity"] == PROOF_OF_CONCEPT
+    assert scored["exploit_evidence"] == ["nuclei-corpus"]
+    assert scored["exploit_verified_on_host"] is False
+
+
+def test_overlay_weaponized_outranks_a_proof_of_concept():
+    scorer = RiskScoring(
+        exploits=ExploitEvidence(
+            overlay={"CVE-1": (WEAPONIZED, ("metasploit",))}, nuclei_cves=frozenset({"CVE-1"})
+        )
+    )
+    scored = scorer.score_vulnerability({"cve": "CVE-1", "cvss4": 6.5, "cvss4_vector": V4_WORST})
+    assert scored["exploit_maturity"] == WEAPONIZED
+    # Every source is kept, not just the winning one.
+    assert set(scored["exploit_evidence"]) == {"metasploit", "nuclei-corpus"}
+
+
+def test_high_epss_without_public_code_is_unproven_not_theoretical():
+    scorer = _scorer(epss={"CVE-1": 0.35})
+    scored = scorer.score_vulnerability({"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST})
+    assert scored["exploit_maturity"] == UNPROVEN
+
+
+# ---------------------------------------------------------------------------
+# Absence of evidence is not evidence of absence
+# ---------------------------------------------------------------------------
+
+
+def test_no_configured_source_reports_unknown_not_theoretical():
+    """The dangerous failure mode: an un-enriched install rating its whole
+    estate Low and calling that a clean bill of health."""
+    scorer = RiskScoring(exploits=ExploitEvidence())  # nothing configured
+    scored = scorer.score_vulnerability({"cve": "CVE-1", "cvss4": 9.8, "cvss4_vector": V4_WORST})
+
+    assert scored["exploit_maturity"] == UNKNOWN
+    assert scored["exploit_evidence"] == ["no-exploit-source-configured"]
+    # Not capped: the assessment falls back to reachability and EPSS rather
+    # than pretending to a verdict it has no basis for.
+    assert scored["risk_level"] in (nist_risk.HIGH, nist_risk.VERY_HIGH)
+    assert "no exploit-intelligence source configured" in scored["risk_explanation"]
+
+
+def test_populated_overlay_makes_absence_meaningful():
+    """Same finding, same code path — the only difference is that a source
+    exists and was silent about this CVE."""
+    scorer = _scorer()
+    scored = scorer.score_vulnerability({"cve": "CVE-1", "cvss4": 9.8, "cvss4_vector": V4_WORST})
+    assert scored["exploit_maturity"] == THEORETICAL
+    assert scored["risk_level"] in (nist_risk.VERY_LOW, nist_risk.LOW, nist_risk.MODERATE)
+
+
+def test_kev_alone_does_not_count_as_a_source():
+    """KEV can say 'yes exploited', never 'no exploit known', so it cannot make
+    an absence meaningful."""
+    assert ExploitEvidence().has_sources is False
+    assert ExploitEvidence(nuclei_cves=frozenset({"CVE-X"})).has_sources is True
+
+
+# ---------------------------------------------------------------------------
+# Confidence, and backward compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_unconfirmed_finding_is_discounted_even_when_kev_floors_it():
+    """A hypothesis about an actively exploited CVE is still a hypothesis, so
+    the discount has to survive the KEV floor rather than be erased by it."""
+    scorer = _scorer(kev={"CVE-1"})
+    base = {"cve": "CVE-1", "cvss4": 9.8, "cvss4_vector": V4_WORST}
+    confirmed = scorer.score_vulnerability(base)
+    unconfirmed = scorer.score_vulnerability(
+        {**base, "finding_class": "keyword_cve", "confidence": 30, "requires_confirmation": True}
+    )
+    assert unconfirmed["likelihood_score"] < confirmed["likelihood_score"]
+    assert unconfirmed["cisa_decision"] == "Attend"  # capped below Act
+
+
+def test_every_mvp2_output_key_survives():
+    """ClickHouse ingest and the UI read these by name; dropping one would be a
+    silent column of nulls rather than an error."""
+    scored = _scorer().score_vulnerability({"cve": "CVE-1", "cvss": 7.5})
+    for key in (
+        "base_cvss",
+        "epss_score",
+        "asset_criticality",
+        "exploit_active",
+        "cisa_decision",
+        "contextual_score",
+        "scoring_model_version",
+        "risk_explanation",
+    ):
+        assert key in scored, key
+    assert 0.0 <= scored["contextual_score"] <= 10.0

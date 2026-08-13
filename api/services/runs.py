@@ -304,6 +304,12 @@ def get_vulnerabilities(
                 contextual_score=scored["contextual_score"],
                 cisa_decision=scored["cisa_decision"],
                 risk_explanation=scored["risk_explanation"],
+                risk_level=scored.get("risk_level"),
+                likelihood=scored.get("likelihood"),
+                impact=scored.get("impact"),
+                exploit_maturity=scored.get("exploit_maturity"),
+                exploit_evidence=list(scored.get("exploit_evidence") or []),
+                exploit_verified_on_host=bool(scored.get("exploit_verified_on_host")),
             )
         )
     # Contextual score leads: it already folds in severity, EPSS, KEV, and the

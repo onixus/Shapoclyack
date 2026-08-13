@@ -4,6 +4,53 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- **Risk scoring rebuilt on NIST SP 800-30 Rev. 1** (#144) — scoring model
+  `mvp-2` → **`nist-1`**. The old model was a weighted sum
+  (`0.55*CVSS + 0.30*EPSS + 0.10*exploit + 0.05*criticality`), which got two
+  things wrong that changed what operators saw:
+
+  * **Asset criticality barely counted.** At weight 0.05 over a 0–4 scale, the
+    whole difference between a lab VM and a payment gateway was 0.5 points out
+    of 10. It is now on the impact axis and shifts it by ±20 semi-quantitative
+    points — enough to cross level boundaries in both directions, so business
+    context can change the verdict instead of decorating it.
+  * **"Exploitable" was one bit.** `exploit_active` was 1 for CISA KEV and 0 for
+    everything else, so "a working exploit has been public for years" and
+    "nobody has ever demonstrated this" landed in the same bucket.
+
+  Risk is now assessed as `f(likelihood, impact)` through Table I-2, transcribed
+  verbatim (the table is deliberately asymmetric, so any smooth formula would
+  disagree with the standard somewhere). Likelihood comes from the CVSS vector's
+  exploitability metrics blended with EPSS, then **floored and capped by exploit
+  maturity**; impact from the vector's impact metrics shifted by asset
+  criticality.
+
+  **Exploit maturity** answers "is there a PoC, or is this theoretical":
+  `attacked` (CISA KEV) / `weaponized` (Metasploit) / `proof_of_concept`
+  (Exploit-DB, or a nuclei template) / `unproven` / `theoretical`. Every level
+  carries the named sources that justified it (`exploit_evidence`), and a
+  template that *matched during the scan* is recorded distinctly from one that
+  merely exists in the corpus — the former means a working check fired against
+  that host (`exploit_verified_on_host`).
+
+  A sixth value, **`unknown`**, is deliberately not the same as `theoretical`:
+  the former means no exploit-intelligence source is configured, the latter that
+  sources were consulted and none knows of exploit code. `unknown` applies no
+  bound, so an un-enriched installation falls back to reachability and EPSS
+  rather than rating its whole estate low-likelihood and calling that a clean
+  bill of health.
+
+  New optional overlay `OCTO_EXPLOIT_DATABASE` with `scripts/fetch-exploit-db.py`
+  (Exploit-DB + Metasploit; merges rather than replaces, and refuses to publish
+  an empty result). New API fields on vulnerabilities: `risk_level`,
+  `likelihood`, `impact`, `exploit_maturity`, `exploit_evidence`,
+  `exploit_verified_on_host`. Every `mvp-2` output key is preserved, so
+  ClickHouse ingest and the UI are unaffected; `risk_explanation` now states the
+  verdict and each axis's reasons rather than listing inputs. Methodology and
+  its stated limits: `docs/risk-scoring.md`.
+
 ### Security
 
 - **Console accounts moved to Postgres; plaintext passwords no longer

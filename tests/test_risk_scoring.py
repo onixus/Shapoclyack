@@ -1,4 +1,4 @@
-"""Unit tests for risk scoring (mvp-2)."""
+"""Unit tests for risk scoring (nist-1)."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def test_score_log4shell_with_overlays():
     assert scored["asset_criticality"] == 4
     assert scored["cisa_decision"] == "Immediate"
     assert scored["contextual_score"] > 8.0
-    assert scored["scoring_model_version"] == "mvp-2"
+    assert scored["scoring_model_version"] == "nist-1"
 
 
 def test_high_value_port_raises_criticality():
@@ -141,7 +141,7 @@ def test_get_scorer_hot_reloads_on_mtime_change(tmp_path: Path, monkeypatch):
         reset_scorer_for_tests(None)
 
 
-# --- scanner-supplied enrichment and confidence (mvp-2) -------------------------
+# --- scanner-supplied enrichment and confidence (nist-1) -------------------------
 
 
 def test_scanner_epss_and_kev_beat_the_local_overlays():
@@ -164,8 +164,9 @@ def test_scanner_epss_and_kev_beat_the_local_overlays():
     assert scored["epss_score"] == 0.97
     assert scored["exploit_active"] == 1
     assert scored["cisa_decision"] == "Immediate"
-    assert "EPSS 0.97 (scanner)" in scored["risk_explanation"]
-    assert "in CISA KEV (scanner)" in scored["risk_explanation"]
+    assert "EPSS 0.970 (scanner)" in scored["risk_explanation"]
+    assert "exploited in the wild" in scored["risk_explanation"]
+    assert "cisa-kev(scanner)" in scored["risk_explanation"]
 
 
 def test_overlay_still_used_when_the_finding_carries_nothing():
@@ -173,7 +174,7 @@ def test_overlay_still_used_when_the_finding_carries_nothing():
     scored = scorer.score_vulnerability({"cve": "CVE-1", "cvss": 8.0, "severity": "high"})
     assert scored["epss_score"] == 0.5
     assert scored["exploit_active"] == 1
-    assert "EPSS 0.50 (overlay)" in scored["risk_explanation"]
+    assert "EPSS 0.500 (overlay)" in scored["risk_explanation"]
 
 
 def test_unconfirmed_finding_is_discounted_and_capped_below_act():
@@ -197,7 +198,7 @@ def test_unconfirmed_finding_is_discounted_and_capped_below_act():
     assert confirmed["cisa_decision"] == "Act"
     assert unconfirmed["cisa_decision"] == "Attend"
     assert unconfirmed["contextual_score"] < confirmed["contextual_score"]
-    assert "unconfirmed keyword_cve (scanner confidence 40%)" in unconfirmed["risk_explanation"]
+    assert "unconfirmed keyword_cve, scanner confidence 40%" in unconfirmed["risk_explanation"]
     assert "capped at Attend" in unconfirmed["risk_explanation"]
 
 
@@ -226,7 +227,11 @@ def test_confirmed_finding_explains_without_a_confidence_note():
         {"cve": "CVE-1", "cvss": 7.5, "severity": "high", "port": "443"}
     )
     explanation = scored["risk_explanation"]
-    assert explanation.startswith("CVSS 7.5")
+    # Leads with the verdict, not the inputs: the reader is deciding whether to
+    # act, and "Moderate risk = likelihood x impact" answers that before the
+    # supporting numbers do.
+    assert explanation.startswith("Moderate risk (NIST SP 800-30)")
+    assert "CVSS 7.5" in explanation
     assert "asset criticality" in explanation
     assert "unconfirmed" not in explanation
 
