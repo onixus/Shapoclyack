@@ -14,6 +14,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Scanner stage wall-clock timings** — each run writes `stage_timings.json`
+  (per-stage duration, skipped/error status, top stages) and a ranked summary
+  line in `pipeline.log`. Design notes for scan intents / delta without adding
+  hardware: `docs/scan-performance.md`. Load test peak-RSS monitor no longer
+  exits before the scanner container exists (was always reporting 0 MiB).
+
 - **Tenant-uploaded brute-force wordlists** (Phase 8.2, UI-managed) — the
   subdomain and cloud-bucket brute-force stages already took a `wordlist_file`
   path, which only an operator with filesystem access to the scanner could set.

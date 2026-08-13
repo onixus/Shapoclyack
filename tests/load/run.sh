@@ -153,7 +153,8 @@ from pathlib import Path
 name = sys.argv[1]
 out = Path(sys.argv[2])
 peak_kb = 0
-pat = re.compile(r"^([\d.]+)\s*([KMG]?i?B)")
+# docker stats --format "{{.MemUsage}}" → "12.3MiB / 7.7GiB" (no space before unit)
+pat = re.compile(r"^([\d.]+)\s*([KMG]?i?B)", re.I)
 
 def to_kb(value: str, unit: str) -> int:
     num = float(value)
@@ -161,12 +162,27 @@ def to_kb(value: str, unit: str) -> int:
     mult = {"B": 1 / 1024, "KB": 1, "KIB": 1, "MB": 1024, "MIB": 1024, "GB": 1024 * 1024, "GIB": 1024 * 1024}
     return int(num * mult.get(unit, 1))
 
-while True:
-    proc = subprocess.run(["docker", "inspect", name], capture_output=True, timeout=5)
-    if proc.returncode != 0:
-        break
+def write_peak() -> None:
+    out.write_text(str(peak_kb), encoding="utf-8")
+
+# Wait until the scanner container exists (monitor is started *before* docker run).
+# Previously we broke on the first failed inspect and always reported peak_rss=0.
+seen = False
+deadline = time.time() + 3600
+while time.time() < deadline:
     try:
-        proc = subprocess.run(
+        insp = subprocess.run(["docker", "inspect", name], capture_output=True, timeout=5)
+    except subprocess.TimeoutExpired:
+        time.sleep(0.5)
+        continue
+    if insp.returncode != 0:
+        if seen:
+            break
+        time.sleep(0.5)
+        continue
+    seen = True
+    try:
+        stats = subprocess.run(
             ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", name],
             capture_output=True,
             text=True,
@@ -175,14 +191,15 @@ while True:
     except subprocess.TimeoutExpired:
         time.sleep(1)
         continue
-    if proc.returncode == 0 and proc.stdout.strip():
-        first = proc.stdout.strip().split()[0]
+    if stats.returncode == 0 and stats.stdout.strip():
+        first = stats.stdout.strip().split()[0]
         m = pat.match(first)
         if m:
             peak_kb = max(peak_kb, to_kb(m.group(1), m.group(2)))
+            write_peak()
     time.sleep(1)
 
-out.write_text(str(peak_kb), encoding="utf-8")
+write_peak()
 PY
   echo $!
 }
@@ -339,7 +356,7 @@ python3 "${ROOT_DIR}/tests/load/check_results.py" \
   --min-fraction "${MIN_FRACTION}" \
   --metrics-out "${METRICS_FILE}"
 
-python3 - "${METRICS_FILE}" "${HOST_COUNT}" "${DURATION_SEC}" "${PEAK_RSS_KB}" "${RESUME_TEST}" "${RUN_ID}" <<'PY'
+python3 - "${METRICS_FILE}" "${HOST_COUNT}" "${DURATION_SEC}" "${PEAK_RSS_KB}" "${RESUME_TEST}" "${RUN_ID}" "${OUTPUT_DIR}" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -353,6 +370,12 @@ data.update({
     "resume_test": bool(int(sys.argv[5])),
     "run_id": sys.argv[6] or None,
 })
+timings_path = Path(sys.argv[7]) / "stage_timings.json"
+if timings_path.is_file():
+    try:
+        data["stage_timings"] = json.loads(timings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        data["stage_timings"] = None
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(data))
 PY
