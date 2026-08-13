@@ -8,3 +8,4 @@ patches:
   - path: job-resources-patch.yaml
   - path: cronjob-resources-patch.yaml
   - path: api-resources-patch.yaml
+  - path: api-env-dev-patch.yaml

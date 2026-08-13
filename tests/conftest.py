@@ -28,6 +28,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from api.settings import Settings
 
+# The suite runs against the built-in demo accounts and the default JWT secret
+# on purpose (see TEST_USERS below), which is exactly what OCTO_ENV=prod refuses
+# to start with. Declaring the suite a dev environment is the honest statement of
+# that, and it is set at import time because api_client() resolves the ambient
+# environment while building the app. A test that wants to exercise the
+# fail-closed checks themselves sets OCTO_ENV explicitly via monkeypatch —
+# setdefault also leaves a deliberate `OCTO_ENV=prod pytest` run alone.
+os.environ.setdefault("OCTO_ENV", "dev")
+
 POSTGRES_URL = (os.environ.get("OCTO_POSTGRES_URL") or os.environ.get("POSTGRES_URL") or "").strip()
 
 requires_postgres = pytest.mark.skipif(

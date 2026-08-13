@@ -1,10 +1,36 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+
+# The environment the process believes it is running in. Defaults to "prod"
+# because the failure modes are asymmetric: a dev box that has to set
+# OCTO_ENV=dev loses a minute, while a production install that silently keeps
+# built-in credentials is compromised by anyone who has read the repository.
+ENV_PROD = "prod"
+ENV_DEV = "dev"
+VALID_ENVS = (ENV_DEV, ENV_PROD)
+
+# Referenced by the dataclass default *and* the fail-closed check, so it lives
+# here rather than being retyped in both places — a check comparing against a
+# stale copy of the literal would pass while the insecure default stayed live.
+DEFAULT_JWT_SECRET = "shapoclyack-dev-secret-change-me"
+
+
+class InsecureConfigurationError(RuntimeError):
+    """Startup refusal: ``OCTO_ENV=prod`` with built-in defaults still active.
+
+    Raised from :func:`load_settings`, so it aborts process startup rather than
+    surfacing on the first request — a half-started API that answers health
+    checks with demo credentials active is the outcome this exists to prevent.
+    """
 
 
 DEFAULT_USERS = [
@@ -28,7 +54,12 @@ DEFAULT_USERS = [
 
 @dataclass
 class Settings:
-    jwt_secret: str = "shapoclyack-dev-secret-change-me"
+    # "prod" (default) enforces the fail-closed checks in _validate_production;
+    # "dev" allows the built-in secrets and demo accounts below. Only
+    # load_settings() validates — Settings constructed directly (tests, tools)
+    # are trusted, since whoever writes the field is stating the value.
+    env: str = ENV_PROD
+    jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
     output_dir: Path = Path("scanner/output")
@@ -186,14 +217,77 @@ def _default_sqlite_url() -> str:
     return f"sqlite:///{current}"
 
 
+def _resolve_env() -> str:
+    raw = os.environ.get("OCTO_ENV", ENV_PROD).strip().lower()
+    if raw not in VALID_ENVS:
+        # An unrecognised value is a typo, and guessing either way is worse than
+        # saying so: silently reading it as prod makes a dev box refuse to start
+        # for reasons it never named, and reading it as dev would turn a
+        # misspelled "prodution" into a disabled safety check.
+        raise InsecureConfigurationError(
+            f"OCTO_ENV must be one of {', '.join(VALID_ENVS)} (got an unrecognised value)."
+        )
+    return raw
+
+
+def _validate_production(settings: Settings, *, using_default_users: bool) -> None:
+    """Refuse to start when prod configuration is still the published default.
+
+    Every problem is reported at once: an operator fixing these one restart at a
+    time learns about the next one only after redeploying, so the list is the
+    whole checklist. Messages name the variable and how to fill it and never
+    echo a configured value — this text reaches logs and terminals.
+    """
+    problems: list[str] = []
+
+    if not settings.jwt_secret or settings.jwt_secret == DEFAULT_JWT_SECRET:
+        problems.append(
+            "OCTO_JWT_SECRET (or API_SECRET_KEY) is unset or still the built-in default.\n"
+            "    Anyone with the repository can mint a valid admin token.\n"
+            "    Generate one with: openssl rand -hex 32\n"
+            "    Every API replica must share the same value — a per-replica secret\n"
+            "    invalidates the tokens issued by the others."
+        )
+
+    if using_default_users:
+        problems.append(
+            "OCTO_API_USERS is unset, so the built-in demo accounts would be active\n"
+            "    (their passwords are published in this repository).\n"
+            '    Supply a JSON list of {"username": ..., "password": ..., "role": ...}.'
+        )
+
+    # Any "*" in the list, not just a bare ["*"]: the wildcard matches every
+    # origin regardless of what else is listed beside it, so ["*", "https://x"]
+    # is exactly as open as ["*"] while looking deliberate.
+    if "*" in settings.cors_origins:
+        problems.append(
+            'OCTO_API_CORS allows any origin ("*", which is also the default when unset).\n'
+            "    Name the exact origins the console is served from, comma-separated."
+        )
+
+    if not problems:
+        return
+
+    listed = "\n\n".join(f"  * {problem}" for problem in problems)
+    raise InsecureConfigurationError(
+        f"Refusing to start: OCTO_ENV={ENV_PROD} but the configuration still carries "
+        f"built-in defaults.\n\n{listed}\n\n"
+        f"  Set OCTO_ENV={ENV_DEV} to allow these defaults for local development only."
+    )
+
+
 def load_settings() -> Settings:
+    env = _resolve_env()
+
     users_raw = os.environ.get("OCTO_API_USERS", "").strip()
     users = DEFAULT_USERS
+    using_default_users = True
     if users_raw:
         parsed = json.loads(users_raw)
         if not isinstance(parsed, list) or not parsed:
             raise ValueError("OCTO_API_USERS must be a non-empty JSON list")
         users = parsed
+        using_default_users = False
 
     origins = os.environ.get("OCTO_API_CORS", "*").strip()
     cors = [part.strip() for part in origins.split(",") if part.strip()] or ["*"]
@@ -202,9 +296,10 @@ def load_settings() -> Settings:
     if mode not in {"local", "agent"}:
         mode = "local"
 
-    return Settings(
+    settings = Settings(
+        env=env,
         jwt_secret=os.environ.get("API_SECRET_KEY", "").strip()
-        or os.environ.get("OCTO_JWT_SECRET", "shapoclyack-dev-secret-change-me"),
+        or os.environ.get("OCTO_JWT_SECRET", DEFAULT_JWT_SECRET),
         jwt_expire_minutes=int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")),
         output_dir=Path(os.environ.get("OCTO_OUTPUT_DIR", "scanner/output")),
         state_dir=Path(os.environ.get("OCTO_STATE_DIR", "scanner/state")),
@@ -316,3 +411,18 @@ def load_settings() -> Settings:
             5, int(os.environ.get("OCTO_JOB_REAPER_INTERVAL_SECONDS", "60"))
         ),
     )
+
+    if settings.env == ENV_PROD:
+        _validate_production(settings, using_default_users=using_default_users)
+        if settings.agent_token:
+            # A warning, not a refusal: the legacy shared token still works and
+            # maps to tenant_id=default (Phase 2), so refusing would break a
+            # working install over a design preference rather than a published
+            # credential. The provisioning-key exchange is the replacement.
+            logger.warning(
+                "OCTO_AGENT_TOKEN is set: every agent holding it authenticates as "
+                "tenant_id=default and one leak covers the whole fleet. Prefer "
+                "per-tenant provisioning keys (POST /api/auth/agent/token)."
+            )
+
+    return settings
