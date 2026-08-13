@@ -147,6 +147,9 @@ class UpdateAssetRequest(BaseModel):
 
 class StartScanRequest(BaseModel):
     mode: Literal["safe", "balanced", "fast", "test"] = "balanced"
+    # Product-level work selection (see api.services.scan_intents). When set,
+    # owns skip_nse / nuclei floor; speed profile stays in ``mode``.
+    intent: Literal["inventory", "vuln", "full", "delta"] | None = None
     delta: bool = False
     skip_nse: bool = False
     notify: bool = False
@@ -191,6 +194,8 @@ class JobInfo(BaseModel):
     # Above 1 means an earlier attempt's lease expired and the reaper put the
     # job back on the queue.
     attempts: int = 0
+    # Persisted start options (intent, mode, delta, wordlist provenance, …).
+    scan_options: dict[str, Any] | None = None
 
 
 class AgentRegisterRequest(BaseModel):
@@ -244,6 +249,7 @@ class CreateScheduleRequest(BaseModel):
     cron: str | None = None
     interval_seconds: int | None = None
     mode: Literal["safe", "balanced", "fast", "test"] = "balanced"
+    intent: Literal["inventory", "vuln", "full", "delta"] | None = None
     delta: bool = True
     skip_nse: bool = False
     notify: bool = False
@@ -260,6 +266,7 @@ class UpdateScheduleRequest(BaseModel):
     cron: str | None = None
     interval_seconds: int | None = None
     mode: Literal["safe", "balanced", "fast", "test"] | None = None
+    intent: Literal["inventory", "vuln", "full", "delta"] | None = None
     delta: bool | None = None
     skip_nse: bool | None = None
     notify: bool | None = None

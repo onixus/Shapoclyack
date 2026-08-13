@@ -183,6 +183,8 @@ export type PortAggregate = {
   services: string[];
 };
 
+export type ScanIntent = "inventory" | "vuln" | "full" | "delta";
+
 export type JobInfo = {
   job_id: string;
   /** `claimed` = an agent holds the job but has not reported starting it. */
@@ -204,10 +206,13 @@ export type JobInfo = {
   /** Hand-outs to an executor. Above 1 means an earlier attempt's lease
    * expired and the job was requeued. */
   attempts?: number;
+  /** Persisted start options (intent, mode, delta, wordlist provenance, …). */
+  scan_options?: Record<string, unknown> | null;
 };
 
 export type ScheduleScanOptions = {
   mode: "safe" | "balanced" | "fast" | "test";
+  intent?: ScanIntent | null;
   delta: boolean;
   skip_nse: boolean;
   notify: boolean;
@@ -243,6 +248,7 @@ export type CreateScheduleBody = {
   cron?: string | null;
   interval_seconds?: number | null;
   mode: "safe" | "balanced" | "fast" | "test";
+  intent?: ScanIntent | null;
   delta: boolean;
   skip_nse: boolean;
   notify: boolean;
@@ -667,6 +673,7 @@ export async function deleteWordlist(wordlistId: string) {
 
 export async function startScan(body: {
   mode: string;
+  intent?: ScanIntent | null;
   delta: boolean;
   skip_nse: boolean;
   notify: boolean;

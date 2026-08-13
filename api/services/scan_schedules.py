@@ -27,7 +27,7 @@ from scanner.scheduler import next_cron_time, parse_cron
 
 _settings: Settings | None = None
 
-_SCAN_OPTION_KEYS = ("mode", "delta", "skip_nse", "notify", "export_defectdojo")
+_SCAN_OPTION_KEYS = ("mode", "intent", "delta", "skip_nse", "notify", "export_defectdojo")
 _TARGET_KEYS = ("ranges", "domains", "ports", "ports_udp")
 
 

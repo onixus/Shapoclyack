@@ -50,6 +50,7 @@ from api.services import pagination
 from api.services import results_ingest
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
+from api.services import scan_intents
 from api.services import wordlists as wordlists_service
 from api.services.targets import parse_target_payload
 from api.settings import Settings
@@ -94,6 +95,7 @@ def _to_info(row: models.Job) -> JobInfo:
         tenant_id=row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
         asset_upsert_error=row.asset_upsert_error,
         attempts=row.attempts or 0,
+        scan_options=dict(row.scan_options) if row.scan_options else None,
     )
 
 
@@ -505,8 +507,12 @@ def _wordlist_overrides(
 
 def _build_command(
     settings: Settings,
-    request: StartScanRequest,
     *,
+    mode: str,
+    delta: bool,
+    skip_nse: bool,
+    notify: bool,
+    export_defectdojo: bool,
     run_id: str | None,
     target_args: list[str],
     config_path: str,
@@ -518,15 +524,15 @@ def _build_command(
         "--config",
         config_path,
         "--mode",
-        request.mode,
+        mode,
     ]
-    if request.delta:
+    if delta:
         command.append("--delta")
-    if request.skip_nse:
+    if skip_nse:
         command.append("--skip-nse")
-    if request.notify:
+    if notify:
         command.append("--notify")
-    if request.export_defectdojo:
+    if export_defectdojo:
         command.append("--export-defectdojo")
     if run_id:
         command.extend(["--run-id", run_id])
@@ -860,14 +866,30 @@ def start_scan(
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     _, target_counts, target_args = _prepare_target_inputs(settings, job_id, request)
+
+    try:
+        resolved = scan_intents.resolve_scan_options(
+            intent=request.intent,
+            mode=request.mode,
+            delta=request.delta,
+            skip_nse=request.skip_nse,
+        )
+    except ValueError:
+        raise
+
     # Local scans run in this container, so apply the installation config
     # overrides by merging them into a job-specific config file. Agents run
     # their own mounted config, so overrides don't reach them — they keep the
-    # base config (documented limitation).
+    # base config (documented limitation). Intent nuclei/top_ports overlays
+    # are local-only for the same reason.
     wordlist_options: dict[str, Any] = {}
+    intent_extra = resolved.config_extra
     if execution == "local":
         selected = _wordlist_overrides(settings, job_id, tenant_id, request.wordlist_id)
-        extra, wordlist_options = selected if selected else (None, {})
+        wordlist_extra: dict[str, Any] | None = None
+        if selected:
+            wordlist_extra, wordlist_options = selected
+        extra = scan_intents.merge_config_extras(intent_extra, wordlist_extra)
         config_path = config_override_service.effective_config_path(settings, job_id, extra)
     else:
         if request.wordlist_id:
@@ -880,9 +902,27 @@ def start_scan(
                 "wordlist_id is only supported in local execution mode, "
                 "not with remote agents"
             )
+        if intent_extra:
+            # Agent workers do not receive the merged effective-config file;
+            # surface that so operators do not think nuclei floors applied.
+            _log.warning(
+                "intent=%s config overlays (nuclei/top_ports) are skipped in agent mode; "
+                "CLI flags delta=%s skip_nse=%s still apply",
+                resolved.intent,
+                resolved.delta,
+                resolved.skip_nse,
+            )
         config_path = str(settings.config_path)
     command = _build_command(
-        settings, request, run_id=run_id, target_args=target_args, config_path=config_path
+        settings,
+        mode=resolved.mode,
+        delta=resolved.delta,
+        skip_nse=resolved.skip_nse,
+        notify=request.notify,
+        export_defectdojo=request.export_defectdojo,
+        run_id=run_id,
+        target_args=target_args,
+        config_path=config_path,
     )
 
     row = models.Job(
@@ -890,13 +930,15 @@ def start_scan(
         tenant_id=tenant_id,
         status=job_states.QUEUED,
         execution=execution,
-        mode=request.mode,
+        mode=resolved.mode,
         run_id=run_id,
         command=command,
         scan_options={
-            "mode": request.mode,
-            "delta": request.delta,
-            "skip_nse": request.skip_nse,
+            "mode": resolved.mode,
+            "intent": resolved.intent,
+            "intent_summary": resolved.summary if resolved.intent else None,
+            "delta": resolved.delta,
+            "skip_nse": resolved.skip_nse,
             "notify": request.notify,
             "export_defectdojo": request.export_defectdojo,
             **wordlist_options,

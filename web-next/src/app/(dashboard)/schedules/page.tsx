@@ -57,6 +57,7 @@ const EMPTY_FORM = {
   cron: "0 * * * *",
   intervalSeconds: "3600",
   mode: "balanced" as CreateScheduleBody["mode"],
+  intent: "inventory" as NonNullable<CreateScheduleBody["intent"]> | "",
   delta: true,
   skipNse: false,
   notify: false,
@@ -114,6 +115,7 @@ export default function SchedulesPage() {
       cron: schedule.cron ?? EMPTY_FORM.cron,
       intervalSeconds: String(schedule.interval_seconds ?? 3600),
       mode: schedule.scan_options.mode,
+      intent: (schedule.scan_options.intent as CreateScheduleBody["intent"]) || "",
       delta: schedule.scan_options.delta,
       skipNse: schedule.scan_options.skip_nse,
       notify: schedule.scan_options.notify,
@@ -134,8 +136,9 @@ export default function SchedulesPage() {
       cron: form.cadenceKind === "cron" ? form.cron.trim() : null,
       interval_seconds: form.cadenceKind === "interval" ? Number(form.intervalSeconds) || null : null,
       mode: form.mode,
+      intent: form.intent || null,
       delta: form.delta,
-      skip_nse: form.skipNse,
+      skip_nse: form.intent ? false : form.skipNse,
       notify: form.notify,
       ranges: form.ranges.trim() || null,
       domains: form.domains.trim() || null,
@@ -367,7 +370,30 @@ export default function SchedulesPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-slate-300">Scan Profile Mode</Label>
+                  <Label className="text-xs font-semibold text-slate-300">Scan Intent</Label>
+                  <Select
+                    value={form.intent || "__none__"}
+                    onValueChange={(value) =>
+                      setForm((f) => ({
+                        ...f,
+                        intent: value === "__none__" ? "" : (value as NonNullable<CreateScheduleBody["intent"]>),
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                      <SelectItem value="inventory">inventory — ports only</SelectItem>
+                      <SelectItem value="vuln">vuln — probe + high nuclei</SelectItem>
+                      <SelectItem value="full">full — assessment</SelectItem>
+                      <SelectItem value="delta">delta — full + incremental</SelectItem>
+                      <SelectItem value="__none__">legacy — manual flags</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-xs font-semibold text-slate-300">Speed Profile</Label>
                   <Select value={form.mode} onValueChange={(value) => setForm((f) => ({ ...f, mode: value as CreateScheduleBody["mode"] }))}>
                     <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
                       <SelectValue />
@@ -376,20 +402,26 @@ export default function SchedulesPage() {
                       <SelectItem value="safe">safe (500 pps · low load)</SelectItem>
                       <SelectItem value="balanced">balanced (2,000 pps · standard)</SelectItem>
                       <SelectItem value="fast">fast (5,000 pps · aggressive)</SelectItem>
-                      <SelectItem value="test">test (smoke test · top 100 ports, short nuclei)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
-                <div className="flex flex-wrap items-end gap-4 text-xs text-slate-300">
+                <div className="flex flex-wrap items-end gap-4 text-xs text-slate-300 md:col-span-2">
                   <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-                    <Checkbox checked={form.delta} onCheckedChange={(c) => setForm((f) => ({ ...f, delta: c === true }))} className="border-slate-700" />
-                    Delta Mode
+                    <Checkbox
+                      checked={form.intent === "delta" ? true : form.delta}
+                      disabled={form.intent === "delta"}
+                      onCheckedChange={(c) => setForm((f) => ({ ...f, delta: c === true }))}
+                      className="border-slate-700"
+                    />
+                    Delta discovery
                   </Label>
-                  <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-                    <Checkbox checked={form.skipNse} onCheckedChange={(c) => setForm((f) => ({ ...f, skipNse: c === true }))} className="border-slate-700" />
-                    Ports only (no service/OS/CVE probe)
-                  </Label>
+                  {!form.intent ? (
+                    <Label className="flex items-center gap-2 font-semibold cursor-pointer">
+                      <Checkbox checked={form.skipNse} onCheckedChange={(c) => setForm((f) => ({ ...f, skipNse: c === true }))} className="border-slate-700" />
+                      Ports only (no service/OS/CVE probe)
+                    </Label>
+                  ) : null}
                   <Label className="flex items-center gap-2 font-semibold cursor-pointer">
                     <Checkbox checked={form.notify} onCheckedChange={(c) => setForm((f) => ({ ...f, notify: c === true }))} className="border-slate-700" />
                     Notify

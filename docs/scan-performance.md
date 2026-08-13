@@ -34,37 +34,36 @@ exited before the scanner container existed; that race is fixed.
 
 ## Intents (do less, more often)
 
-Treat scan work as **intent**, not one default full pipeline:
+Treat scan work as **intent**, not one default full pipeline. **Product control
+(shipped):** `intent` on `POST /api/jobs` and schedules
+(`api/services/scan_intents.py`). Speed profile stays in `mode`
+(safe/balanced/fast).
 
-| Intent | Goal | Typical levers |
+| Intent | Goal | Control plane applies |
 |---|---|---|
-| **inventory** | Alive hosts + open ports + light service ID | `--skip-nse` or Pulse-only, nuclei off / severity floor high, `top_ports` 100 |
-| **vuln** | CVE/misconfig signal on known web surface | Nuclei critical+high (optional medium), no full re-discover if scope stable |
-| **full** | Assessment-grade completeness | `balanced`/`fast` profile, nuclei medium+, full ports |
-| **delta** | Nightly re-check of a known perimeter | `--delta`, seed/previous alive, refresh sample of known hosts |
+| **inventory** | Alive hosts + open ports | `--skip-nse`, nuclei off, `top_ports: 100`; optional `delta` |
+| **vuln** | High-signal CVE/misconfig | Full probe; nuclei **critical+high** only |
+| **full** | Assessment-grade completeness | Default pipeline; nuclei critical/high/medium |
+| **delta** | Re-check known perimeter | Full pipeline + forced `--delta` |
 
-Existing building blocks (no new runtime required):
+Legacy: omit `intent` and use `skip_nse` / `delta` flags (UI: “legacy — manual flags”).
 
-- CLI: `--skip-nse`, `--delta`, `--resume`, `--mode safe|balanced|fast`
-  (`profiles.test` exists in YAML for smoke overlays but is **not** a
-  `--mode` / `runtime.mode` value — use a config file that selects those
-  nuclei/port knobs, or overlay `profiles.safe`/`balanced` rates)
-- Config: `profiles.*.nuclei`, `runtime.skip_nse`, discovery delta,
-  optional custom config with a reduced nuclei/port set (see `profiles.test`
-  in `default.yaml` as a template, not a selectable mode)
-- Ops: schedule inventory often, full less often; L1 then resume for enrichment
+```http
+POST /api/jobs
+{ "intent": "inventory", "mode": "balanced", "delta": true, "ranges": "10.0.0.0/24" }
+```
 
-**Product direction (not yet API fields):** expose `intent` on jobs/schedules that
-maps to the table above so operators do not hand-edit YAML. Until then, encode
-intent in named config overlays or schedule labels.
+Persisted as `scan_options.intent` (+ `intent_summary`). Local execution merges
+nuclei/top_ports into the job effective config; agent mode still gets CLI flags
+but not the nuclei overlay.
 
 ### Suggested schedule shape (same fleet)
 
 ```text
-hourly / 4h  → inventory (+ delta discover)
-daily        → vuln on open web ports from last inventory
-weekly       → full assessment
-on-demand    → full or vuln for a ticket
+hourly / 4h  → intent=inventory, delta=true
+daily        → intent=vuln
+weekly       → intent=full
+on-demand    → intent=full or vuln
 ```
 
 Same agents, same packet budget, far less average wall-clock per day.
@@ -102,7 +101,10 @@ After a change aimed at speed:
 
 | Path | Role |
 |---|---|
+| `api/services/scan_intents.py` | Intent → flags + config overlay |
+| `api/schemas.py` | `StartScanRequest.intent`, schedule fields |
 | `scanner/pipeline/stage_timing.py` | Timer collector |
 | `scanner/main.py` | Wires stages + writes `stage_timings.json` |
 | `scanner/config/default.yaml` | Profiles, nuclei, concurrency |
 | `tests/load/` | Synthetic multi-host duration gate |
+| `tests/test_scan_intents.py` | Intent resolution unit tests |
