@@ -52,6 +52,8 @@ SCANNER_NAME="scanner-load-$$"
 METRICS_FILE="${WORK}/metrics.json"
 TARGETS_FILE="${WORK}/targets.txt"
 PEAK_FILE="${WORK}/peak_rss_kb"
+PEAK_PID_FILE="${WORK}/peak_monitor.pid"
+PEAK_LOG_FILE="${WORK}/peak_monitor.log"
 CONFIG_SRC="${ROOT_DIR}/${CONFIG_REL}"
 START_TS="$(date +%s)"
 
@@ -142,8 +144,12 @@ _run_with_timeout() {
 }
 
 _start_peak_monitor() {
+  # Must NOT run under command substitution ($()): a bg child inherits the
+  # subshell's stdout pipe and Bash waits for it before the substitution
+  # returns — deadlocking the scanner start that only happens after we return.
   echo 0 > "${PEAK_FILE}"
-  python3 - "${SCANNER_NAME}" "${PEAK_FILE}" <<'PY' &
+  : > "${PEAK_LOG_FILE}"
+  python3 - "${SCANNER_NAME}" "${PEAK_FILE}" >>"${PEAK_LOG_FILE}" 2>&1 <<'PY' &
 import re
 import subprocess
 import sys
@@ -201,18 +207,21 @@ while time.time() < deadline:
 
 write_peak()
 PY
-  echo $!
+  echo $! > "${PEAK_PID_FILE}"
 }
 
 _stop_peak_monitor() {
-  local mon_pid="$1"
-  local waited=0
-  while kill -0 "${mon_pid}" 2>/dev/null && (( waited < 15 )); do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  kill "${mon_pid}" 2>/dev/null || true
-  wait "${mon_pid}" 2>/dev/null || true
+  local mon_pid
+  mon_pid="$(cat "${PEAK_PID_FILE}" 2>/dev/null || true)"
+  if [[ -n "${mon_pid}" ]]; then
+    local waited=0
+    while kill -0 "${mon_pid}" 2>/dev/null && (( waited < 15 )); do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    kill "${mon_pid}" 2>/dev/null || true
+    wait "${mon_pid}" 2>/dev/null || true
+  fi
   cat "${PEAK_FILE}"
 }
 
@@ -298,7 +307,7 @@ if [[ "${RESUME_TEST}" -eq 1 ]]; then
   docker rm -f "${SCANNER_NAME}" >/dev/null 2>&1 || true
 
   echo "[load] resuming scan (--resume --run-id ${RUN_ID})"
-  mon_pid="$(_start_peak_monitor)"
+  _start_peak_monitor
   scan_timeout="${SCAN_TIMEOUT_SEC:-2400}"
   set +e
   _run_with_timeout "${scan_timeout}" docker run --rm --network "${NET}" \
@@ -314,11 +323,10 @@ if [[ "${RESUME_TEST}" -eq 1 ]]; then
   if [[ "${SCAN_RC}" -eq 124 ]]; then
     echo "[load] resume scan exceeded ${scan_timeout}s timeout" >&2
   fi
-  peak2="$(_stop_peak_monitor "${mon_pid}")"
-  PEAK_RSS_KB="${peak2}"
+  PEAK_RSS_KB="$(_stop_peak_monitor)"
 else
   echo "[load] running scanner (${HOST_COUNT} targets)"
-  mon_pid="$(_start_peak_monitor)"
+  _start_peak_monitor
   scan_timeout="${SCAN_TIMEOUT_SEC:-2400}"
   set +e
   _run_with_timeout "${scan_timeout}" docker run --rm --network "${NET}" \
@@ -334,7 +342,7 @@ else
   if [[ "${SCAN_RC}" -eq 124 ]]; then
     echo "[load] scan exceeded ${scan_timeout}s timeout" >&2
   fi
-  PEAK_RSS_KB="$(_stop_peak_monitor "${mon_pid}")"
+  PEAK_RSS_KB="$(_stop_peak_monitor)"
 fi
 
 END_TS="$(date +%s)"

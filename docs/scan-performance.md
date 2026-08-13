@@ -46,7 +46,12 @@ Treat scan work as **intent**, not one default full pipeline:
 Existing building blocks (no new runtime required):
 
 - CLI: `--skip-nse`, `--delta`, `--resume`, `--mode safe|balanced|fast`
-- Config: `profiles.*.nuclei`, `profiles.test`, `runtime.skip_nse`, discovery delta
+  (`profiles.test` exists in YAML for smoke overlays but is **not** a
+  `--mode` / `runtime.mode` value — use a config file that selects those
+  nuclei/port knobs, or overlay `profiles.safe`/`balanced` rates)
+- Config: `profiles.*.nuclei`, `runtime.skip_nse`, discovery delta,
+  optional custom config with a reduced nuclei/port set (see `profiles.test`
+  in `default.yaml` as a template, not a selectable mode)
 - Ops: schedule inventory often, full less often; L1 then resume for enrichment
 
 **Product direction (not yet API fields):** expose `intent` on jobs/schedules that

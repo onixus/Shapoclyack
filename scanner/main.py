@@ -468,16 +468,22 @@ def _run_pipeline_body(
 
         open_ports = _run_stage("ports", _ports_stage)
 
-    alive_hosts = verify_alive_without_ports(
-        alive_hosts=alive_hosts,
-        open_ports=open_ports,
-        config=config,
-        profile=profile,
-        output_dir=paths.output_dir,
-        timeout=timeout,
-        retries=retries,
-    )
-    write_lines(alive_file, alive_hosts)
+    def _verify_alive() -> list[str]:
+        verified = verify_alive_without_ports(
+            alive_hosts=alive_hosts,
+            open_ports=open_ports,
+            config=config,
+            profile=profile,
+            output_dir=paths.output_dir,
+            timeout=timeout,
+            retries=retries,
+        )
+        write_lines(alive_file, verified)
+        return verified
+
+    # Default config enables discovery.verify — can re-probe hosts with no open
+    # ports and dominate wall-clock after the ports stage; keep it visible.
+    alive_hosts = _run_stage("verify_alive", _verify_alive)
 
     skip_nse = args.skip_nse or runtime.skip_nse
     nmap_dir = paths.output_dir / "nmap"
