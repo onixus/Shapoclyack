@@ -91,11 +91,13 @@ def test_get_for_scan_is_tenant_scoped(settings: Settings):
     info = wordlists.create_wordlist(
         tenant_id="ten_a", name="subs", kind="subdomain", raw_content="www\napi\n"
     )
-    # Right tenant sees kind + body; a different tenant sees nothing.
-    assert wordlists.get_for_scan(info["wordlist_id"], tenant_id="ten_a") == (
-        "subdomain",
-        "www\napi",
-    )
+    # Right tenant sees body + provenance; a different tenant sees nothing.
+    resolved = wordlists.get_for_scan(info["wordlist_id"], tenant_id="ten_a")
+    assert resolved is not None
+    assert resolved.kind == "subdomain"
+    assert resolved.content == "www\napi"
+    assert resolved.name == "subs"
+    assert resolved.wordlist_id == info["wordlist_id"]
     assert wordlists.get_for_scan(info["wordlist_id"], tenant_id="default") is None
 
 
