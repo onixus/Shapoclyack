@@ -431,15 +431,44 @@ def _prepare_target_inputs(
     return inputs_dir, counts or None, extra
 
 
+def wordlist_file_for_job(settings: Settings, job_id: str) -> Path:
+    """Where a job's materialized wordlist lives. One place, so the writer and
+    the post-run cleanup cannot drift apart."""
+    return settings.state_dir / "wordlists" / f"{job_id}.txt"
+
+
+def _discard_job_wordlist(settings: Settings, job_id: str) -> None:
+    """Drop a finished job's materialized wordlist.
+
+    Each selecting scan writes its own copy of a list that may approach the
+    upload cap, and the state dir is persistent, so without this an
+    installation that routinely brute-forces grows a directory nothing ever
+    reads again until the volume fills. The row in Postgres remains the source
+    of truth — this only removes the per-job copy. Best-effort: a scan that
+    finished must not be reported as failed because its scratch file could not
+    be unlinked."""
+    try:
+        wordlist_file_for_job(settings, job_id).unlink(missing_ok=True)
+    except OSError:
+        _log.warning("Could not remove wordlist scratch file for job %s", job_id, exc_info=True)
+
+
 def _wordlist_overrides(
     settings: Settings, job_id: str, tenant_id: str, wordlist_id: str | None
-) -> dict | None:
+) -> tuple[dict, dict] | None:
     """Materialize a tenant's selected brute-force wordlist to a job-scoped file
-    and return the config override that points the matching stage at it.
+    and return ``(config_override, provenance)``.
 
     Returns ``None`` when no wordlist was requested. Raises ``ValueError`` when
     the id is unknown or belongs to another tenant — selecting a wordlist that
     cannot be found must fail the scan request, not run it without one.
+
+    The override is nested under ``discovery`` because that is where the
+    scanner's ``AppConfig`` actually holds these stages. A top-level ``ct``/
+    ``cloud`` key validates cleanly (the schema does not forbid extras) and is
+    then ignored, so the scan would run with the stage still disabled and
+    succeed — a silent no-op rather than an error. The scan-start tests assert
+    through ``load_config`` for exactly this reason.
 
     Selecting a *subdomain* list turns on the CT/brute-force discovery stage
     (``ct.enabled`` + ``ct.brute_force.enabled``) with the uploaded list; a
@@ -452,17 +481,26 @@ def _wordlist_overrides(
     resolved = wordlists_service.get_for_scan(wordlist_id, tenant_id=tenant_id)
     if resolved is None:
         raise ValueError(f"Unknown wordlist_id: {wordlist_id}")
-    kind, content = resolved
 
-    dest_dir = settings.state_dir / "wordlists"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{job_id}.txt"
-    dest.write_text(content + "\n", encoding="utf-8")
+    dest = wordlist_file_for_job(settings, job_id)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(resolved.content + "\n", encoding="utf-8")
     path = str(dest)
 
-    if kind == "bucket":
-        return {"cloud": {"enabled": True, "wordlist_file": path}}
-    return {"ct": {"enabled": True, "brute_force": {"enabled": True, "wordlist_file": path}}}
+    if resolved.kind == "bucket":
+        stage = {"cloud": {"enabled": True, "wordlist_file": path}}
+    else:
+        stage = {"ct": {"enabled": True, "brute_force": {"enabled": True, "wordlist_file": path}}}
+    # Recorded on the job so a completed run can still answer "which dictionary
+    # produced this?" after the wordlist is renamed, replaced or deleted.
+    provenance = {
+        "wordlist_id": wordlist_id,
+        "wordlist_name": resolved.name,
+        "wordlist_kind": resolved.kind,
+        "wordlist_sha256": resolved.sha256,
+        "wordlist_entries": resolved.line_count,
+    }
+    return {"discovery": stage}, provenance
 
 
 def _build_command(
@@ -705,6 +743,9 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
         )
     except job_states.InvalidJobTransition as exc:
         _log.info("Not starting job %s: %s", job_id, exc)
+        # Cancelled between the insert and this thread getting scheduled: the
+        # scan never launches, so nothing will ever read the wordlist copy.
+        _discard_job_wordlist(settings, job_id)
         return
     try:
         with _renewing_lease(settings, job_id):
@@ -758,6 +799,10 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             # is post-completion bookkeeping (run tagging) blowing up. Record it
             # without rewriting the outcome the scan actually had.
             _update_job(settings, job_id, error=str(exc)[:2000])
+    finally:
+        # The scanner has exited either way, so its copy of the wordlist has
+        # been read for the last time.
+        _discard_job_wordlist(settings, job_id)
 
 
 class IdempotentReplay(Exception):
@@ -819,8 +864,10 @@ def start_scan(
     # overrides by merging them into a job-specific config file. Agents run
     # their own mounted config, so overrides don't reach them — they keep the
     # base config (documented limitation).
+    wordlist_options: dict[str, Any] = {}
     if execution == "local":
-        extra = _wordlist_overrides(settings, job_id, tenant_id, request.wordlist_id)
+        selected = _wordlist_overrides(settings, job_id, tenant_id, request.wordlist_id)
+        extra, wordlist_options = selected if selected else (None, {})
         config_path = config_override_service.effective_config_path(settings, job_id, extra)
     else:
         if request.wordlist_id:
@@ -852,6 +899,7 @@ def start_scan(
             "skip_nse": request.skip_nse,
             "notify": request.notify,
             "export_defectdojo": request.export_defectdojo,
+            **wordlist_options,
         },
         target_counts=target_counts,
         requested_by=username,
@@ -877,6 +925,9 @@ def start_scan(
         if existing is None:
             raise
         _log.info("Idempotent scan start: key already created job %s", existing.job_id)
+        # This job_id never became a row, so its materialized wordlist (and the
+        # merged config beside it) would be read by nobody.
+        _discard_job_wordlist(settings, job_id)
         # Raised rather than returned so the caller can answer 200 here too:
         # this request accepted nothing, exactly like the sequential replay the
         # route detects before calling in.

@@ -220,9 +220,9 @@ def test_subdomain_wordlist_enables_brute_force_in_effective_config(settings, mo
         username="admin",
     )
     cfg = yaml.safe_load(_config_path_from(job).read_text())
-    assert cfg["ct"]["enabled"] is True
-    assert cfg["ct"]["brute_force"]["enabled"] is True
-    materialized = Path(cfg["ct"]["brute_force"]["wordlist_file"])
+    assert cfg["discovery"]["ct"]["enabled"] is True
+    assert cfg["discovery"]["ct"]["brute_force"]["enabled"] is True
+    materialized = Path(cfg["discovery"]["ct"]["brute_force"]["wordlist_file"])
     assert materialized.read_text().split() == ["www", "api"]
 
 
@@ -237,8 +237,8 @@ def test_bucket_wordlist_enables_cloud_discovery(settings, monkeypatch):
         username="admin",
     )
     cfg = yaml.safe_load(_config_path_from(job).read_text())
-    assert cfg["cloud"]["enabled"] is True
-    assert Path(cfg["cloud"]["wordlist_file"]).read_text().split() == ["assets", "backup"]
+    assert cfg["discovery"]["cloud"]["enabled"] is True
+    assert Path(cfg["discovery"]["cloud"]["wordlist_file"]).read_text().split() == ["assets", "backup"]
 
 
 def test_unknown_wordlist_id_fails_the_scan(settings, monkeypatch):
