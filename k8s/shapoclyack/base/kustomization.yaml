@@ -11,7 +11,7 @@ labels:
 
 resources:
   - namespace.yaml
-  - serviceAccount.yaml
+  - serviceaccount.yaml
   - pvc.yaml
   # NATS JetStream (message broker)
   - nats/configmap.yaml
@@ -38,9 +38,6 @@ configMapGenerator:
 configurations: []
 
 secretGenerator:
-  # Dev-only placeholders. The API refuses to start on this JWT secret unless
-  # OCTO_ENV=dev (#155), so overriding it is enforced rather than merely
-  # documented.
   - name: shapoclyack-api
     literals:
       - jwt_secret=shapoclyack-dev-secret-change-me
