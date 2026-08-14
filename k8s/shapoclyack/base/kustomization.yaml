@@ -24,7 +24,7 @@ resources:
   # Postgres (PRIMARY_DB — tenants + asset inventory, Phase 7)
   - postgres/statefulset.yaml
   - postgres/service.yaml
-  - backup/kustomization.yaml
+  - backup
   - job.yaml
   - cronjob.yaml
   - api-deployment.yaml
