@@ -1,9 +1,43 @@
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 
+from .config_schema import NaabuScanType
 from .protocol import ScanProtocol, format_endpoint, naabu_udp_port_spec, parse_endpoint, top_udp_port_list
 from .utils import read_lines, run_command, write_lines
+
+# Set once a SYN batch fails so the remaining batches go straight to CONNECT
+# instead of each paying for the same failed attempt. Batches run concurrently
+# (runtime.ports_concurrency), hence the lock.
+_syn_lock = threading.Lock()
+_syn_unavailable = False
+
+
+def _syn_ruled_out() -> bool:
+    with _syn_lock:
+        return _syn_unavailable
+
+
+def _rule_out_syn() -> None:
+    global _syn_unavailable
+    with _syn_lock:
+        _syn_unavailable = True
+
+
+def _scan_techniques(scan_type: NaabuScanType, protocol: ScanProtocol) -> list[str | None]:
+    """naabu ``-s`` values to try, in order, for one batch.
+
+    ``-s`` selects the TCP technique only, so UDP batches omit it entirely.
+    """
+    if protocol != "tcp":
+        return [None]
+    if scan_type == "syn":
+        return ["s"]
+    if scan_type == "connect":
+        return ["c"]
+    return ["c"] if _syn_ruled_out() else ["s", "c"]
 
 
 def _flatten_custom_ports(custom_file: Path) -> list[str] | None:
@@ -47,6 +81,7 @@ def _run_naabu(
     port_args: list[str],
     protocol: ScanProtocol,
     udp_probes: bool,
+    scan_type: NaabuScanType = "auto",
 ) -> list[str]:
     input_file = batch_dir / f"{tag}.hosts.txt"
     output_file = batch_dir / f"{tag}.open.txt"
@@ -77,7 +112,23 @@ def _run_naabu(
     if protocol == "udp" and udp_probes:
         command.append("-uP")
 
-    result = run_command(command, timeout=timeout, retries=retries)
+    # Whether naabu can raise CAP_NET_RAW cannot be read off this process: the
+    # capability reaches naabu through file capabilities, so the scanner's own
+    # CapEff is empty even where SYN works. Attempting it is the only honest test.
+    techniques = _scan_techniques(scan_type, protocol)
+    for index, technique in enumerate(techniques):
+        attempt = command if technique is None else [*command, "-s", technique]
+        try:
+            result = run_command(attempt, timeout=timeout, retries=retries)
+            break
+        except Exception:  # noqa: BLE001 -- fall back to the next technique
+            if index == len(techniques) - 1:
+                raise
+            _rule_out_syn()
+            logging.warning(
+                "naabu SYN scan failed for batch %s; falling back to CONNECT for the rest of the run", tag
+            )
+
     entries = _naabu_entries(result.stdout or "", protocol)
     write_lines(output_file, entries)
     return entries
@@ -96,6 +147,7 @@ def fast_port_scan(
     custom_udp_ports_file: Path,
     udp_probes: bool,
     tag: str = "all",
+    scan_type: NaabuScanType = "auto",
 ) -> list[str]:
     """Run naabu port scan(s) for a batch of alive hosts.
 
@@ -124,6 +176,7 @@ def fast_port_scan(
                 port_args=port_args,
                 protocol="tcp",
                 udp_probes=False,
+                scan_type=scan_type,
             )
         )
 
@@ -145,6 +198,7 @@ def fast_port_scan(
                 port_args=["-p", port_spec],
                 protocol="udp",
                 udp_probes=udp_probes,
+                scan_type=scan_type,
             )
         )
 

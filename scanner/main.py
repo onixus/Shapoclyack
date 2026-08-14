@@ -457,6 +457,7 @@ def _run_pipeline_body(
                     custom_udp_ports_file=custom_udp_ports_file,
                     udp_probes=port_cfg.udp_probes,
                     tag=bid,
+                    scan_type=port_cfg.scan_type,
                 ),
                 aggregate=open_set,
                 aggregate_file=open_file,
@@ -560,6 +561,7 @@ def _run_pipeline_body(
                     on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
                     chunk_hosts=pulse_cfg.chunk_hosts,
                     report_primary=report_primary_pulse,
+                    retry_settle_seconds=pulse_cfg.retry_settle_seconds,
                 ),
             )
             checkpoint.mark_done("pulse")
