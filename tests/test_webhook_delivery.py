@@ -1,13 +1,10 @@
-"""Phase 10.3: the wire half of webhook delivery — signing, headers, SSRF guard.
-
-Database-free by construction (see api/services/integrations/delivery.py), so
-these run everywhere, unlike the queue tests in tests/test_webhooks.py.
-"""
+"""Phase 10.3: webhook signing, headers and the SSRF delivery boundary."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 
 import pytest
 
@@ -28,7 +25,6 @@ def test_signature_matches_receiver_side_recomputation():
 
 
 def test_signature_covers_the_timestamp():
-    """Replaying an old body under a fresh timestamp must not verify."""
     body = delivery.canonical_body({"kind": "new_cve"})
     assert delivery.sign("s3cret", "1760000000", body) != delivery.sign(
         "s3cret", "1760000060", body
@@ -87,11 +83,22 @@ def test_sanitize_headers_rejects_header_injection():
 
 @pytest.mark.parametrize(
     "url",
-    ["ftp://example.com/hook", "file:///etc/passwd", "://nope", ""],
+    [
+        "ftp://example.com/hook",
+        "file:///etc/passwd",
+        "://nope",
+        "",
+        "https://user:pass@example.com/hook",
+    ],
 )
-def test_validate_url_rejects_non_http_schemes(url):
+def test_validate_url_rejects_illegal_targets(url):
     with pytest.raises(delivery.WebhookTargetError):
         delivery.validate_url(url)
+
+
+def test_validate_url_rejects_malformed_port():
+    with pytest.raises(delivery.WebhookTargetError, match="invalid port"):
+        delivery.validate_url("https://example.com:notaport/hook")
 
 
 @pytest.mark.parametrize(
@@ -99,7 +106,7 @@ def test_validate_url_rejects_non_http_schemes(url):
     [
         "http://127.0.0.1:8080/hook",
         "http://10.0.0.5/hook",
-        "http://169.254.169.254/latest/meta-data",  # cloud metadata service
+        "http://169.254.169.254/latest/meta-data",
         "http://[::1]/hook",
     ],
 )
@@ -109,7 +116,7 @@ def test_validate_url_blocks_internal_targets_by_default(url):
 
 
 def test_validate_url_allows_internal_targets_when_opted_in():
-    url = "http://shapoclyack-receiver.svc.cluster.local:8080/hook"
+    url = "http://127.0.0.1:8080/hook"
     assert delivery.validate_url(url, allow_private=True) == url
 
 
@@ -117,25 +124,62 @@ def test_validate_url_allows_public_literal():
     assert delivery.validate_url("https://93.184.216.34/hook").endswith("/hook")
 
 
-def test_post_refuses_internal_target_without_retrying(monkeypatch):
-    """The guard failing is the operator's to fix — retrying cannot help."""
-
+def test_post_refuses_internal_target_before_wire_call(monkeypatch):
     def _boom(*args, **kwargs):  # pragma: no cover - must never be reached
-        raise AssertionError("httpx.post called for a blocked target")
+        raise AssertionError("wire call reached for blocked target")
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "post", _boom)
+    monkeypatch.setattr(delivery, "_post_to_address", _boom)
     result = delivery.post("http://127.0.0.1/hook", b"{}", {})
     assert result.ok is False
     assert result.retryable is False
     assert "non-public" in (result.error or "")
 
 
-class _Response:
-    def __init__(self, status_code: int, text: str = "") -> None:
-        self.status_code = status_code
-        self.text = text
+def test_post_pins_connection_to_the_validated_address(monkeypatch):
+    approved = ipaddress.ip_address("93.184.216.34")
+    seen = {}
+
+    monkeypatch.setattr(delivery, "_resolve", lambda host: [approved])
+
+    def _capture(target, address, body, headers, *, deadline):
+        seen["target"] = target
+        seen["address"] = address
+        seen["body"] = body
+        seen["headers"] = headers
+        assert deadline > 0
+        return 204, ""
+
+    monkeypatch.setattr(delivery, "_post_to_address", _capture)
+    result = delivery.post("https://receiver.example:8443/hook?q=1", b"{}", {"X-Test": "1"})
+
+    assert result.ok is True
+    assert seen["address"] == approved
+    assert seen["target"].hostname == "receiver.example"
+    assert seen["target"].port == 8443
+    assert seen["target"].request_target == "/hook?q=1"
+    assert seen["target"].host_header == "receiver.example:8443"
+
+
+def test_post_does_not_reresolve_after_validation(monkeypatch):
+    approved = ipaddress.ip_address("93.184.216.34")
+    calls = []
+
+    def _resolve(host):
+        calls.append(host)
+        if len(calls) > 1:
+            return [ipaddress.ip_address("127.0.0.1")]
+        return [approved]
+
+    monkeypatch.setattr(delivery, "_resolve", _resolve)
+    monkeypatch.setattr(
+        delivery,
+        "_post_to_address",
+        lambda target, address, body, headers, *, deadline: (200, ""),
+    )
+
+    result = delivery.post("https://receiver.example/hook", b"{}", {})
+    assert result.ok is True
+    assert calls == ["receiver.example"]
 
 
 @pytest.mark.parametrize(
@@ -153,38 +197,50 @@ class _Response:
     ],
 )
 def test_post_classifies_response_codes(monkeypatch, status_code, ok, retryable):
-    import httpx
-
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Response(status_code, "body"))
+    monkeypatch.setattr(
+        delivery,
+        "_resolve",
+        lambda host: [ipaddress.ip_address("93.184.216.34")],
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_post_to_address",
+        lambda target, address, body, headers, *, deadline: (status_code, "body"),
+    )
     result = delivery.post("https://receiver.example/hook", b"{}", {})
     assert (result.ok, result.retryable) == (ok, retryable)
     assert result.status_code == status_code
 
 
 def test_post_treats_transport_errors_as_retryable(monkeypatch):
-    import httpx
+    monkeypatch.setattr(
+        delivery,
+        "_resolve",
+        lambda host: [ipaddress.ip_address("93.184.216.34")],
+    )
 
     def _raise(*args, **kwargs):
-        raise httpx.ConnectTimeout("timed out")
+        raise TimeoutError("timed out")
 
-    monkeypatch.setattr(httpx, "post", _raise)
+    monkeypatch.setattr(delivery, "_post_to_address", _raise)
     result = delivery.post("https://receiver.example/hook", b"{}", {})
     assert result.ok is False
     assert result.retryable is True
-    assert "ConnectTimeout" in (result.error or "")
+    assert "TimeoutError" in (result.error or "")
 
 
 def test_post_does_not_follow_redirects(monkeypatch):
-    """A 302 could point back inside the network the URL check just cleared."""
-    seen: dict = {}
-
-    import httpx
-
-    def _capture(url, **kwargs):
-        seen.update(kwargs)
-        return _Response(302)
-
-    monkeypatch.setattr(httpx, "post", _capture)
+    monkeypatch.setattr(
+        delivery,
+        "_resolve",
+        lambda host: [ipaddress.ip_address("93.184.216.34")],
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_post_to_address",
+        lambda target, address, body, headers, *, deadline: (302, "moved"),
+    )
     result = delivery.post("https://receiver.example/hook", b"{}", {})
-    assert seen["follow_redirects"] is False
     assert result.ok is False
+    assert result.status_code == 302
+    assert result.retryable is False
