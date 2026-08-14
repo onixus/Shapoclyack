@@ -147,16 +147,36 @@ pipeline {
     stage('Web dashboard') {
       agent { docker { image 'node:26-bookworm-slim'; args '-v shapoclyack-npm-cache:/root/.npm'; reuseNode true } }
       steps {
-        dir('web-next') {
-          sh '''
-            set -eu
-            npm ci
-            npm run lint
-            npm run typecheck
-            npm test
-            npm run build
-          '''
-        }
+        // npm ci must not unpack node_modules into the workspace: on macOS that
+        // is a VirtioFS bind mount, which drops writes silently. Build #25 died
+        // in eslint on a 60 KB run of NUL bytes inside
+        // node_modules/language-subtag-registry/data/json/registry.json — the
+        // hole was page-aligned and the file kept its correct size, so npm saw
+        // nothing to report. #24 had passed on that same revision, which is how
+        // the same commit produced both a green and a red build.
+        //
+        // Building on the container's own filesystem avoids the mount entirely.
+        // A named volume over node_modules would too, but it has to be pinned to
+        // the workspace path, and parallel stages get their own (shapoclyack@2)
+        // — two concurrent builds would then share one node_modules.
+        //
+        // Nothing downstream consumes web-next/out from the workspace: both
+        // Dockerfile.allinone and Dockerfile.api run their own npm ci in a
+        // web-build stage. This stage is a gate, not a producer.
+        sh '''
+          set -eu
+          BUILD_DIR=/tmp/web-next-build
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+          cp -R web-next/. "$BUILD_DIR/"
+          rm -rf "$BUILD_DIR/node_modules" "$BUILD_DIR/.next"
+          cd "$BUILD_DIR"
+          npm ci
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+        '''
       }
     }
 
