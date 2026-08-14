@@ -16,14 +16,14 @@ from __future__ import annotations
 import copy
 import logging
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any, Callable, get_args
 
 import yaml
 
 from api.db import models
 from api.db.engine import get_session
 from api.settings import Settings
-from scanner.pipeline.config_schema import ValidationError, load_config
+from scanner.pipeline.config_schema import NaabuTopPorts, ValidationError, load_config
 
 LOG = logging.getLogger(__name__)
 
@@ -32,6 +32,8 @@ _PROFILES = ("safe", "balanced", "fast", "test")
 _TIMINGS = {"T0", "T1", "T2", "T3", "T4", "T5"}
 _SEVERITIES = {"critical", "high", "medium", "low", "info"}
 _PROFILE_INT_MAX = 1_000_000
+#: Derived from the schema so the two constraints cannot drift apart.
+_NAABU_TOP_PORTS: tuple[int, ...] = get_args(NaabuTopPorts)
 
 
 def _as_bool(value: Any) -> bool:
@@ -44,6 +46,15 @@ def _int_range(lo: int, hi: int) -> Callable[[Any], int]:
     def check(value: Any) -> int:
         if not isinstance(value, int) or isinstance(value, bool) or not (lo <= value <= hi):
             raise ValueError(f"expected an integer {lo}–{hi}")
+        return value
+
+    return check
+
+
+def _int_choices(choices: tuple[int, ...]) -> Callable[[Any], int]:
+    def check(value: Any) -> int:
+        if not isinstance(value, int) or isinstance(value, bool) or value not in choices:
+            raise ValueError(f"expected one of {list(choices)}")
         return value
 
     return check
@@ -126,7 +137,11 @@ _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
 _PROFILE_SPEC: dict[str, Callable[[Any], Any]] = {
     "discover_rate": _int_range(1, _PROFILE_INT_MAX),
     "port_rate": _int_range(1, _PROFILE_INT_MAX),
-    "top_ports": _int_range(1, 65535),
+    # Not a count -- naabu's -top-ports takes a named port set (see
+    # NaabuTopPorts in scanner/pipeline/config_schema.py). Rejected here so the
+    # configurator names the two accepted values, instead of bouncing off the
+    # AppConfig re-validation with a less specific message.
+    "top_ports": _int_choices(_NAABU_TOP_PORTS),
     "nmap_timing": _timing,
 }
 

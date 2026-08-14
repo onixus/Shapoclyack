@@ -18,8 +18,12 @@ import { useConfig, useUpdateConfig } from "@/hooks/use-config";
 
 const TIMINGS = ["T0", "T1", "T2", "T3", "T4", "T5"];
 const SERVICE_BACKENDS = ["nmap", "pulse", "hybrid"];
+// naabu's -top-ports is a named port set, not a count: only 100 and 1000 are
+// accepted (see NaabuTopPorts in scanner/pipeline/config_schema.py). A number
+// input invites 500, which the API rejects — so offer the two real choices.
+const TOP_PORTS = [100, 1000];
 
-type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text" | "secret";
+type Widget = "bool" | "int" | "timing" | "backend" | "list" | "text" | "secret" | "topports";
 
 // `value` is the effective (or default) value the API reported for this path.
 // Any boolean gets a checkbox: the name-based list below only ever covered the
@@ -32,6 +36,7 @@ function widgetFor(path: string, value?: unknown): Widget {
     return "bool";
   }
   if (path.endsWith(".nmap_timing")) return "timing";
+  if (path.endsWith(".top_ports")) return "topports";
   if (path === "service_probe.backend" || path.endsWith(".service_backend")) return "backend";
   if (path === "nuclei.severities" || path === "nuclei.exclude_tags") return "list";
   if (path === "nuclei.templates_dir") return "text";
@@ -151,6 +156,23 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
                           {TIMINGS.map((t) => (
                             <SelectItem key={t} value={t}>
                               {t}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : widget === "topports" ? (
+                      <Select
+                        value={String(values[path] ?? "")}
+                        onValueChange={(v) => setValue(path, Number(v))}
+                        disabled={!canEdit}
+                      >
+                        <SelectTrigger className="w-24 h-8 bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-900 border-slate-800 text-slate-100 font-mono text-xs">
+                          {TOP_PORTS.map((n) => (
+                            <SelectItem key={n} value={String(n)}>
+                              {n}
                             </SelectItem>
                           ))}
                         </SelectContent>

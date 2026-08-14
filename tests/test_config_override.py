@@ -6,10 +6,10 @@ from api.services import config_override as cfg
 
 
 def test_unflatten_nested():
-    flat = {"nuclei.enabled": True, "profiles.safe.top_ports": 200}
+    flat = {"nuclei.enabled": True, "profiles.safe.top_ports": 1000}
     assert cfg.unflatten(flat) == {
         "nuclei": {"enabled": True},
-        "profiles": {"safe": {"top_ports": 200}},
+        "profiles": {"safe": {"top_ports": 1000}},
     }
 
 
@@ -33,12 +33,21 @@ def test_validate_rejects_unknown_path():
 def test_validate_rejects_bad_types_and_ranges():
     with pytest.raises(ValueError, match="expected a boolean"):
         cfg.validate_overrides({"nuclei": {"enabled": "yes"}})
-    with pytest.raises(ValueError, match="integer"):
+    with pytest.raises(ValueError, match="one of"):
         cfg.validate_overrides({"profiles": {"safe": {"top_ports": 0}}})
     with pytest.raises(ValueError, match="one of"):
         cfg.validate_overrides({"profiles": {"safe": {"nmap_timing": "T9"}}})
     with pytest.raises(ValueError, match="unknown severities"):
         cfg.validate_overrides({"nuclei": {"severities": ["nope"]}})
+
+
+def test_validate_rejects_top_ports_naabu_cannot_parse():
+    """An in-range-looking count (500) is still not a naabu port set — it would
+    abort every port batch of the run. The message names the two valid values."""
+    with pytest.raises(ValueError, match=r"one of \[100, 1000\]"):
+        cfg.validate_overrides({"profiles": {"safe": {"top_ports": 500}}})
+    ok = {"profiles": {"safe": {"top_ports": 100}}}
+    assert cfg.validate_overrides(ok) is ok
 
 
 def test_validate_accepts_nuclei_performance_knobs():
@@ -83,12 +92,12 @@ def test_validate_rejects_unknown_service_probe_backend():
 
 def test_deep_merge_via_effective_paths():
     base = {"nuclei": {"enabled": False, "severities": ["critical"]}, "profiles": {"safe": {"top_ports": 100}}}
-    over = {"nuclei": {"enabled": True}, "profiles": {"safe": {"top_ports": 250}}}
+    over = {"nuclei": {"enabled": True}, "profiles": {"safe": {"top_ports": 1000}}}
     merged = cfg._deep_merge(base, over)
     assert merged["nuclei"]["enabled"] is True
     # untouched sibling keys are preserved
     assert merged["nuclei"]["severities"] == ["critical"]
-    assert merged["profiles"]["safe"]["top_ports"] == 250
+    assert merged["profiles"]["safe"]["top_ports"] == 1000
 
 
 def test_validate_accepts_nvd_api_key():
