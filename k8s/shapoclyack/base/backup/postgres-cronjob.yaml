@@ -1,0 +1,133 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shapoclyack-postgres-backup
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: backup
+spec:
+  # Daily at 02:15 UTC. Production overlays may patch this to a tighter RPO.
+  schedule: "15 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: shapoclyack
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  apk add --no-cache aws-cli ca-certificates
+                  umask 077
+                  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+                  archive="/tmp/backup/shapoclyack-${stamp}.dump"
+                  checksum="${archive}.sha256"
+
+                  pg_dump \
+                    --host="${PGHOST}" \
+                    --port="${PGPORT}" \
+                    --username="${PGUSER}" \
+                    --dbname="${PGDATABASE}" \
+                    --format=custom \
+                    --compress=6 \
+                    --no-owner \
+                    --no-privileges \
+                    --file="${archive}"
+
+                  sha256sum "${archive}" > "${checksum}"
+                  prefix="${S3_PREFIX%/}"
+                  target="s3://${S3_BUCKET}/${prefix}/${stamp}"
+                  endpoint_args=""
+                  if [ -n "${S3_ENDPOINT_URL:-}" ]; then
+                    endpoint_args="--endpoint-url ${S3_ENDPOINT_URL}"
+                  fi
+
+                  # shellcheck disable=SC2086 -- endpoint_args intentionally expands to two args.
+                  aws ${endpoint_args} s3 cp "${archive}" "${target}/$(basename "${archive}")" --only-show-errors
+                  # shellcheck disable=SC2086
+                  aws ${endpoint_args} s3 cp "${checksum}" "${target}/$(basename "${checksum}")" --only-show-errors
+
+                  printf 'backup_success timestamp=%s object_prefix=%s\n' "${stamp}" "${target}"
+              env:
+                - name: PGHOST
+                  value: shapoclyack-postgres-client
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: octo
+                - name: PGDATABASE
+                  value: shapoclyack
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-postgres
+                      key: password
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-backup
+                      key: access_key_id
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-backup
+                      key: secret_access_key
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-backup
+                      key: region
+                - name: S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-backup
+                      key: bucket
+                - name: S3_PREFIX
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-backup
+                      key: prefix
+                - name: S3_ENDPOINT_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-backup
+                      key: endpoint_url
+                      optional: true
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: backup-tmp
+                  mountPath: /tmp/backup
+          volumes:
+            - name: backup-tmp
+              emptyDir:
+                sizeLimit: 10Gi
