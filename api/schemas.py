@@ -109,6 +109,14 @@ class AliveHostItem(BaseModel):
     country: str | None = None
     city: str | None = None
     country_iso: str | None = None
+    # GeoIP coordinates, when the City database carried a location. This is the
+    # *registered* position of the network — typically a city or country
+    # centre, never the machine — and the Geo Map labels it as such. Null for a
+    # Country-only database, a private address, or a run scanned before the
+    # scanner recorded them; such hosts are plotted from `country_iso` if they
+    # have one and listed as unlocated otherwise.
+    latitude: float | None = None
+    longitude: float | None = None
     os_name: str | None = None
     os_accuracy: int | None = None
     asn: str | None = None

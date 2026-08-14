@@ -254,6 +254,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 | 11.4 | Reports surface | `web-next/src/app/(dashboard)/reports`, `runs/view` Reports tab, `api/routes/runs.py` | Surface run artifacts + business PDF in the UI (per-run Reports tab with text preview/download + top-level Reports page); new binary-safe `GET /runs/{id}/download/{path}` endpoint | **Done** |
 | 11.5 | System status page | `web-next/src/app/(dashboard)/system`, `api/routes/system.py`, `api/services/system_status.py` | Read-only installation configurator: app/tool versions, enrichment-DB freshness, enabled stages, runtime flags, tenant/agent counts via `GET /api/system` (no secrets) | **Done** |
 | 11.6 | Editable configurator | `api/routes/config.py`, `api/services/config_override.py`, `config_overrides` table, `web-next/src/components/config-editor.tsx` | Admin-editable stage toggles + per-profile scan tuning via `GET`/`PUT /api/config`; whitelist + full-schema validation; Postgres-persisted overrides deep-merged onto the base config at local scan start | **Done** |
+| 11.7 | Geo map | `web-next/src/app/(dashboard)/geo`, `components/geo-map.tsx`, `lib/geo/{aggregate,world-map}.ts`, `scanner/pipeline/geoip.py`, `api/services/runs.py` | Run's alive hosts on a world map by GeoIP position, marker coloured by worst finding and sized by host count. GeoIP now also records **coordinates** (City-edition MMDB `location`) through `alive_hosts.json` → `latitude`/`longitude` on `GET /runs/{id}/hosts`; a country-only record falls back to the country centroid and is drawn dashed, a host with neither is listed as unlocated rather than dropped — a dot on a map reads as more certain than GeoIP is, so the precision is on the marker. Dependency-free SVG with the land outline generated into a committed constant (`scripts/generate-world-map.mjs`), so the page needs no tiles and no network | **Done** |
 
 ---
 
@@ -440,7 +441,7 @@ are worth resolving before either starts, so the work is not built twice: ticket
 **Track A status:** Phases 1–8 are **Done** (1–6, 7, 8.1–8.6); Phase 9 is done except
 [9.3](#phase-9--exposure-fingerprinting), which is now tracked as [P4.4](#p4-breakdown--differentiating-features);
 Phase 10 is done except the ticketing half of [10.3](#phase-10--change-detection--alerting-at-asset-level);
-Phase 11 is **Done** (11.1–11.6). P0, P1 and P3 are **Done** (P3 except OpenTelemetry);
+Phase 11 is **Done** (11.1–11.7). P0, P1 and P3 are **Done** (P3 except OpenTelemetry);
 P2 and P4 carry the remainder listed under [Track A — what is actually left](#track-a--what-is-actually-left).
 
 **Track B and C statuses live in their issues**, not here — a status duplicated in two

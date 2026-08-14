@@ -4,6 +4,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Geo Map (`/geo`)** — a run's alive hosts on a world map, each marker
+  coloured by the worst finding on the hosts it covers and sized by how many
+  they are. GeoIP already gave country and city; the scanner now also records
+  the **coordinates** a City-edition database carries
+  (`alive_hosts.json`/`geoip.json`, and `latitude`/`longitude` on
+  `GET /api/runs/{id}/hosts` — null for older runs and Country-edition
+  databases, which is not an error).
+
+  The page is explicit about the precision of what it draws, because a dot on a
+  map reads as more certain than GeoIP is: a coordinate is the registered
+  position of the *network*, typically a city or country centre and never the
+  machine. Hosts with only a country are plotted at that country's centroid,
+  drawn with a dashed ring and counted above the map; hosts with neither —
+  private addresses, or an installation with no GeoIP database — are listed as
+  **unlocated** rather than dropped, so the map never reads as the whole estate.
+
+  Self-contained SVG with no runtime dependency and no external tiles, so it
+  works in an air-gapped install and nothing on the page calls out of the
+  browser. The land outline and country centroids are generated from Natural
+  Earth 110m data into a committed constant by
+  `web-next/scripts/generate-world-map.mjs`, run by hand — the same
+  dependency-free approach as the Attack Surface graph.
+
 ### Changed
 
 - **Risk scoring rebuilt on NIST SP 800-30 Rev. 1** (#144) — scoring model

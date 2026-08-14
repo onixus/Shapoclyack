@@ -52,8 +52,26 @@ def _parse_endpoint(value: str) -> tuple[str, str, str | None]:
     return raw, "", protocol
 
 
-def _geo_map(run_dir: Path) -> dict[str, dict[str, str | None]]:
-    out: dict[str, dict[str, str | None]] = {}
+def _coordinate(value: Any, *, limit: float) -> float | None:
+    """A finite coordinate inside ``±limit``, or None.
+
+    Re-validated here rather than trusted from the artifact: a run directory is
+    a file on disk that an operator (or an older scanner version) may have
+    written, and an out-of-range latitude plots a marker off the map instead of
+    failing where it can be seen.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    if abs(number) > limit:
+        return None
+    return number
+
+
+def _geo_map(run_dir: Path) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
     geo = _load_json(run_dir / "geoip.json")
     if isinstance(geo, dict):
         for host, value in geo.items():
@@ -62,6 +80,8 @@ def _geo_map(run_dir: Path) -> dict[str, dict[str, str | None]]:
                     "country": value.get("country") or None,
                     "city": value.get("city") or None,
                     "country_iso": value.get("country_iso") or None,
+                    "latitude": _coordinate(value.get("latitude"), limit=90.0),
+                    "longitude": _coordinate(value.get("longitude"), limit=180.0),
                 }
     alive = _load_json(run_dir / "alive_hosts.json")
     if isinstance(alive, list):
@@ -69,13 +89,28 @@ def _geo_map(run_dir: Path) -> dict[str, dict[str, str | None]]:
             if not isinstance(row, dict) or not row.get("host"):
                 continue
             host = str(row["host"])
-            current = out.setdefault(host, {"country": None, "city": None, "country_iso": None})
+            current = out.setdefault(
+                host,
+                {
+                    "country": None,
+                    "city": None,
+                    "country_iso": None,
+                    "latitude": None,
+                    "longitude": None,
+                },
+            )
             if not current.get("country") and row.get("country"):
                 current["country"] = row.get("country")
             if not current.get("city") and row.get("city"):
                 current["city"] = row.get("city")
             if not current.get("country_iso") and row.get("country_iso"):
                 current["country_iso"] = row.get("country_iso")
+            # `is None` rather than falsy: 0.0 is a coordinate, not a gap, and
+            # a run predating this field simply has neither key.
+            if current.get("latitude") is None:
+                current["latitude"] = _coordinate(row.get("latitude"), limit=90.0)
+            if current.get("longitude") is None:
+                current["longitude"] = _coordinate(row.get("longitude"), limit=180.0)
     return out
 
 
@@ -359,6 +394,12 @@ def get_hosts(
                     country=entry.get("country") or geo_hit.get("country"),
                     city=entry.get("city") or geo_hit.get("city"),
                     country_iso=entry.get("country_iso") or geo_hit.get("country_iso"),
+                    latitude=_coordinate(entry.get("latitude"), limit=90.0)
+                    if entry.get("latitude") is not None
+                    else geo_hit.get("latitude"),
+                    longitude=_coordinate(entry.get("longitude"), limit=180.0)
+                    if entry.get("longitude") is not None
+                    else geo_hit.get("longitude"),
                     os_name=entry.get("os_name") or None,
                     os_accuracy=entry.get("os_accuracy"),
                     asn=entry.get("asn") or None,
@@ -375,6 +416,8 @@ def get_hosts(
                     country=geo_hit.get("country"),
                     city=geo_hit.get("city"),
                     country_iso=geo_hit.get("country_iso"),
+                    latitude=geo_hit.get("latitude"),
+                    longitude=geo_hit.get("longitude"),
                     vulnerability_count=vuln_counts.get(host, 0),
                 )
             )

@@ -309,6 +309,8 @@ def build_reports(
             item.setdefault("country", None)
             item.setdefault("city", None)
             item.setdefault("country_iso", None)
+            item.setdefault("latitude", None)
+            item.setdefault("longitude", None)
 
     # ASN/org enrichment for alive hosts (attack-surface graph clustering).
     # Offline, fail-soft, mirrors GeoIP above.
@@ -385,6 +387,10 @@ def build_reports(
             "country": (geo_map.get(host) or {}).get("country") or None,
             "city": (geo_map.get(host) or {}).get("city") or None,
             "country_iso": (geo_map.get(host) or {}).get("country_iso") or None,
+            # Not `or None`: 0.0 is a real coordinate (the equator / the prime
+            # meridian), and the Geo Map reads a missing value as "unlocated".
+            "latitude": (geo_map.get(host) or {}).get("latitude"),
+            "longitude": (geo_map.get(host) or {}).get("longitude"),
             "os_name": (best_os_by_host.get(host) or {}).get("name") or None,
             "os_accuracy": _os_accuracy(best_os_by_host.get(host)),
             "asn": (asn_map.get(host) or {}).get("asn") or None,

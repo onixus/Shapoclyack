@@ -3,6 +3,7 @@ import {
   CalendarDays,
   Database,
   FileText,
+  Globe2,
   Home,
   Laptop,
   Play,
@@ -24,6 +25,7 @@ export const NAV = [
   { href: "/assets", label: "Assets", icon: Database },
   { href: "/endpoints", label: "Endpoints", icon: Laptop },
   { href: "/attack-surface", label: "Attack Surface", icon: Share2 },
+  { href: "/geo", label: "Geo Map", icon: Globe2 },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/system", label: "System", icon: SlidersHorizontal },
 ] as const;

@@ -167,6 +167,12 @@ export type AliveHost = {
   country: string | null;
   city: string | null;
   country_iso: string | null;
+  /** GeoIP coordinates of the *network*, not the machine — typically a city or
+   * country centre. Null for a Country-only GeoIP database, a private address,
+   * or a run scanned before the scanner recorded them; the Geo Map falls back
+   * to the country centroid and says so. */
+  latitude: number | null;
+  longitude: number | null;
   os_name: string | null;
   os_accuracy: number | null;
   asn: string | null;

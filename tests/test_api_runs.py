@@ -90,6 +90,8 @@ def _write_run(root: Path, run_id: str) -> None:
                     "country": "United States",
                     "city": "Ashburn",
                     "country_iso": "US",
+                    "latitude": 39.04,
+                    "longitude": -77.49,
                     "os_name": "Linux 5.x",
                     "os_accuracy": 95,
                 },
@@ -193,9 +195,16 @@ def test_list_and_get_run(tmp_path: Path):
     assert ashburn["vulnerability_count"] == 1
     assert ashburn["os_name"] == "Linux 5.x"
     assert ashburn["os_accuracy"] == 95
+    assert ashburn["latitude"] == 39.04
+    assert ashburn["longitude"] == -77.49
     berlin = next(row for row in host_payload if row["host"] == "10.0.0.2")
     assert berlin["os_name"] is None
     assert berlin["os_accuracy"] is None
+    # A run scanned before the scanner recorded coordinates: the country
+    # survives, and the Geo Map falls back to its centroid rather than
+    # dropping the host.
+    assert berlin["latitude"] is None
+    assert berlin["country_iso"] == "DE"
 
     ports = client.get("/api/runs/run-a/ports", headers=headers)
     assert ports.status_code == 200

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scanner.pipeline.cvss4 import Cvss4Database, enrich_vulnerabilities, score_to_severity
 from scanner.pipeline.geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
 from scanner.pipeline.report import build_reports
@@ -70,6 +72,15 @@ def test_geoip_private_ip_labeled():
     assert db.lookup("8.8.8.8")["country"] == ""
 
 
+def test_geoip_private_ip_has_no_coordinates():
+    """A private address has no position on the planet, and inventing one would
+    plot lab hosts on the Geo Map as if they had been geolocated."""
+    db = GeoIpDatabase.load(None)
+    hit = db.lookup("172.19.0.2")
+    assert hit["latitude"] is None
+    assert hit["longitude"] is None
+
+
 def test_geoip_json_overlay_lookup(tmp_path: Path):
     overlay = tmp_path / "geo.json"
     overlay.write_text(
@@ -97,6 +108,30 @@ def test_geoip_json_overlay_lookup(tmp_path: Path):
     db.close()
 
 
+def test_geoip_overlay_coordinates(tmp_path: Path):
+    overlay = tmp_path / "geo.json"
+    overlay.write_text(
+        json.dumps(
+            {
+                # Short `lat`/`lon` aliases: the overlay is hand-written in labs.
+                "8.8.8.8": {"country": "Nowhere", "lat": 0, "lon": 0},
+                "9.9.9.9": {"country": "Bad", "latitude": 900, "longitude": "north"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    db = GeoIpDatabase.load(overlay)
+    try:
+        # 0/0 is Null Island, a real coordinate — not a missing one.
+        assert db.lookup("8.8.8.8")["latitude"] == 0
+        assert db.lookup("8.8.8.8")["longitude"] == 0
+        # Out of range and non-numeric are both dropped, not plotted off-map.
+        assert db.lookup("9.9.9.9")["latitude"] is None
+        assert db.lookup("9.9.9.9")["longitude"] is None
+    finally:
+        db.close()
+
+
 def test_geoip_mmdb_fixture_lookup():
     """Exercise real MaxMind GeoIP2 City .mmdb reader path (test fixture)."""
     mmdb = Path(__file__).resolve().parent / "data" / "geoip" / "GeoIP2-City-Test.mmdb"
@@ -107,9 +142,13 @@ def test_geoip_mmdb_fixture_lookup():
         assert hit["country_iso"] == "GB"
         assert hit["country"] == "United Kingdom"
         assert hit["city"] == "London"
+        # Coordinates from the record's `location`, which is what the Geo Map plots.
+        assert hit["latitude"] == pytest.approx(51.51, abs=0.1)
+        assert hit["longitude"] == pytest.approx(-0.09, abs=0.1)
         missing = db.lookup("1.1.1.1")
         assert missing["country"] == ""
         assert missing["city"] == ""
+        assert missing["latitude"] is None
     finally:
         db.close()
 
@@ -225,3 +264,6 @@ def test_build_reports_geoip_mmdb_fixture(tmp_path: Path):
     assert vulns[0]["city"] == "London"
     geo = json.loads((out / "geoip.json").read_text(encoding="utf-8"))
     assert geo["81.2.69.142"]["country"] == "United Kingdom"
+    assert geo["81.2.69.142"]["latitude"] == pytest.approx(51.51, abs=0.1)
+    alive = json.loads((out / "alive_hosts.json").read_text(encoding="utf-8"))
+    assert alive[0]["longitude"] == pytest.approx(-0.09, abs=0.1)

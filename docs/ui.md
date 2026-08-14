@@ -19,6 +19,7 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/assets` | Cross-run asset inventory | Viewer |
 | `/assets/view?assetId=…` | Asset metadata, findings, ports, OS/GeoIP, endpoint software | Viewer; operator for permitted edits |
 | `/attack-surface` | Hostname → IP → port → service graph | Viewer |
+| `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
 | `/endpoints` | Endpoint device/software inventory and recent changes | Viewer |
 | `/jobs` | Start and monitor scan jobs | Operator |
 | `/runs` | Tenant-scoped run history | Viewer |
@@ -28,6 +29,37 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/agents` | Distributed worker fleet | Operator |
 | `/tenants` | Tenant provisioning and membership administration | Admin |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
+
+## Geo Map
+
+`/geo` places one run's alive hosts on a world map and colours each marker by
+the worst finding on the hosts it covers (critical → no findings). Markers
+cluster by position, and marker area is proportional to host count.
+
+What the map claims, and what it does not:
+
+- A GeoIP coordinate is the **registered position of the network** — usually a
+  city or country centre — never the machine. Treat a marker as "this network
+  is announced from around here", not as an address.
+- Hosts whose GeoIP record has a country but no coordinates are plotted at that
+  country's centroid and drawn with a **dashed ring**, with a count called out
+  above the map. They are a coarser claim than the solid ones, and mixing them
+  silently would present a guess as a measurement.
+- Hosts with neither — private addresses, or an installation with no GeoIP
+  database configured — are listed under **Unlocated hosts** rather than
+  dropped, so the map never reads as the whole estate.
+
+The map is a self-contained SVG with no runtime dependency and no external
+tiles: nothing on this page calls out of the browser, which also means it works
+in an air-gapped install. The land outline and country centroids are generated
+into `web-next/src/lib/geo/world-map.ts` by
+`web-next/scripts/generate-world-map.mjs` (run by hand; the output is
+committed) from Natural Earth 110m data.
+
+Coordinates come from a **City**-edition GeoIP database (`enrichment.geoip`).
+With a Country-edition database every marker is country-level, which the page
+states rather than hides. See
+[configuration.md](configuration.md#enrichment-sources).
 
 ## Finding presentation
 

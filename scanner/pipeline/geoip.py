@@ -11,33 +11,68 @@ from typing import Any
 LOG = logging.getLogger(__name__)
 
 
-def _private_geo(ip: str) -> dict[str, str] | None:
-    """Label RFC1918 / loopback / link-local so lab scans are not all 'No GeoIP'."""
+def _private_geo(ip: str) -> dict[str, Any] | None:
+    """Label RFC1918 / loopback / link-local so lab scans are not all 'No GeoIP'.
+
+    Deliberately carries no coordinates: a private address has no location on
+    the planet, and inventing one would put lab hosts somewhere on the map as
+    if they had been geolocated.
+    """
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return None
     if addr.is_loopback:
-        return {"country": "Private", "city": "localhost", "country_iso": ""}
+        return {"country": "Private", "city": "localhost", "country_iso": "", "latitude": None, "longitude": None}
     if addr.is_private or addr.is_link_local or addr.is_reserved:
-        return {"country": "Private", "city": "LAN", "country_iso": ""}
+        return {"country": "Private", "city": "LAN", "country_iso": "", "latitude": None, "longitude": None}
     return None
 
 
+def _coordinate(value: Any, *, limit: float) -> float | None:
+    """A finite coordinate inside ``±limit``, or None.
+
+    Applied to every source, database or overlay: a latitude of 900 plots a
+    marker off the map rather than failing visibly, so it is rejected here
+    where the value enters the pipeline.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):  # NaN / ±inf
+        return None
+    if abs(number) > limit:
+        return None
+    return round(number, 4)
+
+
 class GeoIpDatabase:
-    """Resolve IPv4/IPv6 → country / city.
+    """Resolve IPv4/IPv6 → country / city / coordinates.
 
     Supports:
     - MaxMind GeoLite2-City / DB-IP City Lite ``.mmdb`` via the ``geoip2`` package
-    - JSON overlay ``{ "1.2.3.4": {"country": "...", "city": "...", "country_iso": "XX"} }``
-      for labs/tests without redistributing MaxMind data
+    - JSON overlay ``{ "1.2.3.4": {"country": "...", "city": "...", "country_iso": "XX",
+      "latitude": 0.0, "longitude": 0.0} }`` for labs/tests without redistributing
+      MaxMind data
+
+    ``latitude``/``longitude`` come from the City database's ``location`` and are
+    ``None`` whenever it does not carry one — a Country-only database, a record
+    without a location, or a private address. They are what the Geo Map page
+    plots; a host with neither coordinates nor a country ISO is reported as
+    unlocated rather than placed somewhere plausible.
+
+    The coordinates a GeoIP database returns are the *registered* position of a
+    network, typically the centre of a city or of a whole country, and never
+    the physical position of the machine. Consumers must present them at that
+    precision.
     """
 
     def __init__(
         self,
         *,
         reader: Any | None = None,
-        overlay: dict[str, dict[str, str]] | None = None,
+        overlay: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._reader = reader
         self._overlay = overlay or {}
@@ -68,6 +103,15 @@ class GeoIpDatabase:
                         "country": str(value.get("country") or ""),
                         "city": str(value.get("city") or ""),
                         "country_iso": str(value.get("country_iso") or value.get("iso") or ""),
+                        # `lat`/`lon` accepted as aliases: the overlay is
+                        # hand-written in labs and tests, where the short names
+                        # are what people type.
+                        "latitude": _coordinate(
+                            value.get("latitude", value.get("lat")), limit=90.0
+                        ),
+                        "longitude": _coordinate(
+                            value.get("longitude", value.get("lon")), limit=180.0
+                        ),
                     }
             LOG.info("Loaded GeoIP JSON overlay with %d entries from %s", len(overlay), path)
             return cls(overlay=overlay)
@@ -93,8 +137,14 @@ class GeoIpDatabase:
                 pass
             self._reader = None
 
-    def lookup(self, ip: str | None) -> dict[str, str]:
-        empty = {"country": "", "city": "", "country_iso": ""}
+    def lookup(self, ip: str | None) -> dict[str, Any]:
+        empty: dict[str, Any] = {
+            "country": "",
+            "city": "",
+            "country_iso": "",
+            "latitude": None,
+            "longitude": None,
+        }
         if not ip:
             return empty
         if ip in self._overlay:
@@ -103,6 +153,8 @@ class GeoIpDatabase:
                 "country": hit.get("country") or "",
                 "city": hit.get("city") or "",
                 "country_iso": hit.get("country_iso") or "",
+                "latitude": hit.get("latitude"),
+                "longitude": hit.get("longitude"),
             }
         private = _private_geo(ip)
         if private is not None:
@@ -122,23 +174,44 @@ class GeoIpDatabase:
             city = response.city.name or ""
         except Exception:  # noqa: BLE001
             return empty
-        return {"country": country, "city": city, "country_iso": iso}
+        # Read separately from the names above: a Country-edition database has
+        # no `location` attribute at all, and losing the country because the
+        # coordinates are missing would be a regression in what already worked.
+        latitude: float | None = None
+        longitude: float | None = None
+        try:
+            location = getattr(response, "location", None)
+            latitude = _coordinate(getattr(location, "latitude", None), limit=90.0)
+            longitude = _coordinate(getattr(location, "longitude", None), limit=180.0)
+        except Exception:  # noqa: BLE001
+            latitude = longitude = None
+        return {
+            "country": country,
+            "city": city,
+            "country_iso": iso,
+            "latitude": latitude,
+            "longitude": longitude,
+        }
 
 
 def enrich_hosts_geo(
     hosts: list[str],
     database: GeoIpDatabase,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, Any]]:
     """Return ip → geo fields for each host."""
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for host in hosts:
         out[host] = database.lookup(host)
     return out
 
 
-def attach_geo_to_records(records: list[dict], geo_map: dict[str, dict[str, str]]) -> None:
+def attach_geo_to_records(records: list[dict], geo_map: dict[str, dict[str, Any]]) -> None:
     for item in records:
         geo = geo_map.get(str(item.get("host") or ""), {})
         item["country"] = geo.get("country") or None
         item["city"] = geo.get("city") or None
         item["country_iso"] = geo.get("country_iso") or None
+        # `or None` would turn a legitimate 0.0 (the equator, the prime
+        # meridian) into "no coordinate", so these two are passed through as-is.
+        item["latitude"] = geo.get("latitude")
+        item["longitude"] = geo.get("longitude")

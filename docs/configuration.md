@@ -99,7 +99,7 @@ file, so a `wordlist_id` on an agent-mode scan is rejected. Caps:
 
 | Source | Purpose | Typical update |
 |---|---|---|
-| GeoIP MMDB | Country and city | Provider release cadence |
+| GeoIP MMDB | Country, city, and coordinates | Provider release cadence |
 | ASN MMDB | ASN and organization | Provider release cadence |
 | EPSS | Exploit probability | Daily |
 | CISA KEV | Known exploitation | Daily |
@@ -107,6 +107,13 @@ file, so a `wordlist_id` on an agent-mode scan is rejected. Caps:
 
 The Kubernetes enrichment overlay provides a shared PVC and scheduled refresh.
 Placeholder fixture data is suitable only for tests.
+
+A **City**-edition GeoIP database also yields latitude/longitude, which is what
+the [Geo Map](ui.md#geo-map) plots. With a Country-edition database (or none)
+hosts are placed at their country's centroid and the page says so; those
+coordinates are the registered position of the *network*, never the machine.
+The JSON overlay accepts `latitude`/`longitude` (or `lat`/`lon`) per entry for
+labs and tests.
 
 ### CVSS v4 baseline and refresh
 
