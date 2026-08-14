@@ -13,12 +13,19 @@ const CONFIG = {
     // A boolean whose path does not end in ".enabled" — it must still get a
     // checkbox, since a number input would send 0/1 and the API rejects that.
     "tls_posture.hostname_mismatch",
+    // naabu takes only 100 or 1000 here, so this is a choice, not a number.
+    "profiles.safe.top_ports",
   ],
-  defaults: { "nuclei.retries": 1, "tls_posture.hostname_mismatch": true },
+  defaults: {
+    "nuclei.retries": 1,
+    "tls_posture.hostname_mismatch": true,
+    "profiles.safe.top_ports": 100,
+  },
   effective: {
     "enrichment.cvss4.nvd_api_key": SECRET_MASK,
     "nuclei.retries": 1,
     "tls_posture.hostname_mismatch": true,
+    "profiles.safe.top_ports": 100,
   },
   overrides: {},
 };
@@ -56,6 +63,14 @@ describe("ConfigEditor secret fields", () => {
     const box = screen.getByRole("checkbox");
     expect(box).toHaveAttribute("data-state", "checked");
     expect(screen.queryByDisplayValue("true")).toBeNull();
+  });
+
+  it("renders top_ports as a choice, not a free number input", () => {
+    renderEditor();
+    // A number input would happily accept 500, which naabu cannot parse and
+    // the API rejects — the operator only gets the two port sets that work.
+    expect(screen.queryByDisplayValue("100")).toBeNull();
+    expect(screen.getByRole("combobox")).toHaveTextContent("100");
   });
 
   it("disables the key field for a user who cannot edit", () => {
