@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -448,6 +449,41 @@ def sync_report_primary_marker(pulse_dir: Path, report_primary: bool | None) -> 
             pass
 
 
+def _probe_chunk(
+    cmd: list[str], *, timeout_seconds: int, retries: int, idx: int
+) -> tuple[dict[str, Any], int]:
+    """Run one pulse invocation and return its parsed payload and exit code."""
+    completed = run_command(
+        cmd,
+        timeout=timeout_seconds,
+        retries=retries,
+        check=False,
+        capture_output=True,
+    )
+    stdout = (completed.stdout or "").strip()
+    if completed.returncode != 0:
+        logging.warning(
+            "pulse exited %s for chunk %s: %s",
+            completed.returncode,
+            idx,
+            (completed.stderr or stdout)[:500],
+        )
+    payload: dict[str, Any] = {}
+    if stdout:
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            # pulse may print logs on stdout in some builds; try last JSON object
+            start = stdout.rfind("{")
+            if start >= 0:
+                try:
+                    payload = json.loads(stdout[start:])
+                except json.JSONDecodeError:
+                    logging.warning("pulse_probe: could not parse JSON for chunk %s", idx)
+                    payload = {}
+    return payload, completed.returncode
+
+
 def run_pulse_probe(
     open_ports: list[str],
     *,
@@ -471,6 +507,8 @@ def run_pulse_probe(
     on_host_done: Callable[[str], None] | None = None,
     chunk_hosts: int = 64,
     report_primary: bool | None = None,
+    retry_settle_seconds: int = 15,
+    on_unresolved: Callable[[list[str]], None] | None = None,
 ) -> Path:
     """Run Pulse against hosts derived from open_ports; write artifacts.
 
@@ -550,34 +588,40 @@ def run_pulse_probe(
             len(host_chunk),
             len(ports_list),
         )
-        completed = run_command(
-            cmd,
-            timeout=timeout_seconds,
-            retries=retries,
-            check=False,
-            capture_output=True,
+        payload, returncode = _probe_chunk(
+            cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
         )
-        stdout = (completed.stdout or "").strip()
-        if completed.returncode != 0:
+
+        # Every host here reached this stage because naabu proved a port open on
+        # it moments ago, so an all-closed chunk is a contradiction rather than a
+        # finding: the ports burst saturates the path and the probe lands before
+        # it recovers. Pause and ask once more. The checkpoint has to go first --
+        # pulse honours its own "status: done" and would replay the same zero
+        # without touching the network.
+        if not (payload.get("open") if payload else None) and retry_settle_seconds:
             logging.warning(
-                "pulse exited %s for chunk %s: %s",
-                completed.returncode,
+                "pulse_probe chunk %s: 0 services across %s host(s) with known-open "
+                "ports; re-probing in %ss",
                 idx,
-                (completed.stderr or stdout)[:500],
+                len(host_chunk),
+                retry_settle_seconds,
             )
-        payload: dict[str, Any] = {}
-        if stdout:
-            try:
-                payload = json.loads(stdout)
-            except json.JSONDecodeError:
-                # pulse may print logs on stdout in some builds; try last JSON object
-                start = stdout.rfind("{")
-                if start >= 0:
-                    try:
-                        payload = json.loads(stdout[start:])
-                    except json.JSONDecodeError:
-                        logging.warning("pulse_probe: could not parse JSON for chunk %s", idx)
-                        payload = {}
+            ckpt.unlink(missing_ok=True)
+            time.sleep(retry_settle_seconds)
+            payload, returncode = _probe_chunk(
+                cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
+            )
+
+        resolved = bool(payload.get("open") if payload else None)
+        if not resolved:
+            # Leave nothing behind that records this chunk as finished-and-closed.
+            # Dropping pulse's own checkpoint is not enough on its own: the hosts
+            # would still be marked done below and the caller would still mark the
+            # whole stage done, so --resume would skip the stage outright and keep
+            # the false-empty result the retry above exists to recover from.
+            ckpt.unlink(missing_ok=True)
+            if on_unresolved:
+                on_unresolved(list(host_chunk))
 
         if payload:
             services, os_recs, cves = parse_pulse_json(payload)
@@ -592,14 +636,15 @@ def run_pulse_probe(
             )
             merged_raw["tls"].extend(payload.get("tls") or [])
             merged_raw["chunks"].append(
-                {"index": idx, "hosts": host_chunk, "returncode": completed.returncode}
+                {"index": idx, "hosts": host_chunk, "returncode": returncode}
             )
             if isinstance(payload.get("stats"), dict):
                 merged_raw["stats"] = payload["stats"]
 
-        for h in host_chunk:
-            if on_host_done:
-                on_host_done(h)
+        if resolved:
+            for h in host_chunk:
+                if on_host_done:
+                    on_host_done(h)
 
     # Dedupe services by ip:port:proto
     seen: set[tuple[str, int, str]] = set()

@@ -53,6 +53,7 @@ class ProfilePulseConfig(BaseModel):
     syn: bool | None = None
     max_hosts: int | None = Field(default=None, ge=1, le=1_000_000)
     chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
+    retry_settle_seconds: int | None = Field(default=None, ge=0, le=600)
 
 
 class ProfileNucleiConfig(BaseModel):
@@ -150,6 +151,7 @@ class TcpProbeDiscoveryConfig(BaseModel):
 
 ProbeMethod = Literal["icmp", "tcp", "naabu"]
 DiscoveryProfileSetting = Literal["auto", "fast", "balanced", "thorough", "custom"]
+NaabuScanType = Literal["auto", "syn", "connect"]
 _DEFAULT_PROBE_ORDER: list[ProbeMethod] = ["icmp", "tcp", "naabu"]
 
 
@@ -347,6 +349,12 @@ class PortsConfig(BaseModel):
     custom_udp_ports_file: str = "scanner/inputs/ports_udp.txt"
     top_udp_ports: int = Field(default=100, ge=1, le=65535)
     udp_probes: bool = True
+    # naabu's own -s default is "c" (CONNECT) -- it never probes for privileges,
+    # so leaving the flag off means the CAP_NET_RAW the images grant naabu
+    # (setcap in the Dockerfiles, capabilities.add in the manifests) is paid for
+    # and never used. "auto" tries SYN and falls back to CONNECT once, per run,
+    # if naabu cannot raise the capability.
+    scan_type: NaabuScanType = "auto"
 
 
 class NseProfileConfig(BaseModel):
@@ -372,6 +380,12 @@ class PulseProbeConfig(BaseModel):
     syn: bool = False
     max_hosts: int = Field(default=65536, ge=1, le=1_000_000)
     chunk_hosts: int = Field(default=64, ge=1, le=4096)
+    # The ports stage hands over the instant its last naabu batch returns, so the
+    # probe can land while the path is still saturated by that burst: every
+    # connect fails, the chunk reads as all-closed, and pulse writes that zero to
+    # its checkpoint as "status: done". Pause and re-probe once when a chunk
+    # contradicts the open ports naabu just proved. 0 disables the retry.
+    retry_settle_seconds: int = Field(default=15, ge=0, le=600)
 
 
 class ServiceProbeConfig(BaseModel):

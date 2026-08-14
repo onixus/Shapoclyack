@@ -253,3 +253,107 @@ def test_service_record_roundtrip():
     assert d["schema_version"] == "octo.service.v1"
     again = ServiceRecord.model_validate(d)
     assert again.port == 443
+
+
+class _FakeCompleted:
+    """Stand-in for subprocess.CompletedProcess."""
+
+    def __init__(self, stdout: str, returncode: int = 0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+_ONE_SERVICE = '{"open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}]}'
+_ALL_CLOSED = '{"open": [], "os": [], "cves": []}'
+
+
+def _run_probe(tmp_path, monkeypatch, stdouts, **kwargs):
+    """Drive run_pulse_probe with a scripted sequence of pulse outputs."""
+    from scanner.pipeline import pulse_probe as pp
+
+    calls: list[list[str]] = []
+    ckpt_alive_at_call: list[bool] = []
+    ckpt = tmp_path / "pulse" / "chunk_0000.ckpt"
+
+    def fake_run_command(command, **_):
+        calls.append(command)
+        ckpt_alive_at_call.append(ckpt.exists())
+        # pulse writes its checkpoint as it goes; mimic that so the test can
+        # tell whether the retry cleared it first.
+        ckpt.parent.mkdir(parents=True, exist_ok=True)
+        ckpt.write_text('{"status": "done"}', encoding="utf-8")
+        return _FakeCompleted(stdouts[min(len(calls) - 1, len(stdouts) - 1)])
+
+    monkeypatch.setattr(pp, "run_command", fake_run_command)
+    monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "pulse")
+    monkeypatch.setattr(pp.time, "sleep", lambda _: None)
+
+    pp.run_pulse_probe(["10.0.0.1:22/tcp"], output_dir=tmp_path, **kwargs)
+    return calls, ckpt, ckpt_alive_at_call
+
+
+def test_all_closed_chunk_is_reprobed(tmp_path, monkeypatch):
+    """naabu proved the port open, so all-closed is a contradiction, not a result."""
+    calls, _, _ = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED, _ONE_SERVICE])
+    assert len(calls) == 2, "expected one re-probe after the empty chunk"
+
+
+def test_reprobe_clears_checkpoint_first(tmp_path, monkeypatch):
+    """pulse honours its own 'status: done' and would replay the zero offline."""
+    _, _, ckpt_alive = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED, _ONE_SERVICE])
+    assert ckpt_alive[1] is False, "retry ran against a stale done-checkpoint"
+
+
+def test_successful_chunk_is_not_reprobed(tmp_path, monkeypatch):
+    calls, ckpt, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
+    assert len(calls) == 1
+    assert ckpt.exists(), "a chunk that found services must keep its checkpoint"
+
+
+def test_persistently_empty_chunk_leaves_no_checkpoint(tmp_path, monkeypatch):
+    """Otherwise --resume trusts the zero and never re-probes these hosts."""
+    calls, ckpt, _ = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED])
+    assert len(calls) == 2
+    assert not ckpt.exists()
+
+
+def test_retry_can_be_disabled(tmp_path, monkeypatch):
+    calls, _, _ = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED], retry_settle_seconds=0)
+    assert len(calls) == 1
+
+
+def test_persistently_empty_chunk_leaves_hosts_unmarked(tmp_path, monkeypatch):
+    """Deleting pulse's checkpoint is not enough on its own.
+
+    The hosts would still be marked done and the caller would still mark the
+    whole stage done, so --resume would skip the stage and keep the zero. The
+    chunk has to stay visibly unfinished at every level.
+    """
+    done: list[str] = []
+    unresolved: list[str] = []
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_ALL_CLOSED],
+        on_host_done=done.append,
+        on_unresolved=unresolved.extend,
+    )
+
+    assert done == [], "an unresolved chunk must not mark its hosts done"
+    assert unresolved == ["10.0.0.1"], "the caller must learn the chunk is unresolved"
+
+
+def test_resolved_chunk_marks_hosts_done(tmp_path, monkeypatch):
+    done: list[str] = []
+    unresolved: list[str] = []
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_ONE_SERVICE],
+        on_host_done=done.append,
+        on_unresolved=unresolved.extend,
+    )
+
+    assert done == ["10.0.0.1"]
+    assert unresolved == []
