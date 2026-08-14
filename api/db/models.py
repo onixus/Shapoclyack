@@ -100,6 +100,48 @@ class UserTenant(Base):
     )
 
 
+class AuthEvent(Base):
+    """One console-authentication attempt: the audit trail *and* the rate limiter (#157).
+
+    Two jobs in one table, because they are two readings of the same rows. The
+    admin-facing audit answers "who signed in, from where, and what failed";
+    the limiter counts the failures for one ``(username, client_ip)`` pair
+    inside a window. A separate counter table would have to be kept consistent
+    with the log it summarises, and the query the limiter needs is already the
+    log's natural index.
+
+    ``username`` is **not** a FK to :class:`User`: the interesting failures are
+    exactly the attempts naming an account that does not exist, and a FK would
+    make them unrecordable. It stores what was submitted, truncated by the
+    route's own length bound.
+
+    ``client_ip`` is the address the request is attributed to after the trusted
+    -proxy resolution in ``api/core/client_ip.py`` — never a raw
+    ``X-Forwarded-For``, which the client writes itself and could use to pick a
+    fresh limiter key per attempt.
+    """
+
+    __tablename__ = "auth_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(index=True)
+    username: Mapped[str] = mapped_column(default="")
+    client_ip: Mapped[str] = mapped_column(default="")
+    # success | failure | locked. "locked" is a refusal the credentials were
+    # never checked against, so it is neither of the other two.
+    outcome: Mapped[str] = mapped_column(default="failure")
+    # Machine-readable cause; NULL on success. See AUTH_REASONS in
+    # api/services/auth_audit.py.
+    reason: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        # The limiter's exact predicate: one pair's recent rows, newest first.
+        Index("ix_auth_events_pair", "username", "client_ip", "occurred_at"),
+        # The per-IP limiter and the "what is this address doing" audit query.
+        Index("ix_auth_events_ip", "client_ip", "occurred_at"),
+    )
+
+
 class ProvisioningKey(Base):
     __tablename__ = "provisioning_keys"
 

@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from api import __version__
+from api.core.client_ip import parse_trusted_proxies
 from api.services import config_override
 from api.services import pagination
 from api.settings import Settings
@@ -197,6 +198,16 @@ def runtime_info(settings: Settings) -> dict[str, Any]:
         "job_lease_seconds": settings.job_lease_seconds,
         "job_max_attempts": settings.job_max_attempts,
         "job_reaper_enabled": settings.job_reaper_enabled,
+        "login_rate_limit_enabled": settings.login_rate_limit_enabled,
+        "login_rate_limit_max_failures": settings.login_rate_limit_max_failures,
+        "login_rate_limit_window_seconds": settings.login_rate_limit_window_seconds,
+        # Whether *any* proxy is trusted, never which — the addresses are
+        # infrastructure detail, and the operator question this answers is
+        # "is X-Forwarded-For being honoured at all" (#157). Derived from the
+        # *parsed* networks, since unparsable entries are dropped with a
+        # warning: a list of typos would otherwise report "configured" while
+        # every login is still attributed to the ingress.
+        "trusted_proxies_configured": bool(parse_trusted_proxies(settings.trusted_proxies)),
     }
 
 

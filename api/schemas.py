@@ -109,6 +109,14 @@ class AliveHostItem(BaseModel):
     country: str | None = None
     city: str | None = None
     country_iso: str | None = None
+    # GeoIP coordinates, when the City database carried a location. This is the
+    # *registered* position of the network — typically a city or country
+    # centre, never the machine — and the Geo Map labels it as such. Null for a
+    # Country-only database, a private address, or a run scanned before the
+    # scanner recorded them; such hosts are plotted from `country_iso` if they
+    # have one and listed as unlocated otherwise.
+    latitude: float | None = None
+    longitude: float | None = None
     os_name: str | None = None
     os_accuracy: int | None = None
     asn: str | None = None
@@ -408,6 +416,22 @@ class GrantMembershipRequest(BaseModel):
     role: Literal["viewer", "operator", "admin"] = "viewer"
 
 
+class AuthEventInfo(BaseModel):
+    """One recorded login attempt (#157).
+
+    ``outcome`` is ``success``, ``failure`` (credentials checked and rejected)
+    or ``locked`` (refused by the rate limiter before they were checked).
+    ``reason`` is NULL on success.
+    """
+
+    id: int
+    occurred_at: str | None = None
+    username: str
+    client_ip: str
+    outcome: Literal["success", "failure", "locked"]
+    reason: str | None = None
+
+
 class UserInfo(BaseModel):
     """A console account (#156). Carries no password material by construction."""
 
@@ -551,6 +575,13 @@ class RuntimeInfo(BaseModel):
     job_lease_seconds: int = 300
     job_max_attempts: int = 3
     job_reaper_enabled: bool = True
+    # Login brute-force protection (#157). Without a trusted proxy configured
+    # behind an ingress, every attempt is attributed to the ingress address and
+    # the whole installation shares one limiter key.
+    login_rate_limit_enabled: bool = True
+    login_rate_limit_max_failures: int = 5
+    login_rate_limit_window_seconds: int = 900
+    trusted_proxies_configured: bool = False
 
 
 class InventoryCounts(BaseModel):

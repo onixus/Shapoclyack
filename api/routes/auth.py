@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from api.auth import (
     LoginRequest,
@@ -21,31 +21,96 @@ from api.auth import (
 from api.schemas import (
     AgentTokenRequest,
     AgentTokenResponse,
+    AuthEventInfo,
     AuthExchangeRequest,
     AuthExchangeResponse,
     CreateProvisioningKeyRequest,
     CreateTenantRequest,
     GrantMembershipRequest,
     MembershipInfo,
+    Page,
     ProvisioningKeyInfo,
     TenantInfo,
 )
+from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
+from api.routes._pagination import PageParams, build_page
 from api.services import auth as auth_service
+from api.services import auth_audit
 from api.services import memberships as memberships_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
 router = APIRouter(tags=["auth"])
 
+# Deliberately the same text for "locked out" whichever limit tripped and
+# whether or not the account exists: the response to a refused attempt is the
+# last place worth leaking that an account is real (#157).
+_LOCKED_DETAIL = "Too many failed login attempts. Try again later."
+
+
+def _client_ip(request: Request, settings: Settings) -> str:
+    return resolve_client_ip(
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+        parse_trusted_proxies(settings.trusted_proxies),
+    )
+
 
 @router.post("/auth/login", response_model=TokenResponse)
-def login(body: LoginRequest, settings: Annotated[Settings, Depends(get_settings)]) -> TokenResponse:
-    user = authenticate_user(settings, body.username, body.password)
+def login(
+    body: LoginRequest,
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TokenResponse:
+    """Exchange console credentials for a bearer token.
+
+    Rate-limited per ``(username, client IP)`` with a Postgres-backed counter
+    (#157), so the limit is shared by every API replica. A refusal is a 429
+    with ``Retry-After``; it does not reveal whether the account exists, and
+    the window decays on its own — no operator unlocks anything.
+
+    Counting, verification and recording happen inside ``attempt_login`` as one
+    serialized operation, so a batch of concurrent guesses cannot all pass a
+    count taken before any of them has been recorded.
+    """
+    client_ip = _client_ip(request, settings)
+    outcome = auth_audit.attempt_login(
+        username=body.username,
+        client_ip=client_ip,
+        verify=lambda: authenticate_user(settings, body.username, body.password),
+    )
+    if outcome.lockout is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=_LOCKED_DETAIL,
+            headers={"Retry-After": str(outcome.lockout.retry_after_seconds)},
+        )
+    user = outcome.user
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     token = create_access_token(settings, user)
     return TokenResponse(access_token=token, role=user.role, username=user.username)
+
+
+@router.get("/auth/events", response_model=Page[AuthEventInfo])
+def list_auth_events(
+    params: PageParams,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    outcome: Annotated[
+        str | None, Query(pattern="^(success|failure|locked)$", description="Filter by outcome")
+    ] = None,
+) -> Page[AuthEventInfo]:
+    """Recent login attempts, newest first (#157). Platform admin only.
+
+    ``q`` matches username or client IP. Always newest-first: this is a log,
+    and the ``sort``/``order`` parameters the other lists take would only offer
+    orders nobody reads an audit trail in.
+    """
+    items, total = auth_audit.list_events(
+        offset=params.offset, limit=params.limit, q=params.q, outcome=outcome
+    )
+    return build_page([AuthEventInfo.model_validate(item) for item in items], total, params)
 
 
 @router.get("/auth/me", response_model=MeResponse)

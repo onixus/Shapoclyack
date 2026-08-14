@@ -99,7 +99,7 @@ file, so a `wordlist_id` on an agent-mode scan is rejected. Caps:
 
 | Source | Purpose | Typical update |
 |---|---|---|
-| GeoIP MMDB | Country and city | Provider release cadence |
+| GeoIP MMDB | Country, city, and coordinates | Provider release cadence |
 | ASN MMDB | ASN and organization | Provider release cadence |
 | EPSS | Exploit probability | Daily |
 | CISA KEV | Known exploitation | Daily |
@@ -107,6 +107,15 @@ file, so a `wordlist_id` on an agent-mode scan is rejected. Caps:
 
 The Kubernetes enrichment overlay provides a shared PVC and scheduled refresh.
 Placeholder fixture data is suitable only for tests.
+
+A **City**-edition GeoIP database also yields latitude/longitude, which is what
+the [Geo Map](ui.md#geo-map) plots. A Country-edition database is read through
+the Country lookup instead (the City query raises against it), so it still
+resolves countries and hosts are placed at their country's centroid with the
+page saying so; those
+coordinates are the registered position of the *network*, never the machine.
+The JSON overlay accepts `latitude`/`longitude` (or `lat`/`lon`) per entry for
+labs and tests.
 
 ### CVSS v4 baseline and refresh
 
@@ -238,6 +247,18 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS` | `30` | Age past which delivered/dead rows are pruned; `0` keeps the audit trail forever. Pending rows are never pruned |
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
+
+Login rate limiting and the auth audit trail (see
+[api-and-rbac.md](api-and-rbac.md#login-rate-limiting-and-the-auth-audit-trail)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_LOGIN_RATE_LIMIT_ENABLED` | `true` | Enforce the login limit. Off still records every attempt in `auth_events` — the audit trail is not the limiter |
+| `OCTO_LOGIN_RATE_LIMIT_MAX_FAILURES` | `5` | Failed logins allowed per `(username, client IP)` inside the window. A typo budget, not a guessing budget |
+| `OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `900` | Length of that window. Failures age out of it on their own; nothing unlocks an account by hand |
+| `OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES` | `50` | Failures allowed per client IP across *all* usernames, in the same window — what walking a username list looks like. Much looser on purpose: one NAT or office egress address is many legitimate users, and tripping it refuses them too |
+| `OCTO_TRUSTED_PROXIES` | *(empty)* | Comma-separated proxy IPs/CIDRs. `X-Forwarded-For` is read **only** when the immediate peer is one of these. Leave empty and every attempt is attributed to the socket peer — set it when the API sits behind an ingress, or the whole installation shares one limiter key |
+| `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever. Rows inside the limiter window are kept regardless, so a short retention cannot weaken the lockout |
 
 Job leases and the reaper (see [architecture.md](architecture.md#leases)):
 

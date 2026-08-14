@@ -254,6 +254,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 | 11.4 | Reports surface | `web-next/src/app/(dashboard)/reports`, `runs/view` Reports tab, `api/routes/runs.py` | Surface run artifacts + business PDF in the UI (per-run Reports tab with text preview/download + top-level Reports page); new binary-safe `GET /runs/{id}/download/{path}` endpoint | **Done** |
 | 11.5 | System status page | `web-next/src/app/(dashboard)/system`, `api/routes/system.py`, `api/services/system_status.py` | Read-only installation configurator: app/tool versions, enrichment-DB freshness, enabled stages, runtime flags, tenant/agent counts via `GET /api/system` (no secrets) | **Done** |
 | 11.6 | Editable configurator | `api/routes/config.py`, `api/services/config_override.py`, `config_overrides` table, `web-next/src/components/config-editor.tsx` | Admin-editable stage toggles + per-profile scan tuning via `GET`/`PUT /api/config`; whitelist + full-schema validation; Postgres-persisted overrides deep-merged onto the base config at local scan start | **Done** |
+| 11.7 | Geo map | `web-next/src/app/(dashboard)/geo`, `components/geo-map.tsx`, `lib/geo/{aggregate,world-map}.ts`, `scanner/pipeline/geoip.py`, `api/services/runs.py` | Run's alive hosts on a world map by GeoIP position, marker coloured by worst finding and sized by host count. GeoIP now also records **coordinates** (City-edition MMDB `location`) through `alive_hosts.json` → `latitude`/`longitude` on `GET /runs/{id}/hosts`; a country-only record falls back to the country centroid and is drawn dashed, a host with neither is listed as unlocated rather than dropped — a dot on a map reads as more certain than GeoIP is, so the precision is on the marker. Dependency-free SVG with the land outline generated into a committed constant (`scripts/generate-world-map.mjs`), so the page needs no tiles and no network | **Done** |
 
 ---
 
@@ -378,14 +379,14 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 |-------|-------|------|------|
 | ~~[#155](https://github.com/onixus/Shapoclyack/issues/155)~~ | Fail-closed config — refuse to start on default secrets / `CORS=*` | **Done** | `OCTO_ENV` defaults to `prod`; refuses on the default JWT secret or any `*` in CORS. The accounts half moved to startup with #156 |
 | ~~[#156](https://github.com/onixus/Shapoclyack/issues/156)~~ | Users into Postgres, no plaintext passwords | **Done** | `users` table (migration `0013`) with a real FK from `user_tenants`; bcrypt only; `/api/users` + `POST /api/auth/password`; `OCTO_API_USERS` demoted to a one-time bootstrap import |
-| [#157](https://github.com/onixus/Shapoclyack/issues/157) | Login brute-force protection + auth audit | ~0.5 sprint | No rate limit on `POST /api/auth/login` today; counter must be in Postgres to hold across replicas |
+| ~~[#157](https://github.com/onixus/Shapoclyack/issues/157)~~ | Login brute-force protection + auth audit | **Done** | `auth_events` (migration `0014`) is the audit trail *and* the counter: 5 failures per (username, IP) and 50 per IP across usernames in a 15-min decaying window → `429` + `Retry-After`, identical whether the account exists. `X-Forwarded-For` honoured only behind `OCTO_TRUSTED_PROXIES`; `octo_auth_attempts_total{outcome}`; admin `GET /api/auth/events` |
 | [#158](https://github.com/onixus/Shapoclyack/issues/158) | Automated backup + **rehearsed** restore | ~1 sprint | `docs/operations.md` describes intent; no CronJob, no restore script, no measured RPO/RTO. Also covers the missing PodDisruptionBudget and `examples/`-only NetworkPolicy |
 | [#159](https://github.com/onixus/Shapoclyack/issues/159) | Safe upgrade — migrations out of the initContainer, PDB, rollback | ~0.5 sprint | Alembic runs in **every** replica's initContainer ([api-deployment.yaml:36](k8s/shapoclyack/base/api-deployment.yaml:36)); [P1.6](#p1-breakdown--durable-control-plane) removed the `replicas: 1` guard that made this safe. Second schema path via `create_all` ([api/db/engine.py:34](api/db/engine.py:34)) |
 | [#151](https://github.com/onixus/Shapoclyack/issues/151) | Outbound webhook SSRF / credential-leak hardening | ~1 sprint | Release blocker — webhooks ([10.3](#phase-10--change-detection--alerting-at-asset-level)) ship *in* GA, not after |
 | [#160](https://github.com/onixus/Shapoclyack/issues/160) | Cut the release, empty `## Unreleased` | ~1 d | Last, after the rest is merged. See the [baseline note](#current-baseline-done) — the issue's "last tag is 0.33" is stale |
 
-Order: ~~#155~~ and #158 are independent and went first; ~~#156~~ → **#157 is next** in
-sequence; #159 in parallel; #160 last. A fourth item of the same fail-open shape was
+Order: ~~#155~~ and #158 are independent and went first; ~~#156~~ → ~~#157~~ are
+done, so **#158 and #159 are what remain** before #160 closes the wave. A fourth item of the same fail-open shape was
 found while doing #155 and is now [#174](https://github.com/onixus/Shapoclyack/issues/174):
 `OCTO_POSTGRES_URL` silently falls back to local SQLite, which quietly gives every replica
 its own control plane. **Wave 1** (after the blockers, not yet filed as issues):
@@ -440,7 +441,7 @@ are worth resolving before either starts, so the work is not built twice: ticket
 **Track A status:** Phases 1–8 are **Done** (1–6, 7, 8.1–8.6); Phase 9 is done except
 [9.3](#phase-9--exposure-fingerprinting), which is now tracked as [P4.4](#p4-breakdown--differentiating-features);
 Phase 10 is done except the ticketing half of [10.3](#phase-10--change-detection--alerting-at-asset-level);
-Phase 11 is **Done** (11.1–11.6). P0, P1 and P3 are **Done** (P3 except OpenTelemetry);
+Phase 11 is **Done** (11.1–11.7). P0, P1 and P3 are **Done** (P3 except OpenTelemetry);
 P2 and P4 carry the remainder listed under [Track A — what is actually left](#track-a--what-is-actually-left).
 
 **Track B and C statuses live in their issues**, not here — a status duplicated in two

@@ -334,6 +334,15 @@ kubectl -n network-scan port-forward svc/shapoclyack-api 8080:8080
 
 Or apply [`examples/ingress.example.yaml`](shapoclyack/examples/ingress.example.yaml).
 
+**Behind an Ingress, set `OCTO_TRUSTED_PROXIES`.** The login rate limiter (#157)
+keys on the client address, and without this variable that address is the
+socket peer — which behind an ingress controller is the controller, for every
+user. The per-IP limit is then shared by the whole installation. Set it to the
+ingress controller's pod CIDR (or its pod IPs) so `X-Forwarded-For` is honoured
+from that hop only; it is deliberately ignored otherwise, since a client that
+can write the header can pick its own limiter key. See
+[docs/api-and-rbac.md](../docs/api-and-rbac.md#login-rate-limiting-and-the-auth-audit-trail).
+
 Default RBAC:
 
 | Role | Access |
