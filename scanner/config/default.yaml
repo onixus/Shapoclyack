@@ -30,6 +30,10 @@ runtime:
   log_backup_count: 5
 
 profiles:
+  # top_ports must be 100 or 1000 — it selects one of naabu's named port sets
+  # rather than a count, and naabu rejects anything else. For a different port
+  # range use ports.custom_ports_file (passed to naabu as -p), which takes
+  # arbitrary lists and ranges and overrides top_ports when non-empty.
   # Phase 4.1: default service_probe.backend is pulse (OS/banner/CVE).
   # nse_profile is used only when backend is nmap|hybrid (escape hatch).
   # profiles.<mode>.pulse.* overrides service_probe.pulse for that speed mode.

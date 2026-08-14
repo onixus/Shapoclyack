@@ -1,0 +1,41 @@
+# Optional Prometheus Operator rules for the PostgreSQL backup CronJob.
+# Requires kube-state-metrics and Prometheus Operator. Adjust namespace/thresholds
+# in overlays if the base namespace or backup schedule is changed.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: shapoclyack-backup
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: backup
+spec:
+  groups:
+    - name: shapoclyack-backup
+      rules:
+        - alert: ShapoclyackPostgresBackupStale
+          expr: |
+            time() - kube_cronjob_status_last_successful_time{
+              namespace="network-scan",
+              cronjob="shapoclyack-postgres-backup"
+            } > 93600
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: Shapoclyack PostgreSQL backup is stale
+            description: The last successful PostgreSQL backup is older than 26 hours.
+        - alert: ShapoclyackPostgresBackupJobFailed
+          expr: |
+            max by (namespace) (
+              kube_job_status_failed{
+                namespace="network-scan",
+                job_name=~"shapoclyack-postgres-backup-.*"
+              }
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Shapoclyack PostgreSQL backup job failed
+            description: At least one PostgreSQL backup Job is currently reported failed.

@@ -183,15 +183,171 @@ no agent, device, asset, tenant, or product names):
 | `octo_endpoint_retention_deleted_total{table}` | Rows the sweep removed |
 | `octo_endpoint_retention_run_duration_seconds` | Sweep cost; alert if it approaches the sweep interval |
 
-## Backups
+## Backup and disaster recovery
 
-At minimum:
+### Recovery objectives and verification status
 
-1. quiesce or coordinate writers;
-2. back up PostgreSQL with a database-native method;
-3. snapshot artifact and ClickHouse volumes consistently;
-4. export deployment manifests without secret values;
-5. test restore into an isolated namespace.
+The base deployment takes a logical PostgreSQL backup every day at 02:15 UTC.
+That schedule gives a **design RPO of at most 24 hours** for PostgreSQL, assuming
+the scheduled backup succeeds and is uploaded. The initial **RTO target is 60
+minutes** for restoring the base stack into an isolated namespace. Targets are
+not measurements: issue #158 remains open until a restore drill is run on real
+data and the measured values below are replaced with actual numbers.
 
-NATS streams are operational queues. Design recovery so a restored message
-cannot silently duplicate an already-ingested result.
+| Measure | Target | Last measured |
+|---|---:|---:|
+| PostgreSQL RPO | <= 24 h | **Not yet measured** |
+| Full base-stack RTO | <= 60 min | **Not yet measured** |
+| PostgreSQL `pg_restore` duration | n/a | **Not yet measured** |
+| Restore drill date | n/a | **Not yet performed** |
+
+Do not mark the backup/restore GA blocker complete while any `Not yet` value
+remains in this table.
+
+### PostgreSQL scheduled backup
+
+`k8s/shapoclyack/base/backup/postgres-cronjob.yaml` runs `pg_dump` in custom
+format, creates a SHA-256 checksum, and uploads both files to S3 or an
+S3-compatible object store. `concurrencyPolicy: Forbid` prevents overlapping
+backups. The backup credentials come from `Secret/shapoclyack-backup`; the
+External Secrets Operator example in
+`k8s/shapoclyack/examples/externalsecret.example.yaml` documents the expected
+keys and keeps credentials out of manifests.
+
+For a one-off validation, create a Job from the CronJob and inspect its result:
+
+```bash
+kubectl -n network-scan create job \
+  --from=cronjob/shapoclyack-postgres-backup \
+  shapoclyack-postgres-backup-manual
+kubectl -n network-scan logs -f job/shapoclyack-postgres-backup-manual
+```
+
+A successful run writes `backup_success` with the object prefix. Verify the dump
+and its `.sha256` object exist in external storage before treating the run as a
+usable recovery point.
+
+When kube-state-metrics and Prometheus Operator are installed, apply
+`k8s/shapoclyack/examples/prometheusrule-backup.example.yaml`. It uses
+`kube_cronjob_status_last_successful_time` to alert when the last successful
+backup is older than 26 hours and also reports failed backup Jobs. This keeps a
+missed backup visible without an operator manually listing CronJobs.
+
+### PostgreSQL restore drill
+
+Always test recovery in a namespace that is separate from production. The
+restore script refuses the base `network-scan` namespace unless
+`ALLOW_PRODUCTION_RESTORE=1` is deliberately set.
+
+1. Create an isolated namespace/overlay and deploy the same Shapoclyack base
+   version that will consume the backup. Provide the PostgreSQL and API secrets,
+   but keep ingress and external integrations disabled.
+2. Download `shapoclyack.dump` and `shapoclyack.dump.sha256` from the same backup
+   prefix.
+3. Run:
+
+```bash
+scripts/restore-postgres.sh \
+  --namespace shapoclyack-restore \
+  --backup ./shapoclyack.dump \
+  --checksum ./shapoclyack.dump.sha256
+```
+
+The script verifies SHA-256, restores with `pg_restore --clean --if-exists`,
+restarts the API Deployment so its `migrate` init container runs
+`alembic upgrade head`, waits for a successful rollout, then verifies database
+readiness, `alembic_version`, and the `tenants` table. Record the emitted
+`db_restore_seconds` and `recovery_seconds` values in the verification table
+above.
+
+Calculate the measured RPO from the timestamp represented by the selected
+backup object to the declared incident/drill recovery point. Record both the
+selected backup timestamp and the drill start time so another operator can
+reproduce the calculation.
+
+A restore that completes `pg_restore` but cannot start the current API image is
+a failed drill, not a successful database restore.
+
+### Artifact PVC recovery
+
+`scanner-data` contains reports, raw scan artifacts, checkpoints, and other run
+state. The base PVC intentionally does not assume a storage vendor or a
+`VolumeSnapshotClass`, so the repository cannot safely provide one universal
+snapshot object.
+
+For production, configure CSI `VolumeSnapshot` or the storage provider's native
+snapshot/backup mechanism for `scanner-data`. Restore the snapshot to a **new
+PVC in the isolated namespace** and mount that PVC into the recovery deployment
+before validating reports or attempting resume. Do not overwrite the production
+PVC during a drill.
+
+Snapshot cadence must be chosen so artifact retention is compatible with the
+PostgreSQL RPO. If PostgreSQL is restored to time T but the artifact PVC is much
+older, runs referenced by the database may have missing files.
+
+### ClickHouse recovery
+
+The base ClickHouse StatefulSet is single-replica and stores data under
+`clickhouse-data`. Production installations must choose one of these recovery
+methods and test it with the PostgreSQL drill:
+
+- ClickHouse native `BACKUP`/`RESTORE` to configured external object storage; or
+- a CSI/storage-provider snapshot of `clickhouse-data`, taken while writes are
+  quiesced or using a storage mechanism documented as application-consistent.
+
+Restore ClickHouse into the isolated namespace before enabling the ingest
+worker. Validate `/ping`, expected tables, and representative historical
+queries. Do not infer ClickHouse consistency merely because a PVC snapshot
+object exists.
+
+### NATS / JetStream recovery
+
+JetStream is an operational queue, not the source of truth for assets or scan
+history. Recover durable stores first. Only then decide whether a JetStream
+snapshot is required for messages that were accepted but not durably processed.
+
+Shapoclyack publishes with stable `Nats-Msg-Id` values and uses idempotent
+result/event identifiers. The EVENTS stream also has a duplicate window. A
+restored stream can nevertheless contain messages whose effects already exist
+in PostgreSQL or ClickHouse, especially when the queue snapshot and database
+backup were taken at different times.
+
+Recovery order:
+
+1. restore and validate PostgreSQL, artifact PVC, and ClickHouse;
+2. keep API/worker consumers that mutate durable state paused while inspecting
+   the JetStream snapshot boundary;
+3. identify queued messages newer than the durable recovery point and preserve
+   their original `Nats-Msg-Id` / idempotency identifiers;
+4. restore/replay only the required range;
+5. re-enable consumers and verify duplicate/idempotency counters and durable
+   record counts before exposing the recovered stack.
+
+Never replay a restored stream by republishing every message with new message
+IDs. That defeats the deduplication mechanisms the recovery procedure relies
+on.
+
+### Pod disruption and API availability
+
+`k8s/shapoclyack/base/api-pdb.yaml` sets `minAvailable: 1`. With the current base
+`replicas: 1`, a voluntary eviction is blocked rather than reducing API
+availability to zero. Production overlays that need drain-friendly maintenance
+should run two or more API replicas; the scheduler is already protected by its
+PostgreSQL advisory-lock leadership mechanism.
+
+### NetworkPolicy decision
+
+`k8s/shapoclyack/examples/networkpolicy-agent.example.yaml` deliberately remains
+an example instead of a base resource. NetworkPolicy enforcement and ingress
+controller labels vary by CNI/environment, and the platform can legitimately
+need environment-specific egress to DNS, S3-compatible backup storage, NATS,
+ClickHouse, webhooks, scanners, vulnerability sources, SMTP, or ticketing
+systems. Applying a guessed restrictive policy in base can silently break
+backup and integrations; applying the current example unchanged would also
+permit API ingress from any namespace.
+
+Production deployments should copy/patch the example into their overlay and use
+explicit namespace/pod selectors plus the exact external egress destinations
+for that environment. Treat the absence of an environment-specific policy as a
+production deployment finding, not as a reason to ship a misleading universal
+base policy.

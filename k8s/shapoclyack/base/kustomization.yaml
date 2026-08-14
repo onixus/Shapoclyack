@@ -24,10 +24,12 @@ resources:
   # Postgres (PRIMARY_DB — tenants + asset inventory, Phase 7)
   - postgres/statefulset.yaml
   - postgres/service.yaml
+  - backup
   - job.yaml
   - cronjob.yaml
   - api-deployment.yaml
   - api-service.yaml
+  - api-pdb.yaml
 
 configMapGenerator:
   - name: scanner-config

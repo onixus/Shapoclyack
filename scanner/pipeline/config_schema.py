@@ -76,10 +76,23 @@ class ProfileNucleiConfig(BaseModel):
     overall_timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
 
 
+#: Values naabu's ``-top-ports`` accepts, verbatim (naabu 2.6.1:
+#: ``-top-ports, -tp string  top ports to scan (default 100) [full,100,1000]``).
+#: It is a named port-set selector, not a count: anything else -- 500, 200 --
+#: makes naabu abort with "could not parse ports: invalid top ports option"
+#: before scanning a single host, so every port batch of the run fails. The
+#: config has to reject those up front rather than validate cleanly and let the
+#: port stage die on each batch. ``full`` is deliberately not offered here: the
+#: field is consumed as an int throughout (``ports.py``, the config API, the
+#: web configurator), and an all-65535-port scan is already reachable through
+#: ``ports.custom_ports_file`` (``1-65535``), which naabu takes via ``-p``.
+NaabuTopPorts = Literal[100, 1000]
+
+
 class ProfileConfig(BaseModel):
     discover_rate: int = Field(ge=1, le=100_000)
     port_rate: int = Field(ge=1, le=100_000)
-    top_ports: int = Field(ge=1, le=65535)
+    top_ports: NaabuTopPorts
     nmap_timing: Literal["T0", "T1", "T2", "T3", "T4", "T5"] = "T4"
     nse_profile: str
     nse_concurrency: int | None = Field(default=None, ge=1, le=64)

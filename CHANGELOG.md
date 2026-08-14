@@ -624,6 +624,20 @@ All notable changes to Shapoclyack are documented in this file.
   `defectdojo.py` is an opt-in escape hatch gated on `verify_ssl`, default
   `True`. SAST gate: 5 ERROR findings → 0.
 
+### Fixed
+
+- **`profiles.<mode>.top_ports` now rejects values naabu cannot parse.** The
+  field validated as any integer in 1–65535, but naabu's `-top-ports` is a
+  named port set, not a count — it accepts `100`, `1000` or `full` and nothing
+  else. A profile carrying e.g. `top_ports: 500` passed config validation and
+  then aborted every port batch of every run with `could not parse ports:
+  invalid top ports option`, before a single host was scanned. It is now
+  constrained to `100`/`1000` in the schema and in the config API's editable-path
+  whitelist, and the web configurator offers those two values instead of a free
+  number input. The shipped profiles only ever used 100 and 1000, so no
+  supported configuration changes. A full-range scan is still available through
+  `ports.custom_ports_file` (`1-65535`), which reaches naabu as `-p`.
+
 ### CI
 
 - Jenkins pipeline fixes: kustomize validation installs `kubectl` into the
