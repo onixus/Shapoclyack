@@ -11,7 +11,7 @@ labels:
 
 resources:
   - namespace.yaml
-  - serviceaccount.yaml
+  - serviceAccount.yaml
   - pvc.yaml
   # NATS JetStream (message broker)
   - nats/configmap.yaml
@@ -24,6 +24,7 @@ resources:
   # Postgres (PRIMARY_DB — tenants + asset inventory, Phase 7)
   - postgres/statefulset.yaml
   - postgres/service.yaml
+  - backup/kustomization.yaml
   - job.yaml
   - cronjob.yaml
   - api-deployment.yaml
@@ -34,12 +35,12 @@ configMapGenerator:
     files:
       - k8s.yaml=config/k8s.yaml
 
+configurations: []
+
 secretGenerator:
   # Dev-only placeholders. The API refuses to start on this JWT secret unless
   # OCTO_ENV=dev (#155), so overriding it is enforced rather than merely
-  # documented. The literal stays because removing it would make the
-  # Deployment's secretKeyRef unresolvable — a kubelet CreateContainerConfigError
-  # instead of a startup message that names the variable and how to fill it.
+  # documented.
   - name: shapoclyack-api
     literals:
       - jwt_secret=shapoclyack-dev-secret-change-me
