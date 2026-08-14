@@ -9,7 +9,13 @@ Restores a pg_dump custom-format archive into the Shapoclyack PostgreSQL pod in
 an isolated Kubernetes namespace. The script refuses to run against the default
 production namespace unless ALLOW_PRODUCTION_RESTORE=1 is set explicitly.
 
-Requirements: kubectl, sha256sum (or shasum), and a ready shapoclyack-postgres pod.
+After pg_restore, the script restarts shapoclyack-api so its migration init
+container runs Alembic to the image's current head, waits for the rollout, and
+validates core PostgreSQL tables. The final restore_success line contains the
+measured database restore and end-to-end recovery durations for the drill.
+
+Requirements: kubectl, sha256sum (or shasum), and the base Shapoclyack stack
+(PostgreSQL + API Deployment) already created in the target namespace.
 EOF
 }
 
@@ -56,25 +62,25 @@ if [ -z "$checksum" ]; then
   checksum="${backup}.sha256"
 fi
 
-if [ -f "$checksum" ]; then
-  echo "Verifying backup checksum..."
-  expected="$(awk '{print $1}' "$checksum")"
-  if command -v sha256sum >/dev/null 2>&1; then
-    actual="$(sha256sum "$backup" | awk '{print $1}')"
-  elif command -v shasum >/dev/null 2>&1; then
-    actual="$(shasum -a 256 "$backup" | awk '{print $1}')"
-  else
-    echo "neither sha256sum nor shasum is available" >&2
-    exit 4
-  fi
-  [ "$expected" = "$actual" ] || {
-    echo "checksum mismatch for $backup" >&2
-    exit 4
-  }
-else
+if [ ! -f "$checksum" ]; then
   echo "checksum file not found: $checksum" >&2
   exit 4
 fi
+
+echo "Verifying backup checksum..."
+expected="$(awk '{print $1}' "$checksum")"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$backup" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$backup" | awk '{print $1}')"
+else
+  echo "neither sha256sum nor shasum is available" >&2
+  exit 4
+fi
+[ "$expected" = "$actual" ] || {
+  echo "checksum mismatch for $backup" >&2
+  exit 4
+}
 
 selector='app.kubernetes.io/name=shapoclyack,app.kubernetes.io/component=postgres'
 pod="$(kubectl -n "$namespace" get pods -l "$selector" \
@@ -85,13 +91,20 @@ pod="$(kubectl -n "$namespace" get pods -l "$selector" \
   exit 5
 }
 
+kubectl -n "$namespace" get deployment shapoclyack-api >/dev/null 2>&1 || {
+  echo "shapoclyack-api deployment not found in namespace $namespace" >&2
+  echo "restore drills must run against the complete base stack so migrations are validated" >&2
+  exit 5
+}
+
 kubectl -n "$namespace" wait --for=condition=Ready "pod/$pod" --timeout=120s
 
 remote="/tmp/shapoclyack-restore.dump"
 echo "Copying archive to $namespace/$pod..."
 kubectl -n "$namespace" cp "$backup" "$pod:$remote"
 
-started="$(date +%s)"
+recovery_started="$(date +%s)"
+db_started="$recovery_started"
 echo "Restoring database in $namespace..."
 kubectl -n "$namespace" exec "$pod" -- sh -ec '
   export PGPASSWORD="$POSTGRES_PASSWORD"
@@ -108,6 +121,11 @@ kubectl -n "$namespace" exec "$pod" -- sh -ec '
     /tmp/shapoclyack-restore.dump
   rm -f /tmp/shapoclyack-restore.dump
 '
+db_finished="$(date +%s)"
+
+echo "Running application migrations through the API init container..."
+kubectl -n "$namespace" rollout restart deployment/shapoclyack-api
+kubectl -n "$namespace" rollout status deployment/shapoclyack-api --timeout=300s
 
 echo "Validating restored database..."
 kubectl -n "$namespace" exec "$pod" -- sh -ec '
@@ -119,7 +137,8 @@ kubectl -n "$namespace" exec "$pod" -- sh -ec '
     "select count(*) from tenants" >/dev/null
 '
 
-finished="$(date +%s)"
-duration="$((finished - started))"
-printf 'restore_success namespace=%s duration_seconds=%s backup=%s\n' \
-  "$namespace" "$duration" "$backup"
+recovery_finished="$(date +%s)"
+db_duration="$((db_finished - db_started))"
+recovery_duration="$((recovery_finished - recovery_started))"
+printf 'restore_success namespace=%s db_restore_seconds=%s recovery_seconds=%s backup=%s\n' \
+  "$namespace" "$db_duration" "$recovery_duration" "$backup"
