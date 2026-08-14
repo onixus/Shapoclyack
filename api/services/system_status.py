@@ -197,6 +197,13 @@ def runtime_info(settings: Settings) -> dict[str, Any]:
         "job_lease_seconds": settings.job_lease_seconds,
         "job_max_attempts": settings.job_max_attempts,
         "job_reaper_enabled": settings.job_reaper_enabled,
+        "login_rate_limit_enabled": settings.login_rate_limit_enabled,
+        "login_rate_limit_max_failures": settings.login_rate_limit_max_failures,
+        "login_rate_limit_window_seconds": settings.login_rate_limit_window_seconds,
+        # Whether *any* proxy is trusted, never which — the addresses are
+        # infrastructure detail, and the operator question this answers is
+        # "is X-Forwarded-For being honoured at all" (#157).
+        "trusted_proxies_configured": bool(settings.trusted_proxies),
     }
 
 

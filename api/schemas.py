@@ -408,6 +408,22 @@ class GrantMembershipRequest(BaseModel):
     role: Literal["viewer", "operator", "admin"] = "viewer"
 
 
+class AuthEventInfo(BaseModel):
+    """One recorded login attempt (#157).
+
+    ``outcome`` is ``success``, ``failure`` (credentials checked and rejected)
+    or ``locked`` (refused by the rate limiter before they were checked).
+    ``reason`` is NULL on success.
+    """
+
+    id: int
+    occurred_at: str | None = None
+    username: str
+    client_ip: str
+    outcome: Literal["success", "failure", "locked"]
+    reason: str | None = None
+
+
 class UserInfo(BaseModel):
     """A console account (#156). Carries no password material by construction."""
 
@@ -551,6 +567,13 @@ class RuntimeInfo(BaseModel):
     job_lease_seconds: int = 300
     job_max_attempts: int = 3
     job_reaper_enabled: bool = True
+    # Login brute-force protection (#157). Without a trusted proxy configured
+    # behind an ingress, every attempt is attributed to the ingress address and
+    # the whole installation shares one limiter key.
+    login_rate_limit_enabled: bool = True
+    login_rate_limit_max_failures: int = 5
+    login_rate_limit_window_seconds: int = 900
+    trusted_proxies_configured: bool = False
 
 
 class InventoryCounts(BaseModel):

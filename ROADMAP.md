@@ -378,14 +378,14 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 |-------|-------|------|------|
 | ~~[#155](https://github.com/onixus/Shapoclyack/issues/155)~~ | Fail-closed config — refuse to start on default secrets / `CORS=*` | **Done** | `OCTO_ENV` defaults to `prod`; refuses on the default JWT secret or any `*` in CORS. The accounts half moved to startup with #156 |
 | ~~[#156](https://github.com/onixus/Shapoclyack/issues/156)~~ | Users into Postgres, no plaintext passwords | **Done** | `users` table (migration `0013`) with a real FK from `user_tenants`; bcrypt only; `/api/users` + `POST /api/auth/password`; `OCTO_API_USERS` demoted to a one-time bootstrap import |
-| [#157](https://github.com/onixus/Shapoclyack/issues/157) | Login brute-force protection + auth audit | ~0.5 sprint | No rate limit on `POST /api/auth/login` today; counter must be in Postgres to hold across replicas |
+| ~~[#157](https://github.com/onixus/Shapoclyack/issues/157)~~ | Login brute-force protection + auth audit | **Done** | `auth_events` (migration `0014`) is the audit trail *and* the counter: 5 failures per (username, IP) and 50 per IP across usernames in a 15-min decaying window → `429` + `Retry-After`, identical whether the account exists. `X-Forwarded-For` honoured only behind `OCTO_TRUSTED_PROXIES`; `octo_auth_attempts_total{outcome}`; admin `GET /api/auth/events` |
 | [#158](https://github.com/onixus/Shapoclyack/issues/158) | Automated backup + **rehearsed** restore | ~1 sprint | `docs/operations.md` describes intent; no CronJob, no restore script, no measured RPO/RTO. Also covers the missing PodDisruptionBudget and `examples/`-only NetworkPolicy |
 | [#159](https://github.com/onixus/Shapoclyack/issues/159) | Safe upgrade — migrations out of the initContainer, PDB, rollback | ~0.5 sprint | Alembic runs in **every** replica's initContainer ([api-deployment.yaml:36](k8s/shapoclyack/base/api-deployment.yaml:36)); [P1.6](#p1-breakdown--durable-control-plane) removed the `replicas: 1` guard that made this safe. Second schema path via `create_all` ([api/db/engine.py:34](api/db/engine.py:34)) |
 | [#151](https://github.com/onixus/Shapoclyack/issues/151) | Outbound webhook SSRF / credential-leak hardening | ~1 sprint | Release blocker — webhooks ([10.3](#phase-10--change-detection--alerting-at-asset-level)) ship *in* GA, not after |
 | [#160](https://github.com/onixus/Shapoclyack/issues/160) | Cut the release, empty `## Unreleased` | ~1 d | Last, after the rest is merged. See the [baseline note](#current-baseline-done) — the issue's "last tag is 0.33" is stale |
 
-Order: ~~#155~~ and #158 are independent and went first; ~~#156~~ → **#157 is next** in
-sequence; #159 in parallel; #160 last. A fourth item of the same fail-open shape was
+Order: ~~#155~~ and #158 are independent and went first; ~~#156~~ → ~~#157~~ are
+done, so **#158 and #159 are what remain** before #160 closes the wave. A fourth item of the same fail-open shape was
 found while doing #155 and is now [#174](https://github.com/onixus/Shapoclyack/issues/174):
 `OCTO_POSTGRES_URL` silently falls back to local SQLite, which quietly gives every replica
 its own control plane. **Wave 1** (after the blockers, not yet filed as issues):

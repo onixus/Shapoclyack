@@ -199,6 +199,26 @@ class Settings:
     job_max_attempts: int = 3
     job_reaper_enabled: bool = True
     job_reaper_interval_seconds: int = 60
+    # Login brute-force protection (#157). The counter is the auth_events table,
+    # so the limit holds across replicas; see api/services/auth_audit.py.
+    login_rate_limit_enabled: bool = True
+    # Failures allowed per (username, client IP) inside the window. Five is a
+    # typo budget, not a guessing budget: a human who has forgotten which of
+    # their passwords this is has room, an attacker gets 5 per 15 minutes.
+    login_rate_limit_max_failures: int = 5
+    login_rate_limit_window_seconds: int = 900
+    # The same window counted per IP across all usernames, which is what one
+    # address walking a username list looks like. Deliberately much looser: a
+    # NAT gateway or an office egress IP is many legitimate users.
+    login_rate_limit_ip_max_failures: int = 50
+    # Trusted reverse proxies (comma-separated IPs/CIDRs). X-Forwarded-For is
+    # honoured **only** when the immediate peer is one of these — otherwise the
+    # client picks its own limiter key by writing the header. Empty (default)
+    # means the socket peer is always used. See api/core/client_ip.py.
+    trusted_proxies: list[str] = field(default_factory=list)
+    # Audit-trail retention. Pruned opportunistically on login (auth_audit);
+    # 0 keeps events forever.
+    auth_event_retention_days: int = 90
 
 
 # Legacy sqlite filename from when the product was called "octo-man". Kept as a
@@ -410,6 +430,25 @@ def load_settings() -> Settings:
         # loop hammering the database rather than "sweep more often".
         job_reaper_interval_seconds=max(
             5, int(os.environ.get("OCTO_JOB_REAPER_INTERVAL_SECONDS", "60"))
+        ),
+        login_rate_limit_enabled=os.environ.get("OCTO_LOGIN_RATE_LIMIT_ENABLED", "true").lower()
+        in {"1", "true", "yes", "on"},
+        login_rate_limit_max_failures=max(
+            1, int(os.environ.get("OCTO_LOGIN_RATE_LIMIT_MAX_FAILURES", "5"))
+        ),
+        login_rate_limit_window_seconds=max(
+            1, int(os.environ.get("OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS", "900"))
+        ),
+        login_rate_limit_ip_max_failures=max(
+            1, int(os.environ.get("OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES", "50"))
+        ),
+        trusted_proxies=[
+            part.strip()
+            for part in os.environ.get("OCTO_TRUSTED_PROXIES", "").split(",")
+            if part.strip()
+        ],
+        auth_event_retention_days=max(
+            0, int(os.environ.get("OCTO_AUTH_EVENT_RETENTION_DAYS", "90"))
         ),
     )
 

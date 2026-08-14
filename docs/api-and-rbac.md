@@ -24,6 +24,54 @@ Agents use a separate provisioning flow. A tenant provisioning key is exchanged
 for a short-lived agent JWT; the plaintext provisioning key is returned only
 when it is created.
 
+## Login rate limiting and the auth audit trail
+
+Every login attempt is recorded in the Postgres `auth_events` table (migration
+`0014`) and counted in `octo_auth_attempts_total{outcome}`. `outcome` is
+`success`, `failure` (credentials checked and rejected) or `locked` (refused by
+the limiter before they were checked).
+
+Those same rows *are* the limiter. Two counters run over the same window
+(`OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS`, default 15 minutes):
+
+| Counter | Default | What it stops |
+|---|---|---|
+| Failures per `(username, client IP)` | 5 | Guessing one account's password |
+| Failures per client IP, all usernames | 50 | One address walking a username list |
+
+Either one tripping answers `429` with a `Retry-After` header. The body is the
+same text whichever limit tripped and whether or not the account exists — a
+refusal is the last place worth confirming that a username is real.
+
+Three properties are deliberate:
+
+- **The counter is a table, not a process.** With more than one API replica an
+  in-memory limit is divided by the replica count, and which replica serves an
+  attempt is the load balancer's choice.
+- **The window decays; nothing is unlocked by hand.** The correct password
+  works again once the counted failures age out. A lock an attacker could make
+  permanent by failing on purpose would be a denial of service against any
+  username they know.
+- **`X-Forwarded-For` is read only behind a configured proxy.** The client
+  writes that header itself, so trusting it unconditionally would let each
+  attempt pick a fresh limiter key. Set `OCTO_TRUSTED_PROXIES` to the ingress
+  addresses; unset, the socket peer is used and the header is ignored. See
+  [configuration.md](configuration.md#environment-variables).
+
+Reading the trail (platform admin only):
+
+```http
+GET /api/auth/events?limit=100&outcome=failure&q=10.1.2.3
+```
+
+Newest first, `Page` envelope like the other lists. `q` matches username or
+client IP; `outcome` filters to one of the three values. Rows older than
+`OCTO_AUTH_EVENT_RETENTION_DAYS` (default 90) are pruned.
+
+A locked-out client keeps retrying, and recording each retry would make the
+audit trail an amplifier for unauthenticated writes — so one `locked` row is
+written per window and the rest are counted only in `/metrics`.
+
 ## Roles
 
 | Role | Intended capability |
@@ -39,7 +87,7 @@ not an authorization control.
 
 | Prefix | Purpose |
 |---|---|
-| `/api/auth` | Login and current principal |
+| `/api/auth` | Login, current principal, and the authentication audit trail (`/api/auth/events`, admin) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, and fleet status |

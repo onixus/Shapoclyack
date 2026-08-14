@@ -239,6 +239,18 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
+Login rate limiting and the auth audit trail (see
+[api-and-rbac.md](api-and-rbac.md#login-rate-limiting-and-the-auth-audit-trail)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_LOGIN_RATE_LIMIT_ENABLED` | `true` | Enforce the login limit. Off still records every attempt in `auth_events` — the audit trail is not the limiter |
+| `OCTO_LOGIN_RATE_LIMIT_MAX_FAILURES` | `5` | Failed logins allowed per `(username, client IP)` inside the window. A typo budget, not a guessing budget |
+| `OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `900` | Length of that window. Failures age out of it on their own; nothing unlocks an account by hand |
+| `OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES` | `50` | Failures allowed per client IP across *all* usernames, in the same window — what walking a username list looks like. Much looser on purpose: one NAT or office egress address is many legitimate users, and tripping it refuses them too |
+| `OCTO_TRUSTED_PROXIES` | *(empty)* | Comma-separated proxy IPs/CIDRs. `X-Forwarded-For` is read **only** when the immediate peer is one of these. Leave empty and every attempt is attributed to the socket peer — set it when the API sits behind an ingress, or the whole installation shares one limiter key |
+| `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever |
+
 Job leases and the reaper (see [architecture.md](architecture.md#leases)):
 
 | Variable | Default | Purpose |

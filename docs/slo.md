@@ -31,6 +31,7 @@ them.
 | 5 | Ingest freshness | ClickHouse ingest consumer lag | **< 1 000 messages, 99 % of samples** |
 | 6 | Ingest correctness | share of ingest messages processed without error | **≥ 99.9 %** |
 | 7 | Endpoint inventory acceptance | share of submissions with `result="accepted"` | **≥ 99 %** |
+| 8 | Authentication | login attempts by outcome | **no target** — a security signal, alerted on directly ([below](#8-authentication-a-security-signal-not-an-availability-one)) |
 
 ### 1. API availability
 
@@ -162,6 +163,32 @@ correct behaviour, but a sustained replay share means an agent is retrying
 without progressing. Break the ratio down by `result` before acting —
 `rate_limited` and `too_large` are operator-tunable, `invalid` and `conflict`
 are contract bugs.
+
+### 8. Authentication (a security signal, not an availability one)
+
+`octo_auth_attempts_total{outcome}` has no objective attached, and it is listed
+here because it is the one series on this page you alert on directly rather
+than through a burn rate. There is no error budget for password guessing: a
+sustained failure rate is not a fraction of acceptable, it is an event.
+
+```promql
+# Refusals by the login limiter — someone is being stopped, repeatedly.
+sum(rate(octo_auth_attempts_total{outcome="locked"}[5m])) > 0
+
+# Failures far above the daily norm, whether or not any lock has tripped
+# (a slow, distributed attempt stays under the per-pair limit by design).
+sum(rate(octo_auth_attempts_total{outcome="failure"}[15m]))
+> 5 * sum(rate(octo_auth_attempts_total{outcome="failure"}[7d] offset 5m))
+```
+
+Both are ticket-level, not page-level: the limiter is already refusing the
+traffic, and the value of the alert is that someone reads
+`GET /api/auth/events` (see
+[api-and-rbac.md](api-and-rbac.md#login-rate-limiting-and-the-auth-audit-trail))
+and decides whether a *successful* login followed the failures. That last
+question is the one the metric cannot answer on its own — `outcome="success"`
+carries no username, deliberately, since a per-user label is unbounded
+cardinality driven by whatever an attacker types.
 
 ## Error budget policy
 

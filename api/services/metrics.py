@@ -63,6 +63,15 @@ JOB_IDEMPOTENT_REPLAYS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+AUTH_ATTEMPTS_TOTAL = Counter(
+    "octo_auth_attempts_total",
+    "Console login attempts, by outcome (success, failure, locked). 'locked' "
+    "is an attempt refused by the rate limiter before the password was "
+    "checked (#157).",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
 NATS_CONSUMER_PENDING = Gauge(
     "octo_nats_consumer_pending",
     "JetStream durable consumer pending message count (consumer lag).",

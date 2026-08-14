@@ -53,6 +53,38 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Login rate limiting and an authentication audit trail** (#157).
+  `POST /api/auth/login` was unlimited and unrecorded: guessing a password was
+  bounded only by network throughput, and a successful guess looked exactly
+  like an ordinary sign-in in the logs and in `/metrics`.
+
+  Every attempt is now a row in `auth_events` (migration `0014`) and a tick of
+  `octo_auth_attempts_total{outcome}` — `success`, `failure`, or `locked` (the
+  limiter refused it before the password was checked). Those same rows *are*
+  the limiter: two counters over one window (default 15 min) allow **5**
+  failures per `(username, client IP)` and **50** per client IP across all
+  usernames, the second being what walking a username list looks like. Either
+  tripping answers `429` with `Retry-After`, in the same words whether or not
+  the account exists.
+
+  The counter is a table rather than a process because more than one API
+  replica is now legal to run (ROADMAP P1.6) — in memory the limit would be
+  divided by the replica count and reset on every rollout. The window decays on
+  its own, so a correct password works again with no operator involved and an
+  attacker cannot lock a known username out permanently by failing on purpose.
+
+  `X-Forwarded-For` is honoured **only** when the immediate peer is listed in
+  the new `OCTO_TRUSTED_PROXIES`; otherwise the client would pick its own
+  limiter key by writing the header. Unset (the default), the socket peer is
+  used — set it when the API sits behind an ingress, or the whole installation
+  shares one key.
+
+  New admin endpoint `GET /api/auth/events` (newest first, `Page` envelope,
+  filters on username/IP and outcome). Rows are pruned past
+  `OCTO_AUTH_EVENT_RETENTION_DAYS` (default 90), and a locked-out client writes
+  one `locked` row per window rather than one per retry — otherwise the audit
+  trail is an amplifier for unauthenticated writes.
+
 - **Console accounts moved to Postgres; plaintext passwords no longer
   authenticate** (#156) — **breaking.** Accounts live in a `users` table
   (migration `0013`) instead of the `OCTO_API_USERS` environment variable, and

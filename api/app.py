@@ -26,6 +26,7 @@ from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse
 from api.services import agents as agents_service
+from api.services import auth_audit
 from api.services import ch_ingest_worker
 from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     agents_service.load_agents(settings)
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
+    auth_audit.configure(settings)
     endpoint_inventory_service.configure(settings)
     webhooks_service.configure(settings)
     wordlists_service.configure(settings)

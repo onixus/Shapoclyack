@@ -97,6 +97,7 @@ def reset_service_state(settings: "Settings") -> None:
     reference — no module-level dicts left to clear.
     """
     from api.services import agents as agents_service
+    from api.services import auth_audit
     from api.services import scan_schedules
     from api.services import tenants as tenants_service
     from api.services import users as users_service
@@ -117,6 +118,10 @@ def reset_service_state(settings: "Settings") -> None:
     webhooks_service.configure(settings)
     webhooks_service.reset_for_tests()
     wordlists_service.configure(settings)
+    # Login attempts are rows now (#157), so a previous test's failed logins
+    # would otherwise count against this one's rate limit.
+    auth_audit.configure(settings)
+    auth_audit.reset_for_tests()
 
 
 def api_client() -> "TestClient":
