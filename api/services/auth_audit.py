@@ -29,13 +29,15 @@ attacker cannot lock a known username out permanently by failing on purpose.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Callable, Iterator
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, text
 
 from api.db import models
 from api.db.engine import get_session
@@ -101,33 +103,33 @@ def _to_dict(row: models.AuthEvent) -> dict[str, Any]:
     }
 
 
-def check_lockout(username: str, client_ip: str) -> Lockout | None:
-    """Return the refusal to apply to this attempt, or None to let it proceed.
+def _lockout_for(session, settings: Settings, username: str, client_ip: str) -> Lockout | None:
+    """The refusal to apply to this attempt, or None to let it proceed.
 
     Counts *failures* only. A successful login does not clear the window — it
     does not need to, because the window is short and a legitimate user who has
     just succeeded is not being counted for their next attempt either. What it
     does mean is that the limit is on failures per window, full stop, which is
     the property that is easy to state and easy to verify.
+
+    Reads through the caller's session, so the count and the failure it leads
+    to happen inside one transaction — see :func:`attempt_login`.
     """
-    settings = _require_settings()
     if not settings.login_rate_limit_enabled:
         return None
 
     window = max(1, settings.login_rate_limit_window_seconds)
     cutoff = _now() - timedelta(seconds=window)
 
-    with get_session(settings.postgres_url) as session:
-        # One round trip for both counters: the per-IP limit is a superset of
-        # the pair's rows, so counting them separately would read the same rows
-        # twice.
-        rows = session.execute(
-            select(models.AuthEvent.username, models.AuthEvent.occurred_at).where(
-                models.AuthEvent.client_ip == client_ip,
-                models.AuthEvent.occurred_at >= cutoff,
-                models.AuthEvent.outcome == OUTCOME_FAILURE,
-            )
-        ).all()
+    # One round trip for both counters: the per-IP limit is a superset of the
+    # pair's rows, so counting them separately would read the same rows twice.
+    rows = session.execute(
+        select(models.AuthEvent.username, models.AuthEvent.occurred_at).where(
+            models.AuthEvent.client_ip == client_ip,
+            models.AuthEvent.occurred_at >= cutoff,
+            models.AuthEvent.outcome == OUTCOME_FAILURE,
+        )
+    ).all()
 
     if not rows:
         return None
@@ -163,39 +165,30 @@ def _retry_after(times: list[datetime], limit: int, window: int) -> int:
     return max(1, int(remaining) + 1)
 
 
-def record(
+def _record(
+    session,
     *,
     username: str,
     client_ip: str,
     outcome: str,
     reason: str | None = None,
 ) -> None:
-    """Append one attempt to the audit trail and count it in ``/metrics``.
-
-    Best-effort with respect to the caller: an audit write that fails must not
-    turn a valid login into a 500. It is logged at error level, and the metric
-    still moves, so the failure is visible rather than silent.
-    """
-    settings = _require_settings()
+    """Append one attempt to the audit trail and count it in ``/metrics``."""
     metrics_service.AUTH_ATTEMPTS_TOTAL.labels(outcome).inc()
-    try:
-        with get_session(settings.postgres_url) as session:
-            session.add(
-                models.AuthEvent(
-                    occurred_at=_now(),
-                    username=username[:128],
-                    client_ip=client_ip[:64],
-                    outcome=outcome,
-                    reason=reason,
-                )
-            )
-    except Exception:  # pragma: no cover - defensive
-        logger.exception("Failed to record auth event (%s) for %r", outcome, username)
-        return
-    _maybe_prune(settings)
+    session.add(
+        models.AuthEvent(
+            occurred_at=_now(),
+            username=username[:128],
+            client_ip=client_ip[:64],
+            outcome=outcome,
+            reason=reason,
+        )
+    )
 
 
-def record_locked(*, username: str, client_ip: str, lockout: Lockout) -> None:
+def _record_locked(
+    session, settings: Settings, *, username: str, client_ip: str, lockout: Lockout
+) -> None:
     """Record a refused-while-locked attempt, at most once per window.
 
     A locked-out client typically keeps trying, and each of those requests is
@@ -204,34 +197,122 @@ def record_locked(*, username: str, client_ip: str, lockout: Lockout) -> None:
     that carries the information ("this pair hit the limit at this time"); the
     rest are the same fact repeated, and are counted in ``/metrics`` instead.
     """
-    settings = _require_settings()
     metrics_service.AUTH_ATTEMPTS_TOTAL.labels(OUTCOME_LOCKED).inc()
     cutoff = _now() - timedelta(seconds=max(1, settings.login_rate_limit_window_seconds))
-    try:
-        with get_session(settings.postgres_url) as session:
-            already = session.execute(
-                select(models.AuthEvent.id)
-                .where(
-                    models.AuthEvent.username == username[:128],
-                    models.AuthEvent.client_ip == client_ip[:64],
-                    models.AuthEvent.outcome == OUTCOME_LOCKED,
-                    models.AuthEvent.occurred_at >= cutoff,
-                )
-                .limit(1)
-            ).first()
-            if already is not None:
-                return
-            session.add(
-                models.AuthEvent(
-                    occurred_at=_now(),
-                    username=username[:128],
-                    client_ip=client_ip[:64],
-                    outcome=OUTCOME_LOCKED,
-                    reason=lockout.reason,
-                )
+    already = session.execute(
+        select(models.AuthEvent.id)
+        .where(
+            models.AuthEvent.username == username[:128],
+            models.AuthEvent.client_ip == client_ip[:64],
+            models.AuthEvent.outcome == OUTCOME_LOCKED,
+            models.AuthEvent.occurred_at >= cutoff,
+        )
+        .limit(1)
+    ).first()
+    if already is not None:
+        return
+    session.add(
+        models.AuthEvent(
+            occurred_at=_now(),
+            username=username[:128],
+            client_ip=client_ip[:64],
+            outcome=OUTCOME_LOCKED,
+            reason=lockout.reason,
+        )
+    )
+
+
+def _lock_key(username: str, client_ip: str) -> tuple[int, int]:
+    """Two int32s identifying one limiter key, for ``pg_advisory_xact_lock``."""
+    digest = hashlib.blake2b(f"{username}\x00{client_ip}".encode("utf-8"), digest_size=8).digest()
+    high = int.from_bytes(digest[:4], "big", signed=True)
+    low = int.from_bytes(digest[4:], "big", signed=True)
+    return high, low
+
+
+# Fallback mutual exclusion for backends without advisory locks — in practice
+# only the SQLite dev/test URL, which by definition has one process. Striped
+# rather than one lock per key so the table cannot grow with attacker-chosen
+# usernames; a collision costs two unrelated logins a few milliseconds.
+_STRIPES = [threading.Lock() for _ in range(64)]
+
+
+@contextmanager
+def _serialized(settings: Settings, username: str, client_ip: str) -> Iterator[Any]:
+    """A session in which this limiter key is held exclusively.
+
+    Without this, the count and the failure it produces are two statements with
+    a gap between them, and the gap is the whole attack: a parallel batch of
+    guesses all read "4 failures so far" before any of them writes the fifth,
+    so a threshold of 5 admits as many attempts as the attacker can open
+    sockets — across replicas too, since the read is per-request.
+
+    On Postgres the lock is a transaction-scoped advisory lock, released when
+    the transaction ends (including by a crashed backend), so nothing here can
+    strand a key. It is held across password verification, which is deliberate
+    — that is the operation being rate-limited — and costs one pooled
+    connection per *distinct* key in flight, not per request.
+    """
+    with get_session(settings.postgres_url) as session:
+        if settings.postgres_url.startswith("postgres"):
+            high, low = _lock_key(username, client_ip)
+            session.execute(text("SELECT pg_advisory_xact_lock(:high, :low)"), {"high": high, "low": low})
+            yield session
+            return
+        stripe = _STRIPES[hash((username, client_ip)) % len(_STRIPES)]
+        with stripe:
+            yield session
+
+
+@dataclass(frozen=True)
+class AttemptOutcome:
+    """What happened to one login attempt. Exactly one field is set."""
+
+    lockout: Lockout | None = None
+    user: Any | None = None
+
+
+def attempt_login(*, username: str, client_ip: str, verify: Callable[[], Any]) -> AttemptOutcome:
+    """Rate-limit, verify, and record one login attempt as a single operation.
+
+    ``verify`` is called only when the attempt is allowed, and is called *while
+    the limiter key is held* — that is what makes the limit a limit rather than
+    a suggestion under concurrency. It returns the authenticated user, or None.
+
+    Errors are not swallowed. An earlier draft recorded best-effort so that a
+    broken audit write could not fail a valid login, but console accounts live
+    in the same database: if it is unreachable, no login can succeed anyway, and
+    a 500 states that more honestly than an unrecorded, unlimited login form.
+    """
+    settings = _require_settings()
+    with _serialized(settings, username, client_ip) as session:
+        lockout = _lockout_for(session, settings, username, client_ip)
+        if lockout is not None:
+            _record_locked(session, settings, username=username, client_ip=client_ip, lockout=lockout)
+            return AttemptOutcome(lockout=lockout)
+
+        user = verify()
+        if user is None:
+            _record(
+                session,
+                username=username,
+                client_ip=client_ip,
+                outcome=OUTCOME_FAILURE,
+                reason=REASON_INVALID_CREDENTIALS,
             )
-    except Exception:  # pragma: no cover - defensive
-        logger.exception("Failed to record lockout for %r", username)
+            return AttemptOutcome()
+
+        _record(
+            session,
+            username=getattr(user, "username", username),
+            client_ip=client_ip,
+            outcome=OUTCOME_SUCCESS,
+        )
+        outcome = AttemptOutcome(user=user)
+    # After the lock is released: pruning is unrelated to this attempt's
+    # decision and must not hold the key while it deletes.
+    _maybe_prune(settings)
+    return outcome
 
 
 def list_events(
@@ -300,7 +381,14 @@ def _maybe_prune(settings: Settings) -> None:
         if _last_prune is not None and now - _last_prune < _PRUNE_INTERVAL:
             return
         _last_prune = now
-    cutoff = now - timedelta(days=days)
+    # Never inside the limiter's own window. These are two settings an operator
+    # can pick independently, and a retention shorter than the window would let
+    # pruning delete failures the limiter still has to count — turning a
+    # tightened audit policy into a quietly weakened lockout.
+    keep_for = max(
+        timedelta(days=days), timedelta(seconds=max(1, settings.login_rate_limit_window_seconds))
+    )
+    cutoff = now - keep_for
     try:
         with get_session(settings.postgres_url) as session:
             session.execute(delete(models.AuthEvent).where(models.AuthEvent.occurred_at < cutoff))

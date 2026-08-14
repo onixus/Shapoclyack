@@ -49,6 +49,12 @@ What the map claims, and what it does not:
   database configured — are listed under **Unlocated hosts** rather than
   dropped, so the map never reads as the whole estate.
 
+Run sub-resources are `limit`-only by design (ROADMAP P3.2), so a run larger
+than one page arrives truncated. The page says so in a banner rather than
+presenting a partial estate as complete, and a host's finding count always
+comes from the server-side per-host total rather than from the truncated
+findings page.
+
 The map is a self-contained SVG with no runtime dependency and no external
 tiles: nothing on this page calls out of the browser, which also means it works
 in an air-gapped install. The land outline and country centroids are generated

@@ -258,6 +258,45 @@ def test_repeated_locked_attempts_write_one_row_per_window(tmp_path, monkeypatch
     assert events.json()["total"] == 1
 
 
+def test_concurrent_guesses_cannot_outrun_the_counter(tmp_path, monkeypatch):
+    """A parallel batch must not all pass a count taken before any of them was
+    recorded — the check and the failure it produces are one operation."""
+    import concurrent.futures
+
+    client = _client(tmp_path, monkeypatch, login_rate_limit_max_failures=3)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+        statuses = [f.result().status_code for f in [pool.submit(_fail, client) for _ in range(12)]]
+
+    # Three attempts reach the password check; every later one is refused,
+    # whatever order the threads ran in.
+    assert statuses.count(401) == 3
+    assert statuses.count(429) == 9
+
+    events = client.get(
+        "/api/auth/events", headers=auth_headers(client, "admin"), params={"outcome": "failure"}
+    )
+    assert events.json()["total"] == 3
+
+
+def test_failures_survive_a_retention_shorter_than_the_window(tmp_path, monkeypatch):
+    """Retention and the limiter window are set independently; pruning must not
+    delete failures the limiter still has to count."""
+    client = _client(
+        tmp_path,
+        monkeypatch,
+        login_rate_limit_max_failures=3,
+        login_rate_limit_window_seconds=3600,
+        # Shorter than the window, and short enough that "1 day ago" prunes.
+        auth_event_retention_days=1,
+    )
+    for _ in range(3):
+        _fail(client)
+    # The next attempt runs a prune (first call in this process).
+    assert _fail(client).status_code == 429
+    assert _fail(client).status_code == 429
+
+
 def test_events_are_admin_only(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     for role in ("viewer", "operator"):

@@ -69,6 +69,21 @@ def test_system_status_leaks_no_secrets():
     assert settings.jwt_secret not in raw
 
 
+def test_system_status_reports_only_parsed_trusted_proxies(tmp_path, monkeypatch):
+    """The flag answers "is X-Forwarded-For being honoured", so it has to follow
+    the parsed networks: unparsable entries are dropped with a warning, and a
+    list of typos means every login is still attributed to the ingress peer."""
+    from tests.conftest import auth_headers, configured_client
+
+    typos = configured_client(tmp_path, monkeypatch, trusted_proxies=["not-an-ip", "10.0.0.0/99"])
+    runtime = typos.get("/api/system", headers=auth_headers(typos, "admin")).json()["runtime"]
+    assert runtime["trusted_proxies_configured"] is False
+
+    real = configured_client(tmp_path, monkeypatch, trusted_proxies=["10.0.0.0/8"])
+    runtime = real.get("/api/system", headers=auth_headers(real, "admin")).json()["runtime"]
+    assert runtime["trusted_proxies_configured"] is True
+
+
 def test_system_status_requires_auth():
     client = api_client()
     assert client.get("/api/system").status_code == 401

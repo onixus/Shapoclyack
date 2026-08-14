@@ -69,31 +69,26 @@ def login(
     (#157), so the limit is shared by every API replica. A refusal is a 429
     with ``Retry-After``; it does not reveal whether the account exists, and
     the window decays on its own — no operator unlocks anything.
+
+    Counting, verification and recording happen inside ``attempt_login`` as one
+    serialized operation, so a batch of concurrent guesses cannot all pass a
+    count taken before any of them has been recorded.
     """
     client_ip = _client_ip(request, settings)
-    lockout = auth_audit.check_lockout(body.username, client_ip)
-    if lockout is not None:
-        auth_audit.record_locked(username=body.username, client_ip=client_ip, lockout=lockout)
+    outcome = auth_audit.attempt_login(
+        username=body.username,
+        client_ip=client_ip,
+        verify=lambda: authenticate_user(settings, body.username, body.password),
+    )
+    if outcome.lockout is not None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=_LOCKED_DETAIL,
-            headers={"Retry-After": str(lockout.retry_after_seconds)},
+            headers={"Retry-After": str(outcome.lockout.retry_after_seconds)},
         )
-
-    user = authenticate_user(settings, body.username, body.password)
+    user = outcome.user
     if user is None:
-        auth_audit.record(
-            username=body.username,
-            client_ip=client_ip,
-            outcome=auth_audit.OUTCOME_FAILURE,
-            reason=auth_audit.REASON_INVALID_CREDENTIALS,
-        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    auth_audit.record(
-        username=user.username,
-        client_ip=client_ip,
-        outcome=auth_audit.OUTCOME_SUCCESS,
-    )
     token = create_access_token(settings, user)
     return TokenResponse(access_token=token, role=user.role, username=user.username)
 

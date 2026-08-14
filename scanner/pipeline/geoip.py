@@ -36,6 +36,11 @@ def _coordinate(value: Any, *, limit: float) -> float | None:
     marker off the map rather than failing visibly, so it is rejected here
     where the value enters the pipeline.
     """
+    # bool before float: `float(True)` is 1.0, so a hand-written overlay with
+    # `"latitude": true` would otherwise pass every check below and put a
+    # marker at a plausible-looking, entirely fabricated position.
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -51,7 +56,8 @@ class GeoIpDatabase:
     """Resolve IPv4/IPv6 → country / city / coordinates.
 
     Supports:
-    - MaxMind GeoLite2-City / DB-IP City Lite ``.mmdb`` via the ``geoip2`` package
+    - MaxMind GeoLite2-City / DB-IP City Lite ``.mmdb`` via the ``geoip2``
+      package, and Country editions of the same (see :meth:`_read`)
     - JSON overlay ``{ "1.2.3.4": {"country": "...", "city": "...", "country_iso": "XX",
       "latitude": 0.0, "longitude": 0.0} }`` for labs/tests without redistributing
       MaxMind data
@@ -76,6 +82,9 @@ class GeoIpDatabase:
     ) -> None:
         self._reader = reader
         self._overlay = overlay or {}
+        # Which Reader method this database answers: "city" or "country",
+        # decided on the first successful lookup (see _read).
+        self._mode: str | None = None
 
     @classmethod
     def load(cls, path: Path | None) -> GeoIpDatabase:
@@ -137,6 +146,34 @@ class GeoIpDatabase:
                 pass
             self._reader = None
 
+    def _read(self, ip: str) -> Any | None:
+        """One record from the open database, whichever edition it is.
+
+        ``Reader.city()`` raises on a Country-edition database rather than
+        degrading, so a GeoLite2-Country install used to resolve *nothing* —
+        every public host came back empty, and with the Geo Map that reads as
+        an estate with no location at all rather than a coarser one. The
+        working method is remembered after the first call, so the fallback
+        costs one exception per process, not one per host.
+        """
+        reader = self._reader
+        if reader is None:
+            return None
+        for name in (self._mode,) if self._mode else ("city", "country"):
+            try:
+                response = getattr(reader, name)(ip)
+            except Exception as exc:  # noqa: BLE001 — AddressNotFoundError and friends
+                # "This database does not know that address" says nothing about
+                # the edition — the method itself worked — so it settles the
+                # mode instead of falling through to the other one.
+                if type(exc).__name__ == "AddressNotFoundError":
+                    self._mode = name
+                    return None
+                continue
+            self._mode = name
+            return response
+        return None
+
     def lookup(self, ip: str | None) -> dict[str, Any]:
         empty: dict[str, Any] = {
             "country": "",
@@ -149,21 +186,26 @@ class GeoIpDatabase:
             return empty
         if ip in self._overlay:
             hit = self._overlay[ip]
+            # A private address has no position even when the overlay states
+            # one: the overlay is hand-written, and an entry for 10.x with
+            # coordinates would put a lab host on the world map as a
+            # geolocated one. The operator's labels are kept; the position is
+            # not, which is the same invariant _private_geo enforces below.
+            private_hit = _private_geo(ip) is not None
             return {
                 "country": hit.get("country") or "",
                 "city": hit.get("city") or "",
                 "country_iso": hit.get("country_iso") or "",
-                "latitude": hit.get("latitude"),
-                "longitude": hit.get("longitude"),
+                "latitude": None if private_hit else hit.get("latitude"),
+                "longitude": None if private_hit else hit.get("longitude"),
             }
         private = _private_geo(ip)
         if private is not None:
             return private
         if self._reader is None:
             return empty
-        try:
-            response = self._reader.city(ip)
-        except Exception:  # noqa: BLE001 — AddressNotFoundError and friends
+        response = self._read(ip)
+        if response is None:
             return empty
         country = ""
         city = ""
@@ -171,7 +213,8 @@ class GeoIpDatabase:
         try:
             country = response.country.name or ""
             iso = response.country.iso_code or ""
-            city = response.city.name or ""
+            # Absent on a Country-edition response, which has no city at all.
+            city = getattr(getattr(response, "city", None), "name", "") or ""
         except Exception:  # noqa: BLE001
             return empty
         # Read separately from the names above: a Country-edition database has

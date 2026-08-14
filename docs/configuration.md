@@ -109,8 +109,10 @@ The Kubernetes enrichment overlay provides a shared PVC and scheduled refresh.
 Placeholder fixture data is suitable only for tests.
 
 A **City**-edition GeoIP database also yields latitude/longitude, which is what
-the [Geo Map](ui.md#geo-map) plots. With a Country-edition database (or none)
-hosts are placed at their country's centroid and the page says so; those
+the [Geo Map](ui.md#geo-map) plots. A Country-edition database is read through
+the Country lookup instead (the City query raises against it), so it still
+resolves countries and hosts are placed at their country's centroid with the
+page saying so; those
 coordinates are the registered position of the *network*, never the machine.
 The JSON overlay accepts `latitude`/`longitude` (or `lat`/`lon`) per entry for
 labs and tests.
@@ -256,7 +258,7 @@ Login rate limiting and the auth audit trail (see
 | `OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `900` | Length of that window. Failures age out of it on their own; nothing unlocks an account by hand |
 | `OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES` | `50` | Failures allowed per client IP across *all* usernames, in the same window — what walking a username list looks like. Much looser on purpose: one NAT or office egress address is many legitimate users, and tripping it refuses them too |
 | `OCTO_TRUSTED_PROXIES` | *(empty)* | Comma-separated proxy IPs/CIDRs. `X-Forwarded-For` is read **only** when the immediate peer is one of these. Leave empty and every attempt is attributed to the socket peer — set it when the API sits behind an ingress, or the whole installation shares one limiter key |
-| `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever |
+| `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever. Rows inside the limiter window are kept regardless, so a short retention cannot weaken the lockout |
 
 Job leases and the reaper (see [architecture.md](architecture.md#leases)):
 

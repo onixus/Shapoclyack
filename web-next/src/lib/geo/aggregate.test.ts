@@ -167,6 +167,18 @@ describe("aggregateGeo", () => {
     expect(result.vulnerableHostCount).toBe(1);
   });
 
+  it("prefers the server-side finding count when the findings page is truncated", () => {
+    // /runs/{id}/vulnerabilities is capped, so a busy host can appear in the
+    // hosts list with more findings than the page carries. Taking the
+    // truncated number would under-report exactly the hosts that matter most.
+    const result = aggregateGeo(
+      [host({ host: "1.1.1.1", ...frankfurt, vulnerability_count: 40 })],
+      [vuln({ host: "1.1.1.1", severity: "high" })],
+    );
+    expect(result.locations[0].findingCount).toBe(40);
+    expect(result.locations[0].state).toBe("high");
+  });
+
   it("orders a location's hosts worst-first", () => {
     const result = aggregateGeo(
       [

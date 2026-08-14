@@ -14,6 +14,7 @@ import {
 import { GeoMap, STATE_FILL, STATE_LABEL } from "@/components/geo-map";
 import { KpiCard } from "@/components/kpi-card";
 import { useRunHosts, useRuns, useRunVulns } from "@/hooks/use-runs";
+import { HOSTS_FETCH_LIMIT, VULN_FETCH_LIMIT } from "@/lib/config/constants";
 import { aggregateGeo } from "@/lib/geo/aggregate";
 import { pickLatestRun } from "@/lib/run-data";
 import { cn } from "@/lib/utils";
@@ -32,10 +33,15 @@ export default function GeoPage() {
   const hostsQuery = useRunHosts(runId);
   const vulnsQuery = useRunVulns(runId);
 
-  const geo = useMemo(
-    () => aggregateGeo(hostsQuery.data || [], vulnsQuery.data || []),
-    [hostsQuery.data, vulnsQuery.data],
-  );
+  const hosts = useMemo(() => hostsQuery.data || [], [hostsQuery.data]);
+  const vulns = useMemo(() => vulnsQuery.data || [], [vulnsQuery.data]);
+  const geo = useMemo(() => aggregateGeo(hosts, vulns), [hosts, vulns]);
+
+  // Both run sub-resources are `limit`-only by design (ROADMAP P3.2), so a run
+  // larger than the cap arrives truncated. Said out loud rather than left to
+  // read as the whole estate — the counts below are of what was returned.
+  const hostsTruncated = hosts.length >= HOSTS_FETCH_LIMIT;
+  const findingsTruncated = vulns.length >= VULN_FETCH_LIMIT;
 
   const selected = geo.locations.find((location) => location.key === selectedLocation) ?? null;
   const isLoading =
@@ -118,14 +124,29 @@ export default function GeoPage() {
             />
           </div>
 
+          {hostsTruncated || findingsTruncated ? (
+            <Alert className="border-amber-500/40 bg-amber-950/30 text-amber-200">
+              <AlertDescription className="text-xs">
+                This run is larger than one page of the run API.{" "}
+                {hostsTruncated
+                  ? `Only the first ${HOSTS_FETCH_LIMIT.toLocaleString()} hosts are mapped. `
+                  : ""}
+                {findingsTruncated
+                  ? `Only the first ${VULN_FETCH_LIMIT.toLocaleString()} findings were read, so a marker's worst state is the worst of those — a host's finding count still comes from the full run. `
+                  : ""}
+                Every figure on this page describes what was returned, not the whole run.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
           {geo.countryPrecisionHostCount > 0 ? (
             <Alert className="border-slate-700 bg-slate-900/60 text-slate-300">
               <AlertDescription className="text-xs">
                 {geo.countryPrecisionHostCount} host
                 {geo.countryPrecisionHostCount === 1 ? " is" : "s are"} plotted at a country
                 centroid because the GeoIP database gave a country but no coordinates — those
-                markers are dashed. GeoIP positions are the *registered* location of a network,
-                usually a city or country centre, never the machine.
+                markers are dashed. A GeoIP position is the registered location of a{" "}
+                <em>network</em> — usually a city or country centre, never the machine.
               </AlertDescription>
             </Alert>
           ) : null}

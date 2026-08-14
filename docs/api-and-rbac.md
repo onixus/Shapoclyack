@@ -48,6 +48,11 @@ Three properties are deliberate:
 - **The counter is a table, not a process.** With more than one API replica an
   in-memory limit is divided by the replica count, and which replica serves an
   attempt is the load balancer's choice.
+- **Counting, verification and recording are one serialized operation**, keyed
+  on `(username, client IP)` with a Postgres advisory lock. Otherwise a batch
+  of parallel guesses all read the same count before any of them writes a
+  failure, and a threshold of 5 admits as many attempts as the attacker can
+  open sockets.
 - **The window decays; nothing is unlocked by hand.** The correct password
   works again once the counted failures age out. A lock an attacker could make
   permanent by failing on purpose would be a denial of service against any
@@ -66,7 +71,9 @@ GET /api/auth/events?limit=100&outcome=failure&q=10.1.2.3
 
 Newest first, `Page` envelope like the other lists. `q` matches username or
 client IP; `outcome` filters to one of the three values. Rows older than
-`OCTO_AUTH_EVENT_RETENTION_DAYS` (default 90) are pruned.
+`OCTO_AUTH_EVENT_RETENTION_DAYS` (default 90) are pruned — but never while they
+are still inside the limiter's window, since the two settings are chosen
+independently and a short retention must not quietly weaken the lockout.
 
 A locked-out client keeps retrying, and recording each retry would make the
 audit trail an amplifier for unauthenticated writes — so one `locked` row is

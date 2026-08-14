@@ -143,10 +143,15 @@ export function aggregateGeo(hosts: AliveHost[], vulns: Vulnerability[]): GeoAgg
 
   for (const host of hosts) {
     const found = states.get(host.host);
+    // The larger of the two counts, not the one from `vulns`: the findings
+    // endpoint is capped, so a host can have more findings than the page
+    // carries, and `vulnerability_count` is counted server-side over the whole
+    // run. Taking the truncated number would under-report exactly the busiest
+    // hosts.
+    const findingCount = Math.max(found?.count ?? 0, host.vulnerability_count ?? 0);
     // A host with no findings is `clean` rather than `unknown`: the run looked
     // at it and found nothing. `unknown` is reserved for a finding whose own
-    // severity is unrated.
-    const findingCount = found?.count ?? host.vulnerability_count ?? 0;
+    // severity is unrated — or for one this page never received.
     const state: HostState = found?.state ?? (findingCount > 0 ? "unknown" : "clean");
     const entry: GeoHost = {
       host: host.host,
