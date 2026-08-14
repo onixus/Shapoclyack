@@ -284,9 +284,13 @@ pipeline {
             //
             // TMPDIR — по той же причине, что и в E2E: run.sh делает mktemp -d
             // и монтирует этот путь в docker run на хостовый демон.
+            // rm -f метрик: воркспейс между билдами не чистится, и упавший
+            // прогон архивировал/гейтил load-metrics.json от прошлого билда
+            // (см. #26 — зелёные метрики на ABORTED-сборке).
             sh """
               set -eu
               mkdir -p "\$WORKSPACE/.load-tmp"
+              rm -f "\$WORKSPACE/load-metrics.json"
               TMPDIR="\$WORKSPACE/.load-tmp" \
               SCAN_TIMEOUT_SEC=2400 \
               MIN_FRACTION=0.95 \
