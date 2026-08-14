@@ -18,3 +18,6 @@ coverage.xml
 *.mmdb
 !tests/data/geoip/GeoIP2-City-Test.mmdb
 scanner/data/geoip/GeoLite2-*.mmdb
+
+# bench/lan-stability.sh writes its per-run report into the working directory
+lan-stability-*.json
