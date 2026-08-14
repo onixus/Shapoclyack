@@ -63,6 +63,11 @@ esac
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
+# mktemp gives 0700 owned by the caller, but the scanner image runs as uid 1000
+# (octo). If the caller is anyone else — root, most obviously — the container
+# cannot traverse the bind mount, every -list scenario reads its targets file as
+# missing, and the run reports zero recall that looks exactly like packet loss.
+chmod 0755 "${WORK}"
 grep -vE '^\s*(#|$)' "${TARGETS}" | tr -d '\r' > "${WORK}/hosts.txt"
 HOST_COUNT="$(wc -l < "${WORK}/hosts.txt" | tr -d ' ')"
 [ "${HOST_COUNT}" -gt 0 ] || { echo "no targets in ${TARGETS}" >&2; exit 1; }
@@ -72,14 +77,15 @@ HOST_COUNT="$(wc -l < "${WORK}/hosts.txt" | tr -d ' ')"
 # on a host we are trying to indict. Fall back to the image when absent.
 FAILED_RUNS=0
 
-# A SYN scan needs CAP_NET_RAW; without it naabu exits 255 and prints nothing.
-# Swallowing that looks exactly like "the host has no open ports", which is the
-# very conclusion this harness exists to avoid drawing by accident -- so count
-# failures and surface them rather than folding them into the numbers.
+# A failed naabu run prints nothing, which reads exactly like "no open ports" —
+# the false conclusion this harness exists to prevent. So a failure propagates
+# its exit status and the caller discards that repeat instead of scoring it as
+# loss; folding it into recall would make a broken runner indistinguishable from
+# a lossy network in the saved report.
 if command -v naabu >/dev/null 2>&1; then
   RUNNER="local"
   naabu_run() {
-    naabu "$@" 2>/dev/null || { FAILED_RUNS=$((FAILED_RUNS + 1)); return 0; }
+    naabu "$@" 2>/dev/null || { FAILED_RUNS=$((FAILED_RUNS + 1)); return 1; }
   }
 elif command -v docker >/dev/null 2>&1; then
   # Default bridge, not --network host: on Docker Desktop for macOS the "host"
@@ -88,7 +94,7 @@ elif command -v docker >/dev/null 2>&1; then
   naabu_run() {
     docker run --rm --network "${DOCKER_NET}" --cap-add=NET_RAW --cap-add=NET_ADMIN \
       -v "${WORK}:${WORK}" "${IMAGE}" naabu "$@" 2>/dev/null \
-      || { FAILED_RUNS=$((FAILED_RUNS + 1)); return 0; }
+      || { FAILED_RUNS=$((FAILED_RUNS + 1)); return 1; }
   }
 else
   echo "need naabu on PATH or docker installed" >&2; exit 1
@@ -182,6 +188,61 @@ scenario_args() {
 }
 SCENARIOS="S1_per_host S2_batch_r2000 S3_batch_r500 S4_batch_known S5_batch_connect"
 
+# Rotate the scenario order by one position per repeat. Running every S1 before
+# every S2 would confound scenario with elapsed time and cumulative probe load,
+# and on exactly the degrading paths this harness is for, whatever ran last —
+# CONNECT, always — would look worst regardless of technique. Counterbalancing
+# spreads that drift evenly across all five.
+rotate_by() {
+  n="$1"; shift
+  i=0
+  while [ "${i}" -lt "${n}" ]; do
+    first="$1"; shift; set -- "$@" "${first}"; i=$((i + 1))
+  done
+  echo "$@"
+}
+
+# One repeat of one scenario. Prints the recall percentage, or nothing at all
+# when the runner failed — a failed run is missing data, not zero recall, and
+# scoring it as loss is precisely how a broken runner gets mistaken for a lossy
+# network.
+run_repeat() {
+  s="$1"
+  spec="$(scenario_args "${s}")"
+  mode="${spec%% *}"; args="${spec#* }"
+  : > "${WORK}/found.txt"
+  ok=1
+  if [ "${mode}" = "PERHOST" ]; then
+    while read -r h; do
+      [ -n "${h}" ] || continue
+      # shellcheck disable=SC2086
+      naabu_run -host "${h}" ${args} >> "${WORK}/found.txt" || ok=0
+    done < "${WORK}/hosts.txt"
+  else
+    # shellcheck disable=SC2086
+    naabu_run -list "${WORK}/hosts.txt" ${args} >> "${WORK}/found.txt" || ok=0
+  fi
+  [ "${ok}" -eq 1 ] || return 1
+  sort -u "${WORK}/found.txt" -o "${WORK}/found.txt"
+  hit="$(comm -12 "${WORK}/truth.txt" "${WORK}/found.txt" | wc -l | tr -d ' ')"
+  awk -v h="${hit}" -v t="${TRUTH_COUNT}" 'BEGIN{printf "%d\n", (h*100)/t}'
+}
+
+for s in ${SCENARIOS}; do : > "${WORK}/recall_${s}.txt"; echo 0 > "${WORK}/invalid_${s}"; done
+
+r=1
+while [ "${r}" -le "${REPEATS}" ]; do
+  # shellcheck disable=SC2046
+  for s in $(rotate_by "$(( (r - 1) % 5 ))" ${SCENARIOS}); do
+    if value="$(run_repeat "${s}")" && [ -n "${value}" ]; then
+      echo "${value}" >> "${WORK}/recall_${s}.txt"
+    else
+      echo "$(( $(cat "${WORK}/invalid_${s}") + 1 ))" > "${WORK}/invalid_${s}"
+    fi
+  done
+  r=$((r + 1))
+done
+
 printf '%-18s %-8s %s\n' "scenario" "recall%" "per-repeat recall%"
 printf '%-18s %-8s %s\n' "------------------" "-------" "-------------------"
 
@@ -190,30 +251,21 @@ JSON="${WORK}/result.json"
 sep=""
 
 for s in ${SCENARIOS}; do
-  spec="$(scenario_args "${s}")"
-  mode="${spec%% *}"; args="${spec#* }"
-  : > "${WORK}/recalls.txt"
-  r=1
-  while [ "${r}" -le "${REPEATS}" ]; do
-    : > "${WORK}/found.txt"
-    if [ "${mode}" = "PERHOST" ]; then
-      while read -r h; do
-        [ -n "${h}" ] || continue
-        # shellcheck disable=SC2086
-        naabu_run -host "${h}" ${args} >> "${WORK}/found.txt"
-      done < "${WORK}/hosts.txt"
-    else
-      # shellcheck disable=SC2086
-      naabu_run -list "${WORK}/hosts.txt" ${args} >> "${WORK}/found.txt"
-    fi
-    sort -u "${WORK}/found.txt" -o "${WORK}/found.txt"
-    hit="$(comm -12 "${WORK}/truth.txt" "${WORK}/found.txt" | wc -l | tr -d ' ')"
-    awk -v h="${hit}" -v t="${TRUTH_COUNT}" 'BEGIN{printf "%d\n", (h*100)/t}' >> "${WORK}/recalls.txt"
-    r=$((r + 1))
-  done
+  invalid="$(cat "${WORK}/invalid_${s}")"
+  valid="$(wc -l < "${WORK}/recall_${s}.txt" | tr -d ' ')"
+  note=""
+  [ "${invalid}" -gt 0 ] && note="  (${invalid} invalid)"
 
-  stats="$(sort -n "${WORK}/recalls.txt" | awk '
-    {v[NR]=$1; s+=$1}
+  if [ "${valid}" -eq 0 ]; then
+    printf '%-18s %-8s %s%s\n' "${s}" "n/a" "no valid repeats" "${note}"
+    printf '%s    "%s": {"median": null, "min": null, "max": null, "runs": [], "invalid": %s}' \
+      "${sep}" "${s}" "${invalid}" >> "${JSON}"
+    sep=$',\n'
+    continue
+  fi
+
+  stats="$(sort -n "${WORK}/recall_${s}.txt" | awk '
+    {v[NR]=$1}
     END{
       med = (NR%2) ? v[(NR+1)/2] : int((v[NR/2]+v[NR/2+1])/2)
       printf "%d %d %d", med, v[1], v[NR]
@@ -221,29 +273,32 @@ for s in ${SCENARIOS}; do
   med="$(echo "${stats}" | cut -d' ' -f1)"
   lo="$(echo "${stats}" | cut -d' ' -f2)"
   hi="$(echo "${stats}" | cut -d' ' -f3)"
-  series="$(paste -sd' ' "${WORK}/recalls.txt")"
+  series="$(paste -sd' ' "${WORK}/recall_${s}.txt")"
 
   # A wide min..max on identical repeats is the finding, not noise to average away.
   flag=""
   [ "$((hi - lo))" -ge 25 ] && flag="  <-- unstable"
-  printf '%-18s %-8s %s%s\n' "${s}" "${med}" "${series}" "${flag}"
+  printf '%-18s %-8s %s%s%s\n' "${s}" "${med}" "${series}" "${note}" "${flag}"
 
-  printf '%s    "%s": {"median": %s, "min": %s, "max": %s, "runs": [%s]}' \
-    "${sep}" "${s}" "${med}" "${lo}" "${hi}" "$(paste -sd, "${WORK}/recalls.txt")" >> "${JSON}"
+  printf '%s    "%s": {"median": %s, "min": %s, "max": %s, "runs": [%s], "invalid": %s}' \
+    "${sep}" "${s}" "${med}" "${lo}" "${hi}" \
+    "$(paste -sd, "${WORK}/recall_${s}.txt")" "${invalid}" >> "${JSON}"
   sep=$',\n'
 done
 
-{ echo; echo "  }"; echo "}"; } >> "${JSON}"
+{ echo; echo "  },"; echo "  \"failed_runs\": ${FAILED_RUNS}"; echo "}"; } >> "${JSON}"
 
 OUT="lan-stability-${LABEL}-$(date -u +%Y%m%dT%H%M%SZ).json"
 cp "${JSON}" "${OUT}"
 echo
 if [ "${FAILED_RUNS}" -gt 0 ]; then
-  echo "WARNING: ${FAILED_RUNS} naabu invocation(s) exited non-zero and contributed"
-  echo "zero results. Treat the numbers above as a lower bound, not a measurement."
+  echo "NOTE: ${FAILED_RUNS} naabu invocation(s) exited non-zero. Those repeats are"
+  echo "excluded from the numbers above and counted as \"invalid\" in the JSON, so"
+  echo "runner failures cannot be read as network loss. Investigate them separately."
   echo
 fi
 echo "recall% = share of the ground-truth endpoints this scenario recovered."
 echo "S1 is the control (per-host); S2 is what the pipeline's port stage runs."
+echo "Scenario order rotates each repeat, so no scenario is systematically last."
 echo "Compare the SPREAD between hosts, not just the median."
 echo "json: ${OUT}"

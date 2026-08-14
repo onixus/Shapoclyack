@@ -8,36 +8,30 @@ from .config_schema import NaabuScanType
 from .protocol import ScanProtocol, format_endpoint, naabu_udp_port_spec, parse_endpoint, top_udp_port_list
 from .utils import read_lines, run_command, write_lines
 
-# Set once a SYN batch fails so the remaining batches go straight to CONNECT
-# instead of each paying for the same failed attempt. Batches run concurrently
-# (runtime.ports_concurrency), hence the lock.
-_syn_lock = threading.Lock()
-_syn_unavailable = False
+# Whether naabu's SYN mode actually works here, decided once per run:
+# "untested" until a batch has shown one way or the other, then "ok" or
+# "unavailable". Batches run concurrently (runtime.ports_concurrency), so the
+# state is guarded and the deciding batch holds _decision_lock while it settles
+# the question -- otherwise every batch in flight launches its own probe.
+_state_lock = threading.Lock()
+_decision_lock = threading.Lock()
+_syn_state = "untested"
 
 
-def _syn_ruled_out() -> bool:
-    with _syn_lock:
-        return _syn_unavailable
+def _get_syn_state() -> str:
+    with _state_lock:
+        return _syn_state
 
 
-def _rule_out_syn() -> None:
-    global _syn_unavailable
-    with _syn_lock:
-        _syn_unavailable = True
+def _set_syn_state(value: str) -> None:
+    global _syn_state
+    with _state_lock:
+        _syn_state = value
 
 
-def _scan_techniques(scan_type: NaabuScanType, protocol: ScanProtocol) -> list[str | None]:
-    """naabu ``-s`` values to try, in order, for one batch.
-
-    ``-s`` selects the TCP technique only, so UDP batches omit it entirely.
-    """
-    if protocol != "tcp":
-        return [None]
-    if scan_type == "syn":
-        return ["s"]
-    if scan_type == "connect":
-        return ["c"]
-    return ["c"] if _syn_ruled_out() else ["s", "c"]
+def _reset_syn_state() -> None:
+    """Test seam: forget what this process learned about SYN."""
+    _set_syn_state("untested")
 
 
 def _flatten_custom_ports(custom_file: Path) -> list[str] | None:
@@ -68,6 +62,85 @@ def _naabu_entries(stdout: str, protocol: ScanProtocol) -> list[str]:
             continue
         entries.append(format_endpoint(parsed.host, parsed.port, protocol))
     return sorted(set(entries))
+
+
+def _exec(command: list[str], *, technique: str | None, protocol: ScanProtocol, timeout: int, retries: int) -> list[str]:
+    attempt = command if technique is None else [*command, "-s", technique]
+    result = run_command(attempt, timeout=timeout, retries=retries)
+    return _naabu_entries(result.stdout or "", protocol)
+
+
+def _decide_syn(command: list[str], *, protocol: ScanProtocol, timeout: int, retries: int, tag: str) -> list[str]:
+    """Run one batch as SYN and settle whether SYN works here.
+
+    A SYN scan fails two ways. It exits non-zero when naabu cannot raise
+    CAP_NET_RAW, which is loud. It also exits 0 having seen nothing -- the CI
+    image does exactly this -- which is silent and reads identically to a batch
+    of genuinely closed ports. So an empty SYN batch is cross-checked against
+    CONNECT: if CONNECT finds ports, SYN is broken here and the rest of the run
+    uses CONNECT; if CONNECT agrees, the ports really are closed and SYN is
+    trusted from then on. Only the first batch pays for this.
+    """
+    try:
+        entries = _exec(command, technique="s", protocol=protocol, timeout=timeout, retries=retries)
+    except Exception:  # noqa: BLE001 -- no CAP_NET_RAW; CONNECT is the answer
+        _set_syn_state("unavailable")
+        logging.warning("naabu SYN scan failed for batch %s; using CONNECT for the rest of the run", tag)
+        return _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+
+    if entries:
+        _set_syn_state("ok")
+        return entries
+
+    cross = _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+    if cross:
+        _set_syn_state("unavailable")
+        logging.warning(
+            "naabu SYN scan returned nothing for batch %s while CONNECT found %s open port(s); "
+            "using CONNECT for the rest of the run",
+            tag,
+            len(cross),
+        )
+        return cross
+
+    _set_syn_state("ok")
+    return entries
+
+
+def _scan_batch(
+    command: list[str],
+    *,
+    protocol: ScanProtocol,
+    scan_type: NaabuScanType,
+    timeout: int,
+    retries: int,
+    tag: str,
+) -> list[str]:
+    # -s picks the TCP technique; UDP batches have no use for it.
+    if protocol != "tcp":
+        return _exec(command, technique=None, protocol=protocol, timeout=timeout, retries=retries)
+    if scan_type in ("syn", "connect"):
+        return _exec(
+            command, technique=scan_type[0], protocol=protocol, timeout=timeout, retries=retries
+        )
+
+    while True:
+        state = _get_syn_state()
+        if state == "unavailable":
+            return _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+        if state == "ok":
+            try:
+                return _exec(command, technique="s", protocol=protocol, timeout=timeout, retries=retries)
+            except Exception:  # noqa: BLE001 -- capability lost mid-run; keep scanning
+                _set_syn_state("unavailable")
+                logging.warning("naabu SYN scan failed for batch %s; using CONNECT for the rest of the run", tag)
+                return _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+        # Untested: exactly one batch settles it while the others wait for the
+        # answer, rather than each launching the same probe concurrently.
+        with _decision_lock:
+            if _get_syn_state() != "untested":
+                continue
+            return _decide_syn(command, protocol=protocol, timeout=timeout, retries=retries, tag=tag)
 
 
 def _run_naabu(
@@ -112,24 +185,9 @@ def _run_naabu(
     if protocol == "udp" and udp_probes:
         command.append("-uP")
 
-    # Whether naabu can raise CAP_NET_RAW cannot be read off this process: the
-    # capability reaches naabu through file capabilities, so the scanner's own
-    # CapEff is empty even where SYN works. Attempting it is the only honest test.
-    techniques = _scan_techniques(scan_type, protocol)
-    for index, technique in enumerate(techniques):
-        attempt = command if technique is None else [*command, "-s", technique]
-        try:
-            result = run_command(attempt, timeout=timeout, retries=retries)
-            break
-        except Exception:  # noqa: BLE001 -- fall back to the next technique
-            if index == len(techniques) - 1:
-                raise
-            _rule_out_syn()
-            logging.warning(
-                "naabu SYN scan failed for batch %s; falling back to CONNECT for the rest of the run", tag
-            )
-
-    entries = _naabu_entries(result.stdout or "", protocol)
+    entries = _scan_batch(
+        command, protocol=protocol, scan_type=scan_type, timeout=timeout, retries=retries, tag=tag
+    )
     write_lines(output_file, entries)
     return entries
 

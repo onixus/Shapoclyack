@@ -537,6 +537,11 @@ def _run_pipeline_body(
 
         def _do_pulse() -> None:
             pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
+            # Chunks that still report every port closed after their retry are
+            # contradictions, not results (see pulse_probe). Marking the stage done
+            # would let --resume skip it and keep that zero forever, so the flag is
+            # withheld until a later run gets an answer for those hosts.
+            unresolved: list[str] = []
             _run_stage(
                 "pulse",
                 lambda: run_pulse_probe(
@@ -562,9 +567,18 @@ def _run_pipeline_body(
                     chunk_hosts=pulse_cfg.chunk_hosts,
                     report_primary=report_primary_pulse,
                     retry_settle_seconds=pulse_cfg.retry_settle_seconds,
+                    on_unresolved=unresolved.extend,
                 ),
             )
-            checkpoint.mark_done("pulse")
+            if unresolved:
+                logging.warning(
+                    "pulse: %s host(s) still reported no services after re-probing; leaving the "
+                    "stage open so --resume asks again: %s",
+                    len(unresolved),
+                    ", ".join(sorted(unresolved)[:10]),
+                )
+            else:
+                checkpoint.mark_done("pulse")
 
         def _do_nse() -> Path:
             nse_profile = config.nse_profiles[profile.nse_profile]

@@ -70,24 +70,37 @@ def test_naabu_port_scan_skips_redundant_host_discovery(tmp_path, monkeypatch):
     assert "-Pn" in captured[0]
 
 
-def _capture_naabu(monkeypatch, *, fail_syn: bool = False):
-    """Stub run_command, returning the list that collects each invocation."""
+def _capture_naabu(monkeypatch, *, fail_syn: bool = False, syn_out: str = "", connect_out: str = ""):
+    """Stub run_command, returning the list that collects each invocation.
+
+    ``syn_out``/``connect_out`` are the stdout each technique reports, so a test
+    can express "SYN saw nothing but CONNECT saw ports" — the silent failure
+    mode that an exit code cannot express.
+    """
     from scanner.pipeline import ports as ports_mod
 
     captured: list[list[str]] = []
 
     class _Result:
-        stdout = ""
+        def __init__(self, stdout: str):
+            self.stdout = stdout
 
     def fake_run_command(command, **kwargs):
         captured.append(command)
-        if fail_syn and "s" in command and command[command.index("s") - 1] == "-s":
-            raise RuntimeError("naabu: could not raise CAP_NET_RAW")
-        return _Result()
+        technique = command[command.index("-s") + 1] if "-s" in command else None
+        if technique == "s":
+            if fail_syn:
+                raise RuntimeError("naabu: could not raise CAP_NET_RAW")
+            return _Result(syn_out)
+        return _Result(connect_out)
 
     monkeypatch.setattr(ports_mod, "run_command", fake_run_command)
-    monkeypatch.setattr(ports_mod, "_syn_unavailable", False)
+    ports_mod._reset_syn_state()
     return captured
+
+
+def _techniques(captured: list[list[str]]) -> list[str]:
+    return [c[c.index("-s") + 1] for c in captured if "-s" in c]
 
 
 def _scan(tmp_path, **overrides):
@@ -124,19 +137,58 @@ def test_tcp_scan_falls_back_to_connect_when_syn_fails(tmp_path, monkeypatch):
     captured = _capture_naabu(monkeypatch, fail_syn=True)
     _scan(tmp_path)
 
-    assert len(captured) == 2, "expected a CONNECT retry after the SYN attempt"
-    assert captured[1][captured[1].index("-s") + 1] == "c"
+    assert _techniques(captured) == ["s", "c"]
+
+
+def test_empty_syn_is_cross_checked_against_connect(tmp_path, monkeypatch):
+    """SYN can exit 0 having seen nothing, which an exit code cannot reveal.
+
+    The CI image does exactly this: `-s s` succeeds and returns no ports for a
+    host with an open one, so trusting the exit status alone reports a clean
+    scan of a host that is not clean.
+    """
+    captured = _capture_naabu(monkeypatch, syn_out="", connect_out="10.0.0.1:80\n")
+    entries = _scan(tmp_path)
+
+    assert _techniques(captured) == ["s", "c"]
+    assert entries == ["10.0.0.1:80/tcp"], "the CONNECT result must win"
+
+
+def test_syn_is_trusted_when_connect_agrees_it_is_empty(tmp_path, monkeypatch):
+    """Both empty means the ports really are closed, not that SYN is broken."""
+    captured = _capture_naabu(monkeypatch, syn_out="", connect_out="")
+    _scan(tmp_path, tag="first")
+    captured.clear()
+    _scan(tmp_path, tag="second")
+
+    assert _techniques(captured) == ["s"], "later batches must not re-run the cross-check"
 
 
 def test_syn_failure_is_not_retried_on_later_batches(tmp_path, monkeypatch):
-    """The fallback is per run, not per batch -- one probe of SYN is enough."""
+    """The decision is per run, not per batch -- one probe of SYN is enough."""
     captured = _capture_naabu(monkeypatch, fail_syn=True)
     _scan(tmp_path, tag="first")
     captured.clear()
     _scan(tmp_path, tag="second")
 
-    assert len(captured) == 1
-    assert captured[0][captured[0].index("-s") + 1] == "c"
+    assert _techniques(captured) == ["c"]
+
+
+def test_silent_syn_failure_switches_later_batches_to_connect(tmp_path, monkeypatch):
+    captured = _capture_naabu(monkeypatch, syn_out="", connect_out="10.0.0.1:80\n")
+    _scan(tmp_path, tag="first")
+    captured.clear()
+    _scan(tmp_path, tag="second")
+
+    assert _techniques(captured) == ["c"]
+
+
+def test_working_syn_is_not_cross_checked(tmp_path, monkeypatch):
+    """A SYN batch that finds ports proves itself; no CONNECT probe is owed."""
+    captured = _capture_naabu(monkeypatch, syn_out="10.0.0.1:80\n")
+    _scan(tmp_path)
+
+    assert _techniques(captured) == ["s"]
 
 
 def test_explicit_connect_never_attempts_syn(tmp_path, monkeypatch):

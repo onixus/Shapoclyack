@@ -69,7 +69,17 @@ built from `40 40 40` is a different problem from one built from `0 100 20`: the
 first is systematic loss, the second is instability. `<-- unstable` marks any
 scenario whose min and max differ by 25 points or more.
 
-Each run also writes `lan-stability-<label>-<timestamp>.json` for diffing.
+Repeats whose naabu invocation exited non-zero are **excluded** and counted as
+`(N invalid)` rather than scored as zero recall — a broken runner and a lossy
+network are the two things this harness must never conflate. A scenario with no
+valid repeats reports `n/a`.
+
+Scenario order rotates by one position each repeat. Running all of S1 before all
+of S2 would confound scenario with elapsed time, and on a path that degrades
+during the run whatever went last would look worst regardless of technique.
+
+Each run also writes `lan-stability-<label>-<timestamp>.json`, carrying per
+scenario `runs`, `invalid`, and the run-wide `failed_runs`, for diffing.
 
 ## Interpreting the comparison
 

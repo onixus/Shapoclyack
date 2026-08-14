@@ -321,3 +321,39 @@ def test_persistently_empty_chunk_leaves_no_checkpoint(tmp_path, monkeypatch):
 def test_retry_can_be_disabled(tmp_path, monkeypatch):
     calls, _, _ = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED], retry_settle_seconds=0)
     assert len(calls) == 1
+
+
+def test_persistently_empty_chunk_leaves_hosts_unmarked(tmp_path, monkeypatch):
+    """Deleting pulse's checkpoint is not enough on its own.
+
+    The hosts would still be marked done and the caller would still mark the
+    whole stage done, so --resume would skip the stage and keep the zero. The
+    chunk has to stay visibly unfinished at every level.
+    """
+    done: list[str] = []
+    unresolved: list[str] = []
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_ALL_CLOSED],
+        on_host_done=done.append,
+        on_unresolved=unresolved.extend,
+    )
+
+    assert done == [], "an unresolved chunk must not mark its hosts done"
+    assert unresolved == ["10.0.0.1"], "the caller must learn the chunk is unresolved"
+
+
+def test_resolved_chunk_marks_hosts_done(tmp_path, monkeypatch):
+    done: list[str] = []
+    unresolved: list[str] = []
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_ONE_SERVICE],
+        on_host_done=done.append,
+        on_unresolved=unresolved.extend,
+    )
+
+    assert done == ["10.0.0.1"]
+    assert unresolved == []

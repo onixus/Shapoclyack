@@ -508,6 +508,7 @@ def run_pulse_probe(
     chunk_hosts: int = 64,
     report_primary: bool | None = None,
     retry_settle_seconds: int = 15,
+    on_unresolved: Callable[[list[str]], None] | None = None,
 ) -> Path:
     """Run Pulse against hosts derived from open_ports; write artifacts.
 
@@ -611,10 +612,16 @@ def run_pulse_probe(
                 cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
             )
 
-        if not (payload.get("open") if payload else None):
-            # Leave nothing behind that records the chunk as finished-and-closed:
-            # a later --resume would trust it and never re-probe these hosts.
+        resolved = bool(payload.get("open") if payload else None)
+        if not resolved:
+            # Leave nothing behind that records this chunk as finished-and-closed.
+            # Dropping pulse's own checkpoint is not enough on its own: the hosts
+            # would still be marked done below and the caller would still mark the
+            # whole stage done, so --resume would skip the stage outright and keep
+            # the false-empty result the retry above exists to recover from.
             ckpt.unlink(missing_ok=True)
+            if on_unresolved:
+                on_unresolved(list(host_chunk))
 
         if payload:
             services, os_recs, cves = parse_pulse_json(payload)
@@ -634,9 +641,10 @@ def run_pulse_probe(
             if isinstance(payload.get("stats"), dict):
                 merged_raw["stats"] = payload["stats"]
 
-        for h in host_chunk:
-            if on_host_done:
-                on_host_done(h)
+        if resolved:
+            for h in host_chunk:
+                if on_host_done:
+                    on_host_done(h)
 
     # Dedupe services by ip:port:proto
     seen: set[tuple[str, int, str]] = set()
