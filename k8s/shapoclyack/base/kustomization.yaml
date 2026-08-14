@@ -25,6 +25,7 @@ resources:
   - postgres/statefulset.yaml
   - postgres/service.yaml
   - backup/kustomization.yaml
+  - api-pdb.yaml
   - job.yaml
   - cronjob.yaml
   - api-deployment.yaml
