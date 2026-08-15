@@ -25,6 +25,7 @@ def _write_run(root: Path, run_id: str) -> None:
                 "alive_hosts": 2,
                 "open_host_port_pairs": 3,
                 "potential_vulnerabilities": 1,
+                "unconfirmed_findings": 1,
                 "vulnerable_hosts": 1,
                 "vulnerabilities_by_severity": {
                     "critical": 0,
@@ -161,6 +162,7 @@ def test_list_and_get_run(tmp_path: Path):
     body = listed.json()
     assert body["items"][0]["run_id"] == "run-a"
     assert body["items"][0]["has_diff"] is True
+    assert body["items"][0]["unconfirmed_findings"] == 1
     assert body["total"] == len(body["items"])
     assert body["has_more"] is False
 
@@ -222,6 +224,29 @@ def test_list_and_get_run(tmp_path: Path):
     artifact = client.get("/api/runs/run-a/artifacts/summary.md", headers=headers)
     assert artifact.status_code == 200
     assert "Scan Summary" in artifact.text
+
+
+def test_list_runs_unconfirmed_findings_absent_for_older_runs(tmp_path: Path):
+    """A run scanned before the field existed reads back null, not zero.
+
+    Zero would claim every finding was confirmed, which is exactly the
+    overstatement the field exists to prevent -- the UI shows the hint only
+    when the count is a number, so null has to survive the round trip.
+    """
+    client = _client(tmp_path)
+    legacy = tmp_path / "output" / "runs" / "run-legacy"
+    legacy.mkdir(parents=True)
+    (legacy / "run_meta.json").write_text(json.dumps({"run_id": "run-legacy"}), encoding="utf-8")
+    (legacy / "summary.json").write_text(
+        json.dumps({"alive_hosts": 1, "potential_vulnerabilities": 4}), encoding="utf-8"
+    )
+
+    token = login(client)
+    listed = client.get("/api/runs", headers={"Authorization": f"Bearer {token}"})
+    assert listed.status_code == 200
+    items = {item["run_id"]: item for item in listed.json()["items"]}
+    assert items["run-legacy"]["potential_vulnerabilities"] == 4
+    assert items["run-legacy"]["unconfirmed_findings"] is None
 
 
 def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path):

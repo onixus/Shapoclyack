@@ -120,6 +120,10 @@ export type RunSummary = {
   alive_hosts: number | null;
   open_host_port_pairs: number | null;
   potential_vulnerabilities: number | null;
+  /** Subset of `potential_vulnerabilities` the scanner could not confirm —
+   * `exposure` observations and unverified `keyword_cve` hits. Null for runs
+   * scanned before the field existed. */
+  unconfirmed_findings: number | null;
   vulnerable_hosts: number | null;
   has_diff: boolean;
   has_summary: boolean;

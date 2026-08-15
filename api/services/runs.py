@@ -217,6 +217,9 @@ def list_runs(
                 potential_vulnerabilities=(
                     summary.get("potential_vulnerabilities") if isinstance(summary, dict) else None
                 ),
+                unconfirmed_findings=(
+                    summary.get("unconfirmed_findings") if isinstance(summary, dict) else None
+                ),
                 vulnerable_hosts=summary.get("vulnerable_hosts") if isinstance(summary, dict) else None,
                 has_diff=(run_dir / "diff.json").exists(),
                 has_summary=(run_dir / "summary.json").exists(),

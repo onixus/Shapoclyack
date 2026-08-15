@@ -43,6 +43,12 @@ class RunSummary(BaseModel):
     alive_hosts: int | None = None
     open_host_port_pairs: int | None = None
     potential_vulnerabilities: int | None = None
+    # Subset of `potential_vulnerabilities` the scanner itself could not
+    # confirm — `exposure` observations and unverified `keyword_cve` hits (see
+    # VulnerabilityItem.finding_class). Carried alongside the total so a reader
+    # can tell a run with 40 confirmed CVEs from one with 40 keyword guesses;
+    # None for runs written before the scanner recorded it.
+    unconfirmed_findings: int | None = None
     vulnerable_hosts: int | None = None
     has_diff: bool = False
     has_summary: bool = False

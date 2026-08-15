@@ -15,7 +15,18 @@ export function RunMetrics({
   const aliveHosts = summary.alive_hosts as number | undefined;
   const openPairs = summary.open_host_port_pairs as number | undefined;
   const totalVulns = summary.potential_vulnerabilities as number | undefined;
+  const unconfirmed = summary.unconfirmed_findings as number | undefined;
   const osDetected = summary.os_detected_hosts as number | undefined;
+
+  // The headline count includes findings the scanner flagged as unconfirmed
+  // (reachable-service exposures, unverified keyword CVE hits). Without this
+  // hint a run whose findings are all keyword guesses is indistinguishable
+  // from one with the same number of confirmed CVEs — the per-finding
+  // "unconfirmed" badge only shows once the list is open.
+  const vulnHint =
+    typeof unconfirmed === "number" && unconfirmed > 0
+      ? `${unconfirmed.toLocaleString()} unconfirmed`
+      : undefined;
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -29,7 +40,7 @@ export function RunMetrics({
         value={openPairs ?? ports.reduce((n, p) => n + p.host_count, 0)}
         hint={`${ports.length} distinct`}
       />
-      <KpiCard label="Vulnerabilities" value={totalVulns ?? vulnCount} />
+      <KpiCard label="Vulnerabilities" value={totalVulns ?? vulnCount} hint={vulnHint} />
       <KpiCard label="OS detected" value={osDetected ?? "—"} />
     </div>
   );
