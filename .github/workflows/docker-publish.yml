@@ -1,10 +1,15 @@
 name: Docker Publish
 
+# ОТКЛЮЧЕНО: заменено локальным Jenkins (Jenkinsfile.publish, джоба
+# shapoclyack-publish). Образы по-прежнему уезжают в ghcr.io — лимит у нас на
+# минуты раннеров, а не на реестр, поэтому деплой и k8s-манифесты не меняются.
+# Автоматические триггеры сняты; ручной запуск оставлен.
+# Вернуть: раскомментировать push/release ниже.
 on:
-  push:
-    tags: ["v*"]
-  release:
-    types: [published]
+  # push:
+  #   tags: ["v*"]
+  # release:
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:
