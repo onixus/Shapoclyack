@@ -69,11 +69,21 @@ export default function RunsPage() {
       {
         accessorKey: "potential_vulnerabilities",
         header: "Vulns",
-        cell: ({ getValue }) => {
+        cell: ({ getValue, row }) => {
           const val = Number(getValue() ?? 0);
+          // The total counts unconfirmed findings too, so show how many of it
+          // they are rather than letting keyword guesses read as CVEs.
+          const unconfirmed = row.original.unconfirmed_findings ?? 0;
           return (
-            <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-400" : "text-slate-400"}`}>
-              {val.toLocaleString()}
+            <span className="flex items-baseline gap-1.5">
+              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-400" : "text-slate-400"}`}>
+                {val.toLocaleString()}
+              </span>
+              {unconfirmed > 0 ? (
+                <span className="font-mono text-[10px] text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
+                  {unconfirmed.toLocaleString()} unconf.
+                </span>
+              ) : null}
             </span>
           );
         },

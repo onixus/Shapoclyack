@@ -19,6 +19,7 @@ function makeRun(overrides: Partial<RunSummary>): RunSummary {
     alive_hosts: null,
     open_host_port_pairs: null,
     potential_vulnerabilities: null,
+    unconfirmed_findings: null,
     vulnerable_hosts: null,
     has_diff: false,
     has_summary: false,
