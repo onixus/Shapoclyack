@@ -43,7 +43,7 @@ spec:
       # migration fails the pod with a cause instead of hanging at Init:0/1.
       initContainers:
         - name: migrate
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0817
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "api.db.migrate"]
           env:
@@ -61,7 +61,7 @@ spec:
                 - ALL
       containers:
         - name: api
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0817
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
