@@ -102,6 +102,7 @@ not an authorization control.
 | `/api/endpoint` | Endpoint device and software inventory |
 | `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
+| `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
 | `/api/webhooks` | Outbound webhook subscriptions, their delivery trail, and the dead-letter queue |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
@@ -147,6 +148,17 @@ routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
 filter.
 
+### Vulnerabilities
+
+Reading takes `viewer`; moving a finding through its lifecycle or reassigning it
+takes `operator`; **accepting risk and editing SLA policy take tenant `admin`**,
+because each commits the tenant to something rather than progressing one
+person's work. `POST /{id}/transition` answers `409` on an illegal move (the
+request is well-formed; the refusal is about the finding's current state) and
+`422` on a state that is not in the model. A finding in another tenant answers
+`404`. The states, the SLA resolution order and the exception rules are in
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md).
+
 ### Webhooks
 
 Reading webhooks and their deliveries takes the tenant `operator` role;
@@ -175,8 +187,8 @@ timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
 ## Pagination
 
 `GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`, `/api/schedules`,
-and `/api/webhooks` (plus the delivery lists) return a page envelope rather
-than a bare array:
+`/api/webhooks` and `/api/vulnerabilities` (plus the delivery and event lists)
+return a page envelope rather than a bare array:
 
 ```json
 { "items": [], "total": 0, "offset": 0, "limit": 100, "has_more": false }

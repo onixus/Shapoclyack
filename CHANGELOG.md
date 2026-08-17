@@ -4,6 +4,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Vulnerability lifecycle, ownership and SLA** ([#145](https://github.com/onixus/Shapoclyack/issues/145),
+  Track C) — a finding is an entity now, not a row in whatever the last scan
+  wrote. `vulnerabilities`, `vulnerability_events` and `sla_policies` (migration
+  `0015_vuln_lifecycle`) hold what people decide about a finding, which neither
+  the per-run `vulnerabilities.json` nor ClickHouse's `ReplacingMergeTree`
+  could: an owner, a lifecycle state, a deadline.
+
+  Findings are identified by `sha256(asset_id | CVE or script_id | port)` per
+  tenant — the triple the report pipeline already de-duplicates on — so the same
+  finding is the same row across runs, and it is keyed on the asset rather than
+  the observed IP so remediation history survives a DHCP lease.
+
+  Lifecycle `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`, with
+  forward skips, fall-backs, and `CLOSED → OPEN` when a closed finding is
+  observed again (the SLA clock restarts from the regression, not from the
+  original discovery). Same-state moves answer `409`. A finding that stops being
+  observed is **never** auto-closed — the same absence is produced by a host
+  that was down or a narrowed scan profile, so staleness is surfaced
+  (`?stale_days=N`) instead of forgiven.
+
+  SLA deadlines come from `(asset criticality, severity)` policy, that
+  severity's tenant fallback, or built-in defaults (critical 15 / high 30 /
+  medium 90 / low 180 days); breach is derived on read, so a clock or threshold
+  change applies at once. Risk acceptance is an expiring attribute rather than a
+  seventh state: `until` and `reason` are both required, the deadline moves to
+  the expiry, and withdrawing it recomputes from when the clock started.
+
+  Every observation, transition, assignment and exception is written to the
+  audit trail in the same transaction as the change. New endpoints under
+  `/api/vulnerabilities` (reads `viewer`, lifecycle/assignment `operator`, risk
+  acceptance and SLA policy `admin`). Docs:
+  [docs/vulnerability-lifecycle.md](docs/vulnerability-lifecycle.md).
+
 ## [0.41-0817] — 2026-08-17
 
 ### Added

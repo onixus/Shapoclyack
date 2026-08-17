@@ -743,3 +743,128 @@ class EndpointSoftwareItemInfo(BaseModel):
     architecture: str | None = None
     source: str
     install_location: str | None = None
+
+
+class VulnerabilityInfo(BaseModel):
+    """One tracked finding with its lifecycle and SLA state (#145).
+
+    Distinct from ``VulnerabilityItem`` above, which is a *run's* finding read
+    off disk and scored per request. This is the persistent entity: the same
+    finding across runs, plus everything a person decided about it. ``sla_state``
+    and nothing else is derived per response — see the model docstring for why
+    breach is not a column.
+    """
+
+    vuln_id: str
+    tenant_id: str
+    asset_id: str
+    finding_key: str
+    cve: str | None = None
+    script_id: str | None = None
+    port: str | None = None
+    title: str = ""
+    severity: str = "unknown"
+    risk_level: str | None = None
+    contextual_score: float | None = None
+    cvss: float | None = None
+    state: str
+    state_changed_at: str | None = None
+    state_changed_by: str | None = None
+    assignee: str | None = None
+    owner_team: str | None = None
+    due_at: str | None = None
+    sla_days: int | None = None
+    sla_source: str | None = None
+    sla_state: str
+    exception_until: str | None = None
+    exception_reason: str | None = None
+    exception_by: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    sla_started_at: str | None = None
+    first_seen_run_id: str | None = None
+    last_seen_run_id: str | None = None
+    observation_count: int = 1
+    reopen_count: int = 0
+    closed_at: str | None = None
+
+
+class VulnerabilityEventInfo(BaseModel):
+    """One audit entry. ``actor`` is null when the platform, not a person, did it."""
+
+    id: int
+    vuln_id: str
+    tenant_id: str
+    occurred_at: str | None = None
+    kind: str
+    from_state: str | None = None
+    to_state: str | None = None
+    actor: str | None = None
+    note: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class VulnerabilityTransitionRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/transition``.
+
+    ``note`` is optional in general but is the only way to record *why* a
+    finding was closed, which is the transition anyone auditing this will ask
+    about first.
+    """
+
+    state: Literal["OPEN", "ACKNOWLEDGED", "PLANNED", "FIXING", "VERIFYING", "CLOSED"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class VulnerabilityAssignRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/assign``. An explicit ``null``
+    clears the field; an omitted key leaves it untouched."""
+
+    assignee: str | None = Field(default=None, max_length=320)
+    owner_team: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class VulnerabilityExceptionRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/exception`` — accepted risk.
+
+    Both fields are required: an acceptance with no expiry is a decision nobody
+    revisits, and one with no reason cannot be reviewed by whoever inherits it.
+    """
+
+    until: datetime
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class SlaPolicyInfo(BaseModel):
+    policy_id: str
+    tenant_id: str
+    # null = this severity's tenant-wide fallback.
+    asset_criticality: int | None = None
+    severity: str
+    remediation_days: int
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+
+
+class SlaPolicyRequest(BaseModel):
+    """Body for ``PUT /vulnerabilities/sla-policies`` — upsert by scope."""
+
+    severity: Literal["critical", "high", "medium", "low", "unknown"]
+    remediation_days: int = Field(ge=1, le=3650)
+    asset_criticality: int | None = Field(default=None, ge=0, le=4)
+
+
+class VulnerabilitySummary(BaseModel):
+    """Aggregates for the Vulnerability Center header (#137)."""
+
+    total: int
+    open_total: int
+    untriaged: int
+    by_state: dict[str, int] = Field(default_factory=dict)
+    by_severity_open: dict[str, int] = Field(default_factory=dict)
+    by_sla: dict[str, int] = Field(default_factory=dict)
+    breached: int
+    worst_breached_severity: str | None = None
+    generated_at: str | None = None
