@@ -78,6 +78,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **`OCTO_POSTGRES_URL` no longer falls back to SQLite in production** (#174).
+  With the variable unset, `load_settings()` substituted a local SQLite file and
+  the API started as if nothing were missing. Postgres is not an opt-in sidecar
+  like NATS or ClickHouse — tenants, users, assets, jobs, agents and webhook
+  deliveries all live there — so this was the same fail-open shape as the
+  default JWT secret and `CORS=*` closed in #155/#156, just in a different
+  place.
+
+  The consequence was worse than a lost database. Each replica opens **its own**
+  file, so two replicas are two disagreeing control planes; and the guarantees
+  the durable control plane rests on quietly stop holding — `SELECT … FOR UPDATE
+  SKIP LOCKED` for job claims and leases (P1.2/P1.4) and the advisory locks that
+  elect one scheduler (P1.6) do not mean on SQLite what they mean on Postgres.
+  The file also sits on the pod's ephemeral disk and is lost on restart.
+
+  Under `OCTO_ENV=prod` the API now refuses to start when the variable is unset
+  **or** when it points at `sqlite://` — the second because this is not only
+  about forgetting but about setting it to the wrong thing. The message
+  distinguishes the two cases and states the multi-replica consequence rather
+  than only naming the variable. `OCTO_ENV=dev` is unchanged: the fallback is
+  deliberate there, so a laptop and the test suite still need no database.
+
+  Note there *was* already a guard — `tenants_service.load_tenants()` refuses an
+  empty URL — but it could never fire, because the fallback had already supplied
+  a URL that resolves.
+
 - **Login rate limiting and an authentication audit trail** (#157).
   `POST /api/auth/login` was unlimited and unrecorded: guessing a password was
   bounded only by network throughput, and a successful guess looked exactly

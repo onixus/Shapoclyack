@@ -90,9 +90,11 @@ class Settings:
     # CronJob's new feeds reach every replica without a restart.
     # Postgres PRIMARY_DB (Phase 7 — asset inventory + tenants/provisioning keys).
     # UNLIKE nats_url/clickhouse_url, this is NOT an opt-in sidecar: the tenant
-    # store lives here, so an empty value makes API startup fail fast (see
-    # api/services/tenants.py:load_tenants) rather than silently disabling a
-    # feature. Empty-string default is kept only for config-shape consistency.
+    # store lives here. load_settings() still falls back to a local SQLite file
+    # so dev and the test suite need no database, but under OCTO_ENV=prod that
+    # fallback — and any explicit sqlite:// URL — is a startup refusal (#174):
+    # a per-replica file means a per-replica control plane. Empty-string default
+    # is kept only for config-shape consistency.
     postgres_url: str = ""
     # Asset lifecycle: active assets not re-observed within this many days flip
     # to "stale" at the end of every ingest (api/services/assets.py).
@@ -142,8 +144,8 @@ class Settings:
     # Bound on how much fan-out one event can cause per tenant.
     webhook_max_subscriptions_per_tenant: int = 20
     # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
-    # default since postgres_url always resolves (sqlite fallback), unlike
-    # the opt-in NATS/ClickHouse sidecars.
+    # default since postgres_url always resolves — Postgres in prod, the SQLite
+    # fallback in dev — unlike the opt-in NATS/ClickHouse sidecars.
     scheduler_dispatch_enabled: bool = True
     # Lariska endpoint-inventory ingestion (Agent_plan.md S1-S7). Router is
     # only registered when this is true.
@@ -250,7 +252,11 @@ def _resolve_env() -> str:
     return raw
 
 
-def _validate_production(settings: Settings) -> None:
+def _is_sqlite_url(url: str) -> bool:
+    return url.strip().lower().startswith("sqlite")
+
+
+def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     """Refuse to start when prod configuration is still the published default.
 
     Every problem is reported at once: an operator fixing these one restart at a
@@ -284,6 +290,31 @@ def _validate_production(settings: Settings) -> None:
             "    Name the exact origins the console is served from, comma-separated."
         )
 
+    # Postgres is a hard dependency, not an opt-in sidecar like NATS or
+    # ClickHouse: tenants, users, assets, jobs, agents and webhook deliveries
+    # all live there. The SQLite fallback below load_settings() is what makes
+    # this check necessary — tenants_service.load_tenants() already refuses an
+    # empty URL, but it never sees one, because the fallback has already
+    # supplied a URL that resolves.
+    if _is_sqlite_url(settings.postgres_url):
+        unset = not postgres_url_env
+        lead = (
+            "OCTO_POSTGRES_URL is unset, so the API falls back to a local SQLite file."
+            if unset
+            else "OCTO_POSTGRES_URL points at SQLite."
+        )
+        problems.append(
+            f"{lead}\n"
+            "    SQLite cannot carry the control plane: each replica would open its\n"
+            "    own file, so two replicas mean two disagreeing control planes, and\n"
+            "    the guarantees P1 was built on — SELECT ... FOR UPDATE SKIP LOCKED\n"
+            "    for job claims and leases, advisory locks for scheduler leader\n"
+            "    election — quietly stop holding. The file also sits on the pod's\n"
+            "    ephemeral disk and is lost on restart.\n"
+            "    Set OCTO_POSTGRES_URL to the PostgreSQL instance, e.g.\n"
+            "    postgresql+psycopg://user:password@postgres:5432/shapoclyack"
+        )
+
     if not problems:
         return
 
@@ -313,6 +344,11 @@ def load_settings() -> Settings:
     origins = os.environ.get("OCTO_API_CORS", "*").strip()
     cors = [part.strip() for part in origins.split(",") if part.strip()] or ["*"]
 
+    # Kept separately from the resolved URL so the refusal below can tell
+    # "forgot to set it" from "set it to the wrong thing" — the fallback erases
+    # that difference the moment it is applied.
+    postgres_url_env = os.environ.get("OCTO_POSTGRES_URL", "").strip()
+
     mode = os.environ.get("OCTO_JOB_EXECUTION_MODE", "local").strip().lower()
     if mode not in {"local", "agent"}:
         mode = "local"
@@ -338,7 +374,7 @@ def load_settings() -> Settings:
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
-        postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip() or _default_sqlite_url(),
+        postgres_url=postgres_url_env or _default_sqlite_url(),
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
         asset_events_enabled=os.environ.get("OCTO_ASSET_EVENTS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
@@ -453,7 +489,7 @@ def load_settings() -> Settings:
     )
 
     if settings.env == ENV_PROD:
-        _validate_production(settings)
+        _validate_production(settings, postgres_url_env=postgres_url_env)
         if settings.agent_token:
             # A warning, not a refusal: the legacy shared token still works and
             # maps to tenant_id=default (Phase 2), so refusing would break a
