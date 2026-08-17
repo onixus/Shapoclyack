@@ -33,11 +33,19 @@ spec:
       # hard dependency (tenant store lives there), and migrations aren't
       # safely idempotent across N replicas starting concurrently the way
       # ClickHouse's CREATE TABLE IF NOT EXISTS init-SQL is.
+      #
+      # `python -m api.db.migrate`, not bare `alembic upgrade head` (#159): it
+      # takes a Postgres advisory lock first, so the replicas of a scaled
+      # Deployment queue behind each other instead of migrating concurrently.
+      # Waiters still run the upgrade after acquiring the lock — a no-op once
+      # the first replica is done, and still correct if it failed halfway.
+      # OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS bounds the wait so a stuck
+      # migration fails the pod with a cause instead of hanging at Init:0/1.
       initContainers:
         - name: migrate
           image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
           imagePullPolicy: IfNotPresent
-          command: ["alembic", "-c", "api/db/alembic.ini", "upgrade", "head"]
+          command: ["python", "-m", "api.db.migrate"]
           env:
             - name: POSTGRES_PASSWORD
               valueFrom:

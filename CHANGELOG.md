@@ -78,6 +78,51 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Migrations are serialized, and there is one path to the schema** (#159).
+  Every API replica runs `alembic upgrade head` in its init container. While
+  `replicas: 1` was a correctness requirement that was safe by construction;
+  P1.6 removed the requirement and left the init container unchanged, so a
+  scaled Deployment started N concurrent migrations against one database.
+  Alembic has no mutual exclusion of its own — both runs read the same
+  `alembic_version`, both decide the same revision is pending, and both apply
+  it.
+
+  The init container now runs `python -m api.db.migrate`, which takes a
+  **PostgreSQL advisory lock** — the primitive P1.6 already uses for scheduler
+  leader election — before upgrading. Replicas queue instead of racing.
+  Deliberately a blocking lock rather than the `pg_try_advisory_lock` used for
+  leadership: a replica that cannot get it must wait for the migration to
+  finish, not start against an unmigrated schema. Waiters still run the upgrade
+  after acquiring the lock, which is a no-op when the first replica succeeded
+  and still correct when it did not.
+  `OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS` (default 600) bounds the wait so a stuck
+  migration fails the pod with a named cause instead of hanging at `Init:0/1`.
+
+  A lock rather than a separate pre-rollout Job because plain kustomize has no
+  ordering hooks: a Job would have to be applied and waited on out-of-band, a
+  second deployment step that `kubectl apply -k` does not perform.
+
+  **`models.Base.metadata.create_all` no longer runs on PostgreSQL.** It built
+  today's models while writing no `alembic_version` row, so a database it had
+  touched looked migrated to no revision at all while carrying columns a
+  migration was meant to add — and it silently repaired the one situation worth
+  reporting, an API replica started against a database nobody migrated. It
+  remains for SQLite, the dev and test fallback, which cannot be shared by
+  replicas and where requiring a migration run before `pytest` would buy
+  nothing.
+
+  Alembic's `fileConfig` is now called with `disable_existing_loggers=False`.
+  Running the upgrade in-process meant it switched off every logger it does not
+  name — including `api.db.migrate`, whose next line is the message explaining
+  why a migration did not apply.
+
+  [docs/operations.md](docs/operations.md) gains an **Upgrade and rollback**
+  section: the expand/contract rule (a release's migration must leave the
+  previous release's code working, which is what makes both the rolling update
+  and `rollout undo` safe), what to do when a migration fails halfway, why
+  `alembic downgrade` is not the routine path back, and the release in which the
+  legacy `state/api_{jobs,agents}.json` import is removed.
+
 - **Login rate limiting and an authentication audit trail** (#157).
   `POST /api/auth/login` was unlimited and unrecorded: guessing a password was
   bounded only by network throughput, and a successful guess looked exactly

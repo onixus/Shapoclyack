@@ -11,7 +11,12 @@ from api.db.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: fileConfig otherwise switches off every
+    # logger it does not name, which since #159 includes the caller's own.
+    # api/db/migrate.py runs the upgrade in-process, so the default would
+    # silence "api.db.migrate" itself — the failure message explaining why a
+    # migration did not apply is emitted *after* this runs.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
