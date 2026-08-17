@@ -93,7 +93,7 @@ pipeline {
         ]) {
           sh '''
             set -eu
-            if [ -z "${GHCR_TOKEN}" ] || [ -z "${GHCR_USER}" ]; then
+            if [ -z "${GHCR_TOKEN:-}" ] || [ -z "${GHCR_USER:-}" ]; then
               echo "GHCR_USER/GHCR_TOKEN пустые — заполни их в Manage Jenkins → Credentials." >&2
               echo "Нужен PAT с правом write:packages." >&2
               exit 1
