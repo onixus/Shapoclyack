@@ -81,7 +81,7 @@ Catch it early instead: `scripts/dev-up.sh` warns when the Secret is absent.
 
 ```bash
 docker run --rm --entrypoint sh \
-  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.40-0806 \
+  ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.41-0817 \
   -lc 'nmap --version; naabu -version; dnsx -version; nuclei -version'
 ```
 

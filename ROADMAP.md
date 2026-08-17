@@ -34,11 +34,15 @@ map and each source stays authoritative for its own scope.
 
 ## Current baseline (done)
 
-Shipped through **[shapoclyack-0.40-0806](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.40-0806)**.
-`api/__init__.py` and the `k8s/` manifests already carry **`0.41-0812`**, but that tag was
-never cut and `main` has since moved past it (wordlists, stage timings, scan intents all sit
-under `## Unreleased`) — closing [#160](https://github.com/onixus/Shapoclyack/issues/160)
-means deciding whether 0.41 is re-cut from current `main` or re-bumped. Note that GHCR
+Shipped through **[shapoclyack-0.41-0817](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.41-0817)**.
+The half-finished `0.41-0812` bump ([#160](https://github.com/onixus/Shapoclyack/issues/160))
+was resolved by **re-cutting 0.41 from current `main`** and re-stamping the date to the day
+it was actually cut: 0.41 never existed as a tag or as images, so the number was free and the
+numbering stays contiguous, while the date stops claiming a cut that did not happen. The
+release therefore carries more than 0.41 was originally scoped for — the NIST risk model
+(#144), webhooks and the asset event bus, the geo map, and all of Wave 0's security work
+(#155–#159), whose fail-closed startup is **breaking** for deployments that relied on
+defaults. Note that GHCR
 images are now published by the **local Jenkins** job `shapoclyack-publish`
 (`Jenkinsfile.publish`), started by hand with the release tag — neither pushing a tag nor
 `gh release create` builds anything since the Actions workflows were disabled (166b386,

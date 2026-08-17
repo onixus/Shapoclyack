@@ -4,6 +4,8 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.41-0817] — 2026-08-17
+
 ### Added
 
 - **Geo Map (`/geo`)** — a run's alive hosts on a world map, each marker
@@ -28,6 +30,259 @@ All notable changes to Shapoclyack are documented in this file.
   Earth 110m data into a committed constant by
   `web-next/scripts/generate-world-map.mjs`, run by hand — the same
   dependency-free approach as the Attack Surface graph.
+
+
+- **Scan intents on jobs and schedules** — product control for *what work* a
+  scan does (`inventory` / `vuln` / `full` / `delta`), orthogonal to speed
+  `mode`. Maps to CLI flags and per-job config overlays (nuclei floor,
+  top_ports, skip_nse) so operators can schedule fast inventory often and full
+  assessments rarely without editing YAML. UI selectors on Jobs and Schedules;
+  persisted in `scan_options`. See `docs/scan-performance.md` and
+  `api/services/scan_intents.py`.
+
+- **Scanner stage wall-clock timings** — each run writes `stage_timings.json`
+  (per-stage duration, skipped/error status, top stages) and a ranked summary
+  line in `pipeline.log`. Design notes for scan intents / delta without adding
+  hardware: `docs/scan-performance.md`. Load test peak-RSS monitor no longer
+  exits before the scanner container exists (was always reporting 0 MiB).
+
+- **Tenant-uploaded brute-force wordlists** (Phase 8.2, UI-managed) — the
+  subdomain and cloud-bucket brute-force stages already took a `wordlist_file`
+  path, which only an operator with filesystem access to the scanner could set.
+  Operators can now upload a wordlist through the API/UI (`POST /api/wordlists`,
+  or the new **Wordlists** page) and select it per scan
+  (`StartScanRequest.wordlist_id`). The body is normalized to the scanner's own
+  on-disk shape (lowercased, de-duplicated, blank/comment lines dropped) and
+  stored per tenant in Postgres (migration `0012`), so it survives restarts and
+  reaches every replica. At local scan start the selected row is materialized to
+  a job-scoped file under the state dir and injected into the job's effective
+  config: a `subdomain` list turns on `ct.brute_force`, a `bucket` list turns on
+  cloud discovery. Local execution only — a remote agent runs its own mounted
+  config, so a `wordlist_id` on an agent-mode scan is rejected rather than
+  silently ignored. Caps via `OCTO_WORDLIST_MAX_WORDS` (default 50000) and
+  `OCTO_WORDLIST_MAX_BODY_BYTES` (default 8 MiB); reads/lists never expose the
+  body, only metadata.
+
+- **Outbound webhooks for asset events** (ROADMAP P2 / Phase 10.3, webhook
+  half) — the first consumer of the 10.2 event stream. Per-tenant subscriptions
+  (`POST /api/webhooks`) carry the routing policy: which event kinds, and a
+  `min_severity` floor that applies to the kinds which actually have a severity
+  (`new_cve`) and deliberately does **not** swallow port changes or
+  decommissions that have none. A JetStream durable consumer
+  (`octo-webhook-fanout` on `events.asset.>`) turns matching events into rows
+  and acks; a separate dispatcher drains them. The split is the point: a slow
+  receiver can never stall consumption of the event stream, and the POST happens
+  outside any transaction so a hanging receiver holds no database connection.
+
+  `webhook_deliveries` (migration `0011`) is retry queue, dead-letter queue and
+  audit trail in one table, because those are the same rows under different
+  predicates. Retries are exponential and capped
+  (`OCTO_WEBHOOK_MAX_ATTEMPTS`, default 6 attempts over ~15 minutes); 5xx,
+  timeouts, 408 and 429 are retried, while every other 4xx is dead-lettered on
+  the first attempt — replaying an unchanged body that the receiver called
+  malformed only spends the retry budget to get the same answer.
+  `GET /api/webhooks/deliveries?status=dead` is the DLQ view and
+  `POST /api/webhooks/deliveries/{id}/retry` replays one; both work with the
+  broker down, since a delivery is a row and carries its own payload. The
+  dispatcher runs in **every** replica without leader election, like the P1.4
+  reaper: claims are taken with `FOR UPDATE SKIP LOCKED` and each claim pushes a
+  visibility timeout forward, so replicas divide the queue and a replica that
+  dies mid-POST releases its delivery instead of stranding it.
+
+  Deliveries are signed by default: a secret is generated at creation, returned
+  exactly once, and write-only afterwards (`has_secret`, plus
+  `POST /api/webhooks/{id}/rotate-secret`). `X-Shapoclyack-Signature` is an HMAC
+  over `{timestamp}.{body}` with the timestamp *inside* the MAC, so a receiver
+  rejecting stale timestamps cannot be defeated by replaying an old body under a
+  new one. Signing is what you opt out of, not into: an unsigned webhook is a
+  URL anyone who learns it can forge "this host just grew a critical CVE" into.
+
+  Webhook URLs are operator-supplied and this service sits inside the network it
+  scans, so a target resolving to a loopback, private, link-local or otherwise
+  non-global address is refused — that is the SSRF shape where an integration is
+  really a probe of the cluster's own internals, cloud metadata service
+  included. The check runs at write time *and* immediately before every POST (a
+  name can start resolving inward later), redirects are not followed, and
+  `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` opts an on-cluster receiver back in.
+  Writes need the tenant `admin` role rather than `operator`: sending a tenant's
+  exposure data to an address of the creator's choosing is closer to granting
+  access than to scheduling a scan. New metrics:
+  `octo_webhook_deliveries_total{outcome}`,
+  `octo_webhook_delivery_duration_seconds`,
+  `octo_webhook_delivery_queue{status}`. Ticketing bridges (Jira/ServiceNow) are
+  the remaining half of 10.3 and reuse this queue as another transport.
+
+- **Asset event bus** (ROADMAP P2 / Phase 10.2) — the asset-level events that
+  Phase 10.1 normalized into each run's `diff.json` are now published to NATS
+  JetStream on `events.asset.{tenant_id}.{kind}`: `new_asset`, `new_open_port`,
+  `new_cve`, `cert_expiring` after every successful run, plus
+  `decommissioned_host` when an operator decommissions an asset through
+  `PATCH /assets/{id}`. Until now those events existed only inside a run
+  artifact and a pod log, with nothing able to subscribe to them; this is the
+  substrate 10.3 (webhooks, ticketing) consumes.
+
+  The tenant token comes **before** the kind because a routing policy is
+  per-tenant first — the common subscription is `events.asset.acme.>`, while a
+  cross-tenant consumer still gets `events.asset.*.new_cve`. The new `EVENTS`
+  stream uses `LIMITS` retention rather than `WORK_QUEUE`: one event legitimately
+  has several independent consumers, and a work queue would let whichever
+  connected first consume it away from the others. Defaults: 30d max age, 1GiB
+  max bytes, 24h duplicate window (`OCTO_NATS_EVENTS_*`).
+
+  Publishing lives in the API, not in `scanner/pipeline/alerts.py` as the
+  roadmap originally sketched. The scanner is also the agent's payload and has
+  no tenant context — the tenant is a property of the job, resolved by the API —
+  so publishing there would have meant handing broker credentials to every
+  remote worker. The API's post-run hook covers local-mode scans and agent
+  uploads from the same place. `alerts.py` keeps its per-run SMTP/webhook
+  digest; that is a human summary, not the machine event stream.
+
+  Delivery is best-effort and never fails a scan: a run whose artifacts are on
+  disk and whose assets are registered must not be reported as failed because
+  the broker blinked. What did not go out is visible on the new
+  `octo_asset_events_published_total{kind,outcome}` counter, and the payload is
+  still in `diff.json`. The publish loop runs inside the agent's upload request,
+  so it is bounded twice over: a 30s batch deadline, and an abort after three
+  consecutive failures — a broker that accepts connections but fails every
+  publish costs the job seconds, not minutes. Event ids are derived from tenant+run+kind+host+port+CVE
+  instead of randomised, so a results upload replayed through the P1.5
+  idempotency path republishes identical ids and JetStream drops the duplicates;
+  the run id is part of that identity on purpose, so the same finding in a
+  *later* run stays a new occurrence rather than being suppressed after it comes
+  back. A run is capped at `OCTO_ASSET_EVENTS_MAX_PER_RUN` (default 1000) events
+  with the overflow logged and counted — a first scan of a fresh /16 is
+  otherwise one alert storm. The cap keeps the most actionable kinds first
+  (`new_cve`, then `cert_expiring`, then ports, then bare host discoveries),
+  because `report_diff.py` emits every `new_asset` ahead of everything else and
+  a plain head-cap would let a scope expansion bury the findings the bus exists
+  to deliver. `OCTO_ASSET_EVENTS_ENABLED=false` silences the stream without
+  disabling job dispatch and result ingest on the same broker.
+
+
+- **Idempotency keys for scan start and result upload** (ROADMAP P1.5;
+  migration `0010_job_idempotency`). The failure worth designing for is not a
+  duplicate request but a lost response: the write landed and the client never
+  found out. `POST /api/jobs` now honours an **`Idempotency-Key`** header and
+  creates at most one job per (tenant, key) — uniqueness is a database
+  constraint, since two replicas serving the same retry would both read "no
+  such key" — answering **200** rather than 202 for the replay, because nothing
+  was accepted that time. `POST /api/agent/jobs/{job_id}/results` takes an
+  optional `idempotency_key` form field and replays the stored outcome instead
+  of the 422 that P1.3 gives a second completion, with **409** when a second
+  upload genuinely contradicts the first. Agents that send no key still get
+  replay detection from the natural key (same agent, same job, same exit code),
+  so no agent upgrade is required; the bundled agent derives its key from the
+  job rather than randomising it, so a restarted process computes the same one.
+  An upload for a **cancelled** job is still refused — cancellation is an
+  operator decision, not an outcome to replay. A duplicate arriving *while* the
+  first upload is still being ingested also answers 409 (retry once it
+  finishes) rather than letting two handlers extract into the same run
+  directory. New metric `octo_job_idempotent_replays_total{operation}`.
+- **Attempt fencing on result upload.** The claim response now carries an
+  `attempt` number, which the agent echoes back with its results. A lease that
+  expired and was reissued bumps it, so a straggling upload from the previous
+  attempt is refused (**409**) instead of overwriting the run the current
+  attempt is producing — a restarted worker keeps its `agent_id`, so agent
+  identity alone could not tell the two apart. Agents that omit the field are
+  unfenced, exactly as before.
+- **The bundled agent now heartbeats for the whole scan** rather than once at
+  the start. The heartbeat is what renews the server-side lease, so without this
+  any scan longer than `OCTO_JOB_LEASE_SECONDS` would be requeued and handed to
+  a second agent while the first was still scanning the same targets. Interval
+  is 60s against the 300s default lease; a failed heartbeat is retried on the
+  next tick rather than aborting the scan.
+- The **schedule dispatcher** now keys each dispatch on the schedule's own due
+  time, so replicas that all wake for the same tick create one job instead of
+  one each. P1.6 (above) means only the leader ticks at all, but this key stays
+  load-bearing: leadership is not fenced, so a dying leader and its successor
+  can briefly overlap.
+- **Job leases and an expiry reaper** (ROADMAP P1.4; migration
+  `0009_job_leases`). A job handed to an executor had no deadline, so "the
+  worker is still scanning" and "the worker died three hours ago" looked
+  identical in the table and the row stayed in flight forever. Every
+  claimed/running job now carries `claimed_until`, renewed by the agent
+  heartbeat — or, for local jobs, by a thread running beside the scan, which is
+  what finally closes the P1.2 residual: the renewals stop with the replica, so
+  an orphaned local job stops looking attended. A sweep every
+  `OCTO_JOB_REAPER_INTERVAL_SECONDS` (60) puts expired **agent** jobs back on
+  the queue until `OCTO_JOB_MAX_ATTEMPTS` (3) hand-outs are used and fails them
+  after that, so a target that kills whatever picks it up cannot cycle through
+  the fleet; expired **local** jobs are failed outright, since no other replica
+  could ever pick them up. The sweep runs in every replica and needs no leader
+  election — expiry is a property of the row, and candidates are taken with
+  `FOR UPDATE SKIP LOCKED`. New settings `OCTO_JOB_LEASE_SECONDS` (300),
+  `OCTO_JOB_MAX_ATTEMPTS`, `OCTO_JOB_REAPER_ENABLED`,
+  `OCTO_JOB_REAPER_INTERVAL_SECONDS`; new metric
+  `octo_job_lease_expired_total{outcome}`; `JobInfo` gained `attempts`.
+  **Set `OCTO_JOB_LEASE_SECONDS` comfortably above your agents' heartbeat
+  interval** — too low and healthy scans get requeued underneath a working
+  agent.
+- **`POST /api/jobs/{job_id}/cancel`** (operator; ROADMAP P1.3) — cancels a
+  queued job, which the API previously had no way to do: a queued scan could
+  only be waited out. Legal **only** from `queued`, where nothing has taken the
+  job and refusing to hand it out is a real stop. A `claimed` or `running` job
+  answers **409**: an agent that has claimed a job starts scanning without
+  asking the API again, so cancelling then would show a stop that never happened
+  while the targets were still being scanned. An abandoned claimed job is the
+  lease reaper's business instead. A job in another tenant answers 404. The
+  reason is recorded in the job's `error`. API-only for now: the Web UI shows
+  the new statuses but has no cancel action.
+- **`OCTO_INSTANCE_ID`** — identity of an API replica in the shared job queue,
+  defaulting to the hostname. Local-mode jobs run in a thread inside one
+  replica, so the row records its owner and a starting replica reconciles only
+  its *own* orphaned local jobs instead of failing scans other replicas are
+  still running. Jobs orphaned by a replica that never returns under the same
+  id need the lease reaper (ROADMAP P1.4).
+
+- **Scale profiling harness and results** — new `tests/fixtures/scale_profile.py`
+  and [docs/scale-profile.md](docs/scale-profile.md) (ROADMAP P3.8). Times the
+  ClickHouse diff helpers and the Postgres asset list over a P3.7 fixture at
+  1k/10k/50k assets, and reports the two machine-independent counts alongside
+  wall-clock: ClickHouse rows/bytes read from `system.query_log`, and Postgres
+  statements per call. The document records what was measured, the fixes it
+  produced, the `PARTITION BY` evaluation, and explicitly what it does not
+  cover (no end-to-end API latency, no concurrency, no UI, no ingest path).
+
+- **Scale test fixtures** — new `tests/fixtures/scale_seed.py` (ROADMAP P3.7):
+  a CLI that bulk-loads N synthetic assets into the two stores that actually
+  grow with asset count — Postgres `assets`/`asset_identifiers` and ClickHouse
+  `shapoclyack_vulnerabilities`/`shapoclyack_open_ports`. Every row is derived
+  from `--seed` and the asset index, so runs are reproducible, reruns are
+  idempotent (`ON CONFLICT DO NOTHING` / `ReplacingMergeTree`), and a 10k
+  fixture is a byte-identical superset of the 1k one. `--purge` removes a
+  tenant's rows; the default tenant is `scale-test`, never `default`.
+  Complements `tests/load/run.sh`, which drives network load against live
+  containers and produces one run's worth of hosts, not a populated registry.
+
+- **`overlays/kind-enrichment`** — the local kind lab with real GeoIP/ASN/EPSS/
+  KEV/CVSS4 data. Identical to `overlays/enrichment` except the PVC drops to
+  `ReadWriteOnce`, since kind only ships the RWO local-path provisioner and an
+  RWX claim would stay `Pending` forever. `base/enrichment/` became a kustomize
+  Component so both overlays share the same patches instead of copying them.
+- **`NVD_API_KEY` wired into the enrichment fetch** from optional Secret
+  `shapoclyack-nvd` (key `nvd_api_key`), in both the refresh CronJob and the API
+  cold-start initContainer. This is deliberately separate from the key stored
+  through the config API (`enrichment.cvss4.nvd_api_key`), which is only ever
+  exported into a running scan process and never reached the fetch.
+- **Prometheus scrape wiring** (ROADMAP P3.5). The API pod template now carries
+  `prometheus.io/scrape` / `port` / `path` annotations, so annotation-based
+  scrape configs pick `GET /metrics` up with no extra objects; the annotations
+  are inert when nothing scrapes them. For Prometheus Operator installations,
+  `k8s/shapoclyack/examples/servicemonitor.example.yaml` is a ready
+  `ServiceMonitor` — it stays in `examples/` because it needs the
+  `monitoring.coreos.com/v1` CRDs, which no manifest here installs and whose
+  absence must not break `kubectl apply` of `base/`. `k8s/README.md` documents
+  both paths plus a bare `scrape_configs` snippet, and states explicitly that
+  `/metrics` is unauthenticated by design and must stay off the Ingress.
+- **Service level objectives** — new [docs/slo.md](docs/slo.md) (ROADMAP P3.6):
+  seven SLIs with PromQL over the existing series (API availability and
+  latency, job success rate and duration, ClickHouse ingest lag and
+  correctness, endpoint-inventory acceptance), an error-budget policy, and
+  burn-rate alerting guidance. Targets are labelled as starting values rather
+  than measured commitments — there is no scale baseline until P3.7/P3.8 land.
+  The known-gaps section records what the metrics cannot currently support:
+  per-replica in-memory job gauges, no tenant label on any series, and no
+  tracing.
 
 ### Changed
 
@@ -75,6 +330,202 @@ All notable changes to Shapoclyack are documented in this file.
   ClickHouse ingest and the UI are unaffected; `risk_explanation` now states the
   verdict and each axis's reasons rather than listing inputs. Methodology and
   its stated limits: `docs/risk-scoring.md`.
+
+
+- **`tenant_id` is now validated on tenant creation** — `[A-Za-z0-9]` followed
+  by up to 63 more of `[A-Za-z0-9_-]`, and the prefix `h_` is reserved.
+  `POST /api/tenants` answers 422 for anything else (it previously accepted any
+  non-empty string up to the column width). The id is not just a key: it is a
+  token in `ingest.results.{tenant_id}` and now `events.asset.{tenant_id}.{kind}`,
+  and the old subject sanitizer mapped every disallowed character to `_`, so
+  `acme.eu` and `acme_eu` shared one subject — a subscription or NATS ACL scoped
+  to one of them also received the other's messages. Ids that predate the
+  validation keep working: they are published under a reserved
+  `h_<sha256[:32]>` token instead of being mangled into a neighbour's subject,
+  and every conforming id keeps the subject name it has today.
+
+- **TLS certificate name mismatch** (ROADMAP P4.1) — new `cert_name_mismatch`
+  (medium) finding in `tls_posture.json`, closing the hostname/SAN-CN gap that
+  Phase 9.2 explicitly left out of scope. A certificate is flagged when its DNS
+  identities (subject commonName plus every `DNS:` SAN) cover none of the names
+  the scan used to reach that endpoint. Name matching follows RFC 6125: a
+  leftmost `*` covers exactly one label and never a public-suffix-level one, and
+  partial-label wildcards (`www*.example.com`) do not match, since clients
+  reject them. The check runs as one pass over the finished findings, so all
+  three sources (nmap `ssl-cert`, `pulse-tls`, the stdlib probe) are treated
+  identically — they disagree about certificate *formatting*, not about what a
+  certificate is for; extraction in the new `scanner/pipeline/cert_names.py`
+  handles all three shapes.
+
+  What counts as an expected name is the part that decides whether this is
+  signal or noise. It is the **forward** half of `hostnames.json` — the FQDNs
+  the operator scanned, which resolved to this IP — plus the hostname the
+  record itself was dialled by on the Pulse/probe paths. PTR names are
+  deliberately excluded: a reverse name is assigned by whoever owns the address
+  block, not whoever owns the service, so `ec2-….compute.amazonaws.com` missing
+  from a certificate is the normal case and including it would have made this
+  check fire on most of the internet. An endpoint reached only by IP, or a
+  certificate whose names did not parse, yields **no** finding rather than a
+  mismatch.
+
+  **SNI is treated as part of the evidence.** A server behind virtual hosting
+  answers a connection made to an *address* with its default certificate, which
+  says nothing about the name that was scanned — so the stdlib probe now sends
+  the resolved FQDN in SNI (`probe_tls_endpoints(sni_by_host=…)`) and records it
+  on the finding, and its certificate is judged against that name alone. Sources
+  that cannot report an SNI (nmap's `ssl-cert` against an IP target, Pulse)
+  still report the mismatch, tagged `requires_confirmation: true` — the
+  convention already used for Pulse's legacy protocol probe — because a genuine
+  misconfiguration and a default-vhost answer are indistinguishable without
+  re-probing by name. Controlled by `tls_posture.hostname_mismatch` (default `true`,
+  inside the already opt-in `tls_posture` stage, and editable from the admin
+  configurator); findings-only as before, never merged into scan scope.
+- The optional DER certificate path in `tls_probe.py` now renders SAN entries as
+  `DNS:name` / `IP Address:addr` instead of `cryptography`'s
+  `<DNSName(value='…')>` repr, so every source hands the name check one shape.
+  Wrapper forms that still arrive that way (Pulse emits `DNSName("app.local")`)
+  are unwrapped before matching rather than compared verbatim, and a host
+  reported in Pulse's display form (`app.local (10.0.0.5)`) is parsed down to
+  the name — in both cases the unparsed string would have matched nothing and
+  invented a mismatch.
+- The admin configurator now renders **any** boolean setting as a checkbox
+  instead of only paths ending in `.enabled`. A boolean drawn as a number input
+  sends `0`/`1`, which the API's boolean validator rejects, so the setting could
+  be displayed but never changed.
+
+
+- **The schedule dispatcher elects a leader** (ROADMAP P1.6, new
+  `api/services/leader_lock.py`). Its thread still starts in every replica, but
+  each tick first takes a session-scoped Postgres advisory lock and does
+  nothing without it — so exactly one replica polls for due schedules and
+  writes their `last_run_at`/`next_run_at` bookkeeping. **This retires the
+  operational rule** that you must run a single API replica, or set
+  `OCTO_SCHEDULER_DISPATCH_ENABLED=false` on all but one; leave the knob on
+  everywhere. A session lock rather than a leader row with a lease because the
+  lock lives in the connection: a leader that crashes, is OOM-killed, or is
+  partitioned away has it dropped by Postgres when its backend ends, so there
+  is no expiry to wait out and a follower's next tick simply wins. It is
+  deliberately **not** a fence — a dying leader and its successor can briefly
+  overlap — which is why the P1.5 idempotency key on each dispatch stays
+  load-bearing. Costs one pooled connection per replica. New
+  `octo_scheduler_is_leader`: it is 1 on exactly one replica, so a fleet-wide
+  `sum()` other than 1 is the signal something is wrong. On the SQLite fallback
+  URL there are no advisory locks and no second replica, so the process always
+  leads.
+- **Job statuses are now a validated state machine** (ROADMAP P1.3). The
+  lifecycle lives in one place (`api/services/job_states.py`) and is enforced on
+  every status write, instead of each call site assigning a string: an illegal
+  move raises rather than overwriting, so a `/results` upload retried after a
+  network timeout can no longer rewrite a job that already finished — and it is
+  rejected *before* the archive is extracted and re-published. Two states are
+  new. `claimed` covers the window between an agent taking a job and reporting
+  that the scan started (its first heartbeat naming the job promotes it to
+  `running`); it used to be indistinguishable from `running`, hiding exactly
+  the case the P1.4 lease reaper needs to see. `started_at` now records when the
+  agent reported starting rather than when it claimed, so job durations no
+  longer include the claim-to-heartbeat delay. `cancelled` is terminal and set
+  by the new endpoint below. **API consumers:** `JobInfo.status` can now return
+  `claimed` and `cancelled`; the Web UI renders both.
+- `octo_jobs_running` counts `claimed` jobs as well as `running` ones — a
+  claimed job is out with a worker, so leaving it in `octo_jobs_queued` would
+  read as a backlog nothing is working on. `cancelled` jobs are not observed by
+  `octo_job_duration_seconds`, so an operator's decision does not count against
+  the job-completion SLO ([docs/slo.md](docs/slo.md)).
+
+- **Durable control plane: jobs and agents moved into PostgreSQL** (ROADMAP
+  P1.1/P1.2). Both registries were module-level dicts in the API process,
+  mirrored to `state/api_jobs.json` and `state/api_agents.json`. That gave
+  every API replica its own queue and its own view of the agent fleet, lost
+  anything not yet flushed when the process died, and serialised job claims
+  with a `threading.Lock` that a second replica never saw — two replicas could
+  hand the same queued job to two agents. New migration `0008_jobs_agents`
+  adds the `jobs` and `agents` tables; `claim_job` now takes the candidate row
+  with `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent claims get distinct
+  jobs. Job list/search/sort moved into SQL with the same query parameters and
+  `Page` envelope as before (no API change). Agent staleness stays *derived*
+  from `last_seen_at` instead of being written to the row, so one replica's
+  clock cannot freeze a "stale" flag that every other replica reads back.
+  **Upgrades need no manual step**: each legacy JSON file is imported once at
+  startup and renamed to `*.imported`.
+- **`octo_jobs_queued` / `octo_jobs_running` are now cluster-wide**, counted in
+  the `jobs` table rather than per-process, and no longer reset to zero on
+  restart — the "single-process gauges" gap in [docs/slo.md](docs/slo.md) is
+  closed. Every replica exports the same number, so aggregate with `max()`,
+  not `sum()`.
+
+
+- **`GET /api/assets` no longer issues one query per returned row** (ROADMAP
+  P3.8). `list_assets` fetched each asset's identifiers in its own `SELECT`, so
+  the dashboard's `limit=5000` page cost 5002 statements and ~1.1 s at 50k
+  assets; identifiers for the whole page now come from a single `IN` query — 3
+  statements regardless of page size, and 77 ms for the same page. The default
+  100-row page went from 27.8 ms to 9.3 ms. No response-shape change.
+- **`ch_diff.fetch_tenant_cves` / `fetch_tenant_ports` are now bounded** by a
+  `max_rows` argument (default 500 000) and **raise** when a tenant exceeds it.
+  They materialize a tenant's whole history into a set to compute a set
+  difference, so a truncated result would report every dropped key as `removed`
+  and every later re-observation as new — failing is the safer outcome.
+  `fetch_tenant_ports` also gained the `since` parameter `fetch_tenant_cves`
+  already had, since narrowing the window is the remedy when the cap trips.
+  Both are helper-only today; the scanner's filesystem diff remains the default
+  path, so no runtime behaviour changes.
+- **`octo_job_duration_seconds` histogram buckets** are now explicit, spanning
+  30s to 8h. The `prometheus_client` default set stops at 10s, so every real
+  scan fell into `+Inf` and no duration quantile was computable. Existing
+  bucket series (`_bucket{le=...}`) change; `_count` and `_sum` do not.
+
+### Fixed
+
+- **Enrichment volume no longer starts empty, and CVSS v4 is a real database.**
+  On Kubernetes the enrichment PVC mounts at `/app/scanner/data` — the same path
+  the image bakes the seed data into — so the mount shadowed the seed and
+  `scripts/fetch-enrichment.sh`'s "floor" copy silently had nothing to read: its
+  source and destination were the same hidden directory. The images now keep a
+  pristine copy at `/opt/shapoclyack/seed-data` (override with
+  `OCTO_ENRICHMENT_SEED_DIR`) and the floor reads from there.
+
+  `scripts/fetch-cvss4-db.py` gained `--full` (page the whole NVD corpus, keep
+  every CVE carrying a genuine `cvssMetricV40`) and `--last-mod-days N`
+  (incremental, now what the daily refresh runs). Its previous default — refresh
+  a hardcoded 6-CVE list — produced an empty database on a fresh volume and
+  reported success, because none of those six have a CVSS v4 score in NVD at
+  all. A run that harvests nothing, or a `--full` that fails part-way, now
+  refuses to overwrite an existing database and exits non-zero; writes are
+  atomic (write-then-rename) so API replicas polling the file by mtime never
+  read a partial one. NVD's `cvssV4Severity` filter is unusable for selecting
+  v4-scored CVEs, so filtering happens client-side.
+
+  `scan-targets` is mounted as a required Secret by `job.yaml`, `job-resume.yaml`
+  and `cronjob.yaml` (unlike the API Deployment, where it is optional). When it
+  is missing the pod cannot be created at all and the Job sits in
+  `ContainerCreating` until `activeDeadlineSeconds` fails it — deleting the pod,
+  its logs and its events, so the only symptom is a bare `DeadlineExceeded` an
+  hour later. `scripts/dev-up.sh` now warns when the Secret is absent, and
+  `docs/troubleshooting.md` documents the signature.
+- **XML parsing hardened** — `scanner/pipeline/report.py`,
+  `scanner/pipeline/tls_posture.py`, and `scripts/compare-pulse-nmap.py` parse
+  nmap XML, which embeds attacker-influenced banner and NSE text, through
+  `defusedxml`. Python's `ElementTree` does not expand external entities, so
+  this closed an entity-expansion DoS surface rather than XXE. Two further
+  semgrep ERROR findings were reviewed and annotated as verified false
+  positives: the unverified JWT decode in `api/auth.py` is a routing peek at
+  the `typ` claim (a forged `typ=agent` only routes into `decode_agent_token()`,
+  which re-verifies against `jwt_secret`), and the unverified SSL context in
+  `defectdojo.py` is an opt-in escape hatch gated on `verify_ssl`, default
+  `True`. SAST gate: 5 ERROR findings → 0.
+
+
+- **`profiles.<mode>.top_ports` now rejects values naabu cannot parse.** The
+  field validated as any integer in 1–65535, but naabu's `-top-ports` is a
+  named port set, not a count — it accepts `100`, `1000` or `full` and nothing
+  else. A profile carrying e.g. `top_ports: 500` passed config validation and
+  then aborted every port batch of every run with `could not parse ports:
+  invalid top ports option`, before a single host was scanned. It is now
+  constrained to `100`/`1000` in the schema and in the config API's editable-path
+  whitelist, and the web configurator offers those two values instead of a free
+  number input. The shipped profiles only ever used 100 and 1000, so no
+  supported configuration changes. A full-range scan is still available through
+  `ports.custom_ports_file` (`1-65535`), which reaches naabu as `-p`.
 
 ### Security
 
@@ -227,461 +678,6 @@ All notable changes to Shapoclyack are documented in this file.
   was suppressed in CI because no nuclei release had shipped the fix yet;
   v3.11.1 pins `kin-openapi` 0.144.0, so the vulnerable dependency is gone from
   the image instead of hidden from the Trivy gate.
-
-### Added
-
-- **Scan intents on jobs and schedules** — product control for *what work* a
-  scan does (`inventory` / `vuln` / `full` / `delta`), orthogonal to speed
-  `mode`. Maps to CLI flags and per-job config overlays (nuclei floor,
-  top_ports, skip_nse) so operators can schedule fast inventory often and full
-  assessments rarely without editing YAML. UI selectors on Jobs and Schedules;
-  persisted in `scan_options`. See `docs/scan-performance.md` and
-  `api/services/scan_intents.py`.
-
-- **Scanner stage wall-clock timings** — each run writes `stage_timings.json`
-  (per-stage duration, skipped/error status, top stages) and a ranked summary
-  line in `pipeline.log`. Design notes for scan intents / delta without adding
-  hardware: `docs/scan-performance.md`. Load test peak-RSS monitor no longer
-  exits before the scanner container exists (was always reporting 0 MiB).
-
-- **Tenant-uploaded brute-force wordlists** (Phase 8.2, UI-managed) — the
-  subdomain and cloud-bucket brute-force stages already took a `wordlist_file`
-  path, which only an operator with filesystem access to the scanner could set.
-  Operators can now upload a wordlist through the API/UI (`POST /api/wordlists`,
-  or the new **Wordlists** page) and select it per scan
-  (`StartScanRequest.wordlist_id`). The body is normalized to the scanner's own
-  on-disk shape (lowercased, de-duplicated, blank/comment lines dropped) and
-  stored per tenant in Postgres (migration `0012`), so it survives restarts and
-  reaches every replica. At local scan start the selected row is materialized to
-  a job-scoped file under the state dir and injected into the job's effective
-  config: a `subdomain` list turns on `ct.brute_force`, a `bucket` list turns on
-  cloud discovery. Local execution only — a remote agent runs its own mounted
-  config, so a `wordlist_id` on an agent-mode scan is rejected rather than
-  silently ignored. Caps via `OCTO_WORDLIST_MAX_WORDS` (default 50000) and
-  `OCTO_WORDLIST_MAX_BODY_BYTES` (default 8 MiB); reads/lists never expose the
-  body, only metadata.
-
-- **Outbound webhooks for asset events** (ROADMAP P2 / Phase 10.3, webhook
-  half) — the first consumer of the 10.2 event stream. Per-tenant subscriptions
-  (`POST /api/webhooks`) carry the routing policy: which event kinds, and a
-  `min_severity` floor that applies to the kinds which actually have a severity
-  (`new_cve`) and deliberately does **not** swallow port changes or
-  decommissions that have none. A JetStream durable consumer
-  (`octo-webhook-fanout` on `events.asset.>`) turns matching events into rows
-  and acks; a separate dispatcher drains them. The split is the point: a slow
-  receiver can never stall consumption of the event stream, and the POST happens
-  outside any transaction so a hanging receiver holds no database connection.
-
-  `webhook_deliveries` (migration `0011`) is retry queue, dead-letter queue and
-  audit trail in one table, because those are the same rows under different
-  predicates. Retries are exponential and capped
-  (`OCTO_WEBHOOK_MAX_ATTEMPTS`, default 6 attempts over ~15 minutes); 5xx,
-  timeouts, 408 and 429 are retried, while every other 4xx is dead-lettered on
-  the first attempt — replaying an unchanged body that the receiver called
-  malformed only spends the retry budget to get the same answer.
-  `GET /api/webhooks/deliveries?status=dead` is the DLQ view and
-  `POST /api/webhooks/deliveries/{id}/retry` replays one; both work with the
-  broker down, since a delivery is a row and carries its own payload. The
-  dispatcher runs in **every** replica without leader election, like the P1.4
-  reaper: claims are taken with `FOR UPDATE SKIP LOCKED` and each claim pushes a
-  visibility timeout forward, so replicas divide the queue and a replica that
-  dies mid-POST releases its delivery instead of stranding it.
-
-  Deliveries are signed by default: a secret is generated at creation, returned
-  exactly once, and write-only afterwards (`has_secret`, plus
-  `POST /api/webhooks/{id}/rotate-secret`). `X-Shapoclyack-Signature` is an HMAC
-  over `{timestamp}.{body}` with the timestamp *inside* the MAC, so a receiver
-  rejecting stale timestamps cannot be defeated by replaying an old body under a
-  new one. Signing is what you opt out of, not into: an unsigned webhook is a
-  URL anyone who learns it can forge "this host just grew a critical CVE" into.
-
-  Webhook URLs are operator-supplied and this service sits inside the network it
-  scans, so a target resolving to a loopback, private, link-local or otherwise
-  non-global address is refused — that is the SSRF shape where an integration is
-  really a probe of the cluster's own internals, cloud metadata service
-  included. The check runs at write time *and* immediately before every POST (a
-  name can start resolving inward later), redirects are not followed, and
-  `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` opts an on-cluster receiver back in.
-  Writes need the tenant `admin` role rather than `operator`: sending a tenant's
-  exposure data to an address of the creator's choosing is closer to granting
-  access than to scheduling a scan. New metrics:
-  `octo_webhook_deliveries_total{outcome}`,
-  `octo_webhook_delivery_duration_seconds`,
-  `octo_webhook_delivery_queue{status}`. Ticketing bridges (Jira/ServiceNow) are
-  the remaining half of 10.3 and reuse this queue as another transport.
-
-- **Asset event bus** (ROADMAP P2 / Phase 10.2) — the asset-level events that
-  Phase 10.1 normalized into each run's `diff.json` are now published to NATS
-  JetStream on `events.asset.{tenant_id}.{kind}`: `new_asset`, `new_open_port`,
-  `new_cve`, `cert_expiring` after every successful run, plus
-  `decommissioned_host` when an operator decommissions an asset through
-  `PATCH /assets/{id}`. Until now those events existed only inside a run
-  artifact and a pod log, with nothing able to subscribe to them; this is the
-  substrate 10.3 (webhooks, ticketing) consumes.
-
-  The tenant token comes **before** the kind because a routing policy is
-  per-tenant first — the common subscription is `events.asset.acme.>`, while a
-  cross-tenant consumer still gets `events.asset.*.new_cve`. The new `EVENTS`
-  stream uses `LIMITS` retention rather than `WORK_QUEUE`: one event legitimately
-  has several independent consumers, and a work queue would let whichever
-  connected first consume it away from the others. Defaults: 30d max age, 1GiB
-  max bytes, 24h duplicate window (`OCTO_NATS_EVENTS_*`).
-
-  Publishing lives in the API, not in `scanner/pipeline/alerts.py` as the
-  roadmap originally sketched. The scanner is also the agent's payload and has
-  no tenant context — the tenant is a property of the job, resolved by the API —
-  so publishing there would have meant handing broker credentials to every
-  remote worker. The API's post-run hook covers local-mode scans and agent
-  uploads from the same place. `alerts.py` keeps its per-run SMTP/webhook
-  digest; that is a human summary, not the machine event stream.
-
-  Delivery is best-effort and never fails a scan: a run whose artifacts are on
-  disk and whose assets are registered must not be reported as failed because
-  the broker blinked. What did not go out is visible on the new
-  `octo_asset_events_published_total{kind,outcome}` counter, and the payload is
-  still in `diff.json`. The publish loop runs inside the agent's upload request,
-  so it is bounded twice over: a 30s batch deadline, and an abort after three
-  consecutive failures — a broker that accepts connections but fails every
-  publish costs the job seconds, not minutes. Event ids are derived from tenant+run+kind+host+port+CVE
-  instead of randomised, so a results upload replayed through the P1.5
-  idempotency path republishes identical ids and JetStream drops the duplicates;
-  the run id is part of that identity on purpose, so the same finding in a
-  *later* run stays a new occurrence rather than being suppressed after it comes
-  back. A run is capped at `OCTO_ASSET_EVENTS_MAX_PER_RUN` (default 1000) events
-  with the overflow logged and counted — a first scan of a fresh /16 is
-  otherwise one alert storm. The cap keeps the most actionable kinds first
-  (`new_cve`, then `cert_expiring`, then ports, then bare host discoveries),
-  because `report_diff.py` emits every `new_asset` ahead of everything else and
-  a plain head-cap would let a scope expansion bury the findings the bus exists
-  to deliver. `OCTO_ASSET_EVENTS_ENABLED=false` silences the stream without
-  disabling job dispatch and result ingest on the same broker.
-
-### Changed
-
-- **`tenant_id` is now validated on tenant creation** — `[A-Za-z0-9]` followed
-  by up to 63 more of `[A-Za-z0-9_-]`, and the prefix `h_` is reserved.
-  `POST /api/tenants` answers 422 for anything else (it previously accepted any
-  non-empty string up to the column width). The id is not just a key: it is a
-  token in `ingest.results.{tenant_id}` and now `events.asset.{tenant_id}.{kind}`,
-  and the old subject sanitizer mapped every disallowed character to `_`, so
-  `acme.eu` and `acme_eu` shared one subject — a subscription or NATS ACL scoped
-  to one of them also received the other's messages. Ids that predate the
-  validation keep working: they are published under a reserved
-  `h_<sha256[:32]>` token instead of being mangled into a neighbour's subject,
-  and every conforming id keeps the subject name it has today.
-
-- **TLS certificate name mismatch** (ROADMAP P4.1) — new `cert_name_mismatch`
-  (medium) finding in `tls_posture.json`, closing the hostname/SAN-CN gap that
-  Phase 9.2 explicitly left out of scope. A certificate is flagged when its DNS
-  identities (subject commonName plus every `DNS:` SAN) cover none of the names
-  the scan used to reach that endpoint. Name matching follows RFC 6125: a
-  leftmost `*` covers exactly one label and never a public-suffix-level one, and
-  partial-label wildcards (`www*.example.com`) do not match, since clients
-  reject them. The check runs as one pass over the finished findings, so all
-  three sources (nmap `ssl-cert`, `pulse-tls`, the stdlib probe) are treated
-  identically — they disagree about certificate *formatting*, not about what a
-  certificate is for; extraction in the new `scanner/pipeline/cert_names.py`
-  handles all three shapes.
-
-  What counts as an expected name is the part that decides whether this is
-  signal or noise. It is the **forward** half of `hostnames.json` — the FQDNs
-  the operator scanned, which resolved to this IP — plus the hostname the
-  record itself was dialled by on the Pulse/probe paths. PTR names are
-  deliberately excluded: a reverse name is assigned by whoever owns the address
-  block, not whoever owns the service, so `ec2-….compute.amazonaws.com` missing
-  from a certificate is the normal case and including it would have made this
-  check fire on most of the internet. An endpoint reached only by IP, or a
-  certificate whose names did not parse, yields **no** finding rather than a
-  mismatch.
-
-  **SNI is treated as part of the evidence.** A server behind virtual hosting
-  answers a connection made to an *address* with its default certificate, which
-  says nothing about the name that was scanned — so the stdlib probe now sends
-  the resolved FQDN in SNI (`probe_tls_endpoints(sni_by_host=…)`) and records it
-  on the finding, and its certificate is judged against that name alone. Sources
-  that cannot report an SNI (nmap's `ssl-cert` against an IP target, Pulse)
-  still report the mismatch, tagged `requires_confirmation: true` — the
-  convention already used for Pulse's legacy protocol probe — because a genuine
-  misconfiguration and a default-vhost answer are indistinguishable without
-  re-probing by name. Controlled by `tls_posture.hostname_mismatch` (default `true`,
-  inside the already opt-in `tls_posture` stage, and editable from the admin
-  configurator); findings-only as before, never merged into scan scope.
-- The optional DER certificate path in `tls_probe.py` now renders SAN entries as
-  `DNS:name` / `IP Address:addr` instead of `cryptography`'s
-  `<DNSName(value='…')>` repr, so every source hands the name check one shape.
-  Wrapper forms that still arrive that way (Pulse emits `DNSName("app.local")`)
-  are unwrapped before matching rather than compared verbatim, and a host
-  reported in Pulse's display form (`app.local (10.0.0.5)`) is parsed down to
-  the name — in both cases the unparsed string would have matched nothing and
-  invented a mismatch.
-- The admin configurator now renders **any** boolean setting as a checkbox
-  instead of only paths ending in `.enabled`. A boolean drawn as a number input
-  sends `0`/`1`, which the API's boolean validator rejects, so the setting could
-  be displayed but never changed.
-
-### Changed
-
-- **The schedule dispatcher elects a leader** (ROADMAP P1.6, new
-  `api/services/leader_lock.py`). Its thread still starts in every replica, but
-  each tick first takes a session-scoped Postgres advisory lock and does
-  nothing without it — so exactly one replica polls for due schedules and
-  writes their `last_run_at`/`next_run_at` bookkeeping. **This retires the
-  operational rule** that you must run a single API replica, or set
-  `OCTO_SCHEDULER_DISPATCH_ENABLED=false` on all but one; leave the knob on
-  everywhere. A session lock rather than a leader row with a lease because the
-  lock lives in the connection: a leader that crashes, is OOM-killed, or is
-  partitioned away has it dropped by Postgres when its backend ends, so there
-  is no expiry to wait out and a follower's next tick simply wins. It is
-  deliberately **not** a fence — a dying leader and its successor can briefly
-  overlap — which is why the P1.5 idempotency key on each dispatch stays
-  load-bearing. Costs one pooled connection per replica. New
-  `octo_scheduler_is_leader`: it is 1 on exactly one replica, so a fleet-wide
-  `sum()` other than 1 is the signal something is wrong. On the SQLite fallback
-  URL there are no advisory locks and no second replica, so the process always
-  leads.
-- **Job statuses are now a validated state machine** (ROADMAP P1.3). The
-  lifecycle lives in one place (`api/services/job_states.py`) and is enforced on
-  every status write, instead of each call site assigning a string: an illegal
-  move raises rather than overwriting, so a `/results` upload retried after a
-  network timeout can no longer rewrite a job that already finished — and it is
-  rejected *before* the archive is extracted and re-published. Two states are
-  new. `claimed` covers the window between an agent taking a job and reporting
-  that the scan started (its first heartbeat naming the job promotes it to
-  `running`); it used to be indistinguishable from `running`, hiding exactly
-  the case the P1.4 lease reaper needs to see. `started_at` now records when the
-  agent reported starting rather than when it claimed, so job durations no
-  longer include the claim-to-heartbeat delay. `cancelled` is terminal and set
-  by the new endpoint below. **API consumers:** `JobInfo.status` can now return
-  `claimed` and `cancelled`; the Web UI renders both.
-- `octo_jobs_running` counts `claimed` jobs as well as `running` ones — a
-  claimed job is out with a worker, so leaving it in `octo_jobs_queued` would
-  read as a backlog nothing is working on. `cancelled` jobs are not observed by
-  `octo_job_duration_seconds`, so an operator's decision does not count against
-  the job-completion SLO ([docs/slo.md](docs/slo.md)).
-
-- **Durable control plane: jobs and agents moved into PostgreSQL** (ROADMAP
-  P1.1/P1.2). Both registries were module-level dicts in the API process,
-  mirrored to `state/api_jobs.json` and `state/api_agents.json`. That gave
-  every API replica its own queue and its own view of the agent fleet, lost
-  anything not yet flushed when the process died, and serialised job claims
-  with a `threading.Lock` that a second replica never saw — two replicas could
-  hand the same queued job to two agents. New migration `0008_jobs_agents`
-  adds the `jobs` and `agents` tables; `claim_job` now takes the candidate row
-  with `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent claims get distinct
-  jobs. Job list/search/sort moved into SQL with the same query parameters and
-  `Page` envelope as before (no API change). Agent staleness stays *derived*
-  from `last_seen_at` instead of being written to the row, so one replica's
-  clock cannot freeze a "stale" flag that every other replica reads back.
-  **Upgrades need no manual step**: each legacy JSON file is imported once at
-  startup and renamed to `*.imported`.
-- **`octo_jobs_queued` / `octo_jobs_running` are now cluster-wide**, counted in
-  the `jobs` table rather than per-process, and no longer reset to zero on
-  restart — the "single-process gauges" gap in [docs/slo.md](docs/slo.md) is
-  closed. Every replica exports the same number, so aggregate with `max()`,
-  not `sum()`.
-
-### Added
-
-- **Idempotency keys for scan start and result upload** (ROADMAP P1.5;
-  migration `0010_job_idempotency`). The failure worth designing for is not a
-  duplicate request but a lost response: the write landed and the client never
-  found out. `POST /api/jobs` now honours an **`Idempotency-Key`** header and
-  creates at most one job per (tenant, key) — uniqueness is a database
-  constraint, since two replicas serving the same retry would both read "no
-  such key" — answering **200** rather than 202 for the replay, because nothing
-  was accepted that time. `POST /api/agent/jobs/{job_id}/results` takes an
-  optional `idempotency_key` form field and replays the stored outcome instead
-  of the 422 that P1.3 gives a second completion, with **409** when a second
-  upload genuinely contradicts the first. Agents that send no key still get
-  replay detection from the natural key (same agent, same job, same exit code),
-  so no agent upgrade is required; the bundled agent derives its key from the
-  job rather than randomising it, so a restarted process computes the same one.
-  An upload for a **cancelled** job is still refused — cancellation is an
-  operator decision, not an outcome to replay. A duplicate arriving *while* the
-  first upload is still being ingested also answers 409 (retry once it
-  finishes) rather than letting two handlers extract into the same run
-  directory. New metric `octo_job_idempotent_replays_total{operation}`.
-- **Attempt fencing on result upload.** The claim response now carries an
-  `attempt` number, which the agent echoes back with its results. A lease that
-  expired and was reissued bumps it, so a straggling upload from the previous
-  attempt is refused (**409**) instead of overwriting the run the current
-  attempt is producing — a restarted worker keeps its `agent_id`, so agent
-  identity alone could not tell the two apart. Agents that omit the field are
-  unfenced, exactly as before.
-- **The bundled agent now heartbeats for the whole scan** rather than once at
-  the start. The heartbeat is what renews the server-side lease, so without this
-  any scan longer than `OCTO_JOB_LEASE_SECONDS` would be requeued and handed to
-  a second agent while the first was still scanning the same targets. Interval
-  is 60s against the 300s default lease; a failed heartbeat is retried on the
-  next tick rather than aborting the scan.
-- The **schedule dispatcher** now keys each dispatch on the schedule's own due
-  time, so replicas that all wake for the same tick create one job instead of
-  one each. P1.6 (above) means only the leader ticks at all, but this key stays
-  load-bearing: leadership is not fenced, so a dying leader and its successor
-  can briefly overlap.
-- **Job leases and an expiry reaper** (ROADMAP P1.4; migration
-  `0009_job_leases`). A job handed to an executor had no deadline, so "the
-  worker is still scanning" and "the worker died three hours ago" looked
-  identical in the table and the row stayed in flight forever. Every
-  claimed/running job now carries `claimed_until`, renewed by the agent
-  heartbeat — or, for local jobs, by a thread running beside the scan, which is
-  what finally closes the P1.2 residual: the renewals stop with the replica, so
-  an orphaned local job stops looking attended. A sweep every
-  `OCTO_JOB_REAPER_INTERVAL_SECONDS` (60) puts expired **agent** jobs back on
-  the queue until `OCTO_JOB_MAX_ATTEMPTS` (3) hand-outs are used and fails them
-  after that, so a target that kills whatever picks it up cannot cycle through
-  the fleet; expired **local** jobs are failed outright, since no other replica
-  could ever pick them up. The sweep runs in every replica and needs no leader
-  election — expiry is a property of the row, and candidates are taken with
-  `FOR UPDATE SKIP LOCKED`. New settings `OCTO_JOB_LEASE_SECONDS` (300),
-  `OCTO_JOB_MAX_ATTEMPTS`, `OCTO_JOB_REAPER_ENABLED`,
-  `OCTO_JOB_REAPER_INTERVAL_SECONDS`; new metric
-  `octo_job_lease_expired_total{outcome}`; `JobInfo` gained `attempts`.
-  **Set `OCTO_JOB_LEASE_SECONDS` comfortably above your agents' heartbeat
-  interval** — too low and healthy scans get requeued underneath a working
-  agent.
-- **`POST /api/jobs/{job_id}/cancel`** (operator; ROADMAP P1.3) — cancels a
-  queued job, which the API previously had no way to do: a queued scan could
-  only be waited out. Legal **only** from `queued`, where nothing has taken the
-  job and refusing to hand it out is a real stop. A `claimed` or `running` job
-  answers **409**: an agent that has claimed a job starts scanning without
-  asking the API again, so cancelling then would show a stop that never happened
-  while the targets were still being scanned. An abandoned claimed job is the
-  lease reaper's business instead. A job in another tenant answers 404. The
-  reason is recorded in the job's `error`. API-only for now: the Web UI shows
-  the new statuses but has no cancel action.
-- **`OCTO_INSTANCE_ID`** — identity of an API replica in the shared job queue,
-  defaulting to the hostname. Local-mode jobs run in a thread inside one
-  replica, so the row records its owner and a starting replica reconciles only
-  its *own* orphaned local jobs instead of failing scans other replicas are
-  still running. Jobs orphaned by a replica that never returns under the same
-  id need the lease reaper (ROADMAP P1.4).
-
-- **Scale profiling harness and results** — new `tests/fixtures/scale_profile.py`
-  and [docs/scale-profile.md](docs/scale-profile.md) (ROADMAP P3.8). Times the
-  ClickHouse diff helpers and the Postgres asset list over a P3.7 fixture at
-  1k/10k/50k assets, and reports the two machine-independent counts alongside
-  wall-clock: ClickHouse rows/bytes read from `system.query_log`, and Postgres
-  statements per call. The document records what was measured, the fixes it
-  produced, the `PARTITION BY` evaluation, and explicitly what it does not
-  cover (no end-to-end API latency, no concurrency, no UI, no ingest path).
-
-- **Scale test fixtures** — new `tests/fixtures/scale_seed.py` (ROADMAP P3.7):
-  a CLI that bulk-loads N synthetic assets into the two stores that actually
-  grow with asset count — Postgres `assets`/`asset_identifiers` and ClickHouse
-  `shapoclyack_vulnerabilities`/`shapoclyack_open_ports`. Every row is derived
-  from `--seed` and the asset index, so runs are reproducible, reruns are
-  idempotent (`ON CONFLICT DO NOTHING` / `ReplacingMergeTree`), and a 10k
-  fixture is a byte-identical superset of the 1k one. `--purge` removes a
-  tenant's rows; the default tenant is `scale-test`, never `default`.
-  Complements `tests/load/run.sh`, which drives network load against live
-  containers and produces one run's worth of hosts, not a populated registry.
-
-- **`overlays/kind-enrichment`** — the local kind lab with real GeoIP/ASN/EPSS/
-  KEV/CVSS4 data. Identical to `overlays/enrichment` except the PVC drops to
-  `ReadWriteOnce`, since kind only ships the RWO local-path provisioner and an
-  RWX claim would stay `Pending` forever. `base/enrichment/` became a kustomize
-  Component so both overlays share the same patches instead of copying them.
-- **`NVD_API_KEY` wired into the enrichment fetch** from optional Secret
-  `shapoclyack-nvd` (key `nvd_api_key`), in both the refresh CronJob and the API
-  cold-start initContainer. This is deliberately separate from the key stored
-  through the config API (`enrichment.cvss4.nvd_api_key`), which is only ever
-  exported into a running scan process and never reached the fetch.
-- **Prometheus scrape wiring** (ROADMAP P3.5). The API pod template now carries
-  `prometheus.io/scrape` / `port` / `path` annotations, so annotation-based
-  scrape configs pick `GET /metrics` up with no extra objects; the annotations
-  are inert when nothing scrapes them. For Prometheus Operator installations,
-  `k8s/shapoclyack/examples/servicemonitor.example.yaml` is a ready
-  `ServiceMonitor` — it stays in `examples/` because it needs the
-  `monitoring.coreos.com/v1` CRDs, which no manifest here installs and whose
-  absence must not break `kubectl apply` of `base/`. `k8s/README.md` documents
-  both paths plus a bare `scrape_configs` snippet, and states explicitly that
-  `/metrics` is unauthenticated by design and must stay off the Ingress.
-- **Service level objectives** — new [docs/slo.md](docs/slo.md) (ROADMAP P3.6):
-  seven SLIs with PromQL over the existing series (API availability and
-  latency, job success rate and duration, ClickHouse ingest lag and
-  correctness, endpoint-inventory acceptance), an error-budget policy, and
-  burn-rate alerting guidance. Targets are labelled as starting values rather
-  than measured commitments — there is no scale baseline until P3.7/P3.8 land.
-  The known-gaps section records what the metrics cannot currently support:
-  per-replica in-memory job gauges, no tenant label on any series, and no
-  tracing.
-
-### Changed
-
-- **`GET /api/assets` no longer issues one query per returned row** (ROADMAP
-  P3.8). `list_assets` fetched each asset's identifiers in its own `SELECT`, so
-  the dashboard's `limit=5000` page cost 5002 statements and ~1.1 s at 50k
-  assets; identifiers for the whole page now come from a single `IN` query — 3
-  statements regardless of page size, and 77 ms for the same page. The default
-  100-row page went from 27.8 ms to 9.3 ms. No response-shape change.
-- **`ch_diff.fetch_tenant_cves` / `fetch_tenant_ports` are now bounded** by a
-  `max_rows` argument (default 500 000) and **raise** when a tenant exceeds it.
-  They materialize a tenant's whole history into a set to compute a set
-  difference, so a truncated result would report every dropped key as `removed`
-  and every later re-observation as new — failing is the safer outcome.
-  `fetch_tenant_ports` also gained the `since` parameter `fetch_tenant_cves`
-  already had, since narrowing the window is the remedy when the cap trips.
-  Both are helper-only today; the scanner's filesystem diff remains the default
-  path, so no runtime behaviour changes.
-- **`octo_job_duration_seconds` histogram buckets** are now explicit, spanning
-  30s to 8h. The `prometheus_client` default set stops at 10s, so every real
-  scan fell into `+Inf` and no duration quantile was computable. Existing
-  bucket series (`_bucket{le=...}`) change; `_count` and `_sum` do not.
-
-### Fixed
-
-- **Enrichment volume no longer starts empty, and CVSS v4 is a real database.**
-  On Kubernetes the enrichment PVC mounts at `/app/scanner/data` — the same path
-  the image bakes the seed data into — so the mount shadowed the seed and
-  `scripts/fetch-enrichment.sh`'s "floor" copy silently had nothing to read: its
-  source and destination were the same hidden directory. The images now keep a
-  pristine copy at `/opt/shapoclyack/seed-data` (override with
-  `OCTO_ENRICHMENT_SEED_DIR`) and the floor reads from there.
-
-  `scripts/fetch-cvss4-db.py` gained `--full` (page the whole NVD corpus, keep
-  every CVE carrying a genuine `cvssMetricV40`) and `--last-mod-days N`
-  (incremental, now what the daily refresh runs). Its previous default — refresh
-  a hardcoded 6-CVE list — produced an empty database on a fresh volume and
-  reported success, because none of those six have a CVSS v4 score in NVD at
-  all. A run that harvests nothing, or a `--full` that fails part-way, now
-  refuses to overwrite an existing database and exits non-zero; writes are
-  atomic (write-then-rename) so API replicas polling the file by mtime never
-  read a partial one. NVD's `cvssV4Severity` filter is unusable for selecting
-  v4-scored CVEs, so filtering happens client-side.
-
-  `scan-targets` is mounted as a required Secret by `job.yaml`, `job-resume.yaml`
-  and `cronjob.yaml` (unlike the API Deployment, where it is optional). When it
-  is missing the pod cannot be created at all and the Job sits in
-  `ContainerCreating` until `activeDeadlineSeconds` fails it — deleting the pod,
-  its logs and its events, so the only symptom is a bare `DeadlineExceeded` an
-  hour later. `scripts/dev-up.sh` now warns when the Secret is absent, and
-  `docs/troubleshooting.md` documents the signature.
-- **XML parsing hardened** — `scanner/pipeline/report.py`,
-  `scanner/pipeline/tls_posture.py`, and `scripts/compare-pulse-nmap.py` parse
-  nmap XML, which embeds attacker-influenced banner and NSE text, through
-  `defusedxml`. Python's `ElementTree` does not expand external entities, so
-  this closed an entity-expansion DoS surface rather than XXE. Two further
-  semgrep ERROR findings were reviewed and annotated as verified false
-  positives: the unverified JWT decode in `api/auth.py` is a routing peek at
-  the `typ` claim (a forged `typ=agent` only routes into `decode_agent_token()`,
-  which re-verifies against `jwt_secret`), and the unverified SSL context in
-  `defectdojo.py` is an opt-in escape hatch gated on `verify_ssl`, default
-  `True`. SAST gate: 5 ERROR findings → 0.
-
-### Fixed
-
-- **`profiles.<mode>.top_ports` now rejects values naabu cannot parse.** The
-  field validated as any integer in 1–65535, but naabu's `-top-ports` is a
-  named port set, not a count — it accepts `100`, `1000` or `full` and nothing
-  else. A profile carrying e.g. `top_ports: 500` passed config validation and
-  then aborted every port batch of every run with `could not parse ports:
-  invalid top ports option`, before a single host was scanned. It is now
-  constrained to `100`/`1000` in the schema and in the config API's editable-path
-  whitelist, and the web configurator offers those two values instead of a free
-  number input. The shipped profiles only ever used 100 and 1000, so no
-  supported configuration changes. A full-range scan is still available through
-  `ports.custom_ports_file` (`1-65535`), which reaches naabu as `-p`.
 
 ### CI
 
