@@ -1,0 +1,155 @@
+// Публикация образов в ghcr.io — замена .github/workflows/docker-publish.yml.
+//
+// Лимиты GitHub, из-за которых мы ушли с Actions, считаются в минутах раннеров;
+// сам ghcr.io тарифицируется отдельно. Поэтому реестр остаётся прежним, и
+// k8s-манифесты с compose править не нужно — меняется только то, КТО пушит.
+//
+// Запуск ручной и параметризованный, а не по каждому коммиту: пуш образа —
+// действие наружу, оно должно быть осознанным. DRY_RUN по умолчанию включён,
+// то есть первый прогон ничего не публикует.
+
+// Та же матрица, что в docker-publish.yml. Nmap-варианты идут отдельными
+// тегами -nmap: лицензия NPSL делает его включение в дефолтный образ риском
+// перераспространения (issue #97).
+def MATRIX = [
+  [name: 'scanner',      dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '0', suffix: ''],
+  [name: 'scanner-nmap', dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '1', suffix: '-nmap'],
+  [name: 'api',          dockerfile: 'Dockerfile.api',        image: 'ghcr.io/onixus/shapoclyack-api',     nmap: '0', suffix: ''],
+  [name: 'aio',          dockerfile: 'Dockerfile.allinone',   image: 'ghcr.io/onixus/shapoclyack-aio',     nmap: '0', suffix: ''],
+  [name: 'aio-nmap',     dockerfile: 'Dockerfile.allinone',   image: 'ghcr.io/onixus/shapoclyack-aio',     nmap: '1', suffix: '-nmap'],
+]
+
+pipeline {
+  agent any
+
+  parameters {
+    string(
+      name: 'TAG',
+      defaultValue: '',
+      description: 'Тег релиза, например v0.40. Собирается именно он, не HEAD ветки.'
+    )
+    booleanParam(
+      name: 'DRY_RUN',
+      defaultValue: true,
+      description: 'Собрать и залогиниться, но НЕ пушить. Снять галочку для реальной публикации.'
+    )
+    booleanParam(
+      name: 'MULTIARCH',
+      defaultValue: true,
+      description: 'linux/amd64 + linux/arm64. amd64 на этой машине эмулируется QEMU и заметно медленнее.'
+    )
+    string(
+      name: 'ONLY',
+      defaultValue: '',
+      description: 'Собрать только эти образы, через запятую (scanner, scanner-nmap, api, aio, aio-nmap). Пусто — все пять.'
+    )
+  }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+    timeout(time: 180, unit: 'MINUTES')
+  }
+
+  environment {
+    REGISTRY = 'ghcr.io'
+  }
+
+  stages {
+    stage('Checkout tag') {
+      steps {
+        script {
+          if (!params.TAG?.trim()) {
+            error('TAG обязателен: укажи тег релиза, например v0.40')
+          }
+        }
+        // Собираем строго содержимое тега. refspec с тегами обязателен:
+        // джоба смотрит в локальный каталог, а не в GitHub.
+        checkout([
+          $class: 'GitSCM',
+          branches: [[name: "refs/tags/${params.TAG}"]],
+          userRemoteConfigs: [[
+            url: '/Users/onixus/Git/Shapoclyack',
+            refspec: '+refs/tags/*:refs/tags/*',
+          ]],
+        ])
+        sh 'git --no-pager log --oneline -1'
+      }
+    }
+
+    stage('Login') {
+      steps {
+        withCredentials([
+          string(credentialsId: 'GHCR_USER', variable: 'GHCR_USER'),
+          string(credentialsId: 'GHCR_TOKEN', variable: 'GHCR_TOKEN'),
+        ]) {
+          sh '''
+            set -eu
+            if [ -z "${GHCR_TOKEN}" ] || [ -z "${GHCR_USER}" ]; then
+              echo "GHCR_USER/GHCR_TOKEN пустые — заполни их в Manage Jenkins → Credentials." >&2
+              echo "Нужен PAT с правом write:packages." >&2
+              exit 1
+            fi
+            # --password-stdin: токен не попадает ни в ps, ни в лог.
+            printf '%s' "${GHCR_TOKEN}" | docker login ${REGISTRY} -u "${GHCR_USER}" --password-stdin
+          '''
+        }
+      }
+    }
+
+    stage('Build & push') {
+      steps {
+        script {
+          def version = params.TAG.replaceFirst(/^v/, '')
+          def only = params.ONLY?.trim() ? params.ONLY.split(',').collect { it.trim() } : null
+          def selected = only ? MATRIX.findAll { only.contains(it.name) } : MATRIX
+          if (!selected) {
+            error("ONLY='${params.ONLY}' не совпал ни с одним образом матрицы")
+          }
+          def platforms = params.MULTIARCH ? 'linux/amd64,linux/arm64' : 'linux/arm64'
+          def output = params.DRY_RUN ? '' : '--push'
+
+          // Мультиарх требует драйвера docker-container: штатный docker
+          // собирать под несколько платформ не умеет.
+          sh '''
+            docker buildx inspect shapo-publisher >/dev/null 2>&1 \
+              || docker buildx create --name shapo-publisher --driver docker-container --bootstrap
+          '''
+
+          // GENDEC_READ_TOKEN нужен стадии Pulse: релизы GenDec приватные.
+          // Тот же credential, что использует основной пайплайн.
+          withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
+            for (m in selected) {
+              echo "=== ${m.name}: ${m.image}:${version}${m.suffix}"
+              sh """
+                set -eu
+                docker buildx build --builder shapo-publisher \
+                  --platform ${platforms} \
+                  -f ${m.dockerfile} \
+                  --build-arg INSTALL_NMAP=${m.nmap} \
+                  --secret id=github_token,env=GH_TOKEN \
+                  --provenance mode=max --sbom true \
+                  -t ${m.image}:${version}${m.suffix} \
+                  -t ${m.image}:latest${m.suffix} \
+                  ${output} .
+              """
+            }
+          }
+
+          if (params.DRY_RUN) {
+            echo "DRY_RUN: собрано ${selected.size()} образ(ов), публикации не было."
+          } else {
+            echo "Опубликовано ${selected.size()} образ(ов) с тегами ${version} и latest."
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      sh 'docker logout ${REGISTRY} || true'
+    }
+  }
+}

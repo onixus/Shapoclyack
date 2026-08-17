@@ -1,4 +1,4 @@
-"""Fail-closed startup configuration (#155).
+"""Fail-closed startup configuration (#155, #174).
 
 The property under test is that "forgot to configure" and "configured" are
 distinguishable. Every case therefore drives ``load_settings()`` through the
@@ -23,15 +23,18 @@ from api.settings import (
 
 CONFIGURED_USERS = json.dumps([{"username": "ops", "password": "$2b$12$x", "role": "admin"}])
 
-# The three variables that decide the outcome. Cleared per test so a value
-# inherited from the developer's shell cannot make a refusal test pass by
-# accident (or a success test fail for a reason it never asserts).
+CONFIGURED_POSTGRES = "postgresql+psycopg://scan:secret@postgres:5432/shapoclyack"
+
+# The variables that decide the outcome. Cleared per test so a value inherited
+# from the developer's shell cannot make a refusal test pass by accident (or a
+# success test fail for a reason it never asserts).
 _DECIDING_VARS = (
     "OCTO_ENV",
     "OCTO_JWT_SECRET",
     "API_SECRET_KEY",
     "OCTO_API_USERS",
     "OCTO_API_CORS",
+    "OCTO_POSTGRES_URL",
 )
 
 
@@ -48,6 +51,7 @@ def _configure_prod(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OCTO_JWT_SECRET", "a-real-and-sufficiently-long-secret")
     monkeypatch.setenv("OCTO_API_USERS", CONFIGURED_USERS)
     monkeypatch.setenv("OCTO_API_CORS", "https://console.example.com")
+    monkeypatch.setenv("OCTO_POSTGRES_URL", CONFIGURED_POSTGRES)
 
 
 def test_prod_is_the_default_environment(clean_env: pytest.MonkeyPatch) -> None:
@@ -63,10 +67,11 @@ def test_prod_refuses_every_default_and_names_them_all(clean_env: pytest.MonkeyP
         load_settings()
 
     message = str(excinfo.value)
-    # Both at once: an operator fixing them one restart at a time would
+    # All at once: an operator fixing them one restart at a time would
     # otherwise learn about the next only after redeploying.
     assert "OCTO_JWT_SECRET" in message
     assert "OCTO_API_CORS" in message
+    assert "OCTO_POSTGRES_URL" in message
 
 
 def test_console_accounts_are_not_checked_here(clean_env: pytest.MonkeyPatch) -> None:
@@ -143,6 +148,60 @@ def test_prod_refuses_wildcard_listed_beside_real_origins(clean_env: pytest.Monk
         load_settings()
 
 
+def test_prod_refuses_the_sqlite_fallback(clean_env: pytest.MonkeyPatch) -> None:
+    """#174 — an unset OCTO_POSTGRES_URL must not quietly become a local file.
+
+    The pre-existing guard in tenants_service.load_tenants() never fires here:
+    load_settings() has already substituted a URL that resolves, so the empty
+    value it checks for cannot reach it.
+    """
+    _configure_prod(clean_env)
+    clean_env.delenv("OCTO_POSTGRES_URL", raising=False)
+
+    with pytest.raises(InsecureConfigurationError, match="OCTO_POSTGRES_URL"):
+        load_settings()
+
+
+def test_prod_refuses_an_explicit_sqlite_url(clean_env: pytest.MonkeyPatch) -> None:
+    """Not only "forgot to set it" but also "set it to the wrong thing"."""
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_POSTGRES_URL", "sqlite:///scanner/state/shapoclyack.db")
+
+    with pytest.raises(InsecureConfigurationError, match="OCTO_POSTGRES_URL"):
+        load_settings()
+
+
+def test_sqlite_refusal_explains_the_multi_replica_consequence(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """Naming the variable is not enough — the operator has to know why."""
+    _configure_prod(clean_env)
+    clean_env.delenv("OCTO_POSTGRES_URL", raising=False)
+
+    with pytest.raises(InsecureConfigurationError) as excinfo:
+        load_settings()
+
+    message = str(excinfo.value)
+    assert "replica" in message
+    assert "SKIP LOCKED" in message
+
+
+def test_sqlite_refusal_distinguishes_unset_from_misconfigured(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    _configure_prod(clean_env)
+    clean_env.delenv("OCTO_POSTGRES_URL", raising=False)
+    with pytest.raises(InsecureConfigurationError) as unset:
+        load_settings()
+
+    clean_env.setenv("OCTO_POSTGRES_URL", "sqlite:///tmp/whatever.db")
+    with pytest.raises(InsecureConfigurationError) as wrong:
+        load_settings()
+
+    assert "unset" in str(unset.value)
+    assert "unset" not in str(wrong.value)
+
+
 def test_fully_configured_prod_starts(clean_env: pytest.MonkeyPatch) -> None:
     _configure_prod(clean_env)
 
@@ -151,6 +210,7 @@ def test_fully_configured_prod_starts(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.env == ENV_PROD
     assert settings.cors_origins == ["https://console.example.com"]
     assert settings.users[0]["username"] == "ops"
+    assert settings.postgres_url == CONFIGURED_POSTGRES
 
 
 def test_dev_allows_every_default(clean_env: pytest.MonkeyPatch) -> None:
@@ -162,6 +222,9 @@ def test_dev_allows_every_default(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.env == ENV_DEV
     assert settings.jwt_secret == DEFAULT_JWT_SECRET
     assert settings.cors_origins == ["*"]
+    # The SQLite fallback is deliberate here: dev and the test suite must not
+    # need a database to start (#174 refuses it only under OCTO_ENV=prod).
+    assert settings.postgres_url.startswith("sqlite")
 
 
 def test_unrecognised_env_is_refused(clean_env: pytest.MonkeyPatch) -> None:
