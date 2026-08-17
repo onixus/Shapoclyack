@@ -11,6 +11,13 @@
 // Та же матрица, что в docker-publish.yml. Nmap-варианты идут отдельными
 // тегами -nmap: лицензия NPSL делает его включение в дефолтный образ риском
 // перераспространения (issue #97).
+// Релизные образы задают версию Pulse явно, а не полагаются на дефолт из
+// Dockerfile: состав компонентов релиза должен читаться здесь. Значения сейчас
+// совпадают (ARG PULSE_VERSION=v0.9.1), и именно поэтому расхождение было бы
+// незаметным — дефолт уехал бы, а сборка релиза молча поехала бы за ним.
+// Так же было в docker-publish.yml до переезда.
+def PULSE_VERSION = 'v0.9.1'
+
 def MATRIX = [
   [name: 'scanner',      dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '0', suffix: ''],
   [name: 'scanner-nmap', dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '1', suffix: '-nmap'],
@@ -26,7 +33,7 @@ pipeline {
     string(
       name: 'TAG',
       defaultValue: '',
-      description: 'Тег релиза, например v0.40. Собирается именно он, не HEAD ветки.'
+      description: 'Тег релиза целиком, как он есть в git: shapoclyack-0.41-0817. Собирается именно он, не HEAD ветки. Тег и есть тег образа — манифесты k8s ссылаются на ghcr.io/onixus/shapoclyack-aio:<TAG>, так что сокращённое "0.41" или "v0.41" даст образ, которого никто не ищет.'
     )
     booleanParam(
       name: 'DRY_RUN',
@@ -128,6 +135,7 @@ pipeline {
                   --platform ${platforms} \
                   -f ${m.dockerfile} \
                   --build-arg INSTALL_NMAP=${m.nmap} \
+                  --build-arg PULSE_VERSION=${PULSE_VERSION} \
                   --secret id=github_token,env=GH_TOKEN \
                   --provenance mode=max --sbom true \
                   -t ${m.image}:${version}${m.suffix} \
