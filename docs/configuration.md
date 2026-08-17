@@ -177,6 +177,7 @@ to start** while any of the following is still at its built-in default:
 |---|---|
 | `OCTO_JWT_SECRET` (or `API_SECRET_KEY`) unset, empty, or equal to the shipped default | The default is published in this repository, so anyone can mint a valid admin token |
 | `OCTO_API_CORS` containing `*` (including when unset, which means `*`) | With credentials in play, any page a logged-in operator visits could call this API with their session. A `*` listed beside real origins is refused too — the wildcard matches everything regardless of what sits next to it |
+| `OCTO_POSTGRES_URL` unset (it would fall back to a local SQLite file) or pointing at `sqlite://` | Postgres is a hard dependency, not an opt-in sidecar: tenants, users, assets, jobs, agents and webhook deliveries live there. A per-replica file means a per-replica control plane, and the guarantees the durable control plane rests on — `SELECT … FOR UPDATE SKIP LOCKED` for job claims and leases, advisory locks for scheduler leader election — stop holding without saying so. The file also sits on the pod's ephemeral disk |
 | **No console account exists** — the `users` table is empty and `OCTO_API_USERS` is unset (checked at startup, once the database is up) | The built-in demo accounts are not seeded in `prod`; their passwords are published in this repository. An install nobody can log into is a failure whether it is reported at startup or discovered at the login form |
 
 The point is that *"forgot to configure"* and *"configured"* must not look alike.
@@ -199,13 +200,15 @@ still works and maps to `tenant_id=default`, so refusing would break a working
 install over a design preference rather than a published credential. Prefer
 per-tenant provisioning keys (`POST /api/auth/agent/token`).
 
-The first two are checked in `load_settings()` from the environment alone. The
-third needs the database and therefore runs at startup
+The first three are checked in `load_settings()` from the environment alone. The
+fourth needs the database and therefore runs at startup
 (`api/services/users.py:bootstrap`) — only the table can tell an installation
 with a real admin from one with none.
 
-> Related, not yet covered: `OCTO_POSTGRES_URL` still falls back to local SQLite
-> when unset, which is the same fail-open shape as the defaults above.
+The database refusal distinguishes an unset variable from one set to SQLite,
+because those are different mistakes with the same consequence. Under
+`OCTO_ENV=dev` the SQLite fallback stays exactly as it was: a laptop and the test
+suite must not need a database to start.
 
 ## Environment variables
 
@@ -220,7 +223,7 @@ Core deployment variables:
 | `OCTO_JWT_SECRET` | User JWT signing secret. **Required in `prod`**; must be identical across API replicas |
 | `OCTO_API_USERS` | **One-time bootstrap only** since #156. Accounts live in the Postgres `users` table; this JSON list is imported on a first start with an empty table and ignored afterwards. Manage accounts through `/api/users` — see [api-and-rbac.md](api-and-rbac.md#console-accounts) |
 | `OCTO_API_CORS` | Comma-separated allowed origins. **Must not be `*` in `prod`** |
-| `OCTO_POSTGRES_URL` | Primary database connection |
+| `OCTO_POSTGRES_URL` | Primary database connection. **Required in `prod`** — an unset value or a `sqlite://` URL refuses startup, see [above](#startup-safety-octo_env). Falls back to a local SQLite file only under `OCTO_ENV=dev` |
 | `OCTO_NATS_URL` | JetStream connection; empty disables NATS |
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
