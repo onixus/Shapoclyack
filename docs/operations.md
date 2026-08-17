@@ -254,8 +254,10 @@ scripts/restore-postgres.sh \
 ```
 
 The script verifies SHA-256, restores with `pg_restore --clean --if-exists`,
-restarts the API Deployment so its `migrate` init container runs
-`alembic upgrade head`, waits for a successful rollout, then verifies database
+restarts the API Deployment so its `migrate` init container brings the schema to
+head (`python -m api.db.migrate`, see
+[Upgrade and rollback](#one-supported-path-to-the-current-schema)), waits for a
+successful rollout, then verifies database
 readiness, `alembic_version`, and the `tenants` table. Record the emitted
 `db_restore_seconds` and `recovery_seconds` values in the verification table
 above.
@@ -334,6 +336,143 @@ on.
 availability to zero. Production overlays that need drain-friendly maintenance
 should run two or more API replicas; the scheduler is already protected by its
 PostgreSQL advisory-lock leadership mechanism.
+
+## Upgrade and rollback
+
+### One supported path to the current schema
+
+`python -m api.db.migrate` — `alembic upgrade head` holding a PostgreSQL
+advisory lock — run by the `migrate` init container on the API Deployment. Every
+replica runs it and they queue on the lock, so a scaled Deployment no longer
+starts N concurrent migrations. Each waiter still performs the upgrade after
+acquiring the lock: skipping it would leave a replica running against whatever
+schema the leader reached before it failed.
+
+`models.Base.metadata.create_all` no longer runs on PostgreSQL. It is restricted
+to SQLite, which is the dev and test fallback and is refused in production
+anyway. Two ways to build the schema means the two eventually disagree, and the
+disagreement is found in production: `create_all` builds today's models while
+writing no `alembic_version`, so the database looks migrated to no revision at
+all.
+
+`OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS` (default 600) bounds the wait for the lock.
+On expiry the init container fails with a message naming the cause instead of
+hanging at `Init:0/1`.
+
+### The expand/contract rule
+
+A rolling update runs the new schema against the **old** code: migrations
+complete before the first new pod starts, while old pods keep serving. A
+migration that removes or renames something the running version still uses takes
+the API down during its own upgrade, and takes it down again if the deployment
+is rolled back.
+
+Therefore every schema change is split across two releases:
+
+| Phase | Release N (expand) | Release N+1 (contract) |
+|---|---|---|
+| Add a column | Add it **nullable** or with a default; new code writes it, old code ignores it | Add `NOT NULL` once every row is populated and no old replica is left |
+| Remove a column | Stop reading and writing it in code; leave it in the database | Drop it |
+| Rename | Add the new name, write both, read the new with a fallback to the old | Drop the old name |
+| Change a type | Add the new column, backfill, dual-write | Drop the old column |
+
+The rule to apply when unsure: **release N's migration must leave release N-1's
+code working.** That is what makes both the rolling update and the rollback
+below safe, and it is the reason a rollback procedure can be short.
+
+### Upgrade
+
+1. Confirm the target image tag exists in GHCR. Images are published by the
+   local Jenkins job `shapoclyack-publish` (`Jenkinsfile.publish`), started by
+   hand with the release tag as `TAG` — not by pushing a git tag and not by
+   `gh release create`. The Actions workflow that used to do it is disabled
+   (its triggers are commented out; `workflow_dispatch` remains for a manual
+   cross-check). `DRY_RUN` defaults to true, so a first run builds without
+   publishing.
+2. Take a backup and confirm it is current — see
+   [PostgreSQL scheduled backup](#postgresql-scheduled-backup). The rollback
+   path below assumes one exists.
+3. Read the release's `CHANGELOG.md` entry for migrations. A migration that
+   cannot be written in expand/contract form (a genuinely destructive one) is a
+   maintenance window, not a rolling update, and must say so in the release
+   notes.
+4. Update the image tags and apply. Watch the `migrate` init container first —
+   it is where a schema problem appears:
+
+   ```bash
+   kubectl -n network-scan logs deploy/shapoclyack-api -c migrate --follow
+   kubectl -n network-scan rollout status deploy/shapoclyack-api
+   ```
+
+5. Verify: `GET /api/system` reports the new version, `GET /metrics` is served,
+   and `sum(octo_scheduler_is_leader)` is exactly 1 across replicas.
+
+### If a migration fails halfway
+
+`api/db/migrations/env.py` wraps the whole upgrade in **one** transaction
+(`context.begin_transaction()` around `run_migrations()`, not per revision), and
+PostgreSQL executes DDL transactionally. A failing statement therefore rolls back
+every revision in that run, and `alembic_version` still names the revision the
+database was on before it started — there is no half-applied schema to
+reconcile, and the init container fails instead of letting the API start on one.
+
+The exception to be aware of: a migration that does its own commit, or that
+operates outside the transaction (a concurrent index build), is not covered by
+this. Any such migration must say so in its docstring, because it changes what
+this section promises.
+
+1. Read the init container's log — it names the failing revision.
+2. Do **not** delete the pod repeatedly hoping it passes: a migration that
+   failed on data will fail identically on the next attempt, and the advisory
+   lock means each retry also blocks any other replica.
+3. If the failure is environmental (disk, connection, lock timeout waiting for
+   an unrelated long transaction), fix that and let the rollout retry.
+4. If the failure is in the migration itself, roll back the image tag to the
+   previous release (below). By the expand/contract rule the previous code runs
+   against the current schema, so this is a safe place to stand while the
+   migration is corrected.
+5. `alembic downgrade` is **not** part of the routine path. Downgrade scripts
+   are not exercised by CI and cannot restore data a migration dropped. The
+   supported way back from a schema change that must be undone is a restore
+   from backup into a fresh namespace — see
+   [PostgreSQL restore drill](#postgresql-restore-drill).
+
+### Rollback
+
+```bash
+kubectl -n network-scan rollout undo deploy/shapoclyack-api
+kubectl -n network-scan rollout status deploy/shapoclyack-api
+```
+
+This reverts the code, not the schema — and by the expand/contract rule it does
+not need to. The previous release's code runs against the newer schema because
+release N's migration was required to leave release N-1 working.
+
+Two consequences worth stating plainly:
+
+- **Rolling back past a contract migration is not supported.** Once the
+  contract half of a change has been applied, the code from before the expand
+  half no longer matches the database. Roll back at most one release, or
+  restore from backup.
+- A rollback leaves the schema at the newer revision. That is intended: the next
+  attempt at the upgrade is then a no-op on the migration and a plain image
+  change.
+
+Verify a rollback the same way as an upgrade, and confirm that jobs claimed by
+the newer replicas are still progressing — a lease expiring during the rollout
+is requeued by the reaper (P1.4), which is expected and not a failure.
+
+### Legacy JSON state import
+
+`api/services/{jobs,agents}.py` still import pre-P1.2 `state/api_{jobs,agents}.json`
+once at startup, renaming them `*.imported` afterwards. That code is a one-time
+migration aid for installations upgrading from before the Postgres control
+plane. It is scheduled for removal in the **second** release after `0.41`: one
+release is not enough, since an installation may skip a version, and keeping it
+indefinitely means every future start pays for a path nothing has used in years.
+An installation older than that must upgrade through `0.41` first, or accept
+that the queued jobs and registered agents in those files are lost — neither is
+state that a scan cannot recreate.
 
 ### NetworkPolicy decision
 

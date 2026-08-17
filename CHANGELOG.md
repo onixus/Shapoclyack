@@ -78,31 +78,50 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
-- **`OCTO_POSTGRES_URL` no longer falls back to SQLite in production** (#174).
-  With the variable unset, `load_settings()` substituted a local SQLite file and
-  the API started as if nothing were missing. Postgres is not an opt-in sidecar
-  like NATS or ClickHouse — tenants, users, assets, jobs, agents and webhook
-  deliveries all live there — so this was the same fail-open shape as the
-  default JWT secret and `CORS=*` closed in #155/#156, just in a different
-  place.
+- **Migrations are serialized, and there is one path to the schema** (#159).
+  Every API replica runs `alembic upgrade head` in its init container. While
+  `replicas: 1` was a correctness requirement that was safe by construction;
+  P1.6 removed the requirement and left the init container unchanged, so a
+  scaled Deployment started N concurrent migrations against one database.
+  Alembic has no mutual exclusion of its own — both runs read the same
+  `alembic_version`, both decide the same revision is pending, and both apply
+  it.
 
-  The consequence was worse than a lost database. Each replica opens **its own**
-  file, so two replicas are two disagreeing control planes; and the guarantees
-  the durable control plane rests on quietly stop holding — `SELECT … FOR UPDATE
-  SKIP LOCKED` for job claims and leases (P1.2/P1.4) and the advisory locks that
-  elect one scheduler (P1.6) do not mean on SQLite what they mean on Postgres.
-  The file also sits on the pod's ephemeral disk and is lost on restart.
+  The init container now runs `python -m api.db.migrate`, which takes a
+  **PostgreSQL advisory lock** — the primitive P1.6 already uses for scheduler
+  leader election — before upgrading. Replicas queue instead of racing.
+  Deliberately a blocking lock rather than the `pg_try_advisory_lock` used for
+  leadership: a replica that cannot get it must wait for the migration to
+  finish, not start against an unmigrated schema. Waiters still run the upgrade
+  after acquiring the lock, which is a no-op when the first replica succeeded
+  and still correct when it did not.
+  `OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS` (default 600) bounds the wait so a stuck
+  migration fails the pod with a named cause instead of hanging at `Init:0/1`.
 
-  Under `OCTO_ENV=prod` the API now refuses to start when the variable is unset
-  **or** when it points at `sqlite://` — the second because this is not only
-  about forgetting but about setting it to the wrong thing. The message
-  distinguishes the two cases and states the multi-replica consequence rather
-  than only naming the variable. `OCTO_ENV=dev` is unchanged: the fallback is
-  deliberate there, so a laptop and the test suite still need no database.
+  A lock rather than a separate pre-rollout Job because plain kustomize has no
+  ordering hooks: a Job would have to be applied and waited on out-of-band, a
+  second deployment step that `kubectl apply -k` does not perform.
 
-  Note there *was* already a guard — `tenants_service.load_tenants()` refuses an
-  empty URL — but it could never fire, because the fallback had already supplied
-  a URL that resolves.
+  **`models.Base.metadata.create_all` no longer runs on PostgreSQL.** It built
+  today's models while writing no `alembic_version` row, so a database it had
+  touched looked migrated to no revision at all while carrying columns a
+  migration was meant to add — and it silently repaired the one situation worth
+  reporting, an API replica started against a database nobody migrated. It
+  remains for SQLite, the dev and test fallback, which cannot be shared by
+  replicas and where requiring a migration run before `pytest` would buy
+  nothing.
+
+  Alembic's `fileConfig` is now called with `disable_existing_loggers=False`.
+  Running the upgrade in-process meant it switched off every logger it does not
+  name — including `api.db.migrate`, whose next line is the message explaining
+  why a migration did not apply.
+
+  [docs/operations.md](docs/operations.md) gains an **Upgrade and rollback**
+  section: the expand/contract rule (a release's migration must leave the
+  previous release's code working, which is what makes both the rolling update
+  and `rollout undo` safe), what to do when a migration fails halfway, why
+  `alembic downgrade` is not the routine path back, and the release in which the
+  legacy `state/api_{jobs,agents}.json` import is removed.
 
 - **Login rate limiting and an authentication audit trail** (#157).
   `POST /api/auth/login` was unlimited and unrecorded: guessing a password was
