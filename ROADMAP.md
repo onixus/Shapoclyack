@@ -39,7 +39,11 @@ Shipped through **[shapoclyack-0.40-0806](https://github.com/onixus/Shapoclyack/
 never cut and `main` has since moved past it (wordlists, stage timings, scan intents all sit
 under `## Unreleased`) — closing [#160](https://github.com/onixus/Shapoclyack/issues/160)
 means deciding whether 0.41 is re-cut from current `main` or re-bumped. Note that GHCR
-images are built by `gh release create`, **not** by pushing a tag.
+images are now published by the **local Jenkins** job `shapoclyack-publish`
+(`Jenkinsfile.publish`), started by hand with the release tag — neither pushing a tag nor
+`gh release create` builds anything since the Actions workflows were disabled (166b386,
+3e6d57c). It has never been run, not even as a dry run, so #160 should budget for the
+first execution of that job rather than assume it works.
 
 | Area | Status |
 |------|--------|
@@ -380,25 +384,31 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 | ~~[#155](https://github.com/onixus/Shapoclyack/issues/155)~~ | Fail-closed config — refuse to start on default secrets / `CORS=*` | **Done** | `OCTO_ENV` defaults to `prod`; refuses on the default JWT secret or any `*` in CORS. The accounts half moved to startup with #156 |
 | ~~[#156](https://github.com/onixus/Shapoclyack/issues/156)~~ | Users into Postgres, no plaintext passwords | **Done** | `users` table (migration `0013`) with a real FK from `user_tenants`; bcrypt only; `/api/users` + `POST /api/auth/password`; `OCTO_API_USERS` demoted to a one-time bootstrap import |
 | ~~[#157](https://github.com/onixus/Shapoclyack/issues/157)~~ | Login brute-force protection + auth audit | **Done** | `auth_events` (migration `0014`) is the audit trail *and* the counter: 5 failures per (username, IP) and 50 per IP across usernames in a 15-min decaying window → `429` + `Retry-After`, identical whether the account exists. `X-Forwarded-For` honoured only behind `OCTO_TRUSTED_PROXIES`; `octo_auth_attempts_total{outcome}`; admin `GET /api/auth/events` |
-| [#158](https://github.com/onixus/Shapoclyack/issues/158) | Automated backup + **rehearsed** restore | ~1 sprint | `docs/operations.md` describes intent; no CronJob, no restore script, no measured RPO/RTO. Also covers the missing PodDisruptionBudget and `examples/`-only NetworkPolicy |
-| [#159](https://github.com/onixus/Shapoclyack/issues/159) | Safe upgrade — migrations out of the initContainer, PDB, rollback | ~0.5 sprint | Alembic runs in **every** replica's initContainer ([api-deployment.yaml:36](k8s/shapoclyack/base/api-deployment.yaml:36)); [P1.6](#p1-breakdown--durable-control-plane) removed the `replicas: 1` guard that made this safe. Second schema path via `create_all` ([api/db/engine.py:34](api/db/engine.py:34)) |
-| [#151](https://github.com/onixus/Shapoclyack/issues/151) | Outbound webhook SSRF / credential-leak hardening | ~1 sprint | Release blocker — webhooks ([10.3](#phase-10--change-detection--alerting-at-asset-level)) ship *in* GA, not after |
+| ~~[#151](https://github.com/onixus/Shapoclyack/issues/151)~~ | Outbound webhook SSRF / credential-leak hardening | **Done** | Delivery is pinned to the address that was validated (no DNS-rebinding window) with Host/SNI preserved and redirects never followed; header values are write-only on every read path; `enabled=false` is a real kill switch that returns a claimed delivery to pending *without* spending an attempt; error bodies are read streaming behind one wall-clock delivery deadline; a malformed port is refused at subscription time, not retried at delivery time |
+| [#158](https://github.com/onixus/Shapoclyack/issues/158) | Automated backup + **rehearsed** restore | ~1 d left | Infrastructure is merged: `pg_dump` CronJob (`base/backup/`), `scripts/restore-postgres.sh`, the API PodDisruptionBudget, backup-freshness alerts, and a recovery runbook covering the artifact PVC, ClickHouse and JetStream. NetworkPolicy stays in `examples/` — that is now a **documented decision** (egress destinations are environment-specific and base must apply on a cluster with no policy enforcement), not an omission. **What is left is the drill itself**: `docs/operations.md` still reads `Not yet measured` for RPO/RTO, and a design target is not a measurement |
+| [#159](https://github.com/onixus/Shapoclyack/issues/159) | Safe upgrade — migrations out of the initContainer, rollback | ~0.5 sprint | **The only GA blocker not started.** Alembic runs in **every** replica's initContainer ([api-deployment.yaml:36](k8s/shapoclyack/base/api-deployment.yaml:36)); [P1.6](#p1-breakdown--durable-control-plane) removed the `replicas: 1` guard that made this safe. Second schema path via `create_all` ([api/db/engine.py:34](api/db/engine.py:34)). The PDB half landed with #158 |
+| [#174](https://github.com/onixus/Shapoclyack/issues/174) | `OCTO_POSTGRES_URL` falls back to SQLite | ~1–2 d | Filed as P1, but the consequence is P0-shaped: every replica silently gets its own control plane, and the `FOR UPDATE SKIP LOCKED` / advisory-lock guarantees P1 was built for disappear without a word. Same fail-open shape as ~~#155~~/~~#156~~, so it belongs to this wave |
 | [#160](https://github.com/onixus/Shapoclyack/issues/160) | Cut the release, empty `## Unreleased` | ~1 d | Last, after the rest is merged. See the [baseline note](#current-baseline-done) — the issue's "last tag is 0.33" is stale |
 
-Order: ~~#155~~ and #158 are independent and went first; ~~#156~~ → ~~#157~~ are
-done, so **#158 and #159 are what remain** before #160 closes the wave. A fourth item of the same fail-open shape was
-found while doing #155 and is now [#174](https://github.com/onixus/Shapoclyack/issues/174):
-`OCTO_POSTGRES_URL` silently falls back to local SQLite, which quietly gives every replica
-its own control plane. **Wave 1** (after the blockers, not yet filed as issues):
-[#152](https://github.com/onixus/Shapoclyack/issues/152) webhook state-machine
-correctness; end-to-end API latency under concurrency — objectives 2, 4 and 5 in
-[docs/slo.md](docs/slo.md) are still starting values because [3.8](#p3-breakdown--scale--observability)
-profiled query paths in-process; alert rules as code (PromQL exists in `docs/slo.md`,
-no `PrometheusRule` manifests, and `octo_scheduler_is_leader` has no alert on either
-`> 1` or `== 0`); data-growth bounds (ClickHouse has no TTL — [3.8](#p3-breakdown--scale--observability)
-named TTL the right tool and rejected `PARTITION BY` as semantic — plus artifact
-retention on disk); and a load run at ≥2 API replicas, which P1 made legal but nobody
-has exercised.
+Order: ~~#155~~ and the infrastructure half of #158 are independent and went first;
+~~#156~~ → ~~#157~~ → ~~#151~~ are done, so **#159 and #174 are the remaining code
+work** — one coherent piece about fail-closed startup and safe upgrade — followed by the
+#158 drill, with #160 closing the wave.
+
+**Wave 1** is now filed rather than described here:
+[#152](https://github.com/onixus/Shapoclyack/issues/152) webhook state-machine correctness
+(with [#153](https://github.com/onixus/Shapoclyack/issues/153) for its configuration and
+limits); [#185](https://github.com/onixus/Shapoclyack/issues/185) end-to-end API latency
+under concurrency — objectives 2, 4 and 5 in [docs/slo.md](docs/slo.md) are still starting
+values because [3.8](#p3-breakdown--scale--observability) profiled query paths in-process;
+[#186](https://github.com/onixus/Shapoclyack/issues/186) alert rules as code (PromQL exists
+in `docs/slo.md`, no `PrometheusRule` manifests, and `octo_scheduler_is_leader` has no alert
+on either `> 1` or `== 0`); [#187](https://github.com/onixus/Shapoclyack/issues/187)
+data-growth bounds (ClickHouse has no TTL — [3.8](#p3-breakdown--scale--observability) named
+TTL the right tool and rejected `PARTITION BY` as semantic — plus artifact retention on
+disk); and [#188](https://github.com/onixus/Shapoclyack/issues/188) a load run at ≥2 API
+replicas, which P1 made legal but nobody has exercised — it depends on #159, since a rolling
+update is exactly where concurrent initContainer migrations would show up.
 
 ## Track C — Vulnerability Management product
 
