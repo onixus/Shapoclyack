@@ -93,7 +93,13 @@ def run_upgrade(
             # lock_timeout applies to pg_advisory_lock's wait. Without it a
             # replica behind a migration that never finishes waits forever, and
             # the pod reports nothing but "Init:0/1".
-            conn.execute(text(f"SET lock_timeout = '{int(lock_timeout_seconds)}s'"))
+            # set_config() rather than SET: SET takes no bind parameters, so it
+            # forces the value into the statement text, which is what the SAST
+            # gate objects to. The function form takes one.
+            conn.execute(
+                text("SELECT set_config('lock_timeout', :timeout, false)"),
+                {"timeout": f"{int(lock_timeout_seconds)}s"},
+            )
             _log.info("Waiting for the migration lock")
             try:
                 conn.execute(
