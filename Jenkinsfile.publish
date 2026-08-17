@@ -68,7 +68,7 @@ pipeline {
       steps {
         script {
           if (!params.TAG?.trim()) {
-            error('TAG обязателен: укажи тег релиза, например v0.40')
+            error('TAG обязателен: укажи тег релиза целиком, например shapoclyack-0.41-0817. Эта джоба параметризованная — запускать надо через Build with Parameters, а не Build Now.')
           }
         }
         // Собираем строго содержимое тега. refspec с тегами обязателен:
@@ -93,7 +93,7 @@ pipeline {
         ]) {
           sh '''
             set -eu
-            if [ -z "${GHCR_TOKEN}" ] || [ -z "${GHCR_USER}" ]; then
+            if [ -z "${GHCR_TOKEN:-}" ] || [ -z "${GHCR_USER:-}" ]; then
               echo "GHCR_USER/GHCR_TOKEN пустые — заполни их в Manage Jenkins → Credentials." >&2
               echo "Нужен PAT с правом write:packages." >&2
               exit 1
