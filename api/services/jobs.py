@@ -51,6 +51,7 @@ from api.services import results_ingest
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
 from api.services import scan_intents
+from api.services import vulnerabilities as vulns_service
 from api.services import wordlists as wordlists_service
 from api.services.targets import parse_target_payload
 from api.settings import Settings
@@ -563,6 +564,35 @@ def _upsert_assets_best_effort(
             _update_job(settings, job_id, asset_upsert_error=f"{type(exc).__name__}: {exc}"[:2000])
 
 
+def _track_vulnerabilities_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+) -> None:
+    """Best-effort fold of the run's findings into the tracker (#145).
+
+    Runs after the asset upsert in both completion paths, and only for a
+    *succeeded* run: a finding is attached to an asset, so the registry has to
+    be current first, and a failed run's ``vulnerabilities.json`` may be a
+    partial write from a scan that stopped mid-stage. Findings the tracker
+    misses are not lost — the next successful scan observes them again.
+
+    Quiet on failure, like the event publish and unlike the asset upsert: an
+    un-tracked finding is still in the run's artifacts and in ClickHouse, so
+    nothing is unrecoverable, whereas an empty asset list means the run
+    produced no inventory at all.
+    """
+    if not run_id:
+        return
+    try:
+        vulns_service.register_findings_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        logging.exception(
+            "Vulnerability tracking failed for run %s (tenant=%s, job=%s)",
+            run_id,
+            tenant_id,
+            job_id,
+        )
+
+
 def _publish_asset_events_best_effort(
     settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
 ) -> None:
@@ -785,6 +815,9 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             if run_id:
                 runs_service.write_run_tenant(settings, str(run_id), tenant_id, job_id=job_id)
             _upsert_assets_best_effort(
+                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
+            )
+            _track_vulnerabilities_best_effort(
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
             _publish_asset_events_best_effort(
@@ -1348,6 +1381,9 @@ def complete_job(
             # set would alert on hosts and ports that a broken scan simply
             # failed to observe — a disappearance is not a discovery.
             if status == job_states.SUCCEEDED:
+                _track_vulnerabilities_best_effort(
+                    settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+                )
                 _publish_asset_events_best_effort(
                     settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
                 )

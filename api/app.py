@@ -22,6 +22,7 @@ from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import system as system_routes
 from api.routes import users as users_routes
+from api.routes import vulnerabilities as vulnerabilities_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(schedules_routes.router, prefix="/api")
     app.include_router(wordlists_routes.router, prefix="/api")
     app.include_router(users_routes.router, prefix="/api")
+    app.include_router(vulnerabilities_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:

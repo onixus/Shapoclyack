@@ -454,6 +454,203 @@ class WebhookDelivery(Base):
     )
 
 
+class SlaPolicy(Base):
+    """Remediation deadline for one (asset criticality, severity) pair (#145).
+
+    The SLA an organisation actually has is "critical findings on
+    business-critical systems in 7 days, everything else in 90" — two axes, so
+    the policy is a small table rather than a column on the tenant. A row with
+    ``asset_criticality = NULL`` is the tenant's fallback for that severity,
+    which is what makes the table usable before anyone has set criticality on a
+    single asset. When no row matches at all, the built-in defaults in
+    ``api/services/vulnerabilities.py`` apply; they are code and not seeded rows
+    so that an installation which never opens this API still gets deadlines,
+    and so that "the default changed" is a release note rather than a data
+    migration on every tenant.
+
+    ``remediation_days`` is days and not hours: an SLA measured in hours would
+    be a promise about scan cadence (``OCTO_*`` schedules are daily by default)
+    that nothing in this platform can keep.
+    """
+
+    __tablename__ = "sla_policies"
+
+    policy_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    # NULL = the tenant's fallback for this severity. 0–4, same scale as
+    # Asset.asset_criticality.
+    asset_criticality: Mapped[int | None] = mapped_column(default=None)
+    # critical | high | medium | low | unknown — scanner.pipeline.report.SEVERITY_ORDER.
+    severity: Mapped[str]
+    remediation_days: Mapped[int]
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        # One deadline per (criticality, severity). Two rows would mean the
+        # answer depended on row order, i.e. on nothing.
+        UniqueConstraint(
+            "tenant_id", "asset_criticality", "severity", name="uq_sla_policy_scope"
+        ),
+    )
+
+
+class Vulnerability(Base):
+    """One finding tracked across runs, with its lifecycle state (#145).
+
+    Until this table the platform had no *vulnerability* — only per-run rows.
+    ``vulnerabilities.json`` is rewritten by every scan, the ClickHouse
+    ``shapoclyack_vulnerabilities`` table is a ``ReplacingMergeTree`` whose
+    whole job is to keep the latest observation, and both are therefore
+    unable to hold anything a human wrote: an owner, a decision, a deadline. A
+    ``ReplacingMergeTree`` merge would silently drop them. So the state that
+    people produce lives here, in Postgres, next to the assets and jobs, and
+    the analytics store keeps doing what it is good at.
+
+    **Identity.** ``finding_key`` is ``sha256(asset_id|cve-or-script_id|port)``
+    — deliberately the same triple the report pipeline already de-duplicates on
+    (``_dedupe_vulnerabilities``: host:port:CVE), so "the same finding" means
+    the same thing to the tracker as it does to the report. It is scoped by
+    tenant, not global. The key is over ``asset_id`` rather than the observed
+    IP because an asset is what survives a DHCP lease: correlating a finding to
+    the asset registry (Phase 7) is what lets a host keep its remediation
+    history when its address changes.
+
+    **Denormalised finding fields** (``severity``, ``contextual_score``,
+    ``risk_level``, …) are the values from the *latest* observation. They are
+    copied here rather than joined from the run artifacts because the queries
+    this table exists to serve — "what breaches SLA, sorted by risk" — must not
+    depend on a run directory still being on disk, and because the run that
+    first found something may long since have been pruned.
+
+    ``due_at`` is stored, while SLA *breach* is derived on read. Storing the
+    deadline is what makes "what is overdue" an indexed query instead of a
+    scan; deriving the breach keeps a clock comparison out of the table, where
+    it would otherwise need a sweeper to stay true and could be frozen wrong by
+    whichever replica wrote last (the same reasoning as ``Agent.status`` never
+    storing "stale").
+    """
+
+    __tablename__ = "vulnerabilities"
+
+    vuln_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    # CASCADE: a finding is a statement about an asset. If the asset row is
+    # gone, the finding is not a record of anything addressable.
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("assets.asset_id", ondelete="CASCADE"), index=True
+    )
+    finding_key: Mapped[str]
+    # What was found. `cve` is NULL for exposure/nuclei findings, which is why
+    # `script_id` is part of the identity too.
+    cve: Mapped[str | None] = mapped_column(default=None)
+    script_id: Mapped[str | None] = mapped_column(default=None)
+    port: Mapped[str | None] = mapped_column(default=None)
+    title: Mapped[str] = mapped_column(default="")
+    # Latest observation's assessment (api/services/risk_scoring.py, nist-1).
+    severity: Mapped[str] = mapped_column(default="unknown")
+    risk_level: Mapped[str | None] = mapped_column(default=None)
+    contextual_score: Mapped[float | None] = mapped_column(default=None)
+    cvss: Mapped[float | None] = mapped_column(default=None)
+    # Lifecycle. Legal moves live in api/services/vuln_states.py; the column
+    # stays a plain string so adding a state does not need a migration.
+    state: Mapped[str] = mapped_column(default="OPEN")
+    state_changed_at: Mapped[datetime]
+    state_changed_by: Mapped[str | None] = mapped_column(default=None)
+    # Ownership of *remediation*, which is not the same as Asset.owner_email
+    # (who runs the box). Defaulted from the asset on creation and then
+    # independent — reassigning a fix must not rewrite the asset registry.
+    assignee: Mapped[str | None] = mapped_column(default=None)
+    # Free-form team/queue name. A FK would require a teams table that nothing
+    # else in the platform has yet (#146 territory).
+    owner_team: Mapped[str | None] = mapped_column(default=None)
+    # SLA. `sla_days` records the policy that produced `due_at`, so a later
+    # policy edit is visibly not what the finding was judged against until it
+    # is re-observed.
+    due_at: Mapped[datetime | None] = mapped_column(default=None)
+    sla_days: Mapped[int | None] = mapped_column(default=None)
+    # "default" (built-in table) | "policy" (a sla_policies row) | "exception".
+    sla_source: Mapped[str | None] = mapped_column(default=None)
+    # Accepted risk, expiring. See the vuln_states docstring for why this is an
+    # attribute and not a seventh state.
+    exception_until: Mapped[datetime | None] = mapped_column(default=None)
+    exception_reason: Mapped[str | None] = mapped_column(default=None)
+    exception_by: Mapped[str | None] = mapped_column(default=None)
+    first_seen_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+    # The run the SLA clock is counted from: first discovery, or the
+    # re-observation that reopened it. Not necessarily first_seen_run_id.
+    sla_started_at: Mapped[datetime]
+    first_seen_run_id: Mapped[str | None] = mapped_column(default=None)
+    last_seen_run_id: Mapped[str | None] = mapped_column(default=None)
+    observation_count: Mapped[int] = mapped_column(default=1, server_default="1")
+    reopen_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    closed_at: Mapped[datetime | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    __table_args__ = (
+        # Identity: re-observing a finding must find this row, and two API
+        # replicas ingesting the same run must not create it twice.
+        UniqueConstraint("tenant_id", "finding_key", name="uq_vulnerability_finding"),
+        # The SLA queries: one tenant's still-open findings by deadline.
+        Index("ix_vulnerabilities_due", "tenant_id", "state", "due_at"),
+        # The Vulnerability Center's default view: worst first within a tenant.
+        Index("ix_vulnerabilities_risk", "tenant_id", "state", "contextual_score"),
+        Index("ix_vulnerabilities_asset", "tenant_id", "asset_id"),
+        Index("ix_vulnerabilities_assignee", "tenant_id", "assignee"),
+    )
+
+
+class VulnerabilityEvent(Base):
+    """One auditable thing that happened to one finding (#145).
+
+    #145's acceptance criterion is that *all* transitions are auditable, so the
+    row is written in the same transaction as the change it records — an audit
+    trail assembled afterwards from logs is an approximation of what happened,
+    and one that a crash between the two writes makes wrong.
+
+    Observations are events too (``kind="observed"``), which is what makes the
+    trail answer "when did this stop being seen" without a separate scan
+    history. They are the high-volume kind: one per finding per scan. Retention
+    is deliberately not implemented here — the endpoint-inventory retention
+    worker is the pattern to follow when the volume justifies it, and until
+    then losing the trail is worse than keeping it.
+    """
+
+    __tablename__ = "vulnerability_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    vuln_id: Mapped[str] = mapped_column(
+        ForeignKey("vulnerabilities.vuln_id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    occurred_at: Mapped[datetime]
+    # observed | state_change | reopened | assigned | exception_set |
+    # exception_cleared — see VULN_EVENT_KINDS in api/services/vulnerabilities.py.
+    kind: Mapped[str]
+    from_state: Mapped[str | None] = mapped_column(default=None)
+    to_state: Mapped[str | None] = mapped_column(default=None)
+    # The username, or NULL when the scanner did it. NULL is meaningful: it is
+    # the difference between "the platform observed this" and "a person said
+    # so", and no FK to users, because the trail must outlive the account.
+    actor: Mapped[str | None] = mapped_column(default=None)
+    note: Mapped[str | None] = mapped_column(default=None)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    __table_args__ = (
+        # The per-finding timeline, newest first, and the tenant-wide activity
+        # feed the remediation view (#138) reads.
+        Index("ix_vulnerability_events_vuln_time", "vuln_id", "occurred_at"),
+        Index("ix_vulnerability_events_tenant_time", "tenant_id", "occurred_at"),
+    )
+
+
 class AssetTag(Base):
     __tablename__ = "asset_tags"
 
