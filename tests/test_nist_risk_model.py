@@ -12,6 +12,9 @@ not about arithmetic. The three that matter most:
 
 from __future__ import annotations
 
+import os
+from datetime import UTC, datetime
+
 import pytest
 
 from api.services import nist_risk
@@ -31,9 +34,11 @@ from api.services.risk_scoring import (
     RiskScoring,
     apply_criticality,
     apply_network_exposure,
+    cve_age_raise,
     epss_pct,
     exploitability_pct,
     impact_pct,
+    resolve_cve_age,
     resolve_network_exposure,
 )
 from api.services.risk_scoring import _parse_vector as parse_vector
@@ -412,3 +417,57 @@ def test_apply_network_exposure_unknown_is_a_noop():
     assert apply_network_exposure(50.0, UNKNOWN_EXPOSURE) == 50.0
     assert apply_network_exposure(50.0, EXTERNAL) == 70.0
     assert apply_network_exposure(50.0, INTERNAL) == 30.0
+
+
+# ---------------------------------------------------------------------------
+# CVE age (#172) — raise-only, never a decay
+# ---------------------------------------------------------------------------
+
+
+def test_cve_age_raise_is_never_negative():
+    assert cve_age_raise(None) == 0.0
+    assert cve_age_raise(0.2) == 0.0
+    assert cve_age_raise(2.0) == 4.0
+    assert cve_age_raise(5.0) == 8.0
+    assert cve_age_raise(20.0) == 12.0
+    assert cve_age_raise(-3.0) == 0.0
+
+
+def test_older_cve_is_not_scored_below_a_fresh_one_with_the_same_evidence():
+    scorer = _scorer()
+    item = {"cvss4": 7.0, "cvss4_vector": V4_WORST, "network_exposure": "unknown"}
+    fresh = scorer.score_vulnerability({**item, "cve": "CVE-2026-0001", "cve_published": "2026-07-01"})
+    old = scorer.score_vulnerability({**item, "cve": "CVE-2015-0001", "cve_published": "2015-01-15"})
+    assert old["likelihood_score"] >= fresh["likelihood_score"]
+    assert "raised likelihood" in old["risk_explanation"]
+    assert "nvd-published" in old["risk_explanation"]
+
+
+def test_cve_id_year_is_a_named_fallback_when_published_is_missing():
+    years, source = resolve_cve_age(cve="CVE-2015-1234", published=None, now=datetime(2026, 8, 19, tzinfo=UTC))
+    assert source == "cve-id"
+    assert years == 11.0
+    years_pub, source_pub = resolve_cve_age(
+        cve="CVE-2015-1234", published="2015-03-01", now=datetime(2026, 8, 19, tzinfo=UTC)
+    )
+    assert source_pub == "nvd-published"
+    assert years_pub > 10.0
+
+
+def test_overlay_staleness_lists_only_old_present_files(tmp_path, monkeypatch):
+    from api.services import risk_scoring as scoring
+
+    fresh = tmp_path / "epss.json"
+    fresh.write_text("{}", encoding="utf-8")
+    missing = tmp_path / "nope.json"
+    old = tmp_path / "exploit.json"
+    old.write_text("{}", encoding="utf-8")
+    os.utime(old, (0, 0))
+    monkeypatch.setattr(
+        scoring,
+        "_overlay_paths",
+        lambda: (fresh, missing, old),
+    )
+    stale = scoring.overlay_staleness()
+    assert stale == [("exploit", stale[0][1])]
+    assert stale[0][1] > scoring.ENRICHMENT_STALE_DAYS

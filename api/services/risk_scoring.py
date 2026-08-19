@@ -69,6 +69,7 @@ import math
 import os
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,12 @@ _CRITICALITY_SWING = 20.0
 #: the verdict. ``unknown`` shifts nothing — no observation is not "not
 #: exposed".
 _NETWORK_EXPOSURE_SWING = 20.0
+#: Weak raise-only likelihood bump for an old CVE (#172). Never negative —
+#: an unpatched old flaw is not safer for having been ignored. How long *we*
+#: have had the finding open is SLA (#145), not this.
+_CVE_AGE_RAISE = ((1.0, 0.0), (3.0, 4.0), (7.0, 8.0), (None, 12.0))
+ENRICHMENT_STALE_DAYS = 30
+_CVE_ID_YEAR = re.compile(r"^CVE-(\d{4})-", re.I)
 EXTERNAL = "external"
 INTERNAL = "internal"
 UNKNOWN_EXPOSURE = "unknown"
@@ -364,6 +371,63 @@ def apply_network_exposure(likelihood: float, exposure: str) -> float:
     return max(0.0, min(100.0, likelihood + shift))
 
 
+def resolve_cve_age(
+    *,
+    cve: str,
+    published: str | None = None,
+    now: datetime | None = None,
+) -> tuple[float | None, str]:
+    """Years since the CVE became public, and where that date came from.
+
+    Prefer NVD ``published``. The CVE-ID year is a coarse fallback so an
+    un-refreshed ``cvss4.json`` (no ``published`` field yet) still distinguishes
+    2015 from 2026. Missing both is ``none`` — no raise, not a penalty.
+    """
+    clock = now or datetime.now(UTC)
+    if published:
+        try:
+            stamp = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            years = max(0.0, (clock - stamp.astimezone(UTC)).total_seconds() / (86400.0 * 365.25))
+            return years, "nvd-published"
+        except ValueError:
+            pass
+    match = _CVE_ID_YEAR.match(cve or "")
+    if match:
+        year = int(match.group(1))
+        if 1999 <= year <= clock.year + 1:
+            return float(max(0, clock.year - year)), "cve-id"
+    return None, "none"
+
+
+def cve_age_raise(years: float | None) -> float:
+    """Raise-only likelihood bump. Under one year, and unknown age, add nothing."""
+    if years is None or years < 1.0:
+        return 0.0
+    previous = 0.0
+    for ceiling, bump in _CVE_AGE_RAISE:
+        if ceiling is None or years < ceiling:
+            return bump
+        previous = bump
+    return previous
+
+
+def overlay_staleness(*, now: datetime | None = None) -> list[tuple[str, float]]:
+    """``(name, age_days)`` for EPSS/KEV/exploit overlays older than the threshold."""
+    clock = now or datetime.now(UTC)
+    stale: list[tuple[str, float]] = []
+    names = ("EPSS", "KEV", "exploit")
+    for name, path in zip(names, _overlay_paths(), strict=True):
+        try:
+            age = (clock.timestamp() - path.stat().st_mtime) / 86400.0
+        except OSError:
+            continue
+        if age > ENRICHMENT_STALE_DAYS:
+            stale.append((name, age))
+    return stale
+
+
 class RiskScoring:
     """Stateless scorer with optional EPSS / KEV / exploit overlays."""
 
@@ -373,6 +437,7 @@ class RiskScoring:
         epss: dict[str, float] | None = None,
         kev: set[str] | None = None,
         exploits: ExploitEvidence | None = None,
+        report_overlay_age: bool = False,
     ) -> None:
         self._epss = epss or {}
         self._kev = kev or set()
@@ -380,6 +445,10 @@ class RiskScoring:
         # assume it exists; with no overlay and no template corpus it still
         # answers from KEV and per-finding signals.
         self._exploits = exploits if exploits is not None else ExploitEvidence()
+        # Tests construct a scorer in-memory; wall-clock overlay age must not
+        # leak into their explanations. The process-wide get_scorer() turns this
+        # on so a stale EPSS/KEV file is visible to operators (#172).
+        self._report_overlay_age = report_overlay_age
 
     @classmethod
     def from_env(cls) -> RiskScoring:
@@ -391,6 +460,7 @@ class RiskScoring:
             epss=_load_cve_float_map(epss_path),
             kev=_load_kev_set(kev_path),
             exploits=ExploitEvidence.from_env(),
+            report_overlay_age=True,
         )
 
     @staticmethod
@@ -588,7 +658,12 @@ class RiskScoring:
             operator_exposure=operator_exposure,
             explicit=str(item["network_exposure"]) if item.get("network_exposure") else None,
         )
-        likelihood = apply_network_exposure(raw_likelihood, exposure)
+        exposed = apply_network_exposure(raw_likelihood, exposure)
+        published = str(item.get("cve_published") or item.get("published") or "") or None
+        age_years, age_source = resolve_cve_age(cve=cve, published=published)
+        age_bump = cve_age_raise(age_years)
+        likelihood = min(100.0, exposed + age_bump)
+        stale_overlays = overlay_staleness() if self._report_overlay_age else []
         likelihood_level = nist_risk.level_for(likelihood)
         impact_level = nist_risk.level_for(contextual_impact)
         risk = nist_risk.risk_level(likelihood_level, impact_level)
@@ -643,6 +718,10 @@ class RiskScoring:
                 raw_likelihood=raw_likelihood,
                 network_exposure=exposure,
                 network_exposure_source=exposure_source,
+                cve_age_years=age_years,
+                cve_age_source=age_source,
+                cve_age_bump=age_bump,
+                stale_overlays=stale_overlays,
             ),
         }
 
@@ -671,6 +750,10 @@ class RiskScoring:
         raw_likelihood: float,
         network_exposure: str,
         network_exposure_source: str,
+        cve_age_years: float | None,
+        cve_age_source: str,
+        cve_age_bump: float,
+        stale_overlays: list[tuple[str, float]],
     ) -> str:
         """One line explaining the verdict, reading as the assessment's argument.
 
@@ -734,6 +817,17 @@ class RiskScoring:
         else:
             why_likely.append(
                 f"network exposure {network_exposure} ({source_label}), no shift"
+            )
+        if cve_age_years is not None:
+            if cve_age_bump > 0:
+                why_likely.append(
+                    f"CVE age {cve_age_years:.0f}y ({cve_age_source}) raised likelihood by {cve_age_bump:g}"
+                )
+            else:
+                why_likely.append(f"CVE age {cve_age_years:.0f}y ({cve_age_source}), no raise")
+        for overlay_name, age_days in stale_overlays:
+            why_likely.append(
+                f"{overlay_name} overlay {age_days:.0f}d old — not a fresh assessment"
             )
 
         # --- why this impact ---

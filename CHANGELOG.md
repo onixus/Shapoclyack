@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **CVE age as a raise-only likelihood bump** ([#172](https://github.com/onixus/Shapoclyack/issues/172)) —
+  an older CVE with the same evidence is never scored *below* a fresh one.
+  Date comes from NVD `published` on `cvss4.json` (now stored by
+  `scripts/fetch-cvss4-db.py`) or, if missing, the CVE-ID year. Time never
+  lowers the score. Stale EPSS/KEV/exploit overlays are named in the
+  explanation and on `GET /api/system` (`stale`, plus the exploit overlay
+  itself). How long a finding has been open stays SLA (#145).
+
 - **Network exposure in likelihood** ([#171](https://github.com/onixus/Shapoclyack/issues/171)) —
   the same CVE on an RFC1918 box and on an operator-declared internet-facing
   host no longer share a likelihood. `AV:N` remains a property of the

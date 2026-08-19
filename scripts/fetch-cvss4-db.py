@@ -266,6 +266,9 @@ def _scan_page(payload: dict) -> dict:
             continue
         entry = _extract_cvss4(cve.get("metrics") or {})
         if entry:
+            published = str(cve.get("published") or "").strip()
+            if published:
+                entry["published"] = published[:10]
             entries[cve_id] = entry
     return entries
 

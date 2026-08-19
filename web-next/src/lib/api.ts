@@ -453,6 +453,7 @@ export type EnrichmentDb = {
   size_bytes: number | null;
   modified_at: string | null;
   age_days: number | null;
+  stale?: boolean;
 };
 
 export type ScanConfigSummary = {
