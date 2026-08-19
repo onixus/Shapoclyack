@@ -34,8 +34,9 @@ export const queryKeys = {
   agentsPage: (page?: PageParams) => ["agents", pageKey(page)] as const,
   tenants: ["tenants"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,
-  assetsPage: (filters: { status?: string }, page?: PageParams) =>
+  assetsPage: (filters: { status?: string; unowned?: boolean }, page?: PageParams) =>
     ["assets", filters, pageKey(page)] as const,
+  assetSummary: ["assets", "summary"] as const,
   asset: (assetId: string, tenantId = "default") => ["asset", assetId, tenantId] as const,
   endpointDevices: (tenantId = "default") => ["endpoint-devices", tenantId] as const,
   endpointDevicesForAsset: (assetId: string, tenantId = "default") =>
@@ -46,6 +47,15 @@ export const queryKeys = {
     ["endpoint-device", deviceId, "changes", tenantId] as const,
   recentSoftwareChanges: (tenantId = "default", limit = 50) =>
     ["endpoint-changes", tenantId, limit] as const,
+  vulnerabilities: ["vulnerabilities"] as const,
+  vulnerabilitiesPage: (filters: Record<string, unknown>, page?: PageParams) =>
+    ["vulnerabilities", filters, pageKey(page)] as const,
+  vulnerabilitySummary: ["vulnerabilities", "summary"] as const,
+  vulnerability: (vulnId: string) => ["vulnerability", vulnId] as const,
+  vulnerabilityEvents: (vulnId: string, page?: PageParams) =>
+    ["vulnerability", vulnId, "events", pageKey(page)] as const,
+  vulnerabilityActivity: (page?: PageParams) =>
+    ["vulnerabilities", "events", pageKey(page)] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

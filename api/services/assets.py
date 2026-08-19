@@ -178,6 +178,7 @@ def list_assets(
     tenant_id: str,
     *,
     status: str | None = None,
+    unowned: bool = False,
     q: str | None = None,
     offset: int = 0,
     limit: int = 500,
@@ -203,6 +204,9 @@ def list_assets(
         filters = [models.Asset.tenant_id == tenant_id]
         if status:
             filters.append(models.Asset.status == status)
+        if unowned:
+            filters.append(models.Asset.owner_email.is_(None))
+            filters.append(models.Asset.status.in_(("active", "stale")))
         if q and q.strip():
             needle = f"%{q.strip().lower()}%"
             filters.append(
@@ -253,6 +257,40 @@ def list_assets(
                 }
             )
         return results, total
+
+
+def summary(settings: Settings, tenant_id: str) -> dict:
+    """Asset posture counts for the Risk Dashboard (#135). One pass."""
+    by_status = {"active": 0, "stale": 0, "decommissioned": 0}
+    by_criticality = {"unset": 0, "0": 0, "1": 0, "2": 0, "3": 0, "4": 0}
+    total = 0
+    unowned = 0
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(
+                models.Asset.status,
+                models.Asset.owner_email,
+                models.Asset.asset_criticality,
+            ).where(models.Asset.tenant_id == tenant_id)
+        ).all()
+    for status, owner_email, criticality in rows:
+        total += 1
+        status_key = str(status) if status in by_status else "active"
+        by_status[status_key] = by_status.get(status_key, 0) + 1
+        if criticality is None:
+            by_criticality["unset"] += 1
+        else:
+            key = str(int(criticality))
+            by_criticality[key] = by_criticality.get(key, 0) + 1
+        if status in ("active", "stale") and not owner_email:
+            unowned += 1
+    return {
+        "total": total,
+        "unowned": unowned,
+        "by_status": by_status,
+        "by_criticality": by_criticality,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 def get_asset(settings: Settings, tenant_id: str, asset_id: str) -> dict | None:

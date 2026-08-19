@@ -40,11 +40,13 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
 from api.services import vuln_states
@@ -81,7 +83,12 @@ VULN_EVENT_KINDS = (
     "assigned",
     "exception_set",
     "exception_cleared",
+    "comment",
+    "ticket_set",
+    "ticket_cleared",
 )
+
+TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
 
 #: Derived SLA readings. ``none`` is a finding with no deadline at all, which
 #: happens only for a CLOSED row.
@@ -637,6 +644,9 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "observation_count": row.observation_count,
         "reopen_count": row.reopen_count,
         "closed_at": _iso(row.closed_at),
+        "ticket_system": row.ticket_system,
+        "ticket_key": row.ticket_key,
+        "ticket_url": row.ticket_url,
     }
 
 
@@ -883,6 +893,131 @@ def clear_exception(
         return _to_dict(row, now=now)
 
 
+def add_comment(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    note: str,
+    actor: str | None = None,
+) -> dict[str, Any] | None:
+    """Write a comment on the trail. The finding itself does not change."""
+    text = (note or "").strip()
+    if not text:
+        raise ValueError("comment cannot be empty")
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="comment",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            note=text,
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
+def _validate_ticket_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("ticket_url must be an http(s) URL")
+    return url
+
+
+def set_ticket(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    system: str,
+    key: str | None,
+    url: str | None,
+    actor: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    """Attach an external ticket. The platform does not create the ticket."""
+    system = (system or "").strip().lower()
+    if system not in TICKET_SYSTEMS:
+        raise ValueError(f"unknown ticket system {system!r}; expected one of {', '.join(TICKET_SYSTEMS)}")
+    key = (key or "").strip() or None
+    url = (url or "").strip() or None
+    if url:
+        url = _validate_ticket_url(url)
+    if not key and not url:
+        raise ValueError("ticket_key or ticket_url is required")
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        previous = {
+            "system": row.ticket_system,
+            "key": row.ticket_key,
+            "url": row.ticket_url,
+        }
+        row.ticket_system = system
+        row.ticket_key = key
+        row.ticket_url = url
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="ticket_set",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            note=note,
+            detail={"from": previous, "to": {"system": system, "key": key, "url": url}},
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
+def clear_ticket(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str | None = None,
+) -> dict[str, Any] | None:
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        if row.ticket_system is None and row.ticket_key is None and row.ticket_url is None:
+            return _to_dict(row, now=now)
+        previous = {
+            "system": row.ticket_system,
+            "key": row.ticket_key,
+            "url": row.ticket_url,
+        }
+        row.ticket_system = None
+        row.ticket_key = None
+        row.ticket_url = None
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="ticket_cleared",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            detail=previous,
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
 # --------------------------------------------------------------------------
 # Queries
 # --------------------------------------------------------------------------
@@ -893,6 +1028,7 @@ SORT_COLUMNS = {
     "due_at": models.Vulnerability.due_at,
     "first_seen_at": models.Vulnerability.first_seen_at,
     "last_seen_at": models.Vulnerability.last_seen_at,
+    "closed_at": models.Vulnerability.closed_at,
     "severity": models.Vulnerability.severity,
     "state": models.Vulnerability.state,
     "cve": models.Vulnerability.cve,
@@ -908,6 +1044,7 @@ def list_vulnerabilities(
     severity: str | None = None,
     asset_id: str | None = None,
     assignee: str | None = None,
+    unassigned: bool = False,
     sla: str | None = None,
     stale_days: int | None = None,
     offset: int = 0,
@@ -927,6 +1064,8 @@ def list_vulnerabilities(
         raise ValueError(f"unknown state {state!r}; expected one of {', '.join(vuln_states.ORDER)}")
     if sla and sla not in SLA_STATES:
         raise ValueError(f"unknown sla filter {sla!r}; expected one of {', '.join(SLA_STATES)}")
+    if unassigned and assignee:
+        raise ValueError("unassigned and assignee cannot be combined")
     if severity:
         severity = _validate_severity(severity)
 
@@ -945,7 +1084,9 @@ def list_vulnerabilities(
         filters.append(models.Vulnerability.severity == severity)
     if asset_id:
         filters.append(models.Vulnerability.asset_id == asset_id)
-    if assignee:
+    if unassigned:
+        filters.append(models.Vulnerability.assignee.is_(None))
+    elif assignee:
         filters.append(models.Vulnerability.assignee == assignee)
     if stale_days is not None:
         filters.append(models.Vulnerability.last_seen_at < now - timedelta(days=stale_days))
@@ -1046,11 +1187,15 @@ def list_events(
 
 
 def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, Any]:
-    """Counts by lifecycle state, severity and SLA reading (#137's header row).
+    """Counts by lifecycle state, severity, NIST risk and SLA (#135/#137).
 
-    One pass over the tenant's open findings rather than one query per bucket:
-    the numbers have to agree with each other, and five independent aggregates
-    over a table that is being written to do not.
+    One pass over the tenant's findings rather than one query per bucket: the
+    numbers have to agree with each other, and independent aggregates over a
+    table that is being written to do not.
+
+    ``estate_risk`` is the worst open ``risk_level`` (NIST Table I-2), not an
+    average. Averaging would let a hundred Lows cancel a Very High, which is
+    the opposite of "what creates the biggest security risk right now".
     """
     now = _now()
     filters: list[Any] = []
@@ -1059,21 +1204,26 @@ def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, An
 
     by_state = {state: 0 for state in vuln_states.ORDER}
     by_severity = {severity: 0 for severity in SEVERITY_ORDER}
+    by_risk = {level: 0 for level in nist_risk.LEVELS}
     by_sla = {reading: 0 for reading in SLA_STATES}
     total = 0
     open_total = 0
+    unassigned = 0
     overdue_worst: str | None = None
+    estate_risk: str | None = None
 
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(
                 models.Vulnerability.state,
                 models.Vulnerability.severity,
+                models.Vulnerability.risk_level,
+                models.Vulnerability.assignee,
                 models.Vulnerability.due_at,
                 models.Vulnerability.exception_until,
             ).where(*filters)
         ).all()
-    for state, severity, due_at, exception_until in rows:
+    for state, severity, risk_level, assignee, due_at, exception_until in rows:
         total += 1
         by_state[str(state)] = by_state.get(str(state), 0) + 1
         reading = sla_state(
@@ -1083,6 +1233,13 @@ def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, An
         if state in vuln_states.ACTIVE:
             open_total += 1
             by_severity[str(severity)] = by_severity.get(str(severity), 0) + 1
+            if not assignee:
+                unassigned += 1
+            level = str(risk_level) if risk_level in nist_risk.LEVEL_RANK else None
+            if level:
+                by_risk[level] = by_risk.get(level, 0) + 1
+                if nist_risk.LEVEL_RANK[level] > nist_risk.LEVEL_RANK.get(estate_risk or "", -1):
+                    estate_risk = level
             if reading == "breached" and SEVERITY_ORDER.get(str(severity), 0) > SEVERITY_ORDER.get(
                 overdue_worst or "unknown", 0
             ):
@@ -1092,10 +1249,14 @@ def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, An
         "total": total,
         "open_total": open_total,
         "untriaged": by_state.get(vuln_states.OPEN, 0),
+        "unassigned": unassigned,
+        "estate_risk": estate_risk,
         "by_state": by_state,
-        # Severity counts cover open findings only: a dashboard tile reading
-        # "42 critical" must not be counting ones that were fixed last year.
+        # Severity / risk counts cover open findings only: a dashboard tile
+        # reading "42 critical" must not be counting ones that were fixed last
+        # year.
         "by_severity_open": by_severity,
+        "by_risk_level_open": by_risk,
         "by_sla": by_sla,
         "breached": by_sla.get("breached", 0),
         "worst_breached_severity": overdue_worst,

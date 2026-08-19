@@ -15,7 +15,10 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | Route | Purpose | Minimum role |
 |---|---|---|
 | `/login` | Create a user session | Public |
-| `/` | Exposure KPIs, risk trend, severity, top findings, asset posture | Viewer |
+| `/` | Risk Overview: estate NIST verdict, SLA, unassigned work, unowned assets | Viewer |
+| `/vulnerabilities` | Vulnerability Center: tracked findings, lifecycle, owner, SLA | Viewer |
+| `/vulnerabilities/view?vulnId=…` | Finding detail, transitions, assignment, comments, ticket link, risk acceptance, audit trail | Viewer; operator to move/assign/comment/link; admin to accept risk |
+| `/remediation` | Remediation Kanban — detection to verified closure | Viewer; operator to move/assign/comment/link |
 | `/assets` | Cross-run asset inventory | Viewer |
 | `/assets/view?assetId=…` | Asset metadata, findings, ports, OS/GeoIP, endpoint software | Viewer; operator for permitted edits |
 | `/attack-surface` | Hostname → IP → port → service graph | Viewer |
@@ -29,6 +32,80 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/agents` | Distributed worker fleet | Operator |
 | `/tenants` | Tenant provisioning and membership administration | Admin |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
+
+## Risk Overview
+
+`/` is the executive view of **current** cyber risk. It reads tracked findings
+(`GET /api/vulnerabilities/summary`) and asset posture
+(`GET /api/assets/summary`), not the last scan's `vulnerabilities.json`.
+
+Headline tiles:
+
+- **Estate risk** — the worst open NIST SP 800-30 `risk_level` (not an average:
+  a hundred Lows must not cancel a Very High);
+- open critical/high, SLA breaches, unassigned findings, assets without an
+  owner.
+
+"Top business risks" is the open tracked-finding list, worst `contextual_score`
+first, with owner and SLA. Click-throughs land on the Vulnerability Center
+(`?sla=breached`, `?unassigned=1`) or `/assets?unowned=1`.
+
+Internet-facing exposure is **not** a number on this page. The platform does
+not yet know whether a host is on the internet ([#171](https://github.com/onixus/Shapoclyack/issues/171),
+[#146](https://github.com/onixus/Shapoclyack/issues/146)); drawing zero would
+read as "nothing is exposed".
+
+The scan-activity chart is hosts/findings per recent **run** — volume, not
+estate risk over time. Historical risk snapshots are still open on
+[#144](https://github.com/onixus/Shapoclyack/issues/144).
+
+## Remediation Board
+
+`/remediation` is the operational workflow for tracked findings. Columns are
+the lifecycle states (`OPEN → … → CLOSED`); drag a card onto a legal column,
+or use the side panel to move, assign, comment, and link a ticket. Accepted
+risk is a badge on the card, not a seventh column — the same rule as the
+lifecycle model.
+
+A comment is an audit event (`kind=comment`) and does not change state.
+A ticket link (`ticket_system` / `ticket_key` / `ticket_url`) records where
+the work lives in Jira, ServiceNow, SMAX or DefectDojo. The platform does
+**not** create that ticket: native adapters belong to the 10.3 delivery queue
+(ROADMAP P2) and must not be built a second time here.
+
+Evidence on the board is the last observing run. File attachments are out of
+scope. The closed column is a recent page, not the full history — the
+Vulnerability Center list is the complete working set.
+
+## Vulnerability Center
+
+`/vulnerabilities` is the working set of **tracked** findings, not the last
+scan's raw list. Each row is the persistent entity from
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md): the same
+`(asset, CVE-or-script, port)` across runs, with an owner, a lifecycle state
+and an SLA reading. Default view is everything not `CLOSED`, worst (contextual
+score) first.
+
+Header counts come from `GET /api/vulnerabilities/summary` so they agree with
+the filtered table. Filters (`state`, severity, SLA, stale days, search) are
+server-side. An asset's Vulnerabilities tab links here when that asset has
+open tracked findings (`?assetId=`).
+
+`/vulnerabilities/view?vulnId=…` is the remediation card:
+
+- lifecycle stepper `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`;
+- operator **Move lifecycle** (legal transitions only; the API still 409s an
+  illegal move) and **Ownership**;
+- admin **Accepted risk** (expiry and reason are both required);
+- CVSS / risk / owner / first-and-last-seen / SLA, plus EPSS, KEV and the
+  risk explanation copied from the last observing run when that run is still
+  on disk;
+- the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
+  `exception_set`, `exception_cleared`).
+
+CWE is not stored on the tracked finding and is shown as empty rather than
+inferred. A finding that has gone quiet is not auto-closed; the list's stale
+filter is how it gets looked at.
 
 ## Geo Map
 

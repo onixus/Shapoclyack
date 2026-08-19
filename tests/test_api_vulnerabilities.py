@@ -86,9 +86,25 @@ def test_filters_and_summary(tmp_path, monkeypatch):
 
     summary = client.get("/api/vulnerabilities/summary", headers=viewer)
     assert summary.status_code == 200
-    assert summary.json()["open_total"] == 2
-    assert summary.json()["untriaged"] == 2
-    assert summary.json()["breached"] == 0
+    body = summary.json()
+    assert body["open_total"] == 2
+    assert body["untriaged"] == 2
+    assert body["breached"] == 0
+    assert body["unassigned"] == 2
+    assert body["estate_risk"] in {"very_low", "low", "moderate", "high", "very_high"}
+    assert sum(body["by_risk_level_open"].values()) == 2
+
+    assert client.get(
+        "/api/vulnerabilities", params={"unassigned": True}, headers=viewer
+    ).json()["total"] == 2
+    assert (
+        client.get(
+            "/api/vulnerabilities",
+            params={"unassigned": True, "assignee": "ada"},
+            headers=viewer,
+        ).status_code
+        == 422
+    )
 
 
 def test_viewer_cannot_transition_operator_can_and_illegal_moves_are_409(tmp_path, monkeypatch):
@@ -136,6 +152,82 @@ def test_viewer_cannot_transition_operator_can_and_illegal_moves_are_409(tmp_pat
     assert timeline.json()["items"][0]["kind"] == "state_change"
     assert timeline.json()["items"][0]["actor"] == "operator"
     assert client.get("/api/vulnerabilities/vln_nope/events", headers=viewer).status_code == 404
+
+
+def test_comment_and_ticket_link(tmp_path, monkeypatch):
+    """#138: comments and ticket *links* (the platform does not open tickets)."""
+    client = configured_client(tmp_path, monkeypatch)
+    _seed(tmp_path)
+    viewer = auth_headers(client, "viewer")
+    operator = auth_headers(client, "operator")
+    vuln_id = client.get("/api/vulnerabilities", headers=viewer).json()["items"][0]["vuln_id"]
+
+    assert (
+        client.post(
+            f"/api/vulnerabilities/{vuln_id}/comment",
+            json={"note": "looking at this"},
+            headers=viewer,
+        ).status_code
+        == 403
+    )
+    commented = client.post(
+        f"/api/vulnerabilities/{vuln_id}/comment",
+        json={"note": "looking at this"},
+        headers=operator,
+    )
+    assert commented.status_code == 200
+    assert commented.json()["state"] == vuln_states.OPEN
+
+    empty = client.post(
+        f"/api/vulnerabilities/{vuln_id}/comment",
+        json={"note": "   "},
+        headers=operator,
+    )
+    assert empty.status_code == 422
+
+    linked = client.post(
+        f"/api/vulnerabilities/{vuln_id}/ticket",
+        json={
+            "system": "jira",
+            "key": "SEC-1",
+            "url": "https://jira.example/browse/SEC-1",
+        },
+        headers=operator,
+    )
+    assert linked.status_code == 200
+    assert linked.json()["ticket_system"] == "jira"
+    assert linked.json()["ticket_key"] == "SEC-1"
+
+    assert (
+        client.post(
+            f"/api/vulnerabilities/{vuln_id}/ticket",
+            json={"system": "jira"},
+            headers=operator,
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            f"/api/vulnerabilities/{vuln_id}/ticket",
+            json={"system": "jira", "url": "javascript:alert(1)"},
+            headers=operator,
+        ).status_code
+        == 422
+    )
+
+    cleared = client.delete(f"/api/vulnerabilities/{vuln_id}/ticket", headers=operator)
+    assert cleared.status_code == 200
+    assert cleared.json()["ticket_key"] is None
+
+    kinds = [
+        item["kind"]
+        for item in client.get(f"/api/vulnerabilities/{vuln_id}/events", headers=viewer).json()[
+            "items"
+        ]
+    ]
+    assert "comment" in kinds
+    assert "ticket_set" in kinds
+    assert "ticket_cleared" in kinds
 
 
 def test_assign_touches_only_the_keys_that_were_sent(tmp_path, monkeypatch):

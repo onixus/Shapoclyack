@@ -9,13 +9,17 @@ import {
   Play,
   Server,
   Share2,
+  ShieldAlert,
   SlidersHorizontal,
+  SquareKanban,
   Timer,
   Users,
 } from "lucide-react";
 
 export const NAV = [
   { href: "/", label: "Dashboard", icon: Home },
+  { href: "/vulnerabilities", label: "Vulnerabilities", icon: ShieldAlert },
+  { href: "/remediation", label: "Remediation", icon: SquareKanban },
   { href: "/tenants", label: "Tenants", icon: Users },
   { href: "/agents", label: "Agents", icon: Server },
   { href: "/jobs", label: "Jobs", icon: CalendarDays },

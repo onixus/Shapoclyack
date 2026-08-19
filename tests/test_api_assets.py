@@ -114,6 +114,40 @@ def test_update_asset_rejects_non_decommissioned_status():
     assert response.status_code == 422
 
 
+def test_asset_summary_and_unowned_filter():
+    """Risk Dashboard (#135): unowned is active/stale with no owner_email."""
+    bare = _seed_asset("10.0.9.20")
+    owned = _seed_asset("10.0.9.21", asset_criticality=4)
+    client = api_client()
+    operator = login(client, "operator")
+    viewer = login(client, "viewer")
+    assert (
+        client.patch(
+            f"/api/assets/{owned}",
+            headers={"Authorization": f"Bearer {operator}"},
+            json={"owner_email": "ada@example.com"},
+        ).status_code
+        == 200
+    )
+
+    summary = client.get("/api/assets/summary", headers={"Authorization": f"Bearer {viewer}"})
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["total"] >= 2
+    assert body["unowned"] >= 1
+    assert body["by_criticality"]["4"] >= 1
+
+    listed = client.get(
+        "/api/assets",
+        params={"unowned": True, "limit": 5000},
+        headers={"Authorization": f"Bearer {viewer}"},
+    )
+    assert listed.status_code == 200
+    ids = {row["asset_id"] for row in listed.json()["items"]}
+    assert bare in ids
+    assert owned not in ids
+
+
 def test_update_asset_unknown_id_is_404():
     client = api_client()
     token = login(client, "operator")

@@ -423,18 +423,19 @@ update is exactly where concurrent initContainer migrations would show up.
 answer "what is our risk, who owns it, what breaches SLA" without starting a scan. The
 platform today has no representation of *ownership of remediation*, *vulnerability
 lifecycle state*, or *SLA* — so the three backend issues are the real scope and the five
-UI issues render what they produce. This is the largest un-started body of work in the
-project, and none of it appears in Track A.
+UI issues render what they produce. The backend half of this track (#144, #145) is merged; the remaining work is
+asset business context (#146) and the UI issues that render what the APIs
+produce. None of it appears in Track A.
 
 | Issue | Layer | Scope |
 |-------|-------|-------|
 | ~~[#144](https://github.com/onixus/Shapoclyack/issues/144)~~ | Backend | **Done** — scoring model `nist-1`: NIST SP 800-30 likelihood × impact through Table I-2, exploit maturity (`attacked`/`weaponized`/`proof_of_concept`/`unproven`/`theoretical`/`unknown`) with a named evidence trail, and asset criticality moved onto the impact axis where it can change the verdict. Methodology and its stated limits: [docs/risk-scoring.md](docs/risk-scoring.md). Remaining scope split out as [#171](https://github.com/onixus/Shapoclyack/issues/171) (network exposure), [#172](https://github.com/onixus/Shapoclyack/issues/172) (temporal), [#173](https://github.com/onixus/Shapoclyack/issues/173) (chaining, compensating controls). Historical score snapshots for trend charts are **not** done |
 | ~~[#145](https://github.com/onixus/Shapoclyack/issues/145)~~ | Backend | **Done** — the finding is an entity now (`vulnerabilities` + `vulnerability_events` + `sla_policies`, migration `0015`), keyed `sha256(asset\|CVE-or-script\|port)` per tenant so it survives runs. Lifecycle `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED` with `CLOSED → OPEN` on regression; SLA by (asset criticality, severity) with breach derived on read; expiring risk exceptions; every change audited in the same transaction. Absence is never auto-closed. Docs: [docs/vulnerability-lifecycle.md](docs/vulnerability-lifecycle.md). **Not** included: score history/trends (still [#144](https://github.com/onixus/Shapoclyack/issues/144)) and event retention |
 | [#146](https://github.com/onixus/Shapoclyack/issues/146) | Backend | Asset business context: owner, business service, environment, data classification, exposure level; CMDB/AD-ready. Extends the operator-set fields from [9.4](#phase-9--exposure-fingerprinting)/[11.1](#phase-11--web-ui-v2-attack-surface-view) and consumes [P4.2](#p4-breakdown--differentiating-features) identity |
-| [#135](https://github.com/onixus/Shapoclyack/issues/135) | UI | Risk dashboard (needs #144) |
+| [#135](https://github.com/onixus/Shapoclyack/issues/135) | UI | **Done on branch** — Risk Overview (`/`) on tracked findings: estate NIST verdict, SLA, unassigned work, unowned assets. Internet exposure and historical risk snapshots stay #171/#146 and #144 |
 | [#136](https://github.com/onixus/Shapoclyack/issues/136) | UI | Asset-centric security view (needs #146) |
-| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | Vulnerability Center + lifecycle (needs #145) |
-| [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | Remediation workflow + ticket integrations (needs #145; **shares scope with [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2** — Jira/ServiceNow belong to one delivery queue, built once) |
+| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | **Done on branch** — Vulnerability Center (`/vulnerabilities`, `/vulnerabilities/view`) on top of #145: lifecycle stepper, owner, SLA, risk acceptance, audit trail. CWE is not stored on the tracked finding yet |
+| [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | **Done on branch** — Remediation Board (`/remediation`) + comments + ticket *links*. Native Jira/ServiceNow/SMAX create stays [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2 |
 | [#139](https://github.com/onixus/Shapoclyack/issues/139) | UI | Exposure Management + MSSP views |
 
 Backend before UI: #144/#145/#146 → their dependent UI issues. Two overlaps with Track A

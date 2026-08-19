@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
 import { Server, ArrowUpRight, Filter } from "lucide-react";
@@ -27,12 +28,22 @@ function assetDetailHref(assetId: string): string {
 }
 
 export default function AssetsPage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-slate-400">Loading asset inventory…</p>}>
+      <AssetsInner />
+    </Suspense>
+  );
+}
+
+function AssetsInner() {
+  const searchParams = useSearchParams();
   const [status, setStatus] = useState<AssetStatus | "">("");
+  const [unowned, setUnowned] = useState(searchParams.get("unowned") === "1");
 
   // Server-side paging/search/sort (ROADMAP P3.3) — the registry is the one
   // list expected to reach 50k rows, so nothing here is filtered client-side.
   const pagination = usePagination({ sort: "last_seen", order: "desc" });
-  const assetsQuery = useAssets({ status }, pagination.params);
+  const assetsQuery = useAssets({ status, unowned: unowned || undefined }, pagination.params);
   const data = assetsQuery.data?.items ?? [];
   const total = assetsQuery.data?.total ?? 0;
 
@@ -148,6 +159,21 @@ export default function AssetsPage() {
                 <SelectItem value="active">Active</SelectItem>
                 <SelectItem value="stale">Stale</SelectItem>
                 <SelectItem value="decommissioned">Decommissioned</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={unowned ? "unowned" : STATUS_FILTER_ALL}
+              onValueChange={(value) => {
+                setUnowned(value === "unowned");
+                pagination.reset();
+              }}
+            >
+              <SelectTrigger className="w-48 bg-slate-900 border-slate-800 text-slate-200">
+                <SelectValue placeholder="Ownership" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value={STATUS_FILTER_ALL}>Any owner</SelectItem>
+                <SelectItem value="unowned">No owner</SelectItem>
               </SelectContent>
             </Select>
           </div>

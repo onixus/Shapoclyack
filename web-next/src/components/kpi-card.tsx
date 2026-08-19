@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Card, Metric, Text } from "@tremor/react";
 import { cn } from "@/lib/utils";
 
@@ -5,11 +6,13 @@ export function KpiCard({
   label,
   value,
   hint,
+  href,
   decorationColor = "sky",
 }: {
   label: string;
   value: string | number;
   hint?: string;
+  href?: string;
   decorationColor?: string;
 }) {
   const accentBorder: Record<string, string> = {
@@ -24,9 +27,10 @@ export function KpiCard({
 
   const borderClass = accentBorder[decorationColor] || accentBorder.sky;
 
-  return (
+  const card = (
     <Card className={cn(
       "relative overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur transition-all duration-200 hover:border-slate-700 hover:bg-slate-900/90",
+      href && "cursor-pointer",
     )}>
       <div className={cn("absolute top-0 left-0 right-0 h-1 bg-gradient-to-r", 
         decorationColor === "rose" ? "from-rose-500 to-amber-500" :
@@ -41,5 +45,14 @@ export function KpiCard({
       {hint ? <Text className="mt-1.5 text-xs text-slate-400 font-medium">{hint}</Text> : null}
     </Card>
   );
+
+  if (href) {
+    return (
+      <Link href={href} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/60">
+        {card}
+      </Link>
+    );
+  }
+  return card;
 }
 

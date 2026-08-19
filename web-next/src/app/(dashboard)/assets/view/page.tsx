@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EntityList } from "@/components/run/entity-list";
 import { StatusBadge } from "@/components/status-badge";
 import { useAssetDetail, useUpdateAsset } from "@/hooks/use-assets";
+import { useTrackedVulnerabilities } from "@/hooks/use-vulnerabilities";
 import {
   useAssetSoftware,
   useEndpointDeviceChanges,
@@ -47,6 +48,7 @@ import {
   SOFTWARE_CHANGE_STATUS,
 } from "@/lib/config/statuses";
 import { formatLocation, normalizeSeverity, pickLatestRun } from "@/lib/run-data";
+import { vulnListHref } from "@/lib/vuln-lifecycle";
 
 
 const CRIT_UNSET = "unset";
@@ -91,6 +93,13 @@ function AssetDetailInner() {
   const hostRow = (hostsQuery.data || []).find((h) => h.host === ip) || null;
   const assetPorts = (portsQuery.data || []).filter((p) => ip && p.hosts.includes(ip));
   const vulns = vulnsQuery.data || [];
+
+  const trackedQuery = useTrackedVulnerabilities(
+    { asset_id: assetId || undefined, open_only: true },
+    { limit: 1 },
+    Boolean(assetId),
+  );
+  const trackedOpen = trackedQuery.data?.total ?? 0;
 
   const devicesQuery = useEndpointDevicesForAsset(assetId || null, tenantId);
   const devices = devicesQuery.data || [];
@@ -179,6 +188,21 @@ function AssetDetailInner() {
             </TabsList>
 
             <TabsContent value="vulns" className="space-y-3 pt-3">
+              {trackedOpen > 0 ? (
+                <Alert className="border-sky-500/30 bg-sky-950/30 text-sky-100">
+                  <AlertDescription className="text-xs">
+                    {trackedOpen.toLocaleString()} open tracked finding
+                    {trackedOpen === 1 ? "" : "s"} on this asset —{" "}
+                    <Link
+                      href={vulnListHref({ assetId })}
+                      className="font-semibold text-sky-300 underline underline-offset-2"
+                    >
+                      open in Vulnerability Center
+                    </Link>
+                    .
+                  </AlertDescription>
+                </Alert>
+              ) : null}
               {!ip ? (
                 <EmptyNote>No IP identifier — cannot correlate scan findings.</EmptyNote>
               ) : vulnsQuery.isLoading ? (

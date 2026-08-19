@@ -6,6 +6,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Remediation Board** ([#138](https://github.com/onixus/Shapoclyack/issues/138)) —
+  `/remediation` is the Kanban over the #145 lifecycle: drag (or move) a
+  finding from `OPEN` to verified `CLOSED`, assign, comment, and link an
+  external ticket. Comments are `vulnerability_events` (`kind=comment`).
+  Ticket links (`ticket_system` / `ticket_key` / `ticket_url`, migration
+  `0016_vuln_ticket_link`) record Jira/ServiceNow/SMAX/DefectDojo work items;
+  the platform does not create them — that is the 10.3/P2 delivery queue,
+  built once. Accepted risk stays a badge, not a seventh column.
+
+- **Risk Overview dashboard** ([#135](https://github.com/onixus/Shapoclyack/issues/135)) —
+  `/` now answers "what is our risk, who owns it, what breaches SLA" from
+  tracked findings, not the last scan. Estate risk is the worst open NIST
+  `risk_level` (`GET /api/vulnerabilities/summary` grew `estate_risk`,
+  `unassigned`, `by_risk_level_open`). Asset posture is
+  `GET /api/assets/summary` (unowned = active/stale with no `owner_email`).
+  Internet-facing exposure is not counted — that input does not exist yet
+  (#171/#146). The run chart is labelled scan volume; historical risk
+  snapshots are still [#144](https://github.com/onixus/Shapoclyack/issues/144).
+
+- **Vulnerability Center** ([#137](https://github.com/onixus/Shapoclyack/issues/137)) —
+  `/vulnerabilities` is the working set of tracked findings (owner, lifecycle
+  state, SLA), not the last scan's raw list. Header counts come from
+  `GET /api/vulnerabilities/summary`; the table is server-filtered (state,
+  severity, SLA, stale days, search) and pages worst-first. The detail card
+  (`/vulnerabilities/view?vulnId=`) walks
+  `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`, assigns an
+  owner, accepts risk (admin; expiry and reason required), and shows the audit
+  trail. EPSS/KEV and the risk explanation are pulled from the last observing
+  run when it is still on disk. An asset's Vulnerabilities tab links here when
+  that asset has open tracked findings.
+
 - **Vulnerability lifecycle, ownership and SLA** ([#145](https://github.com/onixus/Shapoclyack/issues/145),
   Track C) — a finding is an entity now, not a row in whatever the last scan
   wrote. `vulnerabilities`, `vulnerability_events` and `sla_policies` (migration

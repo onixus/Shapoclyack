@@ -510,6 +510,9 @@ def test_breach_filter_and_summary_agree(tmp_path):
     assert report["untriaged"] == 2
     assert report["by_state"][vuln_states.OPEN] == 2
     assert report["by_severity_open"]["critical"] == 1
+    assert report["unassigned"] == 2
+    assert report["estate_risk"] in {"very_low", "low", "moderate", "high", "very_high"}
+    assert sum(report["by_risk_level_open"].values()) == 2
 
 
 @requires_postgres

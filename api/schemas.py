@@ -787,6 +787,9 @@ class VulnerabilityInfo(BaseModel):
     observation_count: int = 1
     reopen_count: int = 0
     closed_at: str | None = None
+    ticket_system: str | None = None
+    ticket_key: str | None = None
+    ticket_url: str | None = None
 
 
 class VulnerabilityEventInfo(BaseModel):
@@ -836,6 +839,25 @@ class VulnerabilityExceptionRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class VulnerabilityCommentRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/comment`` (#138)."""
+
+    note: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityTicketRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/ticket`` — link, not create.
+
+    Native Jira/ServiceNow/SMAX/DefectDojo creation is the 10.3/P2 transport
+    over the existing delivery queue. This only records where the work lives.
+    """
+
+    system: Literal["jira", "servicenow", "smax", "defectdojo", "other"]
+    key: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+    note: str | None = Field(default=None, max_length=2000)
+
+
 class SlaPolicyInfo(BaseModel):
     policy_id: str
     tenant_id: str
@@ -857,14 +879,34 @@ class SlaPolicyRequest(BaseModel):
 
 
 class VulnerabilitySummary(BaseModel):
-    """Aggregates for the Vulnerability Center header (#137)."""
+    """Aggregates for the Vulnerability Center header and the Risk Dashboard
+    (#135, #137). ``estate_risk`` is the worst open NIST ``risk_level``."""
 
     total: int
     open_total: int
     untriaged: int
+    unassigned: int = 0
+    estate_risk: str | None = None
     by_state: dict[str, int] = Field(default_factory=dict)
     by_severity_open: dict[str, int] = Field(default_factory=dict)
+    by_risk_level_open: dict[str, int] = Field(default_factory=dict)
     by_sla: dict[str, int] = Field(default_factory=dict)
     breached: int
     worst_breached_severity: str | None = None
+    generated_at: str | None = None
+
+
+class AssetInventorySummary(BaseModel):
+    """Tenant asset posture for the Risk Dashboard (#135).
+
+    ``unowned`` is active+stale assets with no ``owner_email`` — decommissioned
+    boxes are out of the working set, so they do not inflate the number.
+    Internet-facing exposure is **not** counted: that input does not exist yet
+    ([#171](https://github.com/onixus/Shapoclyack/issues/171) / #146).
+    """
+
+    total: int
+    unowned: int
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_criticality: dict[str, int] = Field(default_factory=dict)
     generated_at: str | None = None

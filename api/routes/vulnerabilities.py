@@ -25,10 +25,12 @@ from api.schemas import (
     SlaPolicyInfo,
     SlaPolicyRequest,
     VulnerabilityAssignRequest,
+    VulnerabilityCommentRequest,
     VulnerabilityEventInfo,
     VulnerabilityExceptionRequest,
     VulnerabilityInfo,
     VulnerabilitySummary,
+    VulnerabilityTicketRequest,
     VulnerabilityTransitionRequest,
 )
 from api.services import vuln_states
@@ -144,6 +146,9 @@ def list_vulnerabilities(
     severity: Annotated[str | None, Query(description="critical | high | medium | low | unknown")] = None,
     asset_id: str | None = None,
     assignee: str | None = None,
+    unassigned: Annotated[
+        bool, Query(description="Open findings with no assignee — the dashboard's unowned work")
+    ] = False,
     sla: Annotated[
         str | None, Query(description="on_track | due_soon | breached | accepted | none")
     ] = None,
@@ -165,6 +170,7 @@ def list_vulnerabilities(
             severity=severity,
             asset_id=asset_id,
             assignee=assignee,
+            unassigned=unassigned,
             sla=sla,
             stale_days=stale_days,
             offset=page.offset,
@@ -297,6 +303,73 @@ def clear_exception(
     clock started, not from now — the risk was accepted, not restarted."""
     return _found(
         vulns_service.clear_exception(
+            settings,
+            tenant_id=_write_scope(principal),
+            vuln_id=vuln_id,
+            actor=principal.username,
+        )
+    )
+
+
+@router.post("/{vuln_id}/comment", response_model=VulnerabilityInfo)
+def add_comment(
+    vuln_id: str,
+    body: VulnerabilityCommentRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Leave a comment on the audit trail. Does not change lifecycle state."""
+    try:
+        return _found(
+            vulns_service.add_comment(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                note=body.note,
+                actor=principal.username,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.post("/{vuln_id}/ticket", response_model=VulnerabilityInfo)
+def set_ticket(
+    vuln_id: str,
+    body: VulnerabilityTicketRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Link an external ticket. The platform does not open the ticket."""
+    try:
+        return _found(
+            vulns_service.set_ticket(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                system=body.system,
+                key=body.key,
+                url=body.url,
+                actor=principal.username,
+                note=body.note,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.delete("/{vuln_id}/ticket", response_model=VulnerabilityInfo)
+def clear_ticket(
+    vuln_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    return _found(
+        vulns_service.clear_ticket(
             settings,
             tenant_id=_write_scope(principal),
             vuln_id=vuln_id,
