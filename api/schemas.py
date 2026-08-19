@@ -109,6 +109,10 @@ class VulnerabilityItem(BaseModel):
     # Host reachability for likelihood (#171). Not inferred from a public IP.
     network_exposure: str | None = None
     network_exposure_source: str | None = None
+    # On-path CDN/WAF names from fingerprint.json on the same host:port (#173).
+    # Empty means we did not observe one, not that the service is unprotected.
+    cdn_waf: list[str] = Field(default_factory=list)
+    compensating_control_source: str | None = None
 
 
 class AliveHostItem(BaseModel):

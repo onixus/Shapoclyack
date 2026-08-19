@@ -7,7 +7,7 @@ from typing import Any
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.services import pagination
 from api.services import tenants as tenants_service
-from api.services.risk_scoring import get_scorer
+from api.services.risk_scoring import get_scorer, index_cdn_waf
 from api.settings import Settings
 
 # Marker file written into a run directory naming the tenant the run belongs to
@@ -306,6 +306,7 @@ def get_vulnerabilities(
     # at ingest do carry it, so their contextual_score can be the stricter of
     # the two — the explanation says which criticality it used.
     scorer = get_scorer()
+    cdn_waf = index_cdn_waf(_load_json(run_dir / "fingerprint.json"))
     items: list[VulnerabilityItem] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -318,7 +319,7 @@ def get_vulnerabilities(
             continue
         host_key = str(entry_host or "")
         geo_hit = geo.get(host_key, {})
-        scored = scorer.score_vulnerability(entry)
+        scored = scorer.score_vulnerability(entry, cdn_waf_index=cdn_waf)
         confidence = entry.get("confidence")
         items.append(
             VulnerabilityItem(
@@ -350,6 +351,8 @@ def get_vulnerabilities(
                 exploit_verified_on_host=bool(scored.get("exploit_verified_on_host")),
                 network_exposure=scored.get("network_exposure"),
                 network_exposure_source=scored.get("network_exposure_source"),
+                cdn_waf=list(scored.get("cdn_waf") or []),
+                compensating_control_source=scored.get("compensating_control_source"),
             )
         )
     # Contextual score leads: it already folds in severity, EPSS, KEV, and the

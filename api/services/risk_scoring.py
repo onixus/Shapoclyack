@@ -23,7 +23,9 @@ Table I-2 (see ``api/services/nist_risk.py``):
     come out High no matter how alarming its CVSS. Discounted by scanner
     confidence when the finding is a hypothesis rather than an observation.
     Then shifted by **network exposure** (#171): whether *this* host is
-    reachable from outside, which is not what CVSS ``AV:N`` says.
+    reachable from outside, which is not what CVSS ``AV:N`` says. Then a
+    small **compensating-control** discount (#173) only if fingerprint
+    observed a CDN/WAF on the same host:port — named, never "WAF = safe".
 
 **Impact** — how bad if it is?
     The CVSS vector's impact metrics (VC/VI/VA, or C/I/A on v3), shifted by
@@ -124,6 +126,15 @@ _NETWORK_EXPOSURE_SWING = 20.0
 #: an unpatched old flaw is not safer for having been ignored. How long *we*
 #: have had the finding open is SLA (#145), not this.
 _CVE_AGE_RAISE = ((1.0, 0.0), (3.0, 4.0), (7.0, 8.0), (None, 12.0))
+#: Small on-path likelihood discount when fingerprint saw a CDN/WAF on the
+#: *same* host:port (#173). One observation, one discount — never per vendor
+#: and never a qualitative "minus a level" rule. Seeing Cloudflare is not
+#: evidence the WAF blocks this CVE. Names stay in lockstep with
+#: ``scanner.pipeline.fingerprint._CDN_WAF_SIGNATURES``.
+COMPENSATING_CONTROL_DISCOUNT = 6.0
+CDN_WAF_PROVIDERS = frozenset(
+    {"cloudflare", "akamai", "sucuri", "imperva_incapsula", "cloudfront", "fastly"}
+)
 ENRICHMENT_STALE_DAYS = 30
 _CVE_ID_YEAR = re.compile(r"^CVE-(\d{4})-", re.I)
 EXTERNAL = "external"
@@ -413,6 +424,94 @@ def cve_age_raise(years: float | None) -> float:
     return previous
 
 
+def _endpoint_key(host: str | None, port: Any) -> tuple[str, int] | None:
+    """``(host, port)`` identity for an on-path control. Port-less is not a match."""
+    if not host:
+        return None
+    try:
+        port_n = int(str(port).split("/")[0])
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if port_n <= 0:
+        return None
+    return str(host).strip().lower(), port_n
+
+
+def _normalize_cdn_waf(raw: Any) -> tuple[str, ...]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    seen: list[str] = []
+    for item in raw:
+        name = str(item).strip().lower().replace("-", "_").replace(" ", "_")
+        if name in CDN_WAF_PROVIDERS and name not in seen:
+            seen.append(name)
+    return tuple(seen)
+
+
+def index_cdn_waf(fingerprint: Any) -> dict[tuple[str, int], tuple[str, ...]]:
+    """``fingerprint.json`` → ``{(host, port): providers}`` for on-path CDN/WAF.
+
+    CMS/framework hits are ignored: a WordPress marker is not a control.
+    Several findings for the same host:port (http and https) are unioned.
+    """
+    if not isinstance(fingerprint, dict):
+        return {}
+    findings = fingerprint.get("findings")
+    if not isinstance(findings, list):
+        return {}
+    collected: dict[tuple[str, int], list[str]] = {}
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        key = _endpoint_key(finding.get("host"), finding.get("port"))
+        if key is None:
+            continue
+        names = _normalize_cdn_waf(finding.get("cdn_waf"))
+        if not names:
+            continue
+        existing = collected.setdefault(key, [])
+        for name in names:
+            if name not in existing:
+                existing.append(name)
+    return {key: tuple(names) for key, names in collected.items()}
+
+
+def resolve_compensating_control(
+    *,
+    host: str | None = None,
+    port: Any = None,
+    cdn_waf: Any = None,
+    index: dict[tuple[str, int], tuple[str, ...]] | None = None,
+) -> tuple[tuple[str, ...], str]:
+    """``(providers, source)`` for an on-path CDN/WAF (#173).
+
+    An explicit list on the finding wins (``finding``). Otherwise a fingerprint
+    index hit on the **same** host:port (``fingerprint``). Anything else is
+    ``none`` — we did not observe a control, which is not "there is none".
+    """
+    names = _normalize_cdn_waf(cdn_waf)
+    if names:
+        return names, "finding"
+    if index:
+        key = _endpoint_key(host, port)
+        if key is not None:
+            hit = index.get(key)
+            if hit:
+                return hit, "fingerprint"
+    return (), "none"
+
+
+def apply_compensating_control(
+    likelihood: float, providers: tuple[str, ...] | list[str]
+) -> float:
+    """Small named discount. Several vendors on one endpoint still count once."""
+    if not providers:
+        return likelihood
+    return max(0.0, min(100.0, likelihood - COMPENSATING_CONTROL_DISCOUNT))
+
+
 def overlay_staleness(*, now: datetime | None = None) -> list[tuple[str, float]]:
     """``(name, age_days)`` for EPSS/KEV/exploit overlays older than the threshold."""
     clock = now or datetime.now(UTC)
@@ -613,6 +712,7 @@ class RiskScoring:
         *,
         asset_criticality_override: int | None = None,
         operator_exposure: str | None = None,
+        cdn_waf_index: dict[tuple[str, int], tuple[str, ...]] | None = None,
     ) -> dict[str, Any]:
         cve = str(item.get("cve") or item.get("script_id") or "")
         is_cve = cve.upper().startswith("CVE-")
@@ -662,7 +762,14 @@ class RiskScoring:
         published = str(item.get("cve_published") or item.get("published") or "") or None
         age_years, age_source = resolve_cve_age(cve=cve, published=published)
         age_bump = cve_age_raise(age_years)
-        likelihood = min(100.0, exposed + age_bump)
+        providers, control_source = resolve_compensating_control(
+            host=str(item.get("host") or "") or None,
+            port=item.get("port"),
+            cdn_waf=item.get("cdn_waf"),
+            index=cdn_waf_index,
+        )
+        aged = min(100.0, exposed + age_bump)
+        likelihood = apply_compensating_control(aged, providers)
         stale_overlays = overlay_staleness() if self._report_overlay_age else []
         likelihood_level = nist_risk.level_for(likelihood)
         impact_level = nist_risk.level_for(contextual_impact)
@@ -694,6 +801,8 @@ class RiskScoring:
             "exploitability_score": exploitability,
             "network_exposure": exposure,
             "network_exposure_source": exposure_source,
+            "cdn_waf": list(providers),
+            "compensating_control_source": control_source,
             **assessment.as_dict(),
             "risk_explanation": self._explain(
                 item,
@@ -721,6 +830,9 @@ class RiskScoring:
                 cve_age_years=age_years,
                 cve_age_source=age_source,
                 cve_age_bump=age_bump,
+                compensating_control=providers,
+                compensating_control_source=control_source,
+                compensating_drop=aged - likelihood,
                 stale_overlays=stale_overlays,
             ),
         }
@@ -753,6 +865,9 @@ class RiskScoring:
         cve_age_years: float | None,
         cve_age_source: str,
         cve_age_bump: float,
+        compensating_control: tuple[str, ...],
+        compensating_control_source: str,
+        compensating_drop: float,
         stale_overlays: list[tuple[str, float]],
     ) -> str:
         """One line explaining the verdict, reading as the assessment's argument.
@@ -825,6 +940,12 @@ class RiskScoring:
                 )
             else:
                 why_likely.append(f"CVE age {cve_age_years:.0f}y ({cve_age_source}), no raise")
+        if compensating_control:
+            why_likely.append(
+                f"CDN/WAF {', '.join(compensating_control)} on this host:port "
+                f"({compensating_control_source}) lowered likelihood by {compensating_drop:g} "
+                f"— not proof the vuln is blocked"
+            )
         for overlay_name, age_days in stale_overlays:
             why_likely.append(
                 f"{overlay_name} overlay {age_days:.0f}d old — not a fresh assessment"

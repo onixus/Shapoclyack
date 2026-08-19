@@ -341,6 +341,83 @@ def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path)
     assert "unconfirmed exposure" in exposure["risk_explanation"]
 
 
+def test_vulnerabilities_name_an_on_path_waf_from_fingerprint(tmp_path: Path):
+    """A CDN/WAF observed on the same host:port is a named discount, not a
+    claim the control blocks the CVE (#173). A match on another port is not."""
+    output = tmp_path / "output"
+    state = tmp_path / "state"
+    output.mkdir()
+    state.mkdir()
+    _write_run(output, "run-a")
+    (output / "runs" / "run-a" / "vulnerabilities.json").write_text(
+        json.dumps(
+            [
+                {
+                    "host": "8.8.8.8",
+                    "port": "443",
+                    "cve": "CVE-2021-44228",
+                    "cvss": 10.0,
+                    "severity": "critical",
+                    "source": "pulse",
+                    "finding_class": "version_cve",
+                    "confidence": 90,
+                    "epss": 0.97,
+                    "in_kev": True,
+                },
+                {
+                    "host": "8.8.8.8",
+                    "port": "80",
+                    "cve": "CVE-2021-44228",
+                    "cvss": 10.0,
+                    "severity": "critical",
+                    "source": "pulse",
+                    "finding_class": "version_cve",
+                    "confidence": 90,
+                    "epss": 0.97,
+                    "in_kev": True,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (output / "runs" / "run-a" / "fingerprint.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "host": "8.8.8.8",
+                        "port": 443,
+                        "scheme": "https",
+                        "cdn_waf": ["cloudflare"],
+                        "cms_framework": ["wordpress"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(output_dir=output, state_dir=state)
+    app = create_app()
+    from api.auth import get_settings
+
+    app.dependency_overrides = {get_settings: lambda: settings}
+    client = TestClient(app)
+    headers = auth_headers(client)
+
+    payload = client.get("/api/runs/run-a/vulnerabilities", headers=headers).json()
+    by_port = {item["port"]: item for item in payload}
+    shielded = by_port["443"]
+    other = by_port["80"]
+    assert shielded["cdn_waf"] == ["cloudflare"]
+    assert shielded["compensating_control_source"] == "fingerprint"
+    assert "CDN/WAF cloudflare on this host:port (fingerprint)" in shielded["risk_explanation"]
+    assert "not proof the vuln is blocked" in shielded["risk_explanation"]
+    assert other["cdn_waf"] == []
+    assert "CDN/WAF" not in other["risk_explanation"]
+    assert shielded["contextual_score"] < other["contextual_score"]
+
+
 def test_download_artifact_binary_intact(tmp_path: Path):
     client = _client(tmp_path)
     headers = auth_headers(client)

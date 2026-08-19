@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **On-path CDN/WAF as a compensating control** ([#173](https://github.com/onixus/Shapoclyack/issues/173)) —
+  if fingerprint (Phase 9.1) saw Cloudflare / Akamai / Sucuri / Imperva /
+  CloudFront / Fastly on the *same* host:port, likelihood drops by 6 points
+  and `risk_explanation` names the vendor and the source. That is not
+  evidence the control blocks this CVE, and it is not a qualitative "minus
+  a level" rule. A CMS hit, another port, or a missing `fingerprint.json`
+  changes nothing. Attack chaining is still not modelled (needs P4.2).
+
 - **CVE age as a raise-only likelihood bump** ([#172](https://github.com/onixus/Shapoclyack/issues/172)) —
   an older CVE with the same evidence is never scored *below* a fresh one.
   Date comes from NVD `published` on `cvss4.json` (now stored by

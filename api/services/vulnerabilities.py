@@ -50,7 +50,7 @@ from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
 from api.services import vuln_states
-from api.services.risk_scoring import get_scorer
+from api.services.risk_scoring import get_scorer, index_cdn_waf
 from api.settings import Settings
 from scanner.pipeline.asset_identity import identity_candidates_for_host
 from scanner.pipeline.report import SEVERITY_ORDER
@@ -436,6 +436,10 @@ def register_findings_from_run(
         return RegisterStats(0, 0, 0, 0, 0)
 
     scorer = get_scorer()
+    run_dir = runs_service.get_run_dir(settings, run_id)
+    cdn_waf = index_cdn_waf(
+        runs_service._load_json(run_dir / "fingerprint.json") if run_dir is not None else None  # noqa: SLF001
+    )
     now = _now()
     created = reobserved = reopened = skipped = 0
 
@@ -456,7 +460,9 @@ def register_findings_from_run(
                 continue
             port = str(entry.get("port")) if entry.get("port") is not None else None
 
-            scored = scorer.score_vulnerability(entry, operator_exposure=asset.exposure_level)
+            scored = scorer.score_vulnerability(
+                entry, operator_exposure=asset.exposure_level, cdn_waf_index=cdn_waf
+            )
             severity = _severity_of(entry)
             key = finding_key(asset_id=asset.asset_id, cve=cve, script_id=script_id, port=port)
 
