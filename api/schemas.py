@@ -151,6 +151,15 @@ class AssetIdentifier(BaseModel):
     identifier_value: str
 
 
+class AssetIdentityLink(BaseModel):
+    ip: str
+    fqdn: str
+    sources: list[str] = Field(default_factory=list)
+    confidence: str
+    shared: bool = False
+    merged: bool = False
+
+
 class AssetSummary(BaseModel):
     asset_id: str
     status: str
@@ -185,6 +194,9 @@ class AssetDetail(BaseModel):
     context_source: str | None = None
     identifiers: list[AssetIdentifier] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
+    # P4.2: named IP↔FQDN evidence. ``merged`` is false when shared hosting
+    # forbade a collapse — two assets on purpose.
+    identity_links: list[AssetIdentityLink] = Field(default_factory=list)
     # Open-finding rollup from the tracker — why this asset is risky (#146).
     risk: VulnerabilitySummary | None = None
 

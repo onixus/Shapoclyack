@@ -31,7 +31,8 @@ value from an observed public IP would launder a heuristic as a fact.
 Scoring may use `internet` / `internal` as a named `operator-set` source
 ([#171](https://github.com/onixus/Shapoclyack/issues/171)); a public IP still
 does not become `external` on its own. Identity merge (IP↔FQDN↔certificate
-becoming one asset) is still P4.2.
+becoming one asset) is [P4.2](asset-identity.md): only when forward DNS
+and a certificate on that IP agree, and the IP is not shared.
 
 Scoring consumes `asset_criticality` (impact) and, since
 [#171](https://github.com/onixus/Shapoclyack/issues/171), operator

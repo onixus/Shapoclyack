@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **IP↔FQDN↔certificate correlation** (ROADMAP P4.2) — an IP-only asset and
+  a bare-FQDN asset become one row only when forward DNS *and* a
+  certificate on that IP cover the name, and the IP is not shared-hosting
+  two such names. PTR is not evidence. The trail is
+  `asset_identity_links` on `GET /api/assets/{id}` (`identity_links`).
+  A CDN SAN list does not invent assets. Docs:
+  [docs/asset-identity.md](docs/asset-identity.md).
+
 - **On-path CDN/WAF as a compensating control** ([#173](https://github.com/onixus/Shapoclyack/issues/173)) —
   if fingerprint (Phase 9.1) saw Cloudflare / Akamai / Sucuri / Imperva /
   CloudFront / Fastly on the *same* host:port, likelihood drops by 6 points
