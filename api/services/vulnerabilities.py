@@ -456,7 +456,7 @@ def register_findings_from_run(
                 continue
             port = str(entry.get("port")) if entry.get("port") is not None else None
 
-            scored = scorer.score_vulnerability(entry)
+            scored = scorer.score_vulnerability(entry, operator_exposure=asset.exposure_level)
             severity = _severity_of(entry)
             key = finding_key(asset_id=asset.asset_id, cve=cve, script_id=script_id, port=port)
 
@@ -474,6 +474,8 @@ def register_findings_from_run(
                 "cvss": entry.get("cvss"),
                 "in_kev": bool(scored.get("exploit_active")),
                 "exploit_maturity": scored.get("exploit_maturity"),
+                "network_exposure": scored.get("network_exposure"),
+                "network_exposure_source": scored.get("network_exposure_source"),
                 "title": (cve or script_id or "")[:500],
             }
 
@@ -628,6 +630,8 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "cvss": row.cvss,
         "in_kev": bool(row.in_kev),
         "exploit_maturity": row.exploit_maturity,
+        "network_exposure": row.network_exposure,
+        "network_exposure_source": row.network_exposure_source,
         "state": row.state,
         "state_changed_at": _iso(row.state_changed_at),
         "state_changed_by": row.state_changed_by,

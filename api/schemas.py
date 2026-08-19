@@ -106,6 +106,9 @@ class VulnerabilityItem(BaseModel):
     # True when a working check fired against this host, rather than the level
     # being inferred from a list keyed by CVE.
     exploit_verified_on_host: bool = False
+    # Host reachability for likelihood (#171). Not inferred from a public IP.
+    network_exposure: str | None = None
+    network_exposure_source: str | None = None
 
 
 class AliveHostItem(BaseModel):
@@ -802,6 +805,8 @@ class VulnerabilityInfo(BaseModel):
     cvss: float | None = None
     in_kev: bool = False
     exploit_maturity: str | None = None
+    network_exposure: str | None = None
+    network_exposure_source: str | None = None
     state: str
     state_changed_at: str | None = None
     state_changed_by: str | None = None

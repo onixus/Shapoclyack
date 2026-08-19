@@ -6,6 +6,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Network exposure in likelihood** ([#171](https://github.com/onixus/Shapoclyack/issues/171)) —
+  the same CVE on an RFC1918 box and on an operator-declared internet-facing
+  host no longer share a likelihood. `AV:N` remains a property of the
+  vulnerability. `network_exposure` is `external` / `internal` / `unknown`
+  with a named source (`address-space`, `operator-set`, `finding`). A public
+  IP is not treated as internet-facing. `unknown` does not shift the score.
+
 - **Exposure Management and MSSP views** ([#139](https://github.com/onixus/Shapoclyack/issues/139)) —
   `/tenants` compares customer posture (worst open NIST risk, SLA, unassigned,
   KEV, unowned assets, operator-declared internet). `/exposure` lists assets

@@ -17,10 +17,12 @@ from tests.conftest import (
 
 pytestmark = requires_postgres
 
-_HOSTS = [{"host": "10.0.0.5", "hostname": "app.example.com"}]
+# Public addresses so #171 does not collapse both likelihoods to zero
+# (RFC1918 + theoretical ceiling) and scramble worst-first sort.
+_HOSTS = [{"host": "8.8.8.8", "hostname": "app.example.com"}]
 _FINDINGS = [
-    {"host": "10.0.0.5", "port": "443", "cve": "CVE-2024-0001", "cvss": 9.8, "severity": "critical"},
-    {"host": "10.0.0.5", "port": "80", "cve": "CVE-2024-0002", "cvss": 5.0, "severity": "medium"},
+    {"host": "8.8.8.8", "port": "443", "cve": "CVE-2024-0001", "cvss": 9.8, "severity": "critical"},
+    {"host": "8.8.8.8", "port": "80", "cve": "CVE-2024-0002", "cvss": 5.0, "severity": "medium"},
 ]
 
 
