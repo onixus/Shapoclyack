@@ -435,6 +435,20 @@ def get_asset_criticality_by_ip(settings: Settings, tenant_id: str, host_ip: str
         return None
 
 
+def get_asset_exposure_by_ip(settings: Settings, tenant_id: str, host_ip: str) -> str | None:
+    """Operator-set ``exposure_level``, or None. Never inferred from the IP."""
+    asset_id = ip_identity_key(tenant_id, host_ip)
+    try:
+        with get_session(settings.postgres_url) as session:
+            asset = session.get(models.Asset, asset_id)
+            if asset is None or asset.tenant_id != tenant_id:
+                return None
+            return asset.exposure_level
+    except Exception:  # noqa: BLE001
+        LOG.warning("exposure_level lookup failed tenant=%s host=%s", tenant_id, host_ip)
+        return None
+
+
 _MANUAL_STATUS = "decommissioned"
 
 

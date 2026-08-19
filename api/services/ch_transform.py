@@ -103,6 +103,7 @@ def vulnerabilities_to_rows(
     scorer = get_scorer()
     db_enabled = settings is not None and bool(settings.postgres_url.strip())
     criticality_cache: dict[str, int | None] = {}
+    exposure_cache: dict[str, str | None] = {}
 
     def _criticality_override(host_ip: str) -> int | None:
         if host_ip not in criticality_cache:
@@ -110,6 +111,13 @@ def vulnerabilities_to_rows(
                 settings, tenant_id, host_ip
             )
         return criticality_cache[host_ip]
+
+    def _operator_exposure(host_ip: str) -> str | None:
+        if host_ip not in exposure_cache:
+            exposure_cache[host_ip] = assets_service.get_asset_exposure_by_ip(
+                settings, tenant_id, host_ip
+            )
+        return exposure_cache[host_ip]
 
     rows: list[list[Any]] = []
     for item in vulns:
@@ -120,7 +128,11 @@ def vulnerabilities_to_rows(
             continue
         cve = item.get("cve") or item.get("script_id") or ""
         override = _criticality_override(host) if db_enabled else None
-        scored = scorer.score_vulnerability(item, asset_criticality_override=override)
+        scored = scorer.score_vulnerability(
+            item,
+            asset_criticality_override=override,
+            operator_exposure=_operator_exposure(host) if db_enabled else None,
+        )
         rows.append(
             [
                 tenant_uuid,

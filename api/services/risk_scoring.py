@@ -22,6 +22,8 @@ Table I-2 (see ``api/services/nist_risk.py``):
     exploit cannot come out Low, and one nobody has ever demonstrated cannot
     come out High no matter how alarming its CVSS. Discounted by scanner
     confidence when the finding is a hypothesis rather than an observation.
+    Then shifted by **network exposure** (#171): whether *this* host is
+    reachable from outside, which is not what CVSS ``AV:N`` says.
 
 **Impact** — how bad if it is?
     The CVSS vector's impact metrics (VC/VI/VA, or C/I/A on v3), shifted by
@@ -60,6 +62,7 @@ volume, and ``get_scorer`` hot-reloads changed overlays without a restart
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import math
@@ -110,6 +113,16 @@ _MATURITY_BOUNDS: dict[str, tuple[float, float]] = {
 #: ±40 spans two adjacent levels, so a crown-jewel asset can lift a Moderate
 #: impact to High and a lab box can drop it to Low — both directions matter.
 _CRITICALITY_SWING = 20.0
+
+#: How far network exposure (#171) may move likelihood, in Table D-2 points.
+#: Same magnitude as criticality so "this host is on the internet" can change
+#: the verdict. ``unknown`` shifts nothing — no observation is not "not
+#: exposed".
+_NETWORK_EXPOSURE_SWING = 20.0
+EXTERNAL = "external"
+INTERNAL = "internal"
+UNKNOWN_EXPOSURE = "unknown"
+NETWORK_EXPOSURES = (EXTERNAL, INTERNAL, UNKNOWN_EXPOSURE)
 
 _VECTOR_METRIC_RE = re.compile(r"([A-Z]{1,2}):([A-Z])")
 
@@ -306,6 +319,51 @@ def apply_criticality(technical_impact: float, criticality: int) -> float:
     return max(0.0, min(100.0, technical_impact + shift))
 
 
+def _is_non_routable(host: str) -> bool:
+    """RFC1918 / loopback / link-local / reserved — not internet-reachable."""
+    try:
+        addr = ipaddress.ip_address(host.strip())
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved
+
+
+def resolve_network_exposure(
+    *,
+    host: str | None = None,
+    operator_exposure: str | None = None,
+    explicit: str | None = None,
+) -> tuple[str, str]:
+    """``(exposure, source)`` for likelihood (#171).
+
+    Order is load-bearing. A public address is **not** evidence the host is
+    internet-facing — that would launder a routing fact as a scan observation.
+    RFC1918 *is* evidence it is not. Operator-set ``exposure_level=internet``
+    is a named decision, not a measurement. ``unknown`` is the default so
+    absence of data does not score as "nothing is exposed".
+    """
+    if explicit in NETWORK_EXPOSURES:
+        return explicit, "finding"
+    if host and _is_non_routable(host):
+        return INTERNAL, "address-space"
+    if operator_exposure == "internet":
+        return EXTERNAL, "operator-set"
+    if operator_exposure == "internal":
+        return INTERNAL, "operator-set"
+    return UNKNOWN_EXPOSURE, "none"
+
+
+def apply_network_exposure(likelihood: float, exposure: str) -> float:
+    """Shift likelihood after maturity bounds. ``unknown`` is a no-op."""
+    if exposure == EXTERNAL:
+        shift = _NETWORK_EXPOSURE_SWING
+    elif exposure == INTERNAL:
+        shift = -_NETWORK_EXPOSURE_SWING
+    else:
+        return likelihood
+    return max(0.0, min(100.0, likelihood + shift))
+
+
 class RiskScoring:
     """Stateless scorer with optional EPSS / KEV / exploit overlays."""
 
@@ -480,7 +538,11 @@ class RiskScoring:
         return round(math.sqrt(max(0.0, likelihood) * max(0.0, impact)) / 10.0, 2)
 
     def score_vulnerability(
-        self, item: dict[str, Any], *, asset_criticality_override: int | None = None
+        self,
+        item: dict[str, Any],
+        *,
+        asset_criticality_override: int | None = None,
+        operator_exposure: str | None = None,
     ) -> dict[str, Any]:
         cve = str(item.get("cve") or item.get("script_id") or "")
         is_cve = cve.upper().startswith("CVE-")
@@ -515,12 +577,18 @@ class RiskScoring:
         technical_impact, impact_source = impact_pct(vector, base)
         contextual_impact = apply_criticality(technical_impact, criticality)
 
-        likelihood = self.likelihood_pct(
+        raw_likelihood = self.likelihood_pct(
             exploitability=exploitability,
             epss=epss,
             maturity=assessment.maturity,
             confidence_factor=factor,
         )
+        exposure, exposure_source = resolve_network_exposure(
+            host=str(item.get("host") or "") or None,
+            operator_exposure=operator_exposure,
+            explicit=str(item["network_exposure"]) if item.get("network_exposure") else None,
+        )
+        likelihood = apply_network_exposure(raw_likelihood, exposure)
         likelihood_level = nist_risk.level_for(likelihood)
         impact_level = nist_risk.level_for(contextual_impact)
         risk = nist_risk.risk_level(likelihood_level, impact_level)
@@ -549,6 +617,8 @@ class RiskScoring:
             "impact_score": round(contextual_impact, 1),
             "technical_impact_score": technical_impact,
             "exploitability_score": exploitability,
+            "network_exposure": exposure,
+            "network_exposure_source": exposure_source,
             **assessment.as_dict(),
             "risk_explanation": self._explain(
                 item,
@@ -570,6 +640,9 @@ class RiskScoring:
                 unconfirmed=unconfirmed,
                 capped=capped,
                 decision=decision,
+                raw_likelihood=raw_likelihood,
+                network_exposure=exposure,
+                network_exposure_source=exposure_source,
             ),
         }
 
@@ -595,6 +668,9 @@ class RiskScoring:
         unconfirmed: bool,
         capped: bool,
         decision: str,
+        raw_likelihood: float,
+        network_exposure: str,
+        network_exposure_source: str,
     ) -> str:
         """One line explaining the verdict, reading as the assessment's argument.
 
@@ -640,6 +716,25 @@ class RiskScoring:
             if capped:
                 note += f", decision capped at {decision}"
             why_likely.append(note)
+        source_label = {
+            "address-space": "address-space",
+            "operator-set": "operator-set",
+            "finding": "finding",
+            "none": "no observation",
+        }.get(network_exposure_source, network_exposure_source)
+        shifted = apply_network_exposure(raw_likelihood, network_exposure)
+        if network_exposure == UNKNOWN_EXPOSURE:
+            why_likely.append(f"network exposure unknown ({source_label}) — no shift")
+        elif abs(shifted - raw_likelihood) >= 0.05:
+            direction = "raised" if shifted > raw_likelihood else "lowered"
+            why_likely.append(
+                f"network exposure {network_exposure} ({source_label}) {direction} "
+                f"likelihood to {shifted:g}/100"
+            )
+        else:
+            why_likely.append(
+                f"network exposure {network_exposure} ({source_label}), no shift"
+            )
 
         # --- why this impact ---
         origin = "operator-set" if asset_criticality_override is not None else "heuristic"

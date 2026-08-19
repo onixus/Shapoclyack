@@ -28,13 +28,16 @@ render. Unknown values answer `422`.
 
 `exposure_level` is a **decision**, not a scan measurement. Writing a guessed
 value from an observed public IP would launder a heuristic as a fact.
-Network exposure as a measurement is
-[#171](https://github.com/onixus/Shapoclyack/issues/171). Identity merge
-(IP↔FQDN↔certificate becoming one asset) is still P4.2 — this issue does not
-implement it.
+Scoring may use `internet` / `internal` as a named `operator-set` source
+([#171](https://github.com/onixus/Shapoclyack/issues/171)); a public IP still
+does not become `external` on its own. Identity merge (IP↔FQDN↔certificate
+becoming one asset) is still P4.2.
 
-Scoring still consumes only `asset_criticality`. Environment, data class and
-exposure explain the asset; they do not yet move the NIST verdict.
+Scoring consumes `asset_criticality` (impact) and, since
+[#171](https://github.com/onixus/Shapoclyack/issues/171), operator
+`exposure_level=internet|internal` as a **named** likelihood source. A public
+IP is not treated as internet-facing. Environment and data class still do
+not move the verdict.
 
 ## CMDB / AD
 

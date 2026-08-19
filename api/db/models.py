@@ -594,6 +594,10 @@ class Vulnerability(Base):
     # does not depend on the run directory still being on disk.
     in_kev: Mapped[bool] = mapped_column(default=False, server_default="false")
     exploit_maturity: Mapped[str | None] = mapped_column(default=None)
+    # Latest observation's network exposure (#171). external | internal | unknown.
+    # ``unknown`` is the default so a missing observation is not "not exposed".
+    network_exposure: Mapped[str | None] = mapped_column(default=None)
+    network_exposure_source: Mapped[str | None] = mapped_column(default=None)
     # Lifecycle. Legal moves live in api/services/vuln_states.py; the column
     # stays a plain string so adding a state does not need a migration.
     state: Mapped[str] = mapped_column(default="OPEN")

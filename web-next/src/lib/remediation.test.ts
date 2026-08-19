@@ -18,6 +18,8 @@ function stub(overrides: Partial<TrackedVulnerability>): TrackedVulnerability {
     cvss: 7,
     in_kev: false,
     exploit_maturity: null,
+    network_exposure: null,
+    network_exposure_source: null,
     state: "OPEN",
     state_changed_at: null,
     state_changed_by: null,

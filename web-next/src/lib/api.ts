@@ -1040,6 +1040,8 @@ export type TrackedVulnerability = {
   cvss: number | null;
   in_kev: boolean;
   exploit_maturity: string | null;
+  network_exposure: string | null;
+  network_exposure_source: string | null;
   state: VulnLifecycleState;
   state_changed_at: string | null;
   state_changed_by: string | null;

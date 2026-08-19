@@ -348,6 +348,8 @@ def get_vulnerabilities(
                 exploit_maturity=scored.get("exploit_maturity"),
                 exploit_evidence=list(scored.get("exploit_evidence") or []),
                 exploit_verified_on_host=bool(scored.get("exploit_verified_on_host")),
+                network_exposure=scored.get("network_exposure"),
+                network_exposure_source=scored.get("network_exposure_source"),
             )
         )
     # Contextual score leads: it already folds in severity, EPSS, KEV, and the

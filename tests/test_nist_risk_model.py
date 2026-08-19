@@ -25,11 +25,16 @@ from api.services.exploit_evidence import (
     ExploitEvidence,
 )
 from api.services.risk_scoring import (
+    EXTERNAL,
+    INTERNAL,
+    UNKNOWN_EXPOSURE,
     RiskScoring,
     apply_criticality,
+    apply_network_exposure,
     epss_pct,
     exploitability_pct,
     impact_pct,
+    resolve_network_exposure,
 )
 from api.services.risk_scoring import _parse_vector as parse_vector
 
@@ -342,3 +347,68 @@ def test_every_mvp2_output_key_survives():
     ):
         assert key in scored, key
     assert 0.0 <= scored["contextual_score"] <= 10.0
+
+
+# ---------------------------------------------------------------------------
+# Network exposure (#171) — this host, not the CVSS vector
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_network_exposure_does_not_treat_a_public_ip_as_internet():
+    """A routable address is not evidence the host is facing the internet."""
+    assert resolve_network_exposure(host="8.8.8.8") == (UNKNOWN_EXPOSURE, "none")
+    assert resolve_network_exposure(host="10.0.0.5") == (INTERNAL, "address-space")
+    assert resolve_network_exposure(host="8.8.8.8", operator_exposure="internet") == (
+        EXTERNAL,
+        "operator-set",
+    )
+    assert resolve_network_exposure(host="8.8.8.8", operator_exposure="partner") == (
+        UNKNOWN_EXPOSURE,
+        "none",
+    )
+    assert resolve_network_exposure(host="10.0.0.5", explicit=EXTERNAL) == (EXTERNAL, "finding")
+
+
+def test_same_finding_scores_differently_on_external_and_internal_hosts():
+    scorer = _scorer()
+    item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST}
+    external = scorer.score_vulnerability({**item, "network_exposure": EXTERNAL})
+    internal = scorer.score_vulnerability({**item, "network_exposure": INTERNAL})
+    unknown = scorer.score_vulnerability(item)
+
+    assert external["likelihood_score"] > unknown["likelihood_score"]
+    assert internal["likelihood_score"] < unknown["likelihood_score"]
+    assert external["likelihood"] != internal["likelihood"] or (
+        external["likelihood_score"] != internal["likelihood_score"]
+    )
+
+
+def test_unknown_network_exposure_does_not_change_likelihood():
+    scorer = _scorer()
+    item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST}
+    bare = scorer.score_vulnerability(item)
+    marked = scorer.score_vulnerability({**item, "network_exposure": UNKNOWN_EXPOSURE})
+    public = scorer.score_vulnerability({**item, "host": "8.8.8.8"})
+    assert bare["likelihood_score"] == marked["likelihood_score"] == public["likelihood_score"]
+    assert "network exposure unknown" in marked["risk_explanation"]
+
+
+def test_network_exposure_explanation_names_the_source():
+    scorer = _scorer()
+    item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST, "host": "10.1.2.3"}
+    scored = scorer.score_vulnerability(item)
+    assert scored["network_exposure"] == INTERNAL
+    assert scored["network_exposure_source"] == "address-space"
+    assert "network exposure internal (address-space) lowered likelihood" in scored["risk_explanation"]
+
+    decided = scorer.score_vulnerability(
+        {**item, "host": "8.8.8.8"}, operator_exposure="internet"
+    )
+    assert decided["network_exposure"] == EXTERNAL
+    assert "network exposure external (operator-set) raised likelihood" in decided["risk_explanation"]
+
+
+def test_apply_network_exposure_unknown_is_a_noop():
+    assert apply_network_exposure(50.0, UNKNOWN_EXPOSURE) == 50.0
+    assert apply_network_exposure(50.0, EXTERNAL) == 70.0
+    assert apply_network_exposure(50.0, INTERNAL) == 30.0

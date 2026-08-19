@@ -49,10 +49,11 @@ claim.
 
 | Input | Source | Role |
 |---|---|---|
-| Reachability | CVSS vector `AV`/`AC`/`AT`/`PR`/`UI` | How hard is it to reach and trigger |
+| Reachability | CVSS vector `AV`/`AC`/`AT`/`PR`/`UI` | How hard is it to reach and trigger *the vulnerability* |
 | EPSS | per-finding, else the EPSS overlay | Population-level probability over the next 30 days |
 | **Exploit maturity** | see below | Floor **and** ceiling |
 | Scanner confidence | `finding_class` / `confidence` | Discount for hypotheses |
+| **Network exposure** | this host: RFC1918 / operator-set / explicit | ±20 on likelihood after bounds. `unknown` is a no-op |
 
 Reachability and EPSS are blended 65/35 — reachability describes *this* finding,
 while EPSS is a statistic about the CVE that knows nothing about whether the
@@ -93,6 +94,24 @@ is nothing", which is the most dangerous sentence a security tool can say. So
 
 Note that **CISA KEV alone does not make absence meaningful**: KEV only ever says
 "yes, exploited", never "no exploit is known".
+
+### Network exposure is this host, not `AV:N`
+
+CVSS `AV:N` means the *vulnerability* is network-exploitable. It does not
+mean this machine is on the internet. Likelihood now takes a separate
+`network_exposure` of `external` / `internal` / `unknown` (#171):
+
+| Signal | Source | Shift |
+|---|---|---|
+| RFC1918 / loopback / link-local | `address-space` | `internal` −20 |
+| Operator `exposure_level=internet` | `operator-set` | `external` +20 |
+| Operator `exposure_level=internal` | `operator-set` | `internal` −20 |
+| Public IP, partner, unset | `none` | `unknown` 0 |
+
+A public address is **not** `external`. That would treat "this IP is routable"
+as "we observed it from outside". `unknown` scores as the model did before
+#171, so missing data cannot be read as "nothing is exposed". The
+`risk_explanation` names the source.
 
 ## Impact — how bad if it is?
 
@@ -177,11 +196,12 @@ the inference instead of having to trust it.
 
 Each of these is a real gap with its own issue, not a silent approximation.
 
-- **Reachability is the CVSS vector's, not the network's**
-  ([#171](https://github.com/onixus/Shapoclyack/issues/171)). `AV:N` says the
-  vulnerability is network-exploitable in the abstract; whether *this* host is
-  internet-facing is not yet an input, so an exposed service and the same
-  service behind the perimeter get the same likelihood.
+- **Reachability of the vulnerability is still the CVSS vector.** Host
+  reachability is now a separate likelihood input
+  ([#171](https://github.com/onixus/Shapoclyack/issues/171)): `external` /
+  `internal` / `unknown`. A public IP is **not** `external`. RFC1918 is
+  `internal` (`address-space`). Operator `exposure_level=internet` is
+  `external` (`operator-set`). `unknown` does not shift the score.
 - **No temporal input**
   ([#172](https://github.com/onixus/Shapoclyack/issues/172)). A CVE published
   yesterday and one from 2015 with the same evidence score the same. Note that
@@ -197,6 +217,7 @@ Each of these is a real gap with its own issue, not a silent approximation.
 - **No data-classification input in the score.**
   [#146](https://github.com/onixus/Shapoclyack/issues/146) stores
   `owner` / `business_service` / environment / data class / exposure on the
-  asset (see [asset-context.md](asset-context.md)), but scoring still uses
-  only the 0–4 `asset_criticality` dial. Those fields explain the asset; they
-  do not yet move the NIST verdict.
+  asset (see [asset-context.md](asset-context.md)). Scoring uses the 0–4
+  `asset_criticality` dial and, since #171, `exposure_level=internet|internal`
+  as a named likelihood source. Environment and data class still do not move
+  the verdict.
