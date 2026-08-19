@@ -65,6 +65,9 @@ const VULN: TrackedVulnerability = {
   observation_count: 2,
   reopen_count: 0,
   closed_at: null,
+  ticket_system: null,
+  ticket_key: null,
+  ticket_url: null,
 };
 
 const PAGE = {

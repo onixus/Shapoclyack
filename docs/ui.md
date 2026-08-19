@@ -17,7 +17,8 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/login` | Create a user session | Public |
 | `/` | Risk Overview: estate NIST verdict, SLA, unassigned work, unowned assets | Viewer |
 | `/vulnerabilities` | Vulnerability Center: tracked findings, lifecycle, owner, SLA | Viewer |
-| `/vulnerabilities/view?vulnId=…` | Finding detail, transitions, assignment, risk acceptance, audit trail | Viewer; operator to move/assign; admin to accept risk |
+| `/vulnerabilities/view?vulnId=…` | Finding detail, transitions, assignment, comments, ticket link, risk acceptance, audit trail | Viewer; operator to move/assign/comment/link; admin to accept risk |
+| `/remediation` | Remediation Kanban — detection to verified closure | Viewer; operator to move/assign/comment/link |
 | `/assets` | Cross-run asset inventory | Viewer |
 | `/assets/view?assetId=…` | Asset metadata, findings, ports, OS/GeoIP, endpoint software | Viewer; operator for permitted edits |
 | `/attack-surface` | Hostname → IP → port → service graph | Viewer |
@@ -57,6 +58,24 @@ read as "nothing is exposed".
 The scan-activity chart is hosts/findings per recent **run** — volume, not
 estate risk over time. Historical risk snapshots are still open on
 [#144](https://github.com/onixus/Shapoclyack/issues/144).
+
+## Remediation Board
+
+`/remediation` is the operational workflow for tracked findings. Columns are
+the lifecycle states (`OPEN → … → CLOSED`); drag a card onto a legal column,
+or use the side panel to move, assign, comment, and link a ticket. Accepted
+risk is a badge on the card, not a seventh column — the same rule as the
+lifecycle model.
+
+A comment is an audit event (`kind=comment`) and does not change state.
+A ticket link (`ticket_system` / `ticket_key` / `ticket_url`) records where
+the work lives in Jira, ServiceNow, SMAX or DefectDojo. The platform does
+**not** create that ticket: native adapters belong to the 10.3 delivery queue
+(ROADMAP P2) and must not be built a second time here.
+
+Evidence on the board is the last observing run. File attachments are out of
+scope. The closed column is a recent page, not the full history — the
+Vulnerability Center list is the complete working set.
 
 ## Vulnerability Center
 

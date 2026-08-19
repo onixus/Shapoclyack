@@ -591,6 +591,11 @@ class Vulnerability(Base):
     observation_count: Mapped[int] = mapped_column(default=1, server_default="1")
     reopen_count: Mapped[int] = mapped_column(default=0, server_default="0")
     closed_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Operator-set pointer to work in an external tracker (#138). Creating the
+    # ticket itself is a 10.3/P2 transport; this is only the link.
+    ticket_system: Mapped[str | None] = mapped_column(default=None)
+    ticket_key: Mapped[str | None] = mapped_column(default=None)
+    ticket_url: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -632,7 +637,8 @@ class VulnerabilityEvent(Base):
     tenant_id: Mapped[str] = mapped_column(index=True)
     occurred_at: Mapped[datetime]
     # observed | state_change | reopened | assigned | exception_set |
-    # exception_cleared — see VULN_EVENT_KINDS in api/services/vulnerabilities.py.
+    # exception_cleared | comment | ticket_set | ticket_cleared —
+    # see VULN_EVENT_KINDS in api/services/vulnerabilities.py.
     kind: Mapped[str]
     from_state: Mapped[str | None] = mapped_column(default=None)
     to_state: Mapped[str | None] = mapped_column(default=None)

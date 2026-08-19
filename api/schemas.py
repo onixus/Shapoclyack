@@ -787,6 +787,9 @@ class VulnerabilityInfo(BaseModel):
     observation_count: int = 1
     reopen_count: int = 0
     closed_at: str | None = None
+    ticket_system: str | None = None
+    ticket_key: str | None = None
+    ticket_url: str | None = None
 
 
 class VulnerabilityEventInfo(BaseModel):
@@ -834,6 +837,25 @@ class VulnerabilityExceptionRequest(BaseModel):
 
     until: datetime
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityCommentRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/comment`` (#138)."""
+
+    note: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityTicketRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/ticket`` — link, not create.
+
+    Native Jira/ServiceNow/SMAX/DefectDojo creation is the 10.3/P2 transport
+    over the existing delivery queue. This only records where the work lives.
+    """
+
+    system: Literal["jira", "servicenow", "smax", "defectdojo", "other"]
+    key: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class SlaPolicyInfo(BaseModel):

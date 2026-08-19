@@ -434,8 +434,8 @@ produce. None of it appears in Track A.
 | [#146](https://github.com/onixus/Shapoclyack/issues/146) | Backend | Asset business context: owner, business service, environment, data classification, exposure level; CMDB/AD-ready. Extends the operator-set fields from [9.4](#phase-9--exposure-fingerprinting)/[11.1](#phase-11--web-ui-v2-attack-surface-view) and consumes [P4.2](#p4-breakdown--differentiating-features) identity |
 | [#135](https://github.com/onixus/Shapoclyack/issues/135) | UI | **Done on branch** — Risk Overview (`/`) on tracked findings: estate NIST verdict, SLA, unassigned work, unowned assets. Internet exposure and historical risk snapshots stay #171/#146 and #144 |
 | [#136](https://github.com/onixus/Shapoclyack/issues/136) | UI | Asset-centric security view (needs #146) |
-| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | **In progress** — Vulnerability Center (`/vulnerabilities`, `/vulnerabilities/view`) on top of #145: lifecycle stepper, owner, SLA, risk acceptance, audit trail. CWE is not stored on the tracked finding yet |
-| [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | Remediation workflow + ticket integrations (needs #145; **shares scope with [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2** — Jira/ServiceNow belong to one delivery queue, built once) |
+| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | **Done on branch** — Vulnerability Center (`/vulnerabilities`, `/vulnerabilities/view`) on top of #145: lifecycle stepper, owner, SLA, risk acceptance, audit trail. CWE is not stored on the tracked finding yet |
+| [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | **Done on branch** — Remediation Board (`/remediation`) + comments + ticket *links*. Native Jira/ServiceNow/SMAX create stays [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2 |
 | [#139](https://github.com/onixus/Shapoclyack/issues/139) | UI | Exposure Management + MSSP views |
 
 Backend before UI: #144/#145/#146 → their dependent UI issues. Two overlaps with Track A

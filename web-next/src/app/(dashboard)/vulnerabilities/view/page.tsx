@@ -26,13 +26,22 @@ import { useRunVulns } from "@/hooks/use-runs";
 import {
   useAssignVulnerability,
   useClearVulnerabilityException,
+  useClearVulnerabilityTicket,
+  useCommentOnVulnerability,
   useSetVulnerabilityException,
+  useSetVulnerabilityTicket,
   useTrackedVulnerability,
   useTransitionVulnerability,
   useVulnerabilityEvents,
 } from "@/hooks/use-vulnerabilities";
 import { useAuthStore } from "@/lib/auth-store";
-import type { TrackedVulnerability, VulnLifecycleState, Vulnerability } from "@/lib/api";
+import type {
+  TicketSystem,
+  TrackedVulnerability,
+  VulnLifecycleState,
+  Vulnerability,
+} from "@/lib/api";
+import { TICKET_SYSTEMS } from "@/lib/remediation";
 import { SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
 import { normalizeSeverity, runDetailHref } from "@/lib/run-data";
 import {
@@ -173,6 +182,8 @@ function VulnerabilityDetailInner() {
           {canOperate ? (
             <AssignCard key={`${vuln.assignee}:${vuln.owner_team}`} vuln={vuln} />
           ) : null}
+          {canOperate ? <CommentCard vulnId={vuln.vuln_id} /> : null}
+          {canOperate ? <TicketCard vuln={vuln} /> : null}
           {isAdmin ? <ExceptionCard vuln={vuln} /> : null}
           {!canOperate && !isAdmin ? (
             <p className="text-xs text-slate-500">
@@ -214,6 +225,23 @@ function VulnerabilityDetailInner() {
               />
               <Field label="Owner" value={vuln.assignee || "Unassigned"} />
               <Field label="Team" value={vuln.owner_team || "—"} />
+              <Field
+                label="Ticket"
+                value={
+                  vuln.ticket_url ? (
+                    <a
+                      href={vuln.ticket_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-mono text-sky-400 hover:underline"
+                    >
+                      {vuln.ticket_key || vuln.ticket_url}
+                    </a>
+                  ) : (
+                    vuln.ticket_key || "—"
+                  )
+                }
+              />
               <Field label="First seen" value={formatWhen(vuln.first_seen_at)} />
               <Field label="Last seen" value={formatWhen(vuln.last_seen_at)} />
               <Field label="Observations" value={String(vuln.observation_count)} />
@@ -446,6 +474,97 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
         >
           {mutation.isPending ? "Saving…" : "Save owner"}
         </Button>
+      </form>
+    </section>
+  );
+}
+
+function CommentCard({ vulnId }: { vulnId: string }) {
+  const mutation = useCommentOnVulnerability(vulnId);
+  const [note, setNote] = useState("");
+  function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!note.trim()) return;
+    mutation.mutate(note.trim(), { onSuccess: () => setNote("") });
+  }
+  return (
+    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
+      <h2 className="text-sm font-semibold text-slate-100">Comment</h2>
+      <form onSubmit={onSubmit} className="mt-3 space-y-3">
+        <Textarea
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          rows={3}
+          className="bg-slate-950 border-slate-800 text-slate-200"
+          required
+        />
+        <Button type="submit" size="sm" disabled={mutation.isPending} className="bg-indigo-600 hover:bg-indigo-500">
+          {mutation.isPending ? "Posting…" : "Add comment"}
+        </Button>
+      </form>
+    </section>
+  );
+}
+
+function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
+  const setMutation = useSetVulnerabilityTicket(vuln.vuln_id);
+  const clearMutation = useClearVulnerabilityTicket(vuln.vuln_id);
+  const [system, setSystem] = useState<TicketSystem>((vuln.ticket_system as TicketSystem) || "jira");
+  const [key, setKey] = useState(vuln.ticket_key ?? "");
+  const [url, setUrl] = useState(vuln.ticket_url ?? "");
+  function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    setMutation.mutate({ system, key: key.trim() || null, url: url.trim() || null });
+  }
+  return (
+    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
+      <h2 className="text-sm font-semibold text-slate-100">Ticket link</h2>
+      <p className="mt-1 text-[11px] text-slate-500">
+        Records where the work lives. Creating the ticket in Jira/ServiceNow/SMAX is the 10.3
+        delivery queue, not this form.
+      </p>
+      <form onSubmit={onSubmit} className="mt-3 space-y-3">
+        <Select value={system} onValueChange={(value) => setSystem(value as TicketSystem)}>
+          <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+            {TICKET_SYSTEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
+          value={key}
+          onChange={(event) => setKey(event.target.value)}
+          placeholder="SEC-123"
+          className="bg-slate-950 border-slate-800 text-slate-200"
+        />
+        <Input
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          placeholder="https://…"
+          className="bg-slate-950 border-slate-800 text-slate-200"
+        />
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" size="sm" disabled={setMutation.isPending} className="bg-sky-600 hover:bg-sky-500">
+            {setMutation.isPending ? "Saving…" : "Link ticket"}
+          </Button>
+          {vuln.ticket_key || vuln.ticket_url ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={clearMutation.isPending}
+              onClick={() => clearMutation.mutate()}
+              className="border-slate-700 bg-slate-950 text-slate-200"
+            >
+              Unlink
+            </Button>
+          ) : null}
+        </div>
       </form>
     </section>
   );

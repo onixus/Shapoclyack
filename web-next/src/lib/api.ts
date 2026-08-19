@@ -968,6 +968,18 @@ export type TrackedVulnerability = {
   observation_count: number;
   reopen_count: number;
   closed_at: string | null;
+  ticket_system: string | null;
+  ticket_key: string | null;
+  ticket_url: string | null;
+};
+
+export type TicketSystem = "jira" | "servicenow" | "smax" | "defectdojo" | "other";
+
+export type VulnerabilityTicketBody = {
+  system: TicketSystem;
+  key?: string | null;
+  url?: string | null;
+  note?: string | null;
 };
 
 export type VulnerabilityEventInfo = {
@@ -1138,6 +1150,41 @@ export async function clearVulnerabilityException(vulnId: string) {
   try {
     const { data } = await api.delete<TrackedVulnerability>(
       `/vulnerabilities/${encodeURIComponent(vulnId)}/exception`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function commentOnVulnerability(vulnId: string, note: string) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/comment`,
+      { note },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function setVulnerabilityTicket(vulnId: string, body: VulnerabilityTicketBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function clearVulnerabilityTicket(vulnId: string) {
+  try {
+    const { data } = await api.delete<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket`,
     );
     return data;
   } catch (error) {

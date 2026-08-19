@@ -6,6 +6,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Remediation Board** ([#138](https://github.com/onixus/Shapoclyack/issues/138)) —
+  `/remediation` is the Kanban over the #145 lifecycle: drag (or move) a
+  finding from `OPEN` to verified `CLOSED`, assign, comment, and link an
+  external ticket. Comments are `vulnerability_events` (`kind=comment`).
+  Ticket links (`ticket_system` / `ticket_key` / `ticket_url`, migration
+  `0016_vuln_ticket_link`) record Jira/ServiceNow/SMAX/DefectDojo work items;
+  the platform does not create them — that is the 10.3/P2 delivery queue,
+  built once. Accepted risk stays a badge, not a seventh column.
+
 - **Risk Overview dashboard** ([#135](https://github.com/onixus/Shapoclyack/issues/135)) —
   `/` now answers "what is our risk, who owns it, what breaches SLA" from
   tracked findings, not the last scan. Estate risk is the worst open NIST

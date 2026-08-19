@@ -40,6 +40,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import func, or_, select
 
@@ -82,7 +83,12 @@ VULN_EVENT_KINDS = (
     "assigned",
     "exception_set",
     "exception_cleared",
+    "comment",
+    "ticket_set",
+    "ticket_cleared",
 )
+
+TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
 
 #: Derived SLA readings. ``none`` is a finding with no deadline at all, which
 #: happens only for a CLOSED row.
@@ -638,6 +644,9 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "observation_count": row.observation_count,
         "reopen_count": row.reopen_count,
         "closed_at": _iso(row.closed_at),
+        "ticket_system": row.ticket_system,
+        "ticket_key": row.ticket_key,
+        "ticket_url": row.ticket_url,
     }
 
 
@@ -884,6 +893,131 @@ def clear_exception(
         return _to_dict(row, now=now)
 
 
+def add_comment(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    note: str,
+    actor: str | None = None,
+) -> dict[str, Any] | None:
+    """Write a comment on the trail. The finding itself does not change."""
+    text = (note or "").strip()
+    if not text:
+        raise ValueError("comment cannot be empty")
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="comment",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            note=text,
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
+def _validate_ticket_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("ticket_url must be an http(s) URL")
+    return url
+
+
+def set_ticket(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    system: str,
+    key: str | None,
+    url: str | None,
+    actor: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    """Attach an external ticket. The platform does not create the ticket."""
+    system = (system or "").strip().lower()
+    if system not in TICKET_SYSTEMS:
+        raise ValueError(f"unknown ticket system {system!r}; expected one of {', '.join(TICKET_SYSTEMS)}")
+    key = (key or "").strip() or None
+    url = (url or "").strip() or None
+    if url:
+        url = _validate_ticket_url(url)
+    if not key and not url:
+        raise ValueError("ticket_key or ticket_url is required")
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        previous = {
+            "system": row.ticket_system,
+            "key": row.ticket_key,
+            "url": row.ticket_url,
+        }
+        row.ticket_system = system
+        row.ticket_key = key
+        row.ticket_url = url
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="ticket_set",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            note=note,
+            detail={"from": previous, "to": {"system": system, "key": key, "url": url}},
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
+def clear_ticket(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str | None = None,
+) -> dict[str, Any] | None:
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        if row.ticket_system is None and row.ticket_key is None and row.ticket_url is None:
+            return _to_dict(row, now=now)
+        previous = {
+            "system": row.ticket_system,
+            "key": row.ticket_key,
+            "url": row.ticket_url,
+        }
+        row.ticket_system = None
+        row.ticket_key = None
+        row.ticket_url = None
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="ticket_cleared",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            detail=previous,
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
 # --------------------------------------------------------------------------
 # Queries
 # --------------------------------------------------------------------------
@@ -894,6 +1028,7 @@ SORT_COLUMNS = {
     "due_at": models.Vulnerability.due_at,
     "first_seen_at": models.Vulnerability.first_seen_at,
     "last_seen_at": models.Vulnerability.last_seen_at,
+    "closed_at": models.Vulnerability.closed_at,
     "severity": models.Vulnerability.severity,
     "state": models.Vulnerability.state,
     "cve": models.Vulnerability.cve,

@@ -5,17 +5,22 @@ import { toast } from "sonner";
 import {
   assignVulnerability,
   clearVulnerabilityException,
+  clearVulnerabilityTicket,
+  commentOnVulnerability,
   fetchTrackedVulnerability,
   fetchTrackedVulnerabilities,
+  fetchVulnerabilityActivity,
   fetchVulnerabilityEvents,
   fetchVulnerabilitySummary,
   setVulnerabilityException,
+  setVulnerabilityTicket,
   transitionVulnerability,
   type PageParams,
   type TrackedVulnerability,
   type VulnerabilityAssignBody,
   type VulnerabilityExceptionBody,
   type VulnerabilityListFilters,
+  type VulnerabilityTicketBody,
   type VulnerabilityTransitionBody,
 } from "@/lib/api";
 import { POLL_INTERVALS } from "@/lib/config/constants";
@@ -68,6 +73,14 @@ export function useVulnerabilityEvents(vulnId: string | null, page?: PageParams)
     queryKey: queryKeys.vulnerabilityEvents(vulnId ?? "", page),
     queryFn: () => fetchVulnerabilityEvents(vulnId!, page),
     enabled: Boolean(vulnId),
+  });
+}
+
+export function useVulnerabilityActivity(page?: PageParams) {
+  return useQuery({
+    queryKey: queryKeys.vulnerabilityActivity(page),
+    queryFn: () => fetchVulnerabilityActivity(page),
+    refetchInterval: POLL_INTERVALS.vulnerabilities,
   });
 }
 
@@ -127,6 +140,48 @@ export function useSetVulnerabilityException(vulnId: string) {
     onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Risk accepted"),
     onError: (err) => {
       toast.error("Could not accept risk", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useCommentOnVulnerability(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (note: string) => commentOnVulnerability(vulnId, note),
+    onSuccess: (updated) => {
+      onVulnWriteSuccess(queryClient, updated, "Comment added");
+      void queryClient.invalidateQueries({ queryKey: ["vulnerabilities", "events"] });
+    },
+    onError: (err) => {
+      toast.error("Could not add comment", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useSetVulnerabilityTicket(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: VulnerabilityTicketBody) => setVulnerabilityTicket(vulnId, body),
+    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Ticket linked"),
+    onError: (err) => {
+      toast.error("Could not link ticket", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useClearVulnerabilityTicket(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => clearVulnerabilityTicket(vulnId),
+    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Ticket unlinked"),
+    onError: (err) => {
+      toast.error("Could not unlink ticket", {
         description: err instanceof Error ? err.message : undefined,
       });
     },
