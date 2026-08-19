@@ -227,6 +227,35 @@ class AssetIdentifier(Base):
     )
 
 
+class AssetIdentityLink(Base):
+    """IP↔FQDN correlation evidence (P4.2).
+
+    Written every run that can see the pair. ``merged`` is true only when
+    both ``forward-dns`` and ``certificate`` agreed and the IP was not
+    shared. A wrong merge is worse than two assets, so shared hosting
+    stays two rows and this trail says why.
+    """
+
+    __tablename__ = "asset_identity_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    ip: Mapped[str]
+    fqdn: Mapped[str]
+    sources: Mapped[str]
+    confidence: Mapped[str]
+    shared: Mapped[bool] = mapped_column(default=False)
+    merged: Mapped[bool] = mapped_column(default=False)
+    survivor_id: Mapped[str | None] = mapped_column(default=None)
+    run_id: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "ip", "fqdn", name="uq_asset_identity_link"),
+        Index("ix_asset_identity_links_survivor", "survivor_id"),
+    )
+
+
 class ScanSchedule(Base):
     """Per-tenant recurring scan schedule (Phase 8.5).
 

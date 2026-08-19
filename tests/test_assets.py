@@ -7,6 +7,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scanner.pipeline.asset_identity import (
+    CERTIFICATE,
+    FORWARD_DNS,
+    correlate_identities,
     fqdn_identity_key,
     identity_candidates_for_host,
     ip_identity_key,
@@ -38,6 +41,65 @@ def test_identity_candidates_for_host_ip_and_fqdn():
 
 def test_identity_candidates_for_host_empty():
     assert identity_candidates_for_host("ten_a", host_ip=None, hostnames=[]) == []
+
+
+def test_bare_fqdn_host_is_not_stored_as_an_ip():
+    candidates = identity_candidates_for_host("ten_a", host_ip="app.example.com")
+    assert [(c.identifier_type, c.identifier_value) for c in candidates] == [
+        ("fqdn", "app.example.com")
+    ]
+
+
+def test_correlate_requires_forward_dns_and_certificate():
+    cert = {"dns": ["app.example.com"], "ip": [], "common_name": ["app.example.com"]}
+    both = correlate_identities(
+        forward={"1.2.3.4": {"app.example.com"}},
+        certs_by_ip={"1.2.3.4": [cert]},
+    )
+    assert len(both) == 1
+    assert both[0].mergeable
+    assert both[0].sources == (CERTIFICATE, FORWARD_DNS)
+
+    dns_only = correlate_identities(forward={"1.2.3.4": {"app.example.com"}}, certs_by_ip={})
+    assert dns_only[0].confidence == "low"
+    assert not dns_only[0].mergeable
+
+    cert_only = correlate_identities(forward={}, certs_by_ip={"1.2.3.4": [cert]})
+    assert cert_only == []
+
+
+def test_wildcard_cert_confirms_a_forward_name():
+    cert = {"dns": ["*.example.com"], "ip": [], "common_name": []}
+    links = correlate_identities(
+        forward={"1.2.3.4": {"app.example.com"}},
+        certs_by_ip={"1.2.3.4": [cert]},
+    )
+    assert links[0].mergeable
+
+
+def test_shared_hosting_is_not_mergeable():
+    cert = {
+        "dns": ["a.example.com", "b.example.com"],
+        "ip": [],
+        "common_name": [],
+    }
+    links = correlate_identities(
+        forward={"1.2.3.4": {"a.example.com", "b.example.com"}},
+        certs_by_ip={"1.2.3.4": [cert]},
+    )
+    assert {link.fqdn for link in links} == {"a.example.com", "b.example.com"}
+    assert all(link.shared and not link.mergeable for link in links)
+
+
+def test_cdn_san_does_not_invent_an_unresolved_name():
+    cert = {"dns": ["unrelated.cdn.example"], "ip": [], "common_name": []}
+    links = correlate_identities(
+        forward={"1.2.3.4": {"app.example.com"}},
+        certs_by_ip={"1.2.3.4": [cert]},
+    )
+    assert [link.fqdn for link in links] == ["app.example.com"]
+    assert not links[0].mergeable
+    assert CERTIFICATE not in links[0].sources
 
 
 def _write_run(output_dir: Path, run_id: str, hosts: list[dict]) -> None:
@@ -309,3 +371,97 @@ def test_list_assets_empty_page_skips_the_identifier_query(tmp_path):
     assert not [
         s for s in statements if "vulnerabilities" in s and s.strip().upper().startswith("SELECT")
     ]
+
+
+def _write_identity_run(
+    output_dir: Path,
+    run_id: str,
+    hosts: list[dict],
+    *,
+    hostnames: dict | None = None,
+    tls: dict | None = None,
+) -> None:
+    _write_run(output_dir, run_id, hosts)
+    run_dir = output_dir / "runs" / run_id
+    if hostnames is not None:
+        (run_dir / "hostnames.json").write_text(json.dumps(hostnames), encoding="utf-8")
+    if tls is not None:
+        (run_dir / "tls_posture.json").write_text(json.dumps(tls), encoding="utf-8")
+
+
+@requires_postgres
+def test_p42_merges_ip_and_fqdn_when_cert_and_forward_agree(tmp_path):
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_identity_run(settings.output_dir, "run-ip", [{"host": "8.8.8.8"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-ip")
+    ip_id = ip_identity_key(tenant_id, "8.8.8.8")
+    assets_service.update_asset(settings, tenant_id, ip_id, {"asset_criticality": 4})
+
+    _write_identity_run(settings.output_dir, "run-fqdn", [{"host": "app.example.com"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-fqdn")
+    _, total = assets_service.list_assets(settings, tenant_id)
+    assert total == 2
+
+    _write_identity_run(
+        settings.output_dir,
+        "run-join",
+        [{"host": "8.8.8.8"}, {"host": "app.example.com"}],
+        hostnames={"8.8.8.8": {"forward": ["app.example.com"], "reverse": ["ptr.example.net"]}},
+        tls={
+            "findings": [
+                {
+                    "host": "8.8.8.8",
+                    "port": "443",
+                    "cert": {"subject": "CN=app.example.com", "san": "DNS:app.example.com"},
+                }
+            ]
+        },
+    )
+    stats = assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-join")
+    assert stats.identities_merged >= 1
+    listed, total = assets_service.list_assets(settings, tenant_id)
+    assert total == 1
+    detail = assets_service.get_asset(settings, tenant_id, listed[0]["asset_id"])
+    kinds = {row["identifier_type"]: row["identifier_value"] for row in detail["identifiers"]}
+    assert kinds["ip"] == "8.8.8.8"
+    assert kinds["fqdn"] == "app.example.com"
+    assert detail["asset_criticality"] == 4
+    assert any(link["merged"] and "certificate" in link["sources"] for link in detail["identity_links"])
+    assert all(link["fqdn"] != "ptr.example.net" for link in detail["identity_links"])
+    assert assets_service.get_asset_criticality_by_ip(settings, tenant_id, "8.8.8.8") == 4
+
+
+@requires_postgres
+def test_p42_shared_hosting_does_not_merge(tmp_path):
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_identity_run(settings.output_dir, "run-a", [{"host": "a.example.com"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-a")
+    _write_identity_run(settings.output_dir, "run-b", [{"host": "b.example.com"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-b")
+    _write_identity_run(settings.output_dir, "run-ip", [{"host": "9.9.9.9"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-ip")
+
+    _write_identity_run(
+        settings.output_dir,
+        "run-share",
+        [{"host": "9.9.9.9"}, {"host": "a.example.com"}, {"host": "b.example.com"}],
+        hostnames={"9.9.9.9": {"forward": ["a.example.com", "b.example.com"]}},
+        tls={
+            "findings": [
+                {
+                    "host": "9.9.9.9",
+                    "port": "443",
+                    "cert": {"san": "DNS:a.example.com, DNS:b.example.com"},
+                }
+            ]
+        },
+    )
+    stats = assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-share")
+    assert stats.identities_merged == 0
+    _, total = assets_service.list_assets(settings, tenant_id)
+    assert total == 3
+

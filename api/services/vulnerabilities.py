@@ -50,7 +50,7 @@ from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
 from api.services import vuln_states
-from api.services.risk_scoring import get_scorer, index_cdn_waf
+from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
 from api.settings import Settings
 from scanner.pipeline.asset_identity import identity_candidates_for_host
 from scanner.pipeline.report import SEVERITY_ORDER
@@ -444,24 +444,35 @@ def register_findings_from_run(
     created = reobserved = reopened = skipped = 0
 
     with get_session(settings.postgres_url) as session:
+        resolved: list[tuple[dict[str, Any], Any]] = []
         for entry in entries:
             host = str(entry.get("host") or "")
             asset = _asset_for_finding(session, tenant_id=tenant_id, host=host)
             if asset is None:
                 skipped += 1
                 continue
-
             cve = str(entry.get("cve") or "").strip() or None
             script_id = str(entry.get("script_id") or "").strip() or None
             if not cve and not script_id:
-                # Nothing to identify it by across runs; the report would not
-                # have de-duplicated it either.
                 skipped += 1
                 continue
-            port = str(entry.get("port")) if entry.get("port") is not None else None
+            resolved.append((entry, asset))
 
+        footholds = {
+            asset.asset_id for entry, asset in resolved if path_role(entry) == FOOTHOLD
+        }
+
+        for entry, asset in resolved:
+            port = str(entry.get("port")) if entry.get("port") is not None else None
+            cve = str(entry.get("cve") or "").strip() or None
+            script_id = str(entry.get("script_id") or "").strip() or None
             scored = scorer.score_vulnerability(
-                entry, operator_exposure=asset.exposure_level, cdn_waf_index=cdn_waf
+                entry,
+                operator_exposure=asset.exposure_level,
+                cdn_waf_index=cdn_waf,
+                same_asset_foothold=(
+                    path_role(entry) == LOCAL and asset.asset_id in footholds
+                ),
             )
             severity = _severity_of(entry)
             key = finding_key(asset_id=asset.asset_id, cve=cve, script_id=script_id, port=port)

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from api.services import assets as assets_service
-from api.services.risk_scoring import get_scorer, index_cdn_waf
+from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.ch-transform")
@@ -120,6 +120,11 @@ def vulnerabilities_to_rows(
             )
         return exposure_cache[host_ip]
 
+    foothold_hosts = {
+        str(item.get("host") or "").strip()
+        for item in vulns
+        if isinstance(item, dict) and path_role(item) == FOOTHOLD
+    }
     rows: list[list[Any]] = []
     for item in vulns:
         if not isinstance(item, dict):
@@ -134,6 +139,7 @@ def vulnerabilities_to_rows(
             asset_criticality_override=override,
             operator_exposure=_operator_exposure(host) if db_enabled else None,
             cdn_waf_index=cdn_waf,
+            same_asset_foothold=path_role(item) == LOCAL and host in foothold_hosts,
         )
         rows.append(
             [

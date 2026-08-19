@@ -21,6 +21,10 @@ from api.services import runs as runs_service
 from api.settings import Settings
 from scanner.pipeline.asset_identity import (
     IdentityCandidate,
+    IdentityCorrelation,
+    cert_dns_by_ip,
+    correlate_identities,
+    forward_names_by_ip,
     identity_candidates_for_host,
     ip_identity_key,
 )
@@ -50,10 +54,21 @@ class AssetUpsertStats:
     assets_created: int
     assets_updated: int
     marked_stale: int
+    identities_linked: int = 0
+    identities_merged: int = 0
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    """Postgres DateTime columns come back naive; in-session writes are UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _host_records(run_dir: Path) -> list[dict]:
@@ -80,14 +95,243 @@ def _find_existing_asset_id(
     return None
 
 
+def _identifier_asset_id(session, tenant_id: str, kind: str, value: str) -> str | None:
+    return session.execute(
+        select(models.AssetIdentifier.asset_id).where(
+            models.AssetIdentifier.tenant_id == tenant_id,
+            models.AssetIdentifier.identifier_type == kind,
+            models.AssetIdentifier.identifier_value == value,
+        )
+    ).scalar_one_or_none()
+
+
+def _ensure_identifier(session, *, asset_id: str, tenant_id: str, kind: str, value: str) -> None:
+    exists = session.execute(
+        select(models.AssetIdentifier.id).where(
+            models.AssetIdentifier.tenant_id == tenant_id,
+            models.AssetIdentifier.identifier_type == kind,
+            models.AssetIdentifier.identifier_value == value,
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        session.add(
+            models.AssetIdentifier(
+                asset_id=asset_id,
+                tenant_id=tenant_id,
+                identifier_type=kind,
+                identifier_value=value,
+            )
+        )
+
+
+def _pick_survivor(session, left_id: str, right_id: str) -> tuple[models.Asset, models.Asset]:
+    """Prefer context, then age, then the left (IP) side."""
+    left = session.get(models.Asset, left_id)
+    right = session.get(models.Asset, right_id)
+    if left is None:
+        return right, right
+    if right is None:
+        return left, left
+    def score(asset: models.Asset) -> tuple:
+        context = sum(
+            1
+            for field in CONTEXT_FIELDS
+            if getattr(asset, field, None) not in (None, "")
+        )
+        first = _aware(asset.first_seen) or datetime.max.replace(tzinfo=UTC)
+        return (context, 0 if asset.status == "active" else -1, -first.timestamp())
+    if score(right) > score(left):
+        return right, left
+    return left, right
+
+
+def _repoint_findings(session, *, tenant_id: str, absorbed_id: str, survivor_id: str) -> None:
+    from api.services.vulnerabilities import finding_key
+
+    rows = session.execute(
+        select(models.Vulnerability).where(
+            models.Vulnerability.tenant_id == tenant_id,
+            models.Vulnerability.asset_id == absorbed_id,
+        )
+    ).scalars().all()
+    for row in rows:
+        new_key = finding_key(
+            asset_id=survivor_id, cve=row.cve, script_id=row.script_id, port=row.port
+        )
+        clash = session.execute(
+            select(models.Vulnerability).where(
+                models.Vulnerability.tenant_id == tenant_id,
+                models.Vulnerability.finding_key == new_key,
+            )
+        ).scalar_one_or_none()
+        if clash is None:
+            row.asset_id = survivor_id
+            row.finding_key = new_key
+            continue
+        clash.observation_count = (clash.observation_count or 1) + (row.observation_count or 1)
+        row_seen = _aware(row.last_seen_at)
+        clash_seen = _aware(clash.last_seen_at)
+        if row_seen and (clash_seen is None or row_seen > clash_seen):
+            clash.last_seen_at = row.last_seen_at
+            clash.last_seen_run_id = row.last_seen_run_id
+        session.delete(row)
+
+
+def _merge_assets(
+    session,
+    *,
+    tenant_id: str,
+    survivor: models.Asset,
+    absorbed: models.Asset,
+    now: datetime,
+) -> None:
+    if survivor.asset_id == absorbed.asset_id:
+        return
+    for field in CONTEXT_FIELDS:
+        if getattr(survivor, field, None) in (None, "") and getattr(absorbed, field, None) not in (None, ""):
+            setattr(survivor, field, getattr(absorbed, field))
+    absorbed_first, survivor_first = _aware(absorbed.first_seen), _aware(survivor.first_seen)
+    if absorbed_first and (survivor_first is None or absorbed_first < survivor_first):
+        survivor.first_seen = absorbed.first_seen
+    absorbed_last, survivor_last = _aware(absorbed.last_seen), _aware(survivor.last_seen)
+    if absorbed_last and (survivor_last is None or absorbed_last > survivor_last):
+        survivor.last_seen = absorbed.last_seen
+    if survivor.status == "stale" and absorbed.status == "active":
+        survivor.status = "active"
+
+    identifiers = session.execute(
+        select(models.AssetIdentifier).where(models.AssetIdentifier.asset_id == absorbed.asset_id)
+    ).scalars().all()
+    for ident in identifiers:
+        taken = session.execute(
+            select(models.AssetIdentifier).where(
+                models.AssetIdentifier.tenant_id == tenant_id,
+                models.AssetIdentifier.identifier_type == ident.identifier_type,
+                models.AssetIdentifier.identifier_value == ident.identifier_value,
+            )
+        ).scalar_one_or_none()
+        if taken is None:
+            ident.asset_id = survivor.asset_id
+        elif taken.asset_id != survivor.asset_id:
+            ident.asset_id = survivor.asset_id
+        else:
+            session.delete(ident)
+
+    _repoint_findings(session, tenant_id=tenant_id, absorbed_id=absorbed.asset_id, survivor_id=survivor.asset_id)
+    for event in session.execute(
+        select(models.AssetContextEvent).where(models.AssetContextEvent.asset_id == absorbed.asset_id)
+    ).scalars():
+        event.asset_id = survivor.asset_id
+    for tag in session.execute(
+        select(models.AssetTag).where(models.AssetTag.asset_id == absorbed.asset_id)
+    ).scalars():
+        clash = session.execute(
+            select(models.AssetTag.id).where(
+                models.AssetTag.asset_id == survivor.asset_id,
+                models.AssetTag.key == tag.key,
+            )
+        ).scalar_one_or_none()
+        if clash is None:
+            tag.asset_id = survivor.asset_id
+        else:
+            session.delete(tag)
+    session.flush()
+    session.delete(absorbed)
+    survivor.last_seen = now
+
+
+def _apply_identity_correlations(
+    session,
+    *,
+    tenant_id: str,
+    run_id: str,
+    run_dir: Path,
+    now: datetime,
+) -> tuple[int, int]:
+    forward = forward_names_by_ip(
+        runs_service._load_json(run_dir / "hostnames.json"),  # noqa: SLF001
+        runs_service._load_json(run_dir / "dns_resolution.json"),  # noqa: SLF001
+    )
+    certs = cert_dns_by_ip(runs_service._load_json(run_dir / "tls_posture.json"))  # noqa: SLF001
+    correlations = correlate_identities(forward=forward, certs_by_ip=certs)
+    linked = 0
+    merged = 0
+    for link in correlations:
+        survivor_id = _apply_one_correlation(session, tenant_id=tenant_id, link=link, now=now)
+        if survivor_id and link.mergeable:
+            merged += 1
+        existing = session.execute(
+            select(models.AssetIdentityLink).where(
+                models.AssetIdentityLink.tenant_id == tenant_id,
+                models.AssetIdentityLink.ip == link.ip,
+                models.AssetIdentityLink.fqdn == link.fqdn,
+            )
+        ).scalar_one_or_none()
+        sources = ",".join(link.sources)
+        if existing is None:
+            session.add(
+                models.AssetIdentityLink(
+                    tenant_id=tenant_id,
+                    ip=link.ip,
+                    fqdn=link.fqdn,
+                    sources=sources,
+                    confidence=link.confidence,
+                    shared=link.shared,
+                    merged=bool(survivor_id and link.mergeable),
+                    survivor_id=survivor_id,
+                    run_id=run_id,
+                    updated_at=now,
+                )
+            )
+        else:
+            existing.sources = sources
+            existing.confidence = link.confidence
+            existing.shared = link.shared
+            existing.merged = bool(survivor_id and link.mergeable) or existing.merged
+            existing.survivor_id = survivor_id or existing.survivor_id
+            existing.run_id = run_id
+            existing.updated_at = now
+        linked += 1
+    return linked, merged
+
+
+def _apply_one_correlation(
+    session,
+    *,
+    tenant_id: str,
+    link: IdentityCorrelation,
+    now: datetime,
+) -> str | None:
+    if not link.mergeable:
+        return None
+    ip_asset = _identifier_asset_id(session, tenant_id, "ip", link.ip)
+    fqdn_asset = _identifier_asset_id(session, tenant_id, "fqdn", link.fqdn)
+    if ip_asset and fqdn_asset and ip_asset != fqdn_asset:
+        survivor, absorbed = _pick_survivor(session, ip_asset, fqdn_asset)
+        if survivor.status == "decommissioned" or absorbed.status == "decommissioned":
+            return None
+        _merge_assets(session, tenant_id=tenant_id, survivor=survivor, absorbed=absorbed, now=now)
+        return survivor.asset_id
+    target = ip_asset or fqdn_asset
+    if target is None:
+        return None
+    asset = session.get(models.Asset, target)
+    if asset is None or asset.status == "decommissioned":
+        return None
+    _ensure_identifier(session, asset_id=target, tenant_id=tenant_id, kind="ip", value=link.ip)
+    _ensure_identifier(session, asset_id=target, tenant_id=tenant_id, kind="fqdn", value=link.fqdn)
+    return target
+
+
 def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -> AssetUpsertStats:
     """Upsert one asset per host observed in ``run_id`` into the registry.
 
     One asset per *host record* in the run (not per identifier): when a host
     has both an IP and hostname(s), all of them attach to the same asset.
-    Phase 7 does not correlate assets *across* separate host records (e.g. a
-    bare-FQDN-only discovery later resolving to an IP seen elsewhere) — that
-    is deferred (see scanner/pipeline/asset_identity.py).
+    After that, P4.2 may attach or merge an IP-only asset with a
+    bare-FQDN asset when forward DNS *and* a certificate on that IP agree,
+    and the IP is not shared. The evidence is written to
+    ``asset_identity_links``; a wrong merge is worse than two rows.
     """
     run_dir = runs_service.get_run_dir(settings, run_id)
     if run_dir is None:
@@ -150,9 +394,19 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
                         )
                     )
 
+        session.flush()
+        linked, merged = _apply_identity_correlations(
+            session, tenant_id=tenant_id, run_id=run_id, run_dir=run_dir, now=now
+        )
+
     marked_stale = mark_stale_assets(settings, tenant_id=tenant_id)
     return AssetUpsertStats(
-        hosts_seen=len(hosts), assets_created=created, assets_updated=updated, marked_stale=marked_stale
+        hosts_seen=len(hosts),
+        assets_created=created,
+        assets_updated=updated,
+        marked_stale=marked_stale,
+        identities_linked=linked,
+        identities_merged=merged,
     )
 
 
@@ -408,8 +662,38 @@ def get_asset(settings: Settings, tenant_id: str, asset_id: str) -> dict | None:
                 for i in identifiers
             ],
             "tags": {t.key: t.value for t in tags},
+            "identity_links": _identity_links_for(session, tenant_id, identifiers),
         }
     return _with_risk(settings, tenant_id, asset_id, detail)
+
+
+def _identity_links_for(session, tenant_id: str, identifiers) -> list[dict]:
+    ips = [i.identifier_value for i in identifiers if i.identifier_type == "ip"]
+    fqdns = [i.identifier_value for i in identifiers if i.identifier_type == "fqdn"]
+    if not ips and not fqdns:
+        return []
+    clauses = []
+    if ips:
+        clauses.append(models.AssetIdentityLink.ip.in_(ips))
+    if fqdns:
+        clauses.append(models.AssetIdentityLink.fqdn.in_(fqdns))
+    rows = session.execute(
+        select(models.AssetIdentityLink).where(
+            models.AssetIdentityLink.tenant_id == tenant_id,
+            or_(*clauses),
+        )
+    ).scalars().all()
+    return [
+        {
+            "ip": row.ip,
+            "fqdn": row.fqdn,
+            "sources": [s for s in row.sources.split(",") if s],
+            "confidence": row.confidence,
+            "shared": row.shared,
+            "merged": row.merged,
+        }
+        for row in rows
+    ]
 
 
 def _with_risk(settings: Settings, tenant_id: str, asset_id: str, detail: dict) -> dict:
@@ -419,17 +703,30 @@ def _with_risk(settings: Settings, tenant_id: str, asset_id: str, detail: dict) 
     return detail
 
 
+def _asset_for_ip(session, tenant_id: str, host_ip: str) -> models.Asset | None:
+    """Resolve by identifier, not by assuming ``asset_id == ip_identity_key``.
+
+    After P4.2 a merged survivor may keep the FQDN-side id.
+    """
+    asset_id = _identifier_asset_id(session, tenant_id, "ip", host_ip)
+    if asset_id is None:
+        asset_id = ip_identity_key(tenant_id, host_ip)
+    asset = session.get(models.Asset, asset_id)
+    if asset is None or asset.tenant_id != tenant_id:
+        return None
+    return asset
+
+
 def get_asset_criticality_by_ip(settings: Settings, tenant_id: str, host_ip: str) -> int | None:
-    """Single PK read: tenant+IP -> operator-set ``asset_criticality``, or
-    ``None`` if unset/missing. Never raises — callers (risk scoring) treat
-    any failure the same as "no override, fall back to the heuristic"."""
-    asset_id = ip_identity_key(tenant_id, host_ip)
+    """tenant+IP -> operator-set ``asset_criticality``, or ``None``.
+
+    Never raises — callers (risk scoring) treat any failure the same as
+    "no override, fall back to the heuristic".
+    """
     try:
         with get_session(settings.postgres_url) as session:
-            asset = session.get(models.Asset, asset_id)
-            if asset is None or asset.tenant_id != tenant_id:
-                return None
-            return asset.asset_criticality
+            asset = _asset_for_ip(session, tenant_id, host_ip)
+            return None if asset is None else asset.asset_criticality
     except Exception:  # noqa: BLE001
         LOG.warning("asset_criticality lookup failed tenant=%s host=%s", tenant_id, host_ip)
         return None
@@ -437,13 +734,10 @@ def get_asset_criticality_by_ip(settings: Settings, tenant_id: str, host_ip: str
 
 def get_asset_exposure_by_ip(settings: Settings, tenant_id: str, host_ip: str) -> str | None:
     """Operator-set ``exposure_level``, or None. Never inferred from the IP."""
-    asset_id = ip_identity_key(tenant_id, host_ip)
     try:
         with get_session(settings.postgres_url) as session:
-            asset = session.get(models.Asset, asset_id)
-            if asset is None or asset.tenant_id != tenant_id:
-                return None
-            return asset.exposure_level
+            asset = _asset_for_ip(session, tenant_id, host_ip)
+            return None if asset is None else asset.exposure_level
     except Exception:  # noqa: BLE001
         LOG.warning("exposure_level lookup failed tenant=%s host=%s", tenant_id, host_ip)
         return None

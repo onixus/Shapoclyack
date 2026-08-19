@@ -56,6 +56,7 @@ claim.
 | **Network exposure** | this host: RFC1918 / operator-set / explicit | ±20 on likelihood after bounds. `unknown` is a no-op |
 | **CVE age** | NVD `published`, else CVE-ID year | Raise-only, weak. Never a decay |
 | **Compensating control** | fingerprint `cdn_waf` on the same host:port | −6, named. Not proof the vuln is blocked |
+| **Same-asset path** | local finding + network foothold on one P4.2 asset | +8, named. Not a modelled exploit chain |
 
 Reachability and EPSS are blended 65/35 — reachability describes *this* finding,
 while EPSS is a statistic about the CVE that knows nothing about whether the
@@ -129,9 +130,12 @@ vendors on one endpoint still count once. A missing `fingerprint.json`, a
 disabled fingerprint stage, or a hit on a different port is `none` — no
 shift. This is not a qualitative "minus a level" rule.
 
-Attack chaining is still not modelled. Two Moderates that combine into a
-domain takeover stay two Moderates until identity merge ([P4.2](../ROADMAP.md#p4-breakdown--differentiating-features))
-gives the 11.2 graph a reliable host.
+A **same-asset path** is the other half of #173, and only after
+[P4.2](asset-identity.md). A local finding (`AV:L`/`AV:P`) on the same
+asset as a network foothold (`AV:N` or `exposure`) gets +8, named in the
+explanation. Two Moderates that would combine into a domain takeover are
+still two Moderates — there is no step-model of privilege escalation or
+lateral movement.
 
 ## Impact — how bad if it is?
 
@@ -228,12 +232,15 @@ Each of these is a real gap with its own issue, not a silent approximation.
   ([#172](https://github.com/onixus/Shapoclyack/issues/172)): never negative.
   Stale EPSS/KEV/exploit overlays are named in the explanation and on
   `/api/system`; they do not silently age the score down.
-- **No exploit-chaining.**
+- **No modelled exploit chain.**
   [#173](https://github.com/onixus/Shapoclyack/issues/173) still does not
-  compose findings: two Moderates that combine into a domain takeover are
-  still two Moderates. Compensating controls are the other half of that
-  issue and are now a small named discount when fingerprint saw a CDN/WAF
-  on the same host:port — never "WAF = safe".
+  turn two Moderates into a domain takeover. After
+  [P4.2](asset-identity.md), a **local** finding (`AV:L`/`AV:P`) on the
+  same asset as a network foothold (`AV:N` or an `exposure`) gets a named
+  +8 likelihood raise — "same-asset path", not a step-model of privilege
+  escalation or lateral movement. Compensating controls remain the other
+  half of #173: a small named discount when fingerprint saw a CDN/WAF on
+  the same host:port, never "WAF = safe".
 - **No data-classification input in the score.**
   [#146](https://github.com/onixus/Shapoclyack/issues/146) stores
   `owner` / `business_service` / environment / data class / exposure on the

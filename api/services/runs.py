@@ -7,7 +7,7 @@ from typing import Any
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.services import pagination
 from api.services import tenants as tenants_service
-from api.services.risk_scoring import get_scorer, index_cdn_waf
+from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
 from api.settings import Settings
 
 # Marker file written into a run directory naming the tenant the run belongs to
@@ -307,6 +307,11 @@ def get_vulnerabilities(
     # the two — the explanation says which criticality it used.
     scorer = get_scorer()
     cdn_waf = index_cdn_waf(_load_json(run_dir / "fingerprint.json"))
+    foothold_hosts = {
+        str(entry.get("host") or "")
+        for entry in raw
+        if isinstance(entry, dict) and path_role(entry) == FOOTHOLD
+    }
     items: list[VulnerabilityItem] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -319,7 +324,11 @@ def get_vulnerabilities(
             continue
         host_key = str(entry_host or "")
         geo_hit = geo.get(host_key, {})
-        scored = scorer.score_vulnerability(entry, cdn_waf_index=cdn_waf)
+        scored = scorer.score_vulnerability(
+            entry,
+            cdn_waf_index=cdn_waf,
+            same_asset_foothold=path_role(entry) == LOCAL and host_key in foothold_hosts,
+        )
         confidence = entry.get("confidence")
         items.append(
             VulnerabilityItem(

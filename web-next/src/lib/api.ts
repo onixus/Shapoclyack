@@ -354,7 +354,18 @@ export type AssetDetail = {
   context_source: string | null;
   identifiers: AssetIdentifier[];
   tags: Record<string, string>;
+  /** P4.2: named IP↔FQDN evidence. shared/not merged on purpose. */
+  identity_links?: AssetIdentityLink[];
   risk: AssetRisk | null;
+};
+
+export type AssetIdentityLink = {
+  ip: string;
+  fqdn: string;
+  sources: string[];
+  confidence: string;
+  shared: boolean;
+  merged: boolean;
 };
 
 export type AssetContextEvent = {

@@ -28,11 +28,15 @@ from api.services.exploit_evidence import (
     ExploitEvidence,
 )
 from api.services.risk_scoring import (
+    ATTACK_PATH_RAISE,
     COMPENSATING_CONTROL_DISCOUNT,
     EXTERNAL,
+    FOOTHOLD,
     INTERNAL,
+    LOCAL,
     UNKNOWN_EXPOSURE,
     RiskScoring,
+    apply_attack_path,
     apply_compensating_control,
     apply_criticality,
     apply_network_exposure,
@@ -41,6 +45,7 @@ from api.services.risk_scoring import (
     exploitability_pct,
     impact_pct,
     index_cdn_waf,
+    path_role,
     resolve_compensating_control,
     resolve_cve_age,
     resolve_network_exposure,
@@ -549,3 +554,40 @@ def test_on_path_waf_lowers_likelihood_and_is_named():
     assert "CDN/WAF" not in bare["risk_explanation"]
     # A small named discount, not a qualitative "Cloudflare → minus a level" rule.
     assert shielded["likelihood"] == bare["likelihood"]
+
+
+# ---------------------------------------------------------------------------
+# Same-asset path (#173) — composition after P4.2, not a takeover model
+# ---------------------------------------------------------------------------
+
+
+def test_path_role_from_vector_and_exposure():
+    assert path_role({"finding_class": "exposure"}) == FOOTHOLD
+    assert path_role({"cvss4_vector": V4_WORST}) == FOOTHOLD
+    assert path_role({"cvss4_vector": V4_AWKWARD}) == LOCAL
+    assert path_role({"cvss4": 7.0}) == ""
+
+
+def test_local_finding_is_raised_only_when_the_same_asset_has_a_foothold():
+    scorer = _scorer()
+    local = {
+        "cve": "CVE-1",
+        "cvss4": 7.0,
+        "cvss4_vector": V4_AWKWARD,
+        "network_exposure": UNKNOWN_EXPOSURE,
+    }
+    bare = scorer.score_vulnerability(local)
+    chained = scorer.score_vulnerability(local, same_asset_foothold=True)
+    assert chained["likelihood_score"] == pytest.approx(
+        bare["likelihood_score"] + ATTACK_PATH_RAISE
+    )
+    assert chained["attack_path"] == "same-asset"
+    assert "same-asset path" in chained["risk_explanation"]
+    assert "not a modelled exploit chain" in chained["risk_explanation"]
+    assert apply_attack_path(50.0, role=FOOTHOLD, has_foothold=True) == 50.0
+    foothold = scorer.score_vulnerability(
+        {"cve": "CVE-2", "cvss4": 7.0, "cvss4_vector": V4_WORST, "network_exposure": UNKNOWN_EXPOSURE},
+        same_asset_foothold=True,
+    )
+    assert foothold["attack_path"] is None
+    assert "same-asset path" not in foothold["risk_explanation"]
