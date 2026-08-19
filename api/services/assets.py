@@ -62,6 +62,15 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _aware(value: datetime | None) -> datetime | None:
+    """Postgres DateTime columns come back naive; in-session writes are UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _host_records(run_dir: Path) -> list[dict]:
     alive = runs_service._load_json(run_dir / "alive_hosts.json")  # noqa: SLF001
     if isinstance(alive, list) and alive:
@@ -129,7 +138,7 @@ def _pick_survivor(session, left_id: str, right_id: str) -> tuple[models.Asset, 
             for field in CONTEXT_FIELDS
             if getattr(asset, field, None) not in (None, "")
         )
-        first = asset.first_seen or datetime.max.replace(tzinfo=UTC)
+        first = _aware(asset.first_seen) or datetime.max.replace(tzinfo=UTC)
         return (context, 0 if asset.status == "active" else -1, -first.timestamp())
     if score(right) > score(left):
         return right, left
@@ -160,7 +169,9 @@ def _repoint_findings(session, *, tenant_id: str, absorbed_id: str, survivor_id:
             row.finding_key = new_key
             continue
         clash.observation_count = (clash.observation_count or 1) + (row.observation_count or 1)
-        if row.last_seen_at and (clash.last_seen_at is None or row.last_seen_at > clash.last_seen_at):
+        row_seen = _aware(row.last_seen_at)
+        clash_seen = _aware(clash.last_seen_at)
+        if row_seen and (clash_seen is None or row_seen > clash_seen):
             clash.last_seen_at = row.last_seen_at
             clash.last_seen_run_id = row.last_seen_run_id
         session.delete(row)
@@ -179,9 +190,11 @@ def _merge_assets(
     for field in CONTEXT_FIELDS:
         if getattr(survivor, field, None) in (None, "") and getattr(absorbed, field, None) not in (None, ""):
             setattr(survivor, field, getattr(absorbed, field))
-    if absorbed.first_seen and (survivor.first_seen is None or absorbed.first_seen < survivor.first_seen):
+    absorbed_first, survivor_first = _aware(absorbed.first_seen), _aware(survivor.first_seen)
+    if absorbed_first and (survivor_first is None or absorbed_first < survivor_first):
         survivor.first_seen = absorbed.first_seen
-    if absorbed.last_seen and (survivor.last_seen is None or absorbed.last_seen > survivor.last_seen):
+    absorbed_last, survivor_last = _aware(absorbed.last_seen), _aware(survivor.last_seen)
+    if absorbed_last and (survivor_last is None or absorbed_last > survivor_last):
         survivor.last_seen = absorbed.last_seen
     if survivor.status == "stale" and absorbed.status == "active":
         survivor.status = "active"
