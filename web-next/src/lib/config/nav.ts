@@ -9,6 +9,7 @@ import {
   Play,
   Server,
   Share2,
+  ShieldAlert,
   SlidersHorizontal,
   Timer,
   Users,
@@ -16,6 +17,7 @@ import {
 
 export const NAV = [
   { href: "/", label: "Dashboard", icon: Home },
+  { href: "/vulnerabilities", label: "Vulnerabilities", icon: ShieldAlert },
   { href: "/tenants", label: "Tenants", icon: Users },
   { href: "/agents", label: "Agents", icon: Server },
   { href: "/jobs", label: "Jobs", icon: CalendarDays },

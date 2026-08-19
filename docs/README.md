@@ -34,6 +34,7 @@ The roadmap is **planned product behavior**, not documentation of already-delive
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
+| [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
 

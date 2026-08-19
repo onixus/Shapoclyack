@@ -6,6 +6,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Vulnerability Center** ([#137](https://github.com/onixus/Shapoclyack/issues/137)) —
+  `/vulnerabilities` is the working set of tracked findings (owner, lifecycle
+  state, SLA), not the last scan's raw list. Header counts come from
+  `GET /api/vulnerabilities/summary`; the table is server-filtered (state,
+  severity, SLA, stale days, search) and pages worst-first. The detail card
+  (`/vulnerabilities/view?vulnId=`) walks
+  `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`, assigns an
+  owner, accepts risk (admin; expiry and reason required), and shows the audit
+  trail. EPSS/KEV and the risk explanation are pulled from the last observing
+  run when it is still on disk. An asset's Vulnerabilities tab links here when
+  that asset has open tracked findings.
+
 - **Vulnerability lifecycle, ownership and SLA** ([#145](https://github.com/onixus/Shapoclyack/issues/145),
   Track C) — a finding is an entity now, not a row in whatever the last scan
   wrote. `vulnerabilities`, `vulnerability_events` and `sla_policies` (migration

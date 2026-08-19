@@ -57,6 +57,7 @@ FastAPI routes.
 |---|---|
 | `/login` | JWT login |
 | `/` | Exposure dashboard |
+| `/vulnerabilities` and `/vulnerabilities/view` | Vulnerability Center (lifecycle, owner, SLA) |
 | `/assets` and `/assets/view` | Persistent inventory and asset detail |
 | `/attack-surface` | Hostname/IP/port/service graph |
 | `/jobs` | Scan job creation and status |

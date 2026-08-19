@@ -423,8 +423,9 @@ update is exactly where concurrent initContainer migrations would show up.
 answer "what is our risk, who owns it, what breaches SLA" without starting a scan. The
 platform today has no representation of *ownership of remediation*, *vulnerability
 lifecycle state*, or *SLA* — so the three backend issues are the real scope and the five
-UI issues render what they produce. This is the largest un-started body of work in the
-project, and none of it appears in Track A.
+UI issues render what they produce. The backend half of this track (#144, #145) is merged; the remaining work is
+asset business context (#146) and the UI issues that render what the APIs
+produce. None of it appears in Track A.
 
 | Issue | Layer | Scope |
 |-------|-------|-------|
@@ -433,7 +434,7 @@ project, and none of it appears in Track A.
 | [#146](https://github.com/onixus/Shapoclyack/issues/146) | Backend | Asset business context: owner, business service, environment, data classification, exposure level; CMDB/AD-ready. Extends the operator-set fields from [9.4](#phase-9--exposure-fingerprinting)/[11.1](#phase-11--web-ui-v2-attack-surface-view) and consumes [P4.2](#p4-breakdown--differentiating-features) identity |
 | [#135](https://github.com/onixus/Shapoclyack/issues/135) | UI | Risk dashboard (needs #144) |
 | [#136](https://github.com/onixus/Shapoclyack/issues/136) | UI | Asset-centric security view (needs #146) |
-| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | Vulnerability Center + lifecycle (needs #145) |
+| [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | **In progress** — Vulnerability Center (`/vulnerabilities`, `/vulnerabilities/view`) on top of #145: lifecycle stepper, owner, SLA, risk acceptance, audit trail. CWE is not stored on the tracked finding yet |
 | [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | Remediation workflow + ticket integrations (needs #145; **shares scope with [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2** — Jira/ServiceNow belong to one delivery queue, built once) |
 | [#139](https://github.com/onixus/Shapoclyack/issues/139) | UI | Exposure Management + MSSP views |
 

@@ -912,3 +912,210 @@ export async function createProvisioningKey(tenantId: string, label = "") {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+/** Persistent finding across runs (#145). Distinct from `Vulnerability`, which
+ * is a *run's* observation read off disk. */
+export type VulnLifecycleState =
+  | "OPEN"
+  | "ACKNOWLEDGED"
+  | "PLANNED"
+  | "FIXING"
+  | "VERIFYING"
+  | "CLOSED";
+
+export type SlaState = "on_track" | "due_soon" | "breached" | "accepted" | "none";
+
+export type TrackedVulnerability = {
+  vuln_id: string;
+  tenant_id: string;
+  asset_id: string;
+  finding_key: string;
+  cve: string | null;
+  script_id: string | null;
+  title: string;
+  port: string | null;
+  severity: string;
+  risk_level: string | null;
+  contextual_score: number | null;
+  cvss: number | null;
+  state: VulnLifecycleState;
+  state_changed_at: string | null;
+  state_changed_by: string | null;
+  assignee: string | null;
+  owner_team: string | null;
+  due_at: string | null;
+  sla_days: number | null;
+  sla_source: string | null;
+  sla_state: SlaState;
+  exception_until: string | null;
+  exception_reason: string | null;
+  exception_by: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  sla_started_at: string | null;
+  first_seen_run_id: string | null;
+  last_seen_run_id: string | null;
+  observation_count: number;
+  reopen_count: number;
+  closed_at: string | null;
+};
+
+export type VulnerabilityEventInfo = {
+  id: number;
+  vuln_id: string;
+  tenant_id: string;
+  occurred_at: string | null;
+  kind: string;
+  from_state: string | null;
+  to_state: string | null;
+  actor: string | null;
+  note: string | null;
+  detail: Record<string, unknown>;
+};
+
+export type VulnerabilitySummary = {
+  total: number;
+  open_total: number;
+  untriaged: number;
+  by_state: Record<string, number>;
+  by_severity_open: Record<string, number>;
+  by_sla: Record<string, number>;
+  breached: number;
+  worst_breached_severity: string | null;
+  generated_at: string | null;
+};
+
+export type VulnerabilityListFilters = {
+  state?: VulnLifecycleState | "";
+  open_only?: boolean;
+  severity?: string;
+  asset_id?: string;
+  assignee?: string;
+  sla?: SlaState | "";
+  stale_days?: number;
+};
+
+export type VulnerabilityTransitionBody = {
+  state: VulnLifecycleState;
+  note?: string | null;
+};
+
+export type VulnerabilityAssignBody = {
+  assignee?: string | null;
+  owner_team?: string | null;
+  note?: string | null;
+};
+
+export type VulnerabilityExceptionBody = {
+  until: string;
+  reason: string;
+};
+
+export async function fetchTrackedVulnerabilities(
+  filters?: VulnerabilityListFilters,
+  page?: PageParams,
+) {
+  try {
+    const params = pageSearchParams(page);
+    if (filters?.state) params.set("state", filters.state);
+    if (filters?.open_only) params.set("open_only", "true");
+    if (filters?.severity) params.set("severity", filters.severity);
+    if (filters?.asset_id) params.set("asset_id", filters.asset_id);
+    if (filters?.assignee) params.set("assignee", filters.assignee);
+    if (filters?.sla) params.set("sla", filters.sla);
+    if (filters?.stale_days != null) params.set("stale_days", String(filters.stale_days));
+    const { data } = await api.get<Page<TrackedVulnerability>>(`/vulnerabilities?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchVulnerabilitySummary() {
+  try {
+    const { data } = await api.get<VulnerabilitySummary>("/vulnerabilities/summary");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchTrackedVulnerability(vulnId: string) {
+  try {
+    const { data } = await api.get<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchVulnerabilityEvents(vulnId: string, page?: PageParams) {
+  try {
+    const { data } = await api.get<Page<VulnerabilityEventInfo>>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/events?${pageSearchParams(page)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchVulnerabilityActivity(page?: PageParams) {
+  try {
+    const { data } = await api.get<Page<VulnerabilityEventInfo>>(
+      `/vulnerabilities/events?${pageSearchParams(page)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function transitionVulnerability(vulnId: string, body: VulnerabilityTransitionBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/transition`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function assignVulnerability(vulnId: string, body: VulnerabilityAssignBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/assign`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function setVulnerabilityException(vulnId: string, body: VulnerabilityExceptionBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/exception`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function clearVulnerabilityException(vulnId: string) {
+  try {
+    const { data } = await api.delete<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/exception`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}

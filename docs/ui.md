@@ -16,6 +16,8 @@ Platform administrators can retain fleet-wide views where the API contract permi
 |---|---|---|
 | `/login` | Create a user session | Public |
 | `/` | Exposure KPIs, risk trend, severity, top findings, asset posture | Viewer |
+| `/vulnerabilities` | Vulnerability Center: tracked findings, lifecycle, owner, SLA | Viewer |
+| `/vulnerabilities/view?vulnId=…` | Finding detail, transitions, assignment, risk acceptance, audit trail | Viewer; operator to move/assign; admin to accept risk |
 | `/assets` | Cross-run asset inventory | Viewer |
 | `/assets/view?assetId=…` | Asset metadata, findings, ports, OS/GeoIP, endpoint software | Viewer; operator for permitted edits |
 | `/attack-surface` | Hostname → IP → port → service graph | Viewer |
@@ -29,6 +31,36 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/agents` | Distributed worker fleet | Operator |
 | `/tenants` | Tenant provisioning and membership administration | Admin |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
+
+## Vulnerability Center
+
+`/vulnerabilities` is the working set of **tracked** findings, not the last
+scan's raw list. Each row is the persistent entity from
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md): the same
+`(asset, CVE-or-script, port)` across runs, with an owner, a lifecycle state
+and an SLA reading. Default view is everything not `CLOSED`, worst (contextual
+score) first.
+
+Header counts come from `GET /api/vulnerabilities/summary` so they agree with
+the filtered table. Filters (`state`, severity, SLA, stale days, search) are
+server-side. An asset's Vulnerabilities tab links here when that asset has
+open tracked findings (`?assetId=`).
+
+`/vulnerabilities/view?vulnId=…` is the remediation card:
+
+- lifecycle stepper `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`;
+- operator **Move lifecycle** (legal transitions only; the API still 409s an
+  illegal move) and **Ownership**;
+- admin **Accepted risk** (expiry and reason are both required);
+- CVSS / risk / owner / first-and-last-seen / SLA, plus EPSS, KEV and the
+  risk explanation copied from the last observing run when that run is still
+  on disk;
+- the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
+  `exception_set`, `exception_cleared`).
+
+CWE is not stored on the tracked finding and is shown as empty rather than
+inferred. A finding that has gone quiet is not auto-closed; the list's stale
+filter is how it gets looked at.
 
 ## Geo Map
 

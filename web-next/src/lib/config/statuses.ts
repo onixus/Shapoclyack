@@ -1,4 +1,12 @@
-import type { AgentInfo, AssetStatus, EndpointReconciliationStatus, JobInfo, TenantInfo } from "@/lib/api";
+import type {
+  AgentInfo,
+  AssetStatus,
+  EndpointReconciliationStatus,
+  JobInfo,
+  SlaState,
+  TenantInfo,
+  VulnLifecycleState,
+} from "@/lib/api";
 import type { Severity } from "@/lib/run-data";
 
 export type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
@@ -85,5 +93,30 @@ export const SEVERITY_STATUS: Record<Severity, StatusStyle & { tremorColor: stri
   medium: { label: "medium", className: IN_PROGRESS, tremorColor: "amber" },
   low: { label: "low", className: "bg-sky-500/20 text-sky-300 border border-sky-500/30", tremorColor: "sky" },
   unknown: { label: "unknown", variant: "secondary", className: "bg-slate-800 text-slate-400", tremorColor: "slate" },
+};
+
+/** Happy-path order, matching `api/services/vuln_states.py` ORDER. */
+export const VULN_LIFECYCLE_STATUS: Record<VulnLifecycleState, StatusStyle> = {
+  OPEN: { label: "open", className: "bg-sky-500/20 text-sky-300 border border-sky-500/30 font-semibold" },
+  ACKNOWLEDGED: { label: "acknowledged", className: IN_PROGRESS },
+  PLANNED: { label: "planned", className: "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold" },
+  FIXING: { label: "fixing", className: "bg-orange-500/20 text-orange-300 border border-orange-500/30 font-semibold" },
+  VERIFYING: { label: "verifying", className: "bg-violet-500/20 text-violet-300 border border-violet-500/30 font-semibold" },
+  CLOSED: { label: "closed", className: SUCCESS },
+};
+
+export const SLA_STATUS: Record<SlaState, StatusStyle> = {
+  on_track: { label: "on track", className: SUCCESS },
+  due_soon: { label: "due soon", className: IN_PROGRESS },
+  breached: {
+    label: "breached",
+    variant: "destructive",
+    className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-bold",
+  },
+  accepted: {
+    label: "accepted risk",
+    className: "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold",
+  },
+  none: { label: "no SLA", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
 };
 

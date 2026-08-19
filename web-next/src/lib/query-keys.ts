@@ -46,6 +46,15 @@ export const queryKeys = {
     ["endpoint-device", deviceId, "changes", tenantId] as const,
   recentSoftwareChanges: (tenantId = "default", limit = 50) =>
     ["endpoint-changes", tenantId, limit] as const,
+  vulnerabilities: ["vulnerabilities"] as const,
+  vulnerabilitiesPage: (filters: Record<string, unknown>, page?: PageParams) =>
+    ["vulnerabilities", filters, pageKey(page)] as const,
+  vulnerabilitySummary: ["vulnerabilities", "summary"] as const,
+  vulnerability: (vulnId: string) => ["vulnerability", vulnId] as const,
+  vulnerabilityEvents: (vulnId: string, page?: PageParams) =>
+    ["vulnerability", vulnId, "events", pageKey(page)] as const,
+  vulnerabilityActivity: (page?: PageParams) =>
+    ["vulnerabilities", "events", pageKey(page)] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };
