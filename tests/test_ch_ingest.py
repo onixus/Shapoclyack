@@ -72,6 +72,43 @@ def test_transform_vulnerabilities_and_ports(monkeypatch):
     reset_scorer_for_tests(None)
 
 
+def test_vulnerabilities_to_rows_applies_on_path_waf_from_fingerprint():
+    """fingerprint.json on the same host:port is a named discount at ingest (#173)."""
+    from api.services.risk_scoring import RiskScoring, reset_scorer_for_tests
+
+    reset_scorer_for_tests(RiskScoring())
+    try:
+        item = {
+            "host": "8.8.8.8",
+            "port": "443",
+            "cve": "CVE-2020-1",
+            "cvss": 7.5,
+            "cvss4": 7.5,
+            "severity": "high",
+        }
+        fingerprint = {
+            "findings": [{"host": "8.8.8.8", "port": 443, "cdn_waf": ["cloudflare"]}]
+        }
+        meta = json.dumps({"started_at": "2026-07-17T10:00:00Z"}).encode()
+        vulns = json.dumps([item]).encode()
+        payload = {"tenant_id": "ten_acme"}
+        with_fp = ch_transform.vulnerabilities_to_rows(
+            payload,
+            {
+                "vulnerabilities.json": vulns,
+                "run_meta.json": meta,
+                "fingerprint.json": json.dumps(fingerprint).encode(),
+            },
+        )
+        without = ch_transform.vulnerabilities_to_rows(
+            payload,
+            {"vulnerabilities.json": vulns, "run_meta.json": meta},
+        )
+        assert with_fp[0][8] < without[0][8]
+    finally:
+        reset_scorer_for_tests(None)
+
+
 def test_tenant_uuid_stable():
     a = ch_transform.tenant_to_uuid("ten_acme")
     b = ch_transform.tenant_to_uuid("ten_acme")

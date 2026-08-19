@@ -33,6 +33,9 @@ via streamed read) and the candidate endpoint list itself is capped by
 is flagged "truncated" rather than silently scanning everything. Findings
 are reported only (``fingerprint.json``) -- never merged into scan scope or
 asset identity (same non-escalation principle as ``cloud_discovery.py``).
+Risk scoring may apply a small named likelihood discount when ``cdn_waf``
+was observed on the same host:port (#173); that is not a claim the
+control blocks the CVE, and it is not merging the fingerprint into scope.
 """
 
 from __future__ import annotations

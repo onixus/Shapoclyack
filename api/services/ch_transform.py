@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from api.services import assets as assets_service
-from api.services.risk_scoring import get_scorer
+from api.services.risk_scoring import get_scorer, index_cdn_waf
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.ch-transform")
@@ -101,6 +101,7 @@ def vulnerabilities_to_rows(
         return []
 
     scorer = get_scorer()
+    cdn_waf = index_cdn_waf(_load_json_member(members, "fingerprint.json"))
     db_enabled = settings is not None and bool(settings.postgres_url.strip())
     criticality_cache: dict[str, int | None] = {}
     exposure_cache: dict[str, str | None] = {}
@@ -132,6 +133,7 @@ def vulnerabilities_to_rows(
             item,
             asset_criticality_override=override,
             operator_exposure=_operator_exposure(host) if db_enabled else None,
+            cdn_waf_index=cdn_waf,
         )
         rows.append(
             [

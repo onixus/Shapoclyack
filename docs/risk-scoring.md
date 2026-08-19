@@ -55,6 +55,7 @@ claim.
 | Scanner confidence | `finding_class` / `confidence` | Discount for hypotheses |
 | **Network exposure** | this host: RFC1918 / operator-set / explicit | ±20 on likelihood after bounds. `unknown` is a no-op |
 | **CVE age** | NVD `published`, else CVE-ID year | Raise-only, weak. Never a decay |
+| **Compensating control** | fingerprint `cdn_waf` on the same host:port | −6, named. Not proof the vuln is blocked |
 
 Reachability and EPSS are blended 65/35 — reachability describes *this* finding,
 while EPSS is a statistic about the CVE that knows nothing about whether the
@@ -113,6 +114,24 @@ A public address is **not** `external`. That would treat "this IP is routable"
 as "we observed it from outside". `unknown` scores as the model did before
 #171, so missing data cannot be read as "nothing is exposed". The
 `risk_explanation` names the source.
+
+### Compensating controls are observed, not assumed
+
+A WAF in front of a vulnerable service is only a likelihood input when
+fingerprint (Phase 9.1) actually saw a CDN/WAF header on **that** host:port
+([#173](https://github.com/onixus/Shapoclyack/issues/173)). The providers
+are the ones `fingerprint.py` already names: Cloudflare, Akamai, Sucuri,
+Imperva/Incapsula, CloudFront, Fastly. A CMS match is not a control.
+
+The discount is small (−6) and named in `risk_explanation`, with the caveat
+that seeing Cloudflare is **not** evidence it blocks this CVE. Several
+vendors on one endpoint still count once. A missing `fingerprint.json`, a
+disabled fingerprint stage, or a hit on a different port is `none` — no
+shift. This is not a qualitative "minus a level" rule.
+
+Attack chaining is still not modelled. Two Moderates that combine into a
+domain takeover stay two Moderates until identity merge ([P4.2](../ROADMAP.md#p4-breakdown--differentiating-features))
+gives the 11.2 graph a reliable host.
 
 ## Impact — how bad if it is?
 
@@ -209,11 +228,12 @@ Each of these is a real gap with its own issue, not a silent approximation.
   ([#172](https://github.com/onixus/Shapoclyack/issues/172)): never negative.
   Stale EPSS/KEV/exploit overlays are named in the explanation and on
   `/api/system`; they do not silently age the score down.
-- **No exploit-chaining, and no compensating controls**
-  ([#173](https://github.com/onixus/Shapoclyack/issues/173)). Each finding is
-  scored alone: two Moderates that combine into a domain takeover are still two
-  Moderates, and a WAF in front of a vulnerable service does not lower
-  likelihood because nothing in the pipeline observes one.
+- **No exploit-chaining.**
+  [#173](https://github.com/onixus/Shapoclyack/issues/173) still does not
+  compose findings: two Moderates that combine into a domain takeover are
+  still two Moderates. Compensating controls are the other half of that
+  issue and are now a small named discount when fingerprint saw a CDN/WAF
+  on the same host:port — never "WAF = safe".
 - **No data-classification input in the score.**
   [#146](https://github.com/onixus/Shapoclyack/issues/146) stores
   `owner` / `business_service` / environment / data class / exposure on the

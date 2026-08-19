@@ -28,16 +28,20 @@ from api.services.exploit_evidence import (
     ExploitEvidence,
 )
 from api.services.risk_scoring import (
+    COMPENSATING_CONTROL_DISCOUNT,
     EXTERNAL,
     INTERNAL,
     UNKNOWN_EXPOSURE,
     RiskScoring,
+    apply_compensating_control,
     apply_criticality,
     apply_network_exposure,
     cve_age_raise,
     epss_pct,
     exploitability_pct,
     impact_pct,
+    index_cdn_waf,
+    resolve_compensating_control,
     resolve_cve_age,
     resolve_network_exposure,
 )
@@ -471,3 +475,77 @@ def test_overlay_staleness_lists_only_old_present_files(tmp_path, monkeypatch):
     stale = scoring.overlay_staleness()
     assert stale == [("exploit", stale[0][1])]
     assert stale[0][1] > scoring.ENRICHMENT_STALE_DAYS
+
+
+# ---------------------------------------------------------------------------
+# Compensating controls (#173) — observed on-path CDN/WAF, never "WAF = safe"
+# ---------------------------------------------------------------------------
+
+
+def test_index_cdn_waf_matches_the_same_host_port_only():
+    index = index_cdn_waf(
+        {
+            "findings": [
+                {"host": "8.8.8.8", "port": 443, "cdn_waf": ["cloudflare"], "cms_framework": ["wordpress"]},
+                {"host": "8.8.8.8", "port": 80, "cdn_waf": [], "cms_framework": ["wordpress"]},
+                {"host": "1.1.1.1", "port": 443, "cdn_waf": ["akamai"]},
+            ]
+        }
+    )
+    assert index[("8.8.8.8", 443)] == ("cloudflare",)
+    assert ("8.8.8.8", 80) not in index
+    assert index[("1.1.1.1", 443)] == ("akamai",)
+
+
+def test_cms_alone_is_not_a_compensating_control():
+    assert index_cdn_waf({"findings": [{"host": "8.8.8.8", "port": 443, "cms_framework": ["wordpress"]}]}) == {}
+    assert resolve_compensating_control(cdn_waf=["wordpress"]) == ((), "none")
+
+
+def test_unknown_cdn_waf_names_are_ignored():
+    assert resolve_compensating_control(cdn_waf=["made-up-waf", "cloudflare"]) == (
+        ("cloudflare",),
+        "finding",
+    )
+
+
+def test_apply_compensating_control_is_one_discount_not_per_vendor():
+    assert apply_compensating_control(50.0, ()) == 50.0
+    assert apply_compensating_control(50.0, ("cloudflare",)) == 50.0 - COMPENSATING_CONTROL_DISCOUNT
+    assert apply_compensating_control(50.0, ("cloudflare", "akamai")) == 50.0 - COMPENSATING_CONTROL_DISCOUNT
+
+
+def test_on_path_waf_lowers_likelihood_and_is_named():
+    scorer = _scorer()
+    item = {
+        "cve": "CVE-1",
+        "cvss4": 7.0,
+        "cvss4_vector": V4_WORST,
+        "host": "8.8.8.8",
+        "port": "443",
+        "network_exposure": UNKNOWN_EXPOSURE,
+    }
+    bare = scorer.score_vulnerability(item)
+    shielded = scorer.score_vulnerability({**item, "cdn_waf": ["cloudflare"]})
+    other_port = scorer.score_vulnerability(
+        item,
+        cdn_waf_index={("8.8.8.8", 80): ("cloudflare",)},
+    )
+    on_path = scorer.score_vulnerability(
+        item,
+        cdn_waf_index={("8.8.8.8", 443): ("cloudflare",)},
+    )
+
+    assert shielded["likelihood_score"] == pytest.approx(
+        bare["likelihood_score"] - COMPENSATING_CONTROL_DISCOUNT
+    )
+    assert on_path["likelihood_score"] == shielded["likelihood_score"]
+    assert other_port["likelihood_score"] == bare["likelihood_score"]
+    assert shielded["cdn_waf"] == ["cloudflare"]
+    assert shielded["compensating_control_source"] == "finding"
+    assert on_path["compensating_control_source"] == "fingerprint"
+    assert "CDN/WAF cloudflare on this host:port (fingerprint)" in on_path["risk_explanation"]
+    assert "not proof the vuln is blocked" in on_path["risk_explanation"]
+    assert "CDN/WAF" not in bare["risk_explanation"]
+    # A small named discount, not a qualitative "Cloudflare → minus a level" rule.
+    assert shielded["likelihood"] == bare["likelihood"]
