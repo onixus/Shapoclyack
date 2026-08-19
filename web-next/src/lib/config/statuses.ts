@@ -1,5 +1,9 @@
 import type {
   AgentInfo,
+  AssetContextSource,
+  AssetDataClassification,
+  AssetEnvironment,
+  AssetExposureLevel,
   AssetStatus,
   EndpointReconciliationStatus,
   JobInfo,
@@ -74,6 +78,37 @@ export const ASSET_CRITICALITY: Record<number, StatusStyle> = {
   2: { label: "medium", className: IN_PROGRESS },
   3: { label: "high", className: "bg-orange-500/20 text-orange-300 border border-orange-500/30" },
   4: { label: "critical", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-bold" },
+};
+
+/** Operator- or CMDB-set environment (#146). */
+export const ASSET_ENVIRONMENT: Record<AssetEnvironment, StatusStyle> = {
+  production: { label: "production", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold" },
+  staging: { label: "staging", className: IN_PROGRESS },
+  development: { label: "development", className: "bg-sky-500/20 text-sky-300 border border-sky-500/30" },
+  lab: { label: "lab", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
+  other: { label: "other", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
+};
+
+export const ASSET_DATA_CLASSIFICATION: Record<AssetDataClassification, StatusStyle> = {
+  public: { label: "public", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
+  internal: { label: "internal", className: "bg-sky-500/20 text-sky-300 border border-sky-500/30" },
+  confidential: { label: "confidential", className: IN_PROGRESS },
+  restricted: { label: "restricted", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold" },
+};
+
+/** Operator-set posture, not a scan measurement (#171 is the network fact). */
+export const ASSET_EXPOSURE: Record<AssetExposureLevel, StatusStyle> = {
+  internet: { label: "internet", className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold" },
+  partner: { label: "partner", className: IN_PROGRESS },
+  internal: { label: "internal", className: "bg-sky-500/20 text-sky-300 border border-sky-500/30" },
+  unknown: { label: "unknown", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
+};
+
+export const ASSET_CONTEXT_SOURCE: Record<AssetContextSource, StatusStyle> = {
+  operator: { label: "operator", className: "bg-sky-500/20 text-sky-300 border border-sky-500/30" },
+  cmdb: { label: "CMDB", className: "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold" },
+  ad: { label: "AD", className: "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold" },
+  other: { label: "other", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
 };
 
 export const ENDPOINT_RECONCILIATION_STATUS: Record<EndpointReconciliationStatus, StatusStyle> = {

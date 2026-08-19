@@ -19,8 +19,8 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/vulnerabilities` | Vulnerability Center: tracked findings, lifecycle, owner, SLA | Viewer |
 | `/vulnerabilities/view?vulnId=…` | Finding detail, transitions, assignment, comments, ticket link, risk acceptance, audit trail | Viewer; operator to move/assign/comment/link; admin to accept risk |
 | `/remediation` | Remediation Kanban — detection to verified closure | Viewer; operator to move/assign/comment/link |
-| `/assets` | Cross-run asset inventory | Viewer |
-| `/assets/view?assetId=…` | Asset metadata, findings, ports, OS/GeoIP, endpoint software | Viewer; operator for permitted edits |
+| `/assets` | Asset inventory: owner, service, exposure, open tracked risk | Viewer |
+| `/assets/view?assetId=…` | Asset-centric security view: required actions, tracked findings, software, scan evidence, history | Viewer; operator for permitted edits |
 | `/attack-surface` | Hostname → IP → port → service graph | Viewer |
 | `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
 | `/endpoints` | Endpoint device/software inventory and recent changes | Viewer |
@@ -50,10 +50,11 @@ Headline tiles:
 first, with owner and SLA. Click-throughs land on the Vulnerability Center
 (`?sla=breached`, `?unassigned=1`) or `/assets?unowned=1`.
 
-Internet-facing exposure is **not** a number on this page. The platform does
-not yet know whether a host is on the internet ([#171](https://github.com/onixus/Shapoclyack/issues/171),
-[#146](https://github.com/onixus/Shapoclyack/issues/146)); drawing zero would
-read as "nothing is exposed".
+Internet-facing exposure is **not** a number on this page. An operator can
+mark an asset as internet-facing ([asset-context.md](asset-context.md));
+whether the host is actually on the internet is still
+[#171](https://github.com/onixus/Shapoclyack/issues/171). Drawing zero here
+would read as "nothing is exposed".
 
 The scan-activity chart is hosts/findings per recent **run** — volume, not
 estate risk over time. Historical risk snapshots are still open on
@@ -106,6 +107,30 @@ open tracked findings (`?assetId=`).
 CWE is not stored on the tracked finding and is shown as empty rather than
 inferred. A finding that has gone quiet is not auto-closed; the list's stale
 filter is how it gets looked at.
+
+## Asset-centric view
+
+`/assets` is the working set of **assets as security objects**
+([#136](https://github.com/onixus/Shapoclyack/issues/136)), not a scan-host
+list. Each row shows owner, business service, exposure, open tracked
+findings and the worst open NIST `estate_risk`. Search matches identifiers,
+owner or service.
+
+`/assets/view?assetId=…` is what an analyst opens to decide what to do:
+
+- headline tiles: asset risk, open / unassigned / SLA-breached findings;
+- a required-now banner when work is unassigned or overdue;
+- **Findings** — tracked findings with lifecycle, SLA and the next required
+  action (assign, acknowledge, …), linking to the finding card and the
+  Remediation board;
+- **Software** — Lariska inventory when an endpoint is linked;
+- **Scan evidence** — last-run ports, host telemetry and raw findings
+  (secondary; the working set is the tracker);
+- **History** — business-context changes (`GET /api/assets/{id}/events`).
+
+Operators edit owner, service, environment, classification and exposure on
+the same page. Exposure is how the asset is *treated*, not a scan fact.
+See [asset-context.md](asset-context.md).
 
 ## Geo Map
 

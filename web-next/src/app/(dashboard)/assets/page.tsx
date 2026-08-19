@@ -19,7 +19,14 @@ import { StatusBadge } from "@/components/status-badge";
 import { useAssets } from "@/hooks/use-assets";
 import { usePagination } from "@/hooks/use-pagination";
 import { type AssetStatus, type AssetSummary } from "@/lib/api";
-import { ASSET_CRITICALITY, ASSET_STATUS } from "@/lib/config/statuses";
+import { assetRiskLabel } from "@/lib/asset-context";
+import {
+  ASSET_CRITICALITY,
+  ASSET_ENVIRONMENT,
+  ASSET_EXPOSURE,
+  ASSET_STATUS,
+  RISK_LEVEL_STATUS,
+} from "@/lib/config/statuses";
 
 const STATUS_FILTER_ALL = "all";
 
@@ -68,12 +75,84 @@ function AssetsInner() {
       },
       {
         accessorKey: "status",
-        header: "Lifecycle Status",
+        header: "Status",
         cell: ({ row }) => <StatusBadge value={row.original.status} map={ASSET_STATUS} />,
       },
       {
+        accessorKey: "estate_risk",
+        header: "Asset risk",
+        cell: ({ row }) => {
+          const level = row.original.estate_risk;
+          if (level && level in RISK_LEVEL_STATUS) {
+            return <StatusBadge value={level} map={RISK_LEVEL_STATUS} />;
+          }
+          return (
+            <span className="text-xs text-slate-500">
+              {assetRiskLabel({
+                estate_risk: row.original.estate_risk,
+                open_total: row.original.open_findings,
+              })}
+            </span>
+          );
+        },
+      },
+      {
+        accessorKey: "open_findings",
+        header: "Open",
+        cell: ({ row }) => (
+          <span className="tabular-nums text-slate-200">
+            {row.original.open_findings.toLocaleString()}
+            {row.original.unassigned_findings > 0 ? (
+              <span className="ml-1 text-[11px] text-amber-400">
+                · {row.original.unassigned_findings} unassigned
+              </span>
+            ) : null}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "owner_email",
+        header: "Owner",
+        cell: ({ row }) =>
+          row.original.owner_email ? (
+            <span className="text-xs text-slate-200">{row.original.owner_email}</span>
+          ) : (
+            <span className="text-xs text-slate-500">Unassigned</span>
+          ),
+      },
+      {
+        accessorKey: "business_service",
+        header: "Service",
+        cell: ({ row }) =>
+          row.original.business_service ? (
+            <span className="text-xs text-slate-200">{row.original.business_service}</span>
+          ) : (
+            <span className="text-xs text-slate-500">—</span>
+          ),
+      },
+      {
+        accessorKey: "exposure_level",
+        header: "Exposure",
+        cell: ({ row }) =>
+          row.original.exposure_level ? (
+            <StatusBadge value={row.original.exposure_level} map={ASSET_EXPOSURE} />
+          ) : (
+            <span className="text-xs text-slate-500">Unset</span>
+          ),
+      },
+      {
+        accessorKey: "environment",
+        header: "Env",
+        cell: ({ row }) =>
+          row.original.environment ? (
+            <StatusBadge value={row.original.environment} map={ASSET_ENVIRONMENT} />
+          ) : (
+            <span className="text-xs text-slate-500">—</span>
+          ),
+      },
+      {
         accessorKey: "asset_criticality",
-        header: "Criticality Level",
+        header: "Criticality",
         cell: ({ row }) =>
           row.original.asset_criticality != null ? (
             <StatusBadge
@@ -124,10 +203,10 @@ function AssetsInner() {
         <div>
           <div className="flex items-center gap-2.5">
             <Server className="h-5 w-5 text-sky-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Global Assets Inventory</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Assets</h1>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Persistent fleet asset registry across discovery scan runs. Track status, business unit owners, and risk criticality.
+            Persistent security objects: owner, service, exposure, and open tracked risk — not the last scan.
             {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
           </p>
         </div>
@@ -139,7 +218,7 @@ function AssetsInner() {
         isLoading={assetsQuery.isLoading}
         error={assetsQuery.error}
         initialSorting={[{ id: "last_seen", desc: true }]}
-        searchPlaceholder="Filter by IP range or domain hostname…"
+        searchPlaceholder="Filter by IP, hostname, owner or service…"
         toolbar={
           <div className="flex items-center gap-2">
             <Filter className="h-4 w-4 text-slate-400" />
@@ -188,7 +267,15 @@ function AssetsInner() {
           onOffsetChange: pagination.setOffset,
           search: pagination.search,
           onSearchChange: pagination.setSearch,
-          sortableColumns: ["last_seen", "first_seen", "status", "asset_criticality", "asset_id"],
+          sortableColumns: [
+            "last_seen",
+            "first_seen",
+            "status",
+            "asset_criticality",
+            "asset_id",
+            "owner_email",
+            "business_service",
+          ],
           sort: pagination.sort,
           order: pagination.order,
           onSortChange: pagination.setSort,

@@ -111,7 +111,13 @@ Findings are not all equivalent. The normalized finding contract can carry a cla
 
 Confirmed vulnerabilities and lower-confidence exposure/hypothesis records therefore remain distinguishable through the pipeline and UI. The scoring layer must not promote an unconfirmed observation above a confirmed high-risk vulnerability solely because a text pattern resembled a CVE.
 
-The current model provides contextual prioritization for run findings. The broader product roadmap extends this toward asset-level risk, SLA, remediation lifecycle, and business context; those planned capabilities are documented in `docs/ui-ux-redesign-roadmap.md`, not assumed to exist here.
+The current model provides contextual prioritization for run findings (`nist-1`)
+and tracks findings as entities with lifecycle, SLA and an audit trail
+([vulnerability-lifecycle.md](vulnerability-lifecycle.md)). Asset business
+context (owner, service, environment, data class, exposure) and a per-asset
+risk rollup live on the asset card ([asset-context.md](asset-context.md)).
+Remaining product surfaces (full asset-centric view, exposure management)
+are tracked in `docs/ui-ux-redesign-roadmap.md`.
 
 ## Identity and tenancy
 

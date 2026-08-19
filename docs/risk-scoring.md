@@ -194,7 +194,9 @@ Each of these is a real gap with its own issue, not a silent approximation.
   scored alone: two Moderates that combine into a domain takeover are still two
   Moderates, and a WAF in front of a vulnerable service does not lower
   likelihood because nothing in the pipeline observes one.
-- **No data-classification input**
-  ([#146](https://github.com/onixus/Shapoclyack/issues/146)). Asset criticality
-  is a single 0–4 dial; `owner` / `business_service` / data class are that
-  issue's scope.
+- **No data-classification input in the score.**
+  [#146](https://github.com/onixus/Shapoclyack/issues/146) stores
+  `owner` / `business_service` / environment / data class / exposure on the
+  asset (see [asset-context.md](asset-context.md)), but scoring still uses
+  only the 0–4 `asset_criticality` dial. Those fields explain the asset; they
+  do not yet move the NIST verdict.

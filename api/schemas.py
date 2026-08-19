@@ -152,6 +152,14 @@ class AssetSummary(BaseModel):
     primary_identifier: str | None = None
     identifier_count: int = 0
     asset_criticality: int | None = None
+    owner_email: str | None = None
+    business_service: str | None = None
+    environment: str | None = None
+    exposure_level: str | None = None
+    # Page-scoped rollup (#136): one query for the page, not one per row.
+    open_findings: int = 0
+    unassigned_findings: int = 0
+    estate_risk: str | None = None
 
 
 class AssetDetail(BaseModel):
@@ -163,14 +171,39 @@ class AssetDetail(BaseModel):
     owner_email: str | None = None
     business_unit: str | None = None
     asset_criticality: int | None = None
+    business_service: str | None = None
+    environment: str | None = None
+    data_classification: str | None = None
+    exposure_level: str | None = None
+    context_source: str | None = None
     identifiers: list[AssetIdentifier] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
+    # Open-finding rollup from the tracker — why this asset is risky (#146).
+    risk: VulnerabilitySummary | None = None
+
+
+class AssetContextEventInfo(BaseModel):
+    id: int
+    asset_id: str
+    tenant_id: str
+    occurred_at: str | None = None
+    field: str
+    old_value: str | None = None
+    new_value: str | None = None
+    actor: str | None = None
+    source: str | None = None
 
 
 class UpdateAssetRequest(BaseModel):
     owner_email: str | None = None
     business_unit: str | None = None
     asset_criticality: int | None = Field(default=None, ge=0, le=4)
+    business_service: str | None = Field(default=None, max_length=200)
+    environment: Literal["production", "staging", "development", "lab", "other"] | None = None
+    data_classification: Literal["public", "internal", "confidential", "restricted"] | None = None
+    # Operator-set posture, not a scan measurement (#171 is the network fact).
+    exposure_level: Literal["internet", "partner", "internal", "unknown"] | None = None
+    context_source: Literal["operator", "cmdb", "ad", "other"] | None = None
     # Manual decommission only — "active"/"stale" stay system-managed
     # (upsert_assets_from_run / mark_stale_assets), never operator-set.
     status: Literal["decommissioned"] | None = None

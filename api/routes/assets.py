@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
+    AssetContextEventInfo,
     AssetDetail,
     AssetInventorySummary,
     AssetSummary,
@@ -66,6 +67,25 @@ def get_asset(
     return AssetDetail.model_validate(item)
 
 
+@router.get("/{asset_id}/events", response_model=Page[AssetContextEventInfo])
+def list_asset_context_events(
+    asset_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    page: PageParams,
+) -> Page[AssetContextEventInfo]:
+    if not assets_service.asset_exists(settings, principal.tenant_id, asset_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    items, total = assets_service.list_context_events(
+        settings,
+        principal.tenant_id,
+        asset_id,
+        offset=page.offset,
+        limit=page.limit,
+    )
+    return build_page(items, total, page)
+
+
 @router.get("/{asset_id}/software", response_model=list[EndpointSoftwareItemInfo])
 def get_asset_software(
     asset_id: str,
@@ -86,7 +106,9 @@ def update_asset(
 ) -> AssetDetail:
     updates = body.model_dump(exclude_unset=True)
     try:
-        item = assets_service.update_asset(settings, principal.tenant_id, asset_id, updates)
+        item = assets_service.update_asset(
+            settings, principal.tenant_id, asset_id, updates, actor=principal.username
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if item is None:
