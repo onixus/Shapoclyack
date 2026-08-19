@@ -26,6 +26,9 @@ Table I-2 (see ``api/services/nist_risk.py``):
     reachable from outside, which is not what CVSS ``AV:N`` says. Then a
     small **compensating-control** discount (#173) only if fingerprint
     observed a CDN/WAF on the same host:port — named, never "WAF = safe".
+    Then a small **same-asset path** raise (#173) when a local finding
+    shares a P4.2-correlated asset with a network foothold — named, never
+    "this is a domain takeover".
 
 **Impact** — how bad if it is?
     The CVSS vector's impact metrics (VC/VI/VA, or C/I/A on v3), shifted by
@@ -135,6 +138,12 @@ COMPENSATING_CONTROL_DISCOUNT = 6.0
 CDN_WAF_PROVIDERS = frozenset(
     {"cloudflare", "akamai", "sucuri", "imperva_incapsula", "cloudfront", "fastly"}
 )
+#: Small raise when a local finding sits on the same asset as a network
+#: foothold (#173). Not a step-model of privilege escalation, and not a
+#: qualitative level rule. Two Moderates still do not become a takeover.
+ATTACK_PATH_RAISE = 8.0
+FOOTHOLD = "foothold"
+LOCAL = "local"
 ENRICHMENT_STALE_DAYS = 30
 _CVE_ID_YEAR = re.compile(r"^CVE-(\d{4})-", re.I)
 EXTERNAL = "external"
@@ -512,6 +521,32 @@ def apply_compensating_control(
     return max(0.0, min(100.0, likelihood - COMPENSATING_CONTROL_DISCOUNT))
 
 
+def path_role(item: dict[str, Any]) -> str:
+    """``foothold`` / ``local`` / ``""`` from what this finding actually says.
+
+    An ``exposure`` is a reachable service, not a CVE — that is a foothold.
+    Otherwise the CVSS attack vector: ``AV:N`` is network-reachable,
+    ``AV:L`` / ``AV:P`` need a presence on the box. No vector is not a path.
+    """
+    finding_class = str(item.get("finding_class") or "").strip().lower()
+    if finding_class == "exposure":
+        return FOOTHOLD
+    vector = _parse_vector(_finding_vector(item))
+    av = vector.get("AV")
+    if av == "N":
+        return FOOTHOLD
+    if av in {"L", "P"}:
+        return LOCAL
+    return ""
+
+
+def apply_attack_path(likelihood: float, *, role: str, has_foothold: bool) -> float:
+    """Raise only the local finding, and only when a foothold is on the same asset."""
+    if role != LOCAL or not has_foothold:
+        return likelihood
+    return max(0.0, min(100.0, likelihood + ATTACK_PATH_RAISE))
+
+
 def overlay_staleness(*, now: datetime | None = None) -> list[tuple[str, float]]:
     """``(name, age_days)`` for EPSS/KEV/exploit overlays older than the threshold."""
     clock = now or datetime.now(UTC)
@@ -713,6 +748,7 @@ class RiskScoring:
         asset_criticality_override: int | None = None,
         operator_exposure: str | None = None,
         cdn_waf_index: dict[tuple[str, int], tuple[str, ...]] | None = None,
+        same_asset_foothold: bool = False,
     ) -> dict[str, Any]:
         cve = str(item.get("cve") or item.get("script_id") or "")
         is_cve = cve.upper().startswith("CVE-")
@@ -769,7 +805,12 @@ class RiskScoring:
             index=cdn_waf_index,
         )
         aged = min(100.0, exposed + age_bump)
-        likelihood = apply_compensating_control(aged, providers)
+        shielded = apply_compensating_control(aged, providers)
+        role = path_role(item)
+        likelihood = apply_attack_path(
+            shielded, role=role, has_foothold=same_asset_foothold
+        )
+        path_bump = likelihood - shielded
         stale_overlays = overlay_staleness() if self._report_overlay_age else []
         likelihood_level = nist_risk.level_for(likelihood)
         impact_level = nist_risk.level_for(contextual_impact)
@@ -803,6 +844,7 @@ class RiskScoring:
             "network_exposure_source": exposure_source,
             "cdn_waf": list(providers),
             "compensating_control_source": control_source,
+            "attack_path": "same-asset" if path_bump > 0 else None,
             **assessment.as_dict(),
             "risk_explanation": self._explain(
                 item,
@@ -832,7 +874,8 @@ class RiskScoring:
                 cve_age_bump=age_bump,
                 compensating_control=providers,
                 compensating_control_source=control_source,
-                compensating_drop=aged - likelihood,
+                compensating_drop=aged - shielded,
+                attack_path_bump=path_bump,
                 stale_overlays=stale_overlays,
             ),
         }
@@ -868,6 +911,7 @@ class RiskScoring:
         compensating_control: tuple[str, ...],
         compensating_control_source: str,
         compensating_drop: float,
+        attack_path_bump: float,
         stale_overlays: list[tuple[str, float]],
     ) -> str:
         """One line explaining the verdict, reading as the assessment's argument.
@@ -945,6 +989,11 @@ class RiskScoring:
                 f"CDN/WAF {', '.join(compensating_control)} on this host:port "
                 f"({compensating_control_source}) lowered likelihood by {compensating_drop:g} "
                 f"— not proof the vuln is blocked"
+            )
+        if attack_path_bump > 0:
+            why_likely.append(
+                f"same-asset path: network foothold + local finding raised likelihood "
+                f"by {attack_path_bump:g} — not a modelled exploit chain"
             )
         for overlay_name, age_days in stale_overlays:
             why_likely.append(

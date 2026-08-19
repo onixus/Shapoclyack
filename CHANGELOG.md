@@ -6,6 +6,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Same-asset attack path** ([#173](https://github.com/onixus/Shapoclyack/issues/173)) —
+  after P4.2, a local finding (`AV:L`/`AV:P`) on the same asset as a
+  network foothold (`AV:N` or `exposure`) gets +8 likelihood, named in
+  `risk_explanation`. Two Moderates are still two Moderates — this is not
+  a domain-takeover model and not a walk across uncorrelated hosts.
+
 - **IP↔FQDN↔certificate correlation** (ROADMAP P4.2) — an IP-only asset and
   a bare-FQDN asset become one row only when forward DNS *and* a
   certificate on that IP cover the name, and the IP is not shared-hosting

@@ -42,4 +42,5 @@ still answers.
 - Treat a CDN SAN list as a set of assets.
 - Build an ownership graph (P4.3).
 - Model privilege-escalation or lateral-movement steps
-  ([#173](https://github.com/onixus/Shapoclyack/issues/173)).
+  ([#173](https://github.com/onixus/Shapoclyack/issues/173) names a
+  same-asset foothold+local pair; it does not invent a takeover).
