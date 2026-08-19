@@ -26,6 +26,10 @@ anyone has **said** it is internet-facing. Those fields live on `assets`
 Closed lists so a CMDB import cannot invent a fifth environment the UI cannot
 render. Unknown values answer `422`.
 
+The attack-surface **Ownership** view (P4.3) groups a scan by
+`business_unit`, then `owner_email`. Unowned names cluster by
+registrable domain and are labelled as a domain. ASN is not an owner.
+
 `exposure_level` is a **decision**, not a scan measurement. Writing a guessed
 value from an observed public IP would launder a heuristic as a fact.
 Scoring may use `internet` / `internal` as a named `operator-set` source

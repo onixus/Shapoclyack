@@ -6,6 +6,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Ownership graph** (ROADMAP P4.3) — `/attack-surface` can group one scan
+  by operator-set `business_unit` / `owner_email`. Unowned names cluster by
+  registrable domain and are labelled `(domain)` so a DNS name is not an
+  owner. ASN is not an owner. `GET /api/runs/{id}/hosts` carries the
+  fields. Filter answers "what does this unit expose".
+
 - **Same-asset attack path** ([#173](https://github.com/onixus/Shapoclyack/issues/173)) —
   after P4.2, a local finding (`AV:L`/`AV:P`) on the same asset as a
   network foothold (`AV:N` or `exposure`) gets +8 likelihood, named in

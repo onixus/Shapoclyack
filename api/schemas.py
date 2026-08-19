@@ -135,6 +135,13 @@ class AliveHostItem(BaseModel):
     asn: str | None = None
     asn_org: str | None = None
     vulnerability_count: int = 0
+    # P4.3: operator-set ownership from the asset registry. Never inferred
+    # from a public IP or an ASN. ``ownership_source`` is operator | domain | none.
+    owner_email: str | None = None
+    business_unit: str | None = None
+    asset_id: str | None = None
+    registrable_domain: str | None = None
+    ownership_source: str | None = None
 
 
 class PortAggregateItem(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,10 @@ from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary,
 from api.services import pagination
 from api.services import tenants as tenants_service
 from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
+from scanner.pipeline.asset_identity import registrable_domain
 from api.settings import Settings
+
+LOG = logging.getLogger("shapoclyack.runs")
 
 # Marker file written into a run directory naming the tenant the run belongs to
 # (ROADMAP P0). Runs produced before this shipped have no marker and are read as
@@ -439,7 +443,50 @@ def get_hosts(
                 )
             )
     rows.sort(key=lambda item: (-item.vulnerability_count, item.host))
-    return rows[:limit]
+    trimmed = rows[:limit]
+    _apply_host_ownership(settings, tenant_id, trimmed)
+    return trimmed
+
+
+def _apply_host_ownership(
+    settings: Settings, tenant_id: str | None, rows: list[AliveHostItem]
+) -> None:
+    """Fill P4.3 owner fields. Domain clustering works without Postgres."""
+    for row in rows:
+        names = [n for n in [row.hostname, *row.names] if n]
+        domain = ""
+        for name in names:
+            domain = registrable_domain(name)
+            if domain:
+                break
+        row.registrable_domain = domain or None
+        row.ownership_source = "domain" if domain else "none"
+    if not tenant_id or not settings.postgres_url.strip():
+        return
+    try:
+        from api.services import assets as assets_service
+
+        ips = [row.host for row in rows]
+        names = [n for row in rows for n in [row.hostname, *row.names] if n]
+        by_ip, by_name = assets_service.ownership_for_hosts(
+            settings, tenant_id, ips=ips, names=names
+        )
+    except Exception:  # noqa: BLE001
+        LOG.warning("host ownership attach failed tenant=%s", tenant_id, exc_info=True)
+        return
+    for row in rows:
+        hit = by_ip.get(row.host)
+        if hit is None:
+            for name in [row.hostname, *row.names]:
+                if name:
+                    hit = by_name.get(name.lower())
+                    if hit is not None:
+                        break
+        if hit and (hit.get("owner_email") or hit.get("business_unit")):
+            row.owner_email = hit.get("owner_email")
+            row.business_unit = hit.get("business_unit")
+            row.asset_id = hit.get("asset_id")
+            row.ownership_source = "operator"
 
 
 def get_ports(

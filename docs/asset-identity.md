@@ -40,7 +40,8 @@ still answers.
 
 - Infer exposure from a public IP ([#171](https://github.com/onixus/Shapoclyack/issues/171)).
 - Treat a CDN SAN list as a set of assets.
-- Build an ownership graph (P4.3).
+- Treat ASN or a public IP as an owner (P4.3 uses operator-set
+  unit/email, else registrable domain labelled as a domain).
 - Model privilege-escalation or lateral-movement steps
   ([#173](https://github.com/onixus/Shapoclyack/issues/173) names a
   same-asset foothold+local pair; it does not invent a takeover).

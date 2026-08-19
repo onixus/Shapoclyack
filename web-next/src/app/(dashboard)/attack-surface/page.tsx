@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { AttackSurfaceGraph } from "@/components/attack-surface-graph";
 import { useRunHosts, useRunPorts, useRuns } from "@/hooks/use-runs";
+import { uniqueOwnershipGroups, type GraphGroupBy } from "@/lib/attack-surface";
 import { pickLatestRun } from "@/lib/run-data";
 
 const RUN_PICKER_LIMIT = 50;
@@ -20,6 +21,8 @@ export default function AttackSurfacePage() {
   // Run picker only needs the newest runs, so one page is enough (P3.3).
   const runsQuery = useRuns(undefined, { limit: RUN_PICKER_LIMIT });
   const [selected, setSelected] = useState<string>("");
+  const [groupBy, setGroupBy] = useState<GraphGroupBy>("topology");
+  const [ownerKey, setOwnerKey] = useState<string>("all");
 
   const runs = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data]);
   const latest = useMemo(() => pickLatestRun(runs), [runs]);
@@ -41,14 +44,45 @@ export default function AttackSurfacePage() {
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Attack Surface Graph</h1>
             <p className="text-xs text-slate-400">
-              One scan&apos;s hostname → IP → port → service graph — not an attack path and not
-              an internet-exposure map.
+              {groupBy === "owner"
+                ? "What this owner exposes in one scan — operator-set unit/owner, else registrable domain. Not an attack path."
+                : "One scan's hostname → IP → port → service graph — not an attack path and not an internet-exposure map."}
               {runsQuery.isFetching ? " · Refreshing stream…" : ""}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Select
+            value={groupBy}
+            onValueChange={(value) => {
+              setGroupBy(value as GraphGroupBy);
+              setOwnerKey("all");
+            }}
+          >
+            <SelectTrigger className="w-40 bg-slate-900 border-slate-800 text-slate-200">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+              <SelectItem value="topology">Topology</SelectItem>
+              <SelectItem value="owner">Ownership</SelectItem>
+            </SelectContent>
+          </Select>
+          {groupBy === "owner" ? (
+            <Select value={ownerKey} onValueChange={setOwnerKey}>
+              <SelectTrigger className="w-56 bg-slate-900 border-slate-800 text-slate-200">
+                <SelectValue placeholder="All owners" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value="all">All owners</SelectItem>
+                {uniqueOwnershipGroups(hostsQuery.data || []).map((group) => (
+                  <SelectItem key={group.key} value={group.key}>
+                    {group.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
           <Select value={runId} onValueChange={setSelected}>
             <SelectTrigger className="w-72 bg-slate-900 border-slate-800 text-slate-200">
               <SelectValue placeholder="Select a scan run" />
@@ -81,7 +115,12 @@ export default function AttackSurfacePage() {
           <span className="text-sm">Building attack surface graph topology…</span>
         </div>
       ) : (
-        <AttackSurfaceGraph hosts={hostsQuery.data || []} ports={portsQuery.data || []} />
+        <AttackSurfaceGraph
+          hosts={hostsQuery.data || []}
+          ports={portsQuery.data || []}
+          groupBy={groupBy}
+          ownerKey={ownerKey}
+        />
       )}
     </div>
   );

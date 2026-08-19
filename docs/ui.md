@@ -150,7 +150,10 @@ not "what the scanner saw on the internet" ([#171](https://github.com/onixus/Sha
 the list survives run pruning.
 
 Attack paths (exploit chaining) are not drawn. The attack-surface page is
-still one run's topology.
+one run's topology, with an **Ownership** mode (P4.3): operator-set
+`business_unit` / `owner_email` first, unowned names clustered by
+registrable domain and labelled as a domain. ASN is the network, not the
+owner. A filter answers "what does this unit expose".
 
 ## Geo Map
 

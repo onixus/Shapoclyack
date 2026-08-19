@@ -13,6 +13,7 @@ from scanner.pipeline.asset_identity import (
     fqdn_identity_key,
     identity_candidates_for_host,
     ip_identity_key,
+    registrable_domain,
 )
 from tests.conftest import POSTGRES_URL, requires_postgres
 
@@ -41,6 +42,14 @@ def test_identity_candidates_for_host_ip_and_fqdn():
 
 def test_identity_candidates_for_host_empty():
     assert identity_candidates_for_host("ten_a", host_ip=None, hostnames=[]) == []
+
+
+def test_registrable_domain_is_etld_plus_one():
+    assert registrable_domain("app.payments.example.com") == "example.com"
+    assert registrable_domain("shop.co.uk") == "shop.co.uk"
+    assert registrable_domain("8.8.8.8") == ""
+    assert registrable_domain("*.example.com") == ""
+    assert registrable_domain("localhost") == ""
 
 
 def test_bare_fqdn_host_is_not_stored_as_an_ip():
@@ -464,4 +473,24 @@ def test_p42_shared_hosting_does_not_merge(tmp_path):
     assert stats.identities_merged == 0
     _, total = assets_service.list_assets(settings, tenant_id)
     assert total == 3
+
+
+@requires_postgres
+def test_ownership_for_hosts_is_operator_set_not_inferred(tmp_path):
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(settings.output_dir, "run-1", [{"host": "8.8.8.8", "hostname": "app.example.com"}])
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    asset_id = ip_identity_key(tenant_id, "8.8.8.8")
+    assets_service.update_asset(
+        settings, tenant_id, asset_id, {"owner_email": "ops@example.com", "business_unit": "payments"}
+    )
+    by_ip, by_name = assets_service.ownership_for_hosts(
+        settings, tenant_id, ips=["8.8.8.8", "1.1.1.1"], names=["app.example.com"]
+    )
+    assert by_ip["8.8.8.8"]["business_unit"] == "payments"
+    assert by_ip["8.8.8.8"]["owner_email"] == "ops@example.com"
+    assert "1.1.1.1" not in by_ip
+    assert by_name["app.example.com"]["asset_id"] == asset_id
 

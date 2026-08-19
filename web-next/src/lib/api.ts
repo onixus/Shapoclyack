@@ -182,6 +182,12 @@ export type AliveHost = {
   asn: string | null;
   asn_org: string | null;
   vulnerability_count: number;
+  /** P4.3: operator-set. Never inferred from a public IP or ASN. */
+  owner_email?: string | null;
+  business_unit?: string | null;
+  asset_id?: string | null;
+  registrable_domain?: string | null;
+  ownership_source?: string | null;
 };
 
 export type PortAggregate = {
