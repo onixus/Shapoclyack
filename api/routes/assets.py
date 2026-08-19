@@ -32,18 +32,26 @@ def list_assets(
         bool,
         Query(description="Active/stale assets with no owner_email — the dashboard's gap list"),
     ] = False,
+    exposure: Annotated[
+        str | None,
+        Query(description="Operator-set exposure_level: internet | partner | internal | unknown"),
+    ] = None,
 ) -> Page[AssetSummary]:
-    items, total = assets_service.list_assets(
-        settings,
-        principal.tenant_id,
-        status=status_filter,
-        unowned=unowned,
-        q=page.q,
-        offset=page.offset,
-        limit=page.limit,
-        sort=page.sort,
-        order=page.order,
-    )
+    try:
+        items, total = assets_service.list_assets(
+            settings,
+            principal.tenant_id,
+            status=status_filter,
+            unowned=unowned,
+            exposure=exposure,
+            q=page.q,
+            offset=page.offset,
+            limit=page.limit,
+            sort=page.sort,
+            order=page.order,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return build_page([AssetSummary.model_validate(item) for item in items], total, page)
 
 

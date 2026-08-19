@@ -800,6 +800,8 @@ class VulnerabilityInfo(BaseModel):
     risk_level: str | None = None
     contextual_score: float | None = None
     cvss: float | None = None
+    in_kev: bool = False
+    exploit_maturity: str | None = None
     state: str
     state_changed_at: str | None = None
     state_changed_by: str | None = None
@@ -927,6 +929,25 @@ class VulnerabilitySummary(BaseModel):
     breached: int
     worst_breached_severity: str | None = None
     generated_at: str | None = None
+
+
+class TenantPosture(BaseModel):
+    """One customer's risk posture for the MSSP comparison (#139).
+
+    ``declared_internet_assets`` is operator-set ``exposure_level='internet'``,
+    not a scan measurement (#171).
+    """
+
+    tenant_id: str
+    name: str
+    status: str
+    estate_risk: str | None = None
+    open_total: int = 0
+    unassigned: int = 0
+    breached: int = 0
+    in_kev_open: int = 0
+    unowned_assets: int = 0
+    declared_internet_assets: int = 0
 
 
 class AssetInventorySummary(BaseModel):

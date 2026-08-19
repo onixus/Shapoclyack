@@ -472,6 +472,8 @@ def register_findings_from_run(
                 "risk_level": scored.get("risk_level"),
                 "contextual_score": scored.get("contextual_score"),
                 "cvss": entry.get("cvss"),
+                "in_kev": bool(scored.get("exploit_active")),
+                "exploit_maturity": scored.get("exploit_maturity"),
                 "title": (cve or script_id or "")[:500],
             }
 
@@ -624,6 +626,8 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "risk_level": row.risk_level,
         "contextual_score": row.contextual_score,
         "cvss": row.cvss,
+        "in_kev": bool(row.in_kev),
+        "exploit_maturity": row.exploit_maturity,
         "state": row.state,
         "state_changed_at": _iso(row.state_changed_at),
         "state_changed_by": row.state_changed_by,
@@ -1047,6 +1051,7 @@ def list_vulnerabilities(
     unassigned: bool = False,
     sla: str | None = None,
     stale_days: int | None = None,
+    in_kev: bool | None = None,
     offset: int = 0,
     limit: int = pagination.DEFAULT_LIMIT,
     q: str | None = None,
@@ -1090,6 +1095,8 @@ def list_vulnerabilities(
         filters.append(models.Vulnerability.assignee == assignee)
     if stale_days is not None:
         filters.append(models.Vulnerability.last_seen_at < now - timedelta(days=stale_days))
+    if in_kev is True:
+        filters.append(models.Vulnerability.in_kev.is_(True))
     if q and q.strip():
         needle = f"%{q.strip().lower()}%"
         filters.append(

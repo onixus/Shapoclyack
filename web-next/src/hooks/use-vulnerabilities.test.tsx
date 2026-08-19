@@ -45,6 +45,8 @@ const VULN: TrackedVulnerability = {
   risk_level: "very_high",
   contextual_score: 9.1,
   cvss: 9.8,
+  in_kev: false,
+  exploit_maturity: null,
   state: "OPEN",
   state_changed_at: null,
   state_changed_by: null,

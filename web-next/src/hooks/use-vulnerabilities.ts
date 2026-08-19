@@ -36,6 +36,7 @@ function filtersKey(filters: VulnerabilityListFilters): Record<string, unknown> 
     unassigned: Boolean(filters.unassigned),
     sla: filters.sla ?? "",
     stale_days: filters.stale_days ?? null,
+    in_kev: Boolean(filters.in_kev),
   };
 }
 

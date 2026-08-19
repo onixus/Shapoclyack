@@ -31,6 +31,7 @@ from api.schemas import (
     Page,
     ProvisioningKeyInfo,
     TenantInfo,
+    TenantPosture,
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
@@ -38,6 +39,7 @@ from api.routes._pagination import PageParams, build_page
 from api.services import auth as auth_service
 from api.services import auth_audit
 from api.services import memberships as memberships_service
+from api.services import tenant_posture
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -183,6 +185,21 @@ def list_tenants(
         TenantInfo.model_validate(t)
         for t in tenants_service.list_tenants()
         if t["tenant_id"] in allowed
+    ]
+
+
+@router.get("/tenants/posture", response_model=list[TenantPosture])
+def list_tenant_posture(
+    user: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[TenantPosture]:
+    """Per-tenant risk comparison for an MSSP (#139). Same tenant set as ``GET /tenants``."""
+    allowed = memberships_service.tenants_for_user(
+        user.username, is_platform_admin=user.role == Role.admin
+    )
+    return [
+        TenantPosture.model_validate(row)
+        for row in tenant_posture.list_posture(settings, tenant_ids=allowed)
     ]
 
 

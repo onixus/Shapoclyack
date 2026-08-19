@@ -794,13 +794,19 @@ export async function deleteSchedule(scheduleId: string) {
 
 /** Cross-run asset inventory (Phase 7) — distinct from the per-run hosts/ports/vulns above. */
 export async function fetchAssets(
-  opts?: { tenantId?: string; status?: AssetStatus | ""; unowned?: boolean },
+  opts?: {
+    tenantId?: string;
+    status?: AssetStatus | "";
+    unowned?: boolean;
+    exposure?: AssetExposureLevel | "";
+  },
   page?: PageParams,
 ) {
   try {
     const params = pageSearchParams(page, tenantParam(opts?.tenantId));
     if (opts?.status) params.set("status", opts.status);
     if (opts?.unowned) params.set("unowned", "true");
+    if (opts?.exposure) params.set("exposure", opts.exposure);
     const { data } = await api.get<Page<AssetSummary>>(`/assets?${params}`);
     return data;
   } catch (error) {
@@ -964,6 +970,28 @@ export async function fetchTenants() {
   }
 }
 
+export type TenantPosture = {
+  tenant_id: string;
+  name: string;
+  status: string;
+  estate_risk: string | null;
+  open_total: number;
+  unassigned: number;
+  breached: number;
+  in_kev_open: number;
+  unowned_assets: number;
+  declared_internet_assets: number;
+};
+
+export async function fetchTenantPosture() {
+  try {
+    const { data } = await api.get<TenantPosture[]>("/tenants/posture");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function createTenant(body: { name: string; tenant_id?: string }) {
   try {
     const { data } = await api.post<TenantInfo>("/tenants", body);
@@ -1010,6 +1038,8 @@ export type TrackedVulnerability = {
   risk_level: string | null;
   contextual_score: number | null;
   cvss: number | null;
+  in_kev: boolean;
+  exploit_maturity: string | null;
   state: VulnLifecycleState;
   state_changed_at: string | null;
   state_changed_by: string | null;
@@ -1091,6 +1121,7 @@ export type VulnerabilityListFilters = {
   unassigned?: boolean;
   sla?: SlaState | "";
   stale_days?: number;
+  in_kev?: boolean;
 };
 
 export type VulnerabilityTransitionBody = {
@@ -1122,6 +1153,7 @@ export async function fetchTrackedVulnerabilities(
     if (filters?.assignee) params.set("assignee", filters.assignee);
     if (filters?.unassigned) params.set("unassigned", "true");
     if (filters?.sla) params.set("sla", filters.sla);
+    if (filters?.in_kev) params.set("in_kev", "true");
     if (filters?.stale_days != null) params.set("stale_days", String(filters.stale_days));
     const { data } = await api.get<Page<TrackedVulnerability>>(`/vulnerabilities?${params}`);
     return data;

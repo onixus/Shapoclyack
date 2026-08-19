@@ -274,40 +274,30 @@ Final risk       CRITICAL
 
 ## Attack Surface
 
-Add:
+Delivered in part on `/exposure` and `/attack-surface`
+([#139](https://github.com/onixus/Shapoclyack/issues/139)):
 
-- internet exposure map;
-- attack paths;
-- vulnerable services;
-- external risk view.
+- operator-declared exposure inventory (not a scan internet map — [#171](https://github.com/onixus/Shapoclyack/issues/171));
+- existing hostname → IP → port → service graph of one scan.
+
+Still open: attack paths ([#173](https://github.com/onixus/Shapoclyack/issues/173)).
 
 ---
 
 ## Threat Intelligence
 
-Integrate:
-
-- KEV;
-- exploit intelligence;
-- active exploitation signals;
-- threat indicators.
+Delivered on `/threats` ([#139](https://github.com/onixus/Shapoclyack/issues/139)):
+open tracked findings on CISA KEV, with exploit maturity from the last
+observation. Indicators beyond KEV/EPSS/maturity are still overlay data on
+the finding card.
 
 ---
 
 ## MSSP view
 
-Multi-tenant dashboard:
-
-```
-Customer A
- Risk 82%
-
-Customer B
- Risk 45%
-
-Customer C
- Risk 91%
-```
+Delivered on `/tenants` ([#139](https://github.com/onixus/Shapoclyack/issues/139)):
+per-customer estate risk, open work, SLA, KEV, unowned assets. Scoped to the
+caller's tenants so a customer operator cannot see the rest of the portfolio.
 
 ---
 

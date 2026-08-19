@@ -6,6 +6,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Exposure Management and MSSP views** ([#139](https://github.com/onixus/Shapoclyack/issues/139)) —
+  `/tenants` compares customer posture (worst open NIST risk, SLA, unassigned,
+  KEV, unowned assets, operator-declared internet). `/exposure` lists assets
+  by declared `exposure_level` — a decision, not a scan fact ([#171](https://github.com/onixus/Shapoclyack/issues/171)).
+  `/threats` is open tracked findings on CISA KEV (`in_kev` / `exploit_maturity`
+  copied onto the tracker, migration `0018`). Attack paths are not modelled
+  ([#173](https://github.com/onixus/Shapoclyack/issues/173)); the attack-surface
+  graph stays one scan's hostname→IP→port→service map.
+
 - **Asset-centric security view** ([#136](https://github.com/onixus/Shapoclyack/issues/136)) —
   `/assets` and `/assets/view` treat the asset as the primary security object.
   The inventory lists owner, service, exposure, open tracked findings and the

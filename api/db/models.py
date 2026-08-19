@@ -590,6 +590,10 @@ class Vulnerability(Base):
     risk_level: Mapped[str | None] = mapped_column(default=None)
     contextual_score: Mapped[float | None] = mapped_column(default=None)
     cvss: Mapped[float | None] = mapped_column(default=None)
+    # Latest observation's exploit overlay (#139). Copied here so Threat Intel
+    # does not depend on the run directory still being on disk.
+    in_kev: Mapped[bool] = mapped_column(default=False, server_default="false")
+    exploit_maturity: Mapped[str | None] = mapped_column(default=None)
     # Lifecycle. Legal moves live in api/services/vuln_states.py; the column
     # stays a plain string so adding a state does not need a migration.
     state: Mapped[str] = mapped_column(default="OPEN")
