@@ -34,8 +34,11 @@ export const queryKeys = {
   agentsPage: (page?: PageParams) => ["agents", pageKey(page)] as const,
   tenants: ["tenants"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,
-  assetsPage: (filters: { status?: string; unowned?: boolean }, page?: PageParams) =>
-    ["assets", filters, pageKey(page)] as const,
+  assetsPage: (
+    filters: { status?: string; unowned?: boolean; exposure?: string },
+    page?: PageParams,
+  ) => ["assets", filters, pageKey(page)] as const,
+  tenantPosture: ["tenants", "posture"] as const,
   assetSummary: ["assets", "summary"] as const,
   asset: (assetId: string, tenantId = "default") => ["asset", assetId, tenantId] as const,
   assetEvents: (assetId: string, tenantId = "default") =>

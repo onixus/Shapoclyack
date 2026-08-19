@@ -197,6 +197,7 @@ def list_assets(
     *,
     status: str | None = None,
     unowned: bool = False,
+    exposure: str | None = None,
     q: str | None = None,
     offset: int = 0,
     limit: int = 500,
@@ -226,6 +227,10 @@ def list_assets(
         if unowned:
             filters.append(models.Asset.owner_email.is_(None))
             filters.append(models.Asset.status.in_(("active", "stale")))
+        if exposure:
+            if exposure not in EXPOSURE_LEVELS:
+                raise ValueError(f"exposure must be one of {', '.join(EXPOSURE_LEVELS)}")
+            filters.append(models.Asset.exposure_level == exposure)
         if q and q.strip():
             needle = f"%{q.strip().lower()}%"
             ident_hit = (

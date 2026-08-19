@@ -160,6 +160,10 @@ def list_vulnerabilities(
             "auto-closed, so this is how a stale finding gets looked at.",
         ),
     ] = None,
+    in_kev: Annotated[
+        bool,
+        Query(description="Open or any-state findings currently on CISA KEV"),
+    ] = False,
 ) -> Page[VulnerabilityInfo]:
     try:
         items, total = vulns_service.list_vulnerabilities(
@@ -173,6 +177,7 @@ def list_vulnerabilities(
             unassigned=unassigned,
             sla=sla,
             stale_days=stale_days,
+            in_kev=True if in_kev else None,
             offset=page.offset,
             limit=page.limit,
             q=page.q,

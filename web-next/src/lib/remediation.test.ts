@@ -16,6 +16,8 @@ function stub(overrides: Partial<TrackedVulnerability>): TrackedVulnerability {
     risk_level: "high",
     contextual_score: 7,
     cvss: 7,
+    in_kev: false,
+    exploit_maturity: null,
     state: "OPEN",
     state_changed_at: null,
     state_changed_by: null,

@@ -41,7 +41,8 @@ export default function AttackSurfacePage() {
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Attack Surface Graph</h1>
             <p className="text-xs text-slate-400">
-              Interactive 4-column vector topology: FQDN Domains → IP Hosts → Open Ports → Running Services.
+              One scan&apos;s hostname → IP → port → service graph — not an attack path and not
+              an internet-exposure map.
               {runsQuery.isFetching ? " · Refreshing stream…" : ""}
             </p>
           </div>

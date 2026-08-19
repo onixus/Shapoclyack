@@ -99,6 +99,7 @@ not an authorization control.
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
+| `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory |
 | `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |

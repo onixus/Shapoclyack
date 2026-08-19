@@ -424,8 +424,7 @@ answer "what is our risk, who owns it, what breaches SLA" without starting a sca
 platform today has no representation of *ownership of remediation*, *vulnerability
 lifecycle state*, or *SLA* — so the three backend issues are the real scope and the five
 UI issues render what they produce. The backend half of this track (#144, #145, #146)
-is done (on branch / merged); remaining Track C work is Exposure/MSSP
-([#139](https://github.com/onixus/Shapoclyack/issues/139)). None of it appears in Track A.
+is done (on branch / merged). Track C UI through #139 is on branch. None of it appears in Track A.
 
 | Issue | Layer | Scope |
 |-------|-------|-------|
@@ -436,7 +435,7 @@ is done (on branch / merged); remaining Track C work is Exposure/MSSP
 | [#136](https://github.com/onixus/Shapoclyack/issues/136) | UI | **Done on branch** — asset-centric security view: inventory and `/assets/view` show owner, service, exposure, open tracked risk and the next required action. Scan evidence is secondary. Built on #146 |
 | [#137](https://github.com/onixus/Shapoclyack/issues/137) | UI | **Done on branch** — Vulnerability Center (`/vulnerabilities`, `/vulnerabilities/view`) on top of #145: lifecycle stepper, owner, SLA, risk acceptance, audit trail. CWE is not stored on the tracked finding yet |
 | [#138](https://github.com/onixus/Shapoclyack/issues/138) | UI | **Done on branch** — Remediation Board (`/remediation`) + comments + ticket *links*. Native Jira/ServiceNow/SMAX create stays [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2 |
-| [#139](https://github.com/onixus/Shapoclyack/issues/139) | UI | Exposure Management + MSSP views |
+| [#139](https://github.com/onixus/Shapoclyack/issues/139) | UI | **Done on branch** — MSSP tenant posture comparison, declared-exposure inventory, KEV threat intel. Attack paths stay [#173](https://github.com/onixus/Shapoclyack/issues/173); internet as a scan fact stays [#171](https://github.com/onixus/Shapoclyack/issues/171) |
 
 Backend before UI: #144/#145/#146 → their dependent UI issues. Two overlaps with Track A
 are worth resolving before either starts, so the work is not built twice: ticketing

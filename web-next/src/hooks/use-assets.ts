@@ -8,6 +8,7 @@ import {
   fetchAssetSummary,
   fetchAssets,
   updateAsset,
+  type AssetExposureLevel,
   type AssetStatus,
   type PageParams,
   type UpdateAssetBody,
@@ -16,12 +17,19 @@ import { POLL_INTERVALS } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useAssets(
-  filters: { status: AssetStatus | ""; unowned?: boolean },
+  filters: { status: AssetStatus | ""; unowned?: boolean; exposure?: AssetExposureLevel | "" },
   page?: PageParams,
 ) {
   return useQuery({
-    queryKey: queryKeys.assetsPage({ status: filters.status, unowned: filters.unowned }, page),
-    queryFn: () => fetchAssets({ status: filters.status, unowned: filters.unowned }, page),
+    queryKey: queryKeys.assetsPage(
+      { status: filters.status, unowned: filters.unowned, exposure: filters.exposure },
+      page,
+    ),
+    queryFn: () =>
+      fetchAssets(
+        { status: filters.status, unowned: filters.unowned, exposure: filters.exposure },
+        page,
+      ),
     refetchInterval: POLL_INTERVALS.assets,
   });
 }

@@ -21,7 +21,10 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/remediation` | Remediation Kanban — detection to verified closure | Viewer; operator to move/assign/comment/link |
 | `/assets` | Asset inventory: owner, service, exposure, open tracked risk | Viewer |
 | `/assets/view?assetId=…` | Asset-centric security view: required actions, tracked findings, software, scan evidence, history | Viewer; operator for permitted edits |
-| `/attack-surface` | Hostname → IP → port → service graph | Viewer |
+| `/exposure` | Operator-declared exposure inventory (not a scan measurement) | Viewer |
+| `/threats` | Open tracked findings on CISA KEV | Viewer |
+| `/tenants` | MSSP customer posture comparison and provisioning | Operator; admin to create |
+| `/attack-surface` | One scan's hostname → IP → port → service graph (not an attack path) | Viewer |
 | `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
 | `/endpoints` | Endpoint device/software inventory and recent changes | Viewer |
 | `/jobs` | Start and monitor scan jobs | Operator |
@@ -30,7 +33,6 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/reports` | Report and artifact discovery | Viewer |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/agents` | Distributed worker fleet | Operator |
-| `/tenants` | Tenant provisioning and membership administration | Admin |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
 
 ## Risk Overview
@@ -131,6 +133,24 @@ owner or service.
 Operators edit owner, service, environment, classification and exposure on
 the same page. Exposure is how the asset is *treated*, not a scan fact.
 See [asset-context.md](asset-context.md).
+
+## Exposure and MSSP
+
+`/tenants` is the provider comparison ([#139](https://github.com/onixus/Shapoclyack/issues/139)):
+each customer row is estate risk, open work, SLA breaches, KEV, unowned
+assets, and **declared** internet-facing assets. The same tenant set as
+`GET /api/tenants` — an operator of one customer does not see the others.
+Open switches the console into that tenant.
+
+`/exposure` lists assets by operator-set `exposure_level`. It is explicitly
+not "what the scanner saw on the internet" ([#171](https://github.com/onixus/Shapoclyack/issues/171)).
+
+`/threats` is open tracked findings currently on CISA KEV. `in_kev` and
+`exploit_maturity` are copied from the last observation onto the tracker so
+the list survives run pruning.
+
+Attack paths (exploit chaining) are not drawn. The attack-surface page is
+still one run's topology.
 
 ## Geo Map
 
