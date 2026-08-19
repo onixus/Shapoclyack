@@ -98,7 +98,7 @@ not an authorization control.
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
-| `/api/assets` | Persistent asset inventory and metadata |
+| `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/endpoint` | Endpoint device and software inventory |
 | `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
@@ -186,8 +186,9 @@ timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
 
 ## Pagination
 
-`GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`, `/api/schedules`,
-`/api/webhooks` and `/api/vulnerabilities` (plus the delivery and event lists)
+`GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`,
+`/api/assets/{id}/events`, `/api/schedules`, `/api/webhooks` and
+`/api/vulnerabilities` (plus the delivery and event lists)
 return a page envelope rather than a bare array:
 
 ```json
@@ -203,7 +204,7 @@ return a page envelope rather than a bare array:
 | `order` | `asc` or `desc` (default `desc`) |
 
 Sortable fields per resource: assets — `last_seen`, `first_seen`, `status`,
-`asset_criticality`, `asset_id`; jobs — `started_at`, `finished_at`, `status`,
+`asset_criticality`, `asset_id`, `owner_email`, `business_service`; jobs — `started_at`, `finished_at`, `status`,
 `job_id`, `mode`, `tenant_id`; agents — `hostname`, `agent_id`, `status`,
 `last_seen_at`, `registered_at`, `tenant_id`; schedules — `created_at`, `name`,
 `next_run_at`, `last_run_at`, `enabled`, `tenant_id`. Runs are always ordered by

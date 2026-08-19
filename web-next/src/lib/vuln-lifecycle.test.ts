@@ -3,6 +3,7 @@ import {
   assetDetailHref,
   findingLabel,
   legalTransitions,
+  requiredAction,
   VULN_PRIMARY_NEXT,
   VULN_STATES,
   VULN_TRANSITIONS,
@@ -38,6 +39,24 @@ describe("href helpers", () => {
     expect(vulnListHref({ unassigned: true, severity: "critical" })).toBe(
       "/vulnerabilities?severity=critical&unassigned=1",
     );
+  });
+});
+
+describe("requiredAction", () => {
+  it("puts SLA breach and missing owner ahead of the next lifecycle step", () => {
+    expect(
+      requiredAction({ state: "OPEN", assignee: "ada", sla_state: "breached" }),
+    ).toBe("SLA breached");
+    expect(requiredAction({ state: "OPEN", assignee: null, sla_state: "on_track" })).toBe(
+      "Assign owner",
+    );
+    expect(
+      requiredAction({ state: "OPEN", assignee: "ada", sla_state: "on_track" }),
+    ).toBe("Acknowledge");
+    expect(
+      requiredAction({ state: "FIXING", assignee: "ada", sla_state: "due_soon" }),
+    ).toBe("Verify");
+    expect(requiredAction({ state: "CLOSED", assignee: "ada", sla_state: "none" })).toBe("None");
   });
 });
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 
 from api.auth import get_settings
@@ -23,6 +24,15 @@ def _seed_asset(host_ip: str, *, asset_criticality: int | None = None) -> str:
     asset_id = ip_identity_key(tenant_id, host_ip)
     now = datetime.now(UTC)
     with get_session(settings.postgres_url) as session:
+        if session.get(models.Tenant, tenant_id) is None:
+            session.add(
+                models.Tenant(
+                    tenant_id=tenant_id,
+                    name="Default",
+                    status="active",
+                    created_at=now,
+                )
+            )
         if session.get(models.Asset, asset_id) is None:
             session.add(
                 models.Asset(
@@ -157,3 +167,147 @@ def test_update_asset_unknown_id_is_404():
         json={"asset_criticality": 1},
     )
     assert response.status_code == 404
+
+
+def _seed_open_finding(asset_id: str, *, risk_level: str = "very_high") -> None:
+    settings = get_settings()
+    tenant_id = tenants_service.DEFAULT_TENANT_ID
+    now = datetime.now(UTC).replace(tzinfo=None)
+    vuln_id = f"vln-{asset_id[:16]}"
+    with get_session(settings.postgres_url) as session:
+        if session.get(models.Vulnerability, vuln_id) is not None:
+            return
+        session.add(
+            models.Vulnerability(
+                vuln_id=vuln_id,
+                tenant_id=tenant_id,
+                asset_id=asset_id,
+                finding_key=f"key-{asset_id}",
+                cve="CVE-2024-14601",
+                title="seeded finding",
+                severity="critical",
+                risk_level=risk_level,
+                contextual_score=9.5,
+                state="OPEN",
+                state_changed_at=now,
+                first_seen_at=now,
+                last_seen_at=now,
+                sla_started_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+def test_business_context_is_audited_and_risk_is_rolled_up():
+    """#146: PATCH writes context + a trail; GET explains the asset's risk."""
+    asset_id = _seed_asset(f"10.0.146.{uuid4().hex[:8]}")
+    _seed_open_finding(asset_id)
+    client = api_client()
+    operator = login(client, "operator")
+    viewer = login(client, "viewer")
+    op = {"Authorization": f"Bearer {operator}"}
+    vw = {"Authorization": f"Bearer {viewer}"}
+
+    patched = client.patch(
+        f"/api/assets/{asset_id}",
+        headers=op,
+        json={
+            "owner_email": "ada@example.com",
+            "business_service": "payments-api",
+            "environment": "production",
+            "data_classification": "restricted",
+            "exposure_level": "internet",
+            "context_source": "cmdb",
+        },
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["business_service"] == "payments-api"
+    assert body["environment"] == "production"
+    assert body["data_classification"] == "restricted"
+    assert body["exposure_level"] == "internet"
+    assert body["context_source"] == "cmdb"
+    assert body["risk"]["open_total"] == 1
+    assert body["risk"]["unassigned"] == 1
+    assert body["risk"]["estate_risk"] == "very_high"
+
+    assert (
+        client.patch(
+            f"/api/assets/{asset_id}",
+            headers=op,
+            json={"environment": "outer-space"},
+        ).status_code
+        == 422
+    )
+
+    # Same values write no extra audit rows.
+    before = client.get(f"/api/assets/{asset_id}/events", headers=vw).json()["total"]
+    assert (
+        client.patch(
+            f"/api/assets/{asset_id}",
+            headers=op,
+            json={"environment": "production", "context_source": "cmdb"},
+        ).status_code
+        == 200
+    )
+    assert client.get(f"/api/assets/{asset_id}/events", headers=vw).json()["total"] == before
+
+    events = client.get(f"/api/assets/{asset_id}/events", headers=vw)
+    assert events.status_code == 200
+    fields = {row["field"] for row in events.json()["items"]}
+    assert "owner_email" in fields
+    assert "exposure_level" in fields
+    assert all(row["source"] == "cmdb" for row in events.json()["items"])
+    assert events.json()["items"][0]["actor"] == "operator"
+
+    cleared = client.patch(
+        f"/api/assets/{asset_id}",
+        headers=op,
+        json={"business_service": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["business_service"] is None
+    assert any(
+        row["field"] == "business_service" and row["new_value"] is None
+        for row in client.get(f"/api/assets/{asset_id}/events", headers=vw).json()["items"]
+    )
+
+    assert client.get("/api/assets/does-not-exist/events", headers=vw).status_code == 404
+
+
+def test_asset_inventory_lists_context_and_open_risk():
+    """#136: the inventory is a security list, not just identifiers."""
+    asset_id = _seed_asset(f"10.0.136.{uuid4().hex[:8]}")
+    _seed_open_finding(asset_id)
+    client = api_client()
+    operator = login(client, "operator")
+    viewer = login(client, "viewer")
+    assert (
+        client.patch(
+            f"/api/assets/{asset_id}",
+            headers={"Authorization": f"Bearer {operator}"},
+            json={
+                "owner_email": "ada@example.com",
+                "business_service": "billing-api",
+                "environment": "production",
+                "exposure_level": "partner",
+            },
+        ).status_code
+        == 200
+    )
+
+    listed = client.get(
+        "/api/assets",
+        params={"q": "billing-api", "limit": 5000},
+        headers={"Authorization": f"Bearer {viewer}"},
+    )
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()["items"] if item["asset_id"] == asset_id)
+    assert row["owner_email"] == "ada@example.com"
+    assert row["business_service"] == "billing-api"
+    assert row["environment"] == "production"
+    assert row["exposure_level"] == "partner"
+    assert row["open_findings"] == 1
+    assert row["unassigned_findings"] == 1
+    assert row["estate_risk"] == "very_high"

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   fetchAsset,
+  fetchAssetContextEvents,
   fetchAssetSummary,
   fetchAssets,
   updateAsset,
@@ -41,6 +42,14 @@ export function useAssetDetail(assetId: string | null, tenantId = "default") {
   });
 }
 
+export function useAssetContextEvents(assetId: string | null, tenantId = "default") {
+  return useQuery({
+    queryKey: queryKeys.assetEvents(assetId ?? "", tenantId),
+    queryFn: () => fetchAssetContextEvents(assetId!, tenantId, { limit: 50 }),
+    enabled: Boolean(assetId),
+  });
+}
+
 export function useUpdateAsset(assetId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -48,6 +57,7 @@ export function useUpdateAsset(assetId: string) {
     onSuccess: async (updated) => {
       queryClient.setQueryData(queryKeys.asset(assetId), updated);
       await queryClient.invalidateQueries({ queryKey: ["assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["asset", assetId] });
       toast.success("Asset updated");
     },
     onError: (err) => {

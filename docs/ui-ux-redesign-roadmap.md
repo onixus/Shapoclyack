@@ -148,7 +148,8 @@ Asset
  + History
 ```
 
-Required features:
+Required features (delivered on `/assets` and `/assets/view`,
+[#136](https://github.com/onixus/Shapoclyack/issues/136) / [#146](https://github.com/onixus/Shapoclyack/issues/146)):
 
 - ownership management;
 - business context;

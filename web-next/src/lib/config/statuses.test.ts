@@ -3,6 +3,10 @@ import type { AgentInfo } from "@/lib/api";
 import { SEVERITIES } from "@/lib/run-data";
 import {
   AGENT_STATUS,
+  ASSET_CONTEXT_SOURCE,
+  ASSET_DATA_CLASSIFICATION,
+  ASSET_ENVIRONMENT,
+  ASSET_EXPOSURE,
   ASSET_STATUS,
   JOB_STATUS,
   SEVERITY_STATUS,
@@ -12,6 +16,11 @@ import {
   VULN_LIFECYCLE_STATUS,
   agentEffectiveStatus,
 } from "@/lib/config/statuses";
+import {
+  ASSET_DATA_CLASSIFICATIONS,
+  ASSET_ENVIRONMENTS,
+  ASSET_EXPOSURE_LEVELS,
+} from "@/lib/asset-context";
 import { NIST_RISK_LEVELS, SLA_STATES, VULN_STATES } from "@/lib/vuln-lifecycle";
 
 function makeAgent(overrides: Partial<AgentInfo>): AgentInfo {
@@ -47,6 +56,12 @@ describe("status maps", () => {
     expect(Object.keys(VULN_LIFECYCLE_STATUS).sort()).toEqual([...VULN_STATES].sort());
     expect(Object.keys(SLA_STATUS).sort()).toEqual([...SLA_STATES].sort());
     expect(Object.keys(RISK_LEVEL_STATUS).sort()).toEqual([...NIST_RISK_LEVELS].sort());
+    expect(Object.keys(ASSET_ENVIRONMENT).sort()).toEqual([...ASSET_ENVIRONMENTS].sort());
+    expect(Object.keys(ASSET_DATA_CLASSIFICATION).sort()).toEqual(
+      [...ASSET_DATA_CLASSIFICATIONS].sort(),
+    );
+    expect(Object.keys(ASSET_EXPOSURE).sort()).toEqual([...ASSET_EXPOSURE_LEVELS].sort());
+    expect(Object.keys(ASSET_CONTEXT_SOURCE).sort()).toEqual(["ad", "cmdb", "operator", "other"]);
   });
 
   it("give every entry a label and either a variant or a color class", () => {
@@ -59,6 +74,10 @@ describe("status maps", () => {
       VULN_LIFECYCLE_STATUS,
       SLA_STATUS,
       RISK_LEVEL_STATUS,
+      ASSET_ENVIRONMENT,
+      ASSET_DATA_CLASSIFICATION,
+      ASSET_EXPOSURE,
+      ASSET_CONTEXT_SOURCE,
     ]) {
       for (const style of Object.values(map)) {
         expect(style.label).toBeTruthy();

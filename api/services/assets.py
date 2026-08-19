@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -26,6 +26,22 @@ from scanner.pipeline.asset_identity import (
 )
 
 LOG = logging.getLogger("shapoclyack.assets")
+
+#: Operator-set vocabularies (#146). Closed lists so a CMDB import cannot
+#: invent a fifth environment that the UI cannot render.
+ENVIRONMENTS = ("production", "staging", "development", "lab", "other")
+DATA_CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
+EXPOSURE_LEVELS = ("internet", "partner", "internal", "unknown")
+CONTEXT_SOURCES = ("operator", "cmdb", "ad", "other")
+CONTEXT_FIELDS = (
+    "owner_email",
+    "business_unit",
+    "business_service",
+    "environment",
+    "data_classification",
+    "exposure_level",
+    "asset_criticality",
+)
 
 
 @dataclass(frozen=True)
@@ -170,6 +186,8 @@ ASSET_SORT_COLUMNS = {
     "status": models.Asset.status,
     "asset_criticality": models.Asset.asset_criticality,
     "asset_id": models.Asset.asset_id,
+    "owner_email": models.Asset.owner_email,
+    "business_service": models.Asset.business_service,
 }
 
 
@@ -191,11 +209,12 @@ def list_assets(
     identifier search is an EXISTS subquery rather than a post-filter over the
     fetched page, so `total` is honest and `limit` bounds work, not results.
 
-    Identifiers for the whole page are fetched in one ``IN`` query rather than
-    one query per asset (ROADMAP P3.8): the N+1 cost was invisible in wall-clock
-    against a local socket but made the dashboard's ``limit=5000`` page issue
-    5002 statements and take ~1.1 s, and every one of those round-trips is paid
-    again over a real network. See docs/scale-profile.md.
+    Identifiers and the open-finding rollup for the whole page are fetched in
+    one ``IN`` query each rather than one query per asset (ROADMAP P3.8 / #136):
+    the N+1 cost was invisible in wall-clock against a local socket but made
+    the dashboard's ``limit=5000`` page issue 5002 statements and take ~1.1 s,
+    and every one of those round-trips is paid again over a real network. See
+    docs/scale-profile.md.
     """
     sort_column = ASSET_SORT_COLUMNS.get(sort or "", models.Asset.last_seen)
     direction = sort_column.asc() if (order or "").lower() == "asc" else sort_column.desc()
@@ -209,13 +228,20 @@ def list_assets(
             filters.append(models.Asset.status.in_(("active", "stale")))
         if q and q.strip():
             needle = f"%{q.strip().lower()}%"
-            filters.append(
+            ident_hit = (
                 select(models.AssetIdentifier.id)
                 .where(
                     models.AssetIdentifier.asset_id == models.Asset.asset_id,
                     func.lower(models.AssetIdentifier.identifier_value).like(needle),
                 )
                 .exists()
+            )
+            filters.append(
+                or_(
+                    ident_hit,
+                    func.lower(models.Asset.owner_email).like(needle),
+                    func.lower(models.Asset.business_service).like(needle),
+                )
             )
 
         total = session.execute(
@@ -240,10 +266,13 @@ def list_assets(
             ).scalars():
                 by_asset.setdefault(identifier.asset_id, []).append(identifier)
 
+        risk_by_asset = _page_open_risk(session, [asset.asset_id for asset in assets])
+
         results: list[dict] = []
         for asset in assets:
             identifiers = by_asset.get(asset.asset_id, [])
             primary = next((i.identifier_value for i in identifiers if i.identifier_type == "ip"), None)
+            risk = risk_by_asset.get(asset.asset_id, _EMPTY_PAGE_RISK)
             results.append(
                 {
                     "asset_id": asset.asset_id,
@@ -254,9 +283,53 @@ def list_assets(
                     "primary_identifier": primary or (identifiers[0].identifier_value if identifiers else None),
                     "identifier_count": len(identifiers),
                     "asset_criticality": asset.asset_criticality,
+                    "owner_email": asset.owner_email,
+                    "business_service": asset.business_service,
+                    "environment": asset.environment,
+                    "exposure_level": asset.exposure_level,
+                    "open_findings": risk["open_findings"],
+                    "unassigned_findings": risk["unassigned_findings"],
+                    "estate_risk": risk["estate_risk"],
                 }
             )
         return results, total
+
+
+_EMPTY_PAGE_RISK = {"open_findings": 0, "unassigned_findings": 0, "estate_risk": None}
+
+
+def _page_open_risk(session, page_ids: list[str]) -> dict[str, dict]:
+    """Open-finding rollup for one inventory page. One query, not N (#136)."""
+    from api.services import nist_risk, vuln_states
+
+    if not page_ids:
+        return {}
+    rows = session.execute(
+        select(
+            models.Vulnerability.asset_id,
+            models.Vulnerability.risk_level,
+            models.Vulnerability.assignee,
+        ).where(
+            models.Vulnerability.asset_id.in_(page_ids),
+            models.Vulnerability.state.in_(tuple(vuln_states.ACTIVE)),
+        )
+    ).all()
+    out: dict[str, dict] = {}
+    for asset_id, risk_level, assignee in rows:
+        bucket = out.setdefault(asset_id, {
+            "open_findings": 0,
+            "unassigned_findings": 0,
+            "estate_risk": None,
+        })
+        bucket["open_findings"] += 1
+        if not assignee:
+            bucket["unassigned_findings"] += 1
+        level = str(risk_level) if risk_level in nist_risk.LEVEL_RANK else None
+        if level and nist_risk.LEVEL_RANK[level] > nist_risk.LEVEL_RANK.get(
+            bucket["estate_risk"] or "", -1
+        ):
+            bucket["estate_risk"] = level
+    return out
 
 
 def summary(settings: Settings, tenant_id: str) -> dict:
@@ -293,6 +366,13 @@ def summary(settings: Settings, tenant_id: str) -> dict:
     }
 
 
+def asset_exists(settings: Settings, tenant_id: str, asset_id: str) -> bool:
+    """Tenant-scoped existence check — cheaper than ``get_asset`` (no risk rollup)."""
+    with get_session(settings.postgres_url) as session:
+        asset = session.get(models.Asset, asset_id)
+        return asset is not None and asset.tenant_id == tenant_id
+
+
 def get_asset(settings: Settings, tenant_id: str, asset_id: str) -> dict | None:
     with get_session(settings.postgres_url) as session:
         asset = session.get(models.Asset, asset_id)
@@ -304,7 +384,7 @@ def get_asset(settings: Settings, tenant_id: str, asset_id: str) -> dict | None:
         tags = session.execute(
             select(models.AssetTag).where(models.AssetTag.asset_id == asset_id)
         ).scalars().all()
-        return {
+        detail = {
             "asset_id": asset.asset_id,
             "tenant_id": asset.tenant_id,
             "status": asset.status,
@@ -313,12 +393,25 @@ def get_asset(settings: Settings, tenant_id: str, asset_id: str) -> dict | None:
             "owner_email": asset.owner_email,
             "business_unit": asset.business_unit,
             "asset_criticality": asset.asset_criticality,
+            "business_service": asset.business_service,
+            "environment": asset.environment,
+            "data_classification": asset.data_classification,
+            "exposure_level": asset.exposure_level,
+            "context_source": asset.context_source,
             "identifiers": [
                 {"identifier_type": i.identifier_type, "identifier_value": i.identifier_value}
                 for i in identifiers
             ],
             "tags": {t.key: t.value for t in tags},
         }
+    return _with_risk(settings, tenant_id, asset_id, detail)
+
+
+def _with_risk(settings: Settings, tenant_id: str, asset_id: str, detail: dict) -> dict:
+    from api.services import vulnerabilities as vulns_service
+
+    detail["risk"] = vulns_service.summary(settings, tenant_id=tenant_id, asset_id=asset_id)
+    return detail
 
 
 def get_asset_criticality_by_ip(settings: Settings, tenant_id: str, host_ip: str) -> int | None:
@@ -340,29 +433,55 @@ def get_asset_criticality_by_ip(settings: Settings, tenant_id: str, host_ip: str
 _MANUAL_STATUS = "decommissioned"
 
 
+def _validate_context(updates: dict[str, Any]) -> None:
+    if "asset_criticality" in updates and updates["asset_criticality"] is not None:
+        val = updates["asset_criticality"]
+        if not isinstance(val, int) or isinstance(val, bool) or not (0 <= val <= 4):
+            raise ValueError("asset_criticality must be an integer 0-4")
+    checks = (
+        ("environment", ENVIRONMENTS),
+        ("data_classification", DATA_CLASSIFICATIONS),
+        ("exposure_level", EXPOSURE_LEVELS),
+        ("context_source", CONTEXT_SOURCES),
+    )
+    for field, allowed in checks:
+        value = updates.get(field)
+        if value is None:
+            continue
+        if value not in allowed:
+            raise ValueError(f"{field} must be one of {', '.join(allowed)}")
+
+
+def _stringify(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
 def update_asset(
-    settings: Settings, tenant_id: str, asset_id: str, updates: dict[str, Any]
+    settings: Settings,
+    tenant_id: str,
+    asset_id: str,
+    updates: dict[str, Any],
+    *,
+    actor: str | None = None,
 ) -> dict | None:
-    """Partial update of operator-settable Asset fields (``owner_email``,
-    ``business_unit``, ``asset_criticality``, ``status``). Only keys present
-    in ``updates`` are touched, so an explicit ``None`` clears a field while
-    an omitted key leaves it untouched. Returns the updated asset (same shape
-    as ``get_asset``), or ``None`` if the asset doesn't exist for this tenant.
-    Raises ``ValueError`` if ``asset_criticality`` is present and not an int
-    0-4, or if ``status`` is present and not ``"decommissioned"`` — "active"/
-    "stale" stay system-managed (``upsert_assets_from_run``/
-    ``mark_stale_assets``), never operator-set.
+    """Partial update of operator-settable Asset fields.
+
+    Only keys present in ``updates`` are touched, so an explicit ``None``
+    clears a field while an omitted key leaves it untouched. Context writes
+    (#146) are audited in the same transaction. ``status`` may only be set to
+    ``decommissioned`` — "active"/"stale" stay system-managed.
 
     A decommission (Phase 10.1 ``decommissioned_host`` event) is logged the
     run an asset actually transitions into that status — not on a repeat
     PATCH once it's already decommissioned.
     """
-    if "asset_criticality" in updates and updates["asset_criticality"] is not None:
-        val = updates["asset_criticality"]
-        if not isinstance(val, int) or isinstance(val, bool) or not (0 <= val <= 4):
-            raise ValueError("asset_criticality must be an integer 0-4")
+    _validate_context(updates)
     if "status" in updates and updates["status"] not in (None, _MANUAL_STATUS):
         raise ValueError(f"status may only be manually set to {_MANUAL_STATUS!r}")
+    source = updates.get("context_source") or "operator"
+    now = _now().replace(tzinfo=None)
     with get_session(settings.postgres_url) as session:
         # Locked for the read-modify-write: two concurrent decommission PATCHes
         # would otherwise both read "active" and both count as the transition,
@@ -372,9 +491,30 @@ def update_asset(
         if asset is None or asset.tenant_id != tenant_id:
             return None
         previous_status = asset.status
-        for field in ("owner_email", "business_unit", "asset_criticality"):
-            if field in updates:
-                setattr(asset, field, updates[field])
+        for field in CONTEXT_FIELDS:
+            if field not in updates:
+                continue
+            old = getattr(asset, field)
+            new = updates[field]
+            if isinstance(new, str):
+                new = new.strip() or None
+            if old == new:
+                continue
+            setattr(asset, field, new)
+            session.add(
+                models.AssetContextEvent(
+                    asset_id=asset.asset_id,
+                    tenant_id=asset.tenant_id,
+                    occurred_at=now,
+                    field=field,
+                    old_value=_stringify(old),
+                    new_value=_stringify(new),
+                    actor=actor,
+                    source=source,
+                )
+            )
+        if "context_source" in updates or any(f in updates for f in CONTEXT_FIELDS):
+            asset.context_source = source
         decommissioned = (
             updates.get("status") == _MANUAL_STATUS and previous_status != _MANUAL_STATUS
         )
@@ -423,3 +563,43 @@ def _publish_decommissioned(
         )
     except Exception:  # noqa: BLE001
         LOG.exception("decommissioned_host publish failed tenant=%s asset=%s", tenant_id, asset_id)
+
+
+def list_context_events(
+    settings: Settings,
+    tenant_id: str,
+    asset_id: str,
+    *,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[list[dict], int]:
+    """Newest-first context audit trail for one asset."""
+    with get_session(settings.postgres_url) as session:
+        filters = [
+            models.AssetContextEvent.asset_id == asset_id,
+            models.AssetContextEvent.tenant_id == tenant_id,
+        ]
+        total = session.execute(
+            select(func.count()).select_from(models.AssetContextEvent).where(*filters)
+        ).scalar_one()
+        rows = session.execute(
+            select(models.AssetContextEvent)
+            .where(*filters)
+            .order_by(models.AssetContextEvent.occurred_at.desc(), models.AssetContextEvent.id.desc())
+            .offset(offset)
+            .limit(limit)
+        ).scalars().all()
+        return [
+            {
+                "id": row.id,
+                "asset_id": row.asset_id,
+                "tenant_id": row.tenant_id,
+                "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
+                "field": row.field,
+                "old_value": row.old_value,
+                "new_value": row.new_value,
+                "actor": row.actor,
+                "source": row.source,
+            }
+            for row in rows
+        ], total

@@ -309,6 +309,33 @@ export type AssetSummary = {
   primary_identifier: string | null;
   identifier_count: number;
   asset_criticality: number | null;
+  owner_email: string | null;
+  business_service: string | null;
+  environment: string | null;
+  exposure_level: string | null;
+  open_findings: number;
+  unassigned_findings: number;
+  estate_risk: string | null;
+};
+
+export type AssetEnvironment = "production" | "staging" | "development" | "lab" | "other";
+export type AssetDataClassification = "public" | "internal" | "confidential" | "restricted";
+export type AssetExposureLevel = "internet" | "partner" | "internal" | "unknown";
+export type AssetContextSource = "operator" | "cmdb" | "ad" | "other";
+
+export type AssetRisk = {
+  total: number;
+  open_total: number;
+  untriaged: number;
+  unassigned: number;
+  estate_risk: string | null;
+  by_state: Record<string, number>;
+  by_severity_open: Record<string, number>;
+  by_risk_level_open: Record<string, number>;
+  by_sla: Record<string, number>;
+  breached: number;
+  worst_breached_severity: string | null;
+  generated_at: string | null;
 };
 
 export type AssetDetail = {
@@ -320,14 +347,37 @@ export type AssetDetail = {
   owner_email: string | null;
   business_unit: string | null;
   asset_criticality: number | null;
+  business_service: string | null;
+  environment: string | null;
+  data_classification: string | null;
+  exposure_level: string | null;
+  context_source: string | null;
   identifiers: AssetIdentifier[];
   tags: Record<string, string>;
+  risk: AssetRisk | null;
+};
+
+export type AssetContextEvent = {
+  id: number;
+  asset_id: string;
+  tenant_id: string;
+  occurred_at: string | null;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  actor: string | null;
+  source: string | null;
 };
 
 export type UpdateAssetBody = {
   owner_email?: string | null;
   business_unit?: string | null;
   asset_criticality?: number | null;
+  business_service?: string | null;
+  environment?: AssetEnvironment | null;
+  data_classification?: AssetDataClassification | null;
+  exposure_level?: AssetExposureLevel | null;
+  context_source?: AssetContextSource | null;
   status?: "decommissioned";
 };
 
@@ -771,6 +821,18 @@ export async function fetchAsset(assetId: string, tenantId = "default") {
   try {
     const params = new URLSearchParams(tenantParam(tenantId));
     const { data } = await api.get<AssetDetail>(`/assets/${encodeURIComponent(assetId)}?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAssetContextEvents(assetId: string, tenantId = "default", page?: PageParams) {
+  try {
+    const params = pageSearchParams(page, tenantParam(tenantId));
+    const { data } = await api.get<Page<AssetContextEvent>>(
+      `/assets/${encodeURIComponent(assetId)}/events?${params}`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

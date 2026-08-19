@@ -1186,7 +1186,9 @@ def list_events(
     return [_event_to_dict(row) for row in rows], total
 
 
-def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, Any]:
+def summary(
+    settings: Settings, *, tenant_id: str | None = None, asset_id: str | None = None
+) -> dict[str, Any]:
     """Counts by lifecycle state, severity, NIST risk and SLA (#135/#137).
 
     One pass over the tenant's findings rather than one query per bucket: the
@@ -1201,6 +1203,8 @@ def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, An
     filters: list[Any] = []
     if tenant_id:
         filters.append(models.Vulnerability.tenant_id == tenant_id)
+    if asset_id:
+        filters.append(models.Vulnerability.asset_id == asset_id)
 
     by_state = {state: 0 for state in vuln_states.ORDER}
     by_severity = {severity: 0 for severity in SEVERITY_ORDER}

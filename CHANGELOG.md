@@ -6,6 +6,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Asset-centric security view** ([#136](https://github.com/onixus/Shapoclyack/issues/136)) —
+  `/assets` and `/assets/view` treat the asset as the primary security object.
+  The inventory lists owner, service, exposure, open tracked findings and the
+  worst open NIST `estate_risk` (one extra query per page, not per row).
+  Search matches owner and business service as well as identifiers. The asset
+  card opens on tracked findings with the next required action (SLA / assign /
+  lifecycle), KPIs for unassigned and breached work, software inventory, scan
+  evidence as a secondary tab, and context history. Assets sit next to
+  Vulnerabilities and Remediation in the nav.
+
+- **Asset business context** ([#146](https://github.com/onixus/Shapoclyack/issues/146)) —
+  the asset card can explain why a host is risky and who owns it. `PATCH
+  /api/assets/{id}` now stores `business_service`, `environment`
+  (`production`/`staging`/`development`/`lab`/`other`), `data_classification`
+  (`public`/`internal`/`confidential`/`restricted`) and `exposure_level`
+  (`internet`/`partner`/`internal`/`unknown`), with `context_source`
+  (`operator`/`cmdb`/`ad`/`other`) so a later CMDB/AD importer uses the same
+  write. Changes are audited in `asset_context_events` in the same
+  transaction (migration `0017_asset_business_context`).
+  `GET /api/assets/{id}` includes `risk` — the tracked-finding summary for
+  that asset, `estate_risk` being the worst open NIST level, not an average.
+  Exposure here is an operator decision, not a scan measurement ([#171](https://github.com/onixus/Shapoclyack/issues/171)
+  remains the network fact). Scoring still uses only `asset_criticality`.
+  Docs: [docs/asset-context.md](docs/asset-context.md).
+
 - **Remediation Board** ([#138](https://github.com/onixus/Shapoclyack/issues/138)) —
   `/remediation` is the Kanban over the #145 lifecycle: drag (or move) a
   finding from `OPEN` to verified `CLOSED`, assign, comment, and link an
@@ -21,9 +46,12 @@ All notable changes to Shapoclyack are documented in this file.
   `risk_level` (`GET /api/vulnerabilities/summary` grew `estate_risk`,
   `unassigned`, `by_risk_level_open`). Asset posture is
   `GET /api/assets/summary` (unowned = active/stale with no `owner_email`).
-  Internet-facing exposure is not counted — that input does not exist yet
-  (#171/#146). The run chart is labelled scan volume; historical risk
-  snapshots are still [#144](https://github.com/onixus/Shapoclyack/issues/144).
+  Internet-facing exposure is not counted on this page: operator-set
+  `exposure_level` lives on the asset ([#146](https://github.com/onixus/Shapoclyack/issues/146));
+  the network measurement is still [#171](https://github.com/onixus/Shapoclyack/issues/171).
+  Drawing zero would read as "nothing is exposed". The run chart is labelled
+  scan volume; historical risk snapshots are still
+  [#144](https://github.com/onixus/Shapoclyack/issues/144).
 
 - **Vulnerability Center** ([#137](https://github.com/onixus/Shapoclyack/issues/137)) —
   `/vulnerabilities` is the working set of tracked findings (owner, lifecycle

@@ -306,3 +306,6 @@ def test_list_assets_empty_page_skips_the_identifier_query(tmp_path):
     assert not [
         s for s in statements if "asset_identifiers" in s and s.strip().upper().startswith("SELECT")
     ]
+    assert not [
+        s for s in statements if "vulnerabilities" in s and s.strip().upper().startswith("SELECT")
+    ]

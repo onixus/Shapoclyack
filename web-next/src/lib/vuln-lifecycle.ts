@@ -88,6 +88,16 @@ export function vulnListHref(filters?: {
   return query ? `/vulnerabilities?${query}` : "/vulnerabilities";
 }
 
+/** What an analyst should do next on this finding — SLA and ownership first. */
+export function requiredAction(
+  vuln: Pick<TrackedVulnerability, "state" | "assignee" | "sla_state">,
+): string {
+  if (vuln.sla_state === "breached") return "SLA breached";
+  if (!vuln.assignee) return "Assign owner";
+  if (vuln.state === "CLOSED") return "None";
+  return VULN_TRANSITION_LABEL[VULN_PRIMARY_NEXT[vuln.state]];
+}
+
 export function findingLabel(
   vuln: Pick<TrackedVulnerability, "cve" | "script_id" | "title">,
 ): string {

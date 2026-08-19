@@ -172,8 +172,41 @@ class Asset(Base):
     business_unit: Mapped[str | None] = mapped_column(default=None)
     # Forward-compat for Phase 9 (exposure fingerprinting); unused this phase.
     asset_criticality: Mapped[int | None] = mapped_column(default=None)
+    # Business context (#146). Operator- or CMDB-set; never inferred from a
+    # scan. ``exposure_level`` is a *decision* ("we treat this as internet-
+    # facing"), not a measurement — network exposure is still #171.
+    business_service: Mapped[str | None] = mapped_column(default=None)
+    environment: Mapped[str | None] = mapped_column(default=None)
+    data_classification: Mapped[str | None] = mapped_column(default=None)
+    exposure_level: Mapped[str | None] = mapped_column(default=None)
+    # Who last wrote the context: operator | cmdb | ad | other.
+    context_source: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (Index("ix_assets_tenant_status", "tenant_id", "status"),)
+
+
+class AssetContextEvent(Base):
+    """One audited change to an asset's business context (#146).
+
+    Same contract as ``vulnerability_events``: written in the same transaction
+    as the PATCH. ``actor`` is a username or null (platform / import).
+    """
+
+    __tablename__ = "asset_context_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("assets.asset_id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    occurred_at: Mapped[datetime]
+    field: Mapped[str]
+    old_value: Mapped[str | None] = mapped_column(default=None)
+    new_value: Mapped[str | None] = mapped_column(default=None)
+    actor: Mapped[str | None] = mapped_column(default=None)
+    source: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (Index("ix_asset_context_events_asset_time", "asset_id", "occurred_at"),)
 
 
 class AssetIdentifier(Base):
