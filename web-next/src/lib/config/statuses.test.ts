@@ -6,12 +6,13 @@ import {
   ASSET_STATUS,
   JOB_STATUS,
   SEVERITY_STATUS,
+  RISK_LEVEL_STATUS,
   SLA_STATUS,
   TENANT_STATUS,
   VULN_LIFECYCLE_STATUS,
   agentEffectiveStatus,
 } from "@/lib/config/statuses";
-import { SLA_STATES, VULN_STATES } from "@/lib/vuln-lifecycle";
+import { NIST_RISK_LEVELS, SLA_STATES, VULN_STATES } from "@/lib/vuln-lifecycle";
 
 function makeAgent(overrides: Partial<AgentInfo>): AgentInfo {
   return {
@@ -45,6 +46,7 @@ describe("status maps", () => {
     expect(Object.keys(SEVERITY_STATUS).sort()).toEqual([...SEVERITIES].sort());
     expect(Object.keys(VULN_LIFECYCLE_STATUS).sort()).toEqual([...VULN_STATES].sort());
     expect(Object.keys(SLA_STATUS).sort()).toEqual([...SLA_STATES].sort());
+    expect(Object.keys(RISK_LEVEL_STATUS).sort()).toEqual([...NIST_RISK_LEVELS].sort());
   });
 
   it("give every entry a label and either a variant or a color class", () => {
@@ -56,6 +58,7 @@ describe("status maps", () => {
       SEVERITY_STATUS,
       VULN_LIFECYCLE_STATUS,
       SLA_STATUS,
+      RISK_LEVEL_STATUS,
     ]) {
       for (const style of Object.values(map)) {
         expect(style.label).toBeTruthy();

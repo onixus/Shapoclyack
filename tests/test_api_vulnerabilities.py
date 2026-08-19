@@ -86,9 +86,25 @@ def test_filters_and_summary(tmp_path, monkeypatch):
 
     summary = client.get("/api/vulnerabilities/summary", headers=viewer)
     assert summary.status_code == 200
-    assert summary.json()["open_total"] == 2
-    assert summary.json()["untriaged"] == 2
-    assert summary.json()["breached"] == 0
+    body = summary.json()
+    assert body["open_total"] == 2
+    assert body["untriaged"] == 2
+    assert body["breached"] == 0
+    assert body["unassigned"] == 2
+    assert body["estate_risk"] in {"very_low", "low", "moderate", "high", "very_high"}
+    assert sum(body["by_risk_level_open"].values()) == 2
+
+    assert client.get(
+        "/api/vulnerabilities", params={"unassigned": True}, headers=viewer
+    ).json()["total"] == 2
+    assert (
+        client.get(
+            "/api/vulnerabilities",
+            params={"unassigned": True, "assignee": "ada"},
+            headers=viewer,
+        ).status_code
+        == 422
+    )
 
 
 def test_viewer_cannot_transition_operator_can_and_illegal_moves_are_409(tmp_path, monkeypatch):

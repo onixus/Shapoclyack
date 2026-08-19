@@ -8,6 +8,7 @@ from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AssetDetail,
+    AssetInventorySummary,
     AssetSummary,
     EndpointSoftwareItemInfo,
     Page,
@@ -26,11 +27,16 @@ def list_assets(
     settings: Annotated[Settings, Depends(get_settings)],
     page: PageParams,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
+    unowned: Annotated[
+        bool,
+        Query(description="Active/stale assets with no owner_email — the dashboard's gap list"),
+    ] = False,
 ) -> Page[AssetSummary]:
     items, total = assets_service.list_assets(
         settings,
         principal.tenant_id,
         status=status_filter,
+        unowned=unowned,
         q=page.q,
         offset=page.offset,
         limit=page.limit,
@@ -38,6 +44,14 @@ def list_assets(
         order=page.order,
     )
     return build_page([AssetSummary.model_validate(item) for item in items], total, page)
+
+
+@router.get("/summary", response_model=AssetInventorySummary)
+def get_asset_summary(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    return assets_service.summary(settings, principal.tenant_id)
 
 
 @router.get("/{asset_id}", response_model=AssetDetail)

@@ -15,7 +15,7 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | Route | Purpose | Minimum role |
 |---|---|---|
 | `/login` | Create a user session | Public |
-| `/` | Exposure KPIs, risk trend, severity, top findings, asset posture | Viewer |
+| `/` | Risk Overview: estate NIST verdict, SLA, unassigned work, unowned assets | Viewer |
 | `/vulnerabilities` | Vulnerability Center: tracked findings, lifecycle, owner, SLA | Viewer |
 | `/vulnerabilities/view?vulnId=…` | Finding detail, transitions, assignment, risk acceptance, audit trail | Viewer; operator to move/assign; admin to accept risk |
 | `/assets` | Cross-run asset inventory | Viewer |
@@ -31,6 +31,32 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/agents` | Distributed worker fleet | Operator |
 | `/tenants` | Tenant provisioning and membership administration | Admin |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
+
+## Risk Overview
+
+`/` is the executive view of **current** cyber risk. It reads tracked findings
+(`GET /api/vulnerabilities/summary`) and asset posture
+(`GET /api/assets/summary`), not the last scan's `vulnerabilities.json`.
+
+Headline tiles:
+
+- **Estate risk** — the worst open NIST SP 800-30 `risk_level` (not an average:
+  a hundred Lows must not cancel a Very High);
+- open critical/high, SLA breaches, unassigned findings, assets without an
+  owner.
+
+"Top business risks" is the open tracked-finding list, worst `contextual_score`
+first, with owner and SLA. Click-throughs land on the Vulnerability Center
+(`?sla=breached`, `?unassigned=1`) or `/assets?unowned=1`.
+
+Internet-facing exposure is **not** a number on this page. The platform does
+not yet know whether a host is on the internet ([#171](https://github.com/onixus/Shapoclyack/issues/171),
+[#146](https://github.com/onixus/Shapoclyack/issues/146)); drawing zero would
+read as "nothing is exposed".
+
+The scan-activity chart is hosts/findings per recent **run** — volume, not
+estate risk over time. Historical risk snapshots are still open on
+[#144](https://github.com/onixus/Shapoclyack/issues/144).
 
 ## Vulnerability Center
 

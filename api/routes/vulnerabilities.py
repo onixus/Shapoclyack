@@ -144,6 +144,9 @@ def list_vulnerabilities(
     severity: Annotated[str | None, Query(description="critical | high | medium | low | unknown")] = None,
     asset_id: str | None = None,
     assignee: str | None = None,
+    unassigned: Annotated[
+        bool, Query(description="Open findings with no assignee — the dashboard's unowned work")
+    ] = False,
     sla: Annotated[
         str | None, Query(description="on_track | due_soon | breached | accepted | none")
     ] = None,
@@ -165,6 +168,7 @@ def list_vulnerabilities(
             severity=severity,
             asset_id=asset_id,
             assignee=assignee,
+            unassigned=unassigned,
             sla=sla,
             stale_days=stale_days,
             offset=page.offset,

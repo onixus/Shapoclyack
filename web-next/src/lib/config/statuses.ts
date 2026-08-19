@@ -3,6 +3,7 @@ import type {
   AssetStatus,
   EndpointReconciliationStatus,
   JobInfo,
+  NistRiskLevel,
   SlaState,
   TenantInfo,
   VulnLifecycleState,
@@ -118,5 +119,27 @@ export const SLA_STATUS: Record<SlaState, StatusStyle> = {
     className: "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold",
   },
   none: { label: "no SLA", variant: "secondary", className: "bg-slate-800 text-slate-400 border border-slate-700" },
+};
+
+/** NIST SP 800-30 qualitative levels — worst-last, matching `nist_risk.LEVELS`. */
+export const RISK_LEVEL_STATUS: Record<NistRiskLevel, StatusStyle & { tremorColor: string }> = {
+  very_high: {
+    label: "very high",
+    className: "bg-rose-500/20 text-rose-300 border border-rose-500/30 font-bold",
+    tremorColor: "rose",
+  },
+  high: {
+    label: "high",
+    className: "bg-orange-500/20 text-orange-300 border border-orange-500/30 font-semibold",
+    tremorColor: "orange",
+  },
+  moderate: { label: "moderate", className: IN_PROGRESS, tremorColor: "amber" },
+  low: { label: "low", className: "bg-sky-500/20 text-sky-300 border border-sky-500/30", tremorColor: "sky" },
+  very_low: {
+    label: "very low",
+    variant: "secondary",
+    className: "bg-slate-800 text-slate-400",
+    tremorColor: "slate",
+  },
 };
 

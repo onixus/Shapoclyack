@@ -744,13 +744,23 @@ export async function deleteSchedule(scheduleId: string) {
 
 /** Cross-run asset inventory (Phase 7) — distinct from the per-run hosts/ports/vulns above. */
 export async function fetchAssets(
-  opts?: { tenantId?: string; status?: AssetStatus | "" },
+  opts?: { tenantId?: string; status?: AssetStatus | ""; unowned?: boolean },
   page?: PageParams,
 ) {
   try {
     const params = pageSearchParams(page, tenantParam(opts?.tenantId));
     if (opts?.status) params.set("status", opts.status);
+    if (opts?.unowned) params.set("unowned", "true");
     const { data } = await api.get<Page<AssetSummary>>(`/assets?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAssetSummary() {
+  try {
+    const { data } = await api.get<AssetInventorySummary>("/assets/summary");
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -973,15 +983,28 @@ export type VulnerabilityEventInfo = {
   detail: Record<string, unknown>;
 };
 
+export type NistRiskLevel = "very_low" | "low" | "moderate" | "high" | "very_high";
+
 export type VulnerabilitySummary = {
   total: number;
   open_total: number;
   untriaged: number;
+  unassigned: number;
+  estate_risk: NistRiskLevel | null;
   by_state: Record<string, number>;
   by_severity_open: Record<string, number>;
+  by_risk_level_open: Record<string, number>;
   by_sla: Record<string, number>;
   breached: number;
   worst_breached_severity: string | null;
+  generated_at: string | null;
+};
+
+export type AssetInventorySummary = {
+  total: number;
+  unowned: number;
+  by_status: Record<string, number>;
+  by_criticality: Record<string, number>;
   generated_at: string | null;
 };
 
@@ -991,6 +1014,7 @@ export type VulnerabilityListFilters = {
   severity?: string;
   asset_id?: string;
   assignee?: string;
+  unassigned?: boolean;
   sla?: SlaState | "";
   stale_days?: number;
 };
@@ -1022,6 +1046,7 @@ export async function fetchTrackedVulnerabilities(
     if (filters?.severity) params.set("severity", filters.severity);
     if (filters?.asset_id) params.set("asset_id", filters.asset_id);
     if (filters?.assignee) params.set("assignee", filters.assignee);
+    if (filters?.unassigned) params.set("unassigned", "true");
     if (filters?.sla) params.set("sla", filters.sla);
     if (filters?.stale_days != null) params.set("stale_days", String(filters.stale_days));
     const { data } = await api.get<Page<TrackedVulnerability>>(`/vulnerabilities?${params}`);

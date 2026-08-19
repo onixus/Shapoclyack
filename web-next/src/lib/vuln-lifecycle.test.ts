@@ -35,6 +35,9 @@ describe("href helpers", () => {
     expect(vulnListHref({ assetId: "asset_1", sla: "breached" })).toBe(
       "/vulnerabilities?assetId=asset_1&sla=breached",
     );
+    expect(vulnListHref({ unassigned: true, severity: "critical" })).toBe(
+      "/vulnerabilities?severity=critical&unassigned=1",
+    );
   });
 });
 

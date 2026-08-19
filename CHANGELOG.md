@@ -6,6 +6,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Risk Overview dashboard** ([#135](https://github.com/onixus/Shapoclyack/issues/135)) —
+  `/` now answers "what is our risk, who owns it, what breaches SLA" from
+  tracked findings, not the last scan. Estate risk is the worst open NIST
+  `risk_level` (`GET /api/vulnerabilities/summary` grew `estate_risk`,
+  `unassigned`, `by_risk_level_open`). Asset posture is
+  `GET /api/assets/summary` (unowned = active/stale with no `owner_email`).
+  Internet-facing exposure is not counted — that input does not exist yet
+  (#171/#146). The run chart is labelled scan volume; historical risk
+  snapshots are still [#144](https://github.com/onixus/Shapoclyack/issues/144).
+
 - **Vulnerability Center** ([#137](https://github.com/onixus/Shapoclyack/issues/137)) —
   `/vulnerabilities` is the working set of tracked findings (owner, lifecycle
   state, SLA), not the last scan's raw list. Header counts come from

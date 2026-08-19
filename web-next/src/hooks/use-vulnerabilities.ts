@@ -28,6 +28,7 @@ function filtersKey(filters: VulnerabilityListFilters): Record<string, unknown> 
     severity: filters.severity ?? "",
     asset_id: filters.asset_id ?? "",
     assignee: filters.assignee ?? "",
+    unassigned: Boolean(filters.unassigned),
     sla: filters.sla ?? "",
     stale_days: filters.stale_days ?? null,
   };

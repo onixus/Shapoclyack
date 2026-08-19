@@ -47,12 +47,15 @@ function VulnerabilitiesInner() {
   const initialAssetId = (searchParams.get("assetId") || "").trim();
   const initialSla = (searchParams.get("sla") || "") as SlaState | "";
   const initialState = (searchParams.get("state") || "") as VulnLifecycleState | "";
+  const initialSeverity = (searchParams.get("severity") || "").trim();
+  const initialUnassigned = searchParams.get("unassigned") === "1";
 
   const [scope, setScope] = useState<"open" | "all">(initialState ? "all" : OPEN_WORKING_SET);
   const [state, setState] = useState<VulnLifecycleState | "">(initialState);
-  const [severity, setSeverity] = useState("");
+  const [severity, setSeverity] = useState(initialSeverity);
   const [sla, setSla] = useState<SlaState | "">(initialSla);
   const [staleDays, setStaleDays] = useState("");
+  const [unassigned, setUnassigned] = useState(initialUnassigned);
   const assetId = initialAssetId;
 
   const pagination = usePagination({ sort: "contextual_score", order: "desc" });
@@ -61,6 +64,7 @@ function VulnerabilitiesInner() {
     open_only: scope === "open" && !state,
     severity,
     asset_id: assetId || undefined,
+    unassigned: unassigned || undefined,
     sla,
     stale_days: staleDays ? Number(staleDays) : undefined,
   };
@@ -316,6 +320,21 @@ function VulnerabilitiesInner() {
                     {item.replace("_", " ")}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={unassigned ? "unassigned" : FILTER_ALL}
+              onValueChange={(value) => {
+                setUnassigned(value === "unassigned");
+                pagination.reset();
+              }}
+            >
+              <SelectTrigger className="w-40 bg-slate-900 border-slate-800 text-slate-200">
+                <SelectValue placeholder="Owner" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value={FILTER_ALL}>Any owner</SelectItem>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
               </SelectContent>
             </Select>
             <Select

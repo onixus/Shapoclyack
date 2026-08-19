@@ -1,4 +1,4 @@
-import type { SlaState, TrackedVulnerability, VulnLifecycleState } from "@/lib/api";
+import type { NistRiskLevel, SlaState, TrackedVulnerability, VulnLifecycleState } from "@/lib/api";
 
 /** Happy-path order — must match `api/services/vuln_states.py` ORDER. */
 export const VULN_STATES: readonly VulnLifecycleState[] = [
@@ -16,6 +16,15 @@ export const SLA_STATES: readonly SlaState[] = [
   "breached",
   "accepted",
   "none",
+] as const;
+
+/** Worst-last, matching `api/services/nist_risk.py` LEVELS. */
+export const NIST_RISK_LEVELS: readonly NistRiskLevel[] = [
+  "very_low",
+  "low",
+  "moderate",
+  "high",
+  "very_high",
 ] as const;
 
 /**
@@ -66,11 +75,15 @@ export function vulnListHref(filters?: {
   assetId?: string;
   sla?: SlaState;
   state?: VulnLifecycleState;
+  severity?: string;
+  unassigned?: boolean;
 }): string {
   const params = new URLSearchParams();
   if (filters?.assetId) params.set("assetId", filters.assetId);
   if (filters?.sla) params.set("sla", filters.sla);
   if (filters?.state) params.set("state", filters.state);
+  if (filters?.severity) params.set("severity", filters.severity);
+  if (filters?.unassigned) params.set("unassigned", "1");
   const query = params.toString();
   return query ? `/vulnerabilities?${query}` : "/vulnerabilities";
 }

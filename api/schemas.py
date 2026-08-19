@@ -857,14 +857,34 @@ class SlaPolicyRequest(BaseModel):
 
 
 class VulnerabilitySummary(BaseModel):
-    """Aggregates for the Vulnerability Center header (#137)."""
+    """Aggregates for the Vulnerability Center header and the Risk Dashboard
+    (#135, #137). ``estate_risk`` is the worst open NIST ``risk_level``."""
 
     total: int
     open_total: int
     untriaged: int
+    unassigned: int = 0
+    estate_risk: str | None = None
     by_state: dict[str, int] = Field(default_factory=dict)
     by_severity_open: dict[str, int] = Field(default_factory=dict)
+    by_risk_level_open: dict[str, int] = Field(default_factory=dict)
     by_sla: dict[str, int] = Field(default_factory=dict)
     breached: int
     worst_breached_severity: str | None = None
+    generated_at: str | None = None
+
+
+class AssetInventorySummary(BaseModel):
+    """Tenant asset posture for the Risk Dashboard (#135).
+
+    ``unowned`` is active+stale assets with no ``owner_email`` — decommissioned
+    boxes are out of the working set, so they do not inflate the number.
+    Internet-facing exposure is **not** counted: that input does not exist yet
+    ([#171](https://github.com/onixus/Shapoclyack/issues/171) / #146).
+    """
+
+    total: int
+    unowned: int
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_criticality: dict[str, int] = Field(default_factory=dict)
     generated_at: str | None = None
