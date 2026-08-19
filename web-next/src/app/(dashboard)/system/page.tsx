@@ -23,7 +23,8 @@ function EnabledBadge({ on }: { on: boolean }) {
 
 function freshness(db: EnrichmentDb): { label: string; className: string } {
   if (!db.present) return { label: "missing", className: "bg-rose-500/20 text-rose-300 border-rose-500/30" };
-  if (db.age_days != null && db.age_days > STALE_AFTER_DAYS) return { label: "stale", className: "bg-amber-500/20 text-amber-300 border-amber-500/30" };
+  const stale = db.stale ?? (db.age_days != null && db.age_days > STALE_AFTER_DAYS);
+  if (stale) return { label: "stale", className: "bg-amber-500/20 text-amber-300 border-amber-500/30" };
   return { label: "fresh", className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" };
 }
 

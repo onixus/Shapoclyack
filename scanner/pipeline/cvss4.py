@@ -55,10 +55,12 @@ class Cvss4Database:
                 score_f = float(score) if score is not None else None
             except (TypeError, ValueError):
                 score_f = None
+            published = value.get("published")
             entries[key.upper()] = {
                 "score": score_f,
                 "vector": value.get("vector") or value.get("vectorString") or "",
                 "severity": value.get("severity") or score_to_severity(score_f),
+                "published": str(published)[:10] if published else None,
             }
         LOG.info("Loaded CVSS4 database with %d CVE entries from %s", len(entries), path)
         return cls(entries)
@@ -84,6 +86,8 @@ def enrich_vulnerabilities(vulnerabilities: list[dict], database: Cvss4Database)
         item["cvss4"] = hit.get("score")
         item["cvss4_vector"] = hit.get("vector") or None
         item["cvss4_severity"] = hit.get("severity") or score_to_severity(hit.get("score"))
+        if hit.get("published"):
+            item["cve_published"] = hit["published"]
         # Prefer CVSS v4 for overall severity when a score is available.
         if item["cvss4"] is not None:
             item["severity"] = item["cvss4_severity"]

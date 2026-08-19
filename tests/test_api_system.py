@@ -32,7 +32,9 @@ def test_system_status_shape():
             assert tool.get("optional") is False
 
     enrichment_names = {db["name"] for db in body["enrichment"]}
-    assert enrichment_names == {"epss", "kev", "geoip", "cvss4", "asn"}
+    assert enrichment_names == {"epss", "kev", "exploit", "geoip", "cvss4", "asn"}
+    for db in body["enrichment"]:
+        assert "stale" in db
 
     assert set(body["scan_config"]["stages"]) >= {"fingerprint", "tls_posture", "nuclei", "pdf_summary"}
     assert "balanced" in body["scan_config"]["profiles"]

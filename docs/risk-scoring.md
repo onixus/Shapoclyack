@@ -54,6 +54,7 @@ claim.
 | **Exploit maturity** | see below | Floor **and** ceiling |
 | Scanner confidence | `finding_class` / `confidence` | Discount for hypotheses |
 | **Network exposure** | this host: RFC1918 / operator-set / explicit | ±20 on likelihood after bounds. `unknown` is a no-op |
+| **CVE age** | NVD `published`, else CVE-ID year | Raise-only, weak. Never a decay |
 
 Reachability and EPSS are blended 65/35 — reachability describes *this* finding,
 while EPSS is a statistic about the CVE that knows nothing about whether the
@@ -202,13 +203,12 @@ Each of these is a real gap with its own issue, not a silent approximation.
   `internal` / `unknown`. A public IP is **not** `external`. RFC1918 is
   `internal` (`address-space`). Operator `exposure_level=internet` is
   `external` (`operator-set`). `unknown` does not shift the score.
-- **No temporal input**
-  ([#172](https://github.com/onixus/Shapoclyack/issues/172)). A CVE published
-  yesterday and one from 2015 with the same evidence score the same. Note that
-  the fix is a modifier that only ever raises risk — an unpatched old flaw does
-  not become safer for having been ignored. How long a finding has been open is
-  an SLA question ([#145](https://github.com/onixus/Shapoclyack/issues/145)),
-  not a risk one.
+- **Finding-open age is still not a risk input.** How long *we* have had the
+  finding is SLA ([#145](https://github.com/onixus/Shapoclyack/issues/145)).
+  CVE *publication* age is now a weak raise-only likelihood bump
+  ([#172](https://github.com/onixus/Shapoclyack/issues/172)): never negative.
+  Stale EPSS/KEV/exploit overlays are named in the explanation and on
+  `/api/system`; they do not silently age the score down.
 - **No exploit-chaining, and no compensating controls**
   ([#173](https://github.com/onixus/Shapoclyack/issues/173)). Each finding is
   scored alone: two Moderates that combine into a domain takeover are still two

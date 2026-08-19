@@ -26,6 +26,9 @@ from api.settings import Settings
 
 LOG = logging.getLogger(__name__)
 
+# Same threshold the scorer uses when it warns that an overlay is stale (#172).
+ENRICHMENT_STALE_DAYS = 30
+
 # `<binary>: <version-probe args>` for the external scanner toolchain.
 # Phase 5: nmap is optional (default path is Pulse); pulse/nuclei/naabu/dnsx
 # cover the default stack. ``optional`` tools may report "not installed".
@@ -105,8 +108,15 @@ def _stat_db(name: str, path_str: str) -> dict[str, Any]:
     try:
         stat = path.stat()
     except OSError:
-        return {"name": name, "present": False, "path": path_str, "size_bytes": None,
-                "modified_at": None, "age_days": None}
+        return {
+            "name": name,
+            "present": False,
+            "path": path_str,
+            "size_bytes": None,
+            "modified_at": None,
+            "age_days": None,
+            "stale": False,
+        }
     modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
     age_days = round((datetime.now(tz=timezone.utc) - modified).total_seconds() / 86400, 1)
     return {
@@ -116,6 +126,7 @@ def _stat_db(name: str, path_str: str) -> dict[str, Any]:
         "size_bytes": stat.st_size,
         "modified_at": modified,
         "age_days": age_days,
+        "stale": age_days > ENRICHMENT_STALE_DAYS,
     }
 
 
@@ -129,6 +140,7 @@ def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
     paths = {
         "epss": os.environ.get("OCTO_EPSS_DATABASE") or "scanner/data/epss/epss-overlay.json",
         "kev": os.environ.get("OCTO_KEV_DATABASE") or "scanner/data/kev/kev-overlay.json",
+        "exploit": os.environ.get("OCTO_EXPLOIT_DATABASE") or "scanner/data/exploit/exploit-overlay.json",
         "geoip": os.environ.get("OCTO_GEOIP_DATABASE") or geoip_default,
         "cvss4": os.environ.get("OCTO_CVSS4_DATABASE") or cvss4_default,
         "asn": os.environ.get("OCTO_ASN_DATABASE") or asn_default,

@@ -29,6 +29,7 @@ def test_cvss4_load_wrapped_and_enrich(tmp_path: Path):
                         "score": 10.0,
                         "vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H",
                         "severity": "critical",
+                        "published": "2021-12-10",
                     }
                 },
             }
@@ -59,6 +60,7 @@ def test_cvss4_load_wrapped_and_enrich(tmp_path: Path):
     assert vulns[0]["cvss4"] == 10.0
     assert vulns[0]["cvss4_severity"] == "critical"
     assert vulns[0]["severity"] == "critical"
+    assert vulns[0]["cve_published"] == "2021-12-10"
     assert vulns[1]["cvss4"] is None
 
 

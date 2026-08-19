@@ -592,6 +592,7 @@ class EnrichmentDb(BaseModel):
     size_bytes: int | None = None
     modified_at: datetime | None = None
     age_days: float | None = None
+    stale: bool = False
 
 
 class ScanConfigSummary(BaseModel):
