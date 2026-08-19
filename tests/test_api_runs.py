@@ -318,8 +318,12 @@ def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path)
     assert confirmed["cisa_decision"] == "Immediate"
     assert "EPSS 0.970 (scanner)" in confirmed["risk_explanation"]
     # The NIST assessment reaches the API, not just the scorer (#144).
-    assert confirmed["risk_level"] == "very_high"
-    assert confirmed["likelihood"] == "very_high"
+    # 10.0.0.1 is RFC1918, so #171 lowers likelihood; AV:N/KEV alone is not
+    # "this host is on the internet".
+    assert confirmed["network_exposure"] == "internal"
+    assert confirmed["network_exposure_source"] == "address-space"
+    assert "network exposure internal (address-space)" in confirmed["risk_explanation"]
+    assert confirmed["likelihood"] != "very_high"
     assert confirmed["impact"] == "very_high"
     assert confirmed["exploit_maturity"] == "attacked"
     assert any("cisa-kev" in source for source in confirmed["exploit_evidence"])
