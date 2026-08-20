@@ -270,6 +270,15 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
+OpenTelemetry (ROADMAP P3). Empty endpoint means no TracerProvider — the
+API does not buffer spans nobody will read. Traces are request timing, not
+scan observations.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_OTEL_EXPORTER_OTLP_ENDPOINT` | *(empty)* | OTLP HTTP traces URL (`http://collector:4318/v1/traces`). Empty disables tracing |
+| `OCTO_OTEL_SERVICE_NAME` | `shapoclyack-api` | `service.name` resource attribute |
+
 Login rate limiting and the auth audit trail (see
 [api-and-rbac.md](api-and-rbac.md#login-rate-limiting-and-the-auth-audit-trail)):
 

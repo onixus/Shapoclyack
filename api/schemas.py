@@ -820,6 +820,7 @@ class VulnerabilityInfo(BaseModel):
     asset_id: str
     finding_key: str
     cve: str | None = None
+    cwe: list[str] = Field(default_factory=list)
     script_id: str | None = None
     port: str | None = None
     title: str = ""

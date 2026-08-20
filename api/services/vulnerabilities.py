@@ -50,6 +50,7 @@ from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
 from api.services import vuln_states
+from scanner.pipeline.cvss4 import normalize_cwes
 from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
 from api.settings import Settings
 from scanner.pipeline.asset_identity import identity_candidates_for_host
@@ -493,6 +494,7 @@ def register_findings_from_run(
                 "exploit_maturity": scored.get("exploit_maturity"),
                 "network_exposure": scored.get("network_exposure"),
                 "network_exposure_source": scored.get("network_exposure_source"),
+                "cwe": normalize_cwes(entry.get("cwe")),
                 "title": (cve or script_id or "")[:500],
             }
 
@@ -638,6 +640,7 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "asset_id": row.asset_id,
         "finding_key": row.finding_key,
         "cve": row.cve,
+        "cwe": list(row.cwe or []),
         "script_id": row.script_id,
         "port": row.port,
         "title": row.title,

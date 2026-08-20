@@ -224,11 +224,11 @@ Each of these limits what can honestly be claimed today:
   has an alert rule here yet.
 - **No per-tenant SLIs.** No metric carries a tenant label (deliberate —
   cardinality), so per-customer objectives are not derivable from `/metrics`.
-- **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be
-  attributed to Postgres vs. ClickHouse vs. filesystem from metrics alone.
-  Scanner runs now write per-stage wall-clock to `stage_timings.json` (see
-  [scan-performance.md](scan-performance.md)); that is process-local, not a
-  Prometheus series.
+- **Tracing is opt-in.** Set `OCTO_OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP
+  HTTP traces URL; empty means no TracerProvider. API request spans do not
+  replace Prometheus SLIs, and they are not scan observations. Scanner
+  wall-clock stays in `stage_timings.json` (see
+  [scan-performance.md](scan-performance.md)).
 - **No baseline at scale.** Targets 2, 4, and 5 are still starting values. The
   1k/10k/50k fixtures exist (`tests/fixtures/scale_seed.py`, P3.7) and the
   query paths behind them have been profiled ([scale-profile.md](scale-profile.md),

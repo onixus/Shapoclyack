@@ -36,13 +36,18 @@ def test_to_finding_extracts_cve_and_severity():
             "name": "Log4Shell",
             "severity": "Critical",
             "tags": ["cve", "cve2021", "rce"],
-            "classification": {"cve-id": ["CVE-2021-44228"], "cvss-score": 10.0},
+            "classification": {
+                "cve-id": ["CVE-2021-44228"],
+                "cvss-score": 10.0,
+                "cwe-id": ["CWE-20", "CWE-400"],
+            },
         },
     }
     finding = _to_finding(raw)
     assert finding["severity"] == "critical"
     assert finding["cve"] == ["CVE-2021-44228"]
     assert finding["cvss_score"] == 10.0
+    assert finding["cwe"] == ["CWE-20", "CWE-400"]
 
 
 def test_to_vulnerability_rows_empty_without_cve():
@@ -69,6 +74,7 @@ def test_to_vulnerability_rows_falls_back_to_severity_floor_without_cvss():
             "severity": "high",
             "script_id": "nuclei:some-cve-check",
             "source": "nuclei",
+            "cwe": [],
         }
     ]
 

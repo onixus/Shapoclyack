@@ -43,6 +43,8 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from scanner.pipeline.cvss4 import extract_nvd_cwes
+
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
 # NVD's documented maximum for the CVE API.
@@ -164,6 +166,9 @@ def fetch_cve(cve_id: str, api_key: str | None, *, retries: int = 5) -> dict | N
             continue
         entry = _extract_cvss4(cve.get("metrics") or {})
         if entry:
+            cwes = extract_nvd_cwes(cve)
+            if cwes:
+                entry["cwe"] = cwes
             return entry
     return None
 
@@ -269,6 +274,9 @@ def _scan_page(payload: dict) -> dict:
             published = str(cve.get("published") or "").strip()
             if published:
                 entry["published"] = published[:10]
+            cwes = extract_nvd_cwes(cve)
+            if cwes:
+                entry["cwe"] = cwes
             entries[cve_id] = entry
     return entries
 
@@ -437,6 +445,10 @@ def main() -> int:
         }
         if entry.get("version"):
             entries[cve_id]["version"] = entry["version"]
+        if entry.get("published"):
+            entries[cve_id]["published"] = entry["published"]
+        if entry.get("cwe"):
+            entries[cve_id]["cwe"] = entry["cwe"]
 
     if args.full or args.last_mod_days:
         if args.last_mod_days > MAX_LAST_MOD_DAYS:
