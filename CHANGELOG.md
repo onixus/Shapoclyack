@@ -6,6 +6,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Web screenshots** (ROADMAP P4.4 / Phase 9.3) — opt-in capture of
+  already-open web ports (`screenshots.enabled`, off by default). Same
+  candidates as fingerprint; no new scan. Playwright is optional: missing
+  it writes `skipped_reason: playwright.unavailable` and no pixels.
+  Obvious form fields are painted over in the live DOM before the PNG is
+  taken; unredacted bytes never hit disk. A heading name is **not**
+  redacted, so PNGs stay operator-only (`GET /api/runs/{id}/screenshots`,
+  download) and a reaper deletes `runs/*/screenshots/*.png` after
+  `OCTO_SCREENSHOT_RETENTION_DAYS` (14). `screenshots.json` stays.
+  Viewers get 404 on the PNG and do not see those paths in the artifact
+  list. The run view **Screenshots** tab is operator-only.
+
 - **Ownership graph** (ROADMAP P4.3) — `/attack-surface` can group one scan
   by operator-set `business_unit` / `owner_email`. Unowned names cluster by
   registrable domain and are labelled `(domain)` so a DNS name is not an

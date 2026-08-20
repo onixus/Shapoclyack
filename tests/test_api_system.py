@@ -36,7 +36,13 @@ def test_system_status_shape():
     for db in body["enrichment"]:
         assert "stale" in db
 
-    assert set(body["scan_config"]["stages"]) >= {"fingerprint", "tls_posture", "nuclei", "pdf_summary"}
+    assert set(body["scan_config"]["stages"]) >= {
+        "fingerprint",
+        "screenshots",
+        "tls_posture",
+        "nuclei",
+        "pdf_summary",
+    }
     assert "balanced" in body["scan_config"]["profiles"]
     assert body["scan_config"].get("service_backend") in ("pulse", "nmap", "hybrid", None)
 

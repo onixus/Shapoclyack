@@ -12,8 +12,10 @@ import { EntityList } from "@/components/run/entity-list";
 import { FindingsList } from "@/components/run/findings-list";
 import { RunDiffPanel } from "@/components/run/run-diff-panel";
 import { RunMetrics } from "@/components/run/run-metrics";
+import { ScreenshotsPanel } from "@/components/run/screenshots-panel";
 import { SeverityFilter } from "@/components/run/severity-filter";
 import { useRunReport } from "@/hooks/use-run-report";
+import { useAuthStore } from "@/lib/auth-store";
 import { formatLocation } from "@/lib/run-data";
 
 export default function RunDetailPage() {
@@ -45,6 +47,7 @@ function RunDetailInner() {
   const runId = (searchParams.get("runId") || "").trim();
   const initialTab = searchParams.get("tab") || "vulns";
   const report = useRunReport(runId);
+  const { canOperate } = useAuthStore();
   const { filters } = report;
 
   if (!runId) {
@@ -126,6 +129,11 @@ function RunDetailInner() {
           <TabsTrigger value="hosts" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Hosts ({report.hosts.length})</TabsTrigger>
           <TabsTrigger value="ports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Ports ({report.ports.length})</TabsTrigger>
           <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
+          {canOperate ? (
+            <TabsTrigger value="screenshots" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">
+              Screenshots
+            </TabsTrigger>
+          ) : null}
         </TabsList>
 
         <TabsContent value="vulns" className="space-y-4">
@@ -180,6 +188,12 @@ function RunDetailInner() {
         <TabsContent value="reports">
           <ArtifactsPanel runId={report.detail.run_id} artifacts={report.detail.artifacts} />
         </TabsContent>
+
+        {canOperate ? (
+          <TabsContent value="screenshots">
+            <ScreenshotsPanel runId={report.detail.run_id} enabled={canOperate} />
+          </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   );

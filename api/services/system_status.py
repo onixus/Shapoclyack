@@ -182,6 +182,7 @@ def scan_config_summary(config: dict[str, Any], effective: dict[str, Any] | None
             # -- prefer the effective (overridden) value over the base file so
             # this panel doesn't lag behind what an admin actually saved.
             "fingerprint": bool(effective.get("fingerprint.enabled", _stage_enabled(config, "fingerprint"))),
+            "screenshots": bool(effective.get("screenshots.enabled", _stage_enabled(config, "screenshots"))),
             "tls_posture": bool(effective.get("tls_posture.enabled", _stage_enabled(config, "tls_posture"))),
             "nuclei": bool(effective.get("nuclei.enabled", _stage_enabled(config, "nuclei"))),
             "pdf_summary": bool(

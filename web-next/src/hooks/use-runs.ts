@@ -1,7 +1,15 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { fetchHosts, fetchPorts, fetchRun, fetchRuns, fetchVulns, type PageParams } from "@/lib/api";
+import {
+  fetchHosts,
+  fetchPorts,
+  fetchRun,
+  fetchRuns,
+  fetchScreenshots,
+  fetchVulns,
+  type PageParams,
+} from "@/lib/api";
 import { POLL_INTERVALS, VULN_FETCH_LIMIT } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -36,6 +44,14 @@ export function useRunPorts(runId: string) {
     queryKey: queryKeys.runPorts(runId),
     queryFn: () => fetchPorts(runId),
     enabled: Boolean(runId),
+  });
+}
+
+export function useRunScreenshots(runId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.runScreenshots(runId),
+    queryFn: () => fetchScreenshots(runId),
+    enabled: Boolean(runId) && enabled,
   });
 }
 

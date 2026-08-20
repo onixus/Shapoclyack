@@ -179,6 +179,12 @@ class Settings:
     endpoint_change_retention_days: int = 365
     endpoint_retention_interval_seconds: int = 21600
     endpoint_retention_batch_size: int = 5000
+    # P4.4: screenshot PNG retention. 0 disables the reaper (files stay until
+    # the run directory is pruned). Default is short — these images can hold
+    # personal data even after DOM redaction.
+    screenshot_retention_enabled: bool = True
+    screenshot_retention_days: int = 14
+    screenshot_retention_interval_seconds: int = 3600
     # Identity of this API process in the shared control plane (ROADMAP P1.2).
     # Local-mode jobs execute in a thread inside one specific replica, so the
     # jobs table records which one; on startup a replica only reconciles the
@@ -455,6 +461,14 @@ def load_settings() -> Settings:
         ),
         endpoint_retention_batch_size=int(
             os.environ.get("OCTO_ENDPOINT_RETENTION_BATCH_SIZE", "5000")
+        ),
+        screenshot_retention_enabled=os.environ.get("OCTO_SCREENSHOT_RETENTION_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        screenshot_retention_days=max(
+            0, int(os.environ.get("OCTO_SCREENSHOT_RETENTION_DAYS", "14"))
+        ),
+        screenshot_retention_interval_seconds=max(
+            60, int(os.environ.get("OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS", "3600"))
         ),
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),

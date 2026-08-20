@@ -207,6 +207,8 @@ def test_default_yaml_parses():
     assert cfg.runtime.nse_hosts_per_scan == 1
     assert cfg.ports.protocol == "tcp"
     assert cfg.ports.udp_probes is True
+    assert cfg.screenshots.enabled is False
+    assert cfg.screenshots.max_targets == 50
 
 
 def test_default_yaml_phase1_sections():
@@ -253,5 +255,19 @@ def test_scheduler_cron_must_have_five_fields():
 def test_alerts_min_severity_validation():
     raw = _minimal_config()
     raw["alerts"] = {"min_severity": "urgent"}
+    with pytest.raises(ValidationError):
+        load_config(raw)
+
+
+def test_screenshots_opt_in_defaults():
+    cfg = load_config(_minimal_config())
+    assert cfg.screenshots.enabled is False
+    assert cfg.screenshots.max_targets == 50
+    assert cfg.screenshots.concurrency == 4
+
+
+def test_screenshots_rejects_invalid_port():
+    raw = _minimal_config()
+    raw["screenshots"] = {"enabled": True, "http_ports": [0]}
     with pytest.raises(ValidationError):
         load_config(raw)

@@ -98,6 +98,32 @@ Set retention according to legal, operational, and privacy requirements. Scan
 artifacts can contain internal hostnames, IPs, software versions, and
 vulnerability evidence.
 
+### Screenshot retention
+
+Web screenshots (ROADMAP P4.4) are the other automatic policy. A PNG of a
+login page can still hold names after the DOM overlay, so pixels must not
+live as long as the rest of a run directory.
+
+The API walks `output_dir/runs/*/screenshots/*.png` every
+`OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` (1h) and unlinks files whose
+age — the older of the PNG mtime and `run_meta.json` — exceeds
+`OCTO_SCREENSHOT_RETENTION_DAYS` (14). `screenshots.json` is kept: it names
+what was captured, not the pixels. `0` days disables the reaper.
+
+Several API replicas may sweep the same tree; a missing file is a no-op.
+Disabling `OCTO_SCREENSHOT_RETENTION_ENABLED` stops the worker; existing
+PNGs stay until the run directory is pruned.
+
+The stage itself is off by default (`screenshots.enabled`). Turning it on
+needs Playwright + Chromium on the scanner host (`pip install playwright &&
+playwright install chromium`). Without that binary the stage writes
+`skipped_reason: playwright.unavailable` and no files. Capture is not in
+the default image.
+
+PNG download is operator-or-higher. A viewer requesting
+`/api/runs/{id}/download/screenshots/…png` gets `404`, same as a missing
+file.
+
 ### Endpoint inventory retention
 
 Endpoint inventory is the one layer with an automatic policy. The API runs an

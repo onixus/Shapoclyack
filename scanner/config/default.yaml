@@ -322,6 +322,18 @@ fingerprint:
   https_ports: [443, 8443]
   verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
 
+# Web screenshots (P4.4 / 9.3). Opt-in. Same already-open web ports as
+# fingerprint — no new scan. Needs Playwright; without it the stage skips.
+# Images are redacted (obvious form fields) before disk. Retention is API-side.
+screenshots:
+  enabled: false
+  concurrency: 4
+  max_targets: 50
+  timeout_seconds: 15
+  http_ports: [80, 8080, 8000, 8008, 8888]
+  https_ports: [443, 8443]
+  verify_tls: false
+
 # Nuclei template-based web vuln/misconfig scan (Phase 4.2 default ON).
 # Together with Pulse --cve + CVSS4 enrichment this replaces nmap-vulners on
 # the default Pulse path. nmap-vulners remains only in nse_profiles.vuln_legacy

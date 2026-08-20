@@ -262,7 +262,9 @@ def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = N
     artifacts = sorted(
         str(path.relative_to(run_dir))
         for path in run_dir.rglob("*")
-        if path.is_file() and path.stat().st_size < 50_000_000
+        if path.is_file()
+        and path.stat().st_size < 50_000_000
+        and not is_screenshot_path(str(path.relative_to(run_dir)))
     )
     return RunDetail(
         run_id=run_id,
@@ -562,8 +564,19 @@ def get_ports(
     return items[:limit]
 
 
+def is_screenshot_path(relative: str) -> bool:
+    """PNG pixels under screenshots/ — operator-only (P4.4)."""
+    parts = Path(relative).parts
+    return len(parts) >= 2 and parts[0] == "screenshots" and parts[-1].lower().endswith(".png")
+
+
 def resolve_artifact(
-    settings: Settings, run_id: str, relative: str, *, tenant_id: str | None = None
+    settings: Settings,
+    run_id: str,
+    relative: str,
+    *,
+    tenant_id: str | None = None,
+    allow_screenshots: bool = False,
 ) -> Path | None:
     """Resolve a run-relative artifact path to a real file, or ``None`` if the
     run/file doesn't exist or the path escapes the run directory. Rejects
@@ -577,6 +590,8 @@ def resolve_artifact(
         return None
     rel = Path(relative)
     if rel.is_absolute() or ".." in rel.parts:
+        return None
+    if is_screenshot_path(relative) and not allow_screenshots:
         return None
     target = (run_dir / rel).resolve()
     try:
@@ -601,3 +616,57 @@ def read_artifact_text(
         return None
     data = target.read_bytes()[:max_bytes]
     return data.decode("utf-8", errors="replace")
+
+
+def list_screenshots(
+    settings: Settings, run_id: str, *, tenant_id: str | None = None
+) -> dict[str, Any] | None:
+    """Operator-facing manifest of captured (already-redacted) screenshots.
+
+    Pixels that the retention reaper already deleted stay in the list with
+    ``available: false`` so the operator can tell "never captured" from
+    "captured, then expired". Failed captures are omitted.
+    """
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+    raw = _load_json(run_dir / "screenshots.json")
+    empty: dict[str, Any] = {
+        "skipped_reason": None,
+        "captured_count": 0,
+        "redacted_fields": 0,
+        "truncated": False,
+        "retention_days": settings.screenshot_retention_days,
+        "items": [],
+    }
+    if not isinstance(raw, dict):
+        return empty
+    items: list[dict[str, Any]] = []
+    findings = raw.get("findings")
+    if isinstance(findings, list):
+        for finding in findings:
+            if not isinstance(finding, dict) or finding.get("error"):
+                continue
+            rel = str(finding.get("file") or "")
+            target = resolve_artifact(
+                settings, run_id, rel, tenant_id=tenant_id, allow_screenshots=True
+            )
+            items.append(
+                {
+                    "host": finding.get("host"),
+                    "port": finding.get("port"),
+                    "scheme": finding.get("scheme"),
+                    "url": finding.get("url"),
+                    "file": rel,
+                    "redacted_fields": int(finding.get("redacted_fields") or 0),
+                    "available": target is not None,
+                }
+            )
+    return {
+        "skipped_reason": raw.get("skipped_reason"),
+        "captured_count": int(raw.get("captured_count") or 0),
+        "redacted_fields": int(raw.get("redacted_fields") or 0),
+        "truncated": bool(raw.get("truncated")),
+        "retention_days": settings.screenshot_retention_days,
+        "items": items,
+    }

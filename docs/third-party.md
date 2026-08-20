@@ -23,6 +23,7 @@ before distributing that tag further.
 | DNSx | `1.2.3` | MIT | ProjectDiscovery |
 | Pulse | GenDec release tag (`PULSE_VERSION`) | MIT | Default service-probe backend (banner/OS/CVE detection); replaces Nmap in the default image |
 | Nuclei | Docker build argument | MIT | Pin tool and templates |
+| Playwright / Chromium | not pinned; optional host install | Apache-2.0 (Playwright) | **Not in the default image.** P4.4 screenshots skip when the package or browser is missing |
 | nuclei-templates | Git reference | MIT | Template content has its own provenance |
 | nmap-vulners | Git reference | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE vulnerability lookup |
 | Vulscan | Git reference | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE scripts and local data |

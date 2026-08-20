@@ -83,8 +83,8 @@ written per window and the rest are counted only in `/metrics`.
 
 | Role | Intended capability |
 |---|---|
-| `viewer` | Read assets, runs, findings, diffs, artifacts, and status |
-| `operator` | Viewer plus start jobs and update permitted asset metadata |
+| `viewer` | Read assets, runs, findings, diffs, artifacts (except screenshot PNGs), and status |
+| `operator` | Viewer plus start jobs, screenshot PNGs, and update permitted asset metadata |
 | `admin` | Operator plus tenant provisioning, destructive administration, and config overrides |
 
 The route implementation is authoritative. Client-side hiding is usability,
@@ -327,6 +327,18 @@ Text artifacts can be previewed through the run artifact endpoint. Binary
 downloads use a dedicated path so PDFs and other files are transferred without
 text decoding. Artifact paths must be treated as untrusted input and resolved
 only inside the selected run directory.
+
+Screenshot PNGs under `screenshots/` are a separate class (ROADMAP P4.4).
+They can still hold personal data after DOM redaction, so:
+
+- `GET /api/runs/{id}` omits those paths from `artifacts`;
+- the text-preview endpoint answers `404` for them (they are not source);
+- `GET /api/runs/{id}/download/screenshots/…png` is operator-or-higher;
+  a viewer gets `404`, same as a missing file;
+- `GET /api/runs/{id}/screenshots` (operator) returns the manifest, including
+  items whose pixels the retention reaper already deleted (`available: false`).
+
+`screenshots.json` stays a normal text artifact.
 
 ## Automation clients
 

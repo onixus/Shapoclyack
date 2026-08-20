@@ -137,6 +137,26 @@ export type RunDetail = {
   artifacts: string[];
 };
 
+/** Operator-only screenshot manifest (P4.4). Pixels can still hold PII. */
+export type ScreenshotItem = {
+  host: string | null;
+  port: number | string | null;
+  scheme: string | null;
+  url: string | null;
+  file: string;
+  redacted_fields: number;
+  available: boolean;
+};
+
+export type ScreenshotManifest = {
+  skipped_reason: string | null;
+  captured_count: number;
+  redacted_fields: number;
+  truncated: boolean;
+  retention_days: number;
+  items: ScreenshotItem[];
+};
+
 export type Vulnerability = {
   host: string | null;
   port: string | null;
@@ -676,6 +696,31 @@ export async function downloadArtifact(runId: string, path: string) {
       { responseType: "blob" },
     );
     triggerBrowserDownload(data, path.split("/").pop() || "artifact");
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Operator-only screenshot manifest. Viewers 403. */
+export async function fetchScreenshots(runId: string) {
+  try {
+    const { data } = await api.get<ScreenshotManifest>(
+      `/runs/${encodeURIComponent(runId)}/screenshots`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Raw PNG bytes for an operator-only screenshot. Caller owns the blob URL. */
+export async function fetchScreenshotBlob(runId: string, path: string) {
+  try {
+    const { data } = await api.get<Blob>(
+      `/runs/${encodeURIComponent(runId)}/download/${encodeArtifactPath(path)}`,
+      { responseType: "blob" },
+    );
+    return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }

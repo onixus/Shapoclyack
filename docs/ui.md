@@ -29,7 +29,7 @@ Platform administrators can retain fleet-wide views where the API contract permi
 | `/endpoints` | Endpoint device/software inventory and recent changes | Viewer |
 | `/jobs` | Start and monitor scan jobs | Operator |
 | `/runs` | Tenant-scoped run history | Viewer |
-| `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation | Viewer |
+| `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery | Viewer |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/agents` | Distributed worker fleet | Operator |
@@ -191,6 +191,20 @@ Coordinates come from a **City**-edition GeoIP database (`enrichment.geoip`).
 With a Country-edition database every marker is country-level, which the page
 states rather than hides. See
 [configuration.md](configuration.md#enrichment-sources).
+
+## Run screenshots
+
+`/runs/view` has a **Screenshots** tab for operators and admins only. It lists
+the already-redacted PNGs from `GET /api/runs/{id}/screenshots`. Viewers do
+not see the tab, do not get the PNG paths in the Artifacts list, and receive
+`404` if they request the file.
+
+The capture is opt-in (`screenshots.enabled`) and only visits web ports the
+scan already found. Playwright missing is a skip, not a failure. Redaction
+covers obvious form fields in the live DOM; a name in a heading is not
+redacted. The banner on the tab says so. Pixels older than
+`OCTO_SCREENSHOT_RETENTION_DAYS` (14) are deleted; `screenshots.json` stays
+in Artifacts.
 
 ## Finding presentation
 
