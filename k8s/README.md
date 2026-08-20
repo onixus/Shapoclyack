@@ -21,6 +21,13 @@ enrichment data; with `OVERLAY` unset the script keeps whatever the cluster
 already runs, so a rebuild cannot silently strip enrichment from the API.
 Tear down with `scripts/dev-down.sh`.
 
+A PostgreSQL restore drill uses a second namespace, not the source lab:
+`kubectl apply -k k8s/shapoclyack/overlays/kind-restore` then
+`scripts/restore-postgres.sh --namespace shapoclyack-restore --backup …`
+(see [docs/operations.md](../docs/operations.md) § Backup and disaster recovery).
+The overlay is Postgres + API only (no NodePort, so it does not steal
+`http://127.0.0.1:8080`).
+
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
 **Default path (Phase 4–5):** service enrichment is **Pulse** + Nuclei, not

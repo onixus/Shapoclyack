@@ -4,6 +4,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- **Backup restore drill** ([#158](https://github.com/onixus/Shapoclyack/issues/158)) —
+  2026-08-20 on kind `shapoclyack-dev`. A live-lab `pg_dump` (5 assets) restored
+  into namespace `shapoclyack-restore` via `scripts/restore-postgres.sh`.
+  `recovery_seconds=31`, `pg_restore` under 1 s. Overlay
+  `k8s/shapoclyack/overlays/kind-restore` repeats the isolated stack. RPO/RTO
+  table in [docs/operations.md](docs/operations.md) no longer says
+  `Not yet measured`.
+
 ### Added
 
 - **Ticket transports** (ROADMAP P2 / Phase 10.3) — Jira, ServiceNow and

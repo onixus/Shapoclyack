@@ -215,20 +215,24 @@ no agent, device, asset, tenant, or product names):
 
 The base deployment takes a logical PostgreSQL backup every day at 02:15 UTC.
 That schedule gives a **design RPO of at most 24 hours** for PostgreSQL, assuming
-the scheduled backup succeeds and is uploaded. The initial **RTO target is 60
-minutes** for restoring the base stack into an isolated namespace. Targets are
-not measurements: issue #158 remains open until a restore drill is run on real
-data and the measured values below are replaced with actual numbers.
+the scheduled backup succeeds and is uploaded. The **RTO target is 60 minutes**
+for restoring Postgres + API into an isolated namespace (the path
+`scripts/restore-postgres.sh` implements). ClickHouse and the artifact PVC have
+no in-repo snapshot object — see below.
 
 | Measure | Target | Last measured |
 |---|---:|---:|
-| PostgreSQL RPO | <= 24 h | **Not yet measured** |
-| Full base-stack RTO | <= 60 min | **Not yet measured** |
-| PostgreSQL `pg_restore` duration | n/a | **Not yet measured** |
-| Restore drill date | n/a | **Not yet performed** |
+| PostgreSQL RPO | <= 24 h | 3 min (backup `2026-08-20T09:21:29Z` → recovery `2026-08-20T09:24:32Z` on kind `shapoclyack-dev`; the CronJob still bounds worst-case at 24 h) |
+| Full base-stack RTO | <= 60 min | 31 s (`recovery_seconds` from the restore script: `pg_restore` + API migrate rollout) |
+| PostgreSQL `pg_restore` duration | n/a | < 1 s (`db_restore_seconds=0` at 1 s resolution; 82 KiB custom dump of the live lab: 5 assets, 10 identifiers, 3 users, 2 jobs) |
+| Restore drill date | n/a | 2026-08-20 |
 
-Do not mark the backup/restore GA blocker complete while any `Not yet` value
-remains in this table.
+Namespace `shapoclyack-restore`, overlay `k8s/shapoclyack/overlays/kind-restore`.
+Row counts after restore matched the source. JetStream was **not** replayed —
+Postgres is the durable store; see [NATS / JetStream recovery](#nats--jetstream-recovery).
+ClickHouse and `scanner-data` were not snapshotted (kind `local-path` has no
+`VolumeSnapshotClass`); that remains an install-specific choice, not an unmeasured
+Postgres drill.
 
 ### PostgreSQL scheduled backup
 
@@ -265,11 +269,17 @@ Always test recovery in a namespace that is separate from production. The
 restore script refuses the base `network-scan` namespace unless
 `ALLOW_PRODUCTION_RESTORE=1` is deliberately set.
 
-1. Create an isolated namespace/overlay and deploy the same Shapoclyack base
-   version that will consume the backup. Provide the PostgreSQL and API secrets,
-   but keep ingress and external integrations disabled.
+1. Create an isolated namespace and deploy the same Shapoclyack Postgres + API
+   version that will consume the backup. On the kind lab that is
+   `kubectl apply -k k8s/shapoclyack/overlays/kind-restore` (namespace
+   `shapoclyack-restore`, no NodePort, no NATS/ClickHouse/scan Jobs). Elsewhere:
+   same image tag as the source, Postgres and API secrets present, ingress and
+   external integrations disabled. Wait until Postgres is Ready and the API has
+   rolled out once — the restore script then replaces that empty schema.
 2. Download `shapoclyack.dump` and `shapoclyack.dump.sha256` from the same backup
-   prefix.
+   prefix. On the kind lab, dump the source with the CronJob's `pg_dump` flags
+   (`--format=custom --compress=6 --no-owner --no-privileges`) and a SHA-256
+   sidecar; S3 upload is not required for the restore path itself.
 3. Run:
 
 ```bash
