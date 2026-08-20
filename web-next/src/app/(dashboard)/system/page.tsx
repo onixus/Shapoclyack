@@ -10,13 +10,15 @@ import { KpiCard } from "@/components/kpi-card";
 import { useSystemStatus } from "@/hooks/use-system";
 import { useAuthStore } from "@/lib/auth-store";
 import type { EnrichmentDb } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 const STALE_AFTER_DAYS = 30;
 
 function EnabledBadge({ on }: { on: boolean }) {
+  const t = useT();
   return (
     <Badge variant={on ? "default" : "outline"} className={on ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 font-semibold" : "border-slate-800 bg-slate-950 text-slate-500 font-normal"}>
-      {on ? "ENABLED" : "DISABLED"}
+      {on ? t.label("enabled").toUpperCase() : t.label("disabled").toUpperCase()}
     </Badge>
   );
 }
@@ -36,6 +38,7 @@ function formatBytes(bytes: number | null): string {
 }
 
 export default function SystemPage() {
+  const t = useT();
   const { data, isLoading, error, isFetching } = useSystemStatus();
   const isAdmin = useAuthStore((s) => s.user?.role === "admin");
 
@@ -47,10 +50,10 @@ export default function SystemPage() {
             <Settings className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">System Telemetry & Config</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.system.title")}</h1>
             <p className="text-xs text-slate-400">
-              Tool versions, enrichment databases, execution flags, and live YAML configuration tuner.
-              {isFetching ? " · Refreshing system state…" : ""}
+              {t("page.system.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
@@ -65,7 +68,7 @@ export default function SystemPage() {
       {isLoading || !data ? (
         <div className="flex items-center justify-center py-16 text-slate-400 gap-2">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-          <span className="text-sm">Retrieving system diagnostics telemetry…</span>
+          <span className="text-sm">{t("loading.system")}</span>
         </div>
       ) : (
         <>

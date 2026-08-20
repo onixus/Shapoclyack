@@ -10,8 +10,10 @@ import { useAgents } from "@/hooks/use-agents";
 import { usePagination } from "@/hooks/use-pagination";
 import { type AgentInfo } from "@/lib/api";
 import { AGENT_STATUS, agentEffectiveStatus } from "@/lib/config/statuses";
+import { useT } from "@/lib/i18n";
 
 export default function AgentsPage() {
+  const t = useT();
   // Server-side paging/search/sort (ROADMAP P3.3): the fleet list is unbounded.
   const pagination = usePagination({ sort: "hostname", order: "asc" });
   const { data, isLoading, error, isFetching } = useAgents(pagination.params);
@@ -22,7 +24,7 @@ export default function AgentsPage() {
       {
         id: "hostname",
         accessorFn: (agent) => `${agent.hostname} ${agent.agent_id}`,
-        header: "Agent Hostname & ID",
+        header: t("col.agentHost"),
         cell: ({ row }) => (
           <div>
             <p className="font-mono font-bold text-slate-100">{row.original.hostname || "—"}</p>
@@ -33,24 +35,24 @@ export default function AgentsPage() {
       {
         id: "status",
         accessorFn: (agent) => agentEffectiveStatus(agent),
-        header: "Status",
+        header: t("col.status"),
         cell: ({ row }) => (
           <StatusBadge value={agentEffectiveStatus(row.original)} map={AGENT_STATUS} />
         ),
       },
       {
         accessorKey: "tenant_id",
-        header: "Tenant",
+        header: t("col.tenantId"),
         cell: ({ getValue }) => <span className="font-semibold text-slate-300">{String(getValue() || "default")}</span>,
       },
       {
         accessorKey: "version",
-        header: "Version",
+        header: t("col.version"),
         cell: ({ getValue }) => <code className="rounded bg-slate-950 px-2 py-0.5 font-mono text-xs text-sky-400 border border-slate-800">{String(getValue() || "—")}</code>,
       },
       {
         accessorKey: "current_job_id",
-        header: "Active Job",
+        header: t("col.activeJob"),
         enableSorting: false,
         cell: ({ getValue }) => {
           const value = getValue();
@@ -59,7 +61,7 @@ export default function AgentsPage() {
       },
       {
         accessorKey: "last_seen_at",
-        header: "Last Heartbeat",
+        header: t("col.lastHeartbeat"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.last_seen_at ? (
@@ -71,7 +73,7 @@ export default function AgentsPage() {
           ),
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -82,10 +84,10 @@ export default function AgentsPage() {
             <Cpu className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Distributed Agent Fleet</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.agents.title")}</h1>
             <p className="text-xs text-slate-400">
-              Active worker nodes polling JetStream scan queues.
-              {isFetching ? " · Refreshing fleet status…" : ""}
+              {t("page.agents.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
@@ -96,9 +98,9 @@ export default function AgentsPage() {
         data={agents}
         isLoading={isLoading}
         error={error}
-        searchPlaceholder="Search agent hostname or ID…"
-        loadingMessage="Retrieving agent fleet telemetry…"
-        emptyMessage="No distributed agents registered."
+        searchPlaceholder={t("search.agents")}
+        loadingMessage={t("loading.agents")}
+        emptyMessage={t("empty.agents")}
         meta={`${data?.total ?? 0} agents`}
         serverPagination={{
           offset: pagination.offset,

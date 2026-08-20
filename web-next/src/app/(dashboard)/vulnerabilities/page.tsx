@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
+import { useT } from "@/lib/i18n";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
@@ -43,6 +44,7 @@ function relativeTime(value: string | null): string {
 }
 
 function VulnerabilitiesInner() {
+  const t = useT();
   const searchParams = useSearchParams();
   const initialAssetId = (searchParams.get("assetId") || "").trim();
   const initialSla = (searchParams.get("sla") || "") as SlaState | "";
@@ -79,7 +81,7 @@ function VulnerabilitiesInner() {
       {
         id: "cve",
         accessorFn: (row) => findingLabel(row),
-        header: "Finding",
+        header: t("col.finding"),
         cell: ({ row }) => (
           <Link
             href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}
@@ -98,26 +100,26 @@ function VulnerabilitiesInner() {
       },
       {
         accessorKey: "severity",
-        header: "Severity",
+        header: t("col.severity"),
         cell: ({ row }) => (
           <StatusBadge value={normalizeSeverity(row.original.severity)} map={SEVERITY_STATUS} />
         ),
       },
       {
         accessorKey: "state",
-        header: "Lifecycle",
+        header: t("col.lifecycle"),
         cell: ({ row }) => <StatusBadge value={row.original.state} map={VULN_LIFECYCLE_STATUS} />,
       },
       {
         accessorKey: "sla_state",
-        header: "SLA",
+        header: t("col.sla"),
         cell: ({ row }) => (
           <SlaIndicator slaState={row.original.sla_state} dueAt={row.original.due_at} />
         ),
       },
       {
         accessorKey: "assignee",
-        header: "Owner",
+        header: t("col.owner"),
         cell: ({ row }) =>
           row.original.assignee || row.original.owner_team ? (
             <div className="space-y-0.5">
@@ -127,13 +129,13 @@ function VulnerabilitiesInner() {
               ) : null}
             </div>
           ) : (
-            <span className="text-xs text-slate-500">Unassigned</span>
+            <span className="text-xs text-slate-500">{t("common.unassigned")}</span>
           ),
       },
       {
         id: "asset_id",
         accessorKey: "asset_id",
-        header: "Asset",
+        header: t("col.asset"),
         cell: ({ row }) => (
           <Link
             href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
@@ -145,7 +147,7 @@ function VulnerabilitiesInner() {
       },
       {
         accessorKey: "last_seen_at",
-        header: "Last seen",
+        header: t("col.lastSeen"),
         cell: ({ row }) => (
           <span className="text-xs text-slate-400">{relativeTime(row.original.last_seen_at)}</span>
         ),
@@ -161,12 +163,12 @@ function VulnerabilitiesInner() {
             size="sm"
             className="h-7 text-xs border-slate-800 bg-slate-900 text-sky-400 hover:bg-slate-800 hover:text-white"
           >
-            <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}>Details</Link>
+            <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}>{t("common.view")}</Link>
           </Button>
         ),
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -176,13 +178,12 @@ function VulnerabilitiesInner() {
           <div className="flex items-center gap-2.5">
             <ShieldAlert className="h-5 w-5 text-sky-400" />
             <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">
-              Vulnerability Center
+              {t("page.vulns.title")}
             </h1>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Tracked findings with owner, lifecycle state and SLA — not the last scan&apos;s raw
-            list.
-            {listQuery.isFetching ? " · Refreshing…" : ""}
+            {t("page.vulns.subtitle")}
+            {listQuery.isFetching ? t("common.refreshing") : ""}
             {assetId ? (
               <>
                 {" "}
@@ -334,7 +335,7 @@ function VulnerabilitiesInner() {
               </SelectTrigger>
               <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
                 <SelectItem value={FILTER_ALL}>Any owner</SelectItem>
-                <SelectItem value="unassigned">Unassigned</SelectItem>
+                <SelectItem value="unassigned">{t("common.unassigned")}</SelectItem>
               </SelectContent>
             </Select>
             <Select

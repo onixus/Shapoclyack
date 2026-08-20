@@ -5,6 +5,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { Building, Copy, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +27,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 
 export default function TenantsPage() {
+  const t = useT();
   const { user, canOperate, selectTenant } = useAuthStore();
   const isAdmin = user?.role === "admin";
   const [open, setOpen] = useState(false);
@@ -44,7 +46,7 @@ export default function TenantsPage() {
     () => [
       {
         accessorKey: "name",
-        header: "Customer",
+        header: t("col.customer"),
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-slate-100">{row.original.name}</p>
@@ -54,42 +56,42 @@ export default function TenantsPage() {
       },
       {
         accessorKey: "estate_risk",
-        header: "Estate risk",
+        header: t("col.estateRisk"),
         cell: ({ row }) =>
           row.original.estate_risk && row.original.estate_risk in RISK_LEVEL_STATUS ? (
             <StatusBadge value={row.original.estate_risk} map={RISK_LEVEL_STATUS} />
           ) : (
-            <span className="text-xs text-slate-500">{row.original.open_total === 0 ? "none" : "unset"}</span>
+            <span className="text-xs text-slate-500">{row.original.open_total === 0 ? t("common.none") : t("common.unset")}</span>
           ),
       },
       {
         accessorKey: "open_total",
-        header: "Open",
+        header: t("col.open"),
         cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.open_total}</span>,
       },
       {
         accessorKey: "breached",
-        header: "SLA",
+        header: t("col.sla"),
         cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.breached}</span>,
       },
       {
         accessorKey: "unassigned",
-        header: "Unassigned",
+        header: t("col.unassigned"),
         cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.unassigned}</span>,
       },
       {
         accessorKey: "in_kev_open",
-        header: "KEV",
+        header: t("col.kev"),
         cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.in_kev_open}</span>,
       },
       {
         accessorKey: "unowned_assets",
-        header: "Unowned",
+        header: t("col.unowned"),
         cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.unowned_assets}</span>,
       },
       {
         accessorKey: "declared_internet_assets",
-        header: "Declared internet",
+        header: t("col.declaredInternet"),
         cell: ({ row }) => (
           <span className="tabular-nums text-slate-200">{row.original.declared_internet_assets}</span>
         ),
@@ -109,12 +111,12 @@ export default function TenantsPage() {
               router.push("/");
             }}
           >
-            Open
+            {t("common.open")}
           </Button>
         ),
       },
     ],
-    [queryClient, router, selectTenant],
+    [queryClient, router, selectTenant, t],
   );
 
   const columns = useMemo<ColumnDef<TenantInfo>[]>(
@@ -122,7 +124,7 @@ export default function TenantsPage() {
       {
         id: "name",
         accessorFn: (tenant) => `${tenant.name} ${tenant.tenant_id}`,
-        header: "Tenant Name & ID",
+        header: t("col.tenant"),
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-slate-100">{row.original.name}</p>
@@ -132,12 +134,12 @@ export default function TenantsPage() {
       },
       {
         accessorKey: "status",
-        header: "Status",
+        header: t("col.status"),
         cell: ({ row }) => <StatusBadge value={row.original.status} map={TENANT_STATUS} />,
       },
       {
         accessorKey: "created_at",
-        header: "Provisioned Date",
+        header: t("col.provisioned"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.created_at ? (
@@ -149,15 +151,15 @@ export default function TenantsPage() {
           ),
       },
     ],
-    [],
+    [t],
   );
 
   if (!canOperate) {
     return (
       <div className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-100">Tenants</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-100">{t("page.tenants.title")}</h1>
         <p className="text-xs text-slate-400">
-          Operator or admin role required to manage tenant organizations.
+          {t("page.tenants.denied")}
         </p>
       </div>
     );
@@ -171,10 +173,10 @@ export default function TenantsPage() {
             <Building className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Tenants</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.tenants.title")}</h1>
             <p className="text-xs text-slate-400">
-              Compare customer risk posture, then provision keys.
-              {isFetching ? " · Refreshing tenant list…" : ""}
+              {t("page.tenants.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
@@ -193,7 +195,7 @@ export default function TenantsPage() {
             <DialogTrigger asChild>
               <Button className="gap-2 bg-sky-600 hover:bg-sky-500 text-white shadow-md">
                 <Plus className="h-4 w-4" />
-                Create New Tenant
+                {t("common.createTenant")}
               </Button>
             </DialogTrigger>
             <DialogContent className="bg-slate-900 border-slate-800 text-slate-100">
@@ -277,7 +279,7 @@ export default function TenantsPage() {
           data={posture}
           isLoading={postureQuery.isLoading}
           error={postureQuery.error}
-          searchPlaceholder="Filter customers…"
+          searchPlaceholder={t("search.tenants")}
           meta={`${posture.length} customer${posture.length === 1 ? "" : "s"}`}
           loadingMessage="Comparing tenant posture…"
           emptyMessage="No tenants in scope."
@@ -289,7 +291,7 @@ export default function TenantsPage() {
         data={data}
         isLoading={isLoading}
         error={error}
-        searchPlaceholder="Filter tenant names or IDs…"
+        searchPlaceholder={t("search.tenants")}
         meta={`${data.length} tenant${data.length === 1 ? "" : "s"}`}
         loadingMessage="Retrieving tenant telemetry…"
         emptyMessage="No tenant organizations provisioned."

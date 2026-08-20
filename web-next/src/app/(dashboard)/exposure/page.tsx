@@ -6,6 +6,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { ArrowUpRight, Radar } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import {
   Select,
   SelectContent,
@@ -28,6 +29,7 @@ import {
 import { assetDetailHref } from "@/lib/vuln-lifecycle";
 
 export default function ExposurePage() {
+  const t = useT();
   const [exposure, setExposure] = useState<AssetExposureLevel>("internet");
   const pagination = usePagination({ sort: "last_seen", order: "desc" });
   const assetsQuery = useAssets({ status: "", exposure }, pagination.params);
@@ -39,7 +41,7 @@ export default function ExposurePage() {
       {
         id: "asset_id",
         accessorFn: (row) => `${row.primary_identifier || ""} ${row.asset_id}`,
-        header: "Asset",
+        header: t("col.asset"),
         cell: ({ row }) => (
           <Link href={assetDetailHref(row.original.asset_id)} className="group space-y-0.5">
             <div className="flex items-center gap-1.5 font-mono font-bold text-sky-400 group-hover:underline">
@@ -47,25 +49,25 @@ export default function ExposurePage() {
               <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100" />
             </div>
             <span className="block text-[11px] text-slate-400">
-              {row.original.business_service || "no service"}
-              {row.original.owner_email ? ` · ${row.original.owner_email}` : " · no owner"}
+              {row.original.business_service || t("common.noService")}
+              {row.original.owner_email ? ` · ${row.original.owner_email}` : ` · ${t("common.noOwner")}`}
             </span>
           </Link>
         ),
       },
       {
         accessorKey: "exposure_level",
-        header: "Declared exposure",
+        header: t("col.declaredExposure"),
         cell: ({ row }) =>
           row.original.exposure_level ? (
             <StatusBadge value={row.original.exposure_level} map={ASSET_EXPOSURE} />
           ) : (
-            <span className="text-xs text-slate-500">Unset</span>
+            <span className="text-xs text-slate-500">{t.label("unset")}</span>
           ),
       },
       {
         accessorKey: "estate_risk",
-        header: "Asset risk",
+        header: t("col.assetRisk"),
         cell: ({ row }) => {
           const level = row.original.estate_risk;
           if (level && level in RISK_LEVEL_STATUS) {
@@ -83,24 +85,24 @@ export default function ExposurePage() {
       },
       {
         accessorKey: "open_findings",
-        header: "Open",
+        header: t("col.open"),
         cell: ({ row }) => (
           <span className="tabular-nums text-slate-200">{row.original.open_findings}</span>
         ),
       },
       {
         accessorKey: "status",
-        header: "Status",
+        header: t("col.status"),
         cell: ({ row }) => <StatusBadge value={row.original.status} map={ASSET_STATUS} />,
       },
       {
         accessorKey: "asset_criticality",
-        header: "Criticality",
+        header: t("col.criticality"),
         cell: ({ row }) =>
           row.original.asset_criticality != null ? (
             <StatusBadge value={String(row.original.asset_criticality)} map={ASSET_CRITICALITY} />
           ) : (
-            <span className="text-xs text-slate-500">Unset</span>
+            <span className="text-xs text-slate-500">{t.label("unset")}</span>
           ),
       },
       {
@@ -109,12 +111,12 @@ export default function ExposurePage() {
         enableSorting: false,
         cell: ({ row }) => (
           <Button asChild variant="outline" size="sm" className="h-7 text-xs border-slate-800">
-            <Link href={assetDetailHref(row.original.asset_id)}>Open</Link>
+            <Link href={assetDetailHref(row.original.asset_id)}>{t("common.open")}</Link>
           </Button>
         ),
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -123,20 +125,15 @@ export default function ExposurePage() {
         <div>
           <div className="flex items-center gap-2.5">
             <Radar className="h-5 w-5 text-sky-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Exposure</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.exposure.title")}</h1>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            How we <span className="text-slate-200">treat</span> these assets — operator or
-            CMDB-set, not inferred from scan IPs. Network reachability is still a measurement
-            gap.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t("page.exposure.subtitle")}</p>
         </div>
       </div>
 
       <Alert className="border-sky-500/30 bg-sky-950/20 text-sky-100">
         <AlertDescription className="text-xs">
-          Drawing an internet-facing count from public addresses would launder a heuristic as a
-          fact. Mark exposure on the asset card; this list is that decision.
+          {t("page.exposure.alert")}
         </AlertDescription>
       </Alert>
 
@@ -145,7 +142,7 @@ export default function ExposurePage() {
         data={data}
         isLoading={assetsQuery.isLoading}
         error={assetsQuery.error}
-        searchPlaceholder="Filter by IP, hostname, owner or service…"
+        searchPlaceholder={t("search.assets")}
         toolbar={
           <Select
             value={exposure}

@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
+import { useT } from "@/lib/i18n";
 import { StatusBadge } from "@/components/status-badge";
 import { useAssets } from "@/hooks/use-assets";
 import { usePagination } from "@/hooks/use-pagination";
@@ -36,13 +37,14 @@ function assetDetailHref(assetId: string): string {
 
 export default function AssetsPage() {
   return (
-    <Suspense fallback={<p className="text-sm text-slate-400">Loading asset inventory…</p>}>
+    <Suspense fallback={<p className="text-sm text-slate-400">…</p>}>
       <AssetsInner />
     </Suspense>
   );
 }
 
 function AssetsInner() {
+  const t = useT();
   const searchParams = useSearchParams();
   const [status, setStatus] = useState<AssetStatus | "">("");
   const [unowned, setUnowned] = useState(searchParams.get("unowned") === "1");
@@ -59,7 +61,7 @@ function AssetsInner() {
       {
         id: "asset_id",
         accessorFn: (row) => `${row.primary_identifier || ""} ${row.asset_id}`,
-        header: "Asset Identifier",
+        header: t("col.asset"),
         cell: ({ row }) => (
           <Link href={assetDetailHref(row.original.asset_id)} className="group space-y-0.5">
             <div className="flex items-center gap-1.5 font-mono font-bold text-sky-400 group-hover:text-sky-300 group-hover:underline">
@@ -67,20 +69,21 @@ function AssetsInner() {
               <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
             </div>
             <span className="block text-[11px] text-slate-400">
-              {row.original.identifier_count} identifier
-              {row.original.identifier_count === 1 ? "" : "s"}
+              {row.original.identifier_count === 1
+                ? t("page.assets.identifierOne", { count: row.original.identifier_count })
+                : t("page.assets.identifiers", { count: row.original.identifier_count })}
             </span>
           </Link>
         ),
       },
       {
         accessorKey: "status",
-        header: "Status",
+        header: t("col.status"),
         cell: ({ row }) => <StatusBadge value={row.original.status} map={ASSET_STATUS} />,
       },
       {
         accessorKey: "estate_risk",
-        header: "Asset risk",
+        header: t("col.assetRisk"),
         cell: ({ row }) => {
           const level = row.original.estate_risk;
           if (level && level in RISK_LEVEL_STATUS) {
@@ -98,7 +101,7 @@ function AssetsInner() {
       },
       {
         accessorKey: "open_findings",
-        header: "Open",
+        header: t("col.open"),
         cell: ({ row }) => (
           <span className="tabular-nums text-slate-200">
             {row.original.open_findings.toLocaleString()}
@@ -112,17 +115,17 @@ function AssetsInner() {
       },
       {
         accessorKey: "owner_email",
-        header: "Owner",
+        header: t("col.owner"),
         cell: ({ row }) =>
           row.original.owner_email ? (
             <span className="text-xs text-slate-200">{row.original.owner_email}</span>
           ) : (
-            <span className="text-xs text-slate-500">Unassigned</span>
+            <span className="text-xs text-slate-500">{t("common.unassigned")}</span>
           ),
       },
       {
         accessorKey: "business_service",
-        header: "Service",
+        header: t("col.service"),
         cell: ({ row }) =>
           row.original.business_service ? (
             <span className="text-xs text-slate-200">{row.original.business_service}</span>
@@ -132,7 +135,7 @@ function AssetsInner() {
       },
       {
         accessorKey: "exposure_level",
-        header: "Exposure",
+        header: t("col.exposure"),
         cell: ({ row }) =>
           row.original.exposure_level ? (
             <StatusBadge value={row.original.exposure_level} map={ASSET_EXPOSURE} />
@@ -142,7 +145,7 @@ function AssetsInner() {
       },
       {
         accessorKey: "environment",
-        header: "Env",
+        header: t("col.env"),
         cell: ({ row }) =>
           row.original.environment ? (
             <StatusBadge value={row.original.environment} map={ASSET_ENVIRONMENT} />
@@ -152,7 +155,7 @@ function AssetsInner() {
       },
       {
         accessorKey: "asset_criticality",
-        header: "Criticality",
+        header: t("col.criticality"),
         cell: ({ row }) =>
           row.original.asset_criticality != null ? (
             <StatusBadge
@@ -165,7 +168,7 @@ function AssetsInner() {
       },
       {
         accessorKey: "first_seen",
-        header: "First Discovered",
+        header: t("col.firstSeen"),
         sortingFn: "datetime",
         cell: ({ getValue }) => (
           <span className="text-xs text-slate-400">
@@ -175,7 +178,7 @@ function AssetsInner() {
       },
       {
         accessorKey: "last_seen",
-        header: "Last Telemetry",
+        header: t("col.lastSeen"),
         sortingFn: "datetime",
         cell: ({ getValue }) => (
           <span className="text-xs text-slate-300 font-medium">
@@ -189,12 +192,12 @@ function AssetsInner() {
         enableSorting: false,
         cell: ({ row }) => (
           <Button asChild variant="outline" size="sm" className="h-7 text-xs border-slate-800 bg-slate-900 text-sky-400 hover:bg-slate-800 hover:text-white">
-            <Link href={assetDetailHref(row.original.asset_id)}>Details</Link>
+            <Link href={assetDetailHref(row.original.asset_id)}>{t("common.view")}</Link>
           </Button>
         ),
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -203,10 +206,10 @@ function AssetsInner() {
         <div>
           <div className="flex items-center gap-2.5">
             <Server className="h-5 w-5 text-sky-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Assets</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.assets.title")}</h1>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Persistent security objects: owner, service, exposure, and open tracked risk — not the last scan.
+            {t("page.assets.subtitle")}
             {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
           </p>
         </div>

@@ -3,6 +3,7 @@
 import { FormEvent, useRef, useState } from "react";
 import { format } from "date-fns";
 import { BookText, Trash2, Upload } from "lucide-react";
+import { useT } from "@/lib/i18n";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -41,6 +42,7 @@ import { type WordlistInfo, type WordlistKind } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 export default function WordlistsPage() {
+  const t = useT();
   const { canOperate } = useAuthStore();
   const { data, isLoading, error, isFetching } = useWordlists(canOperate);
   const upload = useUploadWordlist();
@@ -55,9 +57,9 @@ export default function WordlistsPage() {
   if (!canOperate) {
     return (
       <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/80 p-8 text-center">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-100">Brute-force Wordlists</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-100">{t("page.wordlists.title")}</h1>
         <p className="text-xs text-slate-400">
-          Operator or admin role privileges required to manage wordlists.
+          {t("page.wordlists.denied")}
         </p>
       </div>
     );
@@ -88,11 +90,10 @@ export default function WordlistsPage() {
             <BookText className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Brute-force Wordlists</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.wordlists.title")}</h1>
             <p className="text-xs text-slate-400">
-              Upload dictionaries for subdomain and cloud-bucket brute force, then select one when
-              launching a scan.
-              {isFetching ? " · Refreshing…" : ""}
+              {t("page.wordlists.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
@@ -179,11 +180,11 @@ export default function WordlistsPage() {
           <Table>
             <TableHeader>
               <TableRow className="border-slate-800 hover:bg-transparent">
-                <TableHead className="text-slate-400">Name</TableHead>
-                <TableHead className="text-slate-400">Kind</TableHead>
-                <TableHead className="text-slate-400 text-right">Entries</TableHead>
+                <TableHead className="text-slate-400">{t("col.name")}</TableHead>
+                <TableHead className="text-slate-400">{t("col.kind")}</TableHead>
+                <TableHead className="text-slate-400 text-right">{t("col.entries")}</TableHead>
                 <TableHead className="text-slate-400">SHA-256</TableHead>
-                <TableHead className="text-slate-400">Uploaded</TableHead>
+                <TableHead className="text-slate-400">{t("col.uploaded")}</TableHead>
                 <TableHead className="text-slate-400" />
               </TableRow>
             </TableHeader>

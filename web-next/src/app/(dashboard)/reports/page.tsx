@@ -13,8 +13,10 @@ import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
 import { downloadArtifact, type RunSummary } from "@/lib/api";
 import { runDetailHref } from "@/lib/run-data";
+import { useT } from "@/lib/i18n";
 
 export default function ReportsPage() {
+  const t = useT();
   // Same server-paged run list as /runs (P3.3); ordering is by run_id.
   const pagination = usePagination({ sort: "run_id", order: "desc" });
   const { data, isLoading, error, isFetching } = useRuns(undefined, pagination.params);
@@ -26,7 +28,7 @@ export default function ReportsPage() {
     try {
       await downloadArtifact(runId, "summary.pdf");
     } catch {
-      toast.error("No PDF report available for this run.");
+      toast.error(t("page.reports.noPdf"));
     } finally {
       setBusyRun(null);
     }
@@ -36,7 +38,7 @@ export default function ReportsPage() {
     () => [
       {
         accessorKey: "run_id",
-        header: "Run ID",
+        header: t("col.runId"),
         cell: ({ row }) => (
           <Link
             href={`${runDetailHref(row.original.run_id)}&tab=reports`}
@@ -48,12 +50,12 @@ export default function ReportsPage() {
       },
       {
         accessorKey: "profile",
-        header: "Profile",
+        header: t("col.profile"),
         cell: ({ getValue }) => <Badge variant="secondary" className="bg-slate-800 text-sky-300 font-mono text-[11px]">{String(getValue() || "—")}</Badge>,
       },
       {
         accessorKey: "started_at",
-        header: "Execution Date",
+        header: t("col.executionDate"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at ? (
@@ -66,7 +68,7 @@ export default function ReportsPage() {
       },
       {
         accessorKey: "potential_vulnerabilities",
-        header: "Vulnerabilities",
+        header: t("col.vulnerabilities"),
         cell: ({ getValue, row }) => {
           const val = Number(getValue() ?? 0);
           // Same reasoning as the Runs catalog: the total includes findings the
@@ -101,19 +103,19 @@ export default function ReportsPage() {
                 disabled={busyRun === row.original.run_id}
               >
                 <Download className="h-3.5 w-3.5" />
-                {busyRun === row.original.run_id ? "Downloading…" : "Download PDF"}
+                {busyRun === row.original.run_id ? t("common.downloading") : t("common.downloadPdf")}
               </Button>
             ) : (
-              <Badge variant="outline" className="border-slate-800 text-slate-500 font-normal">no summary</Badge>
+              <Badge variant="outline" className="border-slate-800 text-slate-500 font-normal">{t("common.noSummary")}</Badge>
             )}
             <Button asChild variant="ghost" size="sm" className="text-slate-400 hover:text-slate-100 hover:bg-slate-800 text-xs">
-              <Link href={`${runDetailHref(row.original.run_id)}&tab=reports`}>Artifacts</Link>
+              <Link href={`${runDetailHref(row.original.run_id)}&tab=reports`}>{t("common.artifacts")}</Link>
             </Button>
           </div>
         ),
       },
     ],
-    [busyRun],
+    [busyRun, t],
   );
 
   return (
@@ -124,10 +126,10 @@ export default function ReportsPage() {
             <FileText className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Executive Security Reports</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.reports.title")}</h1>
             <p className="text-xs text-slate-400">
-              Download business PDF reports or inspect raw scan artifact bundles.
-              {isFetching ? " · Refreshing reports…" : ""}
+              {t("page.reports.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
@@ -138,9 +140,9 @@ export default function ReportsPage() {
         data={runs}
         isLoading={isLoading}
         error={error}
-        searchPlaceholder="Filter run IDs…"
-        loadingMessage="Retrieving report catalog…"
-        emptyMessage="No scan runs recorded yet."
+        searchPlaceholder={t("search.reports")}
+        loadingMessage={t("loading.reports")}
+        emptyMessage={t("empty.reports")}
         meta={`${data?.total ?? 0} runs`}
         serverPagination={{
           offset: pagination.offset,

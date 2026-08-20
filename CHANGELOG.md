@@ -4,6 +4,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Russian locale and light theme** in the Web UI. Default remains English
+  and dark. The header (and login) toggle theme and language; both persist in
+  `localStorage` (`shapoclyack.theme`, `shapoclyack.locale`) and apply before
+  first paint. Russian covers chrome — navigation, titles, table headers,
+  status badges, login — not CVE/host identifiers or API error strings.
+
 ### Changed
 
 - **Backup restore drill** ([#158](https://github.com/onixus/Shapoclyack/issues/158)) —

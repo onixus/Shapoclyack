@@ -21,6 +21,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { VulnerabilityTimeline } from "@/components/vulnerability/timeline";
 import { useAuthStore } from "@/lib/auth-store";
+import { useT } from "@/lib/i18n";
 import {
   useAssignVulnerability,
   useCommentOnVulnerability,
@@ -59,6 +60,7 @@ import { cn } from "@/lib/utils";
 const DRAG_TYPE = "application/x-shapoclyack-vuln";
 
 export default function RemediationPage() {
+  const t = useT();
   const queryClient = useQueryClient();
   const openQuery = useTrackedVulnerabilities(
     { open_only: true },
@@ -115,15 +117,10 @@ export default function RemediationPage() {
           <div className="flex items-center gap-2.5">
             <Columns3 className="h-5 w-5 text-sky-400" />
             <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">
-              Remediation Board
+              {t("page.remediation.title")}
             </h1>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            Move a finding from detection to verified closure. Columns are the
-            lifecycle states; accepted risk is a badge, not a seventh column.
-            Tickets are links to Jira/ServiceNow/SMAX/DefectDojo — the platform
-            does not open them (that is the 10.3 delivery queue).
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t("page.remediation.subtitle")}</p>
         </div>
       </div>
 
@@ -260,6 +257,7 @@ function BoardCard({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const t = useT();
   return (
     <li>
       <button
@@ -286,7 +284,7 @@ function BoardCard({
           <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} showDue={false} />
         </div>
         <p className="mt-1.5 truncate text-[11px] text-slate-400">
-          {vuln.assignee || "Unassigned"}
+          {vuln.assignee || t("common.unassigned")}
           {vuln.ticket_key ? ` · ${vuln.ticket_key}` : ""}
         </p>
       </button>

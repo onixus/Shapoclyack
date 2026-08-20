@@ -7,10 +7,12 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { NAV } from "@/lib/config/nav";
+import { useT } from "@/lib/i18n";
 
 export function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const t = useT();
 
   return (
     <>
@@ -21,7 +23,7 @@ export function Sidebar() {
           </div>
           <div>
             <p className="text-sm font-bold tracking-wide text-slate-100">SHAPOCLYACK</p>
-            <p className="text-[10px] uppercase tracking-wider text-sky-400 font-semibold">Web UI v2</p>
+            <p className="text-[10px] uppercase tracking-wider text-sky-400 font-semibold">{t("brand.webUi")}</p>
           </div>
         </div>
         <Button
@@ -29,7 +31,7 @@ export function Sidebar() {
           variant="ghost"
           size="icon"
           className="text-slate-300 hover:text-white hover:bg-slate-800"
-          aria-label={open ? "Close navigation" : "Open navigation"}
+          aria-label={open ? t("sidebar.closeNav") : t("sidebar.openNav")}
           onClick={() => setOpen((prev) => !prev)}
         >
           {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
@@ -50,7 +52,7 @@ export function Sidebar() {
               </div>
               <div>
                 <p className="text-base font-extrabold tracking-wider text-slate-100">SHAPOCLYACK</p>
-                <p className="text-[11px] font-medium tracking-tight text-slate-400">Cyber Recon & Exposure</p>
+                <p className="text-[11px] font-medium tracking-tight text-slate-400">{t("brand.tagline")}</p>
               </div>
             </div>
           </div>
@@ -62,7 +64,7 @@ export function Sidebar() {
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600/20 px-3 py-2 text-xs font-semibold text-sky-300 border border-sky-500/30 hover:bg-sky-600/30 hover:border-sky-400 transition-all shadow-sm shadow-sky-950"
             >
               <Play className="h-3.5 w-3.5 fill-sky-300" />
-              New Scan Job
+              {t("sidebar.newScan")}
             </Link>
           </div>
 
@@ -86,7 +88,7 @@ export function Sidebar() {
                     <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.8)]" />
                   )}
                   <Icon className={cn("h-4 w-4 shrink-0 transition-transform group-hover:scale-110", active ? "text-sky-400" : "text-slate-400")} />
-                  <span>{item.label}</span>
+                  <span>{t(item.labelKey)}</span>
                 </Link>
               );
             })}
@@ -99,7 +101,7 @@ export function Sidebar() {
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                 </span>
-                Engine Active
+                {t("sidebar.engineActive")}
               </span>
               <span className="font-mono text-[10px] text-slate-600">v0.36-0723</span>
             </div>
@@ -110,7 +112,7 @@ export function Sidebar() {
       {open ? (
         <button
           type="button"
-          aria-label="Close menu overlay"
+          aria-label={t("sidebar.closeOverlay")}
           className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden"
           onClick={() => setOpen(false)}
         />
