@@ -19,7 +19,7 @@ const storageStub: Storage = {
     return memory.get(key) ?? null;
   },
   key(index) {
-    return [...memory.keys()][index] ?? null;
+    return Array.from(memory.keys())[index] ?? null;
   },
   removeItem(key) {
     memory.delete(key);
