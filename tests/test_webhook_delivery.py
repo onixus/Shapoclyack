@@ -141,7 +141,7 @@ def test_post_pins_connection_to_the_validated_address(monkeypatch):
 
     monkeypatch.setattr(delivery, "_resolve", lambda host: [approved])
 
-    def _capture(target, address, body, headers, *, deadline):
+    def _capture(target, address, body, headers, *, deadline, capture_body=False):
         seen["target"] = target
         seen["address"] = address
         seen["body"] = body
@@ -174,7 +174,7 @@ def test_post_does_not_reresolve_after_validation(monkeypatch):
     monkeypatch.setattr(
         delivery,
         "_post_to_address",
-        lambda target, address, body, headers, *, deadline: (200, ""),
+        lambda target, address, body, headers, *, deadline, capture_body=False: (200, ""),
     )
 
     result = delivery.post("https://receiver.example/hook", b"{}", {})
@@ -205,7 +205,10 @@ def test_post_classifies_response_codes(monkeypatch, status_code, ok, retryable)
     monkeypatch.setattr(
         delivery,
         "_post_to_address",
-        lambda target, address, body, headers, *, deadline: (status_code, "body"),
+        lambda target, address, body, headers, *, deadline, capture_body=False: (
+            status_code,
+            "body",
+        ),
     )
     result = delivery.post("https://receiver.example/hook", b"{}", {})
     assert (result.ok, result.retryable) == (ok, retryable)
@@ -238,7 +241,10 @@ def test_post_does_not_follow_redirects(monkeypatch):
     monkeypatch.setattr(
         delivery,
         "_post_to_address",
-        lambda target, address, body, headers, *, deadline: (302, "moved"),
+        lambda target, address, body, headers, *, deadline, capture_body=False: (
+            302,
+            "moved",
+        ),
     )
     result = delivery.post("https://receiver.example/hook", b"{}", {})
     assert result.ok is False
