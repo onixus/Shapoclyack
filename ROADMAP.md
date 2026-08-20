@@ -400,22 +400,25 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 | ~~[#174](https://github.com/onixus/Shapoclyack/issues/174)~~ | `OCTO_POSTGRES_URL` falls back to SQLite | **Done** | [#191](https://github.com/onixus/Shapoclyack/pull/191): `OCTO_ENV=prod` refuses an unset URL and any `sqlite://`. Dev/tests keep the fallback |
 | ~~[#160](https://github.com/onixus/Shapoclyack/issues/160)~~ | Cut the release, empty `## Unreleased` | **Done** | 0.41-0817 was cut. `Unreleased` is non-empty again because work landed after the tag; the next cut is a new tag, not a rerun of #160 |
 | ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ | Webhook delivery state machine | **Done** | Durable `octo-webhook-fanout` created with `DeliverPolicy.NEW` before bind; DLQ replay refuses `delivered`; claim visibility covers the serial batch so concurrent dispatchers cannot double-POST |
+| ~~[#185](https://github.com/onixus/Shapoclyack/issues/185)~~ | End-to-end API latency under concurrency | **Done** | `tests/fixtures/api_latency.py`; kind-dev 2026-08-20 at 1k/10k/50k × conc 32: list GET p95 < 500 ms, `/api/system` tight; SLO 4/5 not re-derived |
+| ~~[#186](https://github.com/onixus/Shapoclyack/issues/186)~~ | PrometheusRule from SLO + scheduler leadership | **Done** | `examples/prometheus-slo.rules.yaml` + Operator wrapper; `promtool check rules` in CI; `octo_scheduler_is_leader` `> 1` (5 m) and `== 0` (10 m) |
 
 Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 follows:
-~~#152~~ → #185/#186 → #188 → #187.
+~~#152~~ → ~~#185/#186~~ → #188 → #187.
 
 **Wave 1** is now filed rather than described here:
 ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
-correctness — **Done**: durable consumer created with `DeliverPolicy.NEW` before
-bind; DLQ replay refuses `delivered`; claim visibility covers the serial batch;
-concurrent dispatchers do not double-POST
-(with [#153](https://github.com/onixus/Shapoclyack/issues/153) for its configuration and
-limits); [#185](https://github.com/onixus/Shapoclyack/issues/185) end-to-end API latency
-under concurrency — objectives 2, 4 and 5 in [docs/slo.md](docs/slo.md) are still starting
-values because [3.8](#p3-breakdown--scale--observability) profiled query paths in-process;
-[#186](https://github.com/onixus/Shapoclyack/issues/186) alert rules as code (PromQL exists
-in `docs/slo.md`, no `PrometheusRule` manifests, and `octo_scheduler_is_leader` has no alert
-on either `> 1` or `== 0`); [#187](https://github.com/onixus/Shapoclyack/issues/187)
+correctness — **Done**;
+~~[#185](https://github.com/onixus/Shapoclyack/issues/185)~~ end-to-end API latency
+under concurrency — **Done**: GET p95 measured through FastAPI at 1k/10k/50k ×
+conc 1/8/32 on kind-dev; list routes stay under 500 ms at 50k × 32, `/api/system`
+is the outlier; SLO 4/5 still unmeasured on this stand (no job histogram,
+ingest off);
+~~[#186](https://github.com/onixus/Shapoclyack/issues/186)~~ alert rules as code —
+**Done**: `prometheus-slo.rules.yaml` + Operator wrapper, `promtool` in CI,
+scheduler `> 1` and `== 0`;
+(with [#153](https://github.com/onixus/Shapoclyack/issues/153) for webhook
+configuration and limits); [#187](https://github.com/onixus/Shapoclyack/issues/187)
 data-growth bounds (ClickHouse has no TTL — [3.8](#p3-breakdown--scale--observability) named
 TTL the right tool and rejected `PARTITION BY` as semantic — plus artifact retention on
 disk); and [#188](https://github.com/onixus/Shapoclyack/issues/188) a load run at ≥2 API

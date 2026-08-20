@@ -188,6 +188,7 @@ pipeline {
         // ("not found" на 1.31), а registry.k8s.io/kubectl — distroless, в нём
         // нет bash для запуска скрипта.
         sh 'k8s/scripts/validate-kustomize.sh'
+        sh 'k8s/scripts/validate-prometheus-rules.sh'
       }
     }
 

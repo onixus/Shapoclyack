@@ -245,8 +245,27 @@ restrict at the network layer, not app auth). `examples/ingress.example.yaml`
 does not expose it; keep it that way, and reach it in a lab with
 `kubectl -n network-scan port-forward svc/shapoclyack-api 8080:8080`.
 
-Series reference and alert thresholds: [docs/slo.md](../docs/slo.md) and the
-observability section of [docs/operations.md](../docs/operations.md).
+Alert rules live next to the scrape wiring, also in `examples/` so base still
+applies on a cluster without Prometheus Operator (#186):
+
+| You run | Rules | Action |
+|---|---|---|
+| Prometheus Operator | `examples/prometheusrule-slo.example.yaml` | `kubectl -n network-scan apply -f …`, and set a label your Prometheus `ruleSelector` matches |
+| Prometheus with `rule_files` | `examples/prometheus-slo.rules.yaml` | add `- /etc/prometheus/shapoclyack-slo.rules.yaml` under `rule_files` and mount the file |
+
+`prometheus-slo.rules.yaml` is the source of truth. The Operator wrapper is
+generated from it (`k8s/scripts/render-prometheusrule-slo.py`). `promtool check
+rules` runs in CI (`k8s/scripts/validate-prometheus-rules.sh`). Backup-freshness
+rules stay in `examples/prometheusrule-backup.example.yaml`.
+
+Scheduler leadership (`octo_scheduler_is_leader`) is alerted in both
+directions: `sum > 1` for 5 m (split brain, longer than a rolling-update
+overlap) and `sum == 0` for 10 m (no dispatch). Both require the series to
+exist so a missing scrape does not look like a missing leader.
+
+Series reference: [docs/slo.md](../docs/slo.md) (expressions live in the
+manifest, not duplicated as thresholds here) and the observability section of
+[docs/operations.md](../docs/operations.md).
 
 ### Upgrading a cluster deployed before the `octo-man` → `shapoclyack` rename
 

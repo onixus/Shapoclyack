@@ -124,6 +124,23 @@ sub-millisecond over a local socket and dominant over a real network.
 Recorded results and the conclusions drawn from them are in
 [scale-profile.md](scale-profile.md).
 
+### End-to-end API latency (#185)
+
+`tests/fixtures/api_latency.py` hits the list/status routes named in
+[slo.md](slo.md) through FastAPI (auth, serialization, the network), at several
+concurrency levels, and prints p50/p95/p99 plus the server histogram:
+
+```bash
+python -m tests.fixtures.api_latency \
+  --base-url http://127.0.0.1:8080 \
+  --concurrency 1,8,32 --requests 40 --markdown
+```
+
+Optional `--tenant-id` selects among the caller's tenants (admin can name
+`scale-test` after a `scale_seed` run). Record the table, the asset/run
+counts, and the stand shape in `docs/slo.md` when you re-derive SLO 2. This
+does **not** replace `tests/load/run.sh` (scanner vs live targets).
+
 ## Kubernetes and containers
 
 Validate manifests:
