@@ -8,6 +8,8 @@ without a listening socket.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -289,6 +291,80 @@ def test_dispatch_survives_a_transport_that_raises(settings):
     assert "RuntimeError" in webhooks.get_delivery(delivery_id)["last_error"]
 
 
+def test_requeue_refuses_a_delivered_row(settings):
+    """#152: replay is a DLQ operation, not a second notification."""
+    _subscribe(settings)
+    delivery_id = webhooks.enqueue_event(_event())[0]
+    webhooks.dispatch_once(post=_ok)
+    with pytest.raises(ValueError, match="delivered"):
+        webhooks.requeue_delivery(delivery_id)
+    assert webhooks.get_delivery(delivery_id)["status"] == "delivered"
+
+
+def test_late_duplicate_result_does_not_un_deliver(settings):
+    _subscribe(settings)
+    delivery_id = webhooks.enqueue_event(_event())[0]
+    webhooks.dispatch_once(post=_ok)
+    status = webhooks._record_result(  # noqa: SLF001
+        delivery_id=delivery_id,
+        result=_server_error(),
+        now=datetime.now(UTC),
+    )
+    assert status == "delivered"
+    assert webhooks.get_delivery(delivery_id)["status"] == "delivered"
+
+
+def test_claim_visibility_covers_the_serial_batch(settings):
+    settings.webhook_timeout_seconds = 10
+    assert webhooks.claim_visibility_seconds(timeout_seconds=10, batch_len=50) == 520
+    assert webhooks.claim_visibility_seconds(timeout_seconds=1, batch_len=0) == 30
+
+    _subscribe(settings)
+    ids = [webhooks.enqueue_event(_event(event_id=f"ev-{i}"))[0] for i in range(4)]
+    claimed = threading.Event()
+    released = threading.Event()
+
+    def _slow(*args, **kwargs):
+        claimed.set()
+        released.wait(timeout=5)
+        return _ok()
+
+    holder = threading.Thread(target=lambda: webhooks.dispatch_once(post=_slow, limit=4))
+    holder.start()
+    assert claimed.wait(timeout=5), "first dispatcher never claimed"
+    try:
+        assert webhooks.dispatch_once(post=_ok, limit=4)["attempted"] == 0
+    finally:
+        released.set()
+        holder.join()
+    assert all(webhooks.get_delivery(did)["status"] == "delivered" for did in ids)
+
+
+def test_concurrent_dispatchers_do_not_double_post(settings):
+    """Two replicas divide the queue; a delivery is POSTed once (#152)."""
+    _subscribe(settings)
+    ids = [webhooks.enqueue_event(_event(event_id=f"ev-{i}"))[0] for i in range(10)]
+    seen: list[str] = []
+    lock = threading.Lock()
+
+    def _post(url, body, headers, **kwargs):
+        with lock:
+            seen.append(headers[delivery_transport.DELIVERY_HEADER])
+        time.sleep(0.02)
+        return _ok()
+
+    threads = [
+        threading.Thread(target=lambda: webhooks.dispatch_once(post=_post, limit=10))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(seen) == sorted(ids)
+    assert len(seen) == len(set(seen))
+
+
 def test_requeue_puts_a_dead_delivery_back_in_the_queue(settings):
     settings.webhook_max_attempts = 1
     _subscribe(settings)
@@ -452,6 +528,13 @@ def test_api_dlq_view_and_retry(tmp_path, monkeypatch):
     assert (
         client.post("/api/webhooks/deliveries/whd_missing/retry", headers=admin).status_code == 404
     )
+
+    webhooks.dispatch_once(post=_ok)
+    delivered_id = client.get(
+        "/api/webhooks/deliveries", params={"status": "delivered"}, headers=admin
+    ).json()["items"][0]["delivery_id"]
+    refused = client.post(f"/api/webhooks/deliveries/{delivered_id}/retry", headers=admin)
+    assert refused.status_code == 409
 
 
 def test_api_rotate_secret(tmp_path, monkeypatch):

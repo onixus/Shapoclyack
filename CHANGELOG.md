@@ -24,6 +24,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Webhook delivery state machine** ([#152](https://github.com/onixus/Shapoclyack/issues/152)) —
+  the JetStream durable `octo-webhook-fanout` is created with
+  `DeliverPolicy.NEW` *before* binding, so a new consumer does not replay
+  retained `EVENTS` history. `POST /api/webhooks/deliveries/{id}/retry`
+  replays only `dead` rows (409 on `delivered`). A claim's visibility
+  timeout covers the whole serial batch so two dispatcher replicas cannot
+  POST the same delivery while one is still in flight; a late duplicate
+  result cannot un-deliver a row the receiver already accepted.
+
 - **Ticket transports** (ROADMAP P2 / Phase 10.3) — Jira, ServiceNow and
   DefectDojo create issues over the existing webhook delivery queue, not
   a second queue. A subscription's `transport` is `webhook` (HMAC POST,

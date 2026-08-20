@@ -135,7 +135,10 @@ def retry_delivery(
         not principal.is_platform_admin and existing.get("tenant_id") != principal.tenant_id
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delivery not found")
-    requeued = webhooks.requeue_delivery(delivery_id)
+    try:
+        requeued = webhooks.requeue_delivery(delivery_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if requeued is None:  # pragma: no cover - deleted between the two reads
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delivery not found")
     return requeued
