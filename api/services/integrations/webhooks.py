@@ -600,6 +600,11 @@ def get_delivery(delivery_id: str) -> dict[str, Any] | None:
 def requeue_delivery(delivery_id: str) -> dict[str, Any] | None:
     """Take one delivery back out of the DLQ.
 
+    Only ``dead`` rows are replayable (#152). A successful delivery must not
+    be POSTed again through this API — that is a second notification of a
+    fact the receiver already accepted. ``pending`` is returned unchanged so
+    a double-click on retry is a no-op rather than a reset of the ladder.
+
     ``attempts`` is reset, so a redelivery gets the full retry ladder again
     rather than dying on its first failure — the operator requeues *because*
     something changed at the receiver, and the previous attempt count describes
@@ -614,6 +619,11 @@ def requeue_delivery(delivery_id: str) -> dict[str, Any] | None:
             return None
         if row.status == "pending":
             return _delivery_to_dict(row)
+        if row.status != "dead":
+            raise ValueError(
+                f"delivery {delivery_id} is {row.status}; "
+                "only dead-lettered rows can be replayed"
+            )
         LOG.info(
             "Requeueing webhook delivery %s (was %s after %s attempts)",
             delivery_id,
@@ -626,6 +636,19 @@ def requeue_delivery(delivery_id: str) -> dict[str, Any] | None:
         row.updated_at = now
         session.flush()
         return _delivery_to_dict(row)
+
+
+def claim_visibility_seconds(*, timeout_seconds: int, batch_len: int) -> int:
+    """How long a claimed batch stays off the due queue.
+
+    The dispatcher POSTs the claimed rows serially. Each POST can take the
+    full ``webhook_timeout_seconds``. A lease of ``timeout * 3`` (the old
+    constant) expired in the middle of a large batch, so a second replica
+    reclaimed a row still being sent and the receiver got a duplicate (#152).
+    The window covers one timeout per claimed row plus two timeouts of slack,
+    and is never shorter than 30s.
+    """
+    return max(30, int(timeout_seconds) * (max(int(batch_len), 1) + 2))
 
 
 def backoff_seconds(attempts: int, settings: Settings) -> int:
@@ -661,7 +684,12 @@ def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.Webhoo
         .limit(limit)
         .with_for_update(skip_locked=True)
     ).scalars().all()
-    visibility = timedelta(seconds=max(30, settings.webhook_timeout_seconds * 3))
+    visibility = timedelta(
+        seconds=claim_visibility_seconds(
+            timeout_seconds=settings.webhook_timeout_seconds,
+            batch_len=len(rows),
+        )
+    )
     for row in rows:
         row.attempts += 1
         row.next_attempt_at = now + visibility
@@ -682,6 +710,10 @@ def _record_result(
         row = session.get(models.WebhookDelivery, delivery_id)
         if row is None:  # pragma: no cover - deleted mid-flight
             return "gone"
+        # A late POST from a duplicate claim must not un-deliver a row the
+        # receiver already accepted (#152).
+        if row.status == "delivered":
+            return "delivered"
         row.last_status_code = result.status_code
         row.last_error = result.error
         row.updated_at = now

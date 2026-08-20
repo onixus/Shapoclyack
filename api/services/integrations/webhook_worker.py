@@ -83,32 +83,17 @@ class WebhookFanoutWorker:
     async def _consume_loop(self) -> None:
         import nats
         from nats.errors import TimeoutError as NatsTimeout
-        from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 
         nc = await nats.connect(self._nats_url, name="octo-webhook-fanout", connect_timeout=5)
         try:
             js = nc.jetstream()
-            try:
-                sub = await js.pull_subscribe(
-                    SUBJECT_FILTER, durable=CONSUMER_WEBHOOK_FANOUT, stream=STREAM_EVENTS
-                )
-            except Exception:  # noqa: BLE001 - consumer does not exist yet
-                await js.add_consumer(
-                    STREAM_EVENTS,
-                    ConsumerConfig(
-                        durable_name=CONSUMER_WEBHOOK_FANOUT,
-                        ack_policy=AckPolicy.EXPLICIT,
-                        filter_subject=SUBJECT_FILTER,
-                        # NEW, not ALL: a webhook created today should not fire
-                        # a month of retained history at its receiver the first
-                        # time this consumer is created.
-                        deliver_policy=DeliverPolicy.NEW,
-                        max_deliver=5,
-                    ),
-                )
-                sub = await js.pull_subscribe(
-                    SUBJECT_FILTER, durable=CONSUMER_WEBHOOK_FANOUT, stream=STREAM_EVENTS
-                )
+            await ensure_fanout_consumer(js)
+            # Bind only: pull_subscribe() auto-creates with DeliverPolicy.ALL
+            # when the durable is missing, which is the #152 replay-of-history
+            # bug. Creation with NEW happens above.
+            sub = await js.pull_subscribe_bind(
+                durable=CONSUMER_WEBHOOK_FANOUT, stream=STREAM_EVENTS
+            )
 
             LOG.info(
                 "Webhook fan-out subscribed stream=%s consumer=%s",
@@ -224,6 +209,49 @@ class WebhookDispatcher:
         if self._last_prune is None or now - self._last_prune >= _PRUNE_INTERVAL_SECONDS:
             self._last_prune = now
             webhooks.prune_deliveries()
+
+
+async def ensure_fanout_consumer(js: Any) -> None:
+    """Create ``octo-webhook-fanout`` with ``DeliverPolicy.NEW`` if it is missing.
+
+    ``pull_subscribe(durable=…)`` auto-creates the consumer when absent, and
+    nats-py's default config is ``DeliverPolicy.ALL``. A webhook subscribed
+    today would then fire a month of retained ``EVENTS`` history at its
+    receiver (#152). Create explicitly, then bind.
+
+    An already-existing consumer is left alone — recreating it would reset
+    the cursor. A leftover ALL from before this fix is logged so an operator
+    can delete the consumer once.
+    """
+    from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
+    from nats.js.errors import NotFoundError
+
+    try:
+        info = await js.consumer_info(STREAM_EVENTS, CONSUMER_WEBHOOK_FANOUT)
+    except NotFoundError:
+        info = None
+    if info is None:
+        config = ConsumerConfig(
+            durable_name=CONSUMER_WEBHOOK_FANOUT,
+            ack_policy=AckPolicy.EXPLICIT,
+            filter_subject=SUBJECT_FILTER,
+            deliver_policy=DeliverPolicy.NEW,
+            max_deliver=5,
+        )
+        try:
+            await js.add_consumer(STREAM_EVENTS, config)
+        except Exception:  # noqa: BLE001 - another replica created it
+            LOG.debug("Webhook fan-out consumer already created by a peer", exc_info=True)
+        return
+    policy = getattr(getattr(info, "config", None), "deliver_policy", None)
+    if policy is not None and policy != DeliverPolicy.NEW:
+        LOG.warning(
+            "Webhook fan-out consumer %s exists with deliver_policy=%s; "
+            "new installs use DeliverPolicy.NEW so retained history is not "
+            "replayed. Delete the consumer to recreate it.",
+            CONSUMER_WEBHOOK_FANOUT,
+            policy,
+        )
 
 
 async def _ack(msg: Any) -> None:

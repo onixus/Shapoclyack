@@ -399,12 +399,16 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 | ~~[#159](https://github.com/onixus/Shapoclyack/issues/159)~~ | Safe upgrade — one path to the schema, rollback runbook | **Done** | Advisory lock around `python -m api.db.migrate` in the initContainer ([#192](https://github.com/onixus/Shapoclyack/pull/192)); `create_all` is SQLite-only. Expand/contract and the upgrade/rollback runbook live in [docs/operations.md](docs/operations.md). PDB landed with #158. Postgres restore drill (#158) is done separately; rolling-update rollback remains the runbook in docs/operations.md |
 | ~~[#174](https://github.com/onixus/Shapoclyack/issues/174)~~ | `OCTO_POSTGRES_URL` falls back to SQLite | **Done** | [#191](https://github.com/onixus/Shapoclyack/pull/191): `OCTO_ENV=prod` refuses an unset URL and any `sqlite://`. Dev/tests keep the fallback |
 | ~~[#160](https://github.com/onixus/Shapoclyack/issues/160)~~ | Cut the release, empty `## Unreleased` | **Done** | 0.41-0817 was cut. `Unreleased` is non-empty again because work landed after the tag; the next cut is a new tag, not a rerun of #160 |
+| ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ | Webhook delivery state machine | **Done** | Durable `octo-webhook-fanout` created with `DeliverPolicy.NEW` before bind; DLQ replay refuses `delivered`; claim visibility covers the serial batch so concurrent dispatchers cannot double-POST |
 
 Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 follows:
-#152 → #185/#186 → #188 → #187.
+~~#152~~ → #185/#186 → #188 → #187.
 
 **Wave 1** is now filed rather than described here:
-[#152](https://github.com/onixus/Shapoclyack/issues/152) webhook state-machine correctness
+~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
+correctness — **Done**: durable consumer created with `DeliverPolicy.NEW` before
+bind; DLQ replay refuses `delivered`; claim visibility covers the serial batch;
+concurrent dispatchers do not double-POST
 (with [#153](https://github.com/onixus/Shapoclyack/issues/153) for its configuration and
 limits); [#185](https://github.com/onixus/Shapoclyack/issues/185) end-to-end API latency
 under concurrency — objectives 2, 4 and 5 in [docs/slo.md](docs/slo.md) are still starting

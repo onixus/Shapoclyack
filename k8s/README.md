@@ -117,10 +117,13 @@ stay in the run's `diff.json`. Turn it off with `OCTO_ASSET_EVENTS_ENABLED=false
 without disabling job dispatch or result ingest on the same broker.
 
 **Webhook fan-out (Phase 10.3):** the API's own consumer of that stream is the
-durable pull consumer `octo-webhook-fanout` on `events.asset.>`, which turns
-matching events into `webhook_deliveries` rows; a dispatcher thread in every
-replica then delivers them (claims via `FOR UPDATE SKIP LOCKED`, so replicas
-divide the queue). Only queueing is on the broker path — the HTTP call is not —
+durable pull consumer `octo-webhook-fanout` on `events.asset.>`, created with
+`DeliverPolicy.NEW` before bind (so retained stream history is not replayed
+into a new webhook), which turns matching events into `webhook_deliveries`
+rows; a dispatcher thread in every replica then delivers them (claims via
+`FOR UPDATE SKIP LOCKED` with a visibility timeout that covers the serial
+batch, so replicas divide the queue without duplicate POSTs). `POST
+/api/webhooks/deliveries/{id}/retry` replays only dead-lettered rows. Only queueing is on the broker path — the HTTP call is not —
 so a slow receiver shows up as pending rows, not as JetStream lag. With
 `OCTO_WEBHOOK_DISPATCH_ENABLED=false` a replica keeps the API surface but sends
 nothing, which is how you confine outbound traffic to pods that have egress.

@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from types import SimpleNamespace
 
 import pytest
+from nats.js.api import DeliverPolicy
+from nats.js.errors import NotFoundError
 
 from api.services.integrations import webhook_worker
 from api.settings import Settings
@@ -93,6 +97,46 @@ def test_database_failure_naks_so_the_event_comes_back(monkeypatch):
 
     assert (msg.naked, msg.acked, msg.termed) == (True, False, False)
     assert worker.stats["errors"] == 1
+
+
+class _Js:
+    def __init__(self, *, exists: bool = False, policy=None) -> None:
+        self.exists = exists
+        self.policy = policy
+        self.added: list = []
+
+    async def consumer_info(self, stream, name):
+        if not self.exists:
+            raise NotFoundError()
+        return SimpleNamespace(config=SimpleNamespace(deliver_policy=self.policy))
+
+    async def add_consumer(self, stream, config):
+        self.added.append((stream, config))
+        self.exists = True
+
+
+def test_ensure_fanout_creates_new_policy_when_missing():
+    js = _Js()
+    asyncio.run(webhook_worker.ensure_fanout_consumer(js))
+    assert len(js.added) == 1
+    stream, config = js.added[0]
+    assert stream == webhook_worker.STREAM_EVENTS
+    assert config.durable_name == webhook_worker.CONSUMER_WEBHOOK_FANOUT
+    assert config.deliver_policy == DeliverPolicy.NEW
+
+
+def test_ensure_fanout_leaves_an_existing_consumer_alone():
+    js = _Js(exists=True, policy=DeliverPolicy.NEW)
+    asyncio.run(webhook_worker.ensure_fanout_consumer(js))
+    assert js.added == []
+
+
+def test_ensure_fanout_warns_when_the_existing_policy_is_all(caplog):
+    js = _Js(exists=True, policy=DeliverPolicy.ALL)
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(webhook_worker.ensure_fanout_consumer(js))
+    assert js.added == []
+    assert "DeliverPolicy.NEW" in caplog.text
 
 
 def test_dispatcher_tick_accumulates_outcomes_and_reports_the_queue(monkeypatch):
