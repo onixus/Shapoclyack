@@ -398,6 +398,9 @@ class CreateWebhookRequest(BaseModel):
     secret: str | None = Field(default=None, max_length=512)
     headers: dict[str, str] | None = None
     enabled: bool = True
+    # webhook (default HMAC POST) | jira | servicenow | defectdojo
+    transport: Literal["webhook", "jira", "servicenow", "defectdojo"] | None = None
+    transport_config: dict[str, Any] | None = None
 
 
 class UpdateWebhookRequest(BaseModel):
@@ -407,6 +410,8 @@ class UpdateWebhookRequest(BaseModel):
     event_kinds: list[str] | None = None
     min_severity: Literal["low", "medium", "high", "critical"] | None = None
     headers: dict[str, str] | None = None
+    transport: Literal["webhook", "jira", "servicenow", "defectdojo"] | None = None
+    transport_config: dict[str, Any] | None = None
 
 
 class WebhookInfo(BaseModel):
@@ -419,6 +424,8 @@ class WebhookInfo(BaseModel):
     min_severity: str | None = None
     has_secret: bool = False
     headers: dict[str, str] = Field(default_factory=dict)
+    transport: str = "webhook"
+    transport_config: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
     created_by: str | None = None
     updated_at: str | None = None

@@ -26,7 +26,9 @@ from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.services import asset_events, metrics, pagination
 from api.services import tenants as tenants_service
+from api.services import vulnerabilities as vulns_service
 from api.services.integrations import delivery as delivery_transport
+from api.services.integrations import tickets as ticket_transport
 from api.settings import Settings
 from scanner.pipeline.report import SEVERITY_ORDER
 
@@ -94,6 +96,8 @@ def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
         "min_severity": row.min_severity,
         "has_secret": bool(row.secret),
         "headers": dict(row.headers or {}),
+        "transport": row.transport or "webhook",
+        "transport_config": dict(row.transport_config or {}),
         "created_at": _iso(row.created_at),
         "created_by": row.created_by,
         "updated_at": _iso(row.updated_at),
@@ -139,6 +143,8 @@ def create_subscription(
     headers: dict[str, Any] | None = None,
     enabled: bool = True,
     created_by: str | None = None,
+    transport: str | None = None,
+    transport_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a subscription. The returned dict carries ``secret`` once.
 
@@ -160,7 +166,17 @@ def create_subscription(
     kinds = _validate_event_kinds(event_kinds)
     severity = _validate_min_severity(min_severity)
     clean_headers = delivery_transport.sanitize_headers(headers)
-    secret_value = (secret or "").strip() or secrets.token_urlsafe(32)
+    kind = ticket_transport.validate_transport(transport)
+    config = ticket_transport.validate_transport_config(kind, transport_config)
+    if kind == "webhook":
+        secret_value = (secret or "").strip() or secrets.token_urlsafe(32)
+    else:
+        secret_value = (secret or "").strip() or None
+        has_auth = any(k.lower() == "authorization" for k in clean_headers)
+        if not secret_value and not has_auth:
+            raise ValueError(
+                f"{kind} subscription needs a secret (API token) or an Authorization header"
+            )
 
     now = _now()
     row = models.WebhookSubscription(
@@ -173,6 +189,8 @@ def create_subscription(
         min_severity=severity,
         secret=secret_value,
         headers=clean_headers,
+        transport=kind,
+        transport_config=config,
         created_at=now,
         created_by=created_by,
         updated_at=now,
@@ -275,6 +293,13 @@ def update_subscription(subscription_id: str, **fields: Any) -> dict[str, Any] |
             row.min_severity = _validate_min_severity(fields["min_severity"])
         if "headers" in fields:
             row.headers = delivery_transport.sanitize_headers(fields["headers"])
+        if "transport" in fields or "transport_config" in fields:
+            kind = ticket_transport.validate_transport(
+                fields["transport"] if "transport" in fields else row.transport
+            )
+            cfg = fields["transport_config"] if "transport_config" in fields else (row.transport_config or {})
+            row.transport = kind
+            row.transport_config = ticket_transport.validate_transport_config(kind, cfg)
         if "secret" in fields:
             # An explicit empty string clears signing; a non-empty value sets
             # it; ``rotate_secret`` (below) is the "give me a new one" path.
@@ -289,7 +314,20 @@ def update_subscription(subscription_id: str, **fields: Any) -> dict[str, Any] |
 
 
 def rotate_secret(subscription_id: str) -> dict[str, Any] | None:
-    """Generate a fresh signing secret and return it once."""
+    """Generate a fresh HMAC signing secret and return it once.
+
+    Ticket transports use ``secret`` as the tracker API token, so rotating
+    it to a random value would silently break Jira/ServiceNow/DefectDojo.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookSubscription, subscription_id)
+        if row is None:
+            return None
+        if (row.transport or "webhook") != "webhook":
+            raise ValueError(
+                "rotate-secret is for webhook HMAC keys; PATCH secret with the tracker token instead"
+            )
     return update_subscription(subscription_id, secret=secrets.token_urlsafe(32))
 
 
@@ -758,6 +796,88 @@ def dispatch_once(
                 result.error,
             )
     return outcome
+
+
+def link_created_ticket(
+    *,
+    tenant_id: str,
+    payload: dict[str, Any],
+    transport: str,
+    ticket_key: str | None,
+    ticket_url: str | None,
+) -> bool:
+    """Attach a newly created ticket to the matching tracked finding.
+
+    No-op when there is no finding, when the finding already has a ticket
+    (an operator-set link wins), or when the adapter returned no key/url.
+    Never raises: a ticket that exists in Jira must not fail the delivery
+    because the tracker row is missing.
+    """
+    if not ticket_key and not ticket_url:
+        return False
+    if transport not in ticket_transport.TICKET_TRANSPORTS:
+        return False
+    envelope = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    host = str(envelope.get("host") or "").strip()
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    cve = str(data.get("cve") or envelope.get("cve") or "").strip() or None
+    script_id = str(data.get("script_id") or "").strip() or None
+    port = envelope.get("port")
+    port_s = "" if port is None else str(port).strip()
+    if not host or (not cve and not script_id):
+        return False
+    settings = _require_settings()
+    try:
+        with get_session(settings.postgres_url) as session:
+            asset_ids = list(
+                session.execute(
+                    select(models.AssetIdentifier.asset_id).where(
+                        models.AssetIdentifier.tenant_id == tenant_id,
+                        func.lower(models.AssetIdentifier.identifier_value) == host.lower(),
+                    )
+                ).scalars().all()
+            )
+            if not asset_ids:
+                return False
+            query = select(models.Vulnerability).where(
+                models.Vulnerability.tenant_id == tenant_id,
+                models.Vulnerability.asset_id.in_(asset_ids),
+            )
+            if cve:
+                query = query.where(func.upper(models.Vulnerability.cve) == cve.upper())
+            else:
+                query = query.where(models.Vulnerability.script_id == script_id)
+            if port_s:
+                query = query.where(models.Vulnerability.port == port_s)
+            rows = list(session.execute(query).scalars().all())
+            if not rows:
+                return False
+            rows.sort(key=lambda row: 0 if row.state != "CLOSED" else 1)
+            target = rows[0]
+            if target.ticket_key or target.ticket_url:
+                return False
+            vuln_id = target.vuln_id
+        linked = vulns_service.set_ticket(
+            settings,
+            tenant_id=tenant_id,
+            vuln_id=vuln_id,
+            system=transport,
+            key=ticket_key,
+            url=ticket_url,
+            actor="shapoclyack",
+            note="opened by ticket transport",
+        )
+        return linked is not None
+    except Exception:  # noqa: BLE001
+        LOG.warning(
+            "ticket link failed transport=%s tenant=%s host=%s cve=%s",
+            transport,
+            tenant_id,
+            host,
+            cve,
+            exc_info=True,
+        )
+        return False
 
 
 def queue_depth() -> dict[str, int]:

@@ -459,6 +459,12 @@ class WebhookSubscription(Base):
     secret: Mapped[str | None] = mapped_column(default=None)
     # Static headers merged into every request (e.g. an API gateway token).
     headers: Mapped[dict] = mapped_column(JSON, default=dict)
+    # webhook (HMAC POST, default) | jira | servicenow | defectdojo.
+    # Ticket transports reuse this queue; they do not HMAC-sign a foreign API.
+    transport: Mapped[str] = mapped_column(default="webhook")
+    # Adapter knobs that are not credentials: Jira project_key / issue_type,
+    # ServiceNow table, DefectDojo test_id. Tokens stay in secret/headers.
+    transport_config: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
     updated_at: Mapped[datetime | None] = mapped_column(default=None)

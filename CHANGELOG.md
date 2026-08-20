@@ -6,6 +6,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Ticket transports** (ROADMAP P2 / Phase 10.3) — Jira, ServiceNow and
+  DefectDojo create issues over the existing webhook delivery queue, not
+  a second queue. A subscription's `transport` is `webhook` (HMAC POST,
+  default) or `jira` / `servicenow` / `defectdojo`. Native create still
+  retries 5xx and dead-letters a 4xx. On success a matching tracked
+  finding is linked (`ticket_system` / `ticket_key` / `ticket_url`); an
+  operator-set link is not overwritten. HMAC is not applied to those
+  APIs. Credentials stay write-only. This is not confirmation the CVE
+  is exploitable, and ticket status is not synced back.
+
 - **OpenTelemetry on the API** (ROADMAP P3) — opt-in
   `OCTO_OTEL_EXPORTER_OTLP_ENDPOINT`. Empty means no TracerProvider.
   Spans are HTTP requests, not scan facts. Scanner wall-clock stays

@@ -73,8 +73,9 @@ lifecycle model.
 A comment is an audit event (`kind=comment`) and does not change state.
 A ticket link (`ticket_system` / `ticket_key` / `ticket_url`) records where
 the work lives in Jira, ServiceNow, SMAX or DefectDojo. The platform does
-**not** create that ticket: native adapters belong to the 10.3 delivery queue
-(ROADMAP P2) and must not be built a second time here.
+**not** create that ticket from this form. Native Jira/ServiceNow/DefectDojo
+create is a `transport` on the same webhook subscription (ROADMAP P2): the
+queue opens the ticket and then writes this link.
 
 Evidence on the board is the last observing run. File attachments are out of
 scope. The closed column is a recent page, not the full history — the
