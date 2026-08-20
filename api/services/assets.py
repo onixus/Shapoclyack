@@ -743,6 +743,82 @@ def get_asset_exposure_by_ip(settings: Settings, tenant_id: str, host_ip: str) -
         return None
 
 
+def ownership_for_hosts(
+    settings: Settings,
+    tenant_id: str,
+    *,
+    ips: list[str],
+    names: list[str],
+) -> tuple[dict[str, dict[str, str | None]], dict[str, dict[str, str | None]]]:
+    """Batch identifier → ownership for a run (P4.3).
+
+    Returns ``(by_ip, by_fqdn)``. One query. Never infers owner from a
+    public IP or an ASN. A miss is empty — the graph then clusters by
+    registrable domain rather than pretending the network operator owns
+    the box.
+    """
+    ip_set = [ip.strip() for ip in ips if ip and ip.strip()]
+    name_set = [n.strip().lower() for n in names if n and n.strip()]
+    if not ip_set and not name_set:
+        return {}, {}
+    clauses = []
+    if ip_set:
+        clauses.append(
+            (models.AssetIdentifier.identifier_type == "ip")
+            & models.AssetIdentifier.identifier_value.in_(ip_set)
+        )
+    if name_set:
+        clauses.append(
+            (models.AssetIdentifier.identifier_type == "fqdn")
+            & models.AssetIdentifier.identifier_value.in_(name_set)
+        )
+    try:
+        with get_session(settings.postgres_url) as session:
+            rows = session.execute(
+                select(
+                    models.AssetIdentifier.identifier_type,
+                    models.AssetIdentifier.identifier_value,
+                    models.Asset.asset_id,
+                    models.Asset.owner_email,
+                    models.Asset.business_unit,
+                )
+                .join(models.Asset, models.Asset.asset_id == models.AssetIdentifier.asset_id)
+                .where(
+                    models.AssetIdentifier.tenant_id == tenant_id,
+                    or_(*clauses),
+                )
+            ).all()
+    except Exception:  # noqa: BLE001
+        LOG.warning("ownership lookup failed tenant=%s", tenant_id, exc_info=True)
+        return {}, {}
+
+    by_ip: dict[str, dict[str, str | None]] = {}
+    by_name: dict[str, dict[str, str | None]] = {}
+    for kind, value, asset_id, owner_email, business_unit in rows:
+        payload = {
+            "asset_id": asset_id,
+            "owner_email": owner_email,
+            "business_unit": business_unit,
+        }
+        if kind == "ip":
+            by_ip[value] = _prefer_owned(by_ip.get(value), payload)
+        else:
+            by_name[value.lower()] = _prefer_owned(by_name.get(value.lower()), payload)
+    return by_ip, by_name
+
+
+def _prefer_owned(
+    existing: dict[str, str | None] | None, incoming: dict[str, str | None]
+) -> dict[str, str | None]:
+    if existing is None:
+        return incoming
+    incoming_owned = bool(incoming.get("owner_email") or incoming.get("business_unit"))
+    existing_owned = bool(existing.get("owner_email") or existing.get("business_unit"))
+    if incoming_owned and not existing_owned:
+        return incoming
+    return existing
+
+
 _MANUAL_STATUS = "decommissioned"
 
 

@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from api.auth import Role, TenantPrincipal, get_settings, require_tenant
+from api.auth import ROLE_RANK, Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AliveHostItem,
@@ -137,6 +137,8 @@ def get_artifact(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> str:
+    if runs_service.is_screenshot_path(artifact_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     text = runs_service.read_artifact_text(
         settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
     )
@@ -156,6 +158,7 @@ _ARTIFACT_MEDIA_TYPES = {
     ".xml": "application/xml",
     ".html": "text/html",
     ".log": "text/plain",
+    ".png": "image/png",
 }
 
 
@@ -170,10 +173,36 @@ def download_artifact(
     UTF-8-decodes and truncates to 1 MB — fine for previewing JSON/TXT but
     corrupts binaries like ``summary.pdf``), this streams the raw file with an
     attachment disposition and a content-type derived from its extension."""
-    target = runs_service.resolve_artifact(
-        settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
-    )
+    if runs_service.is_screenshot_path(artifact_path):
+        if ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+        target = runs_service.resolve_artifact(
+            settings,
+            run_id,
+            artifact_path,
+            tenant_id=_run_tenant_filter(principal),
+            allow_screenshots=True,
+        )
+    else:
+        target = runs_service.resolve_artifact(
+            settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
+        )
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     media_type = _ARTIFACT_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream")
     return FileResponse(target, media_type=media_type, filename=target.name)
+
+
+@router.get("/{run_id}/screenshots")
+def list_screenshots(
+    run_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    """Redacted screenshots for this run. Operator-only — they can still hold PII."""
+    manifest = runs_service.list_screenshots(
+        settings, run_id, tenant_id=_run_tenant_filter(principal)
+    )
+    if manifest is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return manifest

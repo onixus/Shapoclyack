@@ -192,6 +192,9 @@ def test_list_and_get_run(tmp_path: Path):
     host_payload = hosts.json()
     assert {row["host"] for row in host_payload} == {"10.0.0.1", "10.0.0.2"}
     ashburn = next(row for row in host_payload if row["host"] == "10.0.0.1")
+    assert ashburn["registrable_domain"] == "alpha.lab"
+    assert ashburn["ownership_source"] == "domain"
+    assert ashburn["owner_email"] is None
     assert ashburn["city"] == "Ashburn"
     assert ashburn["country"] == "United States"
     assert ashburn["vulnerability_count"] == 1

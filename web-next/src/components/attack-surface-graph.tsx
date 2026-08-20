@@ -2,20 +2,23 @@
 
 import { useMemo } from "react";
 import type { AliveHost, PortAggregate } from "@/lib/api";
+import { ownershipGroup, type GraphGroupBy } from "@/lib/attack-surface";
 
-// Lightweight dependency-free attack-surface view: a three-column layered
-// graph (hostnames → IPs → ports) drawn as plain SVG. IP nodes are colored by
-// GeoIP country (the only clustering dimension currently available via the API
-// — ASN/org needs the opt-in asn_discovery stage). Node counts are capped so a
-// 50k-asset fleet stays legible; the caller states what was shown vs. total.
+// Topology: hostnames → IPs → ports → services, coloured by ASN or GeoIP.
+// Ownership (P4.3): owners → hostnames → IPs → ports → services. Operator-set
+// unit/owner first; unowned names cluster by registrable domain and are
+// labelled as a domain so a DNS name is not read as an owner. ASN is never
+// an owner.
 
-const COL_X = { host: 16, ip: 232, port: 448, service: 664 } as const;
+const TOPOLOGY_X = { host: 16, ip: 232, port: 448, service: 664, owner: -200 } as const;
+const OWNER_X = { owner: 16, host: 200, ip: 384, port: 568, service: 752 } as const;
 const NODE_W = 140;
 const NODE_H = 22;
 const V_GAP = 8;
 const ROW = NODE_H + V_GAP;
 const TOP_PAD = 16;
-const SVG_W = 820;
+const SVG_W_TOPOLOGY = 820;
+const SVG_W_OWNER = 910;
 
 const COUNTRY_PALETTE = [
   "#2563eb", "#0891b2", "#7c3aed", "#db2777", "#ea580c",
@@ -37,22 +40,44 @@ function truncate(text: string, max = 22): string {
 export function AttackSurfaceGraph({
   hosts,
   ports,
+  groupBy = "topology",
+  ownerKey = "all",
   caps = { maxIps: 40, maxHostnames: 40, maxPorts: 30, maxServices: 24 },
 }: {
   hosts: AliveHost[];
   ports: PortAggregate[];
+  groupBy?: GraphGroupBy;
+  ownerKey?: string;
   caps?: AttackSurfaceCaps;
 }) {
   const model = useMemo(() => {
-    // Cluster by ASN/org when the run has ASN enrichment, else by GeoIP country.
-    const clusterMode: "asn" | "geo" = hosts.some((h) => h.asn_org) ? "asn" : "geo";
-    const clusterValue = (h: AliveHost): string =>
-      clusterMode === "asn" ? h.asn_org || h.asn || "" : h.country || "";
+    const col = groupBy === "owner" ? OWNER_X : TOPOLOGY_X;
+    const svgW = groupBy === "owner" ? SVG_W_OWNER : SVG_W_TOPOLOGY;
+    const clusterMode: "owner" | "asn" | "geo" =
+      groupBy === "owner" ? "owner" : hosts.some((h) => h.asn_org) ? "asn" : "geo";
+    const clusterValue = (h: AliveHost): string => {
+      if (clusterMode === "owner") return ownershipGroup(h).key;
+      return clusterMode === "asn" ? h.asn_org || h.asn || "" : h.country || "";
+    };
+    const clusterLabel = (h: AliveHost): string => {
+      if (clusterMode === "owner") return ownershipGroup(h).label;
+      return clusterMode === "asn" ? h.asn_org || h.asn || "" : h.country || "";
+    };
+
+    const scoped =
+      groupBy === "owner" && ownerKey !== "all"
+        ? hosts.filter((h) => ownershipGroup(h).key === ownerKey)
+        : hosts;
 
     // Prioritize the most interesting IPs (most findings first) when capping.
-    const rankedHosts = [...hosts].sort(
-      (a, b) => (b.vulnerability_count || 0) - (a.vulnerability_count || 0),
-    );
+    const rankedHosts = [...scoped].sort((a, b) => {
+      if (clusterMode === "owner") {
+        const ga = ownershipGroup(a).label;
+        const gb = ownershipGroup(b).label;
+        if (ga !== gb) return ga.localeCompare(gb);
+      }
+      return (b.vulnerability_count || 0) - (a.vulnerability_count || 0);
+    });
     const ipHosts = rankedHosts.slice(0, caps.maxIps);
     const ipSet = new Set(ipHosts.map((h) => h.host));
 
@@ -122,7 +147,7 @@ export function AttackSurfaceGraph({
       for (const ip of hostnameToIps.get(name) || []) {
         const y2 = ipY.get(ip);
         if (y2 == null) continue;
-        edgesHostIp.push({ x1: COL_X.host + NODE_W, y1: y1 + NODE_H / 2, x2: COL_X.ip, y2: y2 + NODE_H / 2 });
+        edgesHostIp.push({ x1: col.host + NODE_W, y1: y1 + NODE_H / 2, x2: col.ip, y2: y2 + NODE_H / 2 });
       }
     }
     const edgesIpPort: { x1: number; y1: number; x2: number; y2: number }[] = [];
@@ -131,7 +156,7 @@ export function AttackSurfaceGraph({
       for (const ip of p.ipsHere) {
         const y1 = ipY.get(ip);
         if (y1 == null) continue;
-        edgesIpPort.push({ x1: COL_X.ip + NODE_W, y1: y1 + NODE_H / 2, x2: COL_X.port, y2: y2 + NODE_H / 2 });
+        edgesIpPort.push({ x1: col.ip + NODE_W, y1: y1 + NODE_H / 2, x2: col.port, y2: y2 + NODE_H / 2 });
       }
     }
     const edgesPortService: { x1: number; y1: number; x2: number; y2: number }[] = [];
@@ -140,23 +165,81 @@ export function AttackSurfaceGraph({
       for (const pk of serviceToPorts.get(svc) || []) {
         const y1 = portY.get(pk);
         if (y1 == null) continue;
-        edgesPortService.push({ x1: COL_X.port + NODE_W, y1: y1 + NODE_H / 2, x2: COL_X.service, y2: y2 + NODE_H / 2 });
+        edgesPortService.push({ x1: col.port + NODE_W, y1: y1 + NODE_H / 2, x2: col.service, y2: y2 + NODE_H / 2 });
       }
     }
 
-    const rows = Math.max(hostnames.length, ipHosts.length, rankedPorts.length, services.length, 1);
+    const ownerGroups =
+      clusterMode === "owner"
+        ? Array.from(
+            new Map(
+              ipHosts.map((h) => {
+                const g = ownershipGroup(h);
+                return [g.key, g] as const;
+              }),
+            ).values(),
+          )
+        : [];
+    const ownerY = new Map(ownerGroups.map((g, i) => [g.key, yOf(i)]));
+    const edgesOwnerHost: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    if (clusterMode === "owner") {
+      const ownerToHosts = new Map<string, Set<string>>();
+      for (const h of ipHosts) {
+        const key = ownershipGroup(h).key;
+        const names = h.names?.length ? h.names : h.hostname ? [h.hostname] : [];
+        const targets = names.filter((n) => hostnameSet.has(n));
+        const bucket = ownerToHosts.get(key) || new Set<string>();
+        if (targets.length) targets.forEach((n) => bucket.add(n));
+        else bucket.add(`ip:${h.host}`);
+        ownerToHosts.set(key, bucket);
+      }
+      for (const group of ownerGroups) {
+        const y1 = ownerY.get(group.key)!;
+        for (const target of Array.from(ownerToHosts.get(group.key) || [])) {
+          const y2 = target.startsWith("ip:") ? ipY.get(target.slice(3)) : hostY.get(target);
+          if (y2 == null) continue;
+          const x2 = target.startsWith("ip:") ? col.ip : col.host;
+          edgesOwnerHost.push({
+            x1: col.owner + NODE_W,
+            y1: y1 + NODE_H / 2,
+            x2,
+            y2: y2 + NODE_H / 2,
+          });
+        }
+      }
+    }
+
+    const rows = Math.max(
+      ownerGroups.length,
+      hostnames.length,
+      ipHosts.length,
+      rankedPorts.length,
+      services.length,
+      1,
+    );
     const height = TOP_PAD * 2 + rows * ROW;
 
+    const legend = clusters.map((key) => {
+      const sample = ipHosts.find((h) => clusterValue(h) === key);
+      return [key, clusterColor.get(key) || NO_GEO, sample ? clusterLabel(sample) : key] as const;
+    });
+
     return {
+      col,
+      svgW,
       ipHosts,
       hostnames,
       hostY,
       ipY,
+      ownerGroups,
+      ownerY,
       ports: rankedPorts.map((p) => ({ key: portKey(p), label: portKey(p), y: portY.get(portKey(p))!, vulns: p.vulnerability_count })),
       services: services.map((s) => ({ name: s, y: serviceY.get(s)! })),
       clusterMode,
       clusterColor,
       ipColor,
+      legend,
+      edgesOwnerHost,
       edgesHostIp,
       edgesIpPort,
       edgesPortService,
@@ -169,7 +252,7 @@ export function AttackSurfaceGraph({
         services: serviceToPorts.size,
       },
     };
-  }, [hosts, ports, caps]);
+  }, [hosts, ports, caps, groupBy, ownerKey]);
 
   if (hosts.length === 0) {
     return (
@@ -179,54 +262,81 @@ export function AttackSurfaceGraph({
     );
   }
 
-  const legend = Array.from(model.clusterColor.entries());
+  const legend = model.legend;
+  const col = model.col;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-slate-800/80 bg-slate-900/80 px-4 py-2.5 text-xs backdrop-blur">
         <span className="font-bold text-slate-200 uppercase tracking-wider text-[11px]">
-          {model.clusterMode === "asn" ? "Networks (ASN):" : "Countries:"}
+          {model.clusterMode === "owner"
+            ? "Owners:"
+            : model.clusterMode === "asn"
+              ? "Networks (ASN):"
+              : "Countries:"}
         </span>
         {legend.length === 0 ? (
-          <span className="text-slate-400">{model.clusterMode === "asn" ? "No ASN telemetry" : "No GeoIP telemetry"}</span>
+          <span className="text-slate-400">
+            {model.clusterMode === "owner"
+              ? "No owner or domain to group by"
+              : model.clusterMode === "asn"
+                ? "No ASN telemetry"
+                : "No GeoIP telemetry"}
+          </span>
         ) : (
-          legend.map(([cluster, color]) => (
-            <span key={cluster} className="flex items-center gap-1.5 font-medium text-slate-300">
+          legend.map(([key, color, label]) => (
+            <span key={key} className="flex items-center gap-1.5 font-medium text-slate-300">
               <span className="inline-block h-2.5 w-2.5 rounded-sm shadow-sm" style={{ backgroundColor: color }} />
-              {truncate(cluster, 28)}
+              {truncate(label, 28)}
             </span>
           ))
         )}
         <span className="flex items-center gap-1.5 font-medium text-slate-400">
           <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: NO_GEO }} />
-          Unknown
+          {model.clusterMode === "owner" ? "Unowned" : "Unknown"}
         </span>
       </div>
 
       <div className="max-h-[72vh] overflow-auto rounded-xl border border-slate-800/80 bg-slate-950 p-4 shadow-xl">
         <svg
-          viewBox={`0 0 ${SVG_W} ${model.height}`}
+          viewBox={`0 0 ${model.svgW} ${model.height}`}
           width="100%"
           preserveAspectRatio="xMidYMin meet"
-          className="min-w-[820px]"
+          className={model.clusterMode === "owner" ? "min-w-[910px]" : "min-w-[820px]"}
           role="img"
-          aria-label="Attack surface graph: hostnames to IPs to ports to services"
+          aria-label={
+            model.clusterMode === "owner"
+              ? "Ownership graph: owners to hostnames to IPs to ports to services"
+              : "Attack surface graph: hostnames to IPs to ports to services"
+          }
         >
           {/* Column headers */}
-          <text x={COL_X.host} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          {model.clusterMode === "owner" ? (
+            <text x={col.owner} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+              OWNERS
+            </text>
+          ) : null}
+          <text x={col.host} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
             HOSTNAMES
           </text>
-          <text x={COL_X.ip} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          <text x={col.ip} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
             IP HOSTS
           </text>
-          <text x={COL_X.port} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          <text x={col.port} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
             OPEN PORTS
           </text>
-          <text x={COL_X.service} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
+          <text x={col.service} y={10} fill="#38bdf8" fontSize={11} fontWeight={800} letterSpacing={1}>
             SERVICES
           </text>
 
           {/* Edges (drawn under nodes with glowing strokes) */}
+          {model.clusterMode === "owner" ? (
+            <g stroke="#a78bfa" strokeWidth={1.5} opacity={0.4} fill="none">
+              {model.edgesOwnerHost.map((e, i) => (
+                <path key={`oe-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
+              ))}
+            </g>
+          ) : null}
           <g stroke="#0284c7" strokeWidth={1.5} opacity={0.4} fill="none">
             {model.edgesHostIp.map((e, i) => (
               <path key={`he-${i}`} d={`M${e.x1},${e.y1} C${e.x1 + 40},${e.y1} ${e.x2 - 40},${e.y2} ${e.x2},${e.y2}`} />
@@ -243,11 +353,25 @@ export function AttackSurfaceGraph({
             ))}
           </g>
 
+          {/* Owner nodes */}
+          {model.ownerGroups.map((group) => {
+            const y = model.ownerY.get(group.key)!;
+            const color = model.clusterColor.get(group.key) || NO_GEO;
+            return (
+              <g key={`ow-${group.key}`}>
+                <rect x={col.owner} y={y} width={NODE_W} height={NODE_H} rx={6} fill={color} opacity={0.9} stroke="#1e293b" strokeWidth={1} />
+                <text x={col.owner + 8} y={y + 15} fontSize={10} fontWeight={700} fill="#ffffff">
+                  {truncate(group.label, 18)}
+                </text>
+              </g>
+            );
+          })}
+
           {/* Hostname nodes */}
           {model.hostnames.map((name) => (
             <g key={`h-${name}`}>
               <rect
-                x={COL_X.host}
+                x={col.host}
                 y={model.hostY.get(name)}
                 width={NODE_W}
                 height={NODE_H}
@@ -257,7 +381,7 @@ export function AttackSurfaceGraph({
                 strokeWidth={1}
               />
               <text
-                x={COL_X.host + 8}
+                x={col.host + 8}
                 y={(model.hostY.get(name) || 0) + 15}
                 fontSize={10}
                 fontWeight={600}
@@ -274,8 +398,8 @@ export function AttackSurfaceGraph({
             const y = model.ipY.get(h.host)!;
             return (
               <g key={`ip-${h.host}`}>
-                <rect x={COL_X.ip} y={y} width={NODE_W} height={NODE_H} rx={6} fill={color} opacity={0.9} stroke="#1e293b" strokeWidth={1} />
-                <text x={COL_X.ip + 8} y={y + 15} fontSize={10} fontWeight={700} fill="#ffffff" fontFamily="monospace">
+                <rect x={col.ip} y={y} width={NODE_W} height={NODE_H} rx={6} fill={color} opacity={0.9} stroke="#1e293b" strokeWidth={1} />
+                <text x={col.ip + 8} y={y + 15} fontSize={10} fontWeight={700} fill="#ffffff" fontFamily="monospace">
                   {truncate(h.host, 18)}
                   {h.vulnerability_count ? ` ⚠${h.vulnerability_count}` : ""}
                 </text>
@@ -287,7 +411,7 @@ export function AttackSurfaceGraph({
           {model.ports.map((p) => (
             <g key={`p-${p.key}`}>
               <rect
-                x={COL_X.port}
+                x={col.port}
                 y={p.y}
                 width={NODE_W}
                 height={NODE_H}
@@ -296,7 +420,7 @@ export function AttackSurfaceGraph({
                 stroke={p.vulns ? "#f43f5e" : "#334155"}
                 strokeWidth={1}
               />
-              <text x={COL_X.port + 8} y={p.y + 15} fontSize={10} fontWeight={700} fill={p.vulns ? "#fecdd3" : "#cbd5e1"} fontFamily="monospace">
+              <text x={col.port + 8} y={p.y + 15} fontSize={10} fontWeight={700} fill={p.vulns ? "#fecdd3" : "#cbd5e1"} fontFamily="monospace">
                 {p.label}
                 {p.vulns ? ` ⚠${p.vulns}` : ""}
               </text>
@@ -307,7 +431,7 @@ export function AttackSurfaceGraph({
           {model.services.map((s) => (
             <g key={`svc-${s.name}`}>
               <rect
-                x={COL_X.service}
+                x={col.service}
                 y={s.y}
                 width={NODE_W}
                 height={NODE_H}
@@ -316,7 +440,7 @@ export function AttackSurfaceGraph({
                 stroke="#4338ca"
                 strokeWidth={1}
               />
-              <text x={COL_X.service + 8} y={s.y + 15} fontSize={10} fontWeight={600} fill="#e0e7ff">
+              <text x={col.service + 8} y={s.y + 15} fontSize={10} fontWeight={600} fill="#e0e7ff">
                 {truncate(s.name, 18)}
               </text>
             </g>

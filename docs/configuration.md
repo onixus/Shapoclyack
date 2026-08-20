@@ -64,6 +64,25 @@ authorized targets and a suitable maintenance window.
 Nuclei is an optional stage. Template version, severity filters, concurrency,
 and rate limits should be pinned in production.
 
+## Web screenshots
+
+`screenshots.enabled` (default `false`) takes a viewport PNG of each
+already-open web port — the same candidates as `fingerprint`, no new scan.
+`max_targets` (50) and `concurrency` (4) cap the work. Capture needs
+Playwright + Chromium on the scanner host; without them the stage skips and
+writes `skipped_reason: playwright.unavailable`. Playwright is not a
+required dependency and is not baked into the default image.
+
+Obvious form fields are covered with a black overlay in the live DOM, then
+the screenshot is taken. Unredacted bytes are never written. A name in a
+heading is not redacted. That is why PNG access is operator-only and why
+the API reaper deletes the files after
+`OCTO_SCREENSHOT_RETENTION_DAYS` (see [operations.md](operations.md)).
+
+The System page **Pipeline Stages** tile and the config-override whitelist
+expose `screenshots.enabled`. Leave it off until Playwright is installed
+and the retention window matches the site's data-handling policy.
+
 ## Discovery modules
 
 Optional modules include:
@@ -298,6 +317,14 @@ Endpoint inventory (Lariska ingestion):
 | `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` | `365` | Age after which software change events are deleted |
 | `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval |
 | `OCTO_ENDPOINT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per statement |
+
+Web screenshots (ROADMAP P4.4 / Phase 9.3):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SCREENSHOT_RETENTION_ENABLED` | `true` | Run the in-process PNG reaper. Safe in every replica; deletes are idempotent |
+| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is unlinked. `0` disables the reaper. `screenshots.json` is never deleted by this worker |
+| `OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
 Never commit real URLs containing credentials. Supply them through the platform
 secret mechanism.

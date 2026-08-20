@@ -37,6 +37,7 @@ from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
 from scanner.pipeline.domain_monitor import monitor_domains
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
+from scanner.pipeline.screenshots import capture_screenshots_sync
 from scanner.pipeline.nuclei_scan import run_nuclei_scan
 from scanner.pipeline.tls_posture import check_tls_posture
 from scanner.pipeline.hostnames import (
@@ -702,6 +703,17 @@ def _run_pipeline_body(
             lambda: fingerprint_hosts_sync(open_ports, config.fingerprint, paths.output_dir),
         )
         checkpoint.mark_done("fingerprint")
+
+    # P4.4 / Phase 9.3: screenshots of already-open web ports. Opt-in,
+    # redacted in-DOM, never a new scan. Playwright missing → skip.
+    if args.resume and checkpoint.is_done("screenshots"):
+        timer.skip("screenshots")
+    else:
+        _run_stage(
+            "screenshots",
+            lambda: capture_screenshots_sync(open_ports, config.screenshots, paths.output_dir),
+        )
+        checkpoint.mark_done("screenshots")
 
     # Phase 4.2: Nuclei web CVE/misconfig scan (default on; see nuclei_scan.py).
     # CVE path without nmap-vulners: Pulse --cve + Nuclei + CVSS4 enrichment.

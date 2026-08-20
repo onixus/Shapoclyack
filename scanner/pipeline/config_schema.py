@@ -577,6 +577,32 @@ class FingerprintConfig(BaseModel):
         return ports
 
 
+class ScreenshotConfig(BaseModel):
+    """Web screenshots (P4.4 / Phase 9.3). Opt-in.
+
+    Same already-open web ports as ``fingerprint.py`` — no new scan. Disabled
+    by default. Capture needs Playwright; without it the stage skips. Images
+    are redacted in-DOM (obvious credential/PII form fields only) before
+    they hit disk. Retention and operator-only access live in the API.
+    """
+
+    enabled: bool = False
+    concurrency: int = Field(default=4, ge=1, le=20)
+    max_targets: int = Field(default=50, ge=1, le=500)
+    timeout_seconds: int = Field(default=15, ge=1, le=60)
+    http_ports: list[int] = Field(default_factory=lambda: [80, 8080, 8000, 8008, 8888])
+    https_ports: list[int] = Field(default_factory=lambda: [443, 8443])
+    verify_tls: bool = False
+
+    @field_validator("http_ports", "https_ports")
+    @classmethod
+    def validate_ports(cls, ports: list[int]) -> list[int]:
+        for port in ports:
+            if port < 1 or port > 65535:
+                raise ValueError(f"invalid screenshot port: {port}")
+        return ports
+
+
 class NucleiConfig(BaseModel):
     """Nuclei template-based vulnerability/misconfig scanning.
 
@@ -769,6 +795,7 @@ class AppConfig(BaseModel):
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
+    screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)

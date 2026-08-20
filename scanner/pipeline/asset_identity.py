@@ -212,3 +212,43 @@ def correlate_identities(
             )
         )
     return out
+
+
+# A tiny stand-in for a Public Suffix List. Bundling the PSL would add a
+# dataset with its own staleness (same reason P4.1 refused it). Unknown
+# two-label suffixes are treated as the registrable domain; a miss like
+# ``foo.co.uk`` clustering as ``co.uk`` is possible and named as a limit.
+_MULTI_LABEL_SUFFIXES = frozenset(
+    {
+        "co.uk",
+        "org.uk",
+        "ac.uk",
+        "gov.uk",
+        "com.au",
+        "net.au",
+        "org.au",
+        "co.nz",
+        "com.br",
+        "co.jp",
+        "com.cn",
+        "github.io",
+    }
+)
+
+
+def registrable_domain(name: str) -> str:
+    """eTLD+1 for clustering unowned names (P4.3). Empty when it is not a DNS name.
+
+    ``app.payments.example.com`` → ``example.com``. ``shop.co.uk`` → ``shop.co.uk``.
+    An IP, a wildcard, or a single label is not a domain we will pretend to own.
+    """
+    candidate = (name or "").strip().rstrip(".").lower()
+    if not candidate or candidate.startswith("*.") or not is_dns_name(candidate):
+        return ""
+    labels = candidate.split(".")
+    if len(labels) < 2:
+        return ""
+    last_two = ".".join(labels[-2:])
+    if last_two in _MULTI_LABEL_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return last_two

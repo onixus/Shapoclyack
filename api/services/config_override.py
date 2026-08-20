@@ -118,6 +118,7 @@ SECRET_PATHS: frozenset[str] = frozenset({"enrichment.cvss4.nvd_api_key"})
 # NucleiConfig pydantic bounds in scanner/pipeline/config_schema.py.
 _STATIC_SPEC: dict[str, Callable[[Any], Any]] = {
     "fingerprint.enabled": _as_bool,
+    "screenshots.enabled": _as_bool,
     "tls_posture.enabled": _as_bool,
     "tls_posture.hostname_mismatch": _as_bool,
     "nuclei.enabled": _as_bool,

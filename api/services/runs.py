@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,10 @@ from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary,
 from api.services import pagination
 from api.services import tenants as tenants_service
 from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
+from scanner.pipeline.asset_identity import registrable_domain
 from api.settings import Settings
+
+LOG = logging.getLogger("shapoclyack.runs")
 
 # Marker file written into a run directory naming the tenant the run belongs to
 # (ROADMAP P0). Runs produced before this shipped have no marker and are read as
@@ -258,7 +262,9 @@ def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = N
     artifacts = sorted(
         str(path.relative_to(run_dir))
         for path in run_dir.rglob("*")
-        if path.is_file() and path.stat().st_size < 50_000_000
+        if path.is_file()
+        and path.stat().st_size < 50_000_000
+        and not is_screenshot_path(str(path.relative_to(run_dir)))
     )
     return RunDetail(
         run_id=run_id,
@@ -439,7 +445,50 @@ def get_hosts(
                 )
             )
     rows.sort(key=lambda item: (-item.vulnerability_count, item.host))
-    return rows[:limit]
+    trimmed = rows[:limit]
+    _apply_host_ownership(settings, tenant_id, trimmed)
+    return trimmed
+
+
+def _apply_host_ownership(
+    settings: Settings, tenant_id: str | None, rows: list[AliveHostItem]
+) -> None:
+    """Fill P4.3 owner fields. Domain clustering works without Postgres."""
+    for row in rows:
+        names = [n for n in [row.hostname, *row.names] if n]
+        domain = ""
+        for name in names:
+            domain = registrable_domain(name)
+            if domain:
+                break
+        row.registrable_domain = domain or None
+        row.ownership_source = "domain" if domain else "none"
+    if not tenant_id or not settings.postgres_url.strip():
+        return
+    try:
+        from api.services import assets as assets_service
+
+        ips = [row.host for row in rows]
+        names = [n for row in rows for n in [row.hostname, *row.names] if n]
+        by_ip, by_name = assets_service.ownership_for_hosts(
+            settings, tenant_id, ips=ips, names=names
+        )
+    except Exception:  # noqa: BLE001
+        LOG.warning("host ownership attach failed tenant=%s", tenant_id, exc_info=True)
+        return
+    for row in rows:
+        hit = by_ip.get(row.host)
+        if hit is None:
+            for name in [row.hostname, *row.names]:
+                if name:
+                    hit = by_name.get(name.lower())
+                    if hit is not None:
+                        break
+        if hit and (hit.get("owner_email") or hit.get("business_unit")):
+            row.owner_email = hit.get("owner_email")
+            row.business_unit = hit.get("business_unit")
+            row.asset_id = hit.get("asset_id")
+            row.ownership_source = "operator"
 
 
 def get_ports(
@@ -515,8 +564,19 @@ def get_ports(
     return items[:limit]
 
 
+def is_screenshot_path(relative: str) -> bool:
+    """PNG pixels under screenshots/ — operator-only (P4.4)."""
+    parts = Path(relative).parts
+    return len(parts) >= 2 and parts[0] == "screenshots" and parts[-1].lower().endswith(".png")
+
+
 def resolve_artifact(
-    settings: Settings, run_id: str, relative: str, *, tenant_id: str | None = None
+    settings: Settings,
+    run_id: str,
+    relative: str,
+    *,
+    tenant_id: str | None = None,
+    allow_screenshots: bool = False,
 ) -> Path | None:
     """Resolve a run-relative artifact path to a real file, or ``None`` if the
     run/file doesn't exist or the path escapes the run directory. Rejects
@@ -530,6 +590,8 @@ def resolve_artifact(
         return None
     rel = Path(relative)
     if rel.is_absolute() or ".." in rel.parts:
+        return None
+    if is_screenshot_path(relative) and not allow_screenshots:
         return None
     target = (run_dir / rel).resolve()
     try:
@@ -554,3 +616,57 @@ def read_artifact_text(
         return None
     data = target.read_bytes()[:max_bytes]
     return data.decode("utf-8", errors="replace")
+
+
+def list_screenshots(
+    settings: Settings, run_id: str, *, tenant_id: str | None = None
+) -> dict[str, Any] | None:
+    """Operator-facing manifest of captured (already-redacted) screenshots.
+
+    Pixels that the retention reaper already deleted stay in the list with
+    ``available: false`` so the operator can tell "never captured" from
+    "captured, then expired". Failed captures are omitted.
+    """
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+    raw = _load_json(run_dir / "screenshots.json")
+    empty: dict[str, Any] = {
+        "skipped_reason": None,
+        "captured_count": 0,
+        "redacted_fields": 0,
+        "truncated": False,
+        "retention_days": settings.screenshot_retention_days,
+        "items": [],
+    }
+    if not isinstance(raw, dict):
+        return empty
+    items: list[dict[str, Any]] = []
+    findings = raw.get("findings")
+    if isinstance(findings, list):
+        for finding in findings:
+            if not isinstance(finding, dict) or finding.get("error"):
+                continue
+            rel = str(finding.get("file") or "")
+            target = resolve_artifact(
+                settings, run_id, rel, tenant_id=tenant_id, allow_screenshots=True
+            )
+            items.append(
+                {
+                    "host": finding.get("host"),
+                    "port": finding.get("port"),
+                    "scheme": finding.get("scheme"),
+                    "url": finding.get("url"),
+                    "file": rel,
+                    "redacted_fields": int(finding.get("redacted_fields") or 0),
+                    "available": target is not None,
+                }
+            )
+    return {
+        "skipped_reason": raw.get("skipped_reason"),
+        "captured_count": int(raw.get("captured_count") or 0),
+        "redacted_fields": int(raw.get("redacted_fields") or 0),
+        "truncated": bool(raw.get("truncated")),
+        "retention_days": settings.screenshot_retention_days,
+        "items": items,
+    }
