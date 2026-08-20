@@ -6,6 +6,17 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **OpenTelemetry on the API** (ROADMAP P3) — opt-in
+  `OCTO_OTEL_EXPORTER_OTLP_ENDPOINT`. Empty means no TracerProvider.
+  Spans are HTTP requests, not scan facts. Scanner wall-clock stays
+  `stage_timings.json`. `/metrics` and `/api/health` are not traced.
+
+- **CWE on tracked findings** — copied from the last observation: NVD
+  weaknesses in the cvss4 overlay, else nuclei `classification.cwe-id`.
+  `NVD-CWE-noinfo` is not a CWE and is dropped. Missing stays empty, not
+  inferred from the CVE id. `GET /api/vulnerabilities/{id}` carries `cwe`;
+  the finding card shows it.
+
 - **Web screenshots** (ROADMAP P4.4 / Phase 9.3) — opt-in capture of
   already-open web ports (`screenshots.enabled`, off by default). Same
   candidates as fingerprint; no new scan. Playwright is optional: missing

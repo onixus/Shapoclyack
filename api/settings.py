@@ -185,6 +185,10 @@ class Settings:
     screenshot_retention_enabled: bool = True
     screenshot_retention_days: int = 14
     screenshot_retention_interval_seconds: int = 3600
+    # OpenTelemetry (ROADMAP P3). Empty = no TracerProvider, no export.
+    # The value is the OTLP HTTP traces URL, e.g. http://otel-collector:4318/v1/traces
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "shapoclyack-api"
     # Identity of this API process in the shared control plane (ROADMAP P1.2).
     # Local-mode jobs execute in a thread inside one specific replica, so the
     # jobs table records which one; on startup a replica only reconciles the
@@ -470,6 +474,9 @@ def load_settings() -> Settings:
         screenshot_retention_interval_seconds=max(
             60, int(os.environ.get("OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS", "3600"))
         ),
+        otel_exporter_otlp_endpoint=os.environ.get("OCTO_OTEL_EXPORTER_OTLP_ENDPOINT", "").strip(),
+        otel_service_name=os.environ.get("OCTO_OTEL_SERVICE_NAME", "shapoclyack-api").strip()
+        or "shapoclyack-api",
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),

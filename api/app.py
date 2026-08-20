@@ -42,6 +42,7 @@ from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
+from api.services import tracing as tracing_service
 from api.services import tenants as tenants_service
 from api.services import users as users_service
 from api.services import wordlists as wordlists_service
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
         screenshot_retention.stop_worker()
+        tracing_service.shutdown()
         endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()
@@ -104,6 +106,7 @@ def create_app() -> FastAPI:
         description="HTTP API for Shapoclyack scan runs, jobs, remote agents, and RBAC-protected access.",
         lifespan=lifespan,
     )
+    tracing_service.configure(app, settings)
     if settings.endpoint_inventory_enabled:
         # Runs before routing and body parsing: the cap is decided from the
         # request headers, never by buffering the payload first (S9). Added

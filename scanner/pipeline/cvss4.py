@@ -4,10 +4,53 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger(__name__)
+
+_CWE_ID = re.compile(r"^CWE-\d+$", re.I)
+
+
+def normalize_cwes(raw: Any) -> list[str]:
+    """Return unique ``CWE-n`` ids. Anything else is dropped, not guessed.
+
+    NVD's ``NVD-CWE-noinfo`` / ``NVD-CWE-Other`` are not CWE ids. A bare
+    number is accepted as ``CWE-n``. Order is preserved (primary first).
+    """
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        values = list(raw)
+    else:
+        return []
+    out: list[str] = []
+    for item in values:
+        text = str(item or "").strip().upper()
+        if not text:
+            continue
+        if text.isdigit():
+            text = f"CWE-{text}"
+        if not _CWE_ID.fullmatch(text):
+            continue
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def extract_nvd_cwes(cve: dict[str, Any]) -> list[str]:
+    """CWE ids from an NVD API 2.0 ``cve`` object. Primary weakness first."""
+    weaknesses = [w for w in (cve.get("weaknesses") or []) if isinstance(w, dict)]
+    weaknesses.sort(key=lambda w: 0 if str(w.get("type") or "").lower() == "primary" else 1)
+    values: list[Any] = []
+    for weakness in weaknesses:
+        for desc in weakness.get("description") or []:
+            if isinstance(desc, dict):
+                values.append(desc.get("value"))
+    return normalize_cwes(values)
 
 # Qualitative severity from FIRST CVSS v4.0 score ranges (same bands as v3).
 def score_to_severity(score: float | None) -> str:
@@ -61,6 +104,7 @@ class Cvss4Database:
                 "vector": value.get("vector") or value.get("vectorString") or "",
                 "severity": value.get("severity") or score_to_severity(score_f),
                 "published": str(published)[:10] if published else None,
+                "cwe": normalize_cwes(value.get("cwe")),
             }
         LOG.info("Loaded CVSS4 database with %d CVE entries from %s", len(entries), path)
         return cls(entries)
@@ -82,12 +126,16 @@ def enrich_vulnerabilities(vulnerabilities: list[dict], database: Cvss4Database)
             item.setdefault("cvss4", None)
             item.setdefault("cvss4_vector", None)
             item.setdefault("cvss4_severity", None)
+            item["cwe"] = normalize_cwes(item.get("cwe"))
             continue
         item["cvss4"] = hit.get("score")
         item["cvss4_vector"] = hit.get("vector") or None
         item["cvss4_severity"] = hit.get("severity") or score_to_severity(hit.get("score"))
         if hit.get("published"):
             item["cve_published"] = hit["published"]
+        nvd_cwe = normalize_cwes(hit.get("cwe"))
+        # NVD overlay wins; nuclei/template CWE is only used when NVD is silent.
+        item["cwe"] = nvd_cwe or normalize_cwes(item.get("cwe"))
         # Prefer CVSS v4 for overall severity when a score is available.
         if item["cvss4"] is not None:
             item["severity"] = item["cvss4_severity"]

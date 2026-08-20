@@ -106,8 +106,9 @@ open tracked findings (`?assetId=`).
 - the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
   `exception_set`, `exception_cleared`).
 
-CWE is not stored on the tracked finding and is shown as empty rather than
-inferred. A finding that has gone quiet is not auto-closed; the list's stale
+CWE comes from NVD (the cvss4 overlay) or nuclei's template classification
+on the last observation. Missing is shown as empty, never inferred from
+the CVE id. A finding that has gone quiet is not auto-closed; the list's stale
 filter is how it gets looked at.
 
 ## Asset-centric view

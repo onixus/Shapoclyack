@@ -38,6 +38,7 @@ const VULN: TrackedVulnerability = {
   asset_id: "asset_1",
   finding_key: "abc",
   cve: "CVE-2024-1",
+  cwe: [],
   script_id: null,
   title: "",
   port: "443",

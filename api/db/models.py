@@ -611,6 +611,9 @@ class Vulnerability(Base):
     # What was found. `cve` is NULL for exposure/nuclei findings, which is why
     # `script_id` is part of the identity too.
     cve: Mapped[str | None] = mapped_column(default=None)
+    # NVD/nuclei CWE ids from the latest observation. Empty when the overlay
+    # has none — never inferred from the CVE id.
+    cwe: Mapped[list] = mapped_column(JSON, default=list)
     script_id: Mapped[str | None] = mapped_column(default=None)
     port: Mapped[str | None] = mapped_column(default=None)
     title: Mapped[str] = mapped_column(default="")

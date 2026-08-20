@@ -1094,6 +1094,7 @@ export type TrackedVulnerability = {
   asset_id: string;
   finding_key: string;
   cve: string | null;
+  cwe: string[];
   script_id: string | null;
   title: string;
   port: string | null;

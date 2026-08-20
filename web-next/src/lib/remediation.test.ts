@@ -9,6 +9,7 @@ function stub(overrides: Partial<TrackedVulnerability>): TrackedVulnerability {
     asset_id: "a1",
     finding_key: "k",
     cve: "CVE-1",
+    cwe: [],
     script_id: null,
     title: "",
     port: "443",

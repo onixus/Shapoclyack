@@ -110,6 +110,7 @@ def _to_finding(raw: dict[str, Any]) -> dict[str, Any]:
         "tags": [str(t) for t in (info.get("tags") or [])],
         "cve": [str(c) for c in cve_ids if c],
         "cvss_score": classification.get("cvss-score"),
+        "cwe": classification.get("cwe-id") or [],
     }
 
 
@@ -128,6 +129,7 @@ def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
             "severity": finding["severity"],
             "script_id": f"nuclei:{finding['template_id']}",
             "source": "nuclei",
+            "cwe": finding.get("cwe") or [],
         }
         for cve in finding["cve"]
     ]

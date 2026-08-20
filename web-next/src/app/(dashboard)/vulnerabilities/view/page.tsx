@@ -197,7 +197,15 @@ function VulnerabilityDetailInner() {
             <h2 className="text-sm font-semibold text-slate-100">Finding</h2>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2 text-xs">
               <Field label="CVE" value={vuln.cve || "—"} mono />
-              <Field label="CWE" value="—" hint="Not stored on the tracked finding yet" />
+              <Field
+                label="CWE"
+                value={vuln.cwe?.length ? vuln.cwe.join(", ") : "—"}
+                hint={
+                  vuln.cwe?.length
+                    ? "From NVD (cvss4 overlay) or nuclei classification on the last observation"
+                    : "NVD/nuclei did not name a CWE; not inferred from the CVE id"
+                }
+              />
               <Field label="Detection source" value={vuln.script_id || "—"} mono />
               <Field label="Port" value={vuln.port || "—"} mono />
               <Field label="CVSS" value={vuln.cvss != null ? String(vuln.cvss) : "—"} />
