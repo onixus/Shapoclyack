@@ -10,6 +10,14 @@ The console has a global tenant switcher for users with more than one allowed te
 
 Platform administrators can retain fleet-wide views where the API contract permits them; normal tenant members only see tenants granted by server-side membership rules. Client-side hiding is not an authorization boundary. See [API and RBAC](api-and-rbac.md) for the authoritative tenant model.
 
+## Language and theme
+
+The console ships **English** and **dark** as the defaults. The header (and the login screen) expose a sun/moon toggle and an EN/RU language menu. Both persist in `localStorage` (`shapoclyack.theme`, `shapoclyack.locale`) and are applied before first paint so the page does not flash the other theme.
+
+Russian covers chrome: navigation, page titles, table headers, status badges, login, and empty/loading copy. Scan identifiers, CVE IDs, hostnames and API error strings stay as the backend sent them. Status values (`OPEN`, `critical`, `breached`) are translated at the badge, not in the stored finding.
+
+The light theme remaps the existing slate utility classes rather than rewriting every screen. Default remains dark so existing screenshots and operator muscle memory stay valid until someone picks light.
+
 ## Current surfaces
 
 | Route | Purpose | Minimum role |

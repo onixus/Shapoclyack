@@ -15,8 +15,10 @@ import type { TrackedVulnerability } from "@/lib/api";
 import { RISK_LEVEL_STATUS, SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
 import { normalizeSeverity } from "@/lib/run-data";
 import { assetDetailHref, findingLabel, vulnDetailHref } from "@/lib/vuln-lifecycle";
+import { useT } from "@/lib/i18n";
 
 export default function ThreatsPage() {
+  const t = useT();
   const pagination = usePagination({ sort: "contextual_score", order: "desc" });
   const listQuery = useTrackedVulnerabilities(
     { open_only: true, in_kev: true },
@@ -30,7 +32,7 @@ export default function ThreatsPage() {
       {
         id: "cve",
         accessorFn: (row) => findingLabel(row),
-        header: "Finding",
+        header: t("col.finding"),
         cell: ({ row }) => (
           <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)} className="space-y-0.5">
             <p className="font-mono font-bold text-sky-400 hover:underline">{findingLabel(row.original)}</p>
@@ -43,34 +45,34 @@ export default function ThreatsPage() {
       },
       {
         accessorKey: "severity",
-        header: "Severity",
+        header: t("col.severity"),
         cell: ({ row }) => (
           <StatusBadge value={normalizeSeverity(row.original.severity)} map={SEVERITY_STATUS} />
         ),
       },
       {
         accessorKey: "risk_level",
-        header: "NIST",
+        header: t("col.nist"),
         cell: ({ row }) =>
           row.original.risk_level && row.original.risk_level in RISK_LEVEL_STATUS ? (
             <StatusBadge value={row.original.risk_level} map={RISK_LEVEL_STATUS} />
           ) : (
-            <span className="text-xs text-slate-500">unset</span>
+            <span className="text-xs text-slate-500">{t("common.unset")}</span>
           ),
       },
       {
         accessorKey: "state",
-        header: "Lifecycle",
+        header: t("col.lifecycle"),
         cell: ({ row }) => <StatusBadge value={row.original.state} map={VULN_LIFECYCLE_STATUS} />,
       },
       {
         accessorKey: "sla_state",
-        header: "SLA",
+        header: t("col.sla"),
         cell: ({ row }) => <SlaIndicator slaState={row.original.sla_state} dueAt={row.original.due_at} />,
       },
       {
         id: "asset_id",
-        header: "Asset",
+        header: t("col.asset"),
         cell: ({ row }) => (
           <Link
             href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
@@ -86,12 +88,12 @@ export default function ThreatsPage() {
         enableSorting: false,
         cell: ({ row }) => (
           <Button asChild variant="outline" size="sm" className="h-7 text-xs border-slate-800">
-            <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}>Act</Link>
+            <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}>{t("common.act")}</Link>
           </Button>
         ),
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -100,19 +102,15 @@ export default function ThreatsPage() {
         <div>
           <div className="flex items-center gap-2.5">
             <Siren className="h-5 w-5 text-rose-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Threat intel</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.threats.title")}</h1>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            Open tracked findings currently on CISA KEV, with the latest observation&apos;s
-            exploit maturity. This is the working set, not the last scan&apos;s raw list.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t("page.threats.subtitle")}</p>
         </div>
       </div>
 
       <Alert className="border-rose-500/30 bg-rose-950/20 text-rose-100">
         <AlertDescription className="text-xs">
-          KEV membership is copied from the last observation onto the tracked finding, so it
-          survives run pruning. Attack-path chaining is not modelled.
+          {t("page.threats.alert")}
         </AlertDescription>
       </Alert>
 
@@ -121,10 +119,10 @@ export default function ThreatsPage() {
         data={data}
         isLoading={listQuery.isLoading}
         error={listQuery.error}
-        searchPlaceholder="Filter by CVE, script, asset or owner…"
+        searchPlaceholder={t("search.kev")}
         meta={`${total.toLocaleString()} open KEV finding${total === 1 ? "" : "s"}`}
-        loadingMessage="Loading KEV findings…"
-        emptyMessage="No open tracked findings are on CISA KEV right now."
+        loadingMessage={t("loading.kev")}
+        emptyMessage={t("empty.kev")}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,

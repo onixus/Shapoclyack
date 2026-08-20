@@ -4,6 +4,29 @@
 
 @layer base {
   :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 199 89% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 32% 91%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 40%;
+    --accent: 210 40% 94%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 199 89% 48%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
     --background: 224 71% 4%;
     --foreground: 210 40% 98%;
     --card: 222 47% 8%;
@@ -23,7 +46,6 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 224.3 76.3% 48%;
-    --radius: 0.75rem;
   }
 
   * {
@@ -31,15 +53,36 @@
   }
 
   body {
-    @apply bg-background text-foreground antialiased selection:bg-sky-500/30 selection:text-sky-200;
+    @apply bg-background text-foreground antialiased;
     font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-    background-image: 
-      radial-gradient(at 0% 0%, rgba(14, 165, 233, 0.05) 0px, transparent 50%),
-      radial-gradient(at 100% 0%, rgba(99, 102, 241, 0.05) 0px, transparent 50%);
     background-attachment: fixed;
   }
 
-  /* Custom scrollbar for cyber dark theme */
+  .dark body {
+    @apply selection:bg-sky-500/30 selection:text-sky-200;
+    background-image:
+      radial-gradient(at 0% 0%, rgba(14, 165, 233, 0.05) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(99, 102, 241, 0.05) 0px, transparent 50%);
+  }
+
+  html.light body {
+    @apply selection:bg-sky-500/20 selection:text-sky-900;
+    background-image:
+      radial-gradient(at 0% 0%, rgba(14, 165, 233, 0.08) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(99, 102, 241, 0.07) 0px, transparent 50%);
+  }
+
+  .login-wash {
+    background-image:
+      radial-gradient(ellipse at top, rgba(56, 189, 248, 0.18), transparent 55%),
+      radial-gradient(ellipse at bottom, rgba(15, 23, 42, 0.9), #020617);
+  }
+  html.light .login-wash {
+    background-image:
+      radial-gradient(ellipse at top, rgba(14, 165, 233, 0.12), transparent 55%),
+      radial-gradient(ellipse at bottom, rgba(241, 245, 249, 0.95), #f8fafc);
+  }
+
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
@@ -47,12 +90,68 @@
   ::-webkit-scrollbar-track {
     background: rgba(15, 23, 42, 0.6);
   }
+  html.light ::-webkit-scrollbar-track {
+    background: rgba(226, 232, 240, 0.8);
+  }
   ::-webkit-scrollbar-thumb {
     background: rgba(51, 65, 85, 0.8);
     border-radius: 4px;
   }
+  html.light ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.9);
+  }
   ::-webkit-scrollbar-thumb:hover {
     background: rgba(71, 85, 105, 1);
   }
+}
+
+/* Hardcoded cyber-dark slate utilities used across pages. Remap them when
+   the operator picks the light theme so we do not rewrite every screen. */
+html.light {
+  .bg-slate-950 { background-color: rgb(248 250 252); }
+  .bg-slate-950\/95 { background-color: rgb(248 250 252 / 0.95); }
+  .bg-slate-950\/90 { background-color: rgb(248 250 252 / 0.9); }
+  .bg-slate-950\/80 { background-color: rgb(248 250 252 / 0.8); }
+  .bg-slate-900 { background-color: rgb(255 255 255); }
+  .bg-slate-900\/90 { background-color: rgb(255 255 255 / 0.9); }
+  .bg-slate-900\/80 { background-color: rgb(255 255 255 / 0.8); }
+  .bg-slate-900\/60 { background-color: rgb(241 245 249 / 0.85); }
+  .bg-slate-900\/50 { background-color: rgb(241 245 249 / 0.7); }
+  .bg-slate-800 { background-color: rgb(226 232 240); }
+  .bg-slate-800\/80 { background-color: rgb(226 232 240 / 0.8); }
+  .bg-slate-800\/40 { background-color: rgb(241 245 249 / 0.8); }
+  .hover\:bg-slate-800:hover { background-color: rgb(241 245 249); }
+  .hover\:bg-slate-800\/80:hover { background-color: rgb(241 245 249 / 0.9); }
+  .hover\:bg-slate-900\/50:hover { background-color: rgb(241 245 249 / 0.8); }
+  .hover\:bg-slate-900\/90:hover { background-color: rgb(255 255 255 / 0.95); }
+  .border-slate-800 { border-color: rgb(226 232 240); }
+  .border-slate-800\/80 { border-color: rgb(226 232 240 / 0.9); }
+  .border-slate-800\/60 { border-color: rgb(226 232 240 / 0.75); }
+  .border-slate-700 { border-color: rgb(203 213 225); }
+  .divide-slate-800\/60 > :not([hidden]) ~ :not([hidden]) { border-color: rgb(226 232 240 / 0.8); }
+  .text-slate-100 { color: rgb(15 23 42); }
+  .text-slate-200 { color: rgb(30 41 59); }
+  .text-slate-300 { color: rgb(51 65 85); }
+  .text-slate-400 { color: rgb(71 85 105); }
+  .text-slate-500 { color: rgb(100 116 139); }
+  .text-slate-600 { color: rgb(71 85 105); }
+  .hover\:text-white:hover { color: rgb(15 23 42); }
+  .hover\:text-slate-100:hover { color: rgb(15 23 42); }
+  .hover\:text-slate-200:hover { color: rgb(15 23 42); }
+  .placeholder\:text-slate-500::placeholder { color: rgb(148 163 184); }
+  .text-sky-300 { color: rgb(3 105 161); }
+  .text-sky-400 { color: rgb(2 132 199); }
+  .text-emerald-300 { color: rgb(4 120 87); }
+  .text-emerald-400 { color: rgb(5 150 105); }
+  .text-rose-300 { color: rgb(190 18 60); }
+  .text-rose-400 { color: rgb(225 29 72); }
+  .text-amber-300 { color: rgb(180 83 9); }
+  .text-amber-400 { color: rgb(217 119 6); }
+  .text-orange-300 { color: rgb(194 65 12); }
+  .text-orange-400 { color: rgb(234 88 12); }
+  .text-indigo-300 { color: rgb(67 56 202); }
+  .text-violet-300 { color: rgb(109 40 217); }
+  .shadow-slate-950 { --tw-shadow-color: rgb(15 23 42 / 0.08); }
+  .shadow-sky-950 { --tw-shadow-color: rgb(12 74 110 / 0.15); }
 }
 

@@ -20,6 +20,7 @@ import {
   SEVERITY_STATUS,
 } from "@/lib/config/statuses";
 import { pickLatestRun, recentRunTrend, runDetailHref, SEVERITIES } from "@/lib/run-data";
+import { useT } from "@/lib/i18n";
 import { estateRiskColor, estateRiskLabel } from "@/lib/risk-overview";
 import {
   assetDetailHref,
@@ -33,6 +34,7 @@ const RISK_DONUT_COLORS = ["slate", "sky", "amber", "orange", "rose"];
 const SEVERITY_DONUT_COLORS = ["rose", "orange", "amber", "sky", "slate"];
 
 export default function DashboardPage() {
+  const t = useT();
   const summaryQuery = useVulnerabilitySummary();
   const assetsQuery = useAssetSummary();
   const topRisksQuery = useTrackedVulnerabilities(
@@ -51,19 +53,20 @@ export default function DashboardPage() {
   const riskData = useMemo(
     () =>
       NIST_RISK_LEVELS.map((level) => ({
-        name: RISK_LEVEL_STATUS[level].label,
+        name: t.label(RISK_LEVEL_STATUS[level].label),
         value: summary?.by_risk_level_open[level] ?? 0,
         level,
       })),
-    [summary],
+    [summary, t],
   );
   const severityData = useMemo(
     () =>
       SEVERITIES.map((sev) => ({
-        name: sev,
+        name: t.label(sev),
+        sev,
         value: summary?.by_severity_open[sev] ?? 0,
       })),
-    [summary],
+    [summary, t],
   );
   const criticalityData = useMemo(() => {
     if (!assets) return [];
@@ -73,11 +76,11 @@ export default function DashboardPage() {
       .map((key) => ({
         name:
           key === "unset"
-            ? "unset"
-            : `L${key} · ${ASSET_CRITICALITY[Number(key)]?.label ?? key}`,
+            ? t.label("unset")
+            : `L${key} · ${t.label(ASSET_CRITICALITY[Number(key)]?.label ?? key)}`,
         Assets: assets.by_criticality[key] ?? 0,
       }));
-  }, [assets]);
+  }, [assets, t]);
 
   const isLoading = summaryQuery.isLoading || assetsQuery.isLoading;
   const error =
@@ -86,22 +89,22 @@ export default function DashboardPage() {
       : null;
 
   const criticalOpen = (summary?.by_severity_open.critical ?? 0) + (summary?.by_severity_open.high ?? 0);
-  const estateLabel = isLoading ? "…" : estateRiskLabel(summary);
+  const estateLabel = isLoading ? "…" : t.label(estateRiskLabel(summary));
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Risk Overview</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.risk.title")}</h1>
             <span className="rounded-full bg-sky-500/10 px-2.5 py-0.5 text-xs font-semibold text-sky-400 border border-sky-500/20">
-              Estate
+              {t("page.risk.badge")}
             </span>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Current cyber risk from tracked findings — not the last scan&apos;s raw list.{" "}
+            {t("page.risk.subtitle")}{" "}
             <Link href="/vulnerabilities" className="text-sky-400 hover:underline">
-              Vulnerability Center
+              {t("page.risk.centerLink")}
             </Link>
           </p>
         </div>
@@ -121,12 +124,12 @@ export default function DashboardPage() {
             <RefreshCw
               className={`h-3.5 w-3.5 ${summaryQuery.isFetching || assetsQuery.isFetching ? "animate-spin text-sky-400" : ""}`}
             />
-            Refresh
+            {t("common.refresh")}
           </Button>
           <Link href="/jobs">
             <Button size="sm" className="gap-2 bg-sky-600 text-white hover:bg-sky-500 shadow-lg shadow-sky-950">
               <Play className="h-3.5 w-3.5 fill-current" />
-              Launch Scan
+              {t("page.risk.launch")}
             </Button>
           </Link>
         </div>
@@ -141,14 +144,11 @@ export default function DashboardPage() {
       {!isLoading && (summary?.total ?? 0) === 0 ? (
         <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-8 text-center backdrop-blur">
           <ShieldAlert className="mx-auto h-10 w-10 text-slate-500" />
-          <h3 className="mt-3 text-sm font-semibold text-slate-200">No tracked findings yet</h3>
-          <p className="mt-1 text-xs text-slate-400">
-            Findings become tracked work after a scan observes them against an asset. Launch a
-            scan to populate the estate view.
-          </p>
+          <h3 className="mt-3 text-sm font-semibold text-slate-200">{t("page.risk.emptyTitle")}</h3>
+          <p className="mt-1 text-xs text-slate-400">{t("page.risk.emptyBody")}</p>
           <Link href="/jobs" className="mt-4 inline-block">
             <Button size="sm" className="bg-sky-600 hover:bg-sky-500">
-              Start First Scan Job
+              {t("page.risk.emptyCta")}
             </Button>
           </Link>
         </div>
@@ -156,41 +156,44 @@ export default function DashboardPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard
-          label="Estate risk"
+          label={t("page.risk.kpiEstate")}
           value={estateLabel}
-          hint="worst open NIST verdict"
+          hint={t("page.risk.kpiEstateHint")}
           href={vulnListHref()}
           decorationColor={estateRiskColor(summary?.estate_risk)}
         />
         <KpiCard
-          label="Critical / high (open)"
+          label={t("page.risk.kpiCritHigh")}
           value={isLoading ? "…" : criticalOpen}
-          hint={`${summary?.by_severity_open.critical ?? 0} critical · ${summary?.by_severity_open.high ?? 0} high`}
+          hint={t("page.risk.kpiCritHighHint", {
+            critical: summary?.by_severity_open.critical ?? 0,
+            high: summary?.by_severity_open.high ?? 0,
+          })}
           href={vulnListHref({ severity: "critical" })}
           decorationColor="rose"
         />
         <KpiCard
-          label="SLA breached"
+          label={t("page.risk.kpiSla")}
           value={isLoading ? "…" : (summary?.breached ?? 0)}
           hint={
             summary?.worst_breached_severity
-              ? `worst open: ${summary.worst_breached_severity}`
-              : "no open breaches"
+              ? t("page.risk.kpiSlaWorst", { severity: summary.worst_breached_severity })
+              : t("page.risk.kpiSlaNone")
           }
           href={vulnListHref({ sla: "breached" })}
           decorationColor="rose"
         />
         <KpiCard
-          label="Unassigned findings"
+          label={t("page.risk.kpiUnassigned")}
           value={isLoading ? "…" : (summary?.unassigned ?? 0)}
-          hint={`${summary?.untriaged ?? 0} still untriaged`}
+          hint={t("page.risk.kpiUnassignedHint", { count: summary?.untriaged ?? 0 })}
           href={vulnListHref({ unassigned: true })}
           decorationColor="amber"
         />
         <KpiCard
-          label="Assets without owner"
+          label={t("page.risk.kpiUnowned")}
           value={isLoading ? "…" : (assets?.unowned ?? 0)}
-          hint={`${assets?.total ?? 0} assets in inventory`}
+          hint={t("page.risk.kpiUnownedHint", { count: assets?.total ?? 0 })}
           href="/assets?unowned=1"
           decorationColor="amber"
         />
@@ -198,26 +201,26 @@ export default function DashboardPage() {
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
         <Link href={vulnListHref()} className="text-sky-400 hover:underline">
-          All open findings
+          {t("page.risk.allOpen")}
         </Link>
         <Link href={vulnListHref({ sla: "breached" })} className="text-sky-400 hover:underline">
-          SLA breaches
+          {t("page.risk.slaBreaches")}
         </Link>
         <Link href={vulnListHref({ unassigned: true })} className="text-sky-400 hover:underline">
-          Unassigned
+          {t("page.risk.unassignedLink")}
         </Link>
         <Link href="/assets?unowned=1" className="text-sky-400 hover:underline">
-          Unowned assets
+          {t("page.risk.unownedLink")}
         </Link>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
         <Card className="xl:col-span-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
           <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-            Open findings by NIST risk
+            {t("page.risk.byNist")}
           </Title>
           {riskData.every((row) => row.value === 0) ? (
-            <p className="mt-6 text-xs text-slate-400">No open tracked findings with a risk level.</p>
+            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noRiskLevels")}</p>
           ) : (
             <>
               <DonutChart
@@ -247,10 +250,10 @@ export default function DashboardPage() {
 
         <Card className="xl:col-span-2 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
           <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-            Open by severity
+            {t("page.risk.bySeverity")}
           </Title>
           {severityData.every((row) => row.value === 0) ? (
-            <p className="mt-6 text-xs text-slate-400">No open findings.</p>
+            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noFindings")}</p>
           ) : (
             <>
               <DonutChart
@@ -264,10 +267,10 @@ export default function DashboardPage() {
               <ul className="mt-4 space-y-1.5 text-xs text-slate-300">
                 {severityData.map((row) => (
                   <li
-                    key={row.name}
+                    key={row.sev}
                     className="flex items-center justify-between border-b border-slate-800/60 py-1.5"
                   >
-                    <StatusBadge value={row.name} map={SEVERITY_STATUS} />
+                    <StatusBadge value={row.sev} map={SEVERITY_STATUS} />
                     <span className="font-semibold tabular-nums text-slate-100">
                       {row.value.toLocaleString()}
                     </span>
@@ -283,7 +286,7 @@ export default function DashboardPage() {
         <Card className="xl:col-span-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
           <div className="flex items-center justify-between">
             <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-              Top business risks
+              {t("page.risk.topRisksTitle")}
             </Title>
             <span className="text-xs text-slate-400">Open, worst NIST score first</span>
           </div>
@@ -337,7 +340,7 @@ export default function DashboardPage() {
                         <SlaIndicator slaState={row.sla_state} dueAt={row.due_at} showDue={false} />
                       </td>
                       <td className="py-2.5 px-2 text-slate-300">
-                        {row.assignee || <span className="text-slate-500">Unassigned</span>}
+                        {row.assignee || <span className="text-slate-500">{t("page.risk.unassignedCell")}</span>}
                       </td>
                     </tr>
                   ))}
@@ -350,19 +353,19 @@ export default function DashboardPage() {
         <Card className="xl:col-span-2 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
           <div className="flex items-center justify-between">
             <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-              Asset posture
+              {t("page.risk.assetPosture")}
             </Title>
             <Link href="/assets" className="text-xs text-sky-400 hover:underline">
-              View assets
+              {t("page.risk.viewAssets")}
             </Link>
           </div>
           {!assets || assets.total === 0 ? (
-            <p className="mt-6 text-xs text-slate-400">No assets registered in the inventory.</p>
+            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noAssets")}</p>
           ) : (
             <>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 <span className="font-semibold text-slate-300">
-                  {assets.total.toLocaleString()} assets
+                  {t("page.risk.assetsCount", { count: assets.total.toLocaleString() })}
                 </span>
                 {(["active", "stale", "decommissioned"] as const).map((s) =>
                   assets.by_status[s] ? (
@@ -399,7 +402,7 @@ export default function DashboardPage() {
       <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-            Scan activity
+            {t("page.risk.scanActivity")}
           </Title>
           {latest ? (
             <Link
@@ -412,11 +415,10 @@ export default function DashboardPage() {
           ) : null}
         </div>
         <p className="mt-1 text-xs text-slate-500">
-          Hosts and raw findings per recent run — scan volume, not estate risk over time.
-          Historical risk snapshots are not stored yet.
+          {t("page.risk.scanActivityHint")}
         </p>
         {trend.length === 0 ? (
-          <p className="mt-6 text-xs text-slate-400">No run history to chart.</p>
+          <p className="mt-6 text-xs text-slate-400">{t("page.risk.noRuns")}</p>
         ) : (
           <AreaChart
             className="mt-4 h-64"

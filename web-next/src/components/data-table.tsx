@@ -24,6 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { DEFAULT_PAGE_SIZE } from "@/lib/config/constants";
+import { useT } from "@/lib/i18n";
 
 function SortIcon({ sorted }: { sorted: false | "asc" | "desc" }) {
   if (sorted === "asc") return <ArrowUp className="h-3.5 w-3.5 text-sky-400" aria-hidden />;
@@ -76,8 +77,8 @@ export function DataTable<TData>({
   data,
   isLoading,
   error,
-  emptyMessage = "No results found.",
-  loadingMessage = "Loading data stream…",
+  emptyMessage,
+  loadingMessage,
   initialSorting = [],
   searchPlaceholder,
   toolbar,
@@ -85,6 +86,9 @@ export function DataTable<TData>({
   meta,
   serverPagination,
 }: DataTableProps<TData>) {
+  const t = useT();
+  const resolvedEmpty = emptyMessage ?? t("table.empty");
+  const resolvedLoading = loadingMessage ?? t("table.loading");
   const server = serverPagination;
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [globalFilter, setGlobalFilter] = useState("");
@@ -166,7 +170,7 @@ export function DataTable<TData>({
       {error ? (
         <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
           <AlertDescription>
-            {error instanceof Error ? error.message : "Failed to load data stream"}
+            {error instanceof Error ? error.message : t("table.loadFailed")}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -204,7 +208,7 @@ export function DataTable<TData>({
                 <TableCell colSpan={columns.length} className="py-10 text-center text-sm text-slate-400">
                   <div className="flex items-center justify-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-                    <span>{loadingMessage}</span>
+                    <span>{resolvedLoading}</span>
                   </div>
                 </TableCell>
               </TableRow>
@@ -214,7 +218,7 @@ export function DataTable<TData>({
                   colSpan={columns.length}
                   className="py-12 text-center text-sm text-slate-400 font-medium"
                 >
-                  {emptyMessage}
+                  {resolvedEmpty}
                 </TableCell>
               </TableRow>
             ) : (
@@ -235,8 +239,7 @@ export function DataTable<TData>({
       {pageCount > 1 || (server && server.total > 0) ? (
         <div className="flex items-center justify-between gap-3 pt-1">
           <p className="text-xs text-slate-400">
-            Showing <span className="font-semibold text-slate-200">{rows.length}</span> of{" "}
-            <span className="font-semibold text-slate-200">{totalRows.toLocaleString()}</span> entries
+            {t("table.showing", { shown: String(rows.length), total: totalRows.toLocaleString() })}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -250,7 +253,7 @@ export function DataTable<TData>({
               }
               disabled={!canPrevious}
             >
-              Previous
+              {t("common.previous")}
             </Button>
             <span className="text-xs font-medium text-slate-400 px-1">
               {pageIndex + 1} / {pageCount}
@@ -264,7 +267,7 @@ export function DataTable<TData>({
               }
               disabled={!canNext}
             >
-              Next
+              {t("common.next")}
             </Button>
           </div>
         </div>

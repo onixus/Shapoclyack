@@ -4,6 +4,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { Pencil, Plus, Timer, Trash2 } from "lucide-react";
+import { useT } from "@/lib/i18n";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -82,6 +83,7 @@ function cadenceSummary(schedule: ScanSchedule): string {
 }
 
 export default function SchedulesPage() {
+  const t = useT();
   const { user, canOperate } = useAuthStore();
   const isAdmin = user?.role === "admin";
 
@@ -164,7 +166,7 @@ export default function SchedulesPage() {
     () => [
       {
         accessorKey: "name",
-        header: "Schedule",
+        header: t("col.schedule"),
         cell: ({ row }) => (
           <div>
             <p className="font-semibold text-slate-100">{row.original.name}</p>
@@ -174,25 +176,25 @@ export default function SchedulesPage() {
       },
       {
         id: "enabled",
-        header: "Status",
+        header: t("col.status"),
         accessorFn: (schedule) => (schedule.enabled ? "enabled" : "disabled"),
         cell: ({ row }) => <StatusBadge value={row.original.enabled ? "enabled" : "disabled"} map={SCHEDULE_ENABLED_STATUS} />,
       },
       {
         id: "cadence",
-        header: "Cadence",
+        header: t("col.cadence"),
         enableSorting: false,
         cell: ({ row }) => <span className="font-mono text-xs text-slate-300">{cadenceSummary(row.original)}</span>,
       },
       {
         id: "targets",
-        header: "Targets",
+        header: t("col.targets"),
         enableSorting: false,
         cell: ({ row }) => <span className="text-xs text-slate-300">{targetsSummary(row.original)}</span>,
       },
       {
         accessorKey: "last_run_at",
-        header: "Last Run",
+        header: t("col.lastRun"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.last_run_at ? (
@@ -203,7 +205,7 @@ export default function SchedulesPage() {
       },
       {
         accessorKey: "next_run_at",
-        header: "Next Run",
+        header: t("col.nextRun"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.next_run_at ? (
@@ -230,7 +232,7 @@ export default function SchedulesPage() {
                   updateMutation.mutate({ scheduleId: schedule.schedule_id, body: { enabled: !schedule.enabled } })
                 }
               >
-                {schedule.enabled ? "Disable" : "Enable"}
+                {schedule.enabled ? t("common.disable") : t("common.enable")}
               </Button>
               <Button
                 type="button"
@@ -259,15 +261,15 @@ export default function SchedulesPage() {
         },
       },
     ],
-    [isAdmin, updateMutation],
+    [isAdmin, t, updateMutation],
   );
 
   if (!canOperate) {
     return (
       <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/80 p-8 text-center">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-100">Continuous Scan Schedules</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-100">{t("page.schedules.title")}</h1>
         <p className="text-xs text-slate-400">
-          Operator or admin role privileges required to manage scan schedules.
+          {t("page.schedules.denied")}
         </p>
       </div>
     );
@@ -281,10 +283,10 @@ export default function SchedulesPage() {
             <Timer className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Continuous Scan Schedules</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.schedules.title")}</h1>
             <p className="text-xs text-slate-400">
-              Recurring recon jobs dispatched automatically by cron or interval cadence.
-              {isFetching ? " · Refreshing schedules…" : ""}
+              {t("page.schedules.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
@@ -511,7 +513,7 @@ export default function SchedulesPage() {
         data={schedules}
         isLoading={isLoading}
         error={error}
-        searchPlaceholder="Filter schedules by name…"
+        searchPlaceholder={t("search.schedules")}
         meta={`${scheduleTotal} schedule${scheduleTotal === 1 ? "" : "s"}`}
         loadingMessage="Retrieving scan schedules…"
         emptyMessage="No continuous schedules configured yet."

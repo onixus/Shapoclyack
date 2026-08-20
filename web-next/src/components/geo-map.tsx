@@ -14,6 +14,8 @@ import {
   projectLatitude,
   projectLongitude,
 } from "@/lib/geo/world-map";
+import { useAppearanceStore } from "@/lib/appearance";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /**
@@ -57,6 +59,12 @@ type GeoMapProps = {
 };
 
 export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
+  const t = useT();
+  const theme = useAppearanceStore((s) => s.theme);
+  const ocean = theme === "light" ? "#e2e8f0" : "#020617";
+  const land = theme === "light" ? "#cbd5e1" : "#1e293b";
+  const landStroke = theme === "light" ? "#94a3b8" : "#334155";
+  const grid = theme === "light" ? "#cbd5e1" : "#1e293b";
   const [hovered, setHovered] = useState<GeoLocation | null>(null);
 
   const maxHostCount = useMemo(
@@ -85,10 +93,10 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
           role="img"
           aria-label={`World map of ${locations.length} host locations`}
         >
-          <rect width={MAP_WIDTH} height={MAP_HEIGHT} fill="#020617" />
+          <rect width={MAP_WIDTH} height={MAP_HEIGHT} fill={ocean} />
           {/* Graticule every 30°: without it an equirectangular map gives no
               sense of scale, and the poles look like the tropics. */}
-          <g stroke="#1e293b" strokeWidth={0.5} fill="none">
+          <g stroke={grid} strokeWidth={0.5} fill="none">
             {[-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150].map((lon) => (
               <line
                 key={`lon-${lon}`}
@@ -108,7 +116,7 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
               />
             ))}
           </g>
-          <g fill="#1e293b" stroke="#334155" strokeWidth={0.4}>
+          <g fill={land} stroke={landStroke} strokeWidth={0.4}>
             {LAND_PATHS.map((path, index) => (
               <path key={index} d={path} />
             ))}
@@ -142,10 +150,12 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
                     strokeDasharray={location.precision === "country" ? "3 2" : undefined}
                   />
                   <title>
-                    {`${location.label} — ${location.hostCount} host${
-                      location.hostCount === 1 ? "" : "s"
-                    }, ${STATE_LABEL[location.state]}${
-                      location.precision === "country" ? " (country-level position)" : ""
+                    {`${location.label} — ${
+                      location.hostCount === 1
+                        ? t("geo.hostOne", { count: location.hostCount })
+                        : t("geo.hosts", { count: location.hostCount })
+                    }, ${t.label(STATE_LABEL[location.state])}${
+                      location.precision === "country" ? ` (${t("geo.countryLevel")})` : ""
                     }`}
                   </title>
                 </g>
@@ -158,14 +168,18 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
           <div className="pointer-events-none absolute bottom-3 left-3 max-w-xs rounded-lg border border-slate-700 bg-slate-900/95 p-3 text-xs shadow-xl">
             <p className="font-semibold text-slate-100">{active.label}</p>
             <p className="mt-1 text-slate-400">
-              {active.hostCount} host{active.hostCount === 1 ? "" : "s"} ·{" "}
-              {active.vulnerableHostCount} with findings · {active.findingCount} finding
-              {active.findingCount === 1 ? "" : "s"}
+              {active.hostCount === 1
+                ? t("geo.hostOne", { count: active.hostCount })
+                : t("geo.hosts", { count: active.hostCount })}{" "}
+              · {t("geo.withFindings", { count: active.vulnerableHostCount })} ·{" "}
+              {active.findingCount === 1
+                ? t("geo.findingOne", { count: active.findingCount })
+                : t("geo.findings", { count: active.findingCount })}
             </p>
             <p className="mt-1 text-slate-500">
-              worst: {STATE_LABEL[active.state]} ·{" "}
+              {t("geo.worst")}: {t.label(STATE_LABEL[active.state])} ·{" "}
               {active.precision === "country"
-                ? "country-level position"
+                ? t("geo.countryLevel")
                 : `${active.latitude.toFixed(2)}, ${active.longitude.toFixed(2)}`}
             </p>
           </div>
@@ -179,14 +193,14 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
               className="inline-block h-2.5 w-2.5 rounded-full"
               style={{ backgroundColor: STATE_FILL[state] }}
             />
-            {STATE_LABEL[state]}
+            {t.label(STATE_LABEL[state])}
           </span>
         ))}
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2.5 w-2.5 rounded-full border border-dashed border-slate-400" />
-          country-level position
+          {t("geo.countryLevel")}
         </span>
-        <span className={cn("text-slate-500")}>marker area ∝ hosts</span>
+        <span className={cn("text-slate-500")}>{t("geo.markerArea")}</span>
       </div>
     </div>
   );
