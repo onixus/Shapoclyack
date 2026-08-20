@@ -25,6 +25,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import metrics
 from api.services.integrations import delivery as delivery_transport
+from api.services.integrations import tickets as ticket_transport
 
 _base = importlib.import_module("api.services.integrations.webhooks")
 LOG = logging.getLogger("shapoclyack.webhooks")
@@ -102,7 +103,9 @@ def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.Webhoo
     return rows
 
 
-def _subscription_snapshot(subscription_id: str) -> tuple[str, str | None, dict[str, Any]] | None:
+def _subscription_snapshot(
+    subscription_id: str,
+) -> tuple[str, str | None, dict[str, Any], str, dict[str, Any]] | None:
     """Load the latest enabled target immediately before a wire attempt."""
     settings = _base._require_settings()
     with get_session(settings.postgres_url) as session:
@@ -113,6 +116,8 @@ def _subscription_snapshot(subscription_id: str) -> tuple[str, str | None, dict[
             subscription.url,
             subscription.secret,
             dict(subscription.headers or {}),
+            subscription.transport or "webhook",
+            dict(subscription.transport_config or {}),
         )
 
 
@@ -176,18 +181,8 @@ def dispatch_once(
             _release_disabled_claim(delivery_id, now=_base._now())
             continue
 
-        url, secret, headers = snapshot
+        url, secret, headers, transport, transport_config = snapshot
         try:
-            body, request_headers = delivery_transport.build_request(
-                payload=payload,
-                secret=secret,
-                extra_headers=headers,
-                delivery_id=delivery_id,
-                tenant_id=tenant_id,
-                event_kind=event_kind,
-                event_id=event_id,
-            )
-
             # Narrow the remaining disable race to the actual wire call.  We do
             # not keep a database transaction open across network I/O: that
             # would turn a receiver timeout into a pool-exhaustion primitive.
@@ -196,13 +191,35 @@ def dispatch_once(
                 continue
 
             outcome["attempted"] += 1
-            result = send(
-                url,
-                body,
-                request_headers,
-                timeout_seconds=settings.webhook_timeout_seconds,
-                allow_private=settings.webhook_allow_private_targets,
-            )
+            if transport in ticket_transport.TICKET_TRANSPORTS:
+                result = ticket_transport.deliver(
+                    transport=transport,
+                    base_url=url,
+                    payload=payload,
+                    secret=secret,
+                    extra_headers=headers,
+                    config=transport_config,
+                    timeout_seconds=settings.webhook_timeout_seconds,
+                    allow_private=settings.webhook_allow_private_targets,
+                    post_fn=send,
+                )
+            else:
+                body, request_headers = delivery_transport.build_request(
+                    payload=payload,
+                    secret=secret,
+                    extra_headers=headers,
+                    delivery_id=delivery_id,
+                    tenant_id=tenant_id,
+                    event_kind=event_kind,
+                    event_id=event_id,
+                )
+                result = send(
+                    url,
+                    body,
+                    request_headers,
+                    timeout_seconds=settings.webhook_timeout_seconds,
+                    allow_private=settings.webhook_allow_private_targets,
+                )
         except Exception as exc:  # noqa: BLE001 - one bad receiver must not stall the queue
             LOG.exception("Webhook delivery %s raised before/while sending", delivery_id)
             outcome["attempted"] += 1
@@ -218,6 +235,14 @@ def dispatch_once(
         if status == "delivered":
             outcome["delivered"] += 1
             metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="delivered").inc()
+            if transport in ticket_transport.TICKET_TRANSPORTS:
+                _base.link_created_ticket(
+                    tenant_id=tenant_id,
+                    payload=payload,
+                    transport=transport,
+                    ticket_key=result.ticket_key,
+                    ticket_url=result.ticket_url,
+                )
         elif status == "pending":
             outcome["retrying"] += 1
             metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="retrying").inc()

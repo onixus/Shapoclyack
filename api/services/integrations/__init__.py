@@ -15,8 +15,8 @@ Module split:
                        a JetStream consumer that enqueues, and a timer that
                        dispatches.
 
-Ticketing bridges (Jira/ServiceNow, the second half of 10.3) belong beside
-``delivery.py`` as further transports over the same queue.
+Ticketing bridges (Jira/ServiceNow/DefectDojo, the second half of 10.3) live
+in ``tickets.py`` as further transports over the same queue.
 """
 
 # Existing callers use ``from api.services.integrations import webhooks``.

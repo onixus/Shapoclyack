@@ -104,7 +104,7 @@ not an authorization control.
 | `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
-| `/api/webhooks` | Outbound webhook subscriptions, their delivery trail, and the dead-letter queue |
+| `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
 
@@ -171,19 +171,27 @@ closer to granting access than to scheduling a scan.
 | Route | Role | Notes |
 |---|---|---|
 | `GET /api/webhooks` | operator | Page of subscriptions; the signing secret is never included |
-| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, or the per-tenant limit. The generated `secret` is in this response only |
+| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, a missing ticket `transport_config`, or the per-tenant limit. The generated `secret` is in this response only (webhook transport). Ticket transports take `secret` as the tracker token and do not HMAC |
 | `PATCH`/`DELETE /api/webhooks/{id}` | admin | Deleting takes that subscription's delivery history with it |
-| `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new secret once |
+| `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new HMAC secret once. `422` on a ticket transport — PATCH `secret` with the tracker token instead |
 | `POST /api/webhooks/{id}/test` | admin | **202** — a signed `test` delivery is *queued*, not confirmed. Poll the deliveries list for the outcome |
 | `GET /api/webhooks/{id}/deliveries` | operator | Audit trail for one subscription |
 | `GET /api/webhooks/deliveries?status=dead` | operator | The dead-letter queue (`status` is `pending`, `delivered` or `dead`; anything else is `422`) |
 | `POST /api/webhooks/deliveries/{id}/retry` | admin | Requeues a dead delivery with a fresh attempt budget; needs no broker |
 
 A webhook in another tenant answers `404`, not `403` — as for jobs, schedules
-and runs, the id's existence is not the caller's business. Receivers verify
+and runs, the id's existence is not the caller's business. HMAC receivers verify
 `X-Shapoclyack-Signature` (`sha256=` HMAC over `{timestamp}.{body}`, the
 timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
 `X-Shapoclyack-Event-Id` as the deduplication key.
+
+`transport` selects the wire: `webhook` (default HMAC POST) or `jira` /
+`servicenow` / `defectdojo`. Ticket transports POST the native create-issue
+body to the instance URL, then link `ticket_key` on the matching tracked
+finding. An operator-set link is not overwritten. `transport_config` holds
+non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`).
+Credentials stay in `secret` or `Authorization`. Needs NATS, like any other
+asset-event consumer.
 
 ## Pagination
 

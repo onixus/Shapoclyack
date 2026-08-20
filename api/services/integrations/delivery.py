@@ -63,6 +63,12 @@ class DeliveryResult:
     error: str | None
     retryable: bool
     duration_seconds: float = 0.0
+    #: Response body when the caller asked for it (ticket create needs the
+    #: issue key). Webhook deliveries leave this None — the receiver's 200
+    #: body is not audit material.
+    body: str | None = None
+    ticket_key: str | None = None
+    ticket_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -291,6 +297,7 @@ def _post_to_address(
     headers: dict[str, str],
     *,
     deadline: float,
+    capture_body: bool = False,
 ) -> tuple[int, str]:
     """Send to one already-approved IP without performing DNS resolution."""
     remaining = deadline - time.perf_counter()
@@ -318,8 +325,11 @@ def _post_to_address(
             connection.sock.settimeout(remaining)
         response = connection.getresponse()
         code = response.status
-        # Successful webhook bodies are irrelevant; do not read them at all.
-        excerpt = "" if 200 <= code < 300 else _read_error_excerpt(response, deadline=deadline)
+        if 200 <= code < 300 and not capture_body:
+            # Successful webhook bodies are irrelevant; do not read them at all.
+            excerpt = ""
+        else:
+            excerpt = _read_error_excerpt(response, deadline=deadline)
         return code, excerpt
     finally:
         connection.close()
@@ -332,6 +342,7 @@ def post(
     *,
     timeout_seconds: int = 10,
     allow_private: bool = False,
+    capture_body: bool = False,
 ) -> DeliveryResult:
     """POST one delivery, pinned to the addresses that passed SSRF validation.
 
@@ -371,6 +382,7 @@ def post(
                 body,
                 headers,
                 deadline=deadline,
+                capture_body=capture_body,
             )
         except Exception as exc:  # noqa: BLE001 - socket/ssl/http.client family
             last_error = exc
@@ -386,6 +398,7 @@ def post(
                 error=None,
                 retryable=False,
                 duration_seconds=duration,
+                body=excerpt or None,
             )
         retryable = code >= 500 or code in (408, 429)
         return DeliveryResult(

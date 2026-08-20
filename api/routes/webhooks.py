@@ -22,6 +22,7 @@ from api.schemas import (
     WebhookInfo,
 )
 from api.services.integrations import delivery as delivery_transport
+from api.services.integrations import tickets as ticket_transport
 from api.services.integrations import webhooks
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -84,8 +85,10 @@ def create_webhook(
             headers=body.headers,
             enabled=body.enabled,
             created_by=principal.username,
+            transport=body.transport,
+            transport_config=body.transport_config,
         )
-    except (ValueError, delivery_transport.WebhookTargetError) as exc:
+    except (ValueError, delivery_transport.WebhookTargetError, ticket_transport.TicketSpecError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
@@ -157,7 +160,7 @@ def update_webhook(
         subscription = webhooks.update_subscription(
             subscription_id, **body.model_dump(exclude_unset=True)
         )
-    except (ValueError, delivery_transport.WebhookTargetError) as exc:
+    except (ValueError, delivery_transport.WebhookTargetError, ticket_transport.TicketSpecError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc

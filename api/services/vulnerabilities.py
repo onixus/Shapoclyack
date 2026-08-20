@@ -970,7 +970,12 @@ def set_ticket(
     actor: str | None = None,
     note: str | None = None,
 ) -> dict[str, Any] | None:
-    """Attach an external ticket. The platform does not create the ticket."""
+    """Attach an external ticket.
+
+    Operators call this to *link* a ticket they opened by hand. The P2
+    ticket transport also calls it after a successful Jira/ServiceNow/
+    DefectDojo create — that path is the one that actually opens the ticket.
+    """
     system = (system or "").strip().lower()
     if system not in TICKET_SYSTEMS:
         raise ValueError(f"unknown ticket system {system!r}; expected one of {', '.join(TICKET_SYSTEMS)}")
