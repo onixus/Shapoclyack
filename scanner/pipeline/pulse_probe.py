@@ -11,6 +11,9 @@ already have open ports from naabu, writes canonical artifacts:
 Does **not** replace NSE scripts (ssl-enum-ciphers, vulners, …). Use
 ``service_probe.backend: hybrid`` or ``nmap`` when those are required.
 
+Does **not** invoke Pulse product features that duplicate Shapoclyack:
+``pulse monitor``, ``--server``, ``--alert-*``, ``--scripts``, ``--inventory``.
+
 Environment:
   OCTO_PULSE_BIN     — path to pulse binary (default: ``pulse`` on PATH)
   NVD_API_KEY        — optional; pulse also reads ~/.pulse/nvd_api_key
@@ -163,12 +166,13 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
         banner = row.get("banner")
         product = str(row.get("product") or "").strip()
         version = str(row.get("version") or "").strip()
+        state = str(row.get("state") or "open").strip().lower() or "open"
         services.append(
             ServiceRecord(
                 ip=ip,
                 port=port,
                 protocol=proto if proto in ("tcp", "udp") else "tcp",
-                state="open",
+                state=state,
                 service=str(row.get("service") or "unknown"),
                 product=product,
                 version=version,
@@ -233,6 +237,10 @@ def parse_pulse_json(payload: dict[str, Any]) -> tuple[list[ServiceRecord], list
         # away every "this service is reachable" observation Pulse makes. Keep
         # them when Pulse labelled them; a row with neither a CVE nor a class is
         # still unusable and skipped.
+        #
+        # tls_posture is opt-in and writes a separate artifact; it does not
+        # merge into extra_vulnerabilities. Dropping finding_class=tls here
+        # would hide cert expiry / weak-protocol on the default path.
         if not cve_id and finding_class not in FINDING_CLASSES:
             continue
         if not finding_class:

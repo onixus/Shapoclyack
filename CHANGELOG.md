@@ -30,6 +30,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Pulse `v0.9.1` → `v1.1.0`** — `PULSE_VERSION` in `Dockerfile` /
+  `Dockerfile.allinone`, `Jenkinsfile.publish`, and
+  `scripts/install-pulse.sh` (docs had drifted at `v0.8.3`). Linux
+  amd64/arm64 tarballs are on the GenDec release. Adapter flags are
+  unchanged (`-b --os --cve -f json`); the gain is Pulse's probe-DB
+  (product/version). Not wired: `pulse monitor`, `--server`, `--alert-*`,
+  `--scripts`, `--inventory`. JARM may appear on `tls[]` as a field; it
+  is not scored. `finding_class: tls` still feeds extra vulnerabilities
+  because `tls_posture` is opt-in and a different artifact.
+
 - **Backup restore drill** ([#158](https://github.com/onixus/Shapoclyack/issues/158)) —
   2026-08-20 on kind `shapoclyack-dev`. A live-lab `pg_dump` (5 assets) restored
   into namespace `shapoclyack-restore` via `scripts/restore-postgres.sh`.

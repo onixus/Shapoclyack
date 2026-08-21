@@ -13,10 +13,10 @@
 // перераспространения (issue #97).
 // Релизные образы задают версию Pulse явно, а не полагаются на дефолт из
 // Dockerfile: состав компонентов релиза должен читаться здесь. Значения сейчас
-// совпадают (ARG PULSE_VERSION=v0.9.1), и именно поэтому расхождение было бы
+// совпадают (ARG PULSE_VERSION=v1.1.0), и именно поэтому расхождение было бы
 // незаметным — дефолт уехал бы, а сборка релиза молча поехала бы за ним.
 // Так же было в docker-publish.yml до переезда.
-def PULSE_VERSION = 'v0.9.1'
+def PULSE_VERSION = 'v1.1.0'
 
 def MATRIX = [
   [name: 'scanner',      dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '0', suffix: ''],
