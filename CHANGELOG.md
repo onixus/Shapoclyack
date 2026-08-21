@@ -6,6 +6,22 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **SLO alert rules as code** ([#186](https://github.com/onixus/Shapoclyack/issues/186)) —
+  `k8s/shapoclyack/examples/prometheus-slo.rules.yaml` is the source of
+  truth (availability burn rates, GET p95, job completion, ingest lag/staleness,
+  endpoint acceptance, login limiter, scheduler split-brain and no-leader).
+  Prometheus Operator wrapper is generated beside it. `promtool check rules`
+  runs in CI. Base still applies without the operator.
+
+- **End-to-end API latency probe** ([#185](https://github.com/onixus/Shapoclyack/issues/185)) —
+  `python -m tests.fixtures.api_latency` hits list/status GET routes under
+  concurrency and compares client percentiles with
+  `octo_http_request_duration_seconds`. Recorded 2026-08-20 on kind
+  `shapoclyack-dev` at 1k/10k/50k assets: list-route GET p95 stays under
+  500 ms at 32 concurrent clients on one replica; `GET /api/system` is the
+  outlier (~500–580 ms at conc 32). SLO 4/5 were not re-derived (no job
+  histogram samples; ingest off).
+
 - **Russian locale and light theme** in the Web UI. Default remains English
   and dark. The header (and login) toggle theme and language; both persist in
   `localStorage` (`shapoclyack.theme`, `shapoclyack.locale`) and apply before

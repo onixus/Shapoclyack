@@ -1,0 +1,237 @@
+# Prometheus rule groups for Shapoclyack SLOs (issues #185 / #186).
+#
+# This file is the source of truth for alert expressions. The Prometheus
+# Operator wrapper is prometheusrule-slo.example.yaml (same groups). Neither
+# belongs in base/: the CRD is not installed by this repository.
+#
+# Check:  promtool check rules k8s/shapoclyack/examples/prometheus-slo.rules.yaml
+#         (k8s/scripts/validate-prometheus-rules.sh)
+#
+# Thresholds for latency (SLO 2) and ingest lag (SLO 5) are starting values
+# until a recorded end-to-end run updates docs/slo.md. Job-duration (SLO 4)
+# has no repository-wide number; the rule here fires when p95 exceeds the
+# histogram's last finite bucket (8 h).
+groups:
+  - name: shapoclyack.slo.availability
+    rules:
+      # 99.5 % availability → 0.5 % error budget.
+      # Fast burn: 14.4× → 2 % of the monthly budget in 1 h (page).
+      - alert: ShapoclyackApiAvailabilityFastBurn
+        expr: |
+          (
+            sum(rate(octo_http_requests_total{status=~"5.."}[1h]))
+            /
+            sum(rate(octo_http_requests_total[1h]))
+          ) > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: page
+          slo: "1"
+        annotations:
+          summary: Shapoclyack API availability is burning the monthly error budget fast
+          description: >-
+            5xx share over 1h exceeds 14.4× the 0.5 % budget (SLO 1, 99.5 %).
+            See docs/slo.md and k8s/shapoclyack/examples/prometheus-slo.rules.yaml.
+
+      # Slow burn: 6× → 5 % of the monthly budget in 6 h (ticket).
+      - alert: ShapoclyackApiAvailabilitySlowBurn
+        expr: |
+          (
+            sum(rate(octo_http_requests_total{status=~"5.."}[6h]))
+            /
+            sum(rate(octo_http_requests_total[6h]))
+          ) > (6 * 0.005)
+        for: 15m
+        labels:
+          severity: ticket
+          slo: "1"
+        annotations:
+          summary: Shapoclyack API availability is burning the monthly error budget slowly
+          description: >-
+            5xx share over 6h exceeds 6× the 0.5 % budget (SLO 1).
+
+  - name: shapoclyack.slo.latency
+    rules:
+      - alert: ShapoclyackApiReadLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (
+            rate(octo_http_request_duration_seconds_bucket{method="GET"}[5m])
+          )) > 0.5
+        for: 15m
+        labels:
+          severity: ticket
+          slo: "2"
+        annotations:
+          summary: Shapoclyack GET p95 is above the 500 ms SLO
+          description: >-
+            p95 of GET requests over 5m exceeds 500 ms (SLO 2). POSTs that
+            start scans or upload archives are excluded.
+
+  - name: shapoclyack.slo.jobs
+    rules:
+      - alert: ShapoclyackJobCompletionBudget
+        expr: |
+          (
+            sum(rate(octo_job_duration_seconds_count{status="failed"}[6h]))
+            /
+            sum(rate(octo_job_duration_seconds_count[6h]))
+          ) > 0.05
+          and
+          sum(rate(octo_job_duration_seconds_count[6h])) > 0
+        for: 30m
+        labels:
+          severity: ticket
+          slo: "3"
+        annotations:
+          summary: Shapoclyack job success ratio is below 95 %
+          description: >-
+            Share of terminal jobs that failed over 6h exceeds 5 % (SLO 3).
+            Cancelled jobs are not in this histogram.
+
+      - alert: ShapoclyackJobDurationExceedsHistogram
+        expr: |
+          histogram_quantile(0.95, sum by (le) (
+            rate(octo_job_duration_seconds_bucket{status="succeeded"}[1d])
+          )) > 28800
+        for: 1h
+        labels:
+          severity: ticket
+          slo: "4"
+        annotations:
+          summary: Shapoclyack successful-job p95 exceeds the 8 h histogram
+          description: >-
+            SLO 4 has no repository-wide target; this fires when p95 saturates
+            the last finite bucket (8 h). Set an installation-specific target
+            from docs/slo.md after a measured month.
+
+  - name: shapoclyack.slo.ingest
+    rules:
+      - alert: ShapoclyackClickHouseIngestLag
+        expr: octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000
+        for: 10m
+        labels:
+          severity: ticket
+          slo: "5"
+        annotations:
+          summary: ClickHouse ingest consumer lag is above 1000 messages
+          description: >-
+            octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000 for 10m
+            (SLO 5). Absent series means ingest is not enabled — this rule
+            does not fire then.
+
+      - alert: ShapoclyackClickHouseIngestStale
+        expr: |
+          (time() - timestamp(octo_nats_consumer_pending{consumer="octo-ch-ingest"})) > 300
+        for: 5m
+        labels:
+          severity: ticket
+          slo: "5"
+        annotations:
+          summary: ClickHouse ingest lag gauge is stale
+          description: >-
+            The ingest worker has not refreshed octo_nats_consumer_pending for
+            more than 5 minutes. A stopped poller leaves a stale value rather
+            than a rising one.
+
+      - alert: ShapoclyackClickHouseIngestErrors
+        expr: |
+          (
+            1 - (
+              sum(rate(octo_ch_ingest_messages_total{result="ok"}[6h]))
+              /
+              sum(rate(octo_ch_ingest_messages_total[6h]))
+            )
+          ) > 0.001
+          and
+          sum(rate(octo_ch_ingest_messages_total[6h])) > 0
+        for: 30m
+        labels:
+          severity: ticket
+          slo: "6"
+        annotations:
+          summary: ClickHouse ingest error share is above 0.1 %
+          description: Ingest messages not result="ok" exceed 0.1 % over 6h (SLO 6).
+
+  - name: shapoclyack.slo.endpoint
+    rules:
+      - alert: ShapoclyackEndpointInventoryAcceptance
+        expr: |
+          (
+            1 - (
+              sum(rate(octo_endpoint_inventory_submissions_total{result="accepted"}[6h]))
+              /
+              sum(rate(octo_endpoint_inventory_submissions_total[6h]))
+            )
+          ) > 0.01
+          and
+          sum(rate(octo_endpoint_inventory_submissions_total[6h])) > 0
+        for: 30m
+        labels:
+          severity: ticket
+          slo: "7"
+        annotations:
+          summary: Endpoint inventory acceptance is below 99 %
+          description: >-
+            Submissions with result!="accepted" exceed 1 % over 6h (SLO 7).
+            result="replay" counts against the ratio on purpose.
+
+  - name: shapoclyack.slo.auth
+    rules:
+      - alert: ShapoclyackLoginLimiterTripped
+        expr: sum(rate(octo_auth_attempts_total{outcome="locked"}[5m])) > 0
+        for: 0s
+        labels:
+          severity: ticket
+          slo: "8"
+        annotations:
+          summary: Login rate limiter is refusing attempts
+          description: >-
+            octo_auth_attempts_total{outcome="locked"} is rising. The limiter
+            is already refusing traffic; read GET /api/auth/events.
+
+      - alert: ShapoclyackLoginFailuresElevated
+        expr: |
+          sum(rate(octo_auth_attempts_total{outcome="failure"}[15m]))
+          >
+          5 * sum(rate(octo_auth_attempts_total{outcome="failure"}[7d] offset 5m))
+        for: 15m
+        labels:
+          severity: ticket
+          slo: "8"
+        annotations:
+          summary: Login failures are far above the weekly baseline
+          description: >-
+            Failure rate over 15m is more than 5× the 7d baseline (SLO 8).
+
+  - name: shapoclyack.scheduler
+    rules:
+      # Rolling update can briefly show two replicas; 5m is above a tick (30s)
+      # and a typical pod replacement.
+      - alert: ShapoclyackSchedulerSplitBrain
+        expr: |
+          sum(octo_scheduler_is_leader) > 1
+          and
+          count(octo_scheduler_is_leader) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: More than one API replica holds schedule-dispatcher leadership
+          description: >-
+            sum(octo_scheduler_is_leader) > 1 for 5m. Idempotency keys still
+            prevent a duplicate job, but the advisory lock is not behaving as
+            designed (ROADMAP P1.6).
+
+      - alert: ShapoclyackSchedulerNoLeader
+        expr: |
+          sum(octo_scheduler_is_leader) == 0
+          and
+          count(octo_scheduler_is_leader) > 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: No API replica holds schedule-dispatcher leadership
+          description: >-
+            Recurring scans are not being dispatched. count()>0 so this does
+            not fire when the series is simply not scraped.

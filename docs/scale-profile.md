@@ -160,11 +160,13 @@ rediscovering it.
 
 ## What this does not cover
 
-- **No end-to-end API latency.** Services are called in-process; FastAPI
-  routing, JSON serialization, auth, and the network are all excluded. The SLO
-  in [slo.md](slo.md) for API latency still has no measured basis.
-- **No concurrency.** Single-threaded, one query at a time. Connection-pool
-  behaviour and lock contention are unmeasured.
+- ~~**No end-to-end API latency.**~~ Closed by
+  [#185](https://github.com/onixus/Shapoclyack/issues/185):
+  `tests/fixtures/api_latency.py` hits FastAPI under concurrency; numbers live
+  in [slo.md](slo.md#measured-get-latency-185). This file stays the
+  in-process query-path record.
+- ~~**No concurrency.**~~ The in-process profiler is still single-threaded.
+  Concurrent HTTP is the #185 probe, not this script.
 - **No UI measurement.** The `web-next` tables were not profiled; finding 1 was
   reached by counting statements on the endpoint they call.
 - **No ingest path.** `ch_ingest_worker` throughput at scale is untested.
