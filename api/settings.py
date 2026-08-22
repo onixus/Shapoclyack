@@ -185,6 +185,12 @@ class Settings:
     screenshot_retention_enabled: bool = True
     screenshot_retention_days: int = 14
     screenshot_retention_interval_seconds: int = 3600
+    # Run artifact retention (#187). Old scan run directories in output_dir/runs/*
+    # are deleted past run_retention_days. 0 disables the reaper.
+    run_retention_enabled: bool = True
+    run_retention_days: int = 30
+    run_retention_interval_seconds: int = 3600
+
     # OpenTelemetry (ROADMAP P3). Empty = no TracerProvider, no export.
     # The value is the OTLP HTTP traces URL, e.g. http://otel-collector:4318/v1/traces
     otel_exporter_otlp_endpoint: str = ""
@@ -474,6 +480,15 @@ def load_settings() -> Settings:
         screenshot_retention_interval_seconds=max(
             60, int(os.environ.get("OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS", "3600"))
         ),
+        run_retention_enabled=os.environ.get("OCTO_RUN_RETENTION_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        run_retention_days=max(
+            0, int(os.environ.get("OCTO_RUN_RETENTION_DAYS", "30"))
+        ),
+        run_retention_interval_seconds=max(
+            60, int(os.environ.get("OCTO_RUN_RETENTION_INTERVAL_SECONDS", "3600"))
+        ),
+
         otel_exporter_otlp_endpoint=os.environ.get("OCTO_OTEL_EXPORTER_OTLP_ENDPOINT", "").strip(),
         otel_service_name=os.environ.get("OCTO_OTEL_SERVICE_NAME", "shapoclyack-api").strip()
         or "shapoclyack-api",

@@ -81,7 +81,8 @@ data:
         scoring_model_version String,
         timestamp DateTime
     ) ENGINE = ReplacingMergeTree()
-    ORDER BY (tenant_id, asset_ip, cve_id);
+    ORDER BY (tenant_id, asset_ip, cve_id)
+    TTL timestamp + INTERVAL 90 DAY;
 
     -- Port-state table (roadmap 3.3 keys: tenant_id, target_ip, port)
     CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_open_ports (
@@ -92,4 +93,6 @@ data:
         run_id String,
         timestamp DateTime
     ) ENGINE = ReplacingMergeTree()
-    ORDER BY (tenant_id, target_ip, port);
+    ORDER BY (tenant_id, target_ip, port)
+    TTL timestamp + INTERVAL 90 DAY;
+

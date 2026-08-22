@@ -4,9 +4,29 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.42-0822] — 2026-08-22
+
 ### Added
 
+
+- **Multi-replica concurrent load test suite** ([#188](https://github.com/onixus/Shapoclyack/issues/188)) —
+  `tests/test_multi_replica_load.py` and `tests/fixtures/multi_replica_load.py` validate
+  concurrency across $\ge 2$ API replicas connected to the same PostgreSQL database.
+  Verifies race elimination on job claims (`SELECT ... FOR UPDATE SKIP LOCKED`),
+  idempotency keys replay across replicas, session-scoped advisory lock leader
+  election for scheduler dispatches, and lease reaper sweeps under load.
+
+- **Data-growth bounds: ClickHouse TTL and scan artifact retention** ([#187](https://github.com/onixus/Shapoclyack/issues/187)) —
+
+  ClickHouse tables `shapoclyack.shapoclyack_vulnerabilities` and `shapoclyack.shapoclyack_open_ports`
+  now specify `TTL timestamp + INTERVAL 90 DAY` in `init.sql` and k8s ConfigMap.
+  An in-process `run_retention` worker sweeps `output_dir/runs/*` every
+  `OCTO_RUN_RETENTION_INTERVAL_SECONDS` (1h) and removes expired run directories
+  whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30; `0` disables). Deletion is fail-soft
+  and safe across multiple API replicas.
+
 - **SLO alert rules as code** ([#186](https://github.com/onixus/Shapoclyack/issues/186)) —
+
   `k8s/shapoclyack/examples/prometheus-slo.rules.yaml` is the source of
   truth (availability burn rates, GET p95, job completion, ingest lag/staleness,
   endpoint acceptance, login limiter, scheduler split-brain and no-leader).

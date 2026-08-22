@@ -335,6 +335,15 @@ Web screenshots (ROADMAP P4.4 / Phase 9.3):
 | `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is unlinked. `0` disables the reaper. `screenshots.json` is never deleted by this worker |
 | `OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
+Scan run artifact retention (ROADMAP #187):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RUN_RETENTION_ENABLED` | `true` | Run the in-process scan artifact reaper. Safe in every replica; directory removals are idempotent |
+| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which `output_dir/runs/<run_id>` directories are deleted. `0` disables the reaper |
+| `OCTO_RUN_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
+
+
 Never commit real URLs containing credentials. Supply them through the platform
 secret mechanism.
 

@@ -33,6 +33,7 @@ from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
 from api.services import screenshot_retention
+from api.services import run_retention
 from api.services import job_reaper
 from api.services.integrations import webhook_worker
 from api.services.integrations import webhooks as webhooks_service
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     schedule_dispatcher.start_worker(settings)
     endpoint_retention.start_worker(settings)
     screenshot_retention.start_worker(settings)
+    run_retention.start_worker(settings)
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
@@ -76,12 +78,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
+        run_retention.stop_worker()
         screenshot_retention.stop_worker()
         tracing_service.shutdown()
         endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()
         nats_bus.shutdown_bus()
+
 
 
 def create_app() -> FastAPI:

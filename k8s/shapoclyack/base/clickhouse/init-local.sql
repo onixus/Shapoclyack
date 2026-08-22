@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_vulnerabilities (
     scoring_model_version String,
     timestamp DateTime
 ) ENGINE = ReplacingMergeTree()
-ORDER BY (tenant_id, asset_ip, cve_id);
+ORDER BY (tenant_id, asset_ip, cve_id)
+TTL timestamp + INTERVAL 90 DAY;
 
 CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_open_ports (
     tenant_id UUID,
@@ -24,4 +25,6 @@ CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_open_ports (
     run_id String,
     timestamp DateTime
 ) ENGINE = ReplacingMergeTree()
-ORDER BY (tenant_id, target_ip, port);
+ORDER BY (tenant_id, target_ip, port)
+TTL timestamp + INTERVAL 90 DAY;
+

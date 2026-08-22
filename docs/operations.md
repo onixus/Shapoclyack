@@ -98,7 +98,33 @@ Set retention according to legal, operational, and privacy requirements. Scan
 artifacts can contain internal hostnames, IPs, software versions, and
 vulnerability evidence.
 
+### ClickHouse analytical data retention (ROADMAP #187)
+
+ClickHouse tables `shapoclyack.shapoclyack_vulnerabilities` and `shapoclyack.shapoclyack_open_ports`
+define a table-level TTL policy:
+```sql
+TTL timestamp + INTERVAL 90 DAY
+```
+Expired partitions and rows are merged and deleted automatically in the background
+by ClickHouse without requiring external cron scripts. To modify the retention window,
+run:
+```sql
+ALTER TABLE shapoclyack.shapoclyack_vulnerabilities MODIFY TTL timestamp + INTERVAL 180 DAY;
+ALTER TABLE shapoclyack.shapoclyack_open_ports MODIFY TTL timestamp + INTERVAL 180 DAY;
+```
+
+### Scan run artifact retention (ROADMAP #187)
+
+Scan artifacts written to `output_dir/runs/<run_id>/` accumulate over time on persistent storage.
+An in-process retention worker runs every `OCTO_RUN_RETENTION_INTERVAL_SECONDS` (1h) and
+deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30).
+
+- Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
+- `0` days disables the reaper.
+- Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+
 ### Screenshot retention
+
 
 Web screenshots (ROADMAP P4.4) are the other automatic policy. A PNG of a
 login page can still hold names after the DOM overlay, so pixels must not

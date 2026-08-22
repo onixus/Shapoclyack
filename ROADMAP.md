@@ -34,20 +34,13 @@ map and each source stays authoritative for its own scope.
 
 ## Current baseline (done)
 
-Shipped through **[shapoclyack-0.41-0817](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.41-0817)**.
-The half-finished `0.41-0812` bump ([#160](https://github.com/onixus/Shapoclyack/issues/160))
-was resolved by **re-cutting 0.41 from current `main`** and re-stamping the date to the day
-it was actually cut: 0.41 never existed as a tag or as images, so the number was free and the
-numbering stays contiguous, while the date stops claiming a cut that did not happen. The
-release therefore carries more than 0.41 was originally scoped for — the NIST risk model
-(#144), webhooks and the asset event bus, the geo map, and all of Wave 0's security work
-(#155–#159), whose fail-closed startup is **breaking** for deployments that relied on
-defaults. Note that GHCR
-images are now published by the **local Jenkins** job `shapoclyack-publish`
-(`Jenkinsfile.publish`), started by hand with the release tag — neither pushing a tag nor
-`gh release create` builds anything since the Actions workflows were disabled (166b386,
-3e6d57c). It has never been run, not even as a dry run, so #160 should budget for the
-first execution of that job rather than assume it works.
+Shipped through **[shapoclyack-0.42-0822](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.42-0822)**.
+Includes all capabilities of Phases 1–11 and P0–P4, full EASM lifecycle & NIST risk scoring,
+Track B Wave 0 and Wave 1 GA hardening (#151–#159, #185–#188), ClickHouse TTL and run retention (#187),
+and multi-replica load validation (#188).
+GHCR images are published by the **local Jenkins** job `shapoclyack-publish` (`Jenkinsfile.publish`)
+with tag `shapoclyack-0.42-0822`.
+
 
 | Area | Status |
 |------|--------|
@@ -402,9 +395,11 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 | ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ | Webhook delivery state machine | **Done** | Durable `octo-webhook-fanout` created with `DeliverPolicy.NEW` before bind; DLQ replay refuses `delivered`; claim visibility covers the serial batch so concurrent dispatchers cannot double-POST |
 | ~~[#185](https://github.com/onixus/Shapoclyack/issues/185)~~ | End-to-end API latency under concurrency | **Done** | `tests/fixtures/api_latency.py`; kind-dev 2026-08-20 at 1k/10k/50k × conc 32: list GET p95 < 500 ms, `/api/system` tight; SLO 4/5 not re-derived |
 | ~~[#186](https://github.com/onixus/Shapoclyack/issues/186)~~ | PrometheusRule from SLO + scheduler leadership | **Done** | `examples/prometheus-slo.rules.yaml` + Operator wrapper; `promtool check rules` in CI; `octo_scheduler_is_leader` `> 1` (5 m) and `== 0` (10 m) |
+| ~~[#187](https://github.com/onixus/Shapoclyack/issues/187)~~ | Data-growth bounds (ClickHouse TTL + run retention) | **Done** | ClickHouse `TTL timestamp + INTERVAL 90 DAY` in `init.sql` / configmap; in-process `run_retention` worker deletes expired `runs/*` past `OCTO_RUN_RETENTION_DAYS` (30) |
+| ~~[#188](https://github.com/onixus/Shapoclyack/issues/188)~~ | Multi-replica load run (≥2 API replicas) | **Done** | `tests/fixtures/multi_replica_load.py` & `tests/test_multi_replica_load.py`; concurrent job claims via `FOR UPDATE SKIP LOCKED`, idempotent job submissions, scheduler leader election and reaper lease sweeps across replicas |
 
 Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 follows:
-~~#152~~ → ~~#185/#186~~ → #188 → #187.
+~~#152~~ → ~~#185/#186~~ → ~~#187~~ → ~~#188~~ (**Wave 1 complete**).
 
 **Wave 1** is now filed rather than described here:
 ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
@@ -418,12 +413,15 @@ ingest off);
 **Done**: `prometheus-slo.rules.yaml` + Operator wrapper, `promtool` in CI,
 scheduler `> 1` and `== 0`;
 (with [#153](https://github.com/onixus/Shapoclyack/issues/153) for webhook
-configuration and limits); [#187](https://github.com/onixus/Shapoclyack/issues/187)
-data-growth bounds (ClickHouse has no TTL — [3.8](#p3-breakdown--scale--observability) named
-TTL the right tool and rejected `PARTITION BY` as semantic — plus artifact retention on
-disk); and [#188](https://github.com/onixus/Shapoclyack/issues/188) a load run at ≥2 API
-replicas, which P1 made legal but nobody has exercised — the concurrent-migration
-race it used to depend on is closed (#159).
+configuration and limits);
+~~[#187](https://github.com/onixus/Shapoclyack/issues/187)~~ data-growth bounds —
+**Done**: ClickHouse `TTL timestamp + INTERVAL 90 DAY` on vulnerabilities and open ports,
+plus in-process run artifact reaper (`run_retention.py`, `OCTO_RUN_RETENTION_DAYS=30`);
+and ~~[#188](https://github.com/onixus/Shapoclyack/issues/188)~~ a load run at ≥2 API
+replicas — **Done**: concurrent claim race elimination (`FOR UPDATE SKIP LOCKED`),
+idempotency replay under load, scheduler leadership locks verified.
+
+
 
 ## Track C — Vulnerability Management product
 
