@@ -58,6 +58,7 @@ The roadmap is **planned product behavior**, not documentation of already-delive
 | [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md) | Planned VM/Exposure Management UI and backend dependencies |
 | [Endpoint inventory design record](../Agent_plan.md) | Lariska integration history and design decisions; not the general product roadmap |
 | [Roadmap](../ROADMAP.md) | Product delivery phases and remaining work |
+| [ProjectDiscovery integration concept](projectdiscovery-integration-concept.md) | Architecture concept and scenarios for expanding ProjectDiscovery tools |
 | [Changelog](../CHANGELOG.md) | Released and unreleased behavior changes |
 
 ## Source-of-truth rules
