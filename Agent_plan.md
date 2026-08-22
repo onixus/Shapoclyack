@@ -72,7 +72,7 @@ The **Pulse** module is an external native binary probe engine developed in the 
    Automated via [`scripts/install-pulse.sh`](scripts/install-pulse.sh):
    ```bash
    # Download and install specific version from onixus/GenDec GitHub Releases
-   PULSE_VERSION=v0.8.3 scripts/install-pulse.sh
+   PULSE_VERSION=v1.1.0 scripts/install-pulse.sh
 
    # If using a private repository or authenticated token:
    GITHUB_TOKEN=ghp_... scripts/install-pulse.sh

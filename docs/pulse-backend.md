@@ -127,23 +127,33 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 
 ```dockerfile
 # stage pulse-bin downloads:
-#   pulse-v0.8.3-linux-amd64.tar.gz from onixus/GenDec releases
+#   pulse-v1.1.0-linux-amd64.tar.gz from onixus/GenDec releases
 COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 # + setcap cap_net_raw,cap_net_admin+eip
 ```
 
 | Arg / secret | Default | Meaning |
 |--------------|---------|---------|
-| `PULSE_VERSION` | `v0.8.3` | GenDec release tag |
+| `PULSE_VERSION` | `v1.1.0` | GenDec release tag |
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
+
+The pin is the **engine** (banner / OS / `--cve` / TLS JSON). Shapoclyack does
+not invoke `pulse monitor`, `pulse --server`, `--alert-*`, `--scripts`, or
+`--inventory`. Those duplicate schedules, webhooks, Nuclei, and job targets.
+
+v1.1.0's TLS probe may write a JARM hash onto `tls[]` (no CLI flag to skip
+it). The field is kept on `pulse/tls.json` and is not scored. `finding_class:
+tls` still flows into extra vulnerabilities — `tls_posture` is opt-in and
+writes a separate artifact, so dropping those rows would hide cert expiry on
+the default path.
 
 Host install without Docker:
 
 ```bash
 scripts/install-pulse.sh                  # from release
-PULSE_VERSION=v0.8.3 scripts/install-pulse.sh
+PULSE_VERSION=v1.1.0 scripts/install-pulse.sh
 PULSE_FROM_SOURCE=1 scripts/install-pulse.sh  # cargo fallback
 ```
 
