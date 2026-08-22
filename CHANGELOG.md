@@ -50,7 +50,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Node.js builder image `node:24-bookworm-slim` → `node:26-bookworm-slim`** —
+  aligned `Dockerfile.allinone` and `Dockerfile.api` `web-build` stages with
+  `Jenkinsfile` and `web-next/package.json` (`engines.node: ">=26"`), resolving
+  engine mismatch errors.
+
 - **Pulse `v0.9.1` → `v1.1.0`** — `PULSE_VERSION` in `Dockerfile` /
+
   `Dockerfile.allinone`, `Jenkinsfile.publish`, and
   `scripts/install-pulse.sh` (docs had drifted at `v0.8.3`). Linux
   amd64/arm64 tarballs are on the GenDec release. Adapter flags are

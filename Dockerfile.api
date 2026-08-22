@@ -1,5 +1,5 @@
 # Shapoclyack thin API + Web UI v2 image (no scanner tools).
-FROM node:24-bookworm-slim AS web-build
+FROM node:26-bookworm-slim AS web-build
 WORKDIR /web
 COPY web-next/package.json web-next/package-lock.json ./
 RUN npm ci

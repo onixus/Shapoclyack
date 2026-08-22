@@ -43,7 +43,7 @@ RUN --mount=type=secret,id=github_token,required=false \
     mkdir -p /out; tar -xzf /tmp/pulse.tgz -C /out; test -x /out/pulse; \
     chmod 755 /out/pulse; rm -rf /var/lib/apt/lists/*
 
-FROM node:24-bookworm-slim AS web-build
+FROM node:26-bookworm-slim AS web-build
 WORKDIR /web
 COPY web-next/package.json web-next/package-lock.json ./
 RUN npm ci
