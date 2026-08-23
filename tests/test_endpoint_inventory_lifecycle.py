@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from api.services import endpoint_inventory
+from api.services import endpoint_retention
 from api.services import nats_bus
 from api.services import tenants as tenants_service
 from tests.conftest import (
@@ -254,6 +255,7 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
     stale_status = endpoint_inventory.device_status(now - timedelta(hours=50))
     assert stale_status == "stale"
 
-    prune_res = endpoint_inventory.prune_expired_snapshots()
-    assert isinstance(prune_res, dict)
-    assert "pruned_snapshots" in prune_res
+    sweep_res = endpoint_retention.sweep(settings)
+    assert isinstance(sweep_res, dict)
+    assert sweep_res["tenants"] >= 1
+    assert sweep_res["errors"] == 0
