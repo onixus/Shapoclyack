@@ -33,6 +33,10 @@ export const queryKeys = {
     ["schedules", tenantId ?? null, pageKey(page)] as const,
   agents: ["agents"] as const,
   agentsPage: (page?: PageParams) => ["agents", pageKey(page)] as const,
+  agentSummary: ["agents", "summary"] as const,
+  agentDetail: (agentId: string) => ["agents", "detail", agentId] as const,
+  agentSnippets: ["agents", "snippets"] as const,
+  deployStatus: (deployId: string) => ["agents", "deploy", deployId] as const,
   tenants: ["tenants"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,
   assetsPage: (

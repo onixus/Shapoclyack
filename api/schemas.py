@@ -300,6 +300,8 @@ class AgentHeartbeatRequest(BaseModel):
     status: Literal["idle", "busy", "error"] = "idle"
     current_job_id: str | None = None
     detail: str | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class AgentInfo(BaseModel):
@@ -314,6 +316,57 @@ class AgentInfo(BaseModel):
     last_seen_at: str | None = None
     online: bool = False
     tenant_id: str = "default"
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+    is_outdated: bool = False
+    latest_version: str = ""
+    upgrade_requested: bool = False
+
+
+class AgentFleetSummary(BaseModel):
+    total_agents: int = 0
+    online_agents: int = 0
+    busy_agents: int = 0
+    stale_agents: int = 0
+    error_agents: int = 0
+    outdated_agents: int = 0
+    latest_version: str = ""
+    by_tenant: dict[str, int] = Field(default_factory=dict)
+
+
+class AgentDeploySSHRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=64, default="root")
+    password: str | None = None
+    private_key: str | None = None
+    sudo_password: str | None = None
+    tenant_id: str = "default"
+    agent_id: str | None = None
+    install_dir: str = "/opt/shapoclyack-agent"
+    use_docker: bool = False
+
+
+class AgentDeployStatusResponse(BaseModel):
+    deploy_id: str
+    status: Literal["queued", "connecting", "installing", "verifying", "completed", "failed"] = "queued"
+    stage: str = "Initializing"
+    progress_percent: int = 0
+    logs: list[str] = Field(default_factory=list)
+    agent_id: str | None = None
+    error: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+class AgentDeploymentSnippetResponse(BaseModel):
+    tenant_id: str
+    provisioning_key: str
+    server_url: str
+    systemd_oneliner: str
+    docker_run: str
+    docker_compose: str
+    kubernetes_yaml: str
 
 
 class AgentClaimResponse(BaseModel):

@@ -311,6 +311,71 @@ export type AgentInfo = {
   last_seen_at: string | null;
   online: boolean;
   tenant_id?: string | null;
+  metrics?: {
+    cpu_percent?: number;
+    memory_used_mb?: number;
+    memory_total_mb?: number;
+    memory_percent?: number;
+    disk_free_gb?: number;
+    disk_total_gb?: number;
+    disk_percent?: number;
+    uptime_seconds?: number;
+    os?: string;
+    release?: string;
+    arch?: string;
+    load_1m?: number;
+    load_5m?: number;
+  };
+  capabilities?: string[];
+  is_outdated?: boolean;
+  latest_version?: string;
+  upgrade_requested?: boolean;
+};
+
+export type AgentFleetSummary = {
+  total_agents: number;
+  online_agents: number;
+  busy_agents: number;
+  stale_agents: number;
+  error_agents: number;
+  outdated_agents: number;
+  latest_version: string;
+  by_tenant: Record<string, number>;
+};
+
+export type AgentDeploySSHRequest = {
+  host: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  private_key?: string;
+  sudo_password?: string;
+  tenant_id?: string;
+  agent_id?: string;
+  install_dir?: string;
+  use_docker?: boolean;
+};
+
+export type AgentDeployStatusResponse = {
+  deploy_id: string;
+  status: "queued" | "connecting" | "installing" | "verifying" | "completed" | "failed";
+  stage: string;
+  progress_percent: number;
+  logs: string[];
+  agent_id: string | null;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type AgentDeploymentSnippetResponse = {
+  tenant_id: string;
+  provisioning_key: string;
+  server_url: string;
+  systemd_oneliner: string;
+  docker_run: string;
+  docker_compose: string;
+  kubernetes_yaml: string;
 };
 
 export type TenantInfo = {
@@ -729,6 +794,75 @@ export async function fetchScreenshotBlob(runId: string, path: string) {
 export async function fetchAgents(page?: PageParams) {
   try {
     const { data } = await api.get<Page<AgentInfo>>(`/agents?${pageSearchParams(page)}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAgentSummary() {
+  try {
+    const { data } = await api.get<AgentFleetSummary>("/agents/summary");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAgentDetail(agentId: string) {
+  try {
+    const { data } = await api.get<AgentInfo>(`/agents/${encodeURIComponent(agentId)}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteAgent(agentId: string) {
+  try {
+    const { data } = await api.delete<{ status: string; agent_id: string }>(
+      `/agents/${encodeURIComponent(agentId)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function triggerAgentUpgrade(agentId: string) {
+  try {
+    const { data } = await api.post<{ status: string; agent_id: string; target_version: string }>(
+      `/agents/${encodeURIComponent(agentId)}/upgrade`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAgentDeploymentSnippets() {
+  try {
+    const { data } = await api.get<AgentDeploymentSnippetResponse>("/agent/deployment-command");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deployAgentSSH(body: AgentDeploySSHRequest) {
+  try {
+    const { data } = await api.post<AgentDeployStatusResponse>("/agent/deploy/ssh", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchDeployStatus(deployId: string) {
+  try {
+    const { data } = await api.get<AgentDeployStatusResponse>(
+      `/agent/deploy/${encodeURIComponent(deployId)}/status`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
