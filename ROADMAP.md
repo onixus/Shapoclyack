@@ -21,7 +21,7 @@ yet production-ready.
 | **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; leftover is historical score snapshots (#144) |
-| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | S1–S7 + S9 merged; S8, S10 deferred |
+| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged |
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
@@ -364,7 +364,7 @@ read as one list than as five *Partial* rows spread over 40 KB:
 | IP↔FQDN↔certificate correlation | [P4.2](#p4-breakdown--differentiating-features) | **Done** — feeds Track C's asset model ([#146](https://github.com/onixus/Shapoclyack/issues/146)); see [docs/asset-identity.md](docs/asset-identity.md) |
 | Ownership graph | [P4.3](#p4-breakdown--differentiating-features) | **Done** — groups the 11.2 graph by operator-set unit/owner; unowned names by registrable domain |
 | Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Done** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it |
-| Endpoint-inventory NATS event (S8), cross-repo e2e test (S10) | [Agent_plan.md](Agent_plan.md) (Track D) | Deferred there, not part of any phase; listed here only so the remainder is countable in one place |
+| Endpoint-inventory NATS event (S8), cross-repo e2e test (S10) | [Agent_plan.md](Agent_plan.md) (Track D) | **Done** — merged |
 
 Everything else in Phases 1–11 and P0–P3 is merged.
 

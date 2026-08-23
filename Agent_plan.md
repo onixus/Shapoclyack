@@ -3,7 +3,7 @@
 > Integration architecture, technical specifications, and delivery backlog for the Lariska endpoint inventory.
 > For operator documentation, see [docs/README.md](docs/README.md) and [docs/operations.md](docs/operations.md).
 
-**Current Status:** S1–S7 and S9 are **completed and merged to `main`** (Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, retention sweeps, server-side staleness checks, and metrics). S8 (optional NATS event) and S10 (cross-repository e2e test suite) are **deferred** — see [CHANGELOG.md](CHANGELOG.md).
+**Current Status:** S1–S10 are **completed and merged to `main`** (Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and comprehensive E2E lifecycle test suite).
 
 ---
 
@@ -495,9 +495,9 @@ Prometheus metrics exposed in [api/services/metrics.py](api/services/metrics.py)
 | **S5** | Software Diff & Events | Comparison key calculation, installed/removed/updated event generator | **Done** |
 | **S6** | Read APIs | Asset software & device query endpoints with tenant filters and RBAC | **Done** |
 | **S7** | Web UI Integration | Asset card Endpoint/Software section, query hooks, change indicators | **Done** |
-| **S8** | NATS Stream Integration | Optional event publish to `ingest.endpoint_inventory.{tenant_id}` | **Deferred** |
+| **S8** | NATS Stream Integration | Optional event publish to `ingest.endpoint_inventory.{tenant_id}` | **Done** |
 | **S9** | Retention, Ops & Metrics | Pruning sweeps, 15 MiB body cap, staleness tracking, Prometheus metrics | **Done** |
-| **S10** | Cross-Repo E2E Tests | Automated cross-repository integration tests with Lariska fixtures | **Deferred** |
+| **S10** | Cross-Repo E2E Tests | Automated cross-repository integration tests with Lariska fixtures | **Done** |
 
 ---
 
