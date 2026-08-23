@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { Download, FileText } from "lucide-react";
@@ -23,7 +23,7 @@ export default function ReportsPage() {
   const runs = data?.items ?? [];
   const [busyRun, setBusyRun] = useState<string | null>(null);
 
-  async function downloadPdf(runId: string) {
+  const downloadPdf = useCallback(async (runId: string) => {
     setBusyRun(runId);
     try {
       await downloadArtifact(runId, "summary.pdf");
@@ -32,9 +32,9 @@ export default function ReportsPage() {
     } finally {
       setBusyRun(null);
     }
-  }
+  }, [t]);
 
-  async function downloadSarif(runId: string) {
+  const downloadSarif = useCallback(async (runId: string) => {
     setBusyRun(`sarif-${runId}`);
     try {
       await downloadArtifact(runId, "sarif.json");
@@ -43,7 +43,7 @@ export default function ReportsPage() {
     } finally {
       setBusyRun(null);
     }
-  }
+  }, []);
 
   const columns = useMemo<ColumnDef<RunSummary>[]>(
     () => [
@@ -136,7 +136,7 @@ export default function ReportsPage() {
         ),
       },
     ],
-    [busyRun, t],
+    [busyRun, downloadPdf, downloadSarif, t],
   );
 
   return (

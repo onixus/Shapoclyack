@@ -7,8 +7,6 @@ import {
   BookOpen,
   Code2,
   Download,
-  ExternalLink,
-  Filter,
   Info,
   Layers,
   Search,
