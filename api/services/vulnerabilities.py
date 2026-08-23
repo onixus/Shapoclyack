@@ -624,6 +624,19 @@ def register_findings_from_run(
         stats.reopened,
         stats.skipped_unknown_asset,
     )
+
+    try:
+        from api.services import risk_snapshots
+
+        risk_snapshots.take_snapshot(settings, tenant_id=tenant_id, source="run", now=now)
+    except Exception:  # noqa: BLE001
+        LOG.warning(
+            "Failed to record risk snapshot for run %s tenant %s",
+            run_id,
+            tenant_id,
+            exc_info=True,
+        )
+
     return stats
 
 

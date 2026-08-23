@@ -7,6 +7,7 @@ import {
   clearVulnerabilityException,
   clearVulnerabilityTicket,
   commentOnVulnerability,
+  fetchRiskHistory,
   fetchTrackedVulnerability,
   fetchTrackedVulnerabilities,
   fetchVulnerabilityActivity,
@@ -15,6 +16,7 @@ import {
   setVulnerabilityException,
   setVulnerabilityTicket,
   transitionVulnerability,
+  triggerRiskSnapshot,
   type PageParams,
   type TrackedVulnerability,
   type VulnerabilityAssignBody,
@@ -82,6 +84,32 @@ export function useVulnerabilityActivity(page?: PageParams) {
     queryKey: queryKeys.vulnerabilityActivity(page),
     queryFn: () => fetchVulnerabilityActivity(page),
     refetchInterval: POLL_INTERVALS.vulnerabilities,
+  });
+}
+
+export function useRiskHistory(params?: {
+  since?: string;
+  until?: string;
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: queryKeys.riskHistory(params),
+    queryFn: () => fetchRiskHistory(params),
+    refetchInterval: POLL_INTERVALS.vulnerabilities,
+  });
+}
+
+export function useTriggerRiskSnapshot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: triggerRiskSnapshot,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["vulnerabilities", "risk-history"] });
+      toast.success("Risk snapshot captured");
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to capture risk snapshot");
+    },
   });
 }
 

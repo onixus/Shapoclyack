@@ -882,3 +882,37 @@ class Job(Base):
         # same retry would both read "no such key" and both insert.
         Index("uq_jobs_tenant_idempotency_key", "tenant_id", "idempotency_key", unique=True),
     )
+
+
+class RiskScoreSnapshot(Base):
+    """Historical snapshot of a tenant's risk posture (#144, Track C).
+
+    Recorded on run completion, scheduled ticks, or manual triggers so
+    the security dashboard can render accurate risk trend charts over time.
+    """
+
+    __tablename__ = "risk_score_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[str] = mapped_column(index=True, unique=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    recorded_at: Mapped[datetime]
+    estate_risk: Mapped[str | None] = mapped_column(default=None)
+    open_total: Mapped[int] = mapped_column(default=0)
+    total: Mapped[int] = mapped_column(default=0)
+    untriaged: Mapped[int] = mapped_column(default=0)
+    unassigned: Mapped[int] = mapped_column(default=0)
+    breached: Mapped[int] = mapped_column(default=0)
+    worst_breached_severity: Mapped[str | None] = mapped_column(default=None)
+    by_severity_open: Mapped[dict] = mapped_column(JSON, default=dict)
+    by_risk_level_open: Mapped[dict] = mapped_column(JSON, default=dict)
+    by_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    by_sla: Mapped[dict] = mapped_column(JSON, default=dict)
+    source: Mapped[str] = mapped_column(default="run")
+
+    __table_args__ = (
+        Index("ix_risk_snapshots_tenant_time", "tenant_id", "recorded_at"),
+    )
+

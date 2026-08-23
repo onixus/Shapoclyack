@@ -14,6 +14,7 @@ the role follows what the action can commit the tenant to, not how hard it is.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,6 +23,7 @@ from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     Page,
+    RiskScoreSnapshotInfo,
     SlaPolicyInfo,
     SlaPolicyRequest,
     VulnerabilityAssignRequest,
@@ -33,6 +35,7 @@ from api.schemas import (
     VulnerabilityTicketRequest,
     VulnerabilityTransitionRequest,
 )
+from api.services import risk_snapshots
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
@@ -71,6 +74,41 @@ def get_summary(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     return vulns_service.summary(settings, tenant_id=_scope(principal))
+
+
+@router.get("/risk-history", response_model=list[RiskScoreSnapshotInfo])
+def get_risk_history(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+    since: datetime | None = Query(default=None, description="Filter snapshots recorded on or after this timestamp"),
+    until: datetime | None = Query(default=None, description="Filter snapshots recorded on or before this timestamp"),
+    limit: int = Query(default=90, ge=1, le=500, description="Max snapshots to return"),
+) -> list[dict[str, Any]]:
+    """Time-series risk posture snapshots for trend charts (#144, Track C)."""
+    return risk_snapshots.list_snapshots(
+        settings,
+        tenant_id=_scope(principal),
+        since=since,
+        until=until,
+        limit=limit,
+    )
+
+
+@router.post(
+    "/risk-history/snapshot",
+    response_model=RiskScoreSnapshotInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_risk_snapshot(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Capture and persist an immediate risk snapshot for the tenant."""
+    return risk_snapshots.take_snapshot(
+        settings,
+        tenant_id=principal.tenant_id,
+        source="manual",
+    )
 
 
 @router.get("/sla-policies", response_model=list[SlaPolicyInfo])

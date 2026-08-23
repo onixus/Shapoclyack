@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { AreaChart, BarChart, Card, DonutChart, Title } from "@tremor/react";
-import { ArrowUpRight, Play, RefreshCw, ShieldAlert } from "lucide-react";
+import { ArrowUpRight, Camera, Play, RefreshCw, ShieldAlert, TrendingUp } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { KpiCard } from "@/components/kpi-card";
@@ -11,7 +11,12 @@ import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { useAssetSummary } from "@/hooks/use-assets";
 import { useRuns } from "@/hooks/use-runs";
-import { useTrackedVulnerabilities, useVulnerabilitySummary } from "@/hooks/use-vulnerabilities";
+import {
+  useRiskHistory,
+  useTrackedVulnerabilities,
+  useTriggerRiskSnapshot,
+  useVulnerabilitySummary,
+} from "@/hooks/use-vulnerabilities";
 import { POLL_INTERVALS } from "@/lib/config/constants";
 import {
   ASSET_CRITICALITY,
@@ -42,6 +47,8 @@ export default function DashboardPage() {
     { limit: 10, sort: "contextual_score", order: "desc" },
   );
   const runsQuery = useRuns(POLL_INTERVALS.dashboard, { limit: 50 });
+  const riskHistoryQuery = useRiskHistory({ limit: 30 });
+  const triggerSnapshot = useTriggerRiskSnapshot();
 
   const summary = summaryQuery.data;
   const assets = assetsQuery.data;
@@ -49,6 +56,28 @@ export default function DashboardPage() {
   const runs = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data]);
   const latest = useMemo(() => pickLatestRun(runs), [runs]);
   const trend = useMemo(() => recentRunTrend(runs, 15), [runs]);
+  const riskHistory = useMemo(() => riskHistoryQuery.data ?? [], [riskHistoryQuery.data]);
+
+  const riskHistoryTrend = useMemo(() => {
+    return riskHistory.map((snap) => {
+      const date = snap.recorded_at
+        ? new Date(snap.recorded_at).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "—";
+      const criticalHigh =
+        (snap.by_severity_open?.critical ?? 0) + (snap.by_severity_open?.high ?? 0);
+      return {
+        date,
+        "Open Vulns": snap.open_total,
+        "Critical & High": criticalHigh,
+        "SLA Breached": snap.breached,
+      };
+    });
+  }, [riskHistory]);
 
   const riskData = useMemo(
     () =>
@@ -398,6 +427,55 @@ export default function DashboardPage() {
           )}
         </Card>
       </div>
+
+      <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-sky-400" />
+            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+              Estate Risk & Vulnerability Trend (#144)
+            </Title>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs gap-1.5"
+            onClick={() => triggerSnapshot.mutate()}
+            disabled={triggerSnapshot.isPending}
+          >
+            <Camera className="h-3.5 w-3.5" />
+            {triggerSnapshot.isPending ? "Recording…" : "Capture Snapshot"}
+          </Button>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          Historical timeline of active vulnerabilities, high/critical items, and SLA breaches.
+        </p>
+        {riskHistoryTrend.length === 0 ? (
+          <div className="mt-6 flex flex-col items-center justify-center p-6 border border-dashed border-slate-800 rounded-lg text-center">
+            <p className="text-xs text-slate-400">No historical risk snapshots recorded yet.</p>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="mt-3 text-xs gap-1"
+              onClick={() => triggerSnapshot.mutate()}
+              disabled={triggerSnapshot.isPending}
+            >
+              <Camera className="h-3.5 w-3.5" />
+              Capture Initial Snapshot
+            </Button>
+          </div>
+        ) : (
+          <AreaChart
+            className="mt-4 h-64"
+            data={riskHistoryTrend}
+            index="date"
+            categories={["Open Vulns", "Critical & High", "SLA Breached"]}
+            colors={["sky", "rose", "amber"]}
+            showLegend
+            showAnimation={false}
+          />
+        )}
+      </Card>
 
       <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-2">

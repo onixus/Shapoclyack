@@ -20,8 +20,8 @@ from sqlalchemy import select
 
 from api.db.engine import get_session_factory
 from api.db.models import Job, ScanSchedule, Tenant
+from api.schemas import StartScanRequest
 from api.services import agents as agents_service
-from api.services import job_reaper
 from api.services import jobs as jobs_service
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
@@ -71,7 +71,6 @@ def test_concurrent_job_claims_no_double_claim(multi_settings):
                 status="queued",
                 command=["python", "-m", "scanner.main"],
                 requested_by="admin",
-                created_at=datetime.now(UTC),
                 queued_at=datetime.now(UTC),
             )
             session.add(job)
@@ -79,6 +78,9 @@ def test_concurrent_job_claims_no_double_claim(multi_settings):
         session.commit()
 
     # 2. Concurrently claim jobs across worker threads (simulating multiple agent workers)
+    for i in range(num_workers):
+        agents_service.register_agent(agent_id=f"agent-load-{i}", tenant_id="default")
+
     claimed_jobs: list[str] = []
     errors: list[Exception] = []
 
@@ -122,16 +124,22 @@ def test_concurrent_idempotent_job_creation(multi_settings):
             settings_replica = make_settings(
                 multi_settings.output_dir.parent / f"replica-{replica_idx}",
                 instance_id=f"api-replica-{replica_idx}",
+                job_execution_mode="agent",
             )
-            job_info, was_replayed = jobs_service.start_scan(
-                settings_replica,
-                target=["192.168.1.1"],
-                profile="quick",
-                execution="agent",
+            req = StartScanRequest(
+                targets=["192.168.1.1"],
+                mode="balanced",
                 tenant_id="default",
+            )
+            job_info = jobs_service.start_scan(
+                settings_replica,
+                req,
+                username="admin",
                 idempotency_key=idempotency_key,
             )
-            return job_info.job_id, was_replayed
+            return job_info.job_id, False
+        except jobs_service.IdempotentReplay as exc:
+            return exc.job.job_id, True
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
             return None, False
@@ -168,13 +176,12 @@ def test_concurrent_scheduler_dispatch_leader_election(multi_settings):
             schedule_id="sched-concurrent-1",
             tenant_id="default",
             name="Concurrent Test Schedule",
-            cron_expr="* * * * *",
-            targets=["10.0.0.1"],
+            cron="* * * * *",
+            targets={"include": ["10.0.0.1"]},
             scan_options={"mode": "balanced", "execution": "agent"},
             enabled=True,
             next_run_at=due_time,
             created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
         )
         session.add(sched)
         session.commit()
@@ -188,11 +195,17 @@ def test_concurrent_scheduler_dispatch_leader_election(multi_settings):
             multi_settings.output_dir.parent / f"sched-replica-{replica_idx}",
             instance_id=f"api-sched-replica-{replica_idx}",
         )
+        dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=replica_settings)
         try:
-            return schedule_dispatcher.tick(replica_settings)
+            if dispatcher._lead():  # noqa: SLF001
+                dispatcher._tick()  # noqa: SLF001
+                return dispatcher.stats["dispatched"]
+            return 0
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
             return 0
+        finally:
+            dispatcher.stop()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_replicas) as executor:
         futures = [executor.submit(run_replica_tick, i) for i in range(num_replicas)]
@@ -220,7 +233,6 @@ def test_concurrent_job_reaper_sweeps(multi_settings):
                 attempts=1,
                 command=["python", "-m", "scanner.main"],
                 requested_by="admin",
-                created_at=datetime.now(UTC),
                 queued_at=datetime.now(UTC),
             )
             session.add(job)
@@ -236,7 +248,7 @@ def test_concurrent_job_reaper_sweeps(multi_settings):
             instance_id=f"api-reaper-replica-{replica_idx}",
         )
         try:
-            return job_reaper.sweep(replica_settings)
+            return jobs_service.reap_expired_leases(replica_settings)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
             return {"requeued": 0, "failed": 0}
