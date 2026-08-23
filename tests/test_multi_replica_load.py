@@ -79,7 +79,7 @@ def test_concurrent_job_claims_no_double_claim(multi_settings):
 
     # 2. Concurrently claim jobs across worker threads (simulating multiple agent workers)
     for i in range(num_workers):
-        agents_service.register_agent(multi_settings, agent_id=f"agent-load-{i}", tenant_id="default")
+        agents_service.register_agent(agent_id=f"agent-load-{i}", tenant_id="default")
 
     claimed_jobs: list[str] = []
     errors: list[Exception] = []
@@ -137,7 +137,9 @@ def test_concurrent_idempotent_job_creation(multi_settings):
                 username="admin",
                 idempotency_key=idempotency_key,
             )
-            return job_info.job_id, True
+            return job_info.job_id, False
+        except jobs_service.IdempotentReplay as exc:
+            return exc.job.job_id, True
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
             return None, False
@@ -155,6 +157,12 @@ def test_concurrent_idempotent_job_creation(multi_settings):
     # All callers must receive the exact same job_id
     job_ids = [r[0] for r in results]
     assert len(set(job_ids)) == 1
+
+    # Exactly 1 caller created it (was_replayed=False), remaining were replayed (was_replayed=True)
+    created_count = sum(1 for _, replayed in results if not replayed)
+    replayed_count = sum(1 for _, replayed in results if replayed)
+    assert created_count == 1
+    assert replayed_count == num_callers - 1
 
 
 def test_concurrent_scheduler_dispatch_leader_election(multi_settings):
