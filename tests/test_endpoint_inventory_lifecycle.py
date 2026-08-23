@@ -204,7 +204,7 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
     assert nats_event_2["changes_summary"] == {"installed": 1, "removed": 1, "updated": 1}
 
     # 8. REST Query APIs Verification (Phase S6)
-    admin_headers = auth_headers(client, username="admin", password="password")
+    admin_headers = auth_headers(client, username="admin")
 
     # 8a. List Devices for Tenant
     devices_resp = client.get("/api/endpoint/devices", headers=admin_headers, params={"tenant_id": "acme-corp"})
