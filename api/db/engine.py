@@ -34,6 +34,13 @@ def get_engine(url: str) -> Engine:
         return _engine
 
 
+def get_session_factory(url: str) -> sessionmaker[Session]:
+    """Return a sessionmaker factory configured for ``url``."""
+    get_engine(url)
+    assert _SessionLocal is not None
+    return _SessionLocal
+
+
 def _create_schema_if_unmanaged(engine: Engine) -> None:
     """Create tables from the models — **only** where Alembic does not run (#159).
 

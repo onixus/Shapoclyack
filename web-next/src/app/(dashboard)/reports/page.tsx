@@ -34,6 +34,17 @@ export default function ReportsPage() {
     }
   }
 
+  async function downloadSarif(runId: string) {
+    setBusyRun(`sarif-${runId}`);
+    try {
+      await downloadArtifact(runId, "sarif.json");
+    } catch {
+      toast.error("SARIF report not available for this run");
+    } finally {
+      setBusyRun(null);
+    }
+  }
+
   const columns = useMemo<ColumnDef<RunSummary>[]>(
     () => [
       {
@@ -108,6 +119,16 @@ export default function ReportsPage() {
             ) : (
               <Badge variant="outline" className="border-slate-800 text-slate-500 font-normal">{t("common.noSummary")}</Badge>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+              onClick={() => downloadSarif(row.original.run_id)}
+              disabled={busyRun === `sarif-${row.original.run_id}`}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {busyRun === `sarif-${row.original.run_id}` ? "Downloading…" : "SARIF"}
+            </Button>
             <Button asChild variant="ghost" size="sm" className="text-slate-400 hover:text-slate-100 hover:bg-slate-800 text-xs">
               <Link href={`${runDetailHref(row.original.run_id)}&tab=reports`}>{t("common.artifacts")}</Link>
             </Button>

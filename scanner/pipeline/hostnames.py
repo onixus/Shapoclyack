@@ -186,10 +186,27 @@ def _normalize_name(name: str) -> str:
     return name.strip().rstrip(".").lower()
 
 
-def _http_get_json(url: str, timeout: int, headers: dict[str, str] | None = None) -> Any:
-    request = urllib.request.Request(url, headers=headers or {}, method="GET")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _http_get_json(
+    url: str,
+    timeout: int,
+    headers: dict[str, str] | None = None,
+    max_retries: int = 2,
+) -> Any:
+    import time
+
+    req_headers = {"User-Agent": "shapoclyack/scanner"}
+    if headers:
+        req_headers.update(headers)
+    for attempt in range(max_retries + 1):
+        request = urllib.request.Request(url, headers=req_headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt < max_retries:
+                time.sleep(0.5 * (2**attempt))
+                continue
+            raise
 
 
 def query_crtsh(domain: str, timeout: int) -> list[str]:

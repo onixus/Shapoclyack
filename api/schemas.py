@@ -968,6 +968,27 @@ class VulnerabilitySummary(BaseModel):
     generated_at: str | None = None
 
 
+class RiskScoreSnapshotInfo(BaseModel):
+    """Historical risk snapshot schema (#144, Track C)."""
+
+    snapshot_id: str
+    tenant_id: str
+    recorded_at: str | None = None
+    estate_risk: str | None = None
+    open_total: int = 0
+    total: int = 0
+    untriaged: int = 0
+    unassigned: int = 0
+    breached: int = 0
+    worst_breached_severity: str | None = None
+    by_severity_open: dict[str, int] = Field(default_factory=dict)
+    by_risk_level_open: dict[str, int] = Field(default_factory=dict)
+    by_state: dict[str, int] = Field(default_factory=dict)
+    by_sla: dict[str, int] = Field(default_factory=dict)
+    source: str = "run"
+
+
+
 class TenantPosture(BaseModel):
     """One customer's risk posture for the MSSP comparison (#139).
 

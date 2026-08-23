@@ -84,3 +84,24 @@ def test_asn_skips_ip_lookup_failure(tmp_path: Path, monkeypatch):
     result = discover_asn_ranges(["example.com"], AsnDiscoveryConfig(enabled=True), tmp_path)
     assert result["asns"] == {}
     assert result["ip_ranges"] == []
+
+
+def test_lookup_asn_retries_on_error():
+    from unittest.mock import MagicMock
+    import httpx
+    from scanner.pipeline.asn_discovery import _lookup_asn_for_ip
+
+    mock_client = MagicMock()
+    mock_resp_fail = MagicMock()
+    mock_resp_fail.status_code = 502
+    mock_resp_fail.raise_for_status.side_effect = httpx.HTTPStatusError("Bad Gateway", request=MagicMock(), response=mock_resp_fail)
+
+    mock_resp_ok = MagicMock()
+    mock_resp_ok.status_code = 200
+    mock_resp_ok.json.return_value = {"data": {"asns": ["12345"]}}
+
+    mock_client.get.side_effect = [mock_resp_fail, mock_resp_ok]
+
+    asn = _lookup_asn_for_ip(mock_client, "1.2.3.4", timeout=5.0, max_retries=1)
+    assert asn == "12345"
+    assert mock_client.get.call_count == 2

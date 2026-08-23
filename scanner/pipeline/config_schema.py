@@ -67,7 +67,9 @@ class ProfileNucleiConfig(BaseModel):
     """
 
     severities: list[str] | None = None
+    tags: list[str] | None = None
     exclude_tags: list[str] | None = None
+    custom_templates_dir: str | None = None
     max_targets: int | None = Field(default=None, ge=1, le=50_000)
     concurrency: int | None = Field(default=None, ge=1, le=100)
     rate_limit: int | None = Field(default=None, ge=1, le=10_000)
@@ -498,6 +500,7 @@ class ReportingConfig(BaseModel):
     html_summary: bool = True
     csv_export: bool = True
     json_export: bool = True
+    sarif_export: bool = True
     # Business PDF (summary.pdf) for leadership / ticket attachments.
     pdf_summary: bool = True
     pdf_title: str = "Shapoclyack Security Scan Report"
@@ -629,7 +632,9 @@ class NucleiConfig(BaseModel):
 
     enabled: bool = True
     templates_dir: str = "/usr/share/nuclei-templates"
+    custom_templates_dir: str = ""
     severities: list[str] = Field(default_factory=lambda: ["critical", "high", "medium"])
+    tags: list[str] = Field(default_factory=list)
     exclude_tags: list[str] = Field(default_factory=lambda: ["intrusive", "fuzz", "dos"])
     max_targets: int = Field(default=1000, ge=1, le=50_000)
     concurrency: int = Field(default=10, ge=1, le=100)

@@ -1351,3 +1351,53 @@ export async function clearVulnerabilityTicket(vulnId: string) {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+export type RiskScoreSnapshot = {
+  snapshot_id: string;
+  tenant_id: string;
+  recorded_at: string | null;
+  estate_risk: NistRiskLevel | null;
+  open_total: number;
+  total: number;
+  untriaged: number;
+  unassigned: number;
+  breached: number;
+  worst_breached_severity: string | null;
+  by_severity_open: Record<string, number>;
+  by_risk_level_open: Record<string, number>;
+  by_state: Record<string, number>;
+  by_sla: Record<string, number>;
+  source: string;
+};
+
+export async function fetchRiskHistory(params?: {
+  since?: string;
+  until?: string;
+  limit?: number;
+}) {
+  try {
+    const sp = new URLSearchParams();
+    if (params?.since) sp.set("since", params.since);
+    if (params?.until) sp.set("until", params.until);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    const qs = sp.toString();
+    const { data } = await api.get<RiskScoreSnapshot[]>(
+      `/vulnerabilities/risk-history${qs ? `?${qs}` : ""}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function triggerRiskSnapshot() {
+  try {
+    const { data } = await api.post<RiskScoreSnapshot>(
+      "/vulnerabilities/risk-history/snapshot",
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+

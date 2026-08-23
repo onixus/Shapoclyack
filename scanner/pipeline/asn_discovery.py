@@ -18,6 +18,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+import time
 from pathlib import Path
 from typing import Any
 
@@ -42,30 +43,46 @@ def _resolve_domain_ips(domain: str, timeout: float) -> list[str]:
     return sorted({info[4][0] for info in infos})
 
 
-def _lookup_asn_for_ip(client: httpx.Client, ip: str, timeout: float) -> str | None:
-    try:
-        resp = client.get(RIPESTAT_NETWORK_INFO, params={"resource": ip}, timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        LOG.warning("asn_discovery: network-info lookup failed for %s: %s", ip, exc)
-        return None
-    asns = ((data.get("data") or {}).get("asns")) or []
-    return str(asns[0]) if asns else None
+def _lookup_asn_for_ip(client: httpx.Client, ip: str, timeout: float, max_retries: int = 2) -> str | None:
+    for attempt in range(max_retries + 1):
+        try:
+            resp = client.get(RIPESTAT_NETWORK_INFO, params={"resource": ip}, timeout=timeout)
+            if resp.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                time.sleep(0.5 * (2**attempt))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            asns = ((data.get("data") or {}).get("asns")) or []
+            return str(asns[0]) if asns else None
+        except (httpx.HTTPError, ValueError) as exc:
+            if attempt < max_retries:
+                time.sleep(0.5 * (2**attempt))
+                continue
+            LOG.warning("asn_discovery: network-info lookup failed for %s: %s", ip, exc)
+            return None
+    return None
 
 
-def _announced_prefixes(client: httpx.Client, asn: str, timeout: float) -> list[str]:
-    try:
-        resp = client.get(
-            RIPESTAT_ANNOUNCED_PREFIXES, params={"resource": f"AS{asn}"}, timeout=timeout
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        LOG.warning("asn_discovery: announced-prefixes lookup failed for AS%s: %s", asn, exc)
-        return []
-    prefixes = ((data.get("data") or {}).get("prefixes")) or []
-    return [str(p["prefix"]) for p in prefixes if isinstance(p, dict) and p.get("prefix")]
+def _announced_prefixes(client: httpx.Client, asn: str, timeout: float, max_retries: int = 2) -> list[str]:
+    for attempt in range(max_retries + 1):
+        try:
+            resp = client.get(
+                RIPESTAT_ANNOUNCED_PREFIXES, params={"resource": f"AS{asn}"}, timeout=timeout
+            )
+            if resp.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                time.sleep(0.5 * (2**attempt))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            prefixes = ((data.get("data") or {}).get("prefixes")) or []
+            return [str(p["prefix"]) for p in prefixes if isinstance(p, dict) and p.get("prefix")]
+        except (httpx.HTTPError, ValueError) as exc:
+            if attempt < max_retries:
+                time.sleep(0.5 * (2**attempt))
+                continue
+            LOG.warning("asn_discovery: announced-prefixes lookup failed for AS%s: %s", asn, exc)
+            return []
+    return []
 
 
 def _count_ips(cidr: str) -> int:

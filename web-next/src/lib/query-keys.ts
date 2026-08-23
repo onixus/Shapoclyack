@@ -62,6 +62,8 @@ export const queryKeys = {
     ["vulnerability", vulnId, "events", pageKey(page)] as const,
   vulnerabilityActivity: (page?: PageParams) =>
     ["vulnerabilities", "events", pageKey(page)] as const,
+  riskHistory: (params?: { since?: string; until?: string; limit?: number }) =>
+    ["vulnerabilities", "risk-history", params] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

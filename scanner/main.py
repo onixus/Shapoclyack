@@ -759,6 +759,7 @@ def _run_pipeline_body(
             html_summary=reporting.html_summary,
             csv_export=reporting.csv_export,
             json_export=reporting.json_export,
+            sarif_export=reporting.sarif_export,
             cvss4_enabled=enrichment.cvss4.enabled,
             cvss4_database=cvss4_database,
             geoip_enabled=enrichment.geoip.enabled,

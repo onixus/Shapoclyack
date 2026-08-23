@@ -23,7 +23,7 @@ class _FakeClient:
 
     def heartbeat(self, agent_id: str, *, status: str = "idle", current_job_id=None, detail=None):
         with self.lock:
-            self.heartbeats.append({"status": status, "current_job_id": current_job_id})
+            self.heartbeats.append({"status": status, "current_job_id": current_job_id, "detail": detail})
         return {}
 
     def upload_results(self, job_id: str, **kwargs: Any):
@@ -104,3 +104,127 @@ def test_the_heartbeat_thread_survives_a_control_plane_blip(monkeypatch, tmp_pat
 
     assert failures["count"] == 2
     assert client.uploads  # the scan still completed and reported
+
+
+def test_detect_current_stage(tmp_path):
+    assert worker._detect_current_stage(None, None) is None  # noqa: SLF001
+    assert worker._detect_current_stage(tmp_path, "run-x") is None  # noqa: SLF001
+
+    run_dir = tmp_path / "runs" / "run-x"
+    run_dir.mkdir(parents=True)
+    assert worker._detect_current_stage(tmp_path, "run-x") is None  # noqa: SLF001
+
+    # Via checkpoint.json
+    (run_dir / "checkpoint.json").write_text('{"completed_stages": ["discover", "ports"]}', encoding="utf-8")
+    assert worker._detect_current_stage(tmp_path, "run-x") == "ports"  # noqa: SLF001
+
+    # Via stage_timings.json (higher precedence)
+    (run_dir / "stage_timings.json").write_text('{"stages": [{"name": "pulse_probe"}]}', encoding="utf-8")
+    assert worker._detect_current_stage(tmp_path, "run-x") == "pulse_probe"  # noqa: SLF001
+
+
+def test_heartbeat_includes_detail_telemetry(monkeypatch, tmp_path):
+    client = _FakeClient()
+    run_dir = tmp_path / "runs" / "run-telemetry"
+    run_dir.mkdir(parents=True)
+    (run_dir / "stage_timings.json").write_text('{"stages": [{"name": "nuclei"}]}', encoding="utf-8")
+
+    def _quick_scan(**_kwargs):
+        time.sleep(0.15)
+        return 0, None, None
+
+    monkeypatch.setattr(worker, "_run_scan", _quick_scan)
+    worker._execute_job(  # noqa: SLF001
+        client,
+        agent_id="agent-1",
+        job={"job_id": "job-t", "run_id": "run-telemetry"},
+        config=tmp_path / "config.yaml",
+        output_dir=tmp_path,
+        heartbeat_interval=0.05,
+    )
+
+    details = [hb["detail"] for hb in client.heartbeats if hb.get("detail")]
+    assert any("stage=" in str(d) for d in details)
+    assert any("elapsed=" in str(d) for d in details)
+
+
+def test_agent_client_request_retries_on_transient_error(monkeypatch):
+    import io
+    import urllib.error
+    from unittest.mock import MagicMock
+
+    attempts = 0
+
+    def fake_urlopen(req, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            raise urllib.error.HTTPError(
+                url=req.full_url,
+                code=503,
+                msg="Service Unavailable",
+                hdrs={},
+                fp=io.BytesIO(b"busy"),
+            )
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = b'{"status": "ok"}'
+        resp.__enter__.return_value = resp
+        return resp
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    data = client._request("GET", "/api/ping", max_retries=2)  # noqa: SLF001
+    assert data == {"status": "ok"}
+    assert attempts == 2
+
+
+def test_agent_client_request_fails_fast_on_client_error(monkeypatch):
+    import io
+    import urllib.error
+    import pytest
+
+    attempts = 0
+
+    def fake_urlopen(req, timeout):
+        nonlocal attempts
+        attempts += 1
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(b"bad token"),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    with pytest.raises(RuntimeError, match="401"):
+        client._request("GET", "/api/ping", max_retries=3)  # noqa: SLF001
+    assert attempts == 1  # No retries on 401
+
+
+def test_run_scan_handles_timeout(monkeypatch, tmp_path):
+    import subprocess
+    from unittest.mock import MagicMock
+    from pathlib import Path
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["scanner"], timeout=1.0)
+    mock_proc.pid = 12345
+    mock_proc.returncode = 124
+
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: mock_proc)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("os.killpg", lambda pgid, sig: None)
+
+    code, err, archive = worker._run_scan(  # noqa: SLF001
+        config=tmp_path / "config.yaml",
+        job={"run_id": "test-timeout-run", "inputs": {}},
+        workdir=tmp_path / "work",
+        output_dir=tmp_path / "out",
+        timeout=1.0,
+    )
+    assert code == 124
+    assert "timed out" in (err or "")
+    assert archive is None

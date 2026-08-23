@@ -91,3 +91,71 @@ class BodySizeLimitMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+class SecurityHeadersMiddleware:
+    """Inject defensive HTTP security headers on all responses.
+
+    Enforces:
+    - X-Content-Type-Options: nosniff
+    - X-Frame-Options: DENY (clickjacking protection)
+    - X-XSS-Protection: 1; mode=block
+    - Referrer-Policy: strict-origin-when-cross-origin
+    - Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+    - Cross-Origin-Opener-Policy: same-origin
+    - Content-Security-Policy (CSP)
+    - Strict-Transport-Security (HSTS) when configured
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        enable_hsts: bool = False,
+        content_security_policy: str | None = None,
+    ) -> None:
+        self.app = app
+        self.enable_hsts = enable_hsts
+        self.csp = content_security_policy or (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "font-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self';"
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def _send_with_headers(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                raw_headers: list[tuple[bytes, bytes]] = list(message.get("headers", []))
+                existing_keys = {k.lower() for k, _ in raw_headers}
+
+                sec_headers: list[tuple[bytes, bytes]] = [
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                    (b"x-xss-protection", b"1; mode=block"),
+                    (b"referrer-policy", b"strict-origin-when-cross-origin"),
+                    (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
+                    (b"cross-origin-opener-policy", b"same-origin"),
+                ]
+                if self.csp:
+                    sec_headers.append((b"content-security-policy", self.csp.encode("utf-8")))
+                if self.enable_hsts:
+                    sec_headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
+
+                for k, v in sec_headers:
+                    if k not in existing_keys:
+                        raw_headers.append((k, v))
+
+                message["headers"] = raw_headers
+            await send(message)
+
+        await self.app(scope, receive, _send_with_headers)

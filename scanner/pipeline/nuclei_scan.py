@@ -192,8 +192,16 @@ def run_nuclei_scan(
         "nuclei",
         "-list", str(targets_file),
         "-templates", str(templates_dir),
-        "-severity", ",".join(config.severities),
-        "-exclude-tags", ",".join(config.exclude_tags),
+    ]
+    if config.custom_templates_dir and Path(config.custom_templates_dir).exists():
+        command.extend(["-templates", str(config.custom_templates_dir)])
+    if config.severities:
+        command.extend(["-severity", ",".join(config.severities)])
+    if config.tags:
+        command.extend(["-tags", ",".join(config.tags)])
+    if config.exclude_tags:
+        command.extend(["-exclude-tags", ",".join(config.exclude_tags)])
+    command.extend([
         "-jsonl-export", str(jsonl_file),
         "-rate-limit", str(config.rate_limit),
         "-concurrency", str(config.concurrency),
@@ -202,7 +210,7 @@ def run_nuclei_scan(
         "-disable-update-check",
         "-silent",
         "-no-color",
-    ]  # fmt: skip
+    ])  # fmt: skip
 
     try:
         run_command(command, timeout=config.overall_timeout_seconds, retries=0, check=False)

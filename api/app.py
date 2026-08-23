@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
-from api.middleware import BodySizeLimitMiddleware
+from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
@@ -121,6 +121,7 @@ def create_app() -> FastAPI:
             max_bytes=settings.endpoint_inventory_max_body_bytes,
             paths=("/api/endpoint/inventory",),
         )
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
