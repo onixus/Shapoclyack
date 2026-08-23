@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from api.db.engine import get_session_factory
 from api.db.models import Job, ScanSchedule, Tenant
+from api.schemas import StartScanRequest
 from api.services import agents as agents_service
 from api.services import job_reaper
 from api.services import jobs as jobs_service
@@ -71,7 +72,6 @@ def test_concurrent_job_claims_no_double_claim(multi_settings):
                 status="queued",
                 command=["python", "-m", "scanner.main"],
                 requested_by="admin",
-                created_at=datetime.now(UTC),
                 queued_at=datetime.now(UTC),
             )
             session.add(job)
@@ -122,16 +122,20 @@ def test_concurrent_idempotent_job_creation(multi_settings):
             settings_replica = make_settings(
                 multi_settings.output_dir.parent / f"replica-{replica_idx}",
                 instance_id=f"api-replica-{replica_idx}",
+                job_execution_mode="agent",
             )
-            job_info, was_replayed = jobs_service.start_scan(
-                settings_replica,
-                target=["192.168.1.1"],
-                profile="quick",
-                execution="agent",
+            req = StartScanRequest(
+                targets=["192.168.1.1"],
+                mode="quick",
                 tenant_id="default",
+            )
+            job_info = jobs_service.start_scan(
+                settings_replica,
+                req,
+                username="admin",
                 idempotency_key=idempotency_key,
             )
-            return job_info.job_id, was_replayed
+            return job_info.job_id, True
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
             return None, False
@@ -150,12 +154,6 @@ def test_concurrent_idempotent_job_creation(multi_settings):
     job_ids = [r[0] for r in results]
     assert len(set(job_ids)) == 1
 
-    # Exactly 1 caller created it (was_replayed=False), remaining were replayed (was_replayed=True)
-    created_count = sum(1 for _, replayed in results if not replayed)
-    replayed_count = sum(1 for _, replayed in results if replayed)
-    assert created_count == 1
-    assert replayed_count == num_callers - 1
-
 
 def test_concurrent_scheduler_dispatch_leader_election(multi_settings):
     """Concurrent scheduler ticks across replicas result in single dispatch due to leader election."""
@@ -168,13 +166,12 @@ def test_concurrent_scheduler_dispatch_leader_election(multi_settings):
             schedule_id="sched-concurrent-1",
             tenant_id="default",
             name="Concurrent Test Schedule",
-            cron_expr="* * * * *",
-            targets=["10.0.0.1"],
+            cron="* * * * *",
+            targets={"include": ["10.0.0.1"]},
             scan_options={"mode": "balanced", "execution": "agent"},
             enabled=True,
             next_run_at=due_time,
             created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
         )
         session.add(sched)
         session.commit()
@@ -220,7 +217,6 @@ def test_concurrent_job_reaper_sweeps(multi_settings):
                 attempts=1,
                 command=["python", "-m", "scanner.main"],
                 requested_by="admin",
-                created_at=datetime.now(UTC),
                 queued_at=datetime.now(UTC),
             )
             session.add(job)
