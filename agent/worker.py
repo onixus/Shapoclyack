@@ -41,6 +41,46 @@ STREAM_JOBS = "JOBS"
 CONSUMER_AGENTS = "octo-agents"
 
 
+def _collect_system_metrics() -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    try:
+        import platform
+        metrics["os"] = platform.system()
+        metrics["release"] = platform.release()
+        metrics["arch"] = platform.machine()
+    except Exception:
+        pass
+
+    try:
+        import psutil
+        metrics["cpu_percent"] = psutil.cpu_percent(interval=None)
+        mem = psutil.virtual_memory()
+        metrics["memory_used_mb"] = round((mem.total - mem.available) / (1024 * 1024), 1)
+        metrics["memory_total_mb"] = round(mem.total / (1024 * 1024), 1)
+        metrics["memory_percent"] = mem.percent
+        disk = psutil.disk_usage("/")
+        metrics["disk_free_gb"] = round(disk.free / (1024 * 1024 * 1024), 1)
+        metrics["disk_total_gb"] = round(disk.total / (1024 * 1024 * 1024), 1)
+        metrics["disk_percent"] = disk.percent
+        metrics["uptime_seconds"] = int(time.time() - psutil.boot_time())
+    except ImportError:
+        try:
+            import os
+            load1, load5, _ = os.getloadavg()
+            metrics["load_1m"] = round(load1, 2)
+            metrics["load_5m"] = round(load5, 2)
+        except Exception:
+            pass
+        try:
+            import shutil
+            total, _, free = shutil.disk_usage("/")
+            metrics["disk_free_gb"] = round(free / (1024 * 1024 * 1024), 1)
+            metrics["disk_total_gb"] = round(total / (1024 * 1024 * 1024), 1)
+        except Exception:
+            pass
+    return metrics
+
+
 class AgentClient:
     def __init__(self, base_url: str, token: str, *, timeout: float = 60.0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -130,12 +170,14 @@ class AgentClient:
         status: str = "idle",
         current_job_id: str | None = None,
         detail: str | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "agent_id": agent_id,
             "status": status,
             "current_job_id": current_job_id,
             "detail": detail,
+            "metrics": metrics or _collect_system_metrics(),
         }
         return self._request(
             "POST",

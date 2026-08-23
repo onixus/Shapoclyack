@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import PlainTextResponse
 
 from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AgentClaimResponse,
+    AgentDeploymentSnippetResponse,
+    AgentDeploySSHRequest,
+    AgentDeployStatusResponse,
+    AgentFleetSummary,
     AgentHeartbeatRequest,
     AgentInfo,
     AgentRegisterRequest,
     JobInfo,
     Page,
 )
+from api.services import agent_deployer
 from api.services import agents as agents_service
 from api.services import jobs as jobs_service
 from api.settings import Settings
@@ -51,6 +58,8 @@ def heartbeat(
         status=body.status,
         current_job_id=body.current_job_id,
         detail=body.detail,
+        metrics=body.metrics,
+        capabilities=body.capabilities,
     )
     if info is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -149,6 +158,126 @@ async def upload_results(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/agents/summary", response_model=AgentFleetSummary)
+def get_fleet_summary(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+) -> AgentFleetSummary:
+    tenant_id = (
+        None
+        if principal.is_platform_admin and not principal.tenant_requested
+        else principal.tenant_id
+    )
+    return agents_service.get_fleet_summary(tenant_id=tenant_id)
+
+
+@router.get("/agents/{agent_id}", response_model=AgentInfo)
+def get_agent_detail(
+    agent_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+) -> AgentInfo:
+    tenant_id = (
+        None
+        if principal.is_platform_admin and not principal.tenant_requested
+        else principal.tenant_id
+    )
+    try:
+        agent = agents_service.get_agent(agent_id, tenant_id=tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return agent
+
+
+@router.delete("/agents/{agent_id}")
+def delete_agent(
+    agent_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+) -> dict[str, Any]:
+    tenant_id = (
+        None
+        if principal.is_platform_admin and not principal.tenant_requested
+        else principal.tenant_id
+    )
+    try:
+        deleted = agents_service.delete_agent(agent_id, tenant_id=tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return {"status": "deleted", "agent_id": agent_id}
+
+
+@router.post("/agents/{agent_id}/upgrade")
+def trigger_agent_upgrade(
+    agent_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+) -> dict[str, Any]:
+    tenant_id = (
+        None
+        if principal.is_platform_admin and not principal.tenant_requested
+        else principal.tenant_id
+    )
+    try:
+        return agents_service.request_upgrade(agent_id, tenant_id=tenant_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.post("/agent/deploy/ssh", response_model=AgentDeployStatusResponse)
+def deploy_agent_ssh(
+    body: AgentDeploySSHRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    request: Request,
+) -> AgentDeployStatusResponse:
+    # Ensure tenant alignment
+    tenant_id = principal.tenant_id if not principal.is_platform_admin else (body.tenant_id or principal.tenant_id)
+    body.tenant_id = tenant_id
+
+    # Derive server URL from current request if not explicitly provided
+    server_url = str(request.base_url).rstrip("/")
+    deploy_id = agent_deployer.start_ssh_deployment(body, server_url=server_url)
+    deploy_status = agent_deployer.get_deployment_status(deploy_id)
+    if not deploy_status:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to initialize deployment")
+    return deploy_status
+
+
+@router.get("/agent/deploy/{deploy_id}/status", response_model=AgentDeployStatusResponse)
+def get_deploy_status(
+    deploy_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+) -> AgentDeployStatusResponse:
+    deploy_status = agent_deployer.get_deployment_status(deploy_id)
+    if not deploy_status:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment run not found")
+    return deploy_status
+
+
+@router.get("/agent/install.sh", response_class=PlainTextResponse)
+def get_install_script() -> PlainTextResponse:
+    script_path = Path("scripts/install-agent.sh")
+    if not script_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Installer script not found")
+    content = script_path.read_text(encoding="utf-8")
+    return PlainTextResponse(content, media_type="text/x-sh")
+
+
+@router.get("/agent/deployment-command", response_model=AgentDeploymentSnippetResponse)
+def get_deployment_command(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    request: Request,
+) -> AgentDeploymentSnippetResponse:
+    server_url = str(request.base_url).rstrip("/")
+    snippets = agents_service.get_deployment_snippets(
+        tenant_id=principal.tenant_id,
+        server_url=server_url,
+    )
+    return AgentDeploymentSnippetResponse(**snippets)
 
 
 @router.get("/agents", response_model=Page[AgentInfo])
