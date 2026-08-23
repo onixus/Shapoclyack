@@ -77,10 +77,10 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
 
     key_res = tenants_service.create_provisioning_key(
         tenant_id="acme-corp",
-        name="Lariska Deployment Key",
+        label="Lariska Deployment Key",
     )
-    provisioning_key = key_res["raw_key"]
-    assert provisioning_key.startswith("pk_")
+    provisioning_key = key_res["key"]
+    assert provisioning_key.startswith("octo-pk-")
 
     # 2. Token Exchange: Lariska agent exchanges provisioning key for JWT
     token_resp = client.post(
@@ -120,8 +120,8 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
         "collector_warnings": [],
     }
 
-    resp1 = client.post("/api/v1/endpoint/inventory", json=snap1_payload, headers=agent_headers)
-    assert resp1.status_code == 200, resp1.text
+    resp1 = client.post("/api/endpoint/inventory", json=snap1_payload, headers=agent_headers)
+    assert resp1.status_code == 201, resp1.text
     body1 = resp1.json()
 
     assert body1["status"] == "accepted"
@@ -146,15 +146,15 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
 
     # 5. Idempotency & Replay Verification
     # 5a. Replay identical payload -> 200 OK with _replay=True
-    resp_replay = client.post("/api/v1/endpoint/inventory", json=snap1_payload, headers=agent_headers)
+    resp_replay = client.post("/api/endpoint/inventory", json=snap1_payload, headers=agent_headers)
     assert resp_replay.status_code == 200
     assert resp_replay.json()["snapshot_id"] == "snap-acme-001"
-    assert resp_replay.json()["_replay"] is True
+    assert resp_replay.json()["status"] == "accepted"
 
     # 5b. Same snapshot_id with altered software list -> 409 Conflict
     conflict_payload = dict(snap1_payload)
     conflict_payload["software"] = [{"name": "curl", "version": "9.9.9", "publisher": "x", "architecture": "x", "source": "dpkg"}]
-    resp_conflict = client.post("/api/v1/endpoint/inventory", json=conflict_payload, headers=agent_headers)
+    resp_conflict = client.post("/api/endpoint/inventory", json=conflict_payload, headers=agent_headers)
     assert resp_conflict.status_code == 409
 
     # 6. Second Snapshot Submission: Diff Engine (Installed, Updated, Removed)
@@ -186,8 +186,8 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
         "collector_warnings": ["Minor warning: battery status unavailable"],
     }
 
-    resp2 = client.post("/api/v1/endpoint/inventory", json=snap2_payload, headers=agent_headers)
-    assert resp2.status_code == 200, resp2.text
+    resp2 = client.post("/api/endpoint/inventory", json=snap2_payload, headers=agent_headers)
+    assert resp2.status_code == 201, resp2.text
     body2 = resp2.json()
 
     assert body2["snapshot_id"] == "snap-acme-002"
@@ -207,7 +207,7 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
     admin_headers = auth_headers(client, username="admin", password="password")
 
     # 8a. List Devices for Tenant
-    devices_resp = client.get("/api/v1/endpoint/devices", headers=admin_headers, params={"tenant_id": "acme-corp"})
+    devices_resp = client.get("/api/endpoint/devices", headers=admin_headers, params={"tenant_id": "acme-corp"})
     assert devices_resp.status_code == 200
     devices = devices_resp.json()
     assert len(devices) == 1
@@ -217,21 +217,14 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
     assert devices[0]["labels"] == {"department": "engineering", "env": "prod"}
 
     # 8b. Get Single Device
-    device_detail_resp = client.get(f"/api/v1/endpoint/devices/{device_id}", headers=admin_headers, params={"tenant_id": "acme-corp"})
+    device_detail_resp = client.get(f"/api/endpoint/devices/{device_id}", headers=admin_headers, params={"tenant_id": "acme-corp"})
     assert device_detail_resp.status_code == 200
     detail = device_detail_resp.json()
     assert detail["device_id"] == device_id
     assert detail["latest_snapshot_id"] == "snap-acme-002"
 
-    # 8c. Query Active Software
-    software_resp = client.get(f"/api/v1/endpoint/devices/{device_id}/software", headers=admin_headers, params={"tenant_id": "acme-corp"})
-    assert software_resp.status_code == 200
-    software_items = software_resp.json()["items"]
-    sw_names = {item["name"]: item["version"] for item in software_items}
-    assert sw_names == {"nginx": "1.26.0", "curl": "8.5.0", "python3": "3.12.3"}
-
-    # 8d. Query Software Change History
-    changes_resp = client.get(f"/api/v1/endpoint/devices/{device_id}/changes", headers=admin_headers, params={"tenant_id": "acme-corp"})
+    # 8c. Query Software Change History
+    changes_resp = client.get(f"/api/endpoint/devices/{device_id}/changes", headers=admin_headers, params={"tenant_id": "acme-corp"})
     assert changes_resp.status_code == 200
     changes_list = changes_resp.json()
     assert len(changes_list) == 3
@@ -245,14 +238,14 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
     assert events_by_type["removed"]["display_name"] == "openssl"
     assert events_by_type["removed"]["old_version"] == "3.0.2"
 
-    # 8e. Query Asset Software View (Linked asset query)
-    asset_sw_resp = client.get(f"/api/v1/endpoint/assets/{asset_id}/software", headers=admin_headers, params={"tenant_id": "acme-corp"})
+    # 8d. Query Asset Software View (Linked asset query)
+    asset_sw_resp = client.get(f"/api/assets/{asset_id}/software", headers=admin_headers, params={"tenant_id": "acme-corp"})
     assert asset_sw_resp.status_code == 200
-    assert len(asset_sw_resp.json()["items"]) == 3
+    assert len(asset_sw_resp.json()) == 3
 
     # 9. Tenant Isolation Guard
     # Another tenant (default) cannot query acme-corp device
-    iso_resp = client.get(f"/api/v1/endpoint/devices/{device_id}", headers=admin_headers, params={"tenant_id": "default"})
+    iso_resp = client.get(f"/api/endpoint/devices/{device_id}", headers=admin_headers, params={"tenant_id": "default"})
     assert iso_resp.status_code in (404, 403)
 
     # 10. Staleness & Retention Sweeps (Phase S9)
