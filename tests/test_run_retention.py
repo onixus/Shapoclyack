@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from api.services.run_retention import (
-    RunRetentionWorker,
     start_worker,
     stop_worker,
     sweep,

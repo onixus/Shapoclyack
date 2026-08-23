@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
 from sqlalchemy import create_engine
 
-from api.db.engine import _create_schema_if_unmanaged, get_session
+from api.db.engine import _create_schema_if_unmanaged
 from api.services import risk_snapshots
-from api.services import vulnerabilities as vulns
 from api.settings import Settings
 from tests.conftest import (
     auth_headers,
     configured_client,
-    make_settings,
     requires_postgres,
 )
 

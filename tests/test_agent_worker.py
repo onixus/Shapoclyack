@@ -207,7 +207,6 @@ def test_agent_client_request_fails_fast_on_client_error(monkeypatch):
 def test_run_scan_handles_timeout(monkeypatch, tmp_path):
     import subprocess
     from unittest.mock import MagicMock
-    from pathlib import Path
 
     mock_proc = MagicMock()
     mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["scanner"], timeout=1.0)

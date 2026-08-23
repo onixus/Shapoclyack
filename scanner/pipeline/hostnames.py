@@ -202,7 +202,7 @@ def _http_get_json(
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
             if attempt < max_retries:
                 time.sleep(0.5 * (2**attempt))
                 continue
