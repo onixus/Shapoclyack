@@ -20,48 +20,42 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-from starlette.testclient import TestClient
-
-from api.app import create_app
 from api.services import endpoint_inventory
 from api.services import nats_bus
 from api.services import tenants as tenants_service
-from tests.conftest import auth_headers, make_settings, requires_postgres
+from tests.conftest import (
+    auth_headers,
+    configured_client,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
-
-
-@pytest.fixture()
-def lifecycle_env(tmp_path: Path):
-    """Bootstrap full API environment for endpoint lifecycle tests."""
-    s = make_settings(
-        tmp_path,
-        state_dir=tmp_path / "state",
-        output_dir=tmp_path / "output",
-        nats_url="nats://127.0.0.1:4222",
-        endpoint_nats_events_enabled=True,
-    )
-    s.state_dir.mkdir(parents=True, exist_ok=True)
-    s.output_dir.mkdir(parents=True, exist_ok=True)
-
-    tenants_service.configure(s)
-    tenants_service.reset_for_tests()
-    tenants_service.load_tenants(s)
-    endpoint_inventory.configure(s)
-    endpoint_inventory.reset_for_tests()
-
-    app = create_app(s)
-    client = TestClient(app)
-    return s, client
 
 
 def _hash_id(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def test_full_endpoint_inventory_lifecycle(lifecycle_env, monkeypatch):
-    settings, client = lifecycle_env
+def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
+    settings = make_settings(
+        tmp_path,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "output",
+        nats_url="nats://127.0.0.1:4222",
+        endpoint_nats_events_enabled=True,
+    )
+    client = configured_client(
+        tmp_path,
+        monkeypatch,
+        nats_url="nats://127.0.0.1:4222",
+        endpoint_nats_events_enabled=True,
+    )
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+    endpoint_inventory.configure(settings)
+    endpoint_inventory.reset_for_tests()
 
     # 0. Setup NATS mock to capture published events (Phase S8 verification)
     published_events: list[dict[str, Any]] = []
