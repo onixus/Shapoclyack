@@ -41,6 +41,15 @@ inputs:
     description: Minimum fraction of targets that must pass validation
     required: false
     default: "0.95"
+  github_token:
+    description: GitHub token (or PAT) for private release downloads during image build
+    required: false
+    default: ""
+  build_args:
+    description: Additional build-args passed to docker/build-push-action
+    required: false
+    default: |
+      INSTALL_NMAP=0
   metrics_path:
     description: Workspace-relative path to write metrics JSON
     required: false
@@ -79,6 +88,9 @@ runs:
         tags: ${{ inputs.image }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        secrets: |
+          github_token=${{ inputs.github_token }}
+        build-args: ${{ inputs.build_args }}
 
     - name: Run synthetic load harness
       id: run
