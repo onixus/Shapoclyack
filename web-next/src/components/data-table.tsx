@@ -152,9 +152,9 @@ export function DataTable<TData>({
           <div className="flex flex-1 flex-wrap items-center gap-3">
             {showSearch ? (
               <div className="relative min-w-[240px] max-w-sm">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
-                  className="pl-9 bg-slate-900/90 border-slate-800 text-slate-100 placeholder:text-slate-500 focus:border-sky-500/60 focus:ring-sky-500/20"
+                  className="pl-9 h-9"
                   placeholder={searchPlaceholder}
                   value={searchValue}
                   onChange={(event) => onSearch(event.target.value)}
@@ -163,32 +163,32 @@ export function DataTable<TData>({
             ) : null}
             {toolbar}
           </div>
-          {meta ? <p className="text-xs font-medium text-slate-400">{meta}</p> : null}
+          {meta ? <p className="text-xs font-medium text-muted-foreground">{meta}</p> : null}
         </div>
       ) : null}
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive">
           <AlertDescription>
             {error instanceof Error ? error.message : t("table.loadFailed")}
           </AlertDescription>
         </Alert>
       ) : null}
 
-      <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
         <Table>
-          <TableHeader className="bg-slate-950/80 border-b border-slate-800">
+          <TableHeader className="bg-muted/50 border-b border-border">
             {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id} className="hover:bg-transparent border-slate-800">
+              <TableRow key={headerGroup.id} className="hover:bg-transparent border-border">
                 {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id} className="text-xs font-bold uppercase tracking-wider text-slate-400 py-3">
+                  <TableHead key={header.id} className="text-xs font-bold uppercase tracking-wider text-muted-foreground py-3">
                     {header.isPlaceholder ? null : header.column.getCanSort() &&
                       canSortColumn(header.column.id) ? (
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="-ml-3 h-8 gap-1.5 px-2 font-bold hover:bg-slate-800/80 hover:text-slate-200 text-slate-300"
+                        className="-ml-3 h-8 gap-1.5 px-2 font-bold hover:bg-muted hover:text-foreground text-muted-foreground"
                         onClick={header.column.getToggleSortingHandler()}
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
@@ -202,12 +202,12 @@ export function DataTable<TData>({
               </TableRow>
             ))}
           </TableHeader>
-          <TableBody className="divide-y divide-slate-800/60">
+          <TableBody className="divide-y divide-border/60">
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={columns.length} className="py-10 text-center text-sm text-slate-400">
+                <TableCell colSpan={columns.length} className="py-10 text-center text-sm text-muted-foreground">
                   <div className="flex items-center justify-center gap-2">
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                     <span>{resolvedLoading}</span>
                   </div>
                 </TableCell>
@@ -216,16 +216,16 @@ export function DataTable<TData>({
               <TableRow>
                 <TableCell
                   colSpan={columns.length}
-                  className="py-12 text-center text-sm text-slate-400 font-medium"
+                  className="py-12 text-center text-sm text-muted-foreground font-medium"
                 >
                   {resolvedEmpty}
                 </TableCell>
               </TableRow>
             ) : (
               rows.map((row) => (
-                <TableRow key={row.id} className="hover:bg-slate-800/40 border-slate-800/60 transition-colors">
+                <TableRow key={row.id} className="hover:bg-muted/40 border-border/60 transition-colors">
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id} className="py-3 text-sm text-slate-200">
+                    <TableCell key={cell.id} className="py-3 text-sm text-foreground">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </TableCell>
                   ))}
@@ -238,14 +238,13 @@ export function DataTable<TData>({
 
       {pageCount > 1 || (server && server.total > 0) ? (
         <div className="flex items-center justify-between gap-3 pt-1">
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-muted-foreground">
             {t("table.showing", { shown: String(rows.length), total: totalRows.toLocaleString() })}
           </p>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
-              className="border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-40"
               onClick={() =>
                 server
                   ? server.onOffsetChange(Math.max(0, server.offset - server.limit))
@@ -255,13 +254,12 @@ export function DataTable<TData>({
             >
               {t("common.previous")}
             </Button>
-            <span className="text-xs font-medium text-slate-400 px-1">
+            <span className="text-xs font-medium text-muted-foreground px-1">
               {pageIndex + 1} / {pageCount}
             </span>
             <Button
               variant="outline"
               size="sm"
-              className="border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-40"
               onClick={() =>
                 server ? server.onOffsetChange(server.offset + server.limit) : table.nextPage()
               }
