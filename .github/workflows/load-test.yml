@@ -79,6 +79,7 @@ jobs:
         with:
           image: network-scan-cli:load
           build: "true"
+          github_token: ${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
           hosts: ${{ steps.opts.outputs.hosts }}
           config: ${{ steps.opts.outputs.config }}
           resume_test: ${{ steps.opts.outputs.resume }}
