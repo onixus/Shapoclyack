@@ -39,12 +39,12 @@ export default function AgentsPage() {
         header: t("col.agentHost"),
         cell: ({ row }) => (
           <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/80 text-sky-400">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/60 text-sky-500 shadow-sm">
               <Server className="h-4 w-4" />
             </div>
             <div>
-              <p className="font-mono font-bold text-slate-100">{row.original.hostname || "—"}</p>
-              <p className="font-mono text-[10px] text-slate-400">{row.original.agent_id}</p>
+              <p className="font-mono font-bold text-foreground">{row.original.hostname || "—"}</p>
+              <p className="font-mono text-[10px] text-muted-foreground">{row.original.agent_id}</p>
             </div>
           </div>
         ),
@@ -60,7 +60,7 @@ export default function AgentsPage() {
       {
         accessorKey: "tenant_id",
         header: t("col.tenantId"),
-        cell: ({ getValue }) => <span className="font-semibold text-slate-300">{String(getValue() || "default")}</span>,
+        cell: ({ getValue }) => <span className="font-semibold text-foreground">{String(getValue() || "default")}</span>,
       },
       {
         accessorKey: "version",
@@ -69,12 +69,12 @@ export default function AgentsPage() {
           const isOutdated = row.original.is_outdated;
           return (
             <div className="flex items-center gap-1.5">
-              <code className="rounded bg-slate-950 px-2 py-0.5 font-mono text-xs text-sky-400 border border-slate-800">
+              <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-sky-700 dark:text-sky-300 border border-border">
                 v{row.original.version || "—"}
               </code>
               {isOutdated && (
                 <span title={`Update available: v${row.original.latest_version || "0.42.0"}`} className="flex items-center">
-                  <ArrowUpCircle className="h-4 w-4 text-amber-400" />
+                  <ArrowUpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                 </span>
               )}
             </div>
@@ -88,18 +88,18 @@ export default function AgentsPage() {
         cell: ({ row }) => {
           const m = row.original.metrics;
           if (!m || (m.cpu_percent === undefined && m.memory_percent === undefined)) {
-            return <span className="text-slate-500 text-xs">—</span>;
+            return <span className="text-muted-foreground text-xs">—</span>;
           }
           return (
-            <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
+            <div className="flex items-center gap-2 font-mono text-[11px] text-foreground">
               {m.cpu_percent !== undefined && (
-                <span className="rounded bg-slate-900 px-1.5 py-0.5 border border-slate-800">
-                  <span className="text-slate-500">CPU:</span> {m.cpu_percent}%
+                <span className="rounded bg-muted px-1.5 py-0.5 border border-border">
+                  <span className="text-muted-foreground">CPU:</span> {m.cpu_percent}%
                 </span>
               )}
               {m.memory_used_mb !== undefined && (
-                <span className="rounded bg-slate-900 px-1.5 py-0.5 border border-slate-800">
-                  <span className="text-slate-500">RAM:</span> {m.memory_used_mb}M
+                <span className="rounded bg-muted px-1.5 py-0.5 border border-border">
+                  <span className="text-muted-foreground">RAM:</span> {m.memory_used_mb}M
                 </span>
               )}
             </div>
@@ -112,7 +112,13 @@ export default function AgentsPage() {
         enableSorting: false,
         cell: ({ getValue }) => {
           const value = getValue();
-          return value ? <code className="rounded bg-slate-950 px-2 py-0.5 font-mono text-xs text-indigo-400 border border-slate-800">{String(value)}</code> : <span className="text-slate-500">—</span>;
+          return value ? (
+            <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-indigo-700 dark:text-indigo-300 border border-border">
+              {String(value)}
+            </code>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          );
         },
       },
       {
@@ -121,7 +127,7 @@ export default function AgentsPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.last_seen_at ? (
-            <span className="font-mono text-xs text-slate-300">
+            <span className="font-mono text-xs text-muted-foreground">
               {format(new Date(row.original.last_seen_at), "yyyy-MM-dd HH:mm:ss")}
             </span>
           ) : (
@@ -137,7 +143,7 @@ export default function AgentsPage() {
             size="sm"
             variant="ghost"
             onClick={() => setSelectedAgentId(row.original.agent_id)}
-            className="h-8 gap-1.5 px-2.5 text-xs text-sky-400 hover:bg-sky-950/40 hover:text-sky-300"
+            className="h-8 gap-1.5 px-2.5 text-xs text-primary hover:bg-primary/10"
           >
             <Eye className="h-3.5 w-3.5" />
             Inspect
@@ -151,14 +157,14 @@ export default function AgentsPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/80 pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-500 border border-sky-500/20 shadow-sm">
             <Cpu className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.agents.title")}</h1>
-            <p className="text-xs text-slate-400">
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.agents.title")}</h1>
+            <p className="text-xs text-muted-foreground">
               {t("page.agents.subtitle")}
               {isFetching ? t("common.refreshing") : ""}
             </p>
@@ -237,4 +243,3 @@ export default function AgentsPage() {
     </div>
   );
 }
-

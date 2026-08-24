@@ -14,16 +14,20 @@
     --primary-foreground: 0 0% 100%;
     --secondary: 214 32% 91%;
     --secondary-foreground: 222 47% 11%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 40%;
-    --accent: 210 40% 94%;
+    --muted: 210 40% 95%;
+    --muted-foreground: 215 20% 38%;
+    --accent: 210 40% 92%;
     --accent-foreground: 222 47% 11%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 32% 88%;
-    --input: 214 32% 88%;
+    --border: 214 32% 86%;
+    --input: 214 32% 86%;
     --ring: 199 89% 48%;
     --radius: 0.75rem;
+
+    --scrollbar-thumb: rgba(148, 163, 184, 0.7);
+    --scrollbar-thumb-hover: rgba(100, 116, 139, 0.9);
+    --scrollbar-track: rgba(241, 245, 249, 0.6);
   }
 
   .dark {
@@ -46,10 +50,16 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 224.3 76.3% 48%;
+
+    --scrollbar-thumb: rgba(51, 65, 85, 0.75);
+    --scrollbar-thumb-hover: rgba(71, 85, 105, 0.95);
+    --scrollbar-track: rgba(15, 23, 42, 0.5);
   }
 
   * {
     @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   }
 
   body {
@@ -83,49 +93,122 @@
       radial-gradient(ellipse at bottom, rgba(241, 245, 249, 0.95), #f8fafc);
   }
 
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  ::-webkit-scrollbar-track {
-    background: rgba(15, 23, 42, 0.6);
-  }
-  html.light ::-webkit-scrollbar-track {
-    background: rgba(226, 232, 240, 0.8);
-  }
-  ::-webkit-scrollbar-thumb {
-    background: rgba(51, 65, 85, 0.8);
-    border-radius: 4px;
-  }
-  html.light ::-webkit-scrollbar-thumb {
-    background: rgba(148, 163, 184, 0.9);
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: rgba(71, 85, 105, 1);
+  @supports not (scrollbar-color: auto) {
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--scrollbar-track);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--scrollbar-thumb);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--scrollbar-thumb-hover);
+    }
   }
 }
 
-/* Hardcoded cyber-dark slate utilities used across pages. Remap them when
-   the operator picks the light theme so we do not rewrite every screen. */
+/* Custom Scrollbar Utilities */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.custom-scrollbar-x {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  overflow-x: auto;
+}
+.custom-scrollbar-x::-webkit-scrollbar {
+  height: 6px;
+}
+.custom-scrollbar-x::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 9999px;
+}
+.custom-scrollbar-x::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 9999px;
+}
+.custom-scrollbar-x::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Dedicated Terminal & Code Block Styling */
+.terminal-console {
+  background-color: #030712 !important;
+  color: #f8fafc !important;
+  border-color: #1f2937 !important;
+}
+.terminal-console pre,
+.terminal-console code,
+.terminal-console div,
+.terminal-console span {
+  color: inherit;
+}
+.terminal-console .log-error {
+  color: #f87171 !important;
+}
+.terminal-console .log-warn {
+  color: #fbbf24 !important;
+}
+.terminal-console .log-success {
+  color: #34d399 !important;
+  font-weight: 700;
+}
+.terminal-console .log-info {
+  color: #cbd5e1 !important;
+}
+
+.code-block-dark {
+  background-color: #030712 !important;
+  color: #38bdf8 !important;
+  border-color: #1e293b !important;
+}
+
+/* Light Theme Adaptive Remapping */
 html.light {
   .bg-slate-950 { background-color: rgb(248 250 252); }
   .bg-slate-950\/95 { background-color: rgb(248 250 252 / 0.95); }
   .bg-slate-950\/90 { background-color: rgb(248 250 252 / 0.9); }
   .bg-slate-950\/80 { background-color: rgb(248 250 252 / 0.8); }
+  .bg-slate-950\/60 { background-color: rgb(241 245 249 / 0.85); }
   .bg-slate-900 { background-color: rgb(255 255 255); }
   .bg-slate-900\/90 { background-color: rgb(255 255 255 / 0.9); }
   .bg-slate-900\/80 { background-color: rgb(255 255 255 / 0.8); }
   .bg-slate-900\/60 { background-color: rgb(241 245 249 / 0.85); }
   .bg-slate-900\/50 { background-color: rgb(241 245 249 / 0.7); }
-  .bg-slate-800 { background-color: rgb(226 232 240); }
-  .bg-slate-800\/80 { background-color: rgb(226 232 240 / 0.8); }
-  .bg-slate-800\/40 { background-color: rgb(241 245 249 / 0.8); }
+  .bg-slate-900\/30 { background-color: rgb(241 245 249 / 0.6); }
+  .bg-slate-800 { background-color: rgb(241 245 249); }
+  .bg-slate-800\/80 { background-color: rgb(241 245 249 / 0.9); }
+  .bg-slate-800\/70 { background-color: rgb(241 245 249 / 0.85); }
+  .bg-slate-800\/60 { background-color: rgb(241 245 249 / 0.8); }
+  .bg-slate-800\/40 { background-color: rgb(241 245 249 / 0.6); }
   .hover\:bg-slate-800:hover { background-color: rgb(241 245 249); }
   .hover\:bg-slate-800\/80:hover { background-color: rgb(241 245 249 / 0.9); }
   .hover\:bg-slate-900\/50:hover { background-color: rgb(241 245 249 / 0.8); }
   .hover\:bg-slate-900\/90:hover { background-color: rgb(255 255 255 / 0.95); }
   .border-slate-800 { border-color: rgb(226 232 240); }
   .border-slate-800\/80 { border-color: rgb(226 232 240 / 0.9); }
+  .border-slate-800\/70 { border-color: rgb(226 232 240 / 0.85); }
   .border-slate-800\/60 { border-color: rgb(226 232 240 / 0.75); }
   .border-slate-700 { border-color: rgb(203 213 225); }
   .divide-slate-800\/60 > :not([hidden]) ~ :not([hidden]) { border-color: rgb(226 232 240 / 0.8); }
