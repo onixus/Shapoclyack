@@ -4,6 +4,73 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Historical risk score snapshots** ([#144](https://github.com/onixus/Shapoclyack/issues/144), Track C) —
+  `api/services/risk_snapshots.py` + `risk_score_snapshots` (migration `0023`) persist
+  point-in-time estate risk, open/total finding counts, NIST level breakdown and SLA
+  breaches per tenant. `GET /api/vulnerabilities/risk-history` (viewer, `since`/`until`/`limit`)
+  serves the trend series; `POST /api/vulnerabilities/risk-history/snapshot` (operator)
+  captures one immediately. This closes the last leftover of #144 — the trend charts on the
+  Risk Overview no longer derive history from the last scan.
+
+- **SARIF v2.1.0 report exporter** — `scanner/pipeline/sarif_report.py` writes OASIS SARIF
+  2.1.0 alongside the existing report formats (severity mapped to SARIF `level`), consumable
+  by GitHub Code Scanning, GitLab Security, DefectDojo, VS Code and SIEM/VM platforms.
+  The Web UI renders it in place: `web-next/src/components/run/sarif-viewer.tsx` in the run
+  artifacts panel and on the reports page.
+
+- **Endpoint-inventory NATS events (Track D, Phase S8)** — an accepted inventory submission
+  publishes an `endpoint_inventory_accepted` envelope to `ingest.endpoint_inventory.{tenant_id}`
+  with a stable JetStream `Nats-Msg-Id` derived from (tenant, snapshot, payload digest).
+  Publishing is fail-soft and gated by `OCTO_ENDPOINT_NATS_EVENTS_ENABLED` (default `true`);
+  with no `OCTO_NATS_URL` it is a no-op. With the S10 end-to-end lifecycle suite
+  (`tests/test_endpoint_inventory_lifecycle.py`), **Track D is complete**.
+
+- **Agent fleet monitoring, UI-driven SSH deployment and auto-update** —
+  `GET /api/agents/summary` (fleet health rollup), `GET /api/agents/{id}`,
+  `DELETE /api/agents/{id}`, `POST /api/agents/{id}/upgrade`,
+  `POST /api/agent/deploy/ssh` + `GET /api/agent/deploy/{deploy_id}/status`,
+  `GET /api/agent/install.sh` and `GET /api/agent/deployment-command`.
+  `api/services/agent_deployer.py` pushes and installs the agent onto a Linux host over SSH
+  from the Web UI (in-memory run registry, staged status, bounded history);
+  `scripts/install-agent.sh` (Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine, Arch; native or
+  Docker) and `scripts/update-agent.sh` are the installer/self-updater it drives.
+  The UI adds a live fleet view, an agent details drawer and a deploy dialog with polled
+  deployment progress. Known limits, documented in
+  [docs/operations.md](docs/operations.md): the native installer expects the agent source to
+  be present (the `/api/agent/bundle.tar.gz` it tries to fetch is not served), `Upgrade` is a
+  marker on the agent record rather than a command to the host, and deployment runs are held
+  in the API process' memory.
+
+### Changed
+
+- **UX/UI refactor across the dashboard** — light-theme contrast reworked in `globals.css`,
+  redesigned sidebar/top header, KPI cards, data-table and status configuration
+  (`lib/config/statuses.ts`), a new `sheet` primitive, and a rebuilt drag-and-drop
+  Remediation kanban board.
+
+- **Scanner network hardening** — RIPEstat lookups in `asn_discovery.py` and the crt.sh /
+  hostname JSON fetches now retry with exponential backoff on `429/502/503/504` and transient
+  transport errors, and send an explicit `shapoclyack/scanner` User-Agent. `nuclei_scan.py`
+  hardened alongside them.
+
+### Security
+
+- **JWT algorithm allowlist and clock leeway** — `api/core/security.py` refuses any algorithm
+  outside `HS256/384/512`, `RS256/384/512`, `ES256/384/512` on both encode and decode (so
+  `OCTO_JWT_ALGORITHM=none` cannot be configured), and decodes with a 10 s default leeway.
+
+- **Pre-parse request body cap** — `api/middleware.py` `BodySizeLimitMiddleware` is raw ASGI so
+  the `OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES` cap is enforced from `Content-Length` *before*
+  Starlette buffers or parses the payload; a body without `Content-Length` is answered
+  `411 Length Required`. Rejections increment the same submission-outcome counter as the route.
+
+### Fixed
+
+- **CI:** the synthetic load-test composite action now receives the `github_token` secret
+  ([#217](https://github.com/onixus/Shapoclyack/pull/217)).
+
 ## [0.42-0822] — 2026-08-22
 
 ### Added

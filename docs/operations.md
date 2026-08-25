@@ -16,6 +16,8 @@ The directory can contain:
 - Nmap XML and tool logs;
 - vulnerability and enrichment JSON;
 - Markdown, HTML, and PDF reports;
+- `sarif.json` — OASIS SARIF v2.1.0 export of the run's vulnerabilities
+  (`reporting.sarif_export`, on by default);
 - diff and normalized asset events;
 - DefectDojo exports;
 - diagnostic stage output.
@@ -205,6 +207,88 @@ chain cascades from `tenants` (migration `0006_endpoint_fk_cascade`), so
 deleting a tenant row removes its devices, identifiers, snapshots, software
 rows, and change events; a linked asset being deleted only nulls the device's
 `asset_id`.
+
+## Agent installation and upgrade
+
+An agent can be installed three ways: by hand from the snippets on `/agents`
+(systemd, Docker, Kubernetes), by running the installer directly, or by letting
+the API push it over SSH.
+
+```bash
+curl -sSL https://<api-host>/api/agent/install.sh | sudo bash -s -- --server https://<api-host> --key <provisioning-key> --tenant <tenant-id>
+```
+
+`scripts/install-agent.sh` covers Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine
+and Arch, and takes `--agent-id`, `--install-dir`, `--docker` and `--nats-url`
+as options (`--help` lists them).
+
+With `--docker` it is a thin wrapper: it runs `ghcr.io/onixus/shapoclyack:latest`
+as the container `shapoclyack-agent` (`--restart always`, host network) with the
+server URL, provisioning key, tenant and agent id in the environment, and exits.
+
+Without it, the native path installs Python and a virtualenv under
+`/opt/shapoclyack-agent`, creates a `shapoclyack` system account, writes
+`/etc/shapoclyack/agent.env` (`0600`, owned by that account), and — where
+systemd is present — installs and enables `shapoclyack-agent.service`
+(`Restart=always`, `EnvironmentFile=/etc/shapoclyack/agent.env`). Without
+systemd the agent is started with `nohup` and is **not** restarted on boot; on
+such a host, supervise it yourself.
+
+**The native path does not ship the agent source.** It installs runtime
+dependencies and then tries to fetch `{server}/api/agent/bundle.tar.gz`,
+which the API does not serve — the fetch is best-effort (`|| true`), so the
+installer reports success while `python -m agent.worker` has nothing to import
+unless the code is already on the host. Use `--docker` (or the Kubernetes
+snippet) for a host that has no checkout, and treat the native path as
+"configure and supervise an agent whose source you placed there".
+
+**The provisioning key is on the command line.** During installation it is
+visible in the host's process list, and afterwards it lives in `agent.env`.
+Rotate the key if the host is shared or the shell history is retained.
+
+### SSH push deployment
+
+`POST /api/agent/deploy/ssh` (operator, and the **Deploy agent** dialog in the
+UI) runs the same installer from the API: connect → mint a tenant provisioning
+key → `curl … | bash` the installer on the target → wait up to 30 s for the
+agent's first heartbeat. Paramiko is used when installed, otherwise the
+OpenSSH CLI (with `sshpass` for password auth).
+
+Operational limits worth knowing before relying on it:
+
+- deployment state is **in-memory in the API process** — the last 100 runs, gone
+  on restart, and only pollable on the replica that started the run;
+- **host keys are not verified** on either path
+  (`AutoAddPolicy` / `StrictHostKeyChecking=no`), so use it on a trusted path
+  to the target;
+- SSH credentials cross the API and are used for the run only — nothing is
+  persisted;
+- a heartbeat that has not arrived within the verification window is reported as
+  a warning, not a failure: the install may still be fine, so check `/agents`.
+
+### Upgrade
+
+`POST /api/agents/{id}/upgrade` (the drawer's **Upgrade** button) sets
+`upgrade_requested` on the agent record. That is a marker for the operator
+surface — no channel carries it to the host, and the agent does not act on it.
+The upgrade itself runs on the host. `scripts/update-agent.sh` is not installed
+by the installer — copy it to the target and run it as root:
+
+```bash
+sudo bash update-agent.sh
+```
+
+It reads `/etc/shapoclyack/agent.env`, refreshes the virtualenv's build tooling,
+tries the same non-existent `/api/agent/bundle.tar.gz`, and restarts
+`shapoclyack-agent.service` or the `shapoclyack-agent` container. In practice it
+is therefore a **restart**, not an upgrade. To actually move an agent to a new
+version today: pull the new image and re-run the installer with `--docker`
+(or roll the Kubernetes deployment); for a native install, update the source on
+the host and restart the unit.
+
+**Removing an agent** from `/agents` (`DELETE /api/agents/{id}`) only forgets the
+registration. Stop `shapoclyack-agent.service` (or the container) on the host
+first, otherwise the next heartbeat registers it again.
 
 ## Logs and observability
 

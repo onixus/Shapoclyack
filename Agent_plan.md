@@ -31,7 +31,7 @@
 - [7. Ingestion Pipeline & Service Behavior](#7-ingestion-pipeline--service-behavior)
 - [8. Validation, Normalization & Limits](#8-validation-normalization--limits)
 - [9. Software Diff & Change Calculation](#9-software-diff--change-calculation)
-- [10. Optional NATS Integration (Deferred)](#10-optional-nats-integration-deferred)
+- [10. Optional NATS Integration](#10-optional-nats-integration)
 - [11. Web UI Integration](#11-web-ui-integration)
 - [12. Security & Privacy](#12-security--privacy)
 - [13. Testing Strategy](#13-testing-strategy)
@@ -373,7 +373,7 @@ Implemented in [api/services/endpoint_inventory.py](api/services/endpoint_invent
 
 7. Post-Commit Actions
    ├── Emit Prometheus metrics (octo_endpoint_inventory_submissions_total, latency, counts).
-   └── (Deferred S8) Publish fail-soft internal event.
+   └── (S8) Publish fail-soft `endpoint_inventory_accepted` event to NATS.
 ```
 
 ---
@@ -416,10 +416,12 @@ Software changes are calculated by comparing the newly submitted snapshot with t
 
 ---
 
-## 10. Optional NATS Integration (Deferred)
+## 10. Optional NATS Integration
 
 > [!NOTE]
-> Implementation Phase S8 is deferred. Database persistence remains authoritative.
+> Implementation Phase S8 is merged. Publishing is opt-out via `OCTO_ENDPOINT_NATS_EVENTS_ENABLED`
+> (default `true`), fail-soft, and a no-op without `OCTO_NATS_URL` — database persistence
+> remains authoritative.
 
 When enabled, the API publishes a lightweight summary event to NATS JetStream:
 

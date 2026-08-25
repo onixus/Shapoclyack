@@ -40,7 +40,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery | Viewer |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
-| `/agents` | Distributed worker fleet | Operator |
+| `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog | Operator |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
 
 ## Risk Overview
@@ -67,8 +67,13 @@ whether the host is actually on the internet is still
 would read as "nothing is exposed".
 
 The scan-activity chart is hosts/findings per recent **run** — volume, not
-estate risk over time. Historical risk snapshots are still open on
-[#144](https://github.com/onixus/Shapoclyack/issues/144).
+estate risk over time. Estate risk *over time* is the separate trend chart,
+which reads persisted snapshots from `GET /api/vulnerabilities/risk-history`
+(last 30 by default) rather than recomputing history from the current findings
+([#144](https://github.com/onixus/Shapoclyack/issues/144)). Snapshots only
+exist from the moment they were recorded, so the chart is empty on a fresh
+install and shows a gap for any period nothing was captured — an empty chart
+means "not recorded", not "no risk".
 
 ## Remediation Board
 
@@ -215,6 +220,46 @@ covers obvious form fields in the live DOM; a name in a heading is not
 redacted. The banner on the tab says so. Pixels older than
 `OCTO_SCREENSHOT_RETENTION_DAYS` (14) are deleted; `screenshots.json` stays
 in Artifacts.
+
+## SARIF viewer
+
+A run that produced `sarif.json` gets a viewer rather than a raw download.
+In the run's **Artifacts** panel that artifact opens a SARIF dialog which
+renders the OASIS SARIF v2.1.0 document — rules, `level`, message and the
+`host:port` location of each result — in the console's own severity vocabulary.
+`/reports` keeps it as a per-run **SARIF** download button. Either way the file
+is a normal artifact, so it can be handed to GitHub Code Scanning, GitLab
+Security, DefectDojo or a SIEM unchanged.
+
+## Agent fleet and deployment
+
+`/agents` is operator-only and refreshes on a poll, so it reads as a live view
+rather than a page that needs reloading.
+
+The tiles above the table are `GET /api/agents/summary`: total, online, busy,
+stale and **outdated** agents, the last against the server's target version.
+A row opens a details drawer with the agent's heartbeat metrics — OS and
+architecture, CPU, memory, disk, load and uptime — its capabilities, current
+job, and an **Upgrade** action. Upgrade marks the agent (`upgrade_requested`)
+and the button then reads as requested; it does not push anything to the host.
+The host is upgraded by `scripts/update-agent.sh` there — see
+[operations.md](operations.md#agent-installation-and-upgrade).
+
+**Deploy agent** opens a dialog with two paths:
+
+- *Copy a command* — the **systemd**, **docker** and **kubernetes** tabs hold
+  the snippets from `GET /api/agent/deployment-command` to run on the target
+  host yourself. Each snippet embeds a freshly minted provisioning key, so it
+  is a secret: treat those tabs like a credential screen.
+- *Push over SSH* — host, port, username, and either a password or a private
+  key, optionally `--docker`. The dialog polls the deployment and shows the
+  stages (connect → mint credentials → run installer → verify heartbeat) with
+  the remote installer's output inline. Credentials are used for that run and
+  not stored, but they do travel to the API, and host keys are not verified —
+  the caveats are in [api-and-rbac.md](api-and-rbac.md#agent-fleet-deployment-and-upgrade).
+
+Removing an agent from this page forgets its registration. A process still
+running on the host re-registers on its next heartbeat; stop it there first.
 
 ## Finding presentation
 
