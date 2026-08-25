@@ -7,6 +7,7 @@ import {
   Cpu,
   Loader2,
   Play,
+  KeyRound,
   Server,
   Shield,
   RefreshCw,
@@ -24,8 +25,65 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { useDeploySSH, useDeployStatus, useAgentSnippets } from "@/hooks/use-agents";
+import {
+  useAgentSnippets,
+  useCreateAgentDeploymentKey,
+  useDeploySSH,
+  useDeployStatus,
+} from "@/hooks/use-agents";
 import { type AgentDeploySSHRequest } from "@/lib/api";
+
+/** The snippets are rendered with a placeholder until an operator explicitly
+ * mints a key — loading this dialog must not create tenant credentials. */
+function ProvisioningKeyNotice({
+  keyMinted,
+  onMint,
+  isPending,
+  error,
+}: {
+  keyMinted: boolean;
+  onMint: () => void;
+  isPending: boolean;
+  error: string | null;
+}) {
+  if (keyMinted) {
+    return (
+      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-foreground">
+        <p className="flex items-center gap-1.5 font-semibold text-amber-600 dark:text-amber-400">
+          <KeyRound className="h-3.5 w-3.5" />
+          Provisioning key shown once
+        </p>
+        <p className="mt-1 leading-relaxed text-muted-foreground">
+          The key below is embedded in these snippets and cannot be retrieved
+          again. Copy the command now; revoke the key from Tenants if it leaks.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/50 p-3 text-xs text-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="flex items-center gap-1.5 font-semibold">
+            <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+            No provisioning key yet
+          </p>
+          <p className="mt-1 leading-relaxed text-muted-foreground">
+            Snippets show a <code className="font-mono">&lt;PROVISIONING_KEY&gt;</code>{" "}
+            placeholder. Generate a key to fill them in — this creates a real
+            tenant credential.
+          </p>
+        </div>
+        <Button size="sm" onClick={onMint} disabled={isPending} className="gap-1.5 text-xs">
+          {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
+          Generate key
+        </Button>
+      </div>
+      {error ? <p className="mt-2 text-rose-600 dark:text-rose-400">{error}</p> : null}
+    </div>
+  );
+}
 
 export function DeployAgentDialog() {
   const [open, setOpen] = useState(false);
@@ -45,6 +103,16 @@ export function DeployAgentDialog() {
   const deployMutation = useDeploySSH();
   const { data: deployStatus } = useDeployStatus(activeDeployId);
   const { data: snippets } = useAgentSnippets();
+  const mintKeyMutation = useCreateAgentDeploymentKey();
+
+  const keyNotice = (
+    <ProvisioningKeyNotice
+      keyMinted={Boolean(snippets?.key_minted)}
+      onMint={() => mintKeyMutation.mutate(undefined)}
+      isPending={mintKeyMutation.isPending}
+      error={mintKeyMutation.error ? (mintKeyMutation.error as Error).message : null}
+    />
+  );
 
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
@@ -327,6 +395,7 @@ export function DeployAgentDialog() {
 
             {/* TAB 2: LINUX ONE-LINER */}
             <TabsContent value="systemd" className="mt-4 space-y-4">
+              {keyNotice}
               <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
                 <p className="font-semibold text-sky-600 dark:text-sky-400">Automated Systemd Service One-Liner</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
@@ -359,6 +428,7 @@ export function DeployAgentDialog() {
 
             {/* TAB 3: DOCKER CONTAINER */}
             <TabsContent value="docker" className="mt-4 space-y-4">
+              {keyNotice}
               <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
                 <p className="font-semibold text-sky-600 dark:text-sky-400">Docker Run Command & Compose</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
@@ -407,6 +477,7 @@ export function DeployAgentDialog() {
 
             {/* TAB 4: KUBERNETES */}
             <TabsContent value="kubernetes" className="mt-4 space-y-4">
+              {keyNotice}
               <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
                 <p className="font-semibold text-sky-600 dark:text-sky-400">Kubernetes Deployment Manifest</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">

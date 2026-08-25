@@ -149,6 +149,35 @@ routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
 filter.
 
+### Agent fleet, deployment and upgrade
+
+| Route | Role | Notes |
+|---|---|---|
+| `GET /api/agents` | operator | Page of the fleet; unscoped platform admins see it fleet-wide, as for `/jobs` |
+| `GET /api/agents/summary` | viewer | Counts only — online, busy, outdated, latest version |
+| `GET /api/agents/{agent_id}` | viewer | One agent's telemetry; `404` outside the tenant |
+| `DELETE /api/agents/{agent_id}` | operator | Deregisters the worker |
+| `POST /api/agents/{agent_id}/upgrade` | operator | **Queues** an upgrade the agent picks up on its next heartbeat |
+| `GET /api/agent/install.sh` | public | The installer script itself carries no credential |
+| `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
+| `POST /api/agent/deployment-command` | operator | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
+| `POST /api/agent/deploy/ssh` | operator | Push-installs over SSH; mints a key for that machine server-side |
+| `GET /api/agent/deploy/{deploy_id}/status` | operator | Progress and log tail for one push deployment |
+
+A provisioning key registers an agent into the tenant, so anything that hands
+one out is an authorization decision, not a read. Both deployment-command
+routes therefore take `operator` — the same bar as the SSH push, which already
+mints a key for the host it installs on. Tenant-wide key administration
+(listing, revoking, minting against an arbitrary tenant under
+`/api/tenants/{tenant_id}/provisioning-keys`) stays `admin`.
+
+The split between GET and POST is deliberate: rendering the snippets is
+idempotent, minting is not. Keys are hashed at rest and the plaintext is
+returned exactly once, so an existing key cannot be re-embedded in a snippet —
+a fresh mint is the only way to fill the placeholder in, and the operator asks
+for it explicitly rather than getting one per dialog open. Revoke unused keys
+via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
+
 ### Vulnerabilities
 
 Reading takes `viewer`; moving a finding through its lifecycle or reassigning it

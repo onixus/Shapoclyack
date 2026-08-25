@@ -40,7 +40,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery | Viewer |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
-| `/agents` | Distributed worker fleet | Operator |
+| `/agents` | Distributed worker fleet; Deploy Agent dialog mints provisioning keys on request | Operator |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
 
 ## Risk Overview
@@ -201,6 +201,24 @@ Coordinates come from a **City**-edition GeoIP database (`enrichment.geoip`).
 With a Country-edition database every marker is country-level, which the page
 states rather than hides. See
 [configuration.md](configuration.md#enrichment-sources).
+
+## Agent fleet and deployment
+
+`/agents` is the worker fleet: status, version, telemetry, deregistration and
+remote upgrade. It takes `operator` — the page's **Deploy Agent** dialog hands
+out the credential that registers a worker, so it is not a viewer surface.
+
+The dialog has four tabs. **Remote SSH Push** installs onto a host the platform
+connects to itself. The **Linux One-Liner**, **Docker Container** and
+**Kubernetes** tabs show copy-paste snippets, and they open with a
+`<PROVISIONING_KEY>` placeholder rather than a live key: opening the dialog
+must not create a tenant credential. **Generate key** mints one
+(`POST /api/agent/deployment-command`) and fills the snippets in.
+
+The minted key is plaintext in that one response and is hashed at rest, so the
+dialog says it cannot be shown again — copy the command before closing. Keys
+that were generated and never used are revoked from the tenant's provisioning
+keys, not from this dialog.
 
 ## Run screenshots
 

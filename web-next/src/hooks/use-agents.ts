@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  createAgentDeploymentKey,
   deleteAgent,
   deployAgentSSH,
   fetchAgentDeploymentSnippets,
@@ -46,6 +47,17 @@ export function useAgentSnippets() {
     queryKey: queryKeys.agentSnippets,
     queryFn: fetchAgentDeploymentSnippets,
     staleTime: 60_000,
+  });
+}
+
+export function useCreateAgentDeploymentKey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (label?: string) => createAgentDeploymentKey(label),
+    onSuccess: (data) => {
+      // Show the freshly minted key in place of the placeholder snippets.
+      queryClient.setQueryData(queryKeys.agentSnippets, data);
+    },
   });
 }
 
