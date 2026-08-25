@@ -262,3 +262,61 @@ def test_remote_ssh_deployer_flow(tmp_path: Path, monkeypatch):
     status_resp = client.get(f"/api/agent/deploy/{deploy_id}/status", headers=admin_hdrs)
     assert status_resp.status_code == 200
     assert len(status_resp.json()["logs"]) >= 1
+
+
+def test_upgrade_marker_survives_restart_and_clears_on_new_version(
+    tmp_path: Path, monkeypatch
+):
+    """``upgrade_requested`` tracks the host, not the agent's uptime.
+
+    Two failure modes, mirror images of each other: a plain restart used to wipe
+    the marker (``register_agent`` rewrote ``detail`` without it), and nothing
+    ever cleared it, so the UI's Upgrade control stayed disabled forever once an
+    operator had used it. The reported version is the only evidence the host
+    acted, so that — and only that — clears the marker.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    agent_hdrs = {"Authorization": f"Bearer {settings.agent_token}"}
+
+    def register(version: str):
+        return client.post(
+            "/api/agent/register",
+            json={
+                "agent_id": "agent-marker",
+                "hostname": "srv-marker",
+                "version": version,
+            },
+            headers=agent_hdrs,
+        )
+
+    assert register("0.41.0").status_code == 200
+    assert client.post("/api/agents/agent-marker/upgrade", headers=admin_hdrs).status_code == 200
+    assert client.get("/api/agents/agent-marker", headers=admin_hdrs).json()["upgrade_requested"] is True
+
+    # A heartbeat keeps the marker: the host has not been touched.
+    hb = client.post(
+        "/api/agent/heartbeat",
+        json={
+            "agent_id": "agent-marker",
+            "status": "idle",
+            "metrics": {"cpu_percent": 12.0},
+        },
+        headers=agent_hdrs,
+    )
+    assert hb.status_code == 200
+    assert client.get("/api/agents/agent-marker", headers=admin_hdrs).json()["upgrade_requested"] is True
+
+    # A restart re-registers with the same version — still not an upgrade, and
+    # the telemetry the heartbeat reported is not discarded either.
+    assert register("0.41.0").status_code == 200
+    detail = client.get("/api/agents/agent-marker", headers=admin_hdrs).json()
+    assert detail["upgrade_requested"] is True
+    assert detail["metrics"]["cpu_percent"] == 12.0
+
+    # A new reported version is the evidence, and clears it.
+    assert register("0.42.0").status_code == 200
+    detail = client.get("/api/agents/agent-marker", headers=admin_hdrs).json()
+    assert detail["upgrade_requested"] is False
+    assert detail["version"] == "0.42.0"

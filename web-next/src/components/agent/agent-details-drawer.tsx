@@ -109,6 +109,10 @@ export function AgentDetailsDrawer({
                     <ArrowUpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
                     <span>
                       Update available: Current <strong>v{agent.version}</strong> &rarr; Latest <strong>v{agent.latest_version || "0.42.0"}</strong>
+                      <span className="block opacity-80">
+                        Marking records the intent for operators. The upgrade itself runs on the
+                        host — the agent receives no command from here.
+                      </span>
                     </span>
                   </div>
                   <Button
@@ -120,9 +124,9 @@ export function AgentDetailsDrawer({
                     {upgradeMutation.isPending ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : agent.upgrade_requested ? (
-                      "Upgrade Queued"
+                      "Marked for upgrade"
                     ) : (
-                      "Upgrade Agent"
+                      "Mark for upgrade"
                     )}
                   </Button>
                 </div>

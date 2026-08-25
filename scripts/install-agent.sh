@@ -14,6 +14,7 @@ INSTALL_DIR="/opt/shapoclyack-agent"
 CONF_DIR="/etc/shapoclyack"
 USE_DOCKER=0
 NATS_URL=""
+BUNDLE_URL="${BUNDLE_URL:-}"
 
 log() {
     echo -e "\033[1;34m[INFO]\033[0m $*"
@@ -42,6 +43,10 @@ Options:
   -d, --install-dir <PATH>      Installation root directory (default: /opt/shapoclyack-agent)
       --docker                  Deploy agent as a Docker container
       --nats-url <URL>          Optional NATS JetStream server URL
+      --bundle-url <URL>        Where to fetch the agent package tarball from.
+                                Required for native installs unless the package
+                                is already staged in the install directory: the
+                                Shapoclyack API does not serve one.
   -h, --help                    Show this help message
 EOF
     exit 0
@@ -75,6 +80,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --nats-url)
             NATS_URL="$2"
+            shift 2
+            ;;
+        --bundle-url)
+            BUNDLE_URL="$2"
             shift 2
             ;;
         -h|--help)
@@ -169,33 +178,47 @@ python3 -m venv "${INSTALL_DIR}/venv"
 
 # Fetch agent bundle or install dependencies
 log "Installing agent requirements..."
-"${INSTALL_DIR}/venv/bin/pip" install --quiet fastapi httpx pydantic psutil requests 2>/dev/null || true
+if ! "${INSTALL_DIR}/venv/bin/pip" install --quiet fastapi httpx pydantic psutil requests; then
+    error "Failed to install agent dependencies into ${INSTALL_DIR}/venv."
+fi
 
-# Download/sync agent source from server if available, or write runtime bundle
-cat << 'EOF' > "${INSTALL_DIR}/agent_runner.py"
-import os
-import sys
-import runpy
-
-# Run agent worker module
-if __name__ == "__main__":
-    server_url = os.environ.get("OCTO_SERVER_URL")
-    key = os.environ.get("OCTO_PROVISIONING_KEY")
-    tenant = os.environ.get("OCTO_TENANT_ID", "default")
-    agent_id = os.environ.get("OCTO_AGENT_ID")
-    sys.argv = ["worker.py", "--server", server_url, "--key", key, "--tenant", tenant]
-    if agent_id:
-        sys.argv.extend(["--agent-id", agent_id])
-    from agent import worker
-    worker.main()
-EOF
-
-# Fetch agent package from server
-log "Fetching latest agent bundle from server..."
-curl -sSL "${SERVER_URL}/api/agent/bundle.tar.gz" -o "${INSTALL_DIR}/bundle.tar.gz" 2>/dev/null || true
-if [[ -f "${INSTALL_DIR}/bundle.tar.gz" ]] && tar -tzf "${INSTALL_DIR}/bundle.tar.gz" &>/dev/null; then
+# Obtain the agent package
+#
+# The API serves no agent bundle, so a native install cannot silently "sync"
+# one from the server. The package comes from an explicit --bundle-url, or it
+# is already staged in the install directory. Anything else is a failed
+# install and says so, rather than leaving systemd to restart an agent that
+# cannot import its own module.
+if [[ -n "${BUNDLE_URL}" ]]; then
+    log "Fetching agent package from ${BUNDLE_URL}..."
+    if ! curl -fsSL "${BUNDLE_URL}" -o "${INSTALL_DIR}/bundle.tar.gz"; then
+        error "Could not download the agent package from ${BUNDLE_URL}."
+    fi
+    if ! tar -tzf "${INSTALL_DIR}/bundle.tar.gz" &>/dev/null; then
+        rm -f "${INSTALL_DIR}/bundle.tar.gz"
+        error "The file at ${BUNDLE_URL} is not a readable tarball."
+    fi
     tar -xzf "${INSTALL_DIR}/bundle.tar.gz" -C "${INSTALL_DIR}"
     rm -f "${INSTALL_DIR}/bundle.tar.gz"
+elif [[ -d "${INSTALL_DIR}/agent" ]]; then
+    log "Using the agent package already staged in ${INSTALL_DIR}."
+else
+    error "No agent package available.
+  The Shapoclyack API does not serve one, so a native install needs either:
+    --bundle-url <URL>   a tarball containing the 'agent' package, or
+    an 'agent' directory already staged in ${INSTALL_DIR}
+  Alternatively run this installer with --docker, which takes the agent from
+  the published image and needs no bundle."
+fi
+
+chown -R shapoclyack:shapoclyack "${INSTALL_DIR}"
+
+# Fail here rather than in a restart loop: if the worker cannot be imported,
+# systemd would report the unit as active while it crashes every RestartSec.
+log "Verifying the agent package is importable..."
+if ! (cd "${INSTALL_DIR}" && "${INSTALL_DIR}/venv/bin/python" -c "import agent.worker" 2>/dev/null); then
+    error "The agent package in ${INSTALL_DIR} cannot be imported ('import agent.worker' failed).
+  The installation is incomplete; the service has not been started."
 fi
 
 # Write environment configuration
@@ -237,6 +260,14 @@ EOF
     systemctl daemon-reload
     systemctl enable shapoclyack-agent.service
     systemctl restart shapoclyack-agent.service
+
+    # Type=simple means systemd calls the unit active the moment it forks, so
+    # the unit being "started" proves nothing. Give it a moment and re-check.
+    sleep 3
+    if ! systemctl is-active --quiet shapoclyack-agent.service; then
+        error "Service 'shapoclyack-agent.service' is not running after start.
+  Inspect it with: journalctl -u shapoclyack-agent.service -n 50"
+    fi
     log "Systemd service 'shapoclyack-agent.service' started and enabled on boot!"
 else
     log "Systemd not detected. Starting agent in background..."
@@ -246,6 +277,7 @@ else
 fi
 
 log "================================================================="
-log "Shapoclyack Agent ${AGENT_ID} installed successfully!"
-log "Status: Active & Connecting to ${SERVER_URL}"
+log "Shapoclyack Agent ${AGENT_ID} installed."
+log "Connecting to ${SERVER_URL}. Confirm it appears in the agent fleet view;"
+log "the host has no self-update mechanism, so upgrades are a reinstall."
 log "================================================================="
