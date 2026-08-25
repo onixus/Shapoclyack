@@ -97,7 +97,8 @@ not an authorization control.
 | `/api/auth` | Login, current principal, and the authentication audit trail (`/api/auth/events`, admin) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
-| `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
+| `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |
+| `/api/agent/deploy` | Operator-driven SSH push installation of an agent onto a Linux host |
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory |
@@ -149,20 +150,46 @@ routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
 filter.
 
+### Vulnerabilities
+
+Reading takes `viewer`; moving a finding through its lifecycle or reassigning it
+takes `operator`; **accepting risk and editing SLA policy take tenant `admin`**,
+because each commits the tenant to something rather than progressing one
+person's work. `POST /{id}/transition` answers `409` on an illegal move (the
+request is well-formed; the refusal is about the finding's current state) and
+`422` on a state that is not in the model. A finding in another tenant answers
+`404`. The states, the SLA resolution order and the exception rules are in
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md).
+
+**Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
+tenant's persisted risk snapshots — `recorded_at`, estate risk level, open and
+total counts, the NIST level breakdown and SLA breaches — oldest field order as
+stored, filtered by `since` / `until` and capped by `limit` (default 90,
+maximum 500). It is a **read of what was recorded**, not a recomputation: a
+period with no snapshots is a gap in the series, not zero risk.
+`POST /api/vulnerabilities/risk-history/snapshot` (operator) records one
+immediately and answers `201` with it. Snapshots are per tenant and are the
+only source the Risk Overview trend chart reads
+([#144](https://github.com/onixus/Shapoclyack/issues/144), Track C).
+
 ### Agent fleet, deployment and upgrade
 
 | Route | Role | Notes |
 |---|---|---|
-| `GET /api/agents` | operator | Page of the fleet; unscoped platform admins see it fleet-wide, as for `/jobs` |
-| `GET /api/agents/summary` | viewer | Counts only — online, busy, outdated, latest version |
-| `GET /api/agents/{agent_id}` | viewer | One agent's telemetry; `404` outside the tenant |
-| `DELETE /api/agents/{agent_id}` | operator | Deregisters the worker |
-| `POST /api/agents/{agent_id}/upgrade` | operator | **Queues** an upgrade the agent picks up on its next heartbeat |
-| `GET /api/agent/install.sh` | public | The installer script itself carries no credential |
+| `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin, as for `/jobs` |
+| `GET /api/agents/summary` | viewer | Fleet rollup: total / online / busy / stale / error / outdated, `latest_version`, and a per-tenant count |
+| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities and `upgrade_requested`; `404` outside the tenant |
+| `DELETE /api/agents/{id}` | operator | Forgets the registration. It does **not** stop the remote process — an agent that is still running re-registers on its next heartbeat |
+| `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
 | `POST /api/agent/deployment-command` | operator | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
-| `POST /api/agent/deploy/ssh` | operator | Push-installs over SSH; mints a key for that machine server-side |
-| `GET /api/agent/deploy/{deploy_id}/status` | operator | Progress and log tail for one push deployment |
+| `POST /api/agent/deploy/ssh` | operator | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side |
+| `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id` |
+| `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential; the provisioning key is passed to it as an argument |
+
+Cross-tenant ids answer `404` for a read and `403` where the service can tell
+the caller is reaching outside its tenant; a platform admin without a requested
+tenant sees the whole fleet, the same rule as `/api/jobs`.
 
 A provisioning key registers an agent into the tenant, so anything that hands
 one out is an authorization decision, not a read. Both deployment-command
@@ -178,16 +205,20 @@ a fresh mint is the only way to fill the placeholder in, and the operator asks
 for it explicitly rather than getting one per dialog open. Revoke unused keys
 via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
 
-### Vulnerabilities
+Three further properties of this group are worth knowing before it is used:
 
-Reading takes `viewer`; moving a finding through its lifecycle or reassigning it
-takes `operator`; **accepting risk and editing SLA policy take tenant `admin`**,
-because each commits the tenant to something rather than progressing one
-person's work. `POST /{id}/transition` answers `409` on an illegal move (the
-request is well-formed; the refusal is about the finding's current state) and
-`422` on a state that is not in the model. A finding in another tenant answers
-`404`. The states, the SLA resolution order and the exception rules are in
-[vulnerability-lifecycle.md](vulnerability-lifecycle.md).
+- **Deployment runs live in the API process' memory** (last 100 runs, dropped
+  on restart). With more than one API replica, the status poll only answers on
+  the replica that started the run — put the deploy flow behind a sticky
+  session, or run it against a single replica.
+- **The deployer passes the minted key on the remote command line**, so it is
+  visible in that host's process list while the installer runs, and it stays in
+  `/etc/shapoclyack/agent.env` afterwards. Revoke it if the host is shared.
+- **SSH credentials are request data.** The password or private key in
+  `POST /api/agent/deploy/ssh` is used for the run and never stored, but it does
+  cross the API. Host-key checking is disabled on both the Paramiko and the
+  OpenSSH fallback path, so the deployment is only as trustworthy as the network
+  between the API and the target. Prefer a key with a purpose-built account.
 
 ### Webhooks
 

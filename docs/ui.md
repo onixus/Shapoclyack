@@ -40,7 +40,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery | Viewer |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
-| `/agents` | Distributed worker fleet; Deploy Agent dialog mints provisioning keys on request | Operator |
+| `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog and on-request provisioning keys | Operator |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
 
 ## Risk Overview
@@ -67,8 +67,13 @@ whether the host is actually on the internet is still
 would read as "nothing is exposed".
 
 The scan-activity chart is hosts/findings per recent **run** — volume, not
-estate risk over time. Historical risk snapshots are still open on
-[#144](https://github.com/onixus/Shapoclyack/issues/144).
+estate risk over time. Estate risk *over time* is the separate trend chart,
+which reads persisted snapshots from `GET /api/vulnerabilities/risk-history`
+(last 30 by default) rather than recomputing history from the current findings
+([#144](https://github.com/onixus/Shapoclyack/issues/144)). Snapshots only
+exist from the moment they were recorded, so the chart is empty on a fresh
+install and shows a gap for any period nothing was captured — an empty chart
+means "not recorded", not "no risk".
 
 ## Remediation Board
 
@@ -202,24 +207,6 @@ With a Country-edition database every marker is country-level, which the page
 states rather than hides. See
 [configuration.md](configuration.md#enrichment-sources).
 
-## Agent fleet and deployment
-
-`/agents` is the worker fleet: status, version, telemetry, deregistration and
-remote upgrade. It takes `operator` — the page's **Deploy Agent** dialog hands
-out the credential that registers a worker, so it is not a viewer surface.
-
-The dialog has four tabs. **Remote SSH Push** installs onto a host the platform
-connects to itself. The **Linux One-Liner**, **Docker Container** and
-**Kubernetes** tabs show copy-paste snippets, and they open with a
-`<PROVISIONING_KEY>` placeholder rather than a live key: opening the dialog
-must not create a tenant credential. **Generate key** mints one
-(`POST /api/agent/deployment-command`) and fills the snippets in.
-
-The minted key is plaintext in that one response and is hashed at rest, so the
-dialog says it cannot be shown again — copy the command before closing. Keys
-that were generated and never used are revoked from the tenant's provisioning
-keys, not from this dialog.
-
 ## Run screenshots
 
 `/runs/view` has a **Screenshots** tab for operators and admins only. It lists
@@ -233,6 +220,56 @@ covers obvious form fields in the live DOM; a name in a heading is not
 redacted. The banner on the tab says so. Pixels older than
 `OCTO_SCREENSHOT_RETENTION_DAYS` (14) are deleted; `screenshots.json` stays
 in Artifacts.
+
+## SARIF viewer
+
+A run that produced `sarif.json` gets a viewer rather than a raw download.
+In the run's **Artifacts** panel that artifact opens a SARIF dialog which
+renders the OASIS SARIF v2.1.0 document — rules, `level`, message and the
+`host:port` location of each result — in the console's own severity vocabulary.
+`/reports` keeps it as a per-run **SARIF** download button. Either way the file
+is a normal artifact, so it can be handed to GitHub Code Scanning, GitLab
+Security, DefectDojo or a SIEM unchanged.
+
+## Agent fleet and deployment
+
+`/agents` is the worker fleet: status, version, telemetry, deregistration and
+remote upgrade. It takes `operator` — the page's **Deploy Agent** dialog hands
+out the credential that registers a worker, so it is not a viewer surface. The
+page refreshes on a poll, so it reads as a live view rather than one that needs
+reloading.
+
+The tiles above the table are `GET /api/agents/summary`: total, online, busy,
+stale and **outdated** agents, the last against the server's target version.
+A row opens a details drawer with the agent's heartbeat metrics — OS and
+architecture, CPU, memory, disk, load and uptime — its capabilities, current
+job, and an **Upgrade** action. Upgrade marks the agent (`upgrade_requested`)
+and the button then reads as requested; it does not push anything to the host.
+The host is upgraded there — see
+[operations.md](operations.md#agent-installation-and-upgrade).
+
+The **Deploy Agent** dialog has four tabs. **Remote SSH Push** installs onto a
+host the platform connects to itself: host, port, username, and either a
+password or a private key, optionally Docker. The dialog polls the deployment
+and shows the stages (connect → mint credentials → run installer → verify
+heartbeat) with the remote installer's output inline. Credentials are used for
+that run and not stored, but they do travel to the API, and host keys are not
+verified — the caveats are in
+[api-and-rbac.md](api-and-rbac.md#agent-fleet-deployment-and-upgrade).
+
+The **Linux One-Liner**, **Docker Container** and **Kubernetes** tabs show
+copy-paste snippets, and they open with a `<PROVISIONING_KEY>` placeholder
+rather than a live key: opening the dialog must not create a tenant credential.
+**Generate key** mints one (`POST /api/agent/deployment-command`) and fills the
+snippets in.
+
+The minted key is plaintext in that one response and is hashed at rest, so the
+dialog says it cannot be shown again — copy the command before closing. Keys
+that were generated and never used are revoked from the tenant's provisioning
+keys, not from this dialog.
+
+Removing an agent from this page forgets its registration. A process still
+running on the host re-registers on its next heartbeat; stop it there first.
 
 ## Finding presentation
 

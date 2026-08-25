@@ -20,7 +20,7 @@ yet production-ready.
 |-------|-----------------|----------------|-------|
 | **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
-| **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; leftover is historical score snapshots (#144) |
+| **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
 | **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged |
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
@@ -40,6 +40,16 @@ Track B Wave 0 and Wave 1 GA hardening (#151–#159, #185–#188), ClickHouse TT
 and multi-replica load validation (#188).
 GHCR images are published by the **local Jenkins** job `shapoclyack-publish` (`Jenkinsfile.publish`)
 with tag `shapoclyack-0.42-0822`.
+
+**On `main`, merged but not yet tagged** (see [CHANGELOG.md](CHANGELOG.md) `## Unreleased`):
+historical risk score snapshots — the last leftover of [#144](https://github.com/onixus/Shapoclyack/issues/144);
+a SARIF v2.1.0 exporter with an in-UI viewer; endpoint-inventory NATS events and the
+end-to-end lifecycle suite that complete **Track D** (S8/S10); agent fleet monitoring,
+UI-driven SSH deployment and auto-update (`scripts/install-agent.sh`, `scripts/update-agent.sh`);
+a UX/UI refactor with a redesigned remediation kanban; and JWT-algorithm / request-body
+hardening. Local CI `shapoclyack` **#27** (2026-08-24, revision `08b0bd0`) is SUCCESS:
+1033 pytest on 3.11 and 3.12, coverage 80.02% against a 74% gate, 142 vitest in 26 files,
+load run 16/16 hosts.
 
 
 | Area | Status |
@@ -431,14 +441,14 @@ idempotency replay under load, scheduler leadership locks verified.
 **Why it is not just UI work:** the redesign's premise is that a security manager can
 answer "what is our risk, who owns it, what breaches SLA" without starting a scan. The
 three backend issues (#144, #145, #146) are the real scope and the five UI issues render
-what they produce. All of it is on `main`; EPIC [#134](https://github.com/onixus/Shapoclyack/issues/134) is closed. Historical score snapshots for trend charts remain a leftover of #144.
+what they produce. All of it is on `main`; EPIC [#134](https://github.com/onixus/Shapoclyack/issues/134) is closed. Historical score snapshots for trend charts — the last leftover of #144 — are merged as well (`risk_score_snapshots`, migration `0023`, `GET /api/vulnerabilities/risk-history`), so Track C has no open scope.
 
 | Issue | Layer | Scope |
 |-------|-------|-------|
-| ~~[#144](https://github.com/onixus/Shapoclyack/issues/144)~~ | Backend | **Done** — scoring model `nist-1`: NIST SP 800-30 likelihood × impact through Table I-2, exploit maturity (`attacked`/`weaponized`/`proof_of_concept`/`unproven`/`theoretical`/`unknown`) with a named evidence trail, and asset criticality moved onto the impact axis where it can change the verdict. Methodology and its stated limits: [docs/risk-scoring.md](docs/risk-scoring.md). Remaining scope split out as ~~[#171](https://github.com/onixus/Shapoclyack/issues/171)~~ (**done** — host reachability as a likelihood input; public IP is not `external`), ~~[#172](https://github.com/onixus/Shapoclyack/issues/172)~~ (**done** — CVE publication age, raise-only; overlay staleness visible), ~~[#173](https://github.com/onixus/Shapoclyack/issues/173)~~ (**done** — compensating controls as a named −6 when fingerprint saw a CDN/WAF on the same host:port; same-asset path +8 when a local finding shares a P4.2 asset with a network foothold; not a domain-takeover model). Historical score snapshots for trend charts are **not** done |
-| ~~[#145](https://github.com/onixus/Shapoclyack/issues/145)~~ | Backend | **Done** — the finding is an entity now (`vulnerabilities` + `vulnerability_events` + `sla_policies`, migration `0015`), keyed `sha256(asset\|CVE-or-script\|port)` per tenant so it survives runs. Lifecycle `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED` with `CLOSED → OPEN` on regression; SLA by (asset criticality, severity) with breach derived on read; expiring risk exceptions; every change audited in the same transaction. Absence is never auto-closed. Docs: [docs/vulnerability-lifecycle.md](docs/vulnerability-lifecycle.md). **Not** included: score history/trends (still [#144](https://github.com/onixus/Shapoclyack/issues/144)) and event retention |
+| ~~[#144](https://github.com/onixus/Shapoclyack/issues/144)~~ | Backend | **Done** — scoring model `nist-1`: NIST SP 800-30 likelihood × impact through Table I-2, exploit maturity (`attacked`/`weaponized`/`proof_of_concept`/`unproven`/`theoretical`/`unknown`) with a named evidence trail, and asset criticality moved onto the impact axis where it can change the verdict. Methodology and its stated limits: [docs/risk-scoring.md](docs/risk-scoring.md). Remaining scope split out as ~~[#171](https://github.com/onixus/Shapoclyack/issues/171)~~ (**done** — host reachability as a likelihood input; public IP is not `external`), ~~[#172](https://github.com/onixus/Shapoclyack/issues/172)~~ (**done** — CVE publication age, raise-only; overlay staleness visible), ~~[#173](https://github.com/onixus/Shapoclyack/issues/173)~~ (**done** — compensating controls as a named −6 when fingerprint saw a CDN/WAF on the same host:port; same-asset path +8 when a local finding shares a P4.2 asset with a network foothold; not a domain-takeover model). Historical score snapshots for trend charts are **done** as well — `api/services/risk_snapshots.py`, `risk_score_snapshots` (migration `0023`), `GET /api/vulnerabilities/risk-history` for the series and an operator `POST .../risk-history/snapshot` to capture one |
+| ~~[#145](https://github.com/onixus/Shapoclyack/issues/145)~~ | Backend | **Done** — the finding is an entity now (`vulnerabilities` + `vulnerability_events` + `sla_policies`, migration `0015`), keyed `sha256(asset\|CVE-or-script\|port)` per tenant so it survives runs. Lifecycle `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED` with `CLOSED → OPEN` on regression; SLA by (asset criticality, severity) with breach derived on read; expiring risk exceptions; every change audited in the same transaction. Absence is never auto-closed. Docs: [docs/vulnerability-lifecycle.md](docs/vulnerability-lifecycle.md). **Not** included: event retention (score history/trends landed with [#144](https://github.com/onixus/Shapoclyack/issues/144)) |
 | ~~[#146](https://github.com/onixus/Shapoclyack/issues/146)~~ | Backend | **Done** — asset business context (`business_service`, `environment`, `data_classification`, `exposure_level`, `context_source`) plus a same-transaction audit trail and a per-asset risk rollup. CMDB/AD use the same PATCH. Exposure is an operator decision, not a scan fact ([#171](https://github.com/onixus/Shapoclyack/issues/171)); identity merge is [P4.2](#p4-breakdown--differentiating-features). Docs: [docs/asset-context.md](docs/asset-context.md) |
-| ~~[#135](https://github.com/onixus/Shapoclyack/issues/135)~~ | UI | **Done** — Risk Overview (`/`) on tracked findings: estate NIST verdict, SLA, unassigned work, unowned assets. Historical risk snapshots stay a leftover of [#144](https://github.com/onixus/Shapoclyack/issues/144) |
+| ~~[#135](https://github.com/onixus/Shapoclyack/issues/135)~~ | UI | **Done** — Risk Overview (`/`) on tracked findings: estate NIST verdict, SLA, unassigned work, unowned assets. Trend charts now read persisted snapshots ([#144](https://github.com/onixus/Shapoclyack/issues/144) leftover, merged) |
 | ~~[#136](https://github.com/onixus/Shapoclyack/issues/136)~~ | UI | **Done** — asset-centric security view: inventory and `/assets/view` show owner, service, exposure, open tracked risk and the next required action. Scan evidence is secondary. Built on #146 |
 | ~~[#137](https://github.com/onixus/Shapoclyack/issues/137)~~ | UI | **Done** — Vulnerability Center (`/vulnerabilities`, `/vulnerabilities/view`) on top of #145: lifecycle stepper, owner, SLA, risk acceptance, audit trail. CWE is copied from the last observation (NVD overlay, else nuclei) |
 | ~~[#138](https://github.com/onixus/Shapoclyack/issues/138)~~ | UI | **Done** — Remediation Board (`/remediation`) + comments + ticket *links*. Native Jira/ServiceNow/DefectDojo create is [10.3](#phase-10--change-detection--alerting-at-asset-level)/P2. SMAX was listed in the issue and is **not** implemented |
@@ -460,7 +470,7 @@ are worth resolving before either starts, so the work is not built twice: ticket
 | **Partial** | Some sub-items merged, named remainder still open |
 
 **Track A status:** Phases 1–11 and P0–P4 are **Done** (OpenTelemetry is
-opt-in OTLP on the API). Remaining Track A item: Agent_plan Track D (S8/S10).
+opt-in OTLP on the API). Agent_plan Track D (S8/S10) is merged, so no Track A item is open.
 
 **Track B and C statuses live in their issues**, not here — a status duplicated in two
 places is a status that will disagree with itself. This file links; the issues decide.
