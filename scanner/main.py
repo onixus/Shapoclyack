@@ -35,7 +35,9 @@ from scanner.pipeline.errors import StageFailureError
 from scanner.pipeline.asn_discovery import discover_asn_ranges
 from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
+from scanner.pipeline.dns_hygiene import check_dns_hygiene
 from scanner.pipeline.domain_monitor import monitor_domains
+from scanner.pipeline.mail_posture import check_mail_posture
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
 from scanner.pipeline.screenshots import capture_screenshots_sync
 from scanner.pipeline.nuclei_scan import run_nuclei_scan
@@ -387,6 +389,40 @@ def _run_pipeline_body(
             lambda: monitor_domains(dm_domains, scope_fqdns, dm_config, paths.output_dir),
         )
         checkpoint.mark_done("domain_monitor")
+
+    # EPIC #182 (org_profile M2): zone hygiene and mail authentication posture.
+    # Beside domain_monitor and for the same reason -- after resolve, so both
+    # see the final in-scope FQDN list. Findings-only: neither adds FQDNs or
+    # IPs, so --resume just skips them.
+    if args.resume and checkpoint.is_done("dns_hygiene"):
+        timer.skip("dns_hygiene")
+    else:
+        dns_hygiene_config = config.org_profile.dns_hygiene
+        dns_hygiene_domains = dns_hygiene_config.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "dns_hygiene",
+            lambda: check_dns_hygiene(
+                dns_hygiene_domains,
+                dns_hygiene_config,
+                paths.output_dir,
+            ),
+        )
+        checkpoint.mark_done("dns_hygiene")
+
+    if args.resume and checkpoint.is_done("mail_posture"):
+        timer.skip("mail_posture")
+    else:
+        mail_posture_config = config.org_profile.mail_posture
+        mail_posture_domains = mail_posture_config.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "mail_posture",
+            lambda: check_mail_posture(
+                mail_posture_domains,
+                mail_posture_config,
+                paths.output_dir,
+            ),
+        )
+        checkpoint.mark_done("mail_posture")
 
     all_targets = sorted(set(scope_ips + resolved_ips))
     write_lines(paths.output_dir / "all_targets.txt", all_targets)

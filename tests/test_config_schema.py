@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from scanner.pipeline.config_schema import AppConfig, DiscoveryConfig, format_validation_error, load_config
+from scanner.pipeline.config_schema import (
+    AppConfig,
+    DiscoveryConfig,
+    MailPostureConfig,
+    format_validation_error,
+    load_config,
+)
 
 
 def _minimal_config(**overrides: object) -> dict:
@@ -216,6 +222,22 @@ def test_default_yaml_parses():
     assert cfg.org_profile.ownership.max_domains == 50
     assert cfg.org_profile.ownership.timeout_seconds == 15
     assert cfg.org_profile.ownership.deadline_seconds == 300
+    # org_profile M2 (#182): both stages opt-in, and AXFR -- the only active
+    # check in the module -- stays off in the shipped config.
+    assert cfg.org_profile.dns_hygiene.enabled is False
+    assert cfg.org_profile.dns_hygiene.axfr_probe is False
+    assert cfg.org_profile.dns_hygiene.max_domains == 50
+    assert cfg.org_profile.dns_hygiene.deadline_seconds == 300
+    assert cfg.org_profile.mail_posture.enabled is False
+    assert cfg.org_profile.mail_posture.mta_sts_http is True
+    assert cfg.org_profile.mail_posture.dkim_selectors == [
+        "default",
+        "google",
+        "selector1",
+        "selector2",
+        "k1",
+        "mail",
+    ]
 
 
 def test_default_yaml_phase1_sections():
@@ -278,3 +300,19 @@ def test_screenshots_rejects_invalid_port():
     raw["screenshots"] = {"enabled": True, "http_ports": [0]}
     with pytest.raises(ValidationError):
         load_config(raw)
+
+
+def test_dkim_selectors_must_be_dns_labels():
+    """A selector is interpolated into a query name and passed to dnsx."""
+    for bad in ["not a label", "sel.ector", "x" * 64, "sel/../etc"]:
+        with pytest.raises(ValidationError):
+            MailPostureConfig(dkim_selectors=[bad])
+    assert MailPostureConfig(dkim_selectors=["s1", "selector-2"]).dkim_selectors == [
+        "s1",
+        "selector-2",
+    ]
+
+
+def test_dkim_selector_list_is_capped():
+    with pytest.raises(ValidationError):
+        MailPostureConfig(dkim_selectors=[f"s{index}" for index in range(21)])
