@@ -114,7 +114,7 @@ seed domain
     {"kind": "cert_org",   "value": "Example Holding LLC", "source": "tls_cert",     "confidence": 0.7}
   ],
   "registrar": "…", "created": "…", "expires": "…",
-  "registrant_status": "public|redacted|unknown",
+  "registrant_status": "public|redacted|natural_person|unidentified|unknown",
   "nameservers": ["ns1.…"],
   "truncated": false, "errors": []
 }
@@ -162,6 +162,23 @@ M2/M3, когда появится агрегатор, читающий чужи
 | `not_checked` | `no_rdap_service` | ни bootstrap, ни `rdap.org` не дали кандидата |
 | `error` | `rdap_unavailable` | транспорт/HTTP-ошибка после ретраев |
 | `error` | `rdap_blocked_target` | адрес RDAP-сервера не прошёл валидацию `safe_http` |
+
+**Статусы регистранта** (`registrant_status`) — модуль различает «скрыто»,
+«человек» и «ничего нет», а не сваливает их в один `null`:
+
+| Значение | Когда |
+| --- | --- |
+| `public` | получено имя организации: поле `org`, либо `fn` при явном `kind: org` |
+| `redacted` | реестр замаскировал поле (RFC 9537 `redacted[]`, remark «REDACTED FOR PRIVACY» или маркер в значении) |
+| `natural_person` | регистрант объявлен как `kind: individual` — имя намеренно не записывается |
+| `unidentified` | регистрант есть, но ничего в нём не опознаётся как организация (голый `fn` без `kind`) |
+| `unknown` | сущности с ролью `registrant` в объекте нет вообще |
+
+`fn` без `kind: org` **не** используется как `org_name`. Это осознанный
+false-negative: у домена частного лица `fn` — это имя человека, а контракт
+модуля запрещает писать его на диск. Реестры, кладущие название компании в
+`fn` без `kind`, теряют идентификатор — потерять идентификатор дешевле, чем
+записать имя физлица с весом 0.9.
 
 **Что пишется на диск.** `ownership.json` и `ownership_findings.txt` содержат
 только `org_name`, `registrar`, `abuse_email`, даты, статусы, флаг DNSSEC и NS.
@@ -415,6 +432,7 @@ org_profile:
 | Rate limit RDAP / crt.sh | кэш в `state_dir`, backoff, fail-soft per-call (как в `asn_discovery.py`) |
 | Приватность данных об утечках | агрегаты, маскирование, RBAC-гейт, исключение из PDF и вебхуков |
 | Скрытый GDPR-регистрант | статус `redacted` вместо молчаливого «нет владельца» |
+| Регистрант — физлицо, его имя утекает в артефакт как `org_name` | `fn` берётся только при `kind: org`; иначе `natural_person`/`unidentified` и `org_name: null` |
 | Дублирование существующей логики | typosquat/dangling — ссылка на `domain_monitor.py`; TLS/технологии/сервисы — маппинг существующих findings, без новых HTTP-клиентов |
 
 ## Открытые вопросы

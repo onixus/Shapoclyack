@@ -66,6 +66,36 @@ PUBLIC_DOMAIN = {
     ],
 }
 
+NATURAL_PERSON_DOMAIN = {
+    "ldhName": "private.example",
+    "entities": [
+        {
+            "roles": ["registrant"],
+            "vcardArray": [
+                "vcard",
+                [
+                    ["kind", {}, "text", "individual"],
+                    ["fn", {}, "text", "Ivan Petrov"],
+                    ["adr", {}, "text", ["", "", "12 Lenina St", "Tver", "", "", "RU"]],
+                    ["tel", {}, "text", "+7.9995550122"],
+                ],
+            ],
+        }
+    ],
+}
+
+# Same thing without the explicit kind -- the common registry shape, and the
+# one where "is this a company or a person" cannot be answered from the data.
+AMBIGUOUS_REGISTRANT_DOMAIN = {
+    "ldhName": "ambiguous.example",
+    "entities": [
+        {
+            "roles": ["registrant"],
+            "vcardArray": ["vcard", [["fn", {}, "text", "Ivan Petrov"]]],
+        }
+    ],
+}
+
 REDACTED_DOMAIN = {
     "ldhName": "masked.com",
     "remarks": [{"title": "REDACTED FOR PRIVACY", "description": ["Some fields are not public."]}],
@@ -140,19 +170,79 @@ def test_ownership_records_public_registrant(tmp_path: Path, monkeypatch):
     assert lines == ["example.com:ok:registrant=public:registrar=RESERVED-Registrar"]
 
 
-def test_ownership_never_persists_the_raw_contact_block(tmp_path: Path, monkeypatch):
-    _patch_lookups(monkeypatch, {"example.com": PUBLIC_DOMAIN})
+@pytest.mark.parametrize(
+    ("domain", "payload", "person", "address", "phone"),
+    [
+        # Registrant carries both org and fn: the fn is a contact person.
+        ("example.com", PUBLIC_DOMAIN, "Jane Doe", "1 Example Way", "5555550111"),
+        # Registrant is a private person: fn is the only name there is, and it
+        # is the one path through which a natural-person name could reach disk.
+        ("private.example", NATURAL_PERSON_DOMAIN, "Ivan Petrov", "12 Lenina St", "9995550122"),
+    ],
+)
+def test_ownership_never_persists_the_raw_contact_block(
+    tmp_path: Path, monkeypatch, domain, payload, person, address, phone
+):
+    _patch_lookups(monkeypatch, {domain: payload})
 
-    resolve_ownership(["example.com"], _config(), tmp_path, tmp_path / "state")
+    resolve_ownership([domain], _config(), tmp_path, tmp_path / "state")
 
     raw = (tmp_path / "ownership.json").read_text(encoding="utf-8")
     # Natural-person name, postal address and phone numbers are parsed in
     # memory and dropped -- none of them may reach disk.
-    assert "Jane Doe" not in raw
-    assert "1 Example Way" not in raw
-    assert "5555550111" not in raw
+    assert person not in raw
+    assert address not in raw
+    assert phone not in raw
     assert "vcardArray" not in raw
     assert "entities" not in raw
+
+
+def test_ownership_does_not_promote_a_private_person_to_org_name(tmp_path: Path, monkeypatch):
+    _patch_lookups(monkeypatch, {"private.example": NATURAL_PERSON_DOMAIN})
+
+    result = resolve_ownership(["private.example"], _config(), tmp_path, tmp_path / "state")
+
+    record = result["domains"]["private.example"]
+    assert record["org_name"] is None
+    # "registered by a human" is its own answer -- not "public", which would
+    # claim we identified an organization, and not "unknown".
+    assert record["registrant_status"] == "natural_person"
+    assert result["identifiers"] == []
+
+
+def test_ownership_will_not_guess_an_org_from_a_bare_fn(tmp_path: Path, monkeypatch):
+    _patch_lookups(monkeypatch, {"ambiguous.example": AMBIGUOUS_REGISTRANT_DOMAIN})
+
+    result = resolve_ownership(["ambiguous.example"], _config(), tmp_path, tmp_path / "state")
+
+    record = result["domains"]["ambiguous.example"]
+    # Deliberate false negative: an fn with no kind could be either, and
+    # writing a possible person's name at confidence 0.9 is the worse error.
+    assert record["org_name"] is None
+    assert record["registrant_status"] == "unidentified"
+    assert "Ivan Petrov" not in (tmp_path / "ownership.json").read_text(encoding="utf-8")
+
+
+def test_ownership_reads_an_org_declared_through_kind(tmp_path: Path, monkeypatch):
+    payload = {
+        "ldhName": "kindorg.example",
+        "entities": [
+            {
+                "roles": ["registrant"],
+                "vcardArray": [
+                    "vcard",
+                    [["kind", {}, "text", "org"], ["fn", {}, "text", "Example Holding LLC"]],
+                ],
+            }
+        ],
+    }
+    _patch_lookups(monkeypatch, {"kindorg.example": payload})
+
+    result = resolve_ownership(["kindorg.example"], _config(), tmp_path, tmp_path / "state")
+
+    record = result["domains"]["kindorg.example"]
+    assert record["org_name"] == "Example Holding LLC"
+    assert record["registrant_status"] == "public"
 
 
 def test_ownership_marks_a_masked_registrant_as_redacted(tmp_path: Path, monkeypatch):

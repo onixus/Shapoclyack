@@ -11,7 +11,10 @@ All notable changes to Shapoclyack are documented in this file.
   disabled by default) resolves each seed domain's registrar, registrant organization,
   abuse contact, lifecycle dates, EPP statuses, DNSSEC flag and nameservers from the
   registry's RDAP object (IANA bootstrap cached in `state_dir`, `rdap.org` as fallback).
-  A GDPR-masked registrant is recorded as `registrant_status: "redacted"`, and a domain
+  `registrant_status` keeps apart `public`, `redacted` (registry-masked), `natural_person`
+  (`kind: individual`), `unidentified` (a registrant with nothing identifiable as an
+  organization) and `unknown`; a vCard `fn` becomes `org_name` only under an explicit
+  `kind: org`, so a private person's name is never promoted to an owner identifier. A domain
   with no RDAP answer gets `not_checked`/`error` with a reason — never `ok`. `max_domains`
   and `deadline_seconds` cap the registry query burst; exceeding either sets `truncated`.
   The raw RDAP `entities[]`/vCard block (postal address, phone, natural-person name,

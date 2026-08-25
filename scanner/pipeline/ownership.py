@@ -20,11 +20,15 @@ is parsed in memory and **never** written to disk, the same rule as
 still a restricted class in the API (``api/services/runs.py``
 ``is_restricted_artifact``) because ``abuse_email`` alone is operator-grade.
 
-HONESTY: most gTLD registries return a GDPR-masked object. A registrant that
-exists but is hidden is recorded as ``registrant_status: "redacted"``, never as
-absent data -- "we could not see it" and "there is nothing there" are different
-answers. And per the module invariant of #182, a domain with no RDAP answer
-gets ``status: "not_checked"`` or ``"error"`` with a reason, never ``"ok"``.
+HONESTY: most gTLD registries return a GDPR-masked object, and many domains
+belong to a private person rather than to a company. ``registrant_status``
+keeps those apart instead of collapsing them into "no owner": ``public`` (an
+organization name was recorded), ``redacted`` (the registry masked it),
+``natural_person`` (an explicit ``kind: individual`` -- the name is deliberately
+not recorded), ``unidentified`` (a registrant exists but nothing in it is
+identifiable as an organization) and ``unknown`` (no registrant at all). And
+per the module invariant of #182, a domain with no RDAP answer gets
+``status: "not_checked"`` or ``"error"`` with a reason, never ``"ok"``.
 """
 
 from __future__ import annotations
@@ -122,6 +126,29 @@ def _has_role(entity: dict[str, Any], role: str) -> bool:
     return isinstance(roles, list) and role in roles
 
 
+def _registrant_org(entity: dict[str, Any]) -> str | None:
+    """The registrant's *organization* name, or ``None`` if there is not one.
+
+    ``fn`` is accepted only when the entity declares ``kind: org``. On a domain
+    registered by a private person ``fn`` **is** that person's name, and the
+    module contract is that a natural-person name never reaches disk -- so an
+    ``fn`` that is not backed by an explicit ``kind`` is dropped rather than
+    guessed at.
+
+    That is a deliberate false-negative bias: a registry that puts a company
+    name in ``fn`` and omits ``kind`` loses the identifier, and losing an
+    identifier is the cheaper of the two mistakes. It also keeps
+    ``registrant_status`` meaningful -- a module that exists to tell "hidden"
+    apart from "absent" must not quietly conflate "organization" with "human".
+    """
+    org = _vcard_field(entity, "org")
+    if org:
+        return org
+    if (_vcard_field(entity, "kind") or "").casefold() == "org":
+        return _vcard_field(entity, "fn")
+    return None
+
+
 def _is_redacted_value(value: str | None) -> bool:
     return value is not None and value.strip().casefold() in _REDACTION_MARKERS
 
@@ -165,26 +192,39 @@ def _parse_rdap_domain(payload: dict[str, Any]) -> dict[str, Any]:
     org_name: str | None = None
     abuse_email: str | None = None
     registrant_seen = False
+    registrant_redacted = False
+    registrant_is_individual = False
     for entity in entities:
         if registrar is None and _has_role(entity, "registrar"):
             registrar = _vcard_field(entity, "fn")
         if _has_role(entity, "registrant"):
             registrant_seen = True
+            if (_vcard_field(entity, "kind") or "").casefold() == "individual":
+                registrant_is_individual = True
+            if _is_redacted_value(_vcard_field(entity, "fn")) or _is_redacted_value(
+                _vcard_field(entity, "org")
+            ):
+                registrant_redacted = True
             if org_name is None:
-                org_name = _vcard_field(entity, "org") or _vcard_field(entity, "fn")
+                org_name = _registrant_org(entity)
         if abuse_email is None and _has_role(entity, "abuse"):
             abuse_email = _vcard_field(entity, "email")
 
     if _is_redacted_value(registrar):
         registrar = None
     if _is_redacted_value(org_name):
-        registrant_seen = True
+        registrant_redacted = True
         org_name = None
+    registrant_redacted = registrant_redacted or _object_is_redacted(payload)
 
     if org_name:
         registrant_status = "public"
-    elif registrant_seen or _object_is_redacted(payload):
+    elif registrant_redacted:
         registrant_status = "redacted"
+    elif registrant_is_individual:
+        registrant_status = "natural_person"
+    elif registrant_seen:
+        registrant_status = "unidentified"
     else:
         registrant_status = "unknown"
 
