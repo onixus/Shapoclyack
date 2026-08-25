@@ -697,6 +697,47 @@ class TlsPostureConfig(BaseModel):
     )
 
 
+class OwnershipConfig(BaseModel):
+    """Domain ownership via RDAP (org_profile M1, EPIC #182). Opt-in.
+
+    One HTTPS GET per seed domain against the registry RDAP server named by the
+    IANA bootstrap file, plus ``rdap.org`` as fallback. Passive and keyless --
+    same risk class as ``discovery.asn``'s RIPEstat calls, and the same
+    fail-soft posture.
+
+    SAFETY: the next hop is chosen by a remote party (bootstrap entry, or a
+    302 from rdap.org), so requests go through ``scanner/pipeline/safe_http.py``
+    -- https only, address validated and pinned, redirects re-validated. None
+    of that is configurable; there is no switch here to turn off verification
+    or pinning.
+
+    ``max_domains`` caps how many domains the stage will query. The default
+    seed set is every base domain in scope, which on a large estate is
+    unbounded; past the cap the remaining domains are skipped and the run is
+    flagged ``truncated`` rather than quietly issuing thousands of registry
+    queries. ``deadline_seconds`` is the same cap in the time dimension.
+
+    PII: only org/registrar/abuse-email/dates/statuses/DNSSEC/NS are written;
+    the raw RDAP contact block never reaches disk, and ``ownership.json`` is a
+    restricted artifact (operator+) in the API.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    deadline_seconds: int = Field(default=300, ge=10, le=3_600)
+
+
+class OrgProfileConfig(BaseModel):
+    """Organization profile module (EPIC #182). M1 ships ``ownership``; the
+    remaining stages (dns_hygiene, mail_posture, related_domains, controls,
+    credential_leaks) attach here as they land."""
+
+    ownership: OwnershipConfig = Field(default_factory=OwnershipConfig)
+
+
 class SlackAlertConfig(BaseModel):
     enabled: bool = False
     # Prefer env OCTO_SLACK_WEBHOOK over committing secrets to YAML.
@@ -803,6 +844,7 @@ class AppConfig(BaseModel):
     screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
+    org_profile: OrgProfileConfig = Field(default_factory=OrgProfileConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)

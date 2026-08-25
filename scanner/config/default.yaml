@@ -407,6 +407,22 @@ tls_posture:
   probe_concurrency: 20
   probe_tls_ports: [443, 8443, 9443, 4443, 10443, 6443]
 
+# EPIC #182, org_profile M1 — domain ownership via RDAP (opt-in). One HTTPS GET
+# per seed domain to the registry RDAP server from the IANA bootstrap file
+# (rdap.org as fallback), through the pinned/validated client in
+# scanner/pipeline/safe_http.py. Writes only org/registrar/abuse-email/dates/
+# statuses/DNSSEC/NS — the raw RDAP contact block never reaches disk — and
+# ownership.json is an operator-only artifact in the API. max_domains and
+# deadline_seconds cap the registry query burst (the default seed set is every
+# base domain in scope); past either cap the run is flagged truncated.
+org_profile:
+  ownership:
+    enabled: false
+    domains: []             # empty = base domains from input FQDNs
+    max_domains: 50
+    timeout_seconds: 15
+    deadline_seconds: 300
+
 # Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
 #   OCTO_SMTP_HOST, OCTO_SMTP_PORT, OCTO_SMTP_FROM, OCTO_SMTP_TO

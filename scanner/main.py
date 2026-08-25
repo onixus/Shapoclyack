@@ -47,6 +47,7 @@ from scanner.pipeline.hostnames import (
     merge_name_lists,
 )
 from scanner.pipeline.nse import run_nse
+from scanner.pipeline.ownership import resolve_ownership
 from scanner.pipeline.ports import fast_port_scan
 from scanner.pipeline.pulse_probe import run_pulse_probe, sync_report_primary_marker
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
@@ -329,6 +330,26 @@ def _run_pipeline_body(
         checkpoint.mark_done("asn")
     if config.discovery.asn.enabled:
         scope_ips = sorted(set(scope_ips + list(asn_result.get("ip_ranges") or [])))
+
+    # EPIC #182 (org_profile M1): domain ownership via RDAP. Sits beside ct/asn
+    # and before resolve because the owner identifiers it produces are the seed
+    # for the related-domains stage, which may influence scope. Findings-only
+    # here: it adds neither FQDNs nor IPs, so --resume just skips it.
+    if args.resume and checkpoint.is_done("ownership"):
+        timer.skip("ownership")
+    else:
+        ownership_config = config.org_profile.ownership
+        ownership_domains = ownership_config.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "ownership",
+            lambda: resolve_ownership(
+                ownership_domains,
+                ownership_config,
+                paths.output_dir,
+                paths.state_dir,
+            ),
+        )
+        checkpoint.mark_done("ownership")
 
     # Phase 8.3: cloud storage bucket enumeration (asset-inventory finding,
     # not scope-expanding -- see module docstring). Domains only; no merge
