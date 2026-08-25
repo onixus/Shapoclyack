@@ -144,7 +144,11 @@ def get_artifact(
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     text = runs_service.read_artifact_text(
-        settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
+        settings,
+        run_id,
+        artifact_path,
+        tenant_id=_run_tenant_filter(principal),
+        allow_restricted=True,
     )
     if text is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
@@ -193,7 +197,11 @@ def download_artifact(
         )
     else:
         target = runs_service.resolve_artifact(
-            settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
+            settings,
+            run_id,
+            artifact_path,
+            tenant_id=_run_tenant_filter(principal),
+            allow_restricted=True,
         )
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")

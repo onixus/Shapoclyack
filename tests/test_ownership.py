@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
 
-from scanner.pipeline import safe_http
+from scanner.pipeline import ownership, safe_http
 from scanner.pipeline.config_schema import OwnershipConfig
 from scanner.pipeline.ownership import (
     _get_json,
@@ -116,7 +118,7 @@ def _patch_lookups(monkeypatch, payloads: dict[str, dict | None]) -> list[str]:
     """Answer the bootstrap fetch from BOOTSTRAP and each RDAP URL from ``payloads``."""
     requested: list[str] = []
 
-    def _fake_get_json(url: str, timeout: float, max_retries: int = 2):
+    def _fake_get_json(url: str, timeout: float, max_retries: int = 2, *, deadline: float | None = None):
         requested.append(url)
         if url.endswith("/rdap/dns.json"):
             return BOOTSTRAP
@@ -270,7 +272,7 @@ def test_ownership_missing_rdap_object_is_not_ok(tmp_path: Path, monkeypatch):
 
 
 def test_ownership_transport_failure_is_an_error_not_ok(tmp_path: Path, monkeypatch):
-    def _fake_get_json(url: str, timeout: float, max_retries: int = 2):
+    def _fake_get_json(url: str, timeout: float, max_retries: int = 2, *, deadline: float | None = None):
         if url.endswith("/rdap/dns.json"):
             return BOOTSTRAP
         raise safe_http.SafeHttpError("HTTP 503")
@@ -388,7 +390,7 @@ def test_get_json_does_not_retry_a_blocked_target(monkeypatch):
 
 
 def test_blocked_rdap_target_is_reported_as_an_error(tmp_path: Path, monkeypatch):
-    def _fake_get_json(url: str, timeout: float, max_retries: int = 2):
+    def _fake_get_json(url: str, timeout: float, max_retries: int = 2, *, deadline: float | None = None):
         if url.endswith("/rdap/dns.json"):
             return BOOTSTRAP
         raise safe_http.UnsafeTargetError("resolves to non-public address 127.0.0.1")
@@ -405,7 +407,7 @@ def test_blocked_rdap_target_is_reported_as_an_error(tmp_path: Path, monkeypatch
 def test_bootstrap_failure_falls_back_to_rdap_org(tmp_path: Path, monkeypatch):
     requested: list[str] = []
 
-    def _fake_get_json(url: str, timeout: float, max_retries: int = 2):
+    def _fake_get_json(url: str, timeout: float, max_retries: int = 2, *, deadline: float | None = None):
         requested.append(url)
         if url.endswith("/rdap/dns.json"):
             raise safe_http.SafeHttpError("HTTP 500")
@@ -418,3 +420,71 @@ def test_bootstrap_failure_falls_back_to_rdap_org(tmp_path: Path, monkeypatch):
     assert requested[-1] == "https://rdap.org/domain/example.com"
     assert result["domains"]["example.com"]["status"] == "ok"
     assert not (tmp_path / "state" / "rdap_dns_bootstrap.json").exists()
+
+
+def test_bootstrap_cache_is_reused_inside_its_ttl(tmp_path: Path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir(parents=True)
+    (state / "rdap_dns_bootstrap.json").write_text(json.dumps(BOOTSTRAP), encoding="utf-8")
+
+    requested = _patch_lookups(monkeypatch, {"example.com": PUBLIC_DOMAIN})
+    resolve_ownership(["example.com"], _config(), tmp_path, state)
+
+    assert not [url for url in requested if url.endswith("/rdap/dns.json")]
+
+
+def test_stale_bootstrap_cache_is_refetched(tmp_path: Path, monkeypatch):
+    """state_dir is not always per-run, so a cache with no TTL is believed forever.
+
+    Under ``runtime.per_run_output: false`` state_dir is the shared state base.
+    A registry that moves its RDAP server, or a TLD added after the first run,
+    would then never be picked up and every such domain would fall through to
+    rdap.org with nothing said about it.
+    """
+    state = tmp_path / "state"
+    state.mkdir(parents=True)
+    cache = state / "rdap_dns_bootstrap.json"
+    cache.write_text(json.dumps({"services": []}), encoding="utf-8")
+    stale = time.time() - (ownership.BOOTSTRAP_CACHE_TTL_SECONDS + 60)
+    os.utime(cache, (stale, stale))
+
+    requested = _patch_lookups(monkeypatch, {"example.com": PUBLIC_DOMAIN})
+    resolve_ownership(["example.com"], _config(), tmp_path, state)
+
+    assert [url for url in requested if url.endswith("/rdap/dns.json")]
+    assert "https://rdap.verisign.example/v1/domain/example.com" in requested
+
+
+def test_get_json_refuses_to_start_once_the_stage_deadline_passed(monkeypatch):
+    """The stage budget has to bound one domain, not just the gap between two.
+
+    One unresponsive registry costs (urls x attempts) x timeout plus backoff,
+    which is how a 300 s deadline checked only between domains becomes ~400 s
+    of wall clock.
+    """
+    def _never_called(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("safe_http.get called past the stage deadline")
+
+    monkeypatch.setattr("scanner.pipeline.safe_http.get", _never_called)
+
+    with pytest.raises(safe_http.SafeHttpError, match="stage deadline exceeded"):
+        _get_json("https://rdap.example/domain/example.com", 15.0, deadline=time.perf_counter() - 1)
+
+
+def test_get_json_clamps_the_request_timeout_to_the_remaining_budget(monkeypatch):
+    seen: list[float] = []
+
+    def _capture(url, *, timeout_seconds, max_bytes, headers, max_redirects):
+        seen.append(timeout_seconds)
+        return safe_http.SafeResponse(url=url, status=200, headers={}, body=b"{}", truncated=False)
+
+    monkeypatch.setattr("scanner.pipeline.safe_http.get", _capture)
+
+    _get_json("https://rdap.example/domain/example.com", 15.0, deadline=time.perf_counter() + 2)
+
+    assert seen and seen[0] <= 2.0, "a 15 s request was allowed inside a 2 s remaining budget"
+
+
+def test_sleep_within_refuses_to_spend_budget_the_stage_does_not_have():
+    assert ownership._sleep_within(0.01, None) is True
+    assert ownership._sleep_within(5.0, time.perf_counter() - 1) is False

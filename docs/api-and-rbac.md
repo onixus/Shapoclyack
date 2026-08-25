@@ -427,6 +427,11 @@ names — a new stage has to opt in deliberately:
 - `GET /api/runs/{id}/download/ownership.json` is operator-or-higher; a viewer
   gets `404`, same as a missing file.
 
+`resolve_artifact` refuses a restricted name too, not just the two routes:
+callers pass `allow_restricted=True` once the role check has passed, the same
+belt-and-braces as `allow_screenshots`. Without it the next endpoint that
+reaches for an artifact would inherit no protection at all.
+
 The same predicate will cover `credential_leaks.*` when org profile M5 lands.
 
 ## Automation clients

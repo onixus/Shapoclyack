@@ -49,6 +49,9 @@ IANA_DNS_BOOTSTRAP = "https://data.iana.org/rdap/dns.json"
 RDAP_ORG_FALLBACK = "https://rdap.org/domain/"
 USER_AGENT = "shapoclyack/ownership"
 BOOTSTRAP_CACHE_FILE = "rdap_dns_bootstrap.json"
+#: IANA serves the bootstrap document with ``max-age=86400``; match it rather
+#: than inventing a second number.
+BOOTSTRAP_CACHE_TTL_SECONDS = 86_400
 
 #: rdap.org answers with a 302 to the registry server, so zero redirects would
 #: break the fallback entirely. Three is enough for bootstrap -> registry ->
@@ -264,7 +267,6 @@ def _parse_rdap_domain(payload: dict[str, Any]) -> dict[str, Any]:
 #: #182. "not_checked" is "nobody could tell us"; "error" is "we tried and the
 #: attempt itself failed". Neither is ever "ok".
 _REASON_STATUS = {
-    "no_rdap_service": "not_checked",
     "rdap_not_found": "not_checked",
     "rdap_unavailable": "error",
     "rdap_blocked_target": "error",
@@ -289,23 +291,41 @@ def _no_answer(reason: str) -> dict[str, Any]:
     }
 
 
-def _get_json(url: str, timeout: float, max_retries: int = 2) -> Any:
+def _get_json(
+    url: str,
+    timeout: float,
+    max_retries: int = 2,
+    *,
+    deadline: float | None = None,
+) -> Any:
     """One RDAP GET with the retry ladder from ``asn_discovery.py``.
 
     Response bodies are never logged: an RDAP object is exactly the PII this
     module exists to keep off disk, and a log line is disk.
+
+    ``deadline`` is the stage-wide budget. Without it one unresponsive registry
+    costs up to ``(urls x attempts) * timeout`` plus the backoff sleeps, which
+    is how a 300 s stage deadline turns into ~400 s of wall clock: checking the
+    clock only *between* domains bounds the gap, not the domain.
     """
     for attempt in range(max_retries + 1):
+        request_timeout = timeout
+        if deadline is not None:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise safe_http.SafeHttpError("stage deadline exceeded")
+            request_timeout = min(timeout, remaining)
         try:
             resp = safe_http.get(
                 url,
-                timeout_seconds=timeout,
+                timeout_seconds=request_timeout,
                 max_bytes=_MAX_RESPONSE_BYTES,
                 headers={"Accept": "application/rdap+json, application/json", "User-Agent": USER_AGENT},
                 max_redirects=_MAX_REDIRECTS,
             )
             if resp.status in (429, 502, 503, 504) and attempt < max_retries:
-                time.sleep(0.5 * (2**attempt))
+                if not _sleep_within(0.5 * (2**attempt), deadline):
+                    raise safe_http.SafeHttpError(f"HTTP {resp.status}, stage deadline exceeded")
                 continue
             if resp.status == 404:
                 return None
@@ -317,21 +337,48 @@ def _get_json(url: str, timeout: float, max_retries: int = 2) -> Any:
             # the same URL can only reach the same address.
             raise
         except SAFE_HTTP_ERRORS as exc:
-            if attempt < max_retries:
-                time.sleep(0.5 * (2**attempt))
+            if attempt < max_retries and _sleep_within(0.5 * (2**attempt), deadline):
                 continue
             raise safe_http.SafeHttpError(str(exc)) from exc
     return None
 
 
+def _cache_is_fresh(cache: Path) -> bool:
+    """Whether the cached bootstrap document is still inside its TTL."""
+    try:
+        age = time.time() - cache.stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age < BOOTSTRAP_CACHE_TTL_SECONDS
+
+
+def _sleep_within(seconds: float, deadline: float | None) -> bool:
+    """Back off, unless that would spend budget the stage no longer has."""
+    if deadline is None:
+        time.sleep(seconds)
+        return True
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        return False
+    time.sleep(min(seconds, remaining))
+    return deadline - time.perf_counter() > 0
+
+
 def _load_bootstrap(state_dir: Path, timeout: float) -> dict[str, str]:
     """TLD -> registry RDAP base URL, cached in ``state_dir``.
 
-    Cached per run rather than fetched per domain: a 50k-asset estate collapses
-    to tens of TLDs, and IANA should see one request, not one per domain.
+    Cached rather than fetched per domain: a 50k-asset estate collapses to tens
+    of TLDs, and IANA should see one request, not one per domain.
+
+    The cache carries a one-day TTL because ``state_dir`` is not always per-run:
+    under ``runtime.per_run_output: false`` it is the shared state base, and a
+    cache with no TTL would then be written once and believed forever -- a new
+    TLD or a registry that moved its RDAP server would never be picked up, and
+    every such domain would silently fall through to ``rdap.org``. One day is
+    what IANA itself serves the document with (``max-age=86400``).
     """
     cache = state_dir / BOOTSTRAP_CACHE_FILE
-    payload = load_json(cache, fallback=None)
+    payload = load_json(cache, fallback=None) if _cache_is_fresh(cache) else None
     if payload is None:
         try:
             payload = _get_json(IANA_DNS_BOOTSTRAP, timeout)
@@ -373,12 +420,20 @@ def _rdap_urls(domain: str, services: dict[str, str]) -> list[str]:
     return urls
 
 
-def _lookup_domain(domain: str, services: dict[str, str], timeout: float) -> dict[str, Any]:
+def _lookup_domain(
+    domain: str,
+    services: dict[str, str],
+    timeout: float,
+    deadline: float | None = None,
+) -> dict[str, Any]:
     """Query RDAP for one domain, fail-soft. Never raises."""
-    last_reason = "no_rdap_service"
+    # _rdap_urls always yields at least the rdap.org fallback, so the loop below
+    # always runs and always overwrites this. It is a defensive initializer, not
+    # a reachable outcome -- do not document it as a status an operator can see.
+    last_reason = "rdap_unavailable"
     for url in _rdap_urls(domain, services):
         try:
-            payload = _get_json(url, timeout)
+            payload = _get_json(url, timeout, deadline=deadline)
         except safe_http.UnsafeTargetError as exc:
             LOG.warning("ownership: RDAP target rejected for %s: %s", domain, exc)
             last_reason = "rdap_blocked_target"
@@ -475,7 +530,7 @@ def resolve_ownership(
 
     timeout = float(config.timeout_seconds)
     deadline = time.perf_counter() + float(config.deadline_seconds)
-    services = _load_bootstrap(state_dir, timeout)
+    services = _load_bootstrap(state_dir, min(timeout, float(config.deadline_seconds)))
 
     records: dict[str, dict[str, Any]] = {}
     for domain in seeds:
@@ -489,7 +544,7 @@ def resolve_ownership(
                 len(seeds),
             )
             break
-        records[domain] = _lookup_domain(domain, services, timeout)
+        records[domain] = _lookup_domain(domain, services, timeout, deadline)
 
     result["domains"] = records
     result["identifiers"] = _identifiers(records)

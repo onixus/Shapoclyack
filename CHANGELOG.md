@@ -10,13 +10,17 @@ All notable changes to Shapoclyack are documented in this file.
   new opt-in scanner stage `scanner/pipeline/ownership.py` (`org_profile.ownership`,
   disabled by default) resolves each seed domain's registrar, registrant organization,
   abuse contact, lifecycle dates, EPP statuses, DNSSEC flag and nameservers from the
-  registry's RDAP object (IANA bootstrap cached in `state_dir`, `rdap.org` as fallback).
+  registry's RDAP object (IANA bootstrap cached in `state_dir` under a one-day TTL,
+  matching what IANA serves the document with, `rdap.org` as fallback).
   `registrant_status` keeps apart `public`, `redacted` (registry-masked), `natural_person`
   (`kind: individual`), `unidentified` (a registrant with nothing identifiable as an
   organization) and `unknown`; a vCard `fn` becomes `org_name` only under an explicit
   `kind: org`, so a private person's name is never promoted to an owner identifier. A domain
   with no RDAP answer gets `not_checked`/`error` with a reason — never `ok`. `max_domains`
   and `deadline_seconds` cap the registry query burst; exceeding either sets `truncated`.
+  The deadline bounds a single lookup as well as the gap between two — it is checked
+  before every attempt, clamps that request's timeout and cuts the retry backoff short,
+  so an unresponsive registry cannot spend `(urls x attempts) x timeout` past it.
   The raw RDAP `entities[]`/vCard block (postal address, phone, natural-person name,
   tech/admin contacts) is parsed in memory and never written to disk.
 
@@ -29,7 +33,9 @@ All notable changes to Shapoclyack are documented in this file.
   hop. Certificate verification, pinning and proxy-bypass are not configurable.
 
 - **Restricted run artifacts (operator+)** — `api/services/runs.py::is_restricted_artifact`
-  adds a second protected artifact class beside screenshot PNGs. `ownership.json` and
+  adds a second protected artifact class beside screenshot PNGs. `resolve_artifact`
+  enforces it as well as the two routes (`allow_restricted`, mirroring
+  `allow_screenshots`), so a future endpoint cannot inherit the name without the gate. `ownership.json` and
   `ownership_findings.txt` carry an abuse contact address, so they are omitted from
   `GET /api/runs/{id}` artifact listings and answer `404` to a viewer on both the
   text-preview and the download endpoint. Org profile M5 will add `credential_leaks.*`

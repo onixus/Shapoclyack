@@ -603,6 +603,7 @@ def resolve_artifact(
     *,
     tenant_id: str | None = None,
     allow_screenshots: bool = False,
+    allow_restricted: bool = False,
 ) -> Path | None:
     """Resolve a run-relative artifact path to a real file, or ``None`` if the
     run/file doesn't exist or the path escapes the run directory. Rejects
@@ -610,7 +611,13 @@ def resolve_artifact(
     and confirms the resolved target stays under ``run_dir``. Shared by the
     text-preview and binary-download endpoints. ``tenant_id`` additionally
     scopes the run itself, so artifacts of another tenant's run read as
-    missing."""
+    missing.
+
+    Restricted artifacts (:func:`is_restricted_artifact`) are refused here as
+    well as in the routes, the same belt-and-braces as ``allow_screenshots``.
+    The route check alone would mean the next endpoint that reaches for an
+    artifact inherits no protection at all -- and org_profile M5 is already
+    scheduled to put credential-leak identifiers behind this predicate."""
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
@@ -618,6 +625,8 @@ def resolve_artifact(
     if rel.is_absolute() or ".." in rel.parts:
         return None
     if is_screenshot_path(relative) and not allow_screenshots:
+        return None
+    if is_restricted_artifact(relative) and not allow_restricted:
         return None
     target = (run_dir / rel).resolve()
     try:
@@ -636,8 +645,11 @@ def read_artifact_text(
     *,
     max_bytes: int = 1_000_000,
     tenant_id: str | None = None,
+    allow_restricted: bool = False,
 ) -> str | None:
-    target = resolve_artifact(settings, run_id, relative, tenant_id=tenant_id)
+    target = resolve_artifact(
+        settings, run_id, relative, tenant_id=tenant_id, allow_restricted=allow_restricted
+    )
     if target is None:
         return None
     data = target.read_bytes()[:max_bytes]
