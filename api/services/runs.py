@@ -265,6 +265,7 @@ def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = N
         if path.is_file()
         and path.stat().st_size < 50_000_000
         and not is_screenshot_path(str(path.relative_to(run_dir)))
+        and not is_restricted_artifact(str(path.relative_to(run_dir)))
     )
     return RunDetail(
         run_id=run_id,
@@ -570,6 +571,31 @@ def is_screenshot_path(relative: str) -> bool:
     return len(parts) >= 2 and parts[0] == "screenshots" and parts[-1].lower().endswith(".png")
 
 
+# Run artifacts that carry owner or subject identifiers rather than scan
+# results: an RDAP abuse address (org_profile M1, #182) is a contactable human
+# at the target organization, which is not the same class of data as an open
+# port. Listed by exact run-relative name so a new stage has to opt in
+# deliberately; org_profile M5 adds credential_leaks.* here.
+_RESTRICTED_ARTIFACTS = frozenset(
+    {
+        "ownership.json",
+        "ownership_findings.txt",
+    }
+)
+
+
+def is_restricted_artifact(relative: str) -> bool:
+    """Artifacts an operator may read but a viewer may not (org_profile #182).
+
+    Same treatment as screenshot PNGs: hidden from the artifact listing,
+    ``404`` for a viewer on both the preview and the download endpoint. Unlike
+    screenshots these are readable text, so an operator gets them through the
+    preview endpoint too.
+    """
+    parts = Path(relative).parts
+    return len(parts) == 1 and parts[0].lower() in _RESTRICTED_ARTIFACTS
+
+
 def resolve_artifact(
     settings: Settings,
     run_id: str,
@@ -577,6 +603,7 @@ def resolve_artifact(
     *,
     tenant_id: str | None = None,
     allow_screenshots: bool = False,
+    allow_restricted: bool = False,
 ) -> Path | None:
     """Resolve a run-relative artifact path to a real file, or ``None`` if the
     run/file doesn't exist or the path escapes the run directory. Rejects
@@ -584,7 +611,13 @@ def resolve_artifact(
     and confirms the resolved target stays under ``run_dir``. Shared by the
     text-preview and binary-download endpoints. ``tenant_id`` additionally
     scopes the run itself, so artifacts of another tenant's run read as
-    missing."""
+    missing.
+
+    Restricted artifacts (:func:`is_restricted_artifact`) are refused here as
+    well as in the routes, the same belt-and-braces as ``allow_screenshots``.
+    The route check alone would mean the next endpoint that reaches for an
+    artifact inherits no protection at all -- and org_profile M5 is already
+    scheduled to put credential-leak identifiers behind this predicate."""
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
@@ -592,6 +625,8 @@ def resolve_artifact(
     if rel.is_absolute() or ".." in rel.parts:
         return None
     if is_screenshot_path(relative) and not allow_screenshots:
+        return None
+    if is_restricted_artifact(relative) and not allow_restricted:
         return None
     target = (run_dir / rel).resolve()
     try:
@@ -610,8 +645,11 @@ def read_artifact_text(
     *,
     max_bytes: int = 1_000_000,
     tenant_id: str | None = None,
+    allow_restricted: bool = False,
 ) -> str | None:
-    target = resolve_artifact(settings, run_id, relative, tenant_id=tenant_id)
+    target = resolve_artifact(
+        settings, run_id, relative, tenant_id=tenant_id, allow_restricted=allow_restricted
+    )
     if target is None:
         return None
     data = target.read_bytes()[:max_bytes]

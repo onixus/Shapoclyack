@@ -209,6 +209,13 @@ def test_default_yaml_parses():
     assert cfg.ports.udp_probes is True
     assert cfg.screenshots.enabled is False
     assert cfg.screenshots.max_targets == 50
+    # org_profile M1 (#182): opt-in, and the registry-query caps stay in sync
+    # with OwnershipConfig's defaults.
+    assert cfg.org_profile.ownership.enabled is False
+    assert cfg.org_profile.ownership.domains == []
+    assert cfg.org_profile.ownership.max_domains == 50
+    assert cfg.org_profile.ownership.timeout_seconds == 15
+    assert cfg.org_profile.ownership.deadline_seconds == 300
 
 
 def test_default_yaml_phase1_sections():

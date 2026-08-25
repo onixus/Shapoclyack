@@ -139,8 +139,16 @@ def get_artifact(
 ) -> str:
     if runs_service.is_screenshot_path(artifact_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    if runs_service.is_restricted_artifact(artifact_path) and (
+        ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     text = runs_service.read_artifact_text(
-        settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
+        settings,
+        run_id,
+        artifact_path,
+        tenant_id=_run_tenant_filter(principal),
+        allow_restricted=True,
     )
     if text is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
@@ -173,6 +181,10 @@ def download_artifact(
     UTF-8-decodes and truncates to 1 MB — fine for previewing JSON/TXT but
     corrupts binaries like ``summary.pdf``), this streams the raw file with an
     attachment disposition and a content-type derived from its extension."""
+    if runs_service.is_restricted_artifact(artifact_path) and (
+        ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     if runs_service.is_screenshot_path(artifact_path):
         if ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
@@ -185,7 +197,11 @@ def download_artifact(
         )
     else:
         target = runs_service.resolve_artifact(
-            settings, run_id, artifact_path, tenant_id=_run_tenant_filter(principal)
+            settings,
+            run_id,
+            artifact_path,
+            tenant_id=_run_tenant_filter(principal),
+            allow_restricted=True,
         )
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
