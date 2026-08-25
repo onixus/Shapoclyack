@@ -176,33 +176,44 @@ only source the Risk Overview trend chart reads
 
 | Route | Role | Notes |
 |---|---|---|
-| `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin |
+| `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin, as for `/jobs` |
 | `GET /api/agents/summary` | viewer | Fleet rollup: total / online / busy / stale / error / outdated, `latest_version`, and a per-tenant count |
-| `GET /api/agents/{id}` | viewer | One agent, including heartbeat metrics (OS, CPU, memory, disk, load, uptime), capabilities and `upgrade_requested` |
+| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities and `upgrade_requested`; `404` outside the tenant |
 | `DELETE /api/agents/{id}` | operator | Forgets the registration. It does **not** stop the remote process — an agent that is still running re-registers on its next heartbeat |
-| `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host acts on it, and the upgrade itself is `scripts/update-agent.sh` run on that host |
-| `POST /api/agent/deploy/ssh` | operator | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install happens in a background thread |
+| `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
+| `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
+| `POST /api/agent/deployment-command` | operator | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
+| `POST /api/agent/deploy/ssh` | operator | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side |
 | `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id` |
-| `GET /api/agent/deployment-command` | viewer | Ready-made install snippets (systemd one-liner, `docker run`, compose, Kubernetes) for this tenant |
-| `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script carries no secret; the provisioning key is passed to it as an argument |
+| `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential; the provisioning key is passed to it as an argument |
 
 Cross-tenant ids answer `404` for a read and `403` where the service can tell
 the caller is reaching outside its tenant; a platform admin without a requested
 tenant sees the whole fleet, the same rule as `/api/jobs`.
 
-Three properties of this group are worth knowing before it is used:
+A provisioning key registers an agent into the tenant, so anything that hands
+one out is an authorization decision, not a read. Both deployment-command
+routes therefore take `operator` — the same bar as the SSH push, which already
+mints a key for the host it installs on. Tenant-wide key administration
+(listing, revoking, minting against an arbitrary tenant under
+`/api/tenants/{tenant_id}/provisioning-keys`) stays `admin`.
+
+The split between GET and POST is deliberate: rendering the snippets is
+idempotent, minting is not. Keys are hashed at rest and the plaintext is
+returned exactly once, so an existing key cannot be re-embedded in a snippet —
+a fresh mint is the only way to fill the placeholder in, and the operator asks
+for it explicitly rather than getting one per dialog open. Revoke unused keys
+via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
+
+Three further properties of this group are worth knowing before it is used:
 
 - **Deployment runs live in the API process' memory** (last 100 runs, dropped
   on restart). With more than one API replica, the status poll only answers on
   the replica that started the run — put the deploy flow behind a sticky
   session, or run it against a single replica.
-- **The deployer mints a provisioning key per deployment** and passes it on the
-  remote command line, so it is visible in that host's process list while the
-  installer runs. `GET /api/agent/deployment-command` also mints a key on every
-  call — and it is a **viewer**-role route, so a viewer can obtain a
-  tenant provisioning key from it. Treat that as an open issue, not a design
-  decision, and keep the route away from read-only audiences until it is
-  restricted.
+- **The deployer passes the minted key on the remote command line**, so it is
+  visible in that host's process list while the installer runs, and it stays in
+  `/etc/shapoclyack/agent.env` afterwards. Revoke it if the host is shared.
 - **SSH credentials are request data.** The password or private key in
   `POST /api/agent/deploy/ssh` is used for the run and never stored, but it does
   cross the API. Host-key checking is disabled on both the Paramiko and the

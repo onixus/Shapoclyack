@@ -479,18 +479,28 @@ def request_upgrade(agent_id: str, tenant_id: str | None = None) -> dict[str, An
         }
 
 
+DEPLOYMENT_KEY_LABEL = "Web UI Deployment Key"
+# Shown in place of a real key when the caller only asked to *see* the
+# snippets. Minting a tenant provisioning key is a privileged, stateful act,
+# so it happens on POST, never as a side effect of a GET.
+DEPLOYMENT_KEY_PLACEHOLDER = "<PROVISIONING_KEY>"
+
+
 def get_deployment_snippets(
     tenant_id: str,
     server_url: str,
     *,
     provisioning_key: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    """Render the install snippets. Never mints a key.
+
+    Without ``provisioning_key`` the snippets carry a placeholder the operator
+    is expected to replace with a key minted through
+    :func:`mint_deployment_snippets` (or an existing tenant key).
+    """
+    key_minted = bool(provisioning_key)
     if not provisioning_key:
-        key_res = tenants_service.create_provisioning_key(
-            tenant_id=tenant_id,
-            label="Web UI Deployment Key",
-        )
-        provisioning_key = key_res["key"]
+        provisioning_key = DEPLOYMENT_KEY_PLACEHOLDER
     clean_server = server_url.rstrip("/")
     install_url = f"{clean_server}/api/agent/install.sh"
 
@@ -544,10 +554,33 @@ spec:
 """
     return {
         "tenant_id": tenant_id,
-        "provisioning_key": provisioning_key,
+        "provisioning_key": provisioning_key if key_minted else None,
+        "key_minted": key_minted,
         "server_url": clean_server,
         "systemd_oneliner": systemd_oneliner,
         "docker_run": docker_run,
         "docker_compose": docker_compose.strip(),
         "kubernetes_yaml": kubernetes_yaml.strip(),
     }
+
+
+def mint_deployment_snippets(
+    tenant_id: str,
+    server_url: str,
+    *,
+    label: str = "",
+) -> dict[str, Any]:
+    """Mint one tenant provisioning key and render the snippets around it.
+
+    The plaintext key is returned here only; it is hashed at rest and cannot
+    be read back, so a fresh key is the only way to fill in the snippets.
+    """
+    key_res = tenants_service.create_provisioning_key(
+        tenant_id=tenant_id,
+        label=label.strip() or DEPLOYMENT_KEY_LABEL,
+    )
+    return get_deployment_snippets(
+        tenant_id=tenant_id,
+        server_url=server_url,
+        provisioning_key=key_res["key"],
+    )

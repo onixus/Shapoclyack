@@ -31,7 +31,7 @@ All notable changes to Shapoclyack are documented in this file.
   `GET /api/agents/summary` (fleet health rollup), `GET /api/agents/{id}`,
   `DELETE /api/agents/{id}`, `POST /api/agents/{id}/upgrade`,
   `POST /api/agent/deploy/ssh` + `GET /api/agent/deploy/{deploy_id}/status`,
-  `GET /api/agent/install.sh` and `GET /api/agent/deployment-command`.
+  `GET /api/agent/install.sh` and `GET`/`POST /api/agent/deployment-command`.
   `api/services/agent_deployer.py` pushes and installs the agent onto a Linux host over SSH
   from the Web UI (in-memory run registry, staged status, bounded history);
   `scripts/install-agent.sh` (Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine, Arch; native or
@@ -56,6 +56,19 @@ All notable changes to Shapoclyack are documented in this file.
   hardened alongside them.
 
 ### Security
+
+- **`GET /api/agent/deployment-command` no longer hands a tenant provisioning
+  key to viewers** — the route required only `viewer` while
+  `get_deployment_snippets()` minted a fresh provisioning key on every call and
+  embedded it in the returned snippets, so a read-only account could obtain a
+  credential that registers an agent, and every open of the deploy dialog left
+  another key row behind. The GET now takes `operator` and renders a
+  `<PROVISIONING_KEY>` placeholder without touching the key table; the new
+  `POST /api/agent/deployment-command` (also `operator`, the same bar as
+  `POST /api/agent/deploy/ssh`) mints one key on request, with an optional
+  `label`. `AgentDeploymentSnippetResponse.provisioning_key` is now nullable and
+  carries a `key_minted` flag. The deploy dialog gained an explicit
+  **Generate key** action.
 
 - **JWT algorithm allowlist and clock leeway** — `api/core/security.py` refuses any algorithm
   outside `HS256/384/512`, `RS256/384/512`, `ES256/384/512` on both encode and decode (so

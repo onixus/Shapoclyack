@@ -211,8 +211,9 @@ rows, and change events; a linked asset being deleted only nulls the device's
 ## Agent installation and upgrade
 
 An agent can be installed three ways: by hand from the snippets on `/agents`
-(systemd, Docker, Kubernetes), by running the installer directly, or by letting
-the API push it over SSH.
+(systemd, Docker, Kubernetes — press **Generate key** there first, since the
+snippets open with a `<PROVISIONING_KEY>` placeholder), by running the
+installer directly, or by letting the API push it over SSH.
 
 ```bash
 curl -sSL https://<api-host>/api/agent/install.sh | sudo bash -s -- --server https://<api-host> --key <provisioning-key> --tenant <tenant-id>
