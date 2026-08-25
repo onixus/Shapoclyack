@@ -83,8 +83,8 @@ written per window and the rest are counted only in `/metrics`.
 
 | Role | Intended capability |
 |---|---|
-| `viewer` | Read assets, runs, findings, diffs, artifacts (except screenshot PNGs), and status |
-| `operator` | Viewer plus start jobs, screenshot PNGs, and update permitted asset metadata |
+| `viewer` | Read assets, runs, findings, diffs, artifacts (except screenshot PNGs and restricted artifacts), and status |
+| `operator` | Viewer plus start jobs, screenshot PNGs, restricted artifacts, and update permitted asset metadata |
 | `admin` | Operator plus tenant provisioning, destructive administration, and config overrides |
 
 The route implementation is authoritative. Client-side hiding is usability,
@@ -396,7 +396,12 @@ downloads use a dedicated path so PDFs and other files are transferred without
 text decoding. Artifact paths must be treated as untrusted input and resolved
 only inside the selected run directory.
 
-Screenshot PNGs under `screenshots/` are a separate class (ROADMAP P4.4).
+### Restricted artifacts
+
+Two artifact classes are not covered by the viewer's blanket artifact access,
+because they carry data about people rather than about open ports.
+
+**Screenshot PNGs** under `screenshots/` (ROADMAP P4.4).
 They can still hold personal data after DOM redaction, so:
 
 - `GET /api/runs/{id}` omits those paths from `artifacts`;
@@ -407,6 +412,22 @@ They can still hold personal data after DOM redaction, so:
   items whose pixels the retention reaper already deleted (`available: false`).
 
 `screenshots.json` stays a normal text artifact.
+
+**Owner-identity artifacts** — `ownership.json` and `ownership_findings.txt`
+(org profile M1, [#182](https://github.com/onixus/Shapoclyack/issues/182)).
+They carry the RDAP registrant organization and the abuse contact address, i.e.
+a contactable human at the target organization. The predicate is
+`api/services/runs.py::is_restricted_artifact`, an explicit list of run-relative
+names — a new stage has to opt in deliberately:
+
+- `GET /api/runs/{id}` omits them from `artifacts` (as with PNGs, unconditionally
+  — an operator fetches them by name, they are not discovered through the list);
+- the text-preview endpoint answers `404` for a viewer and serves the JSON to an
+  operator (unlike PNGs these are readable text);
+- `GET /api/runs/{id}/download/ownership.json` is operator-or-higher; a viewer
+  gets `404`, same as a missing file.
+
+The same predicate will cover `credential_leaks.*` when org profile M5 lands.
 
 ## Automation clients
 

@@ -265,6 +265,7 @@ def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = N
         if path.is_file()
         and path.stat().st_size < 50_000_000
         and not is_screenshot_path(str(path.relative_to(run_dir)))
+        and not is_restricted_artifact(str(path.relative_to(run_dir)))
     )
     return RunDetail(
         run_id=run_id,
@@ -568,6 +569,31 @@ def is_screenshot_path(relative: str) -> bool:
     """PNG pixels under screenshots/ — operator-only (P4.4)."""
     parts = Path(relative).parts
     return len(parts) >= 2 and parts[0] == "screenshots" and parts[-1].lower().endswith(".png")
+
+
+# Run artifacts that carry owner or subject identifiers rather than scan
+# results: an RDAP abuse address (org_profile M1, #182) is a contactable human
+# at the target organization, which is not the same class of data as an open
+# port. Listed by exact run-relative name so a new stage has to opt in
+# deliberately; org_profile M5 adds credential_leaks.* here.
+_RESTRICTED_ARTIFACTS = frozenset(
+    {
+        "ownership.json",
+        "ownership_findings.txt",
+    }
+)
+
+
+def is_restricted_artifact(relative: str) -> bool:
+    """Artifacts an operator may read but a viewer may not (org_profile #182).
+
+    Same treatment as screenshot PNGs: hidden from the artifact listing,
+    ``404`` for a viewer on both the preview and the download endpoint. Unlike
+    screenshots these are readable text, so an operator gets them through the
+    preview endpoint too.
+    """
+    parts = Path(relative).parts
+    return len(parts) == 1 and parts[0].lower() in _RESTRICTED_ARTIFACTS
 
 
 def resolve_artifact(

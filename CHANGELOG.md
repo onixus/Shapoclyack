@@ -6,6 +6,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Domain ownership via RDAP — org profile M1** ([#182](https://github.com/onixus/Shapoclyack/issues/182)) —
+  new opt-in scanner stage `scanner/pipeline/ownership.py` (`org_profile.ownership`,
+  disabled by default) resolves each seed domain's registrar, registrant organization,
+  abuse contact, lifecycle dates, EPP statuses, DNSSEC flag and nameservers from the
+  registry's RDAP object (IANA bootstrap cached in `state_dir`, `rdap.org` as fallback).
+  A GDPR-masked registrant is recorded as `registrant_status: "redacted"`, and a domain
+  with no RDAP answer gets `not_checked`/`error` with a reason — never `ok`. `max_domains`
+  and `deadline_seconds` cap the registry query burst; exceeding either sets `truncated`.
+  The raw RDAP `entities[]`/vCard block (postal address, phone, natural-person name,
+  tech/admin contacts) is parsed in memory and never written to disk.
+
+- **SSRF boundary for scanner-side outbound HTTPS** — `scanner/pipeline/safe_http.py`
+  is the first outbound client in `scanner/` whose next hop is named by a remote party
+  (RDAP bootstrap entry, `rdap.org` 302). HTTPS only, no userinfo, rejected when any
+  resolved address is non-global, TCP pinned to the validated IP with SNI and certificate
+  verification against the DNS name, 256 KiB body cap, one wall-clock deadline across the
+  whole redirect chain, and every `Location` re-validated by the same code as the first
+  hop. Certificate verification, pinning and proxy-bypass are not configurable.
+
+- **Restricted run artifacts (operator+)** — `api/services/runs.py::is_restricted_artifact`
+  adds a second protected artifact class beside screenshot PNGs. `ownership.json` and
+  `ownership_findings.txt` carry an abuse contact address, so they are omitted from
+  `GET /api/runs/{id}` artifact listings and answer `404` to a viewer on both the
+  text-preview and the download endpoint. Org profile M5 will add `credential_leaks.*`
+  to the same predicate.
+
 - **Historical risk score snapshots** ([#144](https://github.com/onixus/Shapoclyack/issues/144), Track C) —
   `api/services/risk_snapshots.py` + `risk_score_snapshots` (migration `0023`) persist
   point-in-time estate risk, open/total finding counts, NIST level breakdown and SLA
