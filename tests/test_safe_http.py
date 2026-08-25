@@ -6,6 +6,8 @@ import http.client
 import io
 import ipaddress
 import socket
+import ssl
+import time
 
 import pytest
 
@@ -14,7 +16,9 @@ from scanner.pipeline.safe_http import SafeHttpError, UnsafeTargetError
 
 
 class _FakeSocket:
-    def settimeout(self, value):  # pragma: no cover - exercised via _read_body
+    timeout = None
+
+    def settimeout(self, value):
         self.timeout = value
 
 
@@ -188,6 +192,97 @@ def test_read_body_stops_when_the_deadline_passes():
     response = _FakeResponse(200, {}, b"x" * 5000)
     with pytest.raises(SafeHttpError, match="deadline exceeded"):
         safe_http._read_body(response, deadline=0.0, max_bytes=4096)
+
+
+def test_read_body_pushes_the_remaining_budget_onto_the_socket():
+    """The deadline is only real if it reaches the socket.
+
+    _read_body checks the clock between chunks, but a peer that opens the
+    connection and then goes silent never returns from read(). Without
+    settimeout the read blocks past the deadline forever, so assert the budget
+    was actually pushed down rather than merely computed.
+    """
+    response = _FakeResponse(200, {}, b"x" * 100)
+    deadline = time.perf_counter() + 5.0
+
+    body, truncated = safe_http._read_body(response, deadline=deadline, max_bytes=4096)
+
+    assert body == b"x" * 100
+    assert truncated is False
+    pushed = response.fp.raw._sock.timeout
+    assert pushed is not None, "remaining budget was never pushed onto the socket"
+    assert 0 < pushed <= 5.0
+
+
+def test_pinned_context_verifies_the_certificate():
+    """Pinning the address is worthless if the certificate is not checked.
+
+    _PinnedHTTPSConnection dials an IP and passes the hostname as SNI; the only
+    thing that stops an interceptor at that IP from answering is the default
+    context's verification. Assert it, so swapping in an unverified context
+    cannot pass the suite.
+    """
+    connection = safe_http._PinnedHTTPSConnection(
+        connect_host="93.184.216.34",
+        server_hostname="rdap.example.com",
+        port=443,
+        timeout=5.0,
+    )
+
+    assert connection._context.check_hostname is True
+    assert connection._context.verify_mode is ssl.CERT_REQUIRED
+
+
+def test_redirect_chain_shares_one_deadline(monkeypatch):
+    """One budget covers every hop -- a redirect does not buy a fresh timeout.
+
+    Each hop here burns more than half the budget, so a chain that reset the
+    deadline per hop would complete and this test would not.
+    """
+    _pin_resolution(
+        monkeypatch,
+        {"rdap.example.com": ["93.184.216.34"], "second.example.com": ["93.184.216.35"]},
+    )
+    hops: list[str] = []
+
+    class _SlowConnection:
+        def __init__(self, *, connect_host, server_hostname, port, timeout):
+            self._hostname = server_hostname
+            self.sock = None
+
+        def request(self, method, target, headers=None):
+            hops.append(self._hostname)
+            time.sleep(0.6)
+
+        def getresponse(self):
+            if self._hostname == "rdap.example.com":
+                return _FakeResponse(302, {"Location": "https://second.example.com/next"}, b"")
+            return _FakeResponse(200, {}, b"{}")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("scanner.pipeline.safe_http._PinnedHTTPSConnection", _SlowConnection)
+
+    with pytest.raises(SafeHttpError, match="deadline exceeded"):
+        safe_http.get(
+            "https://rdap.example.com/domain/example.com",
+            timeout_seconds=1,
+            max_redirects=1,
+        )
+
+    assert hops == ["rdap.example.com", "second.example.com"]
+
+
+def test_malformed_url_is_an_unsafe_target_not_a_crash():
+    """urlsplit raises a bare ValueError on a broken IPv6 literal.
+
+    The next hop is named by the remote side (the IANA bootstrap document, or
+    the cached copy of it), and a bare ValueError escapes SAFE_HTTP_ERRORS --
+    which would take the whole run down from inside a fail-soft stage.
+    """
+    with pytest.raises(UnsafeTargetError, match="malformed"):
+        safe_http.validate_url("https://rdap.[bad].example/v1/")
 
 
 def test_all_addresses_unreachable_is_reported(monkeypatch):

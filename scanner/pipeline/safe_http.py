@@ -130,7 +130,15 @@ def _parse_target(url: str) -> _ResolvedTarget:
     url = (url or "").strip()
     if not url:
         raise UnsafeTargetError("request url required")
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        # urlsplit raises a bare ValueError on a malformed IPv6 literal ("[" in
+        # the netloc). The next hop is named by the remote side -- the IANA
+        # bootstrap file, or the cached copy of it -- so an unhandled ValueError
+        # here would escape SAFE_HTTP_ERRORS and take the whole run down from
+        # inside a stage that is documented as fail-soft.
+        raise UnsafeTargetError("request url is malformed") from exc
     if parts.scheme != "https":
         raise UnsafeTargetError(f"request url must be https, got {parts.scheme or 'no scheme'!r}")
     if not parts.hostname:
