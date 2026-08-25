@@ -4,6 +4,21 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Security
+
+- **`GET /api/agent/deployment-command` no longer hands a tenant provisioning
+  key to viewers** — the route required only `viewer` while
+  `get_deployment_snippets()` minted a fresh provisioning key on every call and
+  embedded it in the returned snippets, so a read-only account could obtain a
+  credential that registers an agent, and every open of the deploy dialog left
+  another key row behind. The GET now takes `operator` and renders a
+  `<PROVISIONING_KEY>` placeholder without touching the key table; the new
+  `POST /api/agent/deployment-command` (also `operator`, the same bar as
+  `POST /api/agent/deploy/ssh`) mints one key on request, with an optional
+  `label`. `AgentDeploymentSnippetResponse.provisioning_key` is now nullable and
+  carries a `key_minted` flag. The deploy dialog gained an explicit
+  **Generate key** action.
+
 ## [0.42-0822] — 2026-08-22
 
 ### Added

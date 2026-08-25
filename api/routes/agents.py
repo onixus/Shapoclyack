@@ -19,6 +19,7 @@ from api.schemas import (
     AgentHeartbeatRequest,
     AgentInfo,
     AgentRegisterRequest,
+    CreateAgentDeploymentKeyRequest,
     JobInfo,
     Page,
 )
@@ -269,14 +270,50 @@ def get_install_script() -> PlainTextResponse:
 
 @router.get("/agent/deployment-command", response_model=AgentDeploymentSnippetResponse)
 def get_deployment_command(
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     request: Request,
 ) -> AgentDeploymentSnippetResponse:
+    """Render the install snippets with a placeholder key.
+
+    Read-only: registering an agent is an operator act, and the key that lets
+    someone do it is minted by the POST below, never by loading this page.
+    """
     server_url = str(request.base_url).rstrip("/")
     snippets = agents_service.get_deployment_snippets(
         tenant_id=principal.tenant_id,
         server_url=server_url,
     )
+    return AgentDeploymentSnippetResponse(**snippets)
+
+
+@router.post(
+    "/agent/deployment-command",
+    response_model=AgentDeploymentSnippetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_deployment_command(
+    body: CreateAgentDeploymentKeyRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    request: Request,
+) -> AgentDeploymentSnippetResponse:
+    """Mint one provisioning key for this tenant and return the snippets.
+
+    Operator, the same bar as ``POST /agent/deploy/ssh``, which already mints a
+    key for the machine it installs on. The plaintext is in this response only.
+    """
+    server_url = str(request.base_url).rstrip("/")
+    try:
+        snippets = agents_service.mint_deployment_snippets(
+            tenant_id=principal.tenant_id,
+            server_url=server_url,
+            label=body.label,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     return AgentDeploymentSnippetResponse(**snippets)
 
 

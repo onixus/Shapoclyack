@@ -370,7 +370,9 @@ export type AgentDeployStatusResponse = {
 
 export type AgentDeploymentSnippetResponse = {
   tenant_id: string;
-  provisioning_key: string;
+  /** Plaintext only on the minting POST; null on the read-only GET. */
+  provisioning_key: string | null;
+  key_minted: boolean;
   server_url: string;
   systemd_oneliner: string;
   docker_run: string;
@@ -843,6 +845,18 @@ export async function triggerAgentUpgrade(agentId: string) {
 export async function fetchAgentDeploymentSnippets() {
   try {
     const { data } = await api.get<AgentDeploymentSnippetResponse>("/agent/deployment-command");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createAgentDeploymentKey(label?: string) {
+  try {
+    const { data } = await api.post<AgentDeploymentSnippetResponse>(
+      "/agent/deployment-command",
+      { label: label ?? "" },
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

@@ -361,12 +361,19 @@ class AgentDeployStatusResponse(BaseModel):
 
 class AgentDeploymentSnippetResponse(BaseModel):
     tenant_id: str
-    provisioning_key: str
+    # Null on the read-only GET: the snippets then carry a placeholder the
+    # caller must replace. Only the minting POST returns plaintext, once.
+    provisioning_key: str | None = None
+    key_minted: bool = False
     server_url: str
     systemd_oneliner: str
     docker_run: str
     docker_compose: str
     kubernetes_yaml: str
+
+
+class CreateAgentDeploymentKeyRequest(BaseModel):
+    label: str = Field(default="", max_length=200)
 
 
 class AgentClaimResponse(BaseModel):
