@@ -120,6 +120,19 @@ def _resolve(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Addres
     return addresses
 
 
+def is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether one address is a legal scanner destination.
+
+    The single definition of "public" for the whole scanner. ``dns_hygiene``'s
+    AXFR probe reuses it to gate the nameserver it dials: an NS record is
+    written by the scanned party, so ``ns1.target.example -> 10.0.0.5`` turns a
+    zone-transfer attempt into a TCP/53 connection inside the agent's own
+    network. Same boundary, different transport -- and a second copy of the
+    rule is a second place for it to drift.
+    """
+    return bool(address.is_global) and not address.is_multicast
+
+
 def _parse_target(url: str) -> _ResolvedTarget:
     """Validate one URL and pin the addresses it is allowed to reach.
 
@@ -155,7 +168,7 @@ def _parse_target(url: str) -> _ResolvedTarget:
     if not addresses:
         raise SafeHttpError(f"DNS resolution failed for {parts.hostname}")
     for address in addresses:
-        if not address.is_global or address.is_multicast:
+        if not is_public_address(address):
             raise UnsafeTargetError(
                 f"host {parts.hostname} resolves to non-public address {address}"
             )

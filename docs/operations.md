@@ -78,6 +78,39 @@ include new assets, open ports, CVEs, certificate-expiry findings, and manual
 decommissioning. Verify that both compared runs use equivalent scope and
 profiles before treating a count change as a security event.
 
+## Active checks and target authorization
+
+Every org-profile stage is passive except one. `org_profile.dns_hygiene.axfr_probe`
+attempts a **zone transfer (AXFR)** against each nameserver of each seed domain.
+That is a request the target's nameserver records as an attempted transfer, so
+it needs the same authorization as any other active test — the platform will not
+infer it from the fact that a scan was started.
+
+- **Default is off**, and the flag exists only in the scanner config file. It is
+  deliberately absent from the API config overrides (`EDITABLE_PATHS` in
+  `api/services/config_override.py`), because those overrides are
+  installation-wide rather than per-tenant and would enable AXFR for every
+  tenant's scans at once; and it is absent from the start-scan request, because
+  that would put the decision on the `operator` who launches a scan rather than
+  on whoever authorizes the target. Enabling it is a deployment change, made by
+  whoever can edit the scanner config and reviewed like one.
+- **Only this run's own seed domains** are probed. Attribution candidates from
+  the related-domains stage are never probed: a wrongly attributed domain would
+  mean an active request against a third party's infrastructure.
+- **A nameserver on a non-public address is refused**, not dialled. NS records
+  are written by the scanned party, so `ns1.target.example -> 10.0.0.5` would
+  turn the probe into a TCP/53 connection inside the agent's own network. The
+  refusal is logged as `refusing AXFR against <ns>` and recorded in the artifact
+  as `status: refused`.
+- **A successful transfer is never written down.** `dns_hygiene.json` records
+  only `status: open` and the number of records; the zone itself reaches neither
+  the artifact directory nor `scan.log`. If you need the zone contents, transfer
+  it yourself with `dig axfr` — the scanner will not keep a copy for you.
+
+Before switching `axfr_probe` on, confirm the engagement covers active testing
+of the domains in `org_profile.dns_hygiene.domains` (or of every base domain the
+run derives from its scope, when that list is empty).
+
 ## Alerts and exports
 
 Supported integrations include Slack/Telegram summary alerts, SMTP, DefectDojo,
