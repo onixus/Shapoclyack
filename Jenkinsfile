@@ -72,79 +72,81 @@ pipeline {
     }
 
     stage('Tests') {
-      matrix {
-        axes {
-          axis { name 'PY'; values '3.11', '3.12' }
-        }
-        agent any
-        stages {
-          stage('pytest') {
-            steps {
-              script {
-                // Своя сеть на сборку: postgres и nats резолвятся по alias'ам.
-                // 127.0.0.1 из GitHub Actions тут не работает — у каждого
-                // контейнера свой netns, общего loopback с раннером нет.
-                def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
-                sh "docker network create ${net}"
-                try {
-                  docker.image('postgres:16-alpine').withRun(
-                    "--network ${net} --network-alias pg " +
-                    "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
-                  ) { pg ->
-                    // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
-                    // причина, по которой в GHA это был ручной docker run.
-                    docker.image('nats:2.10.24-alpine').withRun(
-                      "--network ${net} --network-alias nats",
-                      "--jetstream --store_dir=/data --http_port=8222"
-                    ) { nats ->
-                      docker.image("python:${PY}-slim").inside("--network ${net} ${PIP_CACHE}") {
-                        withEnv([
-                          'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
-                          'OCTO_NATS_URL=nats://nats:4222',
-                        ]) {
-                          sh '''
-                            set -eu
-                            # Без apt намеренно: psycopg[binary] везёт libpq в
-                            # колесе, компилятор не нужен, а ожидание сервисов
-                            # сделано на stdlib. Раньше тут стоял apt-get, и
-                            # матрица падала, когда deb.debian.org не ответил.
-                            pip install --quiet -r requirements-dev.txt
+      // Матрица развёрнута в последовательный цикл намеренно. Параллельные
+      // ячейки получали каждая свой воркспейс и клонировали репозиторий
+      // одновременно, и этот клон перемежающимся образом падал с
+      // "inflate: data stream error" ещё на 154 объектах: git fsck исходного
+      // репозитория чист, мелкий клон не помог, а в изоляции (хост и контейнер,
+      // bind-mount и ФС контейнера, параллельно и по одному) 12 попыток прошли
+      // без единого сбоя. Один агент — один воркспейс — один чекаут, и целый
+      // класс гонок исчезает. Цена — около трёх минут: прогоны идут по очереди.
+      agent any
+      steps {
+        script {
+          for (PY in ['3.11', '3.12']) {
+            try {
+              // Своя сеть на прогон: postgres и nats резолвятся по alias'ам.
+              // 127.0.0.1 из GitHub Actions тут не работает — у каждого
+              // контейнера свой netns, общего loopback с раннером нет.
+              def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
+              sh "docker network create ${net}"
+              try {
+                docker.image('postgres:16-alpine').withRun(
+                  "--network ${net} --network-alias pg " +
+                  "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
+                ) { pg ->
+                  // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
+                  // причина, по которой в GHA это был ручной docker run.
+                  docker.image('nats:2.10.24-alpine').withRun(
+                    "--network ${net} --network-alias nats",
+                    "--jetstream --store_dir=/data --http_port=8222"
+                  ) { nats ->
+                    docker.image("python:${PY}-slim").inside("--network ${net} ${PIP_CACHE}") {
+                      withEnv([
+                        'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
+                        'OCTO_NATS_URL=nats://nats:4222',
+                      ]) {
+                        sh '''
+                          set -eu
+                          # Без apt намеренно: psycopg[binary] везёт libpq в
+                          # колесе, компилятор не нужен, а ожидание сервисов
+                          # сделано на stdlib. Раньше тут стоял apt-get, и
+                          # матрица падала, когда deb.debian.org не ответил.
+                          pip install --quiet -r requirements-dev.txt
 
-                            python -m compileall scanner api tests agent
+                          python -m compileall scanner api tests agent
 
-                            echo "[ci] waiting for postgres and jetstream"
-                            for i in $(seq 1 60); do
-                              python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
-                              sleep 1
-                            done
-                            for i in $(seq 1 60); do
-                              python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
-                              sleep 1
-                            done
+                          echo "[ci] waiting for postgres and jetstream"
+                          for i in $(seq 1 60); do
+                            python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
+                            sleep 1
+                          done
+                          for i in $(seq 1 60); do
+                            python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
+                            sleep 1
+                          done
 
-                            alembic -c api/db/alembic.ini upgrade head
+                          alembic -c api/db/alembic.ini upgrade head
 
-                            python -m pytest -q \
-                              --junitxml=junit-''' + PY + '''.xml \
-                              --cov=api --cov=scanner \
-                              --cov-report=xml:coverage-''' + PY + '''.xml \
-                              --cov-report=term-missing \
-                              --cov-fail-under=74
-                          '''
-                        }
+                          python -m pytest -q \
+                            --junitxml=junit-''' + PY + '''.xml \
+                            --cov=api --cov=scanner \
+                            --cov-report=xml:coverage-''' + PY + '''.xml \
+                            --cov-report=term-missing \
+                            --cov-fail-under=74
+                        '''
                       }
                     }
                   }
-                } finally {
-                  sh "docker network rm ${net} || true"
                 }
+              } finally {
+                sh "docker network rm ${net} || true"
               }
-            }
-            post {
-              always {
-                junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
-                archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
-              }
+            } finally {
+              // В finally, а не после цикла: падение на 3.11 не должно съедать
+              // отчёт, который уже написан.
+              junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
+              archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
             }
           }
         }
