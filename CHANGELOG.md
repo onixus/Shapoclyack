@@ -155,6 +155,43 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Static UI fallback no longer serves files from outside the web root**
+  ([GHSA-cpcx-h7mr-24pc](https://github.com/onixus/Shapoclyack/security/advisories/GHSA-cpcx-h7mr-24pc)) —
+  `spa_fallback` in `api/app.py` built its candidate by joining the URL path
+  onto `OCTO_WEB_DIST` and never checked where the result landed. The route is
+  unauthenticated and present in every image that ships the console, so a
+  request that resolved outside the root read any file the API process could,
+  the environment holding `OCTO_JWT_SECRET` and `OCTO_POSTGRES_URL` included —
+  which is the whole access model, not one endpoint. All three lookups (the
+  file, its `.html` sibling, the directory `index.html`) now resolve the
+  candidate and require it to stay under `web_dist.resolve()`, the same
+  containment check `runs.resolve_artifact` already used for run artifacts. A
+  path that escapes falls through to the SPA shell like any other unknown
+  route.
+
+- **Agent results upload is bounded in both directions**
+  ([#222](https://github.com/onixus/Shapoclyack/issues/222)) —
+  `POST /api/agent/jobs/{job_id}/results` read the whole multipart archive into
+  memory before anything inspected it, and `results_ingest._safe_members`
+  checked every member's path and link type but never what the members added up
+  to. A compromised agent could therefore size a single upload against the API's
+  memory, or hand over a gzip bomb that filled the `output_dir` every tenant
+  shares. `BodySizeLimitMiddleware` now guards the results path too, with its
+  own `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` cap (default 128 MiB) enforced from
+  `Content-Length`; the middleware matches this route by pattern rather than
+  prefix so `POST /api/agent/jobs/claim` keeps its own limits. `_safe_members`
+  sums the declared member sizes and refuses above
+  `MAX_UNCOMPRESSED_BYTES` (512 MiB) before extraction writes anything.
+
+- **HSTS can actually be turned on**
+  ([#224](https://github.com/onixus/Shapoclyack/issues/224)) —
+  `SecurityHeadersMiddleware` had the header, `enable_hsts` defaulted to
+  `False`, `create_app()` constructed the middleware with no arguments, and no
+  environment variable existed to change any of that, so
+  `Strict-Transport-Security` was never sent in any deployment. `OCTO_HSTS_ENABLED`
+  now feeds `Settings.hsts_enabled` into the middleware, defaulting to on under
+  `OCTO_ENV=prod` and off under `dev`.
+
 - **`GET /api/agent/deployment-command` no longer hands a tenant provisioning
   key to viewers** — the route required only `viewer` while
   `get_deployment_snippets()` minted a fresh provisioning key on every call and
@@ -178,6 +215,47 @@ All notable changes to Shapoclyack are documented in this file.
   `411 Length Required`. Rejections increment the same submission-outcome counter as the route.
 
 ### Fixed
+
+- **Risk trend chart froze on the first days of the install**
+  ([#228](https://github.com/onixus/Shapoclyack/issues/228)) —
+  `risk_snapshots.list_snapshots()` paged with `ORDER BY recorded_at ASC LIMIT n`,
+  which returns the *oldest* n rows. A snapshot is recorded on every finished run,
+  so the table outgrew the route's default limit of 90 within days and Risk
+  Overview kept re-rendering the same first week forever. The query now sorts
+  descending, takes the newest page and reverses it, so the API still hands the
+  chart a chronological series. The existing test asserted only `len(...) == 1`,
+  which is true of either end of the table.
+
+- **`GET /api/vulnerabilities/risk-history` interleaved tenants for a platform admin**
+  ([#228](https://github.com/onixus/Shapoclyack/issues/228)) — an unscoped platform
+  admin got every tenant's snapshots merged into one chronological list, so a tenant
+  with 500 open findings next to one with 3 drew a sawtooth rather than a trend.
+  No data crossed a boundary (a viewer was always pinned to their own tenant); the
+  series was simply meaningless. The route now follows `principal.tenant_id`: a chart
+  is one line, and a platform admin picks the tenant with the `tenant_id` query
+  parameter every route already accepts. `/summary` keeps the cross-tenant view —
+  summing tenants is a number, concatenating their histories is not.
+
+- **`risk_score_snapshots` grew without bound**
+  ([#229](https://github.com/onixus/Shapoclyack/issues/229)) — the table (migration
+  `0023`) landed after #187 bounded the other stores, and its `prune_snapshots()` was
+  called by nothing but its own unit test: one row per tenant per run, forever. It now
+  has the same in-process sweep as the run-artifact reaper —
+  `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` (90),
+  `OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS` (6h),
+  `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED`.
+
+- **ClickHouse ingest worker consumed endpoint-inventory events**
+  ([#230](https://github.com/onixus/Shapoclyack/issues/230)) — the durable filtered on
+  the stream's whole `ingest.>` tree, so the S8 subject
+  `ingest.endpoint_inventory.{tenant}` was fetched one message at a time by the
+  single-threaded pull loop, transformed into nothing, acked, and counted as a
+  successful ingest: SLO 6 read the empties as successes and improved with every
+  endpoint added. The filter is now `ingest.results.>` (consumer renamed
+  `octo-ch-ingest` → `octo-ch-ingest-results`, since JetStream will not change the
+  filter of an existing durable — see `docs/operations.md`), and `_handle_msg` skips a
+  foreign subject without counting it. The legacy `ingest.raw_results` duplicate of
+  every result drops out too, so a result is no longer transformed and inserted twice.
 
 - **Uncapped DNS-over-HTTPS read in the alert self-check** —
   `scanner/pipeline/alerts.py::lookup_txt_records` read the resolver's answer with a

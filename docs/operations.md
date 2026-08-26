@@ -125,7 +125,7 @@ Retention must cover all stateful layers:
 | Layer | Retain/backup |
 |---|---|
 | Run filesystem/PVC | Raw artifacts, reports, checkpoints |
-| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory |
+| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots |
 | ClickHouse | Analytical vulnerability and port history |
 | NATS | Pending jobs and ingest messages |
 
@@ -157,6 +157,45 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 - Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
 - `0` days disables the reaper.
 - Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+
+### ClickHouse ingest consumer subjects (#230)
+
+Stream `INGEST` carries the whole `ingest.>` tree, but the ClickHouse worker
+only wants scan results. Its durable consumer therefore filters on
+`ingest.results.>`; the S8 endpoint-inventory subject
+(`ingest.endpoint_inventory.{tenant}`) and the legacy `ingest.raw_results`
+duplicate of every result no longer reach it.
+
+JetStream will not change the filter subject of an existing durable, so the
+consumer was renamed `octo-ch-ingest` → `octo-ch-ingest-results`. The API
+creates the new one on start. **Delete the retired consumer after the upgrade**,
+otherwise it keeps a pending count that no one drains:
+
+```
+nats consumer rm INGEST octo-ch-ingest
+```
+
+The new durable starts at `DeliverPolicy.ALL`, so it replays whatever the
+stream still retains. That is safe to repeat: both ClickHouse tables are
+`ReplacingMergeTree` keyed on what the transform emits, and every publish
+carries a `Nats-Msg-Id`.
+
+### Risk snapshot retention (#229)
+
+`risk_score_snapshots` (migration `0023`) gains one row per tenant on every
+finished run, plus one per manual `POST /api/vulnerabilities/risk-history/snapshot`.
+The table arrived after #187 closed, so nothing bounded it until #229: the
+service had a `prune_snapshots()` that only its own unit test ever called.
+
+An in-process sweep runs every `OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS`
+(6h) in every API replica and deletes snapshots older than
+`OCTO_RISK_SNAPSHOT_RETENTION_DAYS` (90), across all tenants. `0` days disables
+the sweep, as does `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED=false`.
+
+The delete is a range delete on `(tenant_id, recorded_at)`, so replicas sweeping
+the same rows is a no-op for whichever loses. Keep the window at or above the
+window the console charts: `/risk-history` defaults to the last 90 points, and a
+shorter retention silently shortens the trend line.
 
 ### Screenshot retention
 
@@ -233,6 +272,17 @@ Runbook:
   `OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES` is refused with `413` from the
   `Content-Length` header alone; a request without `Content-Length` is refused
   with `411` and never buffered.
+
+Agent results upload rejected: an archive over
+`OCTO_AGENT_RESULTS_MAX_BODY_BYTES` is refused with `413` from the
+`Content-Length` header alone, before the multipart body is read; an upload
+without `Content-Length` gets `411`. An archive that passes the transport cap
+but whose tar headers add up to more than 512 MiB expanded is refused as
+`archive expands to more than ... bytes` — the job stays in flight and the run
+directory is not created, so the agent may retry with a smaller archive. Raise
+the transport cap for a legitimately large run; the expansion ceiling is a
+constant (`api/services/results_ingest.MAX_UNCOMPRESSED_BYTES`) because the
+shared `output_dir` is what it protects.
 
 Tenant offboarding: endpoint data has no bespoke delete/export flow and follows
 whatever general tenant-deletion mechanism the platform adopts. The endpoint FK

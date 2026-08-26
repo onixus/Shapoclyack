@@ -8,6 +8,7 @@ render accurate risk trend charts over time.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -103,7 +104,13 @@ def list_snapshots(
     until: datetime | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Retrieve historical snapshots ordered chronologically for plotting."""
+    """Retrieve the ``limit`` most recent snapshots, ordered chronologically.
+
+    The query sorts **descending** and the page is reversed afterwards: a
+    chart that asks for 30 points wants the last 30 days, and ``ASC`` with a
+    ``LIMIT`` hands back the oldest rows instead — which froze the trend chart
+    on the first days of the install once the table outgrew the limit (#228).
+    """
     filters: list[Any] = []
     if tenant_id:
         filters.append(models.RiskScoreSnapshot.tenant_id == tenant_id)
@@ -117,13 +124,16 @@ def list_snapshots(
             session.execute(
                 select(models.RiskScoreSnapshot)
                 .where(*filters)
-                .order_by(models.RiskScoreSnapshot.recorded_at.asc())
+                .order_by(
+                    models.RiskScoreSnapshot.recorded_at.desc(),
+                    models.RiskScoreSnapshot.id.desc(),
+                )
                 .limit(limit)
             )
             .scalars()
             .all()
         )
-        return [_to_dict(row) for row in rows]
+        return [_to_dict(row) for row in reversed(rows)]
 
 
 def prune_snapshots(
@@ -146,3 +156,85 @@ def prune_snapshots(
         if deleted:
             LOG.info("Pruned %s risk snapshots older than %s days", deleted, retention_days)
         return deleted
+
+
+# --------------------------------------------------------------------------
+# Retention worker (#229)
+# --------------------------------------------------------------------------
+#
+# One row per tenant per finished run: the table grows linearly and forever,
+# and #187 ("bound data growth") predates migration 0023, so nothing swept it.
+# Same shape as ``run_retention``: an in-process ticker in every replica. The
+# delete is a plain range delete on ``(tenant_id, recorded_at)``, so replicas
+# racing on the same rows is a no-op for whoever loses.
+
+_worker: RiskSnapshotRetentionWorker | None = None
+
+
+def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
+    """Prune expired snapshots across all tenants. Returns counts (deleted)."""
+    days = settings.risk_snapshot_retention_days
+    if days <= 0:
+        return {"deleted": 0}
+    deleted = prune_snapshots(settings, retention_days=days, now=now)
+    return {"deleted": deleted}
+
+
+class RiskSnapshotRetentionWorker:
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._stats: dict[str, Any] = {"last_run_at": None, "last": {}}
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="octo-risk-snapshot-retention", daemon=True
+        )
+        self._thread.start()
+        LOG.info(
+            "Risk snapshot retention worker started (interval=%ds, days=%d)",
+            self._settings.risk_snapshot_retention_interval_seconds,
+            self._settings.risk_snapshot_retention_days,
+        )
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
+        LOG.info("Risk snapshot retention worker stopped stats=%s", self._stats)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._stats["last"] = sweep(self._settings)
+                self._stats["last_run_at"] = _now().isoformat()
+            except Exception:  # noqa: BLE001
+                LOG.exception("Risk snapshot retention tick failed")
+            self._stop.wait(self._settings.risk_snapshot_retention_interval_seconds)
+
+    def stats(self) -> dict[str, Any]:
+        return dict(self._stats)
+
+
+def start_worker(settings: Settings) -> None:
+    global _worker
+    if not settings.risk_snapshot_retention_enabled:
+        return
+    if _worker is None:
+        _worker = RiskSnapshotRetentionWorker(settings)
+        _worker.start()
+
+
+def stop_worker() -> None:
+    global _worker
+    if _worker is not None:
+        _worker.stop()
+        _worker = None
+
+
+def worker_stats() -> dict[str, Any] | None:
+    return None if _worker is None else _worker.stats()

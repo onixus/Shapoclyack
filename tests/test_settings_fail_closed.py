@@ -35,6 +35,7 @@ _DECIDING_VARS = (
     "OCTO_API_USERS",
     "OCTO_API_CORS",
     "OCTO_POSTGRES_URL",
+    "OCTO_HSTS_ENABLED",
 )
 
 
@@ -254,3 +255,21 @@ def test_legacy_agent_token_warns_but_starts(
     assert settings.agent_token == "legacy-shared-token"
     assert "OCTO_AGENT_TOKEN" in caplog.text
     assert "legacy-shared-token" not in caplog.text
+
+
+def test_hsts_defaults_to_the_environment(clean_env: pytest.MonkeyPatch) -> None:
+    """#224: HSTS had no environment variable at all, so the header could not be
+    turned on. The default follows OCTO_ENV rather than being a flag an operator
+    has to remember, and stays overridable in both directions."""
+    _configure_prod(clean_env)
+    assert load_settings().hsts_enabled is True
+
+    clean_env.setenv("OCTO_HSTS_ENABLED", "false")
+    assert load_settings().hsts_enabled is False
+
+    clean_env.setenv("OCTO_ENV", ENV_DEV)
+    clean_env.delenv("OCTO_HSTS_ENABLED", raising=False)
+    assert load_settings().hsts_enabled is False
+
+    clean_env.setenv("OCTO_HSTS_ENABLED", "true")
+    assert load_settings().hsts_enabled is True

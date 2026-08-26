@@ -67,6 +67,11 @@ class Settings:
     config_path: Path = Path("scanner/config/default.yaml")
     web_dist: Path = Path("web/dist")
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
+    # Strict-Transport-Security on every response (OCTO_HSTS_ENABLED). On in
+    # prod, off in dev: the header pins a browser to HTTPS for a year, and a
+    # developer who picks it up from http://localhost cannot clear it the way a
+    # cookie is cleared (#224).
+    hsts_enabled: bool = True
     users: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_USERS))
     allow_scan_start: bool = True
     # local = API pod runs scanner in a thread; agent = remote workers claim jobs.
@@ -76,6 +81,14 @@ class Settings:
     agent_stale_seconds: int = 120
     # Short-lived agent JWT lifetime after provisioning-key exchange (Phase 2).
     agent_jwt_expire_minutes: int = 60
+    # Hard request-body cap on POST /api/agent/jobs/{job_id}/results, read from
+    # Content-Length before the multipart body is buffered (#222). A run archive
+    # is a tar.gz of one scan directory — single-digit MiB in practice, more with
+    # screenshots; 128 MiB leaves room for an unusually large run while keeping a
+    # compromised agent from streaming the API out of memory. An order of
+    # magnitude above endpoint_inventory_max_body_bytes because, unlike a bounded
+    # JSON document, the archive has no per-field ceiling to fall back on.
+    agent_results_max_body_bytes: int = 128 * 1024 * 1024
     # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
     # ClickHouse HTTP URL (e.g. http://shapoclyack-clickhouse-client:8123). Empty disables CH.
@@ -192,6 +205,12 @@ class Settings:
     run_retention_enabled: bool = True
     run_retention_days: int = 30
     run_retention_interval_seconds: int = 3600
+    # Risk snapshot retention (#229). risk_score_snapshots gains a row per
+    # tenant per finished run; migration 0023 landed after #187, so nothing
+    # bounded it. 0 disables the sweep.
+    risk_snapshot_retention_enabled: bool = True
+    risk_snapshot_retention_days: int = 90
+    risk_snapshot_retention_interval_seconds: int = 21600
 
     # OpenTelemetry (ROADMAP P3). Empty = no TracerProvider, no export.
     # The value is the OTLP HTTP traces URL, e.g. http://otel-collector:4318/v1/traces
@@ -381,6 +400,8 @@ def load_settings() -> Settings:
         config_path=Path(os.environ.get("OCTO_CONFIG", "scanner/config/default.yaml")),
         web_dist=Path(os.environ.get("OCTO_WEB_DIST", "web/dist")),
         cors_origins=cors,
+        hsts_enabled=os.environ.get("OCTO_HSTS_ENABLED", "true" if env == ENV_PROD else "false").lower()
+        in {"1", "true", "yes"},
         users=users,
         allow_scan_start=os.environ.get("OCTO_ALLOW_SCAN_START", "true").lower()
         in {"1", "true", "yes"},
@@ -388,6 +409,9 @@ def load_settings() -> Settings:
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
         agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
+        agent_results_max_body_bytes=int(
+            os.environ.get("OCTO_AGENT_RESULTS_MAX_BODY_BYTES", str(128 * 1024 * 1024))
+        ),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
@@ -491,6 +515,16 @@ def load_settings() -> Settings:
         ),
         run_retention_interval_seconds=max(
             60, int(os.environ.get("OCTO_RUN_RETENTION_INTERVAL_SECONDS", "3600"))
+        ),
+        risk_snapshot_retention_enabled=os.environ.get(
+            "OCTO_RISK_SNAPSHOT_RETENTION_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"},
+        risk_snapshot_retention_days=max(
+            0, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_DAYS", "90"))
+        ),
+        risk_snapshot_retention_interval_seconds=max(
+            60, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS", "21600"))
         ),
 
         otel_exporter_otlp_endpoint=os.environ.get("OCTO_OTEL_EXPORTER_OTLP_ENDPOINT", "").strip(),

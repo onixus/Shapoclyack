@@ -8,6 +8,7 @@ buffers and JSON-parses the payload.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -30,19 +31,46 @@ class BodySizeLimitMiddleware:
     with ``411 Length Required`` rather than being read to find out how big it
     is — the inventory contract is a single bounded JSON document, so a
     length-less body is out of contract by definition.
+
+    The agent results upload (#222) is guarded by a second instance of this
+    middleware with its own cap: ``POST /api/agent/jobs/{job_id}/results``
+    carries a whole run archive as multipart, and the route read it in full
+    before this. Both guarded contracts send a single in-memory body, so the
+    ``411`` for a length-less request holds for the results path too.
+    ``count_endpoint_submissions`` is what separates them: the inventory counter
+    below describes endpoint submissions and would be a lie on the agent path.
     """
 
-    def __init__(self, app: ASGIApp, *, max_bytes: int, paths: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        max_bytes: int,
+        paths: tuple[str, ...] = (),
+        path_patterns: tuple[str, ...] = (),
+        count_endpoint_submissions: bool = True,
+    ) -> None:
         self.app = app
         self.max_bytes = max_bytes
         self.paths = paths
+        # For routes whose identity is not a prefix: `/api/agent/jobs/{job_id}/
+        # results` shares its prefix with the claim endpoint, and capping the
+        # claim body at the archive size would guard the wrong contract.
+        self.path_patterns = tuple(re.compile(pattern) for pattern in path_patterns)
+        self.count_endpoint_submissions = count_endpoint_submissions
+
+    def _guards(self, path: str) -> bool:
+        if any(path.startswith(prefix) for prefix in self.paths):
+            return True
+        return any(pattern.match(path) is not None for pattern in self.path_patterns)
 
     async def _reject(self, send: Send, *, status_code: int, detail: str) -> None:
         # Same counter the route uses, so body-cap rejections show up in the
         # submission outcome breakdown instead of vanishing before the handler.
-        metrics_service.ENDPOINT_SUBMISSIONS_TOTAL.labels(
-            "too_large" if status_code == 413 else "invalid"
-        ).inc()
+        if self.count_endpoint_submissions:
+            metrics_service.ENDPOINT_SUBMISSIONS_TOTAL.labels(
+                "too_large" if status_code == 413 else "invalid"
+            ).inc()
         body = json.dumps({"detail": detail}).encode("utf-8")
         await send(
             {
@@ -61,7 +89,7 @@ class BodySizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if not any(path.startswith(prefix) for prefix in self.paths):
+        if not self._guards(path):
             await self.app(scope, receive, send)
             return
 

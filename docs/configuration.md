@@ -247,6 +247,8 @@ Core deployment variables:
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
 | `OCTO_JOB_EXECUTION_MODE` | `local` or `agent` |
+| `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` | Hard request-body cap on `POST /api/agent/jobs/{job_id}/results`, read from `Content-Length` before the multipart body is buffered (default `134217728` — 128 MiB). A length-less upload is answered `411` |
+| `OCTO_HSTS_ENABLED` | Send `Strict-Transport-Security` on every response. Defaults to on under `OCTO_ENV=prod` and off under `dev`, since a browser that picks the header up from `http://localhost` pins itself to HTTPS for a year |
 | `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
 | `OCTO_ASSET_STALE_DAYS` | Age threshold for stale assets |
@@ -343,6 +345,14 @@ Scan run artifact retention (ROADMAP #187):
 | `OCTO_RUN_RETENTION_ENABLED` | `true` | Run the in-process scan artifact reaper. Safe in every replica; directory removals are idempotent |
 | `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which `output_dir/runs/<run_id>` directories are deleted. `0` disables the reaper |
 | `OCTO_RUN_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
+
+Risk snapshot retention (#229):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED` | `true` | Run the in-process `risk_score_snapshots` sweep. Safe in every replica; the delete is a range delete |
+| `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` | `90` | Age after which risk snapshots are deleted. `0` disables the sweep. Keep at or above the window the trend chart requests |
+| `OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval (floored at 60) |
 
 
 Never commit real URLs containing credentials. Supply them through the platform

@@ -163,10 +163,18 @@ request is well-formed; the refusal is about the finding's current state) and
 
 **Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
 tenant's persisted risk snapshots — `recorded_at`, estate risk level, open and
-total counts, the NIST level breakdown and SLA breaches — oldest field order as
-stored, filtered by `since` / `until` and capped by `limit` (default 90,
-maximum 500). It is a **read of what was recorded**, not a recomputation: a
-period with no snapshots is a gap in the series, not zero risk.
+total counts, the NIST level breakdown and SLA breaches — filtered by
+`since` / `until` and capped by `limit` (default 90, maximum 500). `limit`
+takes the **most recent** rows and the series is returned oldest-first, so a
+chart asking for 30 points gets the last 30 ([#228](https://github.com/onixus/Shapoclyack/issues/228)).
+It is a **read of what was recorded**, not a recomputation: a period with no
+snapshots is a gap in the series, not zero risk.
+
+Unlike `/summary`, this route is always scoped to a single tenant, including
+for a platform admin who named none: summing several tenants is a number,
+interleaving their histories is a sawtooth. A platform admin selects the tenant
+with the `tenant_id` query parameter every route accepts; without one they read
+their own tenant.
 `POST /api/vulnerabilities/risk-history/snapshot` (operator) records one
 immediately and answers `201` with it. Snapshots are per tenant and are the
 only source the Risk Overview trend chart reads
