@@ -277,6 +277,18 @@ pipeline {
         }
 
         stage('Load test') {
+        // Тяжёлый хвост: 16 контейнеров-мишеней и полный прогон сканера,
+        // это самая длинная стадия пайплайна. На ветках она не окупается —
+        // сборка ветки нужна, чтобы поймать регресс до мержа, а не чтобы
+        // перемерить нагрузку. BRANCH_NAME есть только у multibranch-джобы;
+        // у одноветочной 'shapoclyack' он null, поэтому там стадия идёт как
+        // раньше.
+        when {
+          anyOf {
+            expression { env.BRANCH_NAME == null }
+            branch 'main'
+          }
+        }
           steps {
             // Порт .github/actions/synthetic-load-test с теми же параметрами,
             // что и в ci.yml: 16 хостов, tests/load/config.yaml, без resume.
@@ -343,6 +355,15 @@ PY
 
     stage('Image nmap-legacy') {
       agent any
+      // Второй вариант образа (с Nmap) нужен на релизном пути, а не на
+      // каждой ветке: ещё одна полная сборка образа ради проверки, что
+      // легаси-тег собирается.
+      when {
+        anyOf {
+          expression { env.BRANCH_NAME == null }
+          branch 'main'
+        }
+      }
       steps {
         withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
           sh '''
