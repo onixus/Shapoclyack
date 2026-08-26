@@ -41,8 +41,21 @@ spec:
               value: shapoclyack
             - name: CLICKHOUSE_USER
               value: default
+            # Read twice: by the image entrypoint, for the clickhouse-client
+            # that runs the first-boot init.sql, and by users.xml through
+            # `from_env`. Both must see the same value, which is why it is one
+            # variable and not a password written into the ConfigMap.
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-clickhouse
+                  key: password
+            # The entrypoint's generated users.d/default-user.xml is merged
+            # before ours (alphabetical order in users.d), so users.xml wins
+            # either way; keeping this at 0 means the two files agree instead
+            # of relying on that ordering.
             - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
-              value: "1"
+              value: "0"
           readinessProbe:
             httpGet:
               path: /ping

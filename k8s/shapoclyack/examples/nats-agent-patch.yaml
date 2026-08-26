@@ -9,5 +9,10 @@ spec:
       containers:
         - name: agent
           env:
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nats
+                  key: agent_password
             - name: OCTO_NATS_URL
-              value: nats://shapoclyack-nats-client:4222
+              value: nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222

@@ -724,3 +724,152 @@ explicit namespace/pod selectors plus the exact external egress destinations
 for that environment. Treat the absence of an environment-specific policy as a
 production deployment finding, not as a reason to ship a misleading universal
 base policy.
+
+#### Revised for ingress to the stateful services (#225)
+
+The reasoning above is about **egress**, and it stands unchanged. Where a pod
+is allowed to connect *out* genuinely depends on the installation: DNS resolver
+addresses, the S3 endpoint the backup CronJob uploads to, the vulnerability
+feeds and webhook targets an operator has enabled, and the scan targets
+themselves. Base cannot know any of those, and guessing them breaks backups and
+integrations silently. Egress policy stays an overlay concern.
+
+**Ingress to Postgres, ClickHouse and NATS is a different question**, and it
+was answered wrongly by lumping it in with egress. The set of legitimate
+clients there does not vary by installation — it is written down in the
+manifests themselves:
+
+| Service | Port | Legitimate clients |
+|---------|------|--------------------|
+| Postgres | 5432 | API (incl. its `migrate` init container), backup CronJob |
+| ClickHouse | 8123 / 9000 | API |
+| NATS | 4222 | API, scanner agents |
+
+That is a closed list, so `k8s/shapoclyack/base/networkpolicy-datastores.yaml`
+is a base resource: one `Ingress`-only policy per datastore, default-deny by
+omission, allowing exactly the pod labels above. Nothing about it is
+environment-specific, and getting it wrong fails loudly (a pod cannot reach its
+database) rather than silently, which is the opposite of the egress case.
+
+Two things it does not cover, both by design:
+
+- **Agents outside the cluster.** A pod selector cannot name them. An
+  installation that exposes 4222 through a NodePort, LoadBalancer or Ingress
+  must add its own `ipBlock` rule for that source. Their authentication is the
+  `agent` NATS user either way (below).
+- **A CNI that does not enforce NetworkPolicy.** The objects are then inert.
+  They were never the only control: every one of these three services now also
+  requires credentials, and that is the part that holds regardless of CNI.
+
+## Data-plane credentials
+
+The control plane (JWT, RBAC, tenant scoping) has always been authenticated.
+The three stateful services behind it were not: ClickHouse ran the `default`
+user with an empty password, `<networks>::/0</networks>` and
+`access_management=1`, and NATS had neither `authorization` nor `accounts`. Any
+pod in the cluster could read every tenant's raw scan results over 8123,
+create ClickHouse users, subscribe to `ingest.results.*` for all tenants, and
+publish forged `jobs.scan` offers. Since #225 all three require credentials.
+
+### Where they live
+
+| Secret | Keys | Consumed by |
+|--------|------|-------------|
+| `shapoclyack-postgres` | `password` | Postgres, API, backup CronJob |
+| `shapoclyack-clickhouse` | `password` | ClickHouse StatefulSet, API |
+| `shapoclyack-nats` | `api_password`, `agent_password` | NATS StatefulSet, API, agents |
+
+`base/kustomization.yaml` generates dev placeholders for all three, the same
+way it always has for Postgres — a fresh `kubectl apply -k` comes up without
+any manual step. The placeholders are published in this repository. Override
+them with `examples/api-secrets.example.yaml` (or
+`examples/externalsecret.example.yaml` with ExternalSecrets) before any install
+that holds real scan data.
+
+NATS has two users rather than one because they are not equally trusted. `api`
+owns the whole subject tree. `agent` may open the `octo-agents` pull consumer
+on the `JOBS` stream, fetch `jobs.scan`, and ack — and nothing else: it cannot
+subscribe to `ingest.>` or `events.>`, cannot publish `jobs.scan`, and cannot
+open a consumer on the `INGEST` stream. A compromised remote agent therefore
+cannot read other tenants' results or inject work. Both users share the global
+account: the streams are common to both, and JetStream cannot share a stream
+across accounts without export/import plumbing on every subject.
+
+Passwords reach the API and the agents inside the connection URL
+(`nats://api:$(NATS_PASSWORD)@…`, `http://default:$(CLICKHOUSE_PASSWORD)@…`),
+expanded by the kubelet from a `secretKeyRef` declared **earlier** in the same
+container's env list. Any overlay that sets `OCTO_NATS_URL` or
+`OCTO_CLICKHOUSE_URL` must declare the matching password variable in the same
+patch — a strategic merge places a patch's env entries ahead of the base list,
+so relying on the base declaration alone leaves a literal `$(NATS_PASSWORD)` in
+the URL.
+
+### Upgrading an existing installation
+
+This is a **breaking change** for any cluster already running Shapoclyack.
+Read this before the upgrade, not after.
+
+ClickHouse's password is applied by the config at every start, so the moment
+the new StatefulSet rolls, an API still holding a credential-free
+`OCTO_CLICKHOUSE_URL` gets `Authentication failed`. NATS is the same: the
+broker starts requiring credentials and every existing client is rejected as
+unauthorized. Neither restarts the other for you.
+
+1. Create the two new Secrets **first**, with real values, in the namespace:
+
+   ```bash
+   kubectl -n network-scan create secret generic shapoclyack-clickhouse \
+     --from-literal=password="$(openssl rand -hex 24)"
+   kubectl -n network-scan create secret generic shapoclyack-nats \
+     --from-literal=api_password="$(openssl rand -hex 24)" \
+     --from-literal=agent_password="$(openssl rand -hex 24)"
+   ```
+
+   Doing this before `kubectl apply -k` means the generated placeholders never
+   touch the cluster. If you apply first, the placeholder passwords are live
+   until you replace them and restart — treat that window as a compromise.
+
+2. Apply the overlay. Expect a short outage on the ingest path: NATS and
+   ClickHouse restart, the API restarts to pick up the new URLs, and in-flight
+   `jobs.scan` messages stay in JetStream (the stream is on the PVC and
+   survives).
+
+3. **Update every remote agent** that uses NATS job pull. Their
+   `OCTO_NATS_URL` needs `agent:<agent_password>@` — an agent left on the old
+   URL logs an authorization violation and falls back to nothing; it does not
+   silently switch to the HTTP claim path. Agents that already use HTTP claim
+   (`OCTO_NATS_URL` empty) are unaffected.
+
+4. Verify:
+
+   ```bash
+   kubectl -n network-scan logs deploy/shapoclyack-api | grep -i nats
+   kubectl -n network-scan exec sts/shapoclyack-clickhouse -- \
+     clickhouse-client --password "$CH_PASSWORD" --query "SELECT 1"
+   ```
+
+   An anonymous query must now fail:
+   `clickhouse-client --query "SELECT 1"` → `Authentication failed`.
+
+An existing ClickHouse volume keeps whatever SQL-created users
+`access_management=1` allowed to be made. `access_management` is now `0`, which
+stops new ones being created but does not remove any that already exist. Audit
+`SELECT name, storage FROM system.users` on an upgraded install and drop
+anything you did not create.
+
+### Rotation
+
+Rotating any of these is a rollout, not a Secret edit. `nats-server` reads
+`$NATS_*_PASSWORD` once at boot; the API resolves its URLs once at boot.
+ExternalSecrets' `refreshInterval` rewrites the Secret and restarts nothing.
+
+1. Update the Secret (or the upstream store).
+2. `kubectl -n network-scan rollout restart sts/shapoclyack-nats` /
+   `sts/shapoclyack-clickhouse`.
+3. `kubectl -n network-scan rollout restart deploy/shapoclyack-api` and any
+   agent Deployment.
+4. Re-key remote agents outside the cluster.
+
+There is no overlap window: between steps 2 and 3 the old clients are rejected.
+Schedule it like a short maintenance window rather than expecting a seamless
+rotation.
