@@ -32,6 +32,41 @@ def test_validate_archive_rejects_traversal():
         results_ingest.validate_archive(buf.getvalue())
 
 
+def test_validate_archive_rejects_oversized_expansion():
+    """#222: the transport cap bounds the compressed upload, not what it becomes.
+
+    Sizes come from the tar headers, so the refusal happens before extraction
+    writes anything into the shared output_dir.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = b"\0" * 4096
+        for index in range(4):
+            info = tarfile.TarInfo(name=f"pad-{index}.bin")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    archive = buf.getvalue()
+
+    with pytest.raises(results_ingest.IngestError, match="expands to more than"):
+        results_ingest.validate_archive(archive, max_uncompressed_bytes=8192)
+    # One byte of headroom over the same archive is accepted.
+    results_ingest.validate_archive(archive, max_uncompressed_bytes=4096 * 4)
+
+
+def test_extract_run_archive_refuses_before_writing(tmp_path):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = b"\0" * 4096
+        info = tarfile.TarInfo(name="pad.bin")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "runs" / "run-1"
+
+    with pytest.raises(results_ingest.IngestError, match="expands to more than"):
+        results_ingest.extract_run_archive(buf.getvalue(), dest, max_uncompressed_bytes=1024)
+    assert not dest.exists()
+
+
 def test_ingest_msg_id_stable():
     a = nats_bus.ingest_msg_id(job_id="j1", run_id="r1", archive_sha256="abc")
     b = nats_bus.ingest_msg_id(job_id="j1", run_id="r1", archive_sha256="abc")

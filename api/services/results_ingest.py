@@ -19,14 +19,27 @@ from api.services import nats_bus
 
 LOG = logging.getLogger("shapoclyack.ingest")
 
+# Ceiling on the *expanded* size of one run archive (#222). The transport cap
+# (OCTO_AGENT_RESULTS_MAX_BODY_BYTES) bounds the compressed upload only, and gzip
+# is free to turn a 128 MiB body into tens of gigabytes on an output_dir every
+# tenant shares. Read from the tar headers, so an over-budget archive is refused
+# before the first byte is written rather than half-extracted and rolled back.
+MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+
 
 class IngestError(ValueError):
     """Raised when an uploaded archive cannot be accepted."""
 
 
-def _safe_members(tf: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
+def _safe_members(
+    tf: tarfile.TarFile,
+    dest: Path,
+    *,
+    max_uncompressed_bytes: int = MAX_UNCOMPRESSED_BYTES,
+) -> list[tarfile.TarInfo]:
     dest_resolved = dest.resolve()
     members: list[tarfile.TarInfo] = []
+    total_bytes = 0
     for member in tf.getmembers():
         name = member.name.replace("\\", "/")
         if name.startswith("/") or ".." in name.split("/"):
@@ -36,17 +49,28 @@ def _safe_members(tf: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
         target = (dest / name).resolve()
         if not str(target).startswith(str(dest_resolved)):
             raise IngestError(f"path escapes destination: {member.name}")
+        total_bytes += member.size
+        if total_bytes > max_uncompressed_bytes:
+            raise IngestError(
+                f"archive expands to more than {max_uncompressed_bytes} bytes"
+            )
         members.append(member)
     return members
 
 
-def validate_archive(archive_bytes: bytes) -> None:
+def validate_archive(
+    archive_bytes: bytes, *, max_uncompressed_bytes: int = MAX_UNCOMPRESSED_BYTES
+) -> None:
     """Validate tar.gz structure without extracting (gateway pre-check)."""
     if not archive_bytes:
         raise IngestError("empty archive")
     try:
         with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
-            members = _safe_members(tf, Path("/tmp/octo-ingest-validate"))
+            members = _safe_members(
+                tf,
+                Path("/tmp/octo-ingest-validate"),
+                max_uncompressed_bytes=max_uncompressed_bytes,
+            )
             if not members:
                 raise IngestError("archive has no members")
     except IngestError:
@@ -55,12 +79,17 @@ def validate_archive(archive_bytes: bytes) -> None:
         raise IngestError(f"invalid archive: {exc}") from exc
 
 
-def extract_run_archive(archive_bytes: bytes, dest_dir: Path) -> Path:
+def extract_run_archive(
+    archive_bytes: bytes,
+    dest_dir: Path,
+    *,
+    max_uncompressed_bytes: int = MAX_UNCOMPRESSED_BYTES,
+) -> Path:
     """Extract tar.gz into dest_dir (created to receive run artifacts)."""
-    validate_archive(archive_bytes)
+    validate_archive(archive_bytes, max_uncompressed_bytes=max_uncompressed_bytes)
     dest_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
-        members = _safe_members(tf, dest_dir)
+        members = _safe_members(tf, dest_dir, max_uncompressed_bytes=max_uncompressed_bytes)
         # filter="data" blocks links/device nodes on Python 3.12+; ignore on older.
         try:
             tf.extractall(dest_dir, members=members, filter="data")
