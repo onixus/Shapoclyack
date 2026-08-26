@@ -853,3 +853,12 @@ def main(argv: list[str] | None = None) -> int:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
     return run_loop(args)
+
+
+# `python -m agent.worker` used to import this module as __main__, define
+# main(), and exit 0 without ever calling it — a silent no-op that looked like
+# a clean start, and that systemd then restarted forever under Restart=always.
+# `python -m agent` (agent/__main__.py) remains the documented entry point;
+# this guard makes the other spelling do the same thing instead of nothing.
+if __name__ == "__main__":
+    raise SystemExit(main())

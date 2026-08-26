@@ -349,7 +349,6 @@ export type AgentDeploySSHRequest = {
   username?: string;
   password?: string;
   private_key?: string;
-  sudo_password?: string;
   tenant_id?: string;
   agent_id?: string;
   install_dir?: string;

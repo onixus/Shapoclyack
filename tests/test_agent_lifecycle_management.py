@@ -62,6 +62,23 @@ def _record_ssh(monkeypatch) -> list[dict]:
     return calls
 
 
+def _wait_for_deploy(client, headers, deploy_id: str, timeout: float = 10.0) -> dict:
+    """Wait until a deployment run reaches a terminal state.
+
+    Lets a test that starts a real (SSH-stubbed) deployment finish it before
+    asserting, instead of racing the worker thread — and leaves no thread still
+    writing to a database the next test is about to truncate.
+    """
+
+    def finished():
+        resp = client.get(f"/api/agent/deploy/{deploy_id}/status", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        return body if body["status"] in ("completed", "failed") else None
+
+    return _wait_for(finished, timeout)
+
+
 def _wait_for(predicate, timeout: float = 10.0):
     """Wait for the deployment worker thread to get somewhere.
 
@@ -361,6 +378,7 @@ def test_remote_ssh_deployer_flow(tmp_path: Path, monkeypatch):
     status_resp = client.get(f"/api/agent/deploy/{deploy_id}/status", headers=admin_hdrs)
     assert status_resp.status_code == 200
     assert len(status_resp.json()["logs"]) >= 1
+    assert _wait_for_deploy(client, admin_hdrs, deploy_id)["status"] == "completed"
 
 
 def test_ssh_push_takes_admin(tmp_path: Path, monkeypatch):
@@ -443,12 +461,14 @@ def test_a_changed_host_key_is_refused_rather_than_re_pinned(
         "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
     )
     assert first.status_code == 200
+    # Let the legitimate run finish, so every call it makes is already recorded
+    # and the assertion below is about the refused run and nothing else.
+    _wait_for_deploy(client, admin_hdrs, first.json()["deploy_id"])
 
     # The target now answers with a different key. Even naming that key as the
     # expected one must not overwrite the pin - a pinned host is not re-trusted
     # on the say-so of the same request that carries the credentials.
     _stub_host_key(monkeypatch, OTHER_KEY)
-    calls.clear()
     second = client.post(
         "/api/agent/deploy/ssh",
         json=_deploy_payload(expected_host_key=OTHER_KEY.fingerprint),
@@ -459,7 +479,12 @@ def test_a_changed_host_key_is_refused_rather_than_re_pinned(
     detail = second.json()["detail"]
     assert HOST_KEY.fingerprint in detail
     assert OTHER_KEY.fingerprint in detail
-    assert calls == []
+    # The refused run opened no connection. Asserted per key rather than as
+    # "no calls at all", because the list also holds the first, legitimate run's
+    # calls: a call carrying OTHER_KEY could only come from the run that was
+    # supposed to be refused, since the worker is handed whatever key
+    # resolve_host_key returned.
+    assert [call for call in calls if call["host_key"] == OTHER_KEY] == []
 
     # And the pin is still the original one.
     probed = client.post(
@@ -482,20 +507,19 @@ def test_a_pinned_host_needs_no_fingerprint_on_the_next_run(
     _stub_host_key(monkeypatch)
     _record_ssh(monkeypatch)
 
-    assert (
-        client.post(
-            "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
-        ).status_code
-        == 200
+    first = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
     )
-    assert (
-        client.post(
-            "/api/agent/deploy/ssh",
-            json=_deploy_payload(expected_host_key=None),
-            headers=admin_hdrs,
-        ).status_code
-        == 200
+    assert first.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, first.json()["deploy_id"])
+
+    second = client.post(
+        "/api/agent/deploy/ssh",
+        json=_deploy_payload(expected_host_key=None),
+        headers=admin_hdrs,
     )
+    assert second.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, second.json()["deploy_id"])
 
 
 def test_the_host_key_probe_sends_no_credentials_and_pins_nothing(
@@ -546,12 +570,11 @@ def test_the_provisioning_key_never_reaches_the_targets_argv(
     _stub_host_key(monkeypatch)
     calls = _record_ssh(monkeypatch)
 
-    assert (
-        client.post(
-            "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
-        ).status_code
-        == 200
+    started = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
     )
+    assert started.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, started.json()["deploy_id"])
 
     install = _wait_for(
         lambda: next((call for call in calls if "install.sh" in call["command"]), None)
@@ -584,6 +607,7 @@ def test_deployment_status_is_scoped_to_the_tenant(tmp_path: Path, monkeypatch):
     deploy_id = client.post(
         "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
     ).json()["deploy_id"]
+    _wait_for_deploy(client, admin_hdrs, deploy_id)
 
     assert (
         client.get(f"/api/agent/deploy/{deploy_id}/status", headers=admin_hdrs).status_code
@@ -615,6 +639,7 @@ def test_deployment_status_outlives_the_process_that_started_it(
     deploy_id = client.post(
         "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
     ).json()["deploy_id"]
+    _wait_for_deploy(client, admin_hdrs, deploy_id)
 
     from fastapi.testclient import TestClient
 

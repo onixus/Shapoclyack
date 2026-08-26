@@ -348,10 +348,12 @@ The variables in `agent.env` are the ones `agent/worker.py` reads:
 `OCTO_API_URL`, `OCTO_AGENT_PROVISIONING_KEY`, `OCTO_AGENT_ID`,
 `OCTO_TENANT_ID`, `OCTO_NATS_URL`. Earlier versions of the installer wrote
 `OCTO_SERVER_URL` / `OCTO_PROVISIONING_KEY` and passed `--server` / `--key` /
-`--tenant` to `python -m agent.worker`; the worker has none of those flags and
-`agent.worker` has no `__main__` guard, so that unit started a process that did
-nothing and exited. An agent installed by an older installer needs a re-run of
-this one.
+`--tenant` to `python -m agent.worker`; the worker accepts none of those flags,
+and `agent/worker.py` had no `__main__` guard, so that unit started a process
+that did nothing and exited 0 — forever, under `Restart=always`. The guard is
+there now, so both `python -m agent` and `python -m agent.worker` run the
+agent, but the flags in an old unit are still wrong: **an agent installed by an
+older installer needs a re-run of this one.**
 
 ### SSH push deployment
 
@@ -395,10 +397,12 @@ Operational limits worth knowing before relying on it:
 - SSH credentials cross the API and are used for the run only — nothing is
   persisted. A password reaches `ssh` through `SSH_ASKPASS`, never as an
   argument;
-- the installer is invoked with `sudo -n` when the SSH user is not root, so a
-  target whose sudo would prompt fails fast rather than reading the
-  provisioning key off stdin as a password guess. Give the account NOPASSWD for
-  the installer, or deploy as root;
+- **the SSH account must reach root without being asked for a password.** The
+  installer is invoked with `sudo -n` when the SSH user is not root, so a target
+  whose sudo would prompt fails fast rather than reading the provisioning key
+  off stdin as a password guess. Give the account NOPASSWD for the installer, or
+  deploy as root. There is no sudo-password field on the request: one was
+  accepted and silently ignored, which is worse than not offering it;
 - a heartbeat that has not arrived within the verification window is reported as
   a warning, not a failure: the install may still be fine, so check `/agents`.
 

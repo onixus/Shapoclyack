@@ -340,7 +340,6 @@ class AgentDeploySSHRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64, default="root")
     password: str | None = None
     private_key: str | None = None
-    sudo_password: str | None = None
     tenant_id: str = "default"
     agent_id: str | None = None
     install_dir: str = "/opt/shapoclyack-agent"

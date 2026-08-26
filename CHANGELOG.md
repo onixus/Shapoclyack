@@ -187,6 +187,15 @@ All notable changes to Shapoclyack are documented in this file.
   generated container/Kubernetes snippets pass the key in the environment with
   no arguments.
 
+- **`sudo_password` removed from `POST /api/agent/deploy/ssh`** —
+  **breaking for any caller sending it.** The field was accepted and then
+  ignored: nothing ever read it, and the installer is now invoked with
+  `sudo -n` precisely so a sudo that would prompt fails fast instead of reading
+  the provisioning key off stdin as a password guess. An interface that takes a
+  credential and does nothing with it is worse than one that does not offer it.
+  **The SSH account must reach root without a password prompt** — give it
+  NOPASSWD for the installer, or deploy as `root`.
+
 - **The install URL is configuration, not a request header**
   ([#233](https://github.com/onixus/Shapoclyack/issues/233)) — the server URL
   embedded in `curl … | sudo bash`, in the container and Kubernetes snippets,
@@ -307,6 +316,15 @@ All notable changes to Shapoclyack are documented in this file.
   `411 Length Required`. Rejections increment the same submission-outcome counter as the route.
 
 ### Fixed
+
+- **`python -m agent.worker` started nothing and exited 0** — the module
+  defined `main()` but had no `if __name__ == "__main__"` guard, so running it
+  directly imported the file, built no parser, contacted no API, and returned
+  success. Only `python -m agent` ever worked. The installer's systemd unit
+  used the broken spelling, so a native install left `Restart=always` cycling a
+  no-op forever while `systemctl is-active` reported nothing wrong. The guard
+  is added and the installer now uses `python -m agent`; **an agent installed
+  by an older installer needs a re-run of the current one.**
 
 - **Deployment status answered 404 on a successful deployment**
   ([#223](https://github.com/onixus/Shapoclyack/issues/223)) — the run journal
