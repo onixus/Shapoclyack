@@ -388,13 +388,21 @@ def list_agents(
 
 
 def get_agent(agent_id: str, tenant_id: str | None = None) -> AgentInfo | None:
+    """One agent, or ``None`` — including when it belongs to another tenant.
+
+    "Exists elsewhere" and "does not exist" are deliberately the same answer
+    (#223). Distinguishing them turned this into an existence oracle: a caller
+    walking agent ids learned which ones are real in some other tenant, which
+    is the only thing the id itself is worth. docs/api-and-rbac.md has promised
+    ``404`` for both since the tenancy work landed.
+    """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id)
         if not row:
             return None
         if tenant_id and row.tenant_id != tenant_id:
-            raise PermissionError("Cross-tenant agent access denied")
+            return None
         return _to_info(row)
 
 
@@ -454,13 +462,18 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
 
 
 def delete_agent(agent_id: str, tenant_id: str | None = None) -> bool:
+    """Delete and report whether anything was deleted.
+
+    An agent in another tenant is reported as absent, for the reason in
+    :func:`get_agent`.
+    """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id)
         if row is None:
             return False
         if tenant_id and row.tenant_id != tenant_id:
-            raise PermissionError("Cross-tenant agent access denied")
+            return False
         session.delete(row)
         session.flush()
         return True
@@ -470,10 +483,9 @@ def request_upgrade(agent_id: str, tenant_id: str | None = None) -> dict[str, An
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id)
-        if row is None:
+        if row is None or (tenant_id and row.tenant_id != tenant_id):
+            # Same LookupError either way — see get_agent on the id oracle.
             raise LookupError("Agent not found")
-        if tenant_id and row.tenant_id != tenant_id:
-            raise PermissionError("Cross-tenant agent access denied")
         human_detail, metrics, capabilities, _ = _extract_detail(row.detail)
         row.detail = _pack_detail(
             detail=human_detail,
@@ -507,6 +519,11 @@ def get_deployment_snippets(
     Without ``provisioning_key`` the snippets carry a placeholder the operator
     is expected to replace with a key minted through
     :func:`mint_deployment_snippets` (or an existing tenant key).
+
+    The container and Kubernetes forms pass the key in the environment and
+    invoke ``python -m agent`` with no arguments, so it does not end up in the
+    long-lived argv of the agent process, which every local user on that host
+    can read. The variable names are the ones ``agent/worker.py`` reads.
     """
     key_minted = bool(provisioning_key)
     if not provisioning_key:
@@ -520,8 +537,9 @@ def get_deployment_snippets(
     )
     docker_run = (
         f"docker run -d --name shapoclyack-agent --restart always "
-        f"-e OCTO_SERVER_URL={clean_server} -e OCTO_PROVISIONING_KEY={provisioning_key} -e OCTO_TENANT_ID={tenant_id} "
-        f"ghcr.io/onixus/shapoclyack:latest python -m agent.worker --server {clean_server} --key {provisioning_key}"
+        f"-e OCTO_API_URL={clean_server} -e OCTO_AGENT_PROVISIONING_KEY={provisioning_key} "
+        f"-e OCTO_TENANT_ID={tenant_id} "
+        f"ghcr.io/onixus/shapoclyack:latest python -m agent"
     )
     docker_compose = f"""version: '3.8'
 services:
@@ -530,10 +548,10 @@ services:
     container_name: shapoclyack-agent
     restart: always
     environment:
-      - OCTO_SERVER_URL={clean_server}
-      - OCTO_PROVISIONING_KEY={provisioning_key}
+      - OCTO_API_URL={clean_server}
+      - OCTO_AGENT_PROVISIONING_KEY={provisioning_key}
       - OCTO_TENANT_ID={tenant_id}
-    command: python -m agent.worker --server {clean_server} --key {provisioning_key}
+    command: python -m agent
 """
     kubernetes_yaml = f"""apiVersion: apps/v1
 kind: Deployment
@@ -554,13 +572,13 @@ spec:
       - name: agent
         image: ghcr.io/onixus/shapoclyack:latest
         env:
-        - name: OCTO_SERVER_URL
+        - name: OCTO_API_URL
           value: "{clean_server}"
-        - name: OCTO_PROVISIONING_KEY
+        - name: OCTO_AGENT_PROVISIONING_KEY
           value: "{provisioning_key}"
         - name: OCTO_TENANT_ID
           value: "{tenant_id}"
-        command: ["python", "-m", "agent.worker", "--server", "{clean_server}", "--key", "{provisioning_key}"]
+        command: ["python", "-m", "agent"]
 """
     return {
         "tenant_id": tenant_id,

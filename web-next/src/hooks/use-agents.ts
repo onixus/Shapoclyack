@@ -10,6 +10,7 @@ import {
   fetchAgents,
   fetchAgentSummary,
   fetchDeployStatus,
+  probeAgentSSHHostKey,
   triggerAgentUpgrade,
   type AgentDeploySSHRequest,
   type PageParams,
@@ -67,6 +68,16 @@ export function useDeployStatus(deployId: string | null) {
     queryFn: () => (deployId ? fetchDeployStatus(deployId) : null),
     enabled: Boolean(deployId),
     refetchInterval: 1500,
+  });
+}
+
+/** Read a target's SSH host key so the operator can verify it before deploying.
+ * Deliberately not a query: it reaches out to a host the operator just typed,
+ * so it happens when they ask for it and not on every keystroke. */
+export function useProbeSSHHostKey() {
+  return useMutation({
+    mutationFn: ({ host, port }: { host: string; port: number }) =>
+      probeAgentSSHHostKey(host, port),
   });
 }
 

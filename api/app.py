@@ -27,6 +27,7 @@ from api.routes import vulnerabilities as vulnerabilities_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse
+from api.services import agent_deployer
 from api.services import agents as agents_service
 from api.services import auth_audit
 from api.services import ch_ingest_worker
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     users_service.bootstrap(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
+    agent_deployer.configure(settings)
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
     auth_audit.configure(settings)

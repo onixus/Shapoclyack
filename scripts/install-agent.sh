@@ -13,6 +13,7 @@ AGENT_ID=""
 INSTALL_DIR="/opt/shapoclyack-agent"
 CONF_DIR="/etc/shapoclyack"
 USE_DOCKER=0
+KEY_FROM_STDIN=0
 NATS_URL=""
 BUNDLE_URL="${BUNDLE_URL:-}"
 
@@ -36,6 +37,9 @@ Usage: $0 --server <URL> --key <PROVISIONING_KEY> [OPTIONS]
 Required:
   -s, --server <URL>            Shapoclyack server base URL (e.g. http://192.168.1.100:8000)
   -k, --key <KEY>               Agent Provisioning Key (octo-pk-...)
+      --key-stdin               Read the provisioning key from stdin instead.
+                                Prefer this: an argument is visible to every
+                                local user in this host's process list.
 
 Options:
   -t, --tenant <TENANT_ID>      Tenant ID (default: default)
@@ -61,6 +65,10 @@ while [[ $# -gt 0 ]]; do
         -k|--key)
             PROVISIONING_KEY="$2"
             shift 2
+            ;;
+        --key-stdin)
+            KEY_FROM_STDIN=1
+            shift
             ;;
         -t|--tenant)
             TENANT_ID="$2"
@@ -99,7 +107,18 @@ if [[ -z "${SERVER_URL}" ]]; then
     error "Missing required argument: --server <URL>"
 fi
 
+# Read before the check below, so --key-stdin satisfies the same requirement.
+# One line, so whatever follows it on the channel (nothing, today) is left for
+# the caller rather than swallowed into the credential.
+if [[ "${KEY_FROM_STDIN}" -eq 1 ]]; then
+    IFS= read -r PROVISIONING_KEY || true
+    PROVISIONING_KEY="${PROVISIONING_KEY%$'\r'}"
+fi
+
 if [[ -z "${PROVISIONING_KEY}" ]]; then
+    if [[ "${KEY_FROM_STDIN}" -eq 1 ]]; then
+        error "--key-stdin was given but no provisioning key arrived on stdin."
+    fi
     error "Missing required argument: --key <KEY>"
 fi
 
@@ -118,6 +137,33 @@ if [[ $EUID -ne 0 ]]; then
     error "This installer must be run as root (or via sudo)."
 fi
 
+# Environment file
+#
+# The single place the provisioning key is written, and the only channel it
+# reaches the agent through. It is deliberately NOT passed on any command line:
+# argv is world-readable on this host (`ps`, /proc/*/cmdline), and the key
+# registers agents into the tenant for as long as it is not revoked.
+#
+# The variable names are the ones agent/worker.py actually reads. Earlier
+# versions wrote OCTO_SERVER_URL / OCTO_PROVISIONING_KEY and then relied on
+# --server / --key flags, neither of which the worker has ever accepted.
+write_env_file() {
+    mkdir -p "${CONF_DIR}"
+    # Subshell so the umask does not outlive this function and turn every later
+    # file the installer writes (the systemd unit, the log) into 0600 as well.
+    (
+        umask 077
+        cat <<EOF > "${CONF_DIR}/agent.env"
+OCTO_API_URL=${SERVER_URL}
+OCTO_AGENT_PROVISIONING_KEY=${PROVISIONING_KEY}
+OCTO_AGENT_ID=${AGENT_ID}
+OCTO_TENANT_ID=${TENANT_ID}
+OCTO_NATS_URL=${NATS_URL}
+EOF
+    )
+    chmod 0600 "${CONF_DIR}/agent.env"
+}
+
 # Docker Deployment Mode
 if [[ "${USE_DOCKER}" -eq 1 ]]; then
     log "Setting up Docker-based agent deployment..."
@@ -125,21 +171,23 @@ if [[ "${USE_DOCKER}" -eq 1 ]]; then
         error "Docker is not installed on this system. Install Docker first or run without --docker."
     fi
 
+    log "Writing environment config to ${CONF_DIR}/agent.env..."
+    write_env_file
+
     CONTAINER_NAME="shapoclyack-agent"
     docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
 
+    # --env-file rather than -e: a -e assignment is an argument of the docker
+    # client, so the key would be in this host's process list every time the
+    # container is (re)created.
     log "Starting Docker container '${CONTAINER_NAME}'..."
     docker run -d \
         --name "${CONTAINER_NAME}" \
         --restart always \
         --net host \
-        -e OCTO_SERVER_URL="${SERVER_URL}" \
-        -e OCTO_PROVISIONING_KEY="${PROVISIONING_KEY}" \
-        -e OCTO_TENANT_ID="${TENANT_ID}" \
-        -e OCTO_AGENT_ID="${AGENT_ID}" \
-        -e OCTO_NATS_URL="${NATS_URL}" \
+        --env-file "${CONF_DIR}/agent.env" \
         ghcr.io/onixus/shapoclyack:latest \
-        python -m agent.worker --server "${SERVER_URL}" --key "${PROVISIONING_KEY}" --agent-id "${AGENT_ID}"
+        python -m agent
 
     log "Docker agent container '${CONTAINER_NAME}' started successfully!"
     exit 0
@@ -223,14 +271,7 @@ fi
 
 # Write environment configuration
 log "Writing environment config to ${CONF_DIR}/agent.env..."
-cat <<EOF > "${CONF_DIR}/agent.env"
-OCTO_SERVER_URL=${SERVER_URL}
-OCTO_PROVISIONING_KEY=${PROVISIONING_KEY}
-OCTO_TENANT_ID=${TENANT_ID}
-OCTO_AGENT_ID=${AGENT_ID}
-OCTO_NATS_URL=${NATS_URL}
-EOF
-chmod 0600 "${CONF_DIR}/agent.env"
+write_env_file
 chown shapoclyack:shapoclyack "${CONF_DIR}/agent.env"
 
 # Install Systemd Service
@@ -247,8 +288,11 @@ Type=simple
 User=shapoclyack
 Group=shapoclyack
 WorkingDirectory=${INSTALL_DIR}
-EnvironmentFile=-${CONF_DIR}/agent.env
-ExecStart=${INSTALL_DIR}/venv/bin/python -m agent.worker --server \${OCTO_SERVER_URL} --key \${OCTO_PROVISIONING_KEY} --tenant \${OCTO_TENANT_ID} --agent-id \${OCTO_AGENT_ID}
+# Not optional (no leading "-"): without the file the agent has no credential,
+# and a unit that starts anyway just restart-loops. The key stays in the
+# environment and out of ExecStart, which every local user can read in `ps`.
+EnvironmentFile=${CONF_DIR}/agent.env
+ExecStart=${INSTALL_DIR}/venv/bin/python -m agent
 Restart=always
 RestartSec=5s
 LimitNOFILE=65535
@@ -271,8 +315,12 @@ EOF
     log "Systemd service 'shapoclyack-agent.service' started and enabled on boot!"
 else
     log "Systemd not detected. Starting agent in background..."
-    nohup sudo -u shapoclyack env $(cat "${CONF_DIR}/agent.env" | xargs) \
-        "${INSTALL_DIR}/venv/bin/python" -m agent.worker --server "${SERVER_URL}" --key "${PROVISIONING_KEY}" --tenant "${TENANT_ID}" --agent-id "${AGENT_ID}" \
+    # The env file is sourced inside the child rather than expanded into an
+    # `env VAR=value` argument list, which would put the provisioning key back
+    # into this host's process list.
+    nohup sudo -u shapoclyack sh -c \
+        'set -a; . "$1"; set +a; exec "$2" -m agent' \
+        sh "${CONF_DIR}/agent.env" "${INSTALL_DIR}/venv/bin/python" \
         > "${INSTALL_DIR}/agent.log" 2>&1 &
 fi
 

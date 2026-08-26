@@ -354,6 +354,21 @@ export type AgentDeploySSHRequest = {
   agent_id?: string;
   install_dir?: string;
   use_docker?: boolean;
+  /** SHA256 fingerprint the operator read off the target itself. Required the
+   * first time this tenant deploys to a host; afterwards the stored pin is what
+   * is checked. Without it the API refuses rather than trusting any key. */
+  expected_host_key?: string | null;
+};
+
+export type AgentSSHHostKeyInfo = {
+  host: string;
+  port: number;
+  key_type: string;
+  fingerprint: string;
+  /** True when this is the tenant's stored key. False means it was just read
+   * off the wire and is a claim by whoever answered, not yet trusted. */
+  pinned: boolean;
+  pinned_at: string | null;
 };
 
 export type AgentDeployStatusResponse = {
@@ -857,6 +872,18 @@ export async function createAgentDeploymentKey(label?: string) {
       "/agent/deployment-command",
       { label: label ?? "" },
     );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function probeAgentSSHHostKey(host: string, port: number) {
+  try {
+    const { data } = await api.post<AgentSSHHostKeyInfo>("/agent/deploy/ssh/host-key", {
+      host,
+      port,
+    });
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

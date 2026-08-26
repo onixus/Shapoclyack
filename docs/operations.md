@@ -303,12 +303,19 @@ curl -sSL https://<api-host>/api/agent/install.sh | sudo bash -s -- --server htt
 ```
 
 `scripts/install-agent.sh` covers Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine
-and Arch, and takes `--agent-id`, `--install-dir`, `--docker` and `--nats-url`
-as options (`--help` lists them).
+and Arch, and takes `--agent-id`, `--install-dir`, `--docker`, `--nats-url` and
+`--key-stdin` as options (`--help` lists them).
 
-With `--docker` it is a thin wrapper: it runs `ghcr.io/onixus/shapoclyack:latest`
-as the container `shapoclyack-agent` (`--restart always`, host network) with the
-server URL, provisioning key, tenant and agent id in the environment, and exits.
+`--key-stdin` reads the provisioning key from standard input instead of taking
+it as `--key`. Prefer it wherever the caller can write to stdin — an argument is
+readable by every local user on that host for as long as the process runs. The
+SSH push always uses it.
+
+With `--docker` it is a thin wrapper: it writes `/etc/shapoclyack/agent.env`
+(`0600`) and runs `ghcr.io/onixus/shapoclyack:latest` as the container
+`shapoclyack-agent` (`--restart always`, host network, `--env-file` pointing at
+that file), then exits. The credential is in the env file rather than in `-e`
+arguments, which would be in the docker client's own argv.
 
 Without it, the native path installs Python and a virtualenv under
 `/opt/shapoclyack-agent`, creates a `shapoclyack` system account, writes
@@ -328,27 +335,70 @@ cannot import its own module. Before starting the service it runs
 start, because `Type=simple` means "started" on its own proves nothing. Use
 `--docker` (or the Kubernetes snippet) for a host that has no checkout.
 
-**The provisioning key is on the command line.** During installation it is
-visible in the host's process list, and afterwards it lives in `agent.env`.
-Rotate the key if the host is shared or the shell history is retained.
+**Where the provisioning key ends up.** On the target it lives in
+`/etc/shapoclyack/agent.env` (`0600`, owned by the `shapoclyack` account) and
+nowhere else: the systemd unit is `ExecStart=…/venv/bin/python -m agent` with a
+mandatory `EnvironmentFile`, so the key is not in the agent's argv for the life
+of the process. It is still on the command line if you invoke the installer
+with `--key` yourself — use `--key-stdin`, or accept that the key is in your
+shell history and in the host's process list while the installer runs. Rotate
+the key if the host is shared.
+
+The variables in `agent.env` are the ones `agent/worker.py` reads:
+`OCTO_API_URL`, `OCTO_AGENT_PROVISIONING_KEY`, `OCTO_AGENT_ID`,
+`OCTO_TENANT_ID`, `OCTO_NATS_URL`. Earlier versions of the installer wrote
+`OCTO_SERVER_URL` / `OCTO_PROVISIONING_KEY` and passed `--server` / `--key` /
+`--tenant` to `python -m agent.worker`; the worker has none of those flags and
+`agent.worker` has no `__main__` guard, so that unit started a process that did
+nothing and exited. An agent installed by an older installer needs a re-run of
+this one.
 
 ### SSH push deployment
 
-`POST /api/agent/deploy/ssh` (operator, and the **Deploy agent** dialog in the
-UI) runs the same installer from the API: connect → mint a tenant provisioning
-key → `curl … | bash` the installer on the target → wait up to 30 s for the
-agent's first heartbeat. Paramiko is used when installed, otherwise the
-OpenSSH CLI (with `sshpass` for password auth).
+`POST /api/agent/deploy/ssh` (tenant **admin** since
+[#231](https://github.com/onixus/Shapoclyack/issues/231), and the **Deploy
+agent** dialog in the UI) runs the same installer from the API: verify the
+target's host key → connect → mint a tenant provisioning key → run the
+installer on the target, feeding it the key on stdin → wait up to 30 s for the
+agent's first heartbeat. Paramiko is used when installed, otherwise the OpenSSH
+CLI.
+
+**Host key verification.** The first deployment to a host is refused unless the
+request names the fingerprint you expect:
+
+```bash
+# On the target, the authoritative answer:
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Send that as `expected_host_key` (`SHA256:…`), or press **Read from host** in
+the dialog and compare what it reports against the line above before accepting
+it. The probe (`POST /api/agent/deploy/ssh/host-key`) authenticates to nothing
+and pins nothing: it reports what answered, which is a claim, not a
+verification. On a match the key is pinned in `agent_ssh_host_keys` for that
+tenant and target, and later deployments need no fingerprint.
+
+A host whose key no longer matches the pin is a `409` naming both fingerprints,
+and nothing is sent to it. If the host genuinely was rebuilt, confirm that with
+whoever owns it, delete the row and pin the new key deliberately:
+
+```sql
+DELETE FROM agent_ssh_host_keys
+ WHERE tenant_id = 'ten_acme' AND host = '10.0.0.5' AND port = 22;
+```
 
 Operational limits worth knowing before relying on it:
 
-- deployment state is **in-memory in the API process** — the last 100 runs, gone
-  on restart, and only pollable on the replica that started the run;
-- **host keys are not verified** on either path
-  (`AutoAddPolicy` / `StrictHostKeyChecking=no`), so use it on a trusted path
-  to the target;
+- deployment runs are rows in `agent_deployments`, so the status poll answers on
+  any replica and survives a restart; the last 100 runs per tenant are kept,
+  each with its last 500 log lines, and a run in another tenant answers `404`;
 - SSH credentials cross the API and are used for the run only — nothing is
-  persisted;
+  persisted. A password reaches `ssh` through `SSH_ASKPASS`, never as an
+  argument;
+- the installer is invoked with `sudo -n` when the SSH user is not root, so a
+  target whose sudo would prompt fails fast rather than reading the
+  provisioning key off stdin as a password guess. Give the account NOPASSWD for
+  the installer, or deploy as root;
 - a heartbeat that has not arrived within the verification window is reported as
   a warning, not a failure: the install may still be fine, so check `/agents`.
 

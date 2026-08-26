@@ -96,6 +96,7 @@ def reset_service_state(settings: "Settings") -> None:
     ``tenants.reset_for_tests`` clears them along with the tables they
     reference — no module-level dicts left to clear.
     """
+    from api.services import agent_deployer
     from api.services import agents as agents_service
     from api.services import auth_audit
     from api.services import scan_schedules
@@ -105,6 +106,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services.integrations import webhooks as webhooks_service
 
     agents_service.configure(settings)
+    agent_deployer.configure(settings)
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     # Users are cleared here and re-seeded by create_app()'s bootstrap, which

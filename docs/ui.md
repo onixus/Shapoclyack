@@ -234,10 +234,11 @@ Security, DefectDojo or a SIEM unchanged.
 ## Agent fleet and deployment
 
 `/agents` is the worker fleet: status, version, telemetry, deregistration and
-remote upgrade. It takes `operator` — the page's **Deploy Agent** dialog hands
-out the credential that registers a worker, so it is not a viewer surface. The
-page refreshes on a poll, so it reads as a live view rather than one that needs
-reloading.
+remote upgrade. The page takes `operator`; the two actions in the **Deploy
+Agent** dialog that hand out a credential — **Generate key** and the SSH push —
+take tenant `admin` and answer `403` for an operator
+([#231](https://github.com/onixus/Shapoclyack/issues/231)). The page refreshes
+on a poll, so it reads as a live view rather than one that needs reloading.
 
 The tiles above the table are `GET /api/agents/summary`: total, online, busy,
 stale and **outdated** agents, the last against the server's target version.
@@ -249,13 +250,21 @@ The host is upgraded there — see
 [operations.md](operations.md#agent-installation-and-upgrade).
 
 The **Deploy Agent** dialog has four tabs. **Remote SSH Push** installs onto a
-host the platform connects to itself: host, port, username, and either a
-password or a private key, optionally Docker. The dialog polls the deployment
-and shows the stages (connect → mint credentials → run installer → verify
-heartbeat) with the remote installer's output inline. Credentials are used for
-that run and not stored, but they do travel to the API, and host keys are not
-verified — the caveats are in
-[api-and-rbac.md](api-and-rbac.md#agent-fleet-deployment-and-upgrade).
+host the platform connects to itself: host, port, username, either a password or
+a private key, an expected SSH host key fingerprint, and optionally Docker. The
+dialog polls the deployment and shows the stages (connect → mint credentials →
+run installer → verify heartbeat) with the remote installer's output inline.
+Credentials are used for that run and not stored, but they do travel to the API.
+
+**Expected SSH host key fingerprint** is required the first time this tenant
+deploys to a host, and the deployment is refused without it — the operator's
+SSH credentials and a new provisioning key travel over that connection.
+**Read from host** reports what the target currently offers; that is a claim by
+whoever answered, so the dialog says to confirm it on the host itself before
+pressing **It matches — use it**. Once accepted the key is pinned and later
+deployments to that host need nothing. If the target ever offers a different
+key the push fails with both fingerprints named — see
+[operations.md](operations.md#ssh-push-deployment) for what to do about it.
 
 The **Linux One-Liner**, **Docker Container** and **Kubernetes** tabs show
 copy-paste snippets, and they open with a `<PROVISIONING_KEY>` placeholder
