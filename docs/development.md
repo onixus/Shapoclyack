@@ -217,12 +217,20 @@ does not help: it is per job.
 quotes leave it to the shell, which has no such variable, and the tag silently
 becomes empty. Either use `sh """…"""` or pass the value through `withEnv`.
 
-**Clones are shallow (`depth 1`).** Parallel matrix legs each check out their own
-workspace, and on this controller `JENKINS_HOME` is a macOS bind mount where a
-concurrent `index-pack` of the full history has failed with
-`inflate: data stream error` — with `git fsck` clean on the source repository.
-If a stage ever needs real history, give that stage its own checkout rather than
-deepening every clone.
+**The Python matrix runs sequentially, on one agent.** When the two cells ran in
+parallel they each took their own workspace and cloned the repository at the same
+time, and that clone failed intermittently with `inflate: data stream error`,
+taking the whole build down while the other cell passed. What it is *not*: the
+source repository (`git fsck` clean) and not pack size — it recurred at 154
+objects with `depth 1` in effect. Twelve controlled attempts across host and
+container, bind-mounted and container filesystem, parallel and serial, produced
+no failure at all, so **the cause is still unidentified**. One agent means one
+workspace and one checkout, which removes the concurrent clone instead of
+retrying around it; the cost is about three minutes.
+
+Clones are also shallow (`depth 1`). That was tried as a fix for the above and
+did not work — it is kept only because it is faster. If a stage ever needs real
+history, give that stage its own checkout rather than deepening every clone.
 
 ### Reading a run without the UI
 
