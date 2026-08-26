@@ -575,19 +575,25 @@ class GrantMembershipRequest(BaseModel):
 
 
 class AuthEventInfo(BaseModel):
-    """One recorded login attempt (#157).
+    """One recorded access decision (#157, #226).
 
-    ``outcome`` is ``success``, ``failure`` (credentials checked and rejected)
-    or ``locked`` (refused by the rate limiter before they were checked).
-    ``reason`` is NULL on success.
+    ``outcome`` is ``success``, ``failure`` (credentials checked and
+    rejected), ``locked`` (refused by the rate limiter before they were
+    checked) or ``denied`` (an authenticated principal refused an action, e.g.
+    a scan outside the tenant's approved scope). ``reason`` is NULL on success.
+    ``detail`` names the subject of a non-login decision and is NULL for login
+    attempts, whose subject is the username/IP pair; ``client_ip`` is empty for
+    the decisions taken in the service layer, which have no request to read it
+    from.
     """
 
     id: int
     occurred_at: str | None = None
     username: str
     client_ip: str
-    outcome: Literal["success", "failure", "locked"]
+    outcome: Literal["success", "failure", "locked", "denied"]
     reason: str | None = None
+    detail: str | None = None
 
 
 class UserInfo(BaseModel):
@@ -661,6 +667,41 @@ class ProvisioningKeyInfo(BaseModel):
     last_used_at: str | None = None
     # Present only on create (one-time plaintext).
     key: str | None = None
+
+
+class ScanScopeEntry(BaseModel):
+    """One allow/deny entry of a tenant's approved scanning scope (#226).
+
+    ``value`` is a CIDR (``kind="cidr"``), a domain suffix covering itself and
+    its subdomains (``kind="domain"``), or the literal ``*`` for either kind,
+    which is the explicit any-value wildcard.
+    """
+
+    effect: Literal["allow", "deny"]
+    kind: Literal["cidr", "domain"]
+    value: str = Field(min_length=1, max_length=255)
+    note: str = Field(default="", max_length=500)
+
+
+class ScanScopeEntryInfo(ScanScopeEntry):
+    """A stored entry, with the approval it was written under."""
+
+    id: int
+    tenant_id: str
+    approved_by: str = ""
+    approved_at: str | None = None
+
+
+class ReplaceScanScopeRequest(BaseModel):
+    """The scope a tenant should have after this request — the whole of it.
+
+    A replacement rather than a patch: a scope is evaluated as a set (deny
+    beats allow), so applying a narrowing entry by entry would leave a window
+    in which a half-applied set is the one being enforced. An empty list is
+    accepted and means "this tenant scans nothing".
+    """
+
+    entries: list[ScanScopeEntry] = Field(default_factory=list, max_length=1000)
 
 
 class AgentTokenRequest(BaseModel):

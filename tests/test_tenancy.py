@@ -7,7 +7,13 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.settings import Settings
-from tests.conftest import configured_client, login, make_settings, requires_postgres
+from tests.conftest import (
+    approve_scan_scope_via_api,
+    configured_client,
+    login,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -85,6 +91,10 @@ def test_cross_tenant_claim_denied(tmp_path, monkeypatch):
         headers={"Authorization": f"Bearer {admin}"},
         json={"name": "B", "tenant_id": "ten_b"},
     )
+    # Both tenants are new, so both start with no approved scan scope (#226).
+    for tenant_id in ("ten_a", "ten_b"):
+        approve_scan_scope_via_api(client, tenant_id, {"Authorization": f"Bearer {admin}"})
+
     key_a = client.post(
         "/api/tenants/ten_a/provisioning-keys",
         headers={"Authorization": f"Bearer {admin}"},

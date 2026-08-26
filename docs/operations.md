@@ -111,6 +111,85 @@ Before switching `axfr_probe` on, confirm the engagement covers active testing
 of the domains in `org_profile.dns_hygiene.domains` (or of every base domain the
 run derives from its scope, when that list is empty).
 
+## Approved scan scope per tenant
+
+Since #226 a scan target is checked against the tenant's **approved scanning
+scope** (`tenant_scan_scopes`, migration `0025`), not only against target
+syntax. Without it the platform accepted any well-formed CIDR or FQDN from any
+tenant — including `169.254.169.254/32`, the provider's cluster ranges, or a
+third party's network — and could not afterwards answer whether that tenant
+had been entitled to scan it.
+
+The scope is a list of allow/deny entries, each stamped with who approved it
+and when. Three rules decide a target:
+
+- **Deny beats allow**, by overlap. A range that intersects a denied one at all
+  is refused, so `10.0.0.0/8` is not a way to reach a denied `10.1.2.0/24`.
+- **Allow is containment.** A range is permitted only if it fits entirely
+  inside one allowed range; a partly approved range is not partly approved.
+- **No entries means no scanning.** A tenant with an empty scope starts no
+  scan at all, not even one that would have used the installation's default
+  target files.
+
+Domain entries are suffixes: `example.com` covers `example.com` and its
+subdomains. The literal `*` is the explicit any-value wildcard for either kind.
+
+The check runs twice: when the targets are submitted, and again inside
+`start_scan` at the moment the scan actually starts — which is what covers the
+schedule dispatcher, whose targets were stored days earlier and may no longer
+be inside a scope that has since been narrowed. Refusals are recorded in the
+access-decision journal (`GET /api/auth/events?outcome=denied`, admin) with the
+offending targets in `detail`.
+
+### Upgrading an existing installation
+
+Enforcement is fail-closed, so migration `0025` **grandfathers every tenant
+that exists at upgrade time** with an explicit allow-all scope (`0.0.0.0/0`,
+`::/0`, `*`) stamped `approved_by = migration-0025`. Nothing stops scanning on
+upgrade, and the permission is a row an admin can see and narrow rather than an
+implicit rule in the code. Tenants created *after* the upgrade start with no
+scope and cannot scan until one is approved.
+
+Read and narrow a scope (platform admin):
+
+```http
+GET /api/tenants/{tenant_id}/scan-scope
+PUT /api/tenants/{tenant_id}/scan-scope
+{"entries": [
+  {"effect": "allow", "kind": "cidr", "value": "203.0.113.0/24", "note": "engagement 2026-Q3"},
+  {"effect": "allow", "kind": "domain", "value": "customer.example"},
+  {"effect": "deny", "kind": "cidr", "value": "169.254.0.0/16", "note": "cloud metadata"}
+]}
+```
+
+`PUT` replaces the whole scope in one transaction and stamps the caller on
+every resulting row — a scope is evaluated as a set, so applying a narrowing
+entry by entry would leave a window in which a half-applied set is enforced.
+An admin narrowing a grandfathered tenant should therefore send the entries
+they want to keep, not only the ones they are adding.
+
+Recommended order per tenant, after the upgrade:
+
+1. `GET .../scan-scope` and confirm the `migration-0025` rows are still there.
+2. Agree the ranges and domains the engagement actually covers.
+3. `PUT` that list, keeping a deny entry for cloud metadata (`169.254.0.0/16`)
+   and for any range of your own infrastructure the tenant must never touch.
+4. Start one scan and confirm it is accepted; a refusal answers `403` and names
+   the offending target.
+
+Two limits worth knowing before relying on this:
+
+- **Resolution is checked at admission, not during the scan.** The API resolves
+  the requested names and refuses those whose current addresses land in a
+  denied range (`OCTO_SCAN_SCOPE_RESOLVE_CHECK`), but the scanner resolves
+  again later — a record that changes in between is not covered. Deny entries
+  for addresses that must never be reached belong in the agent's network
+  policy as well, not only here.
+- **Default target files are not read by the API.** When a scan carries no
+  target overrides it runs the installation's own target files; the scope check
+  can only require that the tenant has an approved scope, not compare it
+  against a file the API never opens.
+
 ## Alerts and exports
 
 Supported integrations include Slack/Telegram summary alerts, SMTP, DefectDojo,

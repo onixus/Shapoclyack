@@ -19,6 +19,7 @@ from api.services import tenants as tenants_service
 from api.services import wordlists
 from api.settings import Settings
 from tests.conftest import (
+    approve_scan_scope,
     auth_headers,
     configured_client,
     make_settings,
@@ -35,6 +36,8 @@ def settings(tmp_path: Path) -> Settings:
     tenants_service.load_tenants(s)
     tenants_service.reset_for_tests()
     tenants_service.load_tenants(s)
+    # Scans need an approved scan scope since #226; see tests/conftest.py.
+    approve_scan_scope(s)
     wordlists.configure(s)
     return s
 
