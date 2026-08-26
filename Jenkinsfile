@@ -9,7 +9,14 @@
 //   * образ собирается только под нативный linux/arm64, без QEMU-матрицы.
 
 def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
-def IMAGE_TAG = 'network-scan-cli:ci'
+
+// Уникально на джобу, а не только на номер билда. В multibranch у каждой
+// ветки своя нумерация с #1, поэтому общий тег означал бы, что параллельные
+// сборки разных веток перетирают друг другу образ, а Smoke/E2E/Trivy молча
+// проверяют чужой — это хуже падения. disableConcurrentBuilds() тут не
+// помогает: он про одну джобу, а ветки это разные джобы.
+def CI_SLUG = "${env.JOB_NAME}-${env.BUILD_NUMBER}".replaceAll(/[^A-Za-z0-9]+/, '-').toLowerCase()
+def IMAGE_TAG = "network-scan-cli:ci-${CI_SLUG}"
 
 pipeline {
   agent none
@@ -77,7 +84,7 @@ pipeline {
                 // Своя сеть на сборку: postgres и nats резолвятся по alias'ам.
                 // 127.0.0.1 из GitHub Actions тут не работает — у каждого
                 // контейнера свой netns, общего loopback с раннером нет.
-                def net = "shapoclyack-ci-${env.BUILD_NUMBER}-${PY}"
+                def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
                 sh "docker network create ${net}"
                 try {
                   docker.image('postgres:16-alpine').withRun(
@@ -351,6 +358,13 @@ PY
           }
         }
       }
+      post {
+        always {
+          // Тег уникален на сборку, поэтому образы копились бы на диске —
+          // раньше их перезаписывал следующий билд под тем же именем.
+          sh "docker rmi -f ${IMAGE_TAG} || true"
+        }
+      }
     }
 
     stage('Image nmap-legacy') {
@@ -365,15 +379,19 @@ PY
         }
       }
       steps {
+        // Этот sh — в одинарных кавычках, поэтому ${IMAGE_TAG} раскрывает не
+        // Groovy, а шелл: значение приходит через env, иначе тег молча стал бы
+        // пустым и docker build собрал бы "-nmap".
+        withEnv(["IMAGE_TAG=${IMAGE_TAG}"]) {
         withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
           sh '''
             set -eu
             DOCKER_BUILDKIT=1 docker build \
               --secret id=github_token,env=GH_TOKEN \
               --build-arg INSTALL_NMAP=1 \
-              -t network-scan-cli:ci-nmap .
+              -t ${IMAGE_TAG}-nmap .
 
-            docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh network-scan-cli:ci-nmap -c '
+            docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh ${IMAGE_TAG}-nmap -c '
               set -e
               naabu -version
               dnsx -version
@@ -384,6 +402,12 @@ PY
               python -m compileall scanner
             '
           '''
+        }
+        }
+      }
+      post {
+        always {
+          sh "docker rmi -f ${IMAGE_TAG}-nmap || true"
         }
       }
     }
