@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request, Response
@@ -121,7 +122,18 @@ def create_app() -> FastAPI:
             max_bytes=settings.endpoint_inventory_max_body_bytes,
             paths=("/api/endpoint/inventory",),
         )
-    app.add_middleware(SecurityHeadersMiddleware)
+    # Same reasoning for the agent results upload (#222): the archive part is a
+    # whole run directory, and the route buffered it in full before deciding
+    # anything about it. Its own cap because the two contracts are different
+    # sizes, and no endpoint-submission counter because those rejections are not
+    # endpoint submissions.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=settings.agent_results_max_body_bytes,
+        path_patterns=(r"^/api/agent/jobs/[^/]+/results/?$",),
+        count_endpoint_submissions=False,
+    )
+    app.add_middleware(SecurityHeadersMiddleware, enable_hsts=settings.hsts_enabled)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -191,21 +203,43 @@ def create_app() -> FastAPI:
         elif vite_assets.is_dir():
             app.mount("/assets", StaticFiles(directory=vite_assets), name="assets")
 
+        web_root = web_dist.resolve()
+
+        def _contained_file(candidate: Path) -> Path | None:
+            """Resolve ``candidate`` and keep it only if it stays under the web root.
+
+            Same containment check as ``runs.resolve_artifact``: resolve, then
+            require ``relative_to`` the root to succeed. ``full_path`` reaches the
+            handler percent-decoded, so a ``%2e%2e%2f`` segment arrives here as a
+            real ``..`` that no ASGI-level path normalization ever saw — and this
+            route is unauthenticated, which made every file the API process can
+            read, its environment included, readable to anyone
+            (GHSA-cpcx-h7mr-24pc).
+            """
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(web_root)
+            except ValueError:
+                return None
+            return resolved if resolved.is_file() else None
+
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
             # Next `output: "export"` emits `runs.html` / `runs/view.html` (and optionally
             # directory `index.html`). Prefer explicit files before the SPA shell.
             if full_path:
                 cleaned = full_path.rstrip("/")
-                candidate = web_dist / cleaned
-                if candidate.is_file():
+                candidate = _contained_file(web_dist / cleaned)
+                if candidate is not None:
                     return FileResponse(candidate)
-                html_candidate = web_dist / f"{cleaned}.html"
-                if html_candidate.is_file():
+                html_candidate = _contained_file(web_dist / f"{cleaned}.html")
+                if html_candidate is not None:
                     return FileResponse(html_candidate)
-                index_candidate = candidate / "index.html"
-                if index_candidate.is_file():
+                index_candidate = _contained_file(web_dist / cleaned / "index.html")
+                if index_candidate is not None:
                     return FileResponse(index_candidate)
+            # An escaping path lands here, on the SPA shell, exactly like any
+            # other unknown route: the client-side router owns 404 rendering.
             return FileResponse(web_dist / "index.html")
 
     return app

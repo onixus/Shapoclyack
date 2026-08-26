@@ -234,6 +234,17 @@ Runbook:
   `Content-Length` header alone; a request without `Content-Length` is refused
   with `411` and never buffered.
 
+Agent results upload rejected: an archive over
+`OCTO_AGENT_RESULTS_MAX_BODY_BYTES` is refused with `413` from the
+`Content-Length` header alone, before the multipart body is read; an upload
+without `Content-Length` gets `411`. An archive that passes the transport cap
+but whose tar headers add up to more than 512 MiB expanded is refused as
+`archive expands to more than ... bytes` — the job stays in flight and the run
+directory is not created, so the agent may retry with a smaller archive. Raise
+the transport cap for a legitimately large run; the expansion ceiling is a
+constant (`api/services/results_ingest.MAX_UNCOMPRESSED_BYTES`) because the
+shared `output_dir` is what it protects.
+
 Tenant offboarding: endpoint data has no bespoke delete/export flow and follows
 whatever general tenant-deletion mechanism the platform adopts. The endpoint FK
 chain cascades from `tenants` (migration `0006_endpoint_fk_cascade`), so

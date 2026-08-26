@@ -155,6 +155,43 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Static UI fallback no longer serves files from outside the web root**
+  ([GHSA-cpcx-h7mr-24pc](https://github.com/onixus/Shapoclyack/security/advisories/GHSA-cpcx-h7mr-24pc)) —
+  `spa_fallback` in `api/app.py` built its candidate by joining the URL path
+  onto `OCTO_WEB_DIST` and never checked where the result landed. The route is
+  unauthenticated and present in every image that ships the console, so a
+  request that resolved outside the root read any file the API process could,
+  the environment holding `OCTO_JWT_SECRET` and `OCTO_POSTGRES_URL` included —
+  which is the whole access model, not one endpoint. All three lookups (the
+  file, its `.html` sibling, the directory `index.html`) now resolve the
+  candidate and require it to stay under `web_dist.resolve()`, the same
+  containment check `runs.resolve_artifact` already used for run artifacts. A
+  path that escapes falls through to the SPA shell like any other unknown
+  route.
+
+- **Agent results upload is bounded in both directions**
+  ([#222](https://github.com/onixus/Shapoclyack/issues/222)) —
+  `POST /api/agent/jobs/{job_id}/results` read the whole multipart archive into
+  memory before anything inspected it, and `results_ingest._safe_members`
+  checked every member's path and link type but never what the members added up
+  to. A compromised agent could therefore size a single upload against the API's
+  memory, or hand over a gzip bomb that filled the `output_dir` every tenant
+  shares. `BodySizeLimitMiddleware` now guards the results path too, with its
+  own `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` cap (default 128 MiB) enforced from
+  `Content-Length`; the middleware matches this route by pattern rather than
+  prefix so `POST /api/agent/jobs/claim` keeps its own limits. `_safe_members`
+  sums the declared member sizes and refuses above
+  `MAX_UNCOMPRESSED_BYTES` (512 MiB) before extraction writes anything.
+
+- **HSTS can actually be turned on**
+  ([#224](https://github.com/onixus/Shapoclyack/issues/224)) —
+  `SecurityHeadersMiddleware` had the header, `enable_hsts` defaulted to
+  `False`, `create_app()` constructed the middleware with no arguments, and no
+  environment variable existed to change any of that, so
+  `Strict-Transport-Security` was never sent in any deployment. `OCTO_HSTS_ENABLED`
+  now feeds `Settings.hsts_enabled` into the middleware, defaulting to on under
+  `OCTO_ENV=prod` and off under `dev`.
+
 - **`GET /api/agent/deployment-command` no longer hands a tenant provisioning
   key to viewers** — the route required only `viewer` while
   `get_deployment_snippets()` minted a fresh provisioning key on every call and

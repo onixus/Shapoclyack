@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.core import security
 from api.settings import Settings
+from tests.conftest import configured_client, requires_postgres
 
 
 def test_security_headers_middleware():
@@ -27,6 +28,24 @@ def test_security_headers_middleware():
     assert "camera=()" in (headers.get("permissions-policy") or "")
     assert headers.get("cross-origin-opener-policy") == "same-origin"
     assert "default-src 'self'" in (headers.get("content-security-policy") or "")
+
+
+@requires_postgres
+def test_hsts_header_follows_the_configured_flag(tmp_path, monkeypatch):
+    """#224: the header existed in the middleware but nothing could turn it on —
+    ``enable_hsts`` defaulted to False and the app constructed the middleware
+    with no arguments, so it was never sent in any deployment."""
+    client = configured_client(tmp_path, monkeypatch, hsts_enabled=True)
+    headers = client.get("/api/health").headers
+    assert headers.get("strict-transport-security") == "max-age=31536000; includeSubDomains"
+
+
+@requires_postgres
+def test_hsts_header_absent_when_disabled(tmp_path, monkeypatch):
+    """Off in dev on purpose: a browser that picks up the header on
+    http://localhost pins itself to HTTPS for a year."""
+    client = configured_client(tmp_path, monkeypatch, hsts_enabled=False)
+    assert "strict-transport-security" not in client.get("/api/health").headers
 
 
 def test_jwt_algorithm_whitelist_enforcement():
