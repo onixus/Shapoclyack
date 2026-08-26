@@ -254,6 +254,7 @@ def test_retention_sweep_prunes_every_tenant(tmp_path: Path):
     assert len(risk_snapshots.list_snapshots(settings, tenant_id="tenant-a")) == 2
 
 
+@requires_postgres
 def test_app_lifespan_starts_the_retention_worker(tmp_path: Path, monkeypatch):
     """The sweep has to be wired, not merely written.
 

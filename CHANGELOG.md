@@ -183,6 +183,29 @@ All notable changes to Shapoclyack are documented in this file.
   transport errors, and send an explicit `shapoclyack/scanner` User-Agent. `nuclei_scan.py`
   hardened alongside them.
 
+### Changed
+
+- **Real enrichment data is committed instead of seed stubs** — `scanner/data`
+  carried 3 EPSS entries, 3 KEV ids and 4 exploit-maturity entries, so an image
+  built from a clean checkout prioritised findings against data that was
+  effectively empty, and said nothing about it. Now: **365,017** EPSS scores
+  (FIRST.org, score date 2026-08-26), **1,676** KEV ids (CISA, released
+  2026-08-25) and **25,943** exploit-maturity entries (Exploit-DB and
+  Metasploit, CVE ids only — no exploit content). `scanner/data` grows from
+  8.9 MB to 21 MB, in line with the CVSS v4 overlay that was already committed.
+  Refresh with `scripts/fetch-epss-db.sh`, `scripts/fetch-kev-db.sh` and
+  `scripts/fetch-exploit-db.py`. Attribution and terms for every bundled
+  dataset are now recorded in [docs/third-party.md](docs/third-party.md) —
+  EPSS is CC BY 4.0 and requires it.
+  This does **not** change what the tests assert: they build their own CVE
+  fixtures and never read `scanner/data`. What changes is the image, the E2E
+  and load stages, and any dev install working from a checkout.
+  Separately from this change, the build-time refresh of these sources is
+  currently failing with HTTP 403 for every source
+  ([#246](https://github.com/onixus/Shapoclyack/issues/246)) — committing real
+  data means a build that cannot reach them now falls back to real data rather
+  than to stubs.
+
 ### Security
 
 - **SSH push deployment verifies the target's host key**

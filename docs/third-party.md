@@ -42,6 +42,30 @@ Relevant license families include:
 | jq | MIT |
 | unzip | Info-ZIP |
 
+## Bundled data
+
+These datasets are committed to the repository under `scanner/data/` and baked
+into the images as the seed set, so the product is redistributing them and not
+merely downloading them at build time. Refresh them with the matching script in
+`scripts/`; each script merges rather than truncates, so a failed fetch keeps
+the previous copy instead of publishing an empty one.
+
+| Dataset | Path | Source | Terms | What is extracted |
+|---------|------|--------|-------|-------------------|
+| CVSS v4 | `cvss4/cvss4.json` | NVD | US government work, public domain | Base vectors and scores per CVE |
+| EPSS | `epss/epss-overlay.json` | [FIRST.org](https://www.first.org/epss/) | **CC BY 4.0 — attribution required** | Exploit-prediction score and percentile per CVE |
+| KEV | `kev/kev-overlay.json` | [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | US government work, public domain | The list of CVE ids in the catalog |
+| Exploit maturity | `exploit/exploit-overlay.json` | Exploit-DB `files_exploits.csv`; Metasploit `modules_metadata_base.json` | GPL-2.0 (Exploit-DB), BSD-3-Clause (Metasploit Framework) | CVE ids only — which CVEs have public exploit code or a packaged module. No exploit code, titles or descriptions are copied |
+
+**Attribution.** EPSS data is provided by FIRST.org under CC BY 4.0. Any
+redistribution of this repository or its images carries that obligation; keep
+this notice with it.
+
+**Why identifiers only.** The exploit overlay stores CVE ids and a maturity
+rung, never exploit content. That keeps the redistribution to a set of factual
+identifiers and keeps the images free of exploit code — which also matters for
+the scanners that would otherwise flag them.
+
 ## Application dependencies
 
 Python and JavaScript dependencies are locked in requirement and package-lock
