@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from api.services import nats_bus, results_ingest
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import POSTGRES_URL, approve_scan_scope, requires_postgres
 
 
 def _archive(name: str = "findings.json", data: bytes = b'{"ok":true}\n') -> bytes:
@@ -155,6 +155,8 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     client = TestClient(create_app())
+    # create_app() seeded the default tenant; scans need its scope (#226).
+    approve_scan_scope(settings)
 
     reg = client.post(
         "/api/agent/register",

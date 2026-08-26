@@ -20,7 +20,7 @@ from api.services import jobs as jobs_service
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
 from api.services.jobs import get_job, load_jobs
-from tests.conftest import make_settings, requires_postgres
+from tests.conftest import approve_scan_scope, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -56,6 +56,8 @@ def settings(tmp_path: Path):
     tenants_service.configure(base)
     tenants_service.reset_for_tests()
     tenants_service.load_tenants(base)
+    # Scans need an approved scan scope since #226; see tests/conftest.py.
+    approve_scan_scope(base)
     agents_service.configure(base)
     return base
 
@@ -170,6 +172,7 @@ def test_claim_is_scoped_to_the_agents_tenant(settings):
     from api.schemas import StartScanRequest
 
     tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    approve_scan_scope(settings, "ten_a")
     settings.job_execution_mode = "agent"
     jobs_service.start_scan(
         settings, StartScanRequest(mode="balanced", tenant_id="ten_a"), username="admin"
@@ -291,6 +294,7 @@ def test_local_run_is_tagged_with_the_jobs_tenant(settings, monkeypatch):
         json.dumps({"run_id": "20260805T101500Z"}), encoding="utf-8"
     )
     tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    approve_scan_scope(settings, "ten_a")
 
     monkeypatch.setattr(
         subprocess,

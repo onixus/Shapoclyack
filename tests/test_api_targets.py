@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,17 +13,29 @@ from api.app import create_app
 from api.schemas import StartScanRequest
 from api.services import tenants as tenants_service
 from api.services.jobs import start_scan
+from api.services.scan_scopes import ScanScope
 from api.services.targets import parse_target_payload
 from api.settings import Settings
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import POSTGRES_URL, approve_scan_scope, requires_postgres
+
+# Parsing is only reached by a tenant that may scan something (#226), so the
+# pure syntax tests below pass a scope that allows everything. The scope
+# checks themselves live in tests/test_scan_scopes.py.
+ANY_TARGET = ScanScope(
+    tenant_id="default",
+    allow_networks=(ipaddress.ip_network("0.0.0.0/0"), ipaddress.ip_network("::/0")),
+    allow_domains=("*",),
+    approved=True,
+)
 
 
 def test_parse_target_payload_none_when_empty():
-    assert parse_target_payload(ranges_text="", domains_text=None, ports_text="  ") is None
+    assert parse_target_payload(scope=ANY_TARGET, ranges_text="", domains_text=None, ports_text="  ") is None
 
 
 def test_parse_target_payload_host_override_requires_valid_entry():
     parsed = parse_target_payload(
+        scope=ANY_TARGET,
         ranges_text="10.0.0.0/24\n# comment\n",
         domains_text="scanme.nmap.org",
         ports_text="22,80\n443",
@@ -36,7 +49,7 @@ def test_parse_target_payload_host_override_requires_valid_entry():
 
 
 def test_parse_target_payload_ports_only_keeps_default_hosts():
-    parsed = parse_target_payload(ranges_text=None, domains_text=None, ports_text="80,443")
+    parsed = parse_target_payload(scope=ANY_TARGET, ranges_text=None, domains_text=None, ports_text="80,443")
     assert parsed is not None
     assert parsed.ranges is None
     assert parsed.domains is None
@@ -46,6 +59,7 @@ def test_parse_target_payload_ports_only_keeps_default_hosts():
 
 def test_parse_target_payload_udp_only():
     parsed = parse_target_payload(
+        scope=ANY_TARGET,
         ranges_text=None,
         domains_text=None,
         ports_text=None,
@@ -58,7 +72,7 @@ def test_parse_target_payload_udp_only():
 
 def test_parse_target_payload_rejects_invalid():
     with pytest.raises(ValueError, match="invalid scan targets"):
-        parse_target_payload(ranges_text="not-a-cidr", domains_text=None, ports_text=None)
+        parse_target_payload(scope=ANY_TARGET, ranges_text="not-a-cidr", domains_text=None, ports_text=None)
 
 
 @requires_postgres
@@ -71,6 +85,7 @@ def test_start_scan_writes_job_inputs_and_cli_flags(tmp_path: Path):
         postgres_url=POSTGRES_URL,
     )
     tenants_service.load_tenants(settings)
+    approve_scan_scope(settings)
     request = StartScanRequest(
         mode="safe",
         skip_nse=True,
@@ -109,6 +124,10 @@ def test_start_scan_writes_job_inputs_and_cli_flags(tmp_path: Path):
 @requires_postgres
 def test_api_rejects_invalid_targets_with_422():
     client = TestClient(create_app())
+    # create_app() seeded the default tenant; a tenant with no approved scope
+    # is refused before its targets are parsed at all (#226), which is a
+    # different answer than the malformed-input 422 under test here.
+    approve_scan_scope(Settings(postgres_url=POSTGRES_URL))
     login = client.post(
         "/api/auth/login",
         json={"username": "operator", "password": "operator-change-me"},

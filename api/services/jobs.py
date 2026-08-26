@@ -49,6 +49,7 @@ from api.services import nats_bus
 from api.services import pagination
 from api.services import results_ingest
 from api.services import runs as runs_service
+from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services import scan_intents
 from api.services import vulnerabilities as vulns_service
@@ -391,12 +392,17 @@ def _prepare_target_inputs(
     settings: Settings,
     job_id: str,
     request: StartScanRequest,
+    *,
+    tenant_id: str,
 ) -> tuple[Path | None, dict[str, int] | None, list[str]]:
     """Write per-job input files when overrides are provided.
 
-    Returns (inputs_dir, target_counts, extra_cli_args).
+    Returns (inputs_dir, target_counts, extra_cli_args). Raises
+    ``scan_scopes.ScanScopeDenied`` when the tenant's approved scope does not
+    cover the requested targets — the first of the two barriers (#226).
     """
     parsed = parse_target_payload(
+        scope=scan_scopes.load_scope(settings, tenant_id),
         ranges_text=request.ranges,
         domains_text=request.domains,
         ports_text=request.ports,
@@ -898,7 +904,24 @@ def start_scan(
     if execution == "agent" and not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
-    _, target_counts, target_args = _prepare_target_inputs(settings, job_id, request)
+    try:
+        _, target_counts, target_args = _prepare_target_inputs(
+            settings, job_id, request, tenant_id=tenant_id
+        )
+        # Second barrier, deliberately redundant. start_scan is also reached
+        # from schedule_dispatcher, which replays targets stored days ago and
+        # never passed through the check above, and the approved scope may
+        # have been narrowed since the targets were entered — the moment that
+        # matters is the moment the scan starts, not the moment it was typed.
+        scan_scopes.assert_scan_allowed(
+            settings,
+            tenant_id=tenant_id,
+            ranges_text=request.ranges,
+            domains_text=request.domains,
+        )
+    except scan_scopes.ScanScopeDenied as denied:
+        scan_scopes.record_denial(username=username, denied=denied)
+        raise
 
     try:
         resolved = scan_intents.resolve_scan_options(

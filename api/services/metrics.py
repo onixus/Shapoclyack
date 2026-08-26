@@ -65,9 +65,11 @@ JOB_IDEMPOTENT_REPLAYS_TOTAL = Counter(
 
 AUTH_ATTEMPTS_TOTAL = Counter(
     "octo_auth_attempts_total",
-    "Console login attempts, by outcome (success, failure, locked). 'locked' "
-    "is an attempt refused by the rate limiter before the password was "
-    "checked (#157).",
+    "Access decisions, by outcome (success, failure, locked, denied). "
+    "'locked' is a login attempt refused by the rate limiter before the "
+    "password was checked (#157); 'denied' is an authenticated principal "
+    "refused an action, e.g. a scan outside the tenant's approved scope "
+    "(#226).",
     ["outcome"],
     registry=REGISTRY,
 )

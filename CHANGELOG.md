@@ -6,6 +6,36 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Approved scanning scope per tenant** ([#226](https://github.com/onixus/Shapoclyack/issues/226)) —
+  target validation used to be a syntax check, so any well-formed CIDR or FQDN
+  from any tenant was accepted: `169.254.169.254/32`, the provider's cluster
+  range, or a third party's network, scanned from the platform's own address,
+  with nothing recording whether that tenant had been entitled to. The new
+  `tenant_scan_scopes` table (migration `0025`) stores allow/deny entries for
+  CIDRs and domain suffixes, each with who approved it and when. Deny beats
+  allow by *overlap* (`10.0.0.0/8` is not a way to reach a denied
+  `10.1.2.0/24`), allow is containment (a partly approved range is not partly
+  approved), and a tenant with no entries starts no scan at all — including one
+  that would have used the installation's default target files.
+  The check runs in `parse_target_payload` when targets are submitted **and**
+  again in `jobs_service.start_scan` when the scan starts, which is the barrier
+  that covers `schedule_dispatcher` replaying targets stored days earlier
+  against a scope that has since been narrowed. Domains are also checked after
+  resolution, against deny ranges only (`OCTO_SCAN_SCOPE_RESOLVE_CHECK`), so a
+  name inside the scope by suffix is not a way into a denied address.
+  Refusals answer `403` and land in the existing access-decision journal
+  (`GET /api/auth/events?outcome=denied`, with the offending targets in the new
+  `auth_events.detail` column). `GET`/`PUT /api/tenants/{id}/scan-scope` manage
+  the scope, platform admin only — the same bar #231 set for minting a
+  provisioning key.
+  **Breaking for existing installations, with a migration path:** enforcement
+  is fail-closed, so `0025` grandfathers every tenant that exists at upgrade
+  time with an explicit allow-all scope stamped `approved_by = migration-0025`.
+  Nothing stops scanning on upgrade and the permission is a visible row an
+  admin narrows, rather than an implicit "no scope means everything" rule;
+  tenants created after the upgrade start fail-closed. Narrowing procedure in
+  [docs/operations.md](docs/operations.md#approved-scan-scope-per-tenant).
+
 - **Zone hygiene and mail posture — org profile M2** ([#182](https://github.com/onixus/Shapoclyack/issues/182)) —
   two new opt-in scanner stages, both disabled by default and both findings-only
   (neither adds an FQDN or an IP to scope). `scanner/pipeline/dns_hygiene.py`

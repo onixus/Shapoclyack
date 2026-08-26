@@ -292,6 +292,16 @@ Run findings may include both confirmed vulnerabilities and lower-confidence exp
 
 Do not equate every row with a confirmed CVE. `finding_class`, `confidence`, `requires_confirmation`, and evidence fields are part of the finding contract and should remain visible enough for an analyst to understand why an item was prioritized.
 
+## Not in the console yet
+
+A tenant's **approved scanning scope** (#226) has no console surface: it is
+managed over `GET`/`PUT /api/tenants/{id}/scan-scope` by a platform admin, and
+`/tenants` neither shows nor edits it. What the console does show is the
+consequence — starting a scan outside the scope answers `403` on `/jobs`, with
+the offending targets in the error text, and a tenant whose scope was never
+approved cannot start one at all. See
+[api-and-rbac.md](api-and-rbac.md#approved-scanning-scope).
+
 ## Current versus planned UI
 
 The current console still contains scanner- and operations-oriented surfaces such as jobs, runs, agents, and schedules. The target product UX moves toward risk, asset, vulnerability-lifecycle, remediation, and MSSP views. That target is intentionally documented in [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md), not mixed into this current-state guide.

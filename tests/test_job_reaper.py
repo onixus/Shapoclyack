@@ -20,7 +20,7 @@ from api.services import job_reaper
 from api.services import jobs as jobs_service
 from api.services import tenants as tenants_service
 from api.services.jobs import get_job
-from tests.conftest import make_settings, requires_postgres
+from tests.conftest import approve_scan_scope, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -38,6 +38,8 @@ def settings(tmp_path: Path):
     tenants_service.configure(base)
     tenants_service.reset_for_tests()
     tenants_service.load_tenants(base)
+    # Scans need an approved scan scope since #226; see tests/conftest.py.
+    approve_scan_scope(base)
     agents_service.configure(base)
     agents_service.register_agent(agent_id="agent-1", tenant_id="default")
     return base

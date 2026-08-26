@@ -108,6 +108,10 @@ class Settings:
     hsts_enabled: bool = True
     users: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_USERS))
     allow_scan_start: bool = True
+    # Resolve requested scan domains at admission and refuse the ones whose
+    # current addresses land in a denied range (#226). Off leaves the name
+    # checked as a string only — see docs/configuration.md.
+    scan_scope_resolve_check: bool = True
     # local = API pod runs scanner in a thread; agent = remote workers claim jobs.
     job_execution_mode: str = "local"
     # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables legacy agent auth.
@@ -509,6 +513,8 @@ def load_settings() -> Settings:
         in {"1", "true", "yes"},
         users=users,
         allow_scan_start=os.environ.get("OCTO_ALLOW_SCAN_START", "true").lower()
+        in {"1", "true", "yes"},
+        scan_scope_resolve_check=os.environ.get("OCTO_SCAN_SCOPE_RESOLVE_CHECK", "true").lower()
         in {"1", "true", "yes"},
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),

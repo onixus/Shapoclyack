@@ -19,7 +19,12 @@ from api.app import create_app
 from api.db import models
 from api.db.engine import get_session
 from api.settings import Settings
-from tests.conftest import login, make_settings, requires_postgres
+from tests.conftest import (
+    approve_scan_scope_via_api,
+    login,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -56,12 +61,19 @@ def _headers(client: TestClient, username: str) -> dict[str, str]:
 
 
 def _make_tenant(client: TestClient, tenant_id: str) -> None:
+    """Create a tenant that can actually be used — scan scope included.
+
+    A tenant created through the API starts fail-closed since #226, so the
+    tests below that start scans in one would otherwise be testing the scope
+    check rather than the tenant isolation they are about.
+    """
     created = client.post(
         "/api/tenants",
         headers=_headers(client, "admin"),
         json={"name": tenant_id, "tenant_id": tenant_id},
     )
     assert created.status_code == 201
+    approve_scan_scope_via_api(client, tenant_id, _headers(client, "admin"))
 
 
 def _grant(client: TestClient, username: str, tenant_id: str, role: str = "operator") -> None:

@@ -26,7 +26,7 @@ from api.services import jobs as jobs_service
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
 from api.services import tenants as tenants_service
-from tests.conftest import make_settings, requires_postgres
+from tests.conftest import approve_scan_scope, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -45,6 +45,8 @@ def multi_settings(tmp_path: Path):
     tenants_service.configure(s)
     tenants_service.reset_for_tests()
     tenants_service.load_tenants(s)
+    # Scans need an approved scan scope since #226; see tests/conftest.py.
+    approve_scan_scope(s)
     agents_service.configure(s)
     scan_schedules.configure(s)
     scan_schedules.reset_for_tests()

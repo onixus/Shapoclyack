@@ -133,6 +133,10 @@ class AuthEvent(Base):
     # Machine-readable cause; NULL on success. See AUTH_REASONS in
     # api/services/auth_audit.py.
     reason: Mapped[str | None] = mapped_column(default=None)
+    # Free-text subject of a non-login decision — for a scan-scope refusal
+    # (#226) the targets that were out of scope. NULL for login attempts,
+    # whose subject is already the username/IP pair.
+    detail: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (
         # The limiter's exact predicate: one pair's recent rows, newest first.
@@ -992,3 +996,50 @@ class RiskScoreSnapshot(Base):
         Index("ix_risk_snapshots_tenant_time", "tenant_id", "recorded_at"),
     )
 
+
+
+class TenantScanScope(Base):
+    """One allow or deny entry in a tenant's approved scanning scope (#226).
+
+    Until this table existed the platform validated only the *syntax* of a
+    scan target: any well-formed CIDR or FQDN was accepted, so a tenant
+    operator could point the platform's own IP at a link-local address, at the
+    provider's cluster range, or at a third party's network, and afterwards
+    nobody could answer whether that tenant had been allowed to.
+
+    One row is one entry, so approval provenance is per entry: an operator who
+    widens a scope later cannot make the earlier, narrower approval look like
+    it had always included the addition. ``approved_by`` is the console
+    username that stored the row — or ``migration-0025`` for the grandfathered
+    allow-all entries that revision created for tenants predating this table
+    (see docs/operations.md).
+
+    ``value`` holds a CIDR (``kind="cidr"``, normalised by ``ip_network``) or a
+    domain suffix (``kind="domain"``, lowercased, no leading dot). The literal
+    ``*`` is the explicit any-value wildcard and is the only non-literal form.
+
+    Evaluation lives in ``api/services/scan_scopes.py``; two properties belong
+    to the data model rather than to that module: deny beats allow, and a
+    tenant with no rows at all scans nothing.
+    """
+
+    __tablename__ = "tenant_scan_scopes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    # allow | deny. Deny always wins — see scan_scopes.ScanScope.
+    effect: Mapped[str]
+    # cidr | domain.
+    kind: Mapped[str]
+    value: Mapped[str]
+    note: Mapped[str] = mapped_column(default="")
+    approved_by: Mapped[str] = mapped_column(default="")
+    approved_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "effect", "kind", "value", name="uq_tenant_scan_scopes_entry"
+        ),
+    )

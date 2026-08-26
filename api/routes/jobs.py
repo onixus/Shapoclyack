@@ -9,6 +9,7 @@ from api.routes._pagination import PageParams, build_page
 from api.schemas import JobInfo, Page, StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
+from api.services import scan_scopes
 from api.settings import Settings
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -116,6 +117,10 @@ def start_job(
         jobs_service.note_start_replay()
         response.status_code = status.HTTP_200_OK
         return replay.job
+    except scan_scopes.ScanScopeDenied as exc:
+        # 403, not 422: the targets are well-formed, this tenant is simply not
+        # approved for them (#226). The refusal is already in the audit trail.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:

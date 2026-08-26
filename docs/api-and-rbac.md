@@ -28,8 +28,13 @@ when it is created.
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
 `0014`) and counted in `octo_auth_attempts_total{outcome}`. `outcome` is
-`success`, `failure` (credentials checked and rejected) or `locked` (refused by
-the limiter before they were checked).
+`success`, `failure` (credentials checked and rejected), `locked` (refused by
+the limiter before they were checked) or `denied` — an already-authenticated
+principal refused an action, currently a scan outside the tenant's approved
+scanning scope (#226). A `denied` row names what was refused in `detail` and
+carries no client IP: that decision is taken in the service layer, which has
+no request to read one from. The limiter counts `failure` rows only, so these
+refusals cannot lock anyone out.
 
 Those same rows *are* the limiter. Two counters run over the same window
 (`OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS`, default 15 minutes):
@@ -70,7 +75,7 @@ GET /api/auth/events?limit=100&outcome=failure&q=10.1.2.3
 ```
 
 Newest first, `Page` envelope like the other lists. `q` matches username or
-client IP; `outcome` filters to one of the three values. Rows older than
+client IP; `outcome` filters to one of the four values. Rows older than
 `OCTO_AUTH_EVENT_RETENTION_DAYS` (default 90) are pruned — but never while they
 are still inside the limiter's window, since the two settings are chosen
 independently and a short retention must not quietly weaken the lockout.
@@ -102,7 +107,7 @@ not an authorization control.
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory |
-| `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
+| `/api/tenants` | Tenant lifecycle, provisioning keys, and the approved scanning scope (`/api/tenants/{id}/scan-scope`, admin). A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
 | `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
@@ -374,6 +379,29 @@ sources of truth is the state this change exists to leave. The built-in demo
 accounts are never imported, and exist only under `OCTO_ENV=dev`; a `prod`
 install with neither an account nor that variable refuses to start. See
 [configuration.md](configuration.md#startup-safety-octo_env).
+
+## Approved scanning scope
+
+What a tenant may point the platform at is a stored, approved list rather than
+a syntax check (#226). Both endpoints are platform admin, for the same reason
+provisioning-key creation is (#231): deciding that a tenant may scan a network
+is an administrative act, and an operator who could widen their own scope
+would be the control removing itself.
+
+```http
+GET /api/tenants/{tenant_id}/scan-scope
+PUT /api/tenants/{tenant_id}/scan-scope   {"entries": [{"effect": "allow", "kind": "cidr", "value": "203.0.113.0/24"}]}
+```
+
+`PUT` replaces the whole scope in one transaction and stamps the caller as
+`approved_by` on every resulting row; `entries: []` is accepted and means the
+tenant scans nothing. A malformed entry is `422`, an unknown tenant `404`.
+
+An out-of-scope scan is refused with **`403`, not `422`** — the target is
+well-formed, the tenant is simply not entitled to it — and the refusal is
+recorded in the access-decision journal above. The model, and the
+grandfathering migration `0025` applies on upgrade, are described in
+[operations.md](operations.md#approved-scan-scope-per-tenant).
 
 ## Tenant memberships
 

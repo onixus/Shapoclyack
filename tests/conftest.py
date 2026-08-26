@@ -126,6 +126,55 @@ def reset_service_state(settings: "Settings") -> None:
     auth_audit.reset_for_tests()
 
 
+def approve_scan_scope(
+    settings: "Settings",
+    tenant_id: str = "default",
+    entries: list[dict[str, Any]] | None = None,
+) -> None:
+    """Give a tenant an approved scanning scope (#226).
+
+    Since #226 a tenant with no approved scope starts no scans at all, which
+    would be every test in this suite. Real installations get the same thing
+    from migration 0025, which grandfathers an explicit allow-all scope onto
+    the tenants that predate the table; this is that scope, for the tenants
+    tests create at runtime. Tests about the check itself pass their own
+    ``entries`` — or none, to exercise a tenant that was never approved.
+    """
+    from api.services import scan_scopes
+
+    if entries is None:
+        entries = [
+            {"effect": "allow", "kind": "cidr", "value": "0.0.0.0/0"},
+            {"effect": "allow", "kind": "cidr", "value": "::/0"},
+            {"effect": "allow", "kind": "domain", "value": "*"},
+        ]
+    scan_scopes.replace_scope(
+        settings, tenant_id=tenant_id, entries=entries, approved_by="tests"
+    )
+
+
+def approve_scan_scope_via_api(
+    client: "TestClient", tenant_id: str, admin_headers: dict[str, str]
+) -> None:
+    """Approve an allow-all scan scope for ``tenant_id`` over the admin API.
+
+    The counterpart of :func:`approve_scan_scope` for tests that create their
+    tenants through ``POST /api/tenants`` and have no Settings object at hand.
+    """
+    response = client.put(
+        f"/api/tenants/{tenant_id}/scan-scope",
+        headers=admin_headers,
+        json={
+            "entries": [
+                {"effect": "allow", "kind": "cidr", "value": "0.0.0.0/0"},
+                {"effect": "allow", "kind": "cidr", "value": "::/0"},
+                {"effect": "allow", "kind": "domain", "value": "*"},
+            ]
+        },
+    )
+    assert response.status_code == 200, f"scope approval failed: {response.text}"
+
+
 def api_client() -> "TestClient":
     """A client over the app's ambient settings (whatever the env provides)."""
     from fastapi.testclient import TestClient
@@ -152,7 +201,11 @@ def configured_client(tmp_path: Path, monkeypatch, **overrides: Any) -> "TestCli
     monkeypatch.setattr("api.auth.load_settings", lambda: settings)
     monkeypatch.setattr("api.app.get_settings", lambda: settings)
     reset_service_state(settings)
-    return TestClient(create_app())
+    client = TestClient(create_app())
+    # create_app() seeds the default tenant; approving its scan scope here
+    # keeps every pre-#226 test starting scans the way it did.
+    approve_scan_scope(settings)
+    return client
 
 
 def login(client: "TestClient", username: str = "viewer", password: str | None = None) -> str:
