@@ -48,8 +48,9 @@ a SARIF v2.1.0 exporter with an in-UI viewer; endpoint-inventory NATS events and
 end-to-end lifecycle suite that complete **Track D** (S8/S10); agent fleet monitoring
 and UI-driven SSH deployment (`scripts/install-agent.sh`, `scripts/update-agent.sh`);
 **auto-update was claimed here in error and does not exist** — the bundle route the scripts
-fetch is not implemented and `upgrade_requested` is a flag nothing on the host reads
-([#227](https://github.com/onixus/Shapoclyack/issues/227));
+fetched was never implemented and `upgrade_requested` is a flag nothing on the host reads
+(~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~, corrected in
+[#233](https://github.com/onixus/Shapoclyack/pull/233));
 a UX/UI refactor with a redesigned remediation kanban; and JWT-algorithm / request-body
 hardening. Local CI `shapoclyack` **#27** (2026-08-24, revision `08b0bd0`) is SUCCESS:
 1033 pytest on 3.11 and 3.12, coverage 80.02% against a 74% gate, 142 vitest in 26 files,
@@ -475,7 +476,7 @@ Not GA blockers, but they are the reason Wave 2 exists: the status columns in th
 
 | Issue | Theme |
 |-------|-------|
-| [#227](https://github.com/onixus/Shapoclyack/issues/227) | Agent auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches |
+| ~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~ | Agent auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches. **Fixed** in [#233](https://github.com/onixus/Shapoclyack/pull/233): the promise is removed rather than implemented, because a bundle route without a signed payload is unsigned code delivery to root shells. The installers now take an explicit `--bundle-url` and fail loudly without one |
 | [#228](https://github.com/onixus/Shapoclyack/issues/228) | `risk-history` returns the *oldest* snapshots — the Risk Overview trend freezes on the system's first week |
 | [#229](https://github.com/onixus/Shapoclyack/issues/229) | `risk_score_snapshots` grows unbounded — migration `0023` landed after [#187](https://github.com/onixus/Shapoclyack/issues/187) and was never covered by it |
 | [#230](https://github.com/onixus/Shapoclyack/issues/230) | `ch_ingest_worker` consumes S8 endpoint-inventory events and inflates the SLO 6 denominator |
