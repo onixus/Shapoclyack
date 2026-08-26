@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import time
 from pathlib import Path
 
+from api.services import agent_deployer
 from tests.conftest import (
     auth_headers,
     configured_client,
@@ -12,6 +15,97 @@ from tests.conftest import (
 )
 
 pytestmark = requires_postgres
+
+
+# A fixed key blob, so the fingerprint a test asserts on is the fingerprint the
+# production code computes rather than a second implementation of it.
+HOST_KEY_BLOB = b"ssh-ed25519-test-host-key"
+OTHER_KEY_BLOB = b"ssh-ed25519-some-other-host"
+HOST_KEY = agent_deployer.HostKey(
+    key_type="ssh-ed25519",
+    public_key=base64.b64encode(HOST_KEY_BLOB).decode(),
+    fingerprint=agent_deployer.fingerprint_of(HOST_KEY_BLOB),
+)
+OTHER_KEY = agent_deployer.HostKey(
+    key_type="ssh-ed25519",
+    public_key=base64.b64encode(OTHER_KEY_BLOB).decode(),
+    fingerprint=agent_deployer.fingerprint_of(OTHER_KEY_BLOB),
+)
+
+
+def _stub_host_key(monkeypatch, key: agent_deployer.HostKey = HOST_KEY) -> None:
+    """Answer the host key probe without a network, and without pinning."""
+    monkeypatch.setattr(
+        "api.services.agent_deployer.probe_host_key",
+        lambda host, port, timeout=10: key,
+    )
+
+
+def _record_ssh(monkeypatch) -> list[dict]:
+    """Capture every remote command instead of running it.
+
+    Also collapses the post-install heartbeat wait, so the worker thread a test
+    starts is finished before the test is — a daemon thread still sleeping
+    against a truncated database is a flake, not a signal.
+    """
+    calls: list[dict] = []
+
+    def fake_ssh_cmd(req, cmd, *, host_key, timeout=120, stdin_data=None):
+        calls.append({"command": cmd, "stdin": stdin_data, "host_key": host_key})
+        if "uname" in cmd:
+            return 0, "Linux x86_64 0\n", ""
+        return 0, "Agent installed successfully\n", ""
+
+    monkeypatch.setattr("api.services.agent_deployer._execute_ssh_command", fake_ssh_cmd)
+    monkeypatch.setattr("api.services.agent_deployer._VERIFY_ATTEMPTS", 1)
+    monkeypatch.setattr("api.services.agent_deployer._VERIFY_INTERVAL_SECONDS", 0)
+    return calls
+
+
+def _wait_for_deploy(client, headers, deploy_id: str, timeout: float = 10.0) -> dict:
+    """Wait until a deployment run reaches a terminal state.
+
+    Lets a test that starts a real (SSH-stubbed) deployment finish it before
+    asserting, instead of racing the worker thread — and leaves no thread still
+    writing to a database the next test is about to truncate.
+    """
+
+    def finished():
+        resp = client.get(f"/api/agent/deploy/{deploy_id}/status", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        return body if body["status"] in ("completed", "failed") else None
+
+    return _wait_for(finished, timeout)
+
+
+def _wait_for(predicate, timeout: float = 10.0):
+    """Wait for the deployment worker thread to get somewhere.
+
+    The push is answered before the install runs — that is the point of the
+    route — so anything asserted about the remote command has to wait for it.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(0.05)
+    raise AssertionError("timed out waiting for the deployment worker")
+
+
+def _deploy_payload(**overrides) -> dict:
+    payload = {
+        "host": "192.168.10.50",
+        "port": 22,
+        "username": "admin",
+        "password": "secret-ssh-password",
+        "tenant_id": "default",
+        "agent_id": "agent-remote-50",
+        "expected_host_key": HOST_KEY.fingerprint,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_agent_telemetry_heartbeat_and_fleet_summary(tmp_path: Path, monkeypatch):
@@ -153,14 +247,15 @@ def _key_count(client, admin_hdrs, tenant_id: str = "default") -> int:
     return len(resp.json())
 
 
-def test_deployment_snippets_require_operator_and_do_not_mint_on_read(
+def test_minting_a_deployment_key_takes_admin_and_reading_takes_operator(
     tmp_path: Path, monkeypatch
 ):
-    """A viewer must not be able to obtain a tenant provisioning key.
+    """#231 — minting is the same credential as /tenants/{id}/provisioning-keys.
 
-    The snippets embed a credential that registers an agent, so reading them
-    takes `operator`, and minting the credential is a separate, explicit POST
-    rather than a side effect of every dialog open.
+    Reading the snippets stays `operator`: it mints nothing and the key is a
+    placeholder. Handing out a key that registers agents into the tenant is an
+    `admin` act, matching the route that has always administered these keys,
+    rather than the weakest route that happens to mint one.
     """
     settings = make_settings(tmp_path)
     client = configured_client(tmp_path, monkeypatch, settings=settings)
@@ -179,18 +274,27 @@ def test_deployment_snippets_require_operator_and_do_not_mint_on_read(
         == 403
     )
 
-    # Repeated reads by an operator leave the key table untouched.
+    # Repeated reads by an operator leave the key table untouched...
     for _ in range(3):
         resp = client.get("/api/agent/deployment-command", headers=operator_hdrs)
         assert resp.status_code == 200
         assert resp.json()["provisioning_key"] is None
     assert _key_count(client, admin_hdrs) == before
 
-    # One POST mints exactly one key, carrying the requested label.
+    # ...and an operator cannot mint one at all.
+    assert (
+        client.post(
+            "/api/agent/deployment-command", json={}, headers=operator_hdrs
+        ).status_code
+        == 403
+    )
+    assert _key_count(client, admin_hdrs) == before
+
+    # One admin POST mints exactly one key, carrying the requested label.
     mint = client.post(
         "/api/agent/deployment-command",
         json={"label": "k8s cluster east"},
-        headers=operator_hdrs,
+        headers=admin_hdrs,
     )
     assert mint.status_code == 201
     assert mint.json()["provisioning_key"].startswith("octo-pk-")
@@ -202,7 +306,7 @@ def test_deployment_snippets_require_operator_and_do_not_mint_on_read(
     # An unlabelled mint falls back to the default label.
     assert (
         client.post(
-            "/api/agent/deployment-command", json={}, headers=operator_hdrs
+            "/api/agent/deployment-command", json={}, headers=admin_hdrs
         ).status_code
         == 201
     )
@@ -215,10 +319,10 @@ def test_minted_deployment_key_registers_an_agent(tmp_path: Path, monkeypatch):
     """The minted key is a real credential: it exchanges for an agent JWT."""
     settings = make_settings(tmp_path)
     client = configured_client(tmp_path, monkeypatch, settings=settings)
-    operator_hdrs = auth_headers(client, username="operator")
+    admin_hdrs = auth_headers(client, username="admin")
 
     minted = client.post(
-        "/api/agent/deployment-command", json={}, headers=operator_hdrs
+        "/api/agent/deployment-command", json={}, headers=admin_hdrs
     ).json()
     token_resp = client.post(
         "/api/auth/agent/token",
@@ -227,31 +331,43 @@ def test_minted_deployment_key_registers_an_agent(tmp_path: Path, monkeypatch):
     assert token_resp.status_code == 200
 
 
+def test_snippets_use_the_configured_base_url_not_the_host_header(
+    tmp_path: Path, monkeypatch
+):
+    """#233 — the install URL must not come from a header the caller writes.
+
+    ``server_url`` is embedded in a command that runs as root on the target and
+    is written into the agent's ``OCTO_API_URL``, so whoever chose it chose
+    where the next agent fetches its installer from and reports to.
+    """
+    client = configured_client(
+        tmp_path, monkeypatch, public_base_url="https://console.example.com"
+    )
+    admin_hdrs = auth_headers(client, username="admin")
+
+    resp = client.get(
+        "/api/agent/deployment-command",
+        headers={**admin_hdrs, "Host": "attacker.example.net"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["server_url"] == "https://console.example.com"
+    assert "attacker.example.net" not in body["systemd_oneliner"]
+    assert "https://console.example.com/api/agent/install.sh" in body["systemd_oneliner"]
+    assert "attacker.example.net" not in body["kubernetes_yaml"]
+
+
 def test_remote_ssh_deployer_flow(tmp_path: Path, monkeypatch):
     settings = make_settings(tmp_path)
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
 
-    # Mock SSH execution to simulate successful connection and install
-    def fake_ssh_cmd(req, cmd, timeout=120):
-        if "uname" in cmd:
-            return 0, "Linux x86_64 0\n", ""
-        if "install.sh" in cmd:
-            return 0, "Agent installed successfully\n", ""
-        return 0, "ok\n", ""
-
-    monkeypatch.setattr("api.services.agent_deployer._execute_ssh_command", fake_ssh_cmd)
-
-    deploy_payload = {
-        "host": "192.168.10.50",
-        "port": 22,
-        "username": "admin",
-        "password": "secret-ssh-password",
-        "tenant_id": "default",
-        "agent_id": "agent-remote-50",
-    }
-
-    start_resp = client.post("/api/agent/deploy/ssh", json=deploy_payload, headers=admin_hdrs)
+    start_resp = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
     assert start_resp.status_code == 200
     deploy_data = start_resp.json()
     deploy_id = deploy_data["deploy_id"]
@@ -262,6 +378,318 @@ def test_remote_ssh_deployer_flow(tmp_path: Path, monkeypatch):
     status_resp = client.get(f"/api/agent/deploy/{deploy_id}/status", headers=admin_hdrs)
     assert status_resp.status_code == 200
     assert len(status_resp.json()["logs"]) >= 1
+    assert _wait_for_deploy(client, admin_hdrs, deploy_id)["status"] == "completed"
+
+
+def test_ssh_push_takes_admin(tmp_path: Path, monkeypatch):
+    """#231 - the push mints a provisioning key *and* installs code as root."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    _stub_host_key(monkeypatch)
+    calls = _record_ssh(monkeypatch)
+
+    for username in ("viewer", "operator"):
+        resp = client.post(
+            "/api/agent/deploy/ssh",
+            json=_deploy_payload(),
+            headers=auth_headers(client, username=username),
+        )
+        assert resp.status_code == 403, username
+    assert calls == []
+
+
+def test_ssh_deployment_refuses_an_unpinned_host(tmp_path: Path, monkeypatch):
+    """No verified fingerprint, no deployment (#232).
+
+    The old deployer added whatever key answered and then sent the operator's
+    SSH password and a freshly minted tenant provisioning key down that
+    channel. Refusing has to happen before either exists, so this asserts that
+    nothing was executed and no key was minted, not merely that the response
+    was an error.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    calls = _record_ssh(monkeypatch)
+    keys_before = _key_count(client, admin_hdrs)
+
+    resp = client.post(
+        "/api/agent/deploy/ssh",
+        json=_deploy_payload(expected_host_key=None),
+        headers=admin_hdrs,
+    )
+
+    assert resp.status_code == 409
+    # The observed fingerprint is reported, so the operator can verify it on the
+    # host and come back with it - that is the whole of the remediation.
+    assert HOST_KEY.fingerprint in resp.json()["detail"]
+    assert calls == []
+    assert _key_count(client, admin_hdrs) == keys_before
+
+
+def test_ssh_deployment_refuses_a_fingerprint_that_does_not_match(
+    tmp_path: Path, monkeypatch
+):
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    calls = _record_ssh(monkeypatch)
+
+    resp = client.post(
+        "/api/agent/deploy/ssh",
+        json=_deploy_payload(expected_host_key=OTHER_KEY.fingerprint),
+        headers=admin_hdrs,
+    )
+
+    assert resp.status_code == 409
+    assert calls == []
+
+
+def test_a_changed_host_key_is_refused_rather_than_re_pinned(
+    tmp_path: Path, monkeypatch
+):
+    """The second deployment checks the pin, and a different key ends the run."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    calls = _record_ssh(monkeypatch)
+
+    first = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert first.status_code == 200
+    # Let the legitimate run finish, so every call it makes is already recorded
+    # and the assertion below is about the refused run and nothing else.
+    _wait_for_deploy(client, admin_hdrs, first.json()["deploy_id"])
+
+    # The target now answers with a different key. Even naming that key as the
+    # expected one must not overwrite the pin - a pinned host is not re-trusted
+    # on the say-so of the same request that carries the credentials.
+    _stub_host_key(monkeypatch, OTHER_KEY)
+    second = client.post(
+        "/api/agent/deploy/ssh",
+        json=_deploy_payload(expected_host_key=OTHER_KEY.fingerprint),
+        headers=admin_hdrs,
+    )
+
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert HOST_KEY.fingerprint in detail
+    assert OTHER_KEY.fingerprint in detail
+    # The refused run opened no connection. Asserted per key rather than as
+    # "no calls at all", because the list also holds the first, legitimate run's
+    # calls: a call carrying OTHER_KEY could only come from the run that was
+    # supposed to be refused, since the worker is handed whatever key
+    # resolve_host_key returned.
+    assert [call for call in calls if call["host_key"] == OTHER_KEY] == []
+
+    # And the pin is still the original one.
+    probed = client.post(
+        "/api/agent/deploy/ssh/host-key",
+        json={"host": "192.168.10.50", "port": 22},
+        headers=admin_hdrs,
+    )
+    assert probed.status_code == 200
+    assert probed.json()["pinned"] is True
+    assert probed.json()["fingerprint"] == HOST_KEY.fingerprint
+
+
+def test_a_pinned_host_needs_no_fingerprint_on_the_next_run(
+    tmp_path: Path, monkeypatch
+):
+    """Pinning is what makes the second deployment usable without a re-check."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+
+    first = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert first.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, first.json()["deploy_id"])
+
+    second = client.post(
+        "/api/agent/deploy/ssh",
+        json=_deploy_payload(expected_host_key=None),
+        headers=admin_hdrs,
+    )
+    assert second.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, second.json()["deploy_id"])
+
+
+def test_the_host_key_probe_sends_no_credentials_and_pins_nothing(
+    tmp_path: Path, monkeypatch
+):
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    calls = _record_ssh(monkeypatch)
+
+    probed = client.post(
+        "/api/agent/deploy/ssh/host-key",
+        json={"host": "192.168.10.50", "port": 22},
+        headers=admin_hdrs,
+    )
+    assert probed.status_code == 200
+    body = probed.json()
+    assert body["fingerprint"] == HOST_KEY.fingerprint
+    assert body["key_type"] == "ssh-ed25519"
+    # Not pinned: reading a key is not trusting it, and the deployment still
+    # refuses until the operator names this fingerprint explicitly.
+    assert body["pinned"] is False
+    assert calls == []
+
+    assert (
+        client.post(
+            "/api/agent/deploy/ssh",
+            json=_deploy_payload(expected_host_key=None),
+            headers=admin_hdrs,
+        ).status_code
+        == 409
+    )
+
+
+def test_the_provisioning_key_never_reaches_the_targets_argv(
+    tmp_path: Path, monkeypatch
+):
+    """argv is world-readable on the target host (#232).
+
+    The installer command line is the argv of a shell on the remote host, so a
+    key placed there is readable by every local user for as long as the install
+    runs. It travels on stdin instead.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    calls = _record_ssh(monkeypatch)
+
+    started = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert started.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, started.json()["deploy_id"])
+
+    install = _wait_for(
+        lambda: next((call for call in calls if "install.sh" in call["command"]), None)
+    )
+    assert install["stdin"] is not None
+    key = install["stdin"].strip()
+    assert key.startswith("octo-pk-")
+    assert key not in install["command"]
+    assert "--key-stdin" in install["command"]
+    assert "--key " not in install["command"]
+
+
+def test_deployment_status_is_scoped_to_the_tenant(tmp_path: Path, monkeypatch):
+    """#223 - the route resolved a tenant and then ignored it."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+
+    assert (
+        client.post(
+            "/api/tenants",
+            json={"name": "Other", "tenant_id": "ten_other"},
+            headers=admin_hdrs,
+        ).status_code
+        == 201
+    )
+
+    deploy_id = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    ).json()["deploy_id"]
+    _wait_for_deploy(client, admin_hdrs, deploy_id)
+
+    assert (
+        client.get(f"/api/agent/deploy/{deploy_id}/status", headers=admin_hdrs).status_code
+        == 200
+    )
+    # Reading as another tenant is a 404, not a 403: whether that id exists
+    # somewhere else is not the caller's business.
+    other = client.get(
+        f"/api/agent/deploy/{deploy_id}/status?tenant_id=ten_other",
+        headers=admin_hdrs,
+    )
+    assert other.status_code == 404
+
+
+def test_deployment_status_outlives_the_process_that_started_it(
+    tmp_path: Path, monkeypatch
+):
+    """#223 - the journal was process-local, so a poll hit the wrong replica.
+
+    A second app instance over the same database stands in for the second
+    replica the prod overlay and api-pdb.yaml assume.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+
+    deploy_id = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    ).json()["deploy_id"]
+    _wait_for_deploy(client, admin_hdrs, deploy_id)
+
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+
+    second_replica = TestClient(create_app())
+    resp = second_replica.get(
+        f"/api/agent/deploy/{deploy_id}/status",
+        headers=auth_headers(second_replica, username="admin"),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["deploy_id"] == deploy_id
+
+
+def test_an_agent_in_another_tenant_reads_as_absent(tmp_path: Path, monkeypatch):
+    """#223 - 403 on a foreign id and 404 on a missing one is an existence oracle.
+
+    docs/api-and-rbac.md has promised 404 for both; this is the code catching up.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+
+    assert (
+        client.post(
+            "/api/tenants",
+            json={"name": "Other", "tenant_id": "ten_other"},
+            headers=admin_hdrs,
+        ).status_code
+        == 201
+    )
+    client.post(
+        "/api/agent/register",
+        json={"agent_id": "agent-in-default", "hostname": "srv", "version": "0.42.0"},
+        headers={"Authorization": f"Bearer {settings.agent_token}"},
+    )
+
+    for path, method in (
+        ("/api/agents/agent-in-default?tenant_id=ten_other", client.get),
+        ("/api/agents/agent-in-default?tenant_id=ten_other", client.delete),
+        ("/api/agents/agent-in-default/upgrade?tenant_id=ten_other", client.post),
+    ):
+        resp = method(path, headers=admin_hdrs)
+        assert resp.status_code == 404, path
+        # Identical to the answer for an id that exists nowhere.
+        missing = method(
+            path.replace("agent-in-default", "agent-nowhere"), headers=admin_hdrs
+        )
+        assert missing.status_code == 404
+        assert resp.json()["detail"] == missing.json()["detail"]
 
 
 def test_upgrade_marker_survives_restart_and_clears_on_new_version(

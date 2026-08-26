@@ -5,6 +5,7 @@ import {
   Check,
   Copy,
   Cpu,
+  Fingerprint,
   Loader2,
   Play,
   KeyRound,
@@ -30,8 +31,10 @@ import {
   useCreateAgentDeploymentKey,
   useDeploySSH,
   useDeployStatus,
+  useProbeSSHHostKey,
 } from "@/hooks/use-agents";
 import { type AgentDeploySSHRequest } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
 /** The snippets are rendered with a placeholder until an operator explicitly
  * mints a key — loading this dialog must not create tenant credentials. */
@@ -40,11 +43,13 @@ function ProvisioningKeyNotice({
   onMint,
   isPending,
   error,
+  canMint,
 }: {
   keyMinted: boolean;
   onMint: () => void;
   isPending: boolean;
   error: string | null;
+  canMint: boolean;
 }) {
   if (keyMinted) {
     return (
@@ -74,8 +79,20 @@ function ProvisioningKeyNotice({
             placeholder. Generate a key to fill them in — this creates a real
             tenant credential.
           </p>
+          {canMint ? null : (
+            <p className="mt-1 leading-relaxed text-amber-600 dark:text-amber-400">
+              Minting one takes tenant admin: the key registers agents into the
+              tenant, the same credential the tenant key administration page
+              hands out.
+            </p>
+          )}
         </div>
-        <Button size="sm" onClick={onMint} disabled={isPending} className="gap-1.5 text-xs">
+        <Button
+          size="sm"
+          onClick={onMint}
+          disabled={isPending || !canMint}
+          className="gap-1.5 text-xs"
+        >
           {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
           Generate key
         </Button>
@@ -98,9 +115,14 @@ export function DeployAgentDialog() {
   const [password, setPassword] = useState("");
   const [privateKey, setPrivateKey] = useState("");
   const [useDocker, setUseDocker] = useState(false);
+  const [expectedHostKey, setExpectedHostKey] = useState("");
   const [activeDeployId, setActiveDeployId] = useState<string | null>(null);
 
   const deployMutation = useDeploySSH();
+  const hostKeyMutation = useProbeSSHHostKey();
+  // Both credential-handing actions in this dialog take tenant admin (#231).
+  // Offering them to an operator would only produce a 403 they cannot act on.
+  const isAdmin = useAuthStore((state) => state.user?.role === "admin");
   const { data: deployStatus } = useDeployStatus(activeDeployId);
   const { data: snippets } = useAgentSnippets();
   const mintKeyMutation = useCreateAgentDeploymentKey();
@@ -111,6 +133,7 @@ export function DeployAgentDialog() {
       onMint={() => mintKeyMutation.mutate(undefined)}
       isPending={mintKeyMutation.isPending}
       error={mintKeyMutation.error ? (mintKeyMutation.error as Error).message : null}
+      canMint={isAdmin}
     />
   );
 
@@ -139,18 +162,28 @@ export function DeployAgentDialog() {
       password: authMethod === "password" ? password : undefined,
       private_key: authMethod === "key" ? privateKey : undefined,
       use_docker: useDocker,
+      expected_host_key: expectedHostKey.trim() || undefined,
     };
 
-    const res = await deployMutation.mutateAsync(payload);
-    if (res && res.deploy_id) {
-      setActiveDeployId(res.deploy_id);
+    try {
+      const res = await deployMutation.mutateAsync(payload);
+      if (res && res.deploy_id) {
+        setActiveDeployId(res.deploy_id);
+      }
+    } catch {
+      // A refused host key is the expected first answer for a new target, so
+      // the rejection is rendered from deployMutation.error below rather than
+      // escaping the submit handler as an unhandled rejection.
     }
   };
 
   const resetSSHForm = () => {
     setActiveDeployId(null);
     deployMutation.reset();
+    hostKeyMutation.reset();
   };
+
+  const probedKey = hostKeyMutation.data;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -273,6 +306,84 @@ export function DeployAgentDialog() {
                     </div>
                   </div>
 
+                  <div className="space-y-1.5 rounded-lg border border-border bg-muted/40 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Label htmlFor="host-key" className="text-xs font-medium text-foreground">
+                        Expected SSH host key fingerprint
+                      </Label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 text-xs"
+                        disabled={!host.trim() || hostKeyMutation.isPending}
+                        onClick={() =>
+                          hostKeyMutation.mutate({
+                            host: host.trim(),
+                            port: Number(port) || 22,
+                          })
+                        }
+                      >
+                        {hostKeyMutation.isPending ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Fingerprint className="h-3.5 w-3.5" />
+                        )}
+                        Read from host
+                      </Button>
+                    </div>
+                    <Input
+                      id="host-key"
+                      placeholder="SHA256:..."
+                      value={expectedHostKey}
+                      onChange={(e) => setExpectedHostKey(e.target.value)}
+                      className="font-mono text-xs"
+                    />
+                    {probedKey ? (
+                      <div className="space-y-1.5 text-xs">
+                        <p className="font-mono break-all text-foreground">
+                          {probedKey.key_type} {probedKey.fingerprint}
+                        </p>
+                        {probedKey.pinned ? (
+                          <p className="text-muted-foreground">
+                            Already pinned for this tenant — no fingerprint needed.
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-amber-600 dark:text-amber-400">
+                              Whoever answered offered this. Confirm it on the host with{" "}
+                              <code className="font-mono">
+                                ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+                              </code>{" "}
+                              before accepting.
+                            </p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="text-xs"
+                              onClick={() => setExpectedHostKey(probedKey.fingerprint)}
+                            >
+                              It matches — use it
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        Required the first time this tenant deploys to a host. Your SSH
+                        credentials and a new provisioning key travel over this
+                        connection, so the deployment is refused until the target&apos;s
+                        identity is known. Afterwards the pinned key is checked instead.
+                      </p>
+                    )}
+                    {hostKeyMutation.error ? (
+                      <p className="text-xs text-rose-600 dark:text-rose-400">
+                        {(hostKeyMutation.error as Error).message}
+                      </p>
+                    ) : null}
+                  </div>
+
                   {authMethod === "password" ? (
                     <div className="space-y-1.5">
                       <Label htmlFor="ssh-pass" className="text-xs font-medium text-foreground">SSH Password</Label>
@@ -312,7 +423,7 @@ export function DeployAgentDialog() {
 
                     <Button
                       type="submit"
-                      disabled={deployMutation.isPending || !host}
+                      disabled={deployMutation.isPending || !host || !isAdmin}
                       className="gap-2 font-semibold"
                     >
                       {deployMutation.isPending ? (
@@ -322,6 +433,17 @@ export function DeployAgentDialog() {
                       )}
                       Start Installation
                     </Button>
+                    {isAdmin ? null : (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        The push takes tenant admin: it mints a provisioning key
+                        and installs software as root on the target.
+                      </p>
+                    )}
+                    {deployMutation.error ? (
+                      <p className="text-xs text-rose-600 dark:text-rose-400">
+                        {(deployMutation.error as Error).message}
+                      </p>
+                    ) : null}
                   </div>
                 </form>
               ) : (

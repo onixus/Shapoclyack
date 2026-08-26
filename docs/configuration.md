@@ -198,6 +198,9 @@ to start** while any of the following is still at its built-in default:
 | `OCTO_API_CORS` containing `*` (including when unset, which means `*`) | With credentials in play, any page a logged-in operator visits could call this API with their session. A `*` listed beside real origins is refused too — the wildcard matches everything regardless of what sits next to it |
 | `OCTO_POSTGRES_URL` unset (it would fall back to a local SQLite file) or pointing at `sqlite://` | Postgres is a hard dependency, not an opt-in sidecar: tenants, users, assets, jobs, agents and webhook deliveries live there. A per-replica file means a per-replica control plane, and the guarantees the durable control plane rests on — `SELECT … FOR UPDATE SKIP LOCKED` for job claims and leases, advisory locks for scheduler leader election — stop holding without saying so. The file also sits on the pod's ephemeral disk |
 | **No console account exists** — the `users` table is empty and `OCTO_API_USERS` is unset (checked at startup, once the database is up) | The built-in demo accounts are not seeded in `prod`; their passwords are published in this repository. An install nobody can log into is a failure whether it is reported at startup or discovered at the login form |
+| `OCTO_PUBLIC_BASE_URL` unset, or set to something without an `http(s)://` scheme | It is the URL the agent install snippets tell a target host to fetch the installer from and report to, and it is written into the agent's permanent `OCTO_API_URL`. With no configured value the API would fall back to the request's own `Host` header, letting the caller choose that URL ([#233](https://github.com/onixus/Shapoclyack/issues/233)) |
+| `OCTO_POSTGRES_URL`, `OCTO_CLICKHOUSE_URL` or `OCTO_NATS_URL` still carrying a placeholder password from `k8s/shapoclyack/base/kustomization.yaml` | Those literals are as published as the JWT secret; they were unchecked only because they arrive inside a connection URL rather than as a variable of their own. All of them are checked by one rule, so a secret added to `base` later is covered without a new check ([#224](https://github.com/onixus/Shapoclyack/issues/224)) |
+| `OCTO_AGENT_TOKEN` set on or after **2027-03-01** | The legacy shared agent token authenticates every agent holding it as `tenant_id=default`. For an MSSP install that is the absence of the tenant isolation every other route enforces, so the deprecation has an end date rather than an open-ended warning ([#224](https://github.com/onixus/Shapoclyack/issues/224)) |
 
 The point is that *"forgot to configure"* and *"configured"* must not look alike.
 All problems are reported in one message, so fixing them does not take one
@@ -214,15 +217,18 @@ the test suite. The `dev` overlay (`k8s/shapoclyack/overlays/dev`, inherited by
 value is rejected outright rather than guessed in either direction — a
 misspelled `prodution` must not silently disable the checks.
 
-A set `OCTO_AGENT_TOKEN` **warns** rather than refuses: the legacy shared token
-still works and maps to `tenant_id=default`, so refusing would break a working
-install over a design preference rather than a published credential. Prefer
-per-tenant provisioning keys (`POST /api/auth/agent/token`).
+Until **2027-03-01** a set `OCTO_AGENT_TOKEN` **warns** rather than refuses, and
+the warning names that date. Breaking a working install needs notice, which is
+what the date buys; what it does not buy is an indefinite warning nobody acts
+on. Migrate before then: mint a per-tenant provisioning key
+(`POST /api/tenants/{tenant_id}/provisioning-keys`), re-install the agents with
+it so they exchange it for a scoped agent JWT
+(`POST /api/auth/agent/token`), then unset the variable.
 
-The first three are checked in `load_settings()` from the environment alone. The
-fourth needs the database and therefore runs at startup
-(`api/services/users.py:bootstrap`) — only the table can tell an installation
-with a real admin from one with none.
+Everything except the console-account check is decided in `load_settings()`
+from the environment alone. That one needs the database and therefore runs at
+startup (`api/services/users.py:bootstrap`) — only the table can tell an
+installation with a real admin from one with none.
 
 The database refusal distinguishes an unset variable from one set to SQLite,
 because those are different mistakes with the same consequence. Under
@@ -242,11 +248,13 @@ Core deployment variables:
 | `OCTO_JWT_SECRET` | User JWT signing secret. **Required in `prod`**; must be identical across API replicas |
 | `OCTO_API_USERS` | **One-time bootstrap only** since #156. Accounts live in the Postgres `users` table; this JSON list is imported on a first start with an empty table and ignored afterwards. Manage accounts through `/api/users` — see [api-and-rbac.md](api-and-rbac.md#console-accounts) |
 | `OCTO_API_CORS` | Comma-separated allowed origins. **Must not be `*` in `prod`** |
+| `OCTO_PUBLIC_BASE_URL` | The URL this installation is reached at from outside, e.g. `https://shapoclyack.example.com`. **Required in `prod`.** Everything that hands an operator or a target host a link back to the API is built from it: the install one-liner, the container and Kubernetes snippets, and the `OCTO_API_URL` the SSH push writes into `agent.env`. Never taken from the request's `Host` header, which the caller writes. Under `OCTO_ENV=dev` an unset value falls back to the request URL so a laptop needs no extra variable |
 | `OCTO_POSTGRES_URL` | Primary database connection. **Required in `prod`** — an unset value or a `sqlite://` URL refuses startup, see [above](#startup-safety-octo_env). Falls back to a local SQLite file only under `OCTO_ENV=dev` |
 | `OCTO_NATS_URL` | JetStream connection; empty disables NATS |
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
 | `OCTO_JOB_EXECUTION_MODE` | `local` or `agent` |
+| `OCTO_AGENT_TOKEN` | **Deprecated, refused in `prod` from 2027-03-01.** Legacy shared bearer token for remote agents; every agent holding it is `tenant_id=default`. Use per-tenant provisioning keys instead |
 | `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` | Hard request-body cap on `POST /api/agent/jobs/{job_id}/results`, read from `Content-Length` before the multipart body is buffered (default `134217728` — 128 MiB). A length-less upload is answered `411` |
 | `OCTO_HSTS_ENABLED` | Send `Strict-Transport-Security` on every response. Defaults to on under `OCTO_ENV=prod` and off under `dev`, since a browser that picks the header up from `http://localhost` pins itself to HTTPS for a year |
 | `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |

@@ -155,6 +155,82 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **SSH push deployment verifies the target's host key**
+  ([#232](https://github.com/onixus/Shapoclyack/issues/232)) —
+  **breaking for the SSH push: the first deployment to a host now needs a
+  fingerprint.** `POST /api/agent/deploy/ssh` accepted any host key it was
+  offered (`AutoAddPolicy` on the Paramiko path, `StrictHostKeyChecking=no`
+  with `UserKnownHostsFile=/dev/null` on the OpenSSH one), and the operator's
+  SSH credentials for the target — often root — plus a freshly minted tenant
+  provisioning key went down that channel. The host key is now resolved before
+  any credential exists: a key pinned for this tenant and target must match, and
+  an unpinned target is refused unless the request carries
+  `expected_host_key` (`SHA256:…`), which is then pinned. A changed key is
+  reported with both fingerprints and never re-added. Pins live in
+  `agent_ssh_host_keys`, per tenant, so one tenant cannot decide what another
+  trusts. `POST /api/agent/deploy/ssh/host-key` (admin) reads a target's key
+  without authenticating to it, so the operator has something to compare
+  against the host before allowing a deployment. The **Deploy Agent** dialog
+  grew the field and a **Read from host** control.
+
+- **Credentials no longer travel in a command line**
+  ([#232](https://github.com/onixus/Shapoclyack/issues/232)) —
+  `sshpass -p <password>` put the operator's SSH password into the API
+  container's argv, and the provisioning key was passed to the installer as
+  `--key <key>` and then written into the systemd unit's `ExecStart` — argv is
+  world-readable through `/proc` on both machines. The password now reaches
+  `ssh` through `SSH_ASKPASS` (Paramiko remains the preferred path and never
+  had this problem), and the key reaches the installer on stdin via a new
+  `--key-stdin`. On the target it lives only in `/etc/shapoclyack/agent.env`
+  (`0600`): the unit is `ExecStart=…/python -m agent` with a mandatory
+  `EnvironmentFile`, the Docker path uses `--env-file` instead of `-e`, and the
+  generated container/Kubernetes snippets pass the key in the environment with
+  no arguments.
+
+- **`sudo_password` removed from `POST /api/agent/deploy/ssh`** —
+  **breaking for any caller sending it.** The field was accepted and then
+  ignored: nothing ever read it, and the installer is now invoked with
+  `sudo -n` precisely so a sudo that would prompt fails fast instead of reading
+  the provisioning key off stdin as a password guess. An interface that takes a
+  credential and does nothing with it is worse than one that does not offer it.
+  **The SSH account must reach root without a password prompt** — give it
+  NOPASSWD for the installer, or deploy as `root`.
+
+- **The install URL is configuration, not a request header**
+  ([#233](https://github.com/onixus/Shapoclyack/issues/233)) — the server URL
+  embedded in `curl … | sudo bash`, in the container and Kubernetes snippets,
+  and written into the agent's permanent `OCTO_API_URL` came from
+  `request.base_url`, i.e. from the caller's `Host` / `X-Forwarded-Host`. New
+  **`OCTO_PUBLIC_BASE_URL`**, required under `OCTO_ENV=prod` and checked
+  alongside the other fail-closed startup checks. `request.base_url` is no
+  longer used for this on any route; under `OCTO_ENV=dev` it is still the
+  fallback, since a laptop's own address is not a security decision.
+
+- **Minting a provisioning key takes tenant `admin`**
+  ([#231](https://github.com/onixus/Shapoclyack/issues/231)) —
+  **breaking: an operator can no longer generate a deployment key or start an
+  SSH push.** `POST /api/agent/deployment-command` and
+  `POST /api/agent/deploy/ssh` mint the same credential as
+  `POST /api/tenants/{id}/provisioning-keys`, which has always been `admin`;
+  the SSH push additionally installs software as root on another machine. The
+  previous justification — symmetry with the SSH push — reasoned from the
+  weaker of the two routes. Reading the snippets stays `operator`: it mints
+  nothing and shows a placeholder. The revised decision and its reason are
+  recorded in [docs/api-and-rbac.md](docs/api-and-rbac.md).
+
+- **Fail-closed startup covers the rest of the shipped secrets**
+  ([#224](https://github.com/onixus/Shapoclyack/issues/224)) — an install that
+  overrode `OCTO_JWT_SECRET` and stopped there started silently on the
+  Postgres, ClickHouse and NATS placeholder passwords from
+  `k8s/shapoclyack/base/kustomization.yaml`. All of them are checked by one
+  mechanism — the shipped literals are looked for inside `OCTO_POSTGRES_URL`,
+  `OCTO_CLICKHOUSE_URL` and `OCTO_NATS_URL` — so the next generated secret is
+  not another check to remember. `OCTO_AGENT_TOKEN` now has an end date:
+  **2027-03-01**. Until then a prod start warns and names the date; from that
+  date a prod start with it set is refused. One shared token authenticates
+  every agent as `tenant_id=default`, which for an MSSP install is the absence
+  of the isolation every other route enforces.
+
 - **The Kubernetes data plane now requires credentials** ([#225](https://github.com/onixus/Shapoclyack/issues/225)) —
   **breaking for existing installs; read
   [docs/operations.md](docs/operations.md) § Data-plane credentials before
@@ -240,6 +316,34 @@ All notable changes to Shapoclyack are documented in this file.
   `411 Length Required`. Rejections increment the same submission-outcome counter as the route.
 
 ### Fixed
+
+- **`python -m agent.worker` started nothing and exited 0** — the module
+  defined `main()` but had no `if __name__ == "__main__"` guard, so running it
+  directly imported the file, built no parser, contacted no API, and returned
+  success. Only `python -m agent` ever worked. The installer's systemd unit
+  used the broken spelling, so a native install left `Restart=always` cycling a
+  no-op forever while `systemctl is-active` reported nothing wrong. The guard
+  is added and the installer now uses `python -m agent`; **an agent installed
+  by an older installer needs a re-run of the current one.**
+
+- **Deployment status answered 404 on a successful deployment**
+  ([#223](https://github.com/onixus/Shapoclyack/issues/223)) — the run journal
+  was a dict in the API process, so with more than one replica (which the prod
+  overlay and `api-pdb.yaml` assume) `GET /api/agent/deploy/{id}/status`
+  answered only on the replica that started the run, and a restart erased the
+  log an operator was reading. Runs are rows in `agent_deployments` now, with
+  the tenant on the row: the status route was declaring `require_tenant` and
+  then ignoring the tenant it resolved, so any operator could poll any run's
+  log by id. A run in another tenant answers `404`, not `403`.
+
+- **Agent ids leaked their existence across tenants**
+  ([#223](https://github.com/onixus/Shapoclyack/issues/223)) —
+  `GET`/`DELETE /api/agents/{id}` and `POST /api/agents/{id}/upgrade` answered
+  `403 Cross-tenant agent access denied` for an id belonging to another tenant
+  and `404` for one that existed nowhere, which is an existence oracle over
+  every agent id in the installation, and the opposite of what
+  `docs/api-and-rbac.md` has promised since the tenancy work. All three answer
+  `404` either way now.
 
 - **Risk trend chart froze on the first days of the install**
   ([#228](https://github.com/onixus/Shapoclyack/issues/228)) —

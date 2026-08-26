@@ -817,6 +817,82 @@ class Agent(Base):
     __table_args__ = (Index("ix_agents_tenant_last_seen", "tenant_id", "last_seen_at"),)
 
 
+class AgentSshHostKey(Base):
+    """Pinned SSH host key for one deployment target, per tenant (#232).
+
+    The SSH push carries the operator's credentials for the target host and a
+    freshly minted tenant provisioning key. Both used to go to whatever host
+    key answered, because the deployer accepted any key it was offered. The
+    pinned row is what a subsequent deployment is checked against, and a
+    mismatch is a refusal rather than a re-add.
+
+    The full public key is stored, not only its fingerprint: the OpenSSH
+    fallback path needs a ``known_hosts`` line, which a fingerprint cannot
+    produce. ``fingerprint`` is the ``SHA256:...`` form, kept alongside so the
+    value an operator compares out-of-band is the value that was stored rather
+    than one recomputed at display time.
+
+    Scoped per tenant on purpose: two tenants naming the same host are not
+    making a claim about each other's infrastructure, and one tenant must not
+    be able to pre-pin a key another tenant then trusts.
+    """
+
+    __tablename__ = "agent_ssh_host_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    host: Mapped[str]
+    port: Mapped[int] = mapped_column(default=22)
+    key_type: Mapped[str]
+    public_key: Mapped[str]
+    fingerprint: Mapped[str]
+    created_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "host", "port", name="uq_agent_ssh_host_keys_target"),
+    )
+
+
+class AgentDeployment(Base):
+    """One SSH push deployment run (#223).
+
+    Was a module-level dict bounded to the last 100 runs. Under more than one
+    API replica the status poll reached whichever replica the load balancer
+    picked, so a completed deployment answered 404 more often than not, and a
+    restart erased the log the operator was reading. The row also carries the
+    tenant, which is what makes the status route scopeable at all.
+
+    ``logs`` is the rendered log line list; it is trimmed on write, since an
+    installer that talks for an hour must not turn one row into an unbounded
+    document.
+    """
+
+    __tablename__ = "agent_deployments"
+
+    deploy_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    host: Mapped[str] = mapped_column(default="")
+    port: Mapped[int] = mapped_column(default=22)
+    username: Mapped[str] = mapped_column(default="")
+    status: Mapped[str] = mapped_column(default="queued")
+    stage: Mapped[str] = mapped_column(default="")
+    progress_percent: Mapped[int] = mapped_column(default=0)
+    agent_id: Mapped[str | None] = mapped_column(default=None)
+    error: Mapped[str | None] = mapped_column(default=None)
+    logs: Mapped[list] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime]
+    completed_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index("ix_agent_deployments_tenant_started", "tenant_id", "started_at"),
+    )
+
+
 class Job(Base):
     """Scan job — the control plane's unit of work (ROADMAP P1.1).
 

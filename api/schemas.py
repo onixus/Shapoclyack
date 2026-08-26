@@ -340,11 +340,37 @@ class AgentDeploySSHRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64, default="root")
     password: str | None = None
     private_key: str | None = None
-    sudo_password: str | None = None
     tenant_id: str = "default"
     agent_id: str | None = None
     install_dir: str = "/opt/shapoclyack-agent"
     use_docker: bool = False
+    # The target's SSH host key fingerprint (SHA256:…), as the operator read it
+    # off the target itself. Required the first time this tenant deploys to a
+    # host and pinned on success; afterwards the pin is what is checked and
+    # this field is ignored. Without it the deployment is refused rather than
+    # trusting whatever key answers (#232).
+    expected_host_key: str | None = Field(default=None, max_length=200)
+
+
+class AgentSSHHostKeyProbeRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+
+
+class AgentSSHHostKeyInfo(BaseModel):
+    """A target's SSH host key as the API currently sees it.
+
+    ``pinned`` says whether this is the tenant's stored key or one just read
+    off the wire — an unpinned fingerprint is a claim by whoever answered, and
+    the operator is expected to check it against the host before trusting it.
+    """
+
+    host: str
+    port: int
+    key_type: str
+    fingerprint: str
+    pinned: bool = False
+    pinned_at: str | None = None
 
 
 class AgentDeployStatusResponse(BaseModel):

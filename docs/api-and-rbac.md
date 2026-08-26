@@ -190,21 +190,44 @@ only source the Risk Overview trend chart reads
 | `DELETE /api/agents/{id}` | operator | Forgets the registration. It does **not** stop the remote process — an agent that is still running re-registers on its next heartbeat |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
-| `POST /api/agent/deployment-command` | operator | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
-| `POST /api/agent/deploy/ssh` | operator | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side |
-| `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id` |
-| `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential; the provisioning key is passed to it as an argument |
+| `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
+| `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `502` when the target cannot be read |
+| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side. The target's host key is resolved **synchronously first**: `409` if it is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
+| `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id`. Scoped to the caller's tenant; a run in another tenant answers `404` |
+| `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential |
 
-Cross-tenant ids answer `404` for a read and `403` where the service can tell
-the caller is reaching outside its tenant; a platform admin without a requested
-tenant sees the whole fleet, the same rule as `/api/jobs`.
+An agent id belonging to another tenant answers `404`, exactly as an id that
+exists nowhere does, on `GET`, `DELETE` and `upgrade` alike
+([#223](https://github.com/onixus/Shapoclyack/issues/223)). Answering `403`
+for the former and `404` for the latter told a caller which ids are real
+elsewhere in the installation, which is the only thing an opaque id is worth. A
+platform admin without a requested tenant sees the whole fleet, the same rule
+as `/api/jobs`.
 
-A provisioning key registers an agent into the tenant, so anything that hands
-one out is an authorization decision, not a read. Both deployment-command
-routes therefore take `operator` — the same bar as the SSH push, which already
-mints a key for the host it installs on. Tenant-wide key administration
-(listing, revoking, minting against an arbitrary tenant under
-`/api/tenants/{tenant_id}/provisioning-keys`) stays `admin`.
+**Who may mint a provisioning key** ([#231](https://github.com/onixus/Shapoclyack/issues/231)).
+A provisioning key registers agents into the tenant, which makes handing one
+out an authorization decision rather than a read. `POST` on
+`/api/agent/deployment-command` and `/api/agent/deploy/ssh` therefore take
+tenant **`admin`** — the same bar as
+`POST /api/tenants/{tenant_id}/provisioning-keys`, which mints the identical
+credential, and the SSH push additionally installs software as root on another
+machine.
+
+This replaces the earlier rule, which set both at `operator` on the grounds
+that the SSH push already minted a key at `operator`. That reasoned from the
+weaker of the two routes: the argument justified `operator` on the
+key-minting POST by pointing at a route that should not have been `operator`
+either. The alternative considered was a separate `agent_provisioner`
+capability; it was rejected because roles here are a three-step ladder
+(`viewer` < `operator` < `admin`) that every route and the console's role
+gating read, so one capability would mean a second authorization model for one
+pair of endpoints. If per-capability grants arrive for other reasons, this is
+the first pair worth revisiting.
+
+Reading the snippets stays `operator`: `GET` mints nothing and returns a
+`<PROVISIONING_KEY>` placeholder. Tenant-wide key administration (listing,
+revoking, minting against an arbitrary tenant under
+`/api/tenants/{tenant_id}/provisioning-keys`) is `admin`, as before.
 
 The split between GET and POST is deliberate: rendering the snippets is
 idempotent, minting is not. Keys are hashed at rest and the plaintext is
@@ -215,18 +238,22 @@ via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
 
 Three further properties of this group are worth knowing before it is used:
 
-- **Deployment runs live in the API process' memory** (last 100 runs, dropped
-  on restart). With more than one API replica, the status poll only answers on
-  the replica that started the run — put the deploy flow behind a sticky
-  session, or run it against a single replica.
-- **The deployer passes the minted key on the remote command line**, so it is
-  visible in that host's process list while the installer runs, and it stays in
-  `/etc/shapoclyack/agent.env` afterwards. Revoke it if the host is shared.
+- **Deployment runs are rows** in `agent_deployments`, keyed by tenant, so the
+  status poll answers on any replica and survives a restart. The last 100 runs
+  per tenant are kept and each run keeps its last 500 log lines.
+- **The target's host key must be known before a deployment runs.** The first
+  deployment to a host needs `expected_host_key`; read it with
+  `POST /api/agent/deploy/ssh/host-key`, **confirm it on the target itself**
+  (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) rather than trusting the
+  probe, and send it back. It is then pinned for that tenant and target, and
+  later runs need nothing. A key that no longer matches the pin is a `409` that
+  reports both fingerprints; if the host really was rebuilt, delete the row in
+  `agent_ssh_host_keys` and pin the new key deliberately.
 - **SSH credentials are request data.** The password or private key in
   `POST /api/agent/deploy/ssh` is used for the run and never stored, but it does
-  cross the API. Host-key checking is disabled on both the Paramiko and the
-  OpenSSH fallback path, so the deployment is only as trustworthy as the network
-  between the API and the target. Prefer a key with a purpose-built account.
+  cross the API. Prefer a key with a purpose-built account. The minted
+  provisioning key reaches the installer on stdin and lives on the target only
+  in `/etc/shapoclyack/agent.env` (`0600`); revoke it if the host is shared.
 
 ### Webhooks
 
