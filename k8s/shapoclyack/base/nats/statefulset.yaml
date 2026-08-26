@@ -37,6 +37,20 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # nats.conf references both as $NATS_API_PASSWORD /
+            # $NATS_AGENT_PASSWORD. nats-server refuses to start on an
+            # undefined variable, so a missing Secret key fails the pod
+            # instead of leaving the broker open.
+            - name: NATS_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nats
+                  key: api_password
+            - name: NATS_AGENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nats
+                  key: agent_password
           ports:
             - name: client
               containerPort: 4222

@@ -26,12 +26,81 @@ data:
     # distinct; set via downward API in statefulset.yaml.
     server_name: $SERVER_NAME
 
+    # Authentication. Before this block the server took any anonymous client:
+    # NATS listens on a ClusterIP Service, and remote agents reach it from
+    # outside the cluster, so "anonymous" meant any pod could subscribe to
+    # ingest.results.* for every tenant and publish forged jobs.scan offers.
+    #
+    # Two users in one account (the global $G) on purpose: JOBS/INGEST/EVENTS
+    # are JetStream streams, and streams cannot be shared across accounts
+    # without export/import plumbing on every subject. The split here is by
+    # permission, not by account.
+    #
+    # $NATS_API_PASSWORD / $NATS_AGENT_PASSWORD come from the environment
+    # (Secret shapoclyack-nats, wired in statefulset.yaml). nats-server refuses
+    # to start on an undefined reference, so a missing key is a startup error
+    # rather than a server that quietly keeps accepting everyone.
+    authorization {
+      users: [
+        # API: publishes jobs.scan, creates the streams and consumers, and
+        # consumes ingest.> for the ClickHouse worker. No permissions block —
+        # it owns the whole subject tree.
+        { user: api, password: $NATS_API_PASSWORD }
+
+        # Agents pull jobs.scan and ack it; results travel back over HTTP, not
+        # NATS (agent/worker.py never publishes an application subject), so the
+        # allow-list below is the whole of what the worker needs. Everything
+        # else — subscribing to ingest.> or events.>, publishing jobs.> — is
+        # denied by omission. The JOBS/octo-agents tokens are pinned so this
+        # account cannot open a pull consumer on INGEST instead.
+        {
+          user: agent
+          password: $NATS_AGENT_PASSWORD
+          permissions: {
+            publish: {
+              allow: [
+                "$JS.API.INFO"
+                "$JS.API.STREAM.NAMES"
+                "$JS.API.STREAM.INFO.JOBS"
+                "$JS.API.CONSUMER.INFO.JOBS.octo-agents"
+                "$JS.API.CONSUMER.CREATE.JOBS.octo-agents"
+                "$JS.API.CONSUMER.CREATE.JOBS.octo-agents.>"
+                "$JS.API.CONSUMER.DURABLE.CREATE.JOBS.octo-agents"
+                "$JS.API.CONSUMER.MSG.NEXT.JOBS.octo-agents"
+                "$JS.ACK.JOBS.octo-agents.>"
+              ]
+            }
+            subscribe: { allow: ["_INBOX.>"] }
+          }
+        }
+      ]
+    }
+
     cluster {
       name: shapoclyack-nats
       port: 6222
+
+      # Route port is its own trust boundary: a client that completes a route
+      # handshake joins the cluster and sees every subject, whatever the user
+      # permissions above say. Left open, :6222 accepts any pod that can reach
+      # it, which would undo the authorization block wholesale.
+      #
+      # The literal below is a placeholder you MUST replace before applying.
+      # It cannot come from the environment the way the user passwords do:
+      # nats-server expands `$VAR` only when it is the whole value, and the
+      # route URLs need the password embedded mid-token. Replace all four
+      # occurrences with the same value, and keep this ConfigMap out of any
+      # place a plain manifest would be world-readable — or move to
+      # `nkeys`/operator mode, where routes authenticate with keys instead.
+      authorization {
+        user: route
+        password: replace-me-with-a-shared-route-password
+        timeout: 2
+      }
+
       routes: [
-        nats://shapoclyack-nats-0.shapoclyack-nats:6222
-        nats://shapoclyack-nats-1.shapoclyack-nats:6222
-        nats://shapoclyack-nats-2.shapoclyack-nats:6222
+        nats://route:replace-me-with-a-shared-route-password@shapoclyack-nats-0.shapoclyack-nats:6222
+        nats://route:replace-me-with-a-shared-route-password@shapoclyack-nats-1.shapoclyack-nats:6222
+        nats://route:replace-me-with-a-shared-route-password@shapoclyack-nats-2.shapoclyack-nats:6222
       ]
     }
