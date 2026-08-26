@@ -415,9 +415,8 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 
 Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 is done:
 ~~#152~~ → ~~#185/#186~~ → ~~#187~~ → ~~#188~~. **Wave 2** ([below](#wave-2--what-was-never-filed))
-is the GA gate and is nearly closed — [#226](https://github.com/onixus/Shapoclyack/issues/226)
-is the only item left. The next tag waits for it, and cutting it is what lets the three
-security advisories be published.
+is **closed**. What the GA gate now waits on is the release cut itself: none of this has shipped
+in a tag, and cutting one is also what lets the three security advisories be published.
 
 **Wave 1** is now filed rather than described here:
 ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
@@ -469,15 +468,15 @@ tag**, so the advisories stay drafts until the next release. Without exploitatio
 | ~~[#223](https://github.com/onixus/Shapoclyack/issues/223)~~ | Deployment status is not tenant-scoped, and its journal is process-local | **Done** ([#239](https://github.com/onixus/Shapoclyack/pull/239)) — journal moved to Postgres (migration `0024`) with a `tenant_id`; the 403/404 existence oracle in `agents.py` closed with it |
 | ~~[#224](https://github.com/onixus/Shapoclyack/issues/224)~~ | Fail-closed startup misses the Postgres password, `OCTO_AGENT_TOKEN` and HSTS | **Done** — HSTS in [#234](https://github.com/onixus/Shapoclyack/pull/234), default secrets and `OCTO_AGENT_TOKEN` in [#239](https://github.com/onixus/Shapoclyack/pull/239). The secret check also covers the ClickHouse and NATS placeholders #225 introduced, and every problem lands in one list so a misconfigured install is fixed in one restart |
 | ~~[#225](https://github.com/onixus/Shapoclyack/issues/225)~~ | ClickHouse and NATS unauthenticated; no NetworkPolicy to stateful services | **Done** ([#236](https://github.com/onixus/Shapoclyack/pull/236)) — verified against live ClickHouse and NATS containers; images pinned by digest. Revises the recorded NetworkPolicy decision for ingress only, egress reasoning stands. NetworkPolicy **enforcement is a CNI behaviour and is not verified on a live cluster** |
-| [#226](https://github.com/onixus/Shapoclyack/issues/226) | No scan-scope authorization — a tenant may scan any network | **The one item still open.** "Was this tenant allowed to scan that?" is a question MSSP lawyers ask, and it is asked after the fact |
+| ~~[#226](https://github.com/onixus/Shapoclyack/issues/226)~~ | No scan-scope authorization — a tenant may scan any network | **Done** ([#243](https://github.com/onixus/Shapoclyack/pull/243)) — `tenant_scan_scopes` (migration `0025`), deny wins by *overlap* so a wider target cannot reach a denied range, allow by containment, empty scope scans nothing. Two barriers: `parse_target_payload` takes the scope as a keyword argument with no default, so no call site can omit it, and `start_scan` re-reads and re-parses rather than trusting the first. Refusals go to `auth_events`. Checked **before** resolution, and the scanner resolves again — that gap is [#244](https://github.com/onixus/Shapoclyack/issues/244) |
 | ~~[#231](https://github.com/onixus/Shapoclyack/issues/231)~~ | Role for minting provisioning keys and SSH deployment | **Done** ([#239](https://github.com/onixus/Shapoclyack/pull/239)) — raised to `admin` rather than adding an `agent_provisioner` capability: a second authorization model for one pair of endpoints costs more than it returns. `docs/api-and-rbac.md` records the new reasoning |
 
-**Where Wave 2 stands (2026-08-26).** All three P0 items and five of the six P1 items are
-merged to `main`; [#226](https://github.com/onixus/Shapoclyack/issues/226) (scan-scope
-authorization) is the last one open. Nothing here has shipped in a tag, so the advisories stay
-drafts and the GA gate stays closed until the cut.
+**Where Wave 2 stands (2026-08-26).** **Closed** — all three P0 items and all six P1 items are
+merged to `main`, along with the four "claimed Done" defects below. Nothing here has shipped in
+a tag, so the three security advisories stay drafts and the GA gate stays closed until the cut:
+what blocks the release now is the procedure, not the content.
 
-Three issues were opened *because of* this work rather than found by the original review, and
+Four issues were opened *because of* this work rather than found by the original review, and
 they are the honest residue of it:
 [#238](https://github.com/onixus/Shapoclyack/issues/238) — a webhook concurrency test that fails
 roughly every other full run and passes in isolation; it is the test that is supposed to prove
@@ -487,11 +486,16 @@ roughly every other full run and passes in isolation; it is the test that is sup
 with no SSRF guard, admin-only and tenant-scoped but unreviewed against the hardened path used
 for webhooks; and [#241](https://github.com/onixus/Shapoclyack/issues/241) — a pinned host key
 can only be removed with SQL, and a legitimate operation that has to bypass the product is one
-people will route around instead.
+people will route around instead; and
+[#244](https://github.com/onixus/Shapoclyack/issues/244) — scan scope is authorized before name
+resolution while the scanner resolves again, so a record that changes in between is not covered.
+For a schedule that window is hours, and the record belongs to whoever owns the name, not to us.
 
-Two limits of what was verified, stated rather than implied: NetworkPolicy **enforcement** was
-never exercised on a live cluster, and the SSH path was never run end to end against a real
-sshd. Both are noted where they apply.
+Three limits of what was verified, stated rather than implied: NetworkPolicy **enforcement** was
+never exercised on a live cluster; the SSH path was never run end to end against a real sshd;
+and migration `0025`'s grandfather path — the one that decides whether existing installs keep
+scanning after the upgrade — has no automated test and was checked by hand against a database
+built at `0024`. All three are noted where they apply.
 
 ### Claimed Done, broken in code
 
