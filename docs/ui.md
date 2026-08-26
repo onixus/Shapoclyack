@@ -69,7 +69,7 @@ would read as "nothing is exposed".
 The scan-activity chart is hosts/findings per recent **run** — volume, not
 estate risk over time. Estate risk *over time* is the separate trend chart,
 which reads persisted snapshots from `GET /api/vulnerabilities/risk-history`
-(last 30 by default) rather than recomputing history from the current findings
+(the most recent 30 by default) rather than recomputing history from the current findings
 ([#144](https://github.com/onixus/Shapoclyack/issues/144)). Snapshots only
 exist from the moment they were recorded, so the chart is empty on a fresh
 install and shows a gap for any period nothing was captured — an empty chart

@@ -205,6 +205,12 @@ class Settings:
     run_retention_enabled: bool = True
     run_retention_days: int = 30
     run_retention_interval_seconds: int = 3600
+    # Risk snapshot retention (#229). risk_score_snapshots gains a row per
+    # tenant per finished run; migration 0023 landed after #187, so nothing
+    # bounded it. 0 disables the sweep.
+    risk_snapshot_retention_enabled: bool = True
+    risk_snapshot_retention_days: int = 90
+    risk_snapshot_retention_interval_seconds: int = 21600
 
     # OpenTelemetry (ROADMAP P3). Empty = no TracerProvider, no export.
     # The value is the OTLP HTTP traces URL, e.g. http://otel-collector:4318/v1/traces
@@ -509,6 +515,16 @@ def load_settings() -> Settings:
         ),
         run_retention_interval_seconds=max(
             60, int(os.environ.get("OCTO_RUN_RETENTION_INTERVAL_SECONDS", "3600"))
+        ),
+        risk_snapshot_retention_enabled=os.environ.get(
+            "OCTO_RISK_SNAPSHOT_RETENTION_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"},
+        risk_snapshot_retention_days=max(
+            0, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_DAYS", "90"))
+        ),
+        risk_snapshot_retention_interval_seconds=max(
+            60, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS", "21600"))
         ),
 
         otel_exporter_otlp_endpoint=os.environ.get("OCTO_OTEL_EXPORTER_OTLP_ENDPOINT", "").strip(),
