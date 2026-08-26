@@ -22,6 +22,7 @@ yet production-ready.
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
 | **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged |
+| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | Proposed 2026-08-26 |
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
@@ -44,8 +45,12 @@ with tag `shapoclyack-0.42-0822`.
 **On `main`, merged but not yet tagged** (see [CHANGELOG.md](CHANGELOG.md) `## Unreleased`):
 historical risk score snapshots — the last leftover of [#144](https://github.com/onixus/Shapoclyack/issues/144);
 a SARIF v2.1.0 exporter with an in-UI viewer; endpoint-inventory NATS events and the
-end-to-end lifecycle suite that complete **Track D** (S8/S10); agent fleet monitoring,
-UI-driven SSH deployment and auto-update (`scripts/install-agent.sh`, `scripts/update-agent.sh`);
+end-to-end lifecycle suite that complete **Track D** (S8/S10); agent fleet monitoring
+and UI-driven SSH deployment (`scripts/install-agent.sh`, `scripts/update-agent.sh`);
+**auto-update was claimed here in error and does not exist** — the bundle route the scripts
+fetched was never implemented and `upgrade_requested` is a flag nothing on the host reads
+(~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~, corrected in
+[#233](https://github.com/onixus/Shapoclyack/pull/233));
 a UX/UI refactor with a redesigned remediation kanban; and JWT-algorithm / request-body
 hardening. Local CI `shapoclyack` **#27** (2026-08-24, revision `08b0bd0`) is SUCCESS:
 1033 pytest on 3.11 and 3.12, coverage 80.02% against a 74% gate, 142 vitest in 26 files,
@@ -125,7 +130,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 **Goal:** Handle 50k+ assets and generate analytical diff-reports.
 
 **Status:** **Done** — CH tables + NATS→ClickHouse ingest worker; compose auto-wire;
-risk scoring model ``mvp-2`` (CVSS4/EPSS/KEV + scanner-supplied EPSS/KEV and confidence →
+risk scoring model ``nist-1`` (CVSS4/EPSS/KEV + scanner-supplied EPSS/KEV and confidence →
 contextual_score / cisa_decision / risk_explanation);
 FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
@@ -297,7 +302,7 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 | **P1** | 2–4 sprints | Durable control plane | **Done** — jobs/agents in PostgreSQL (1.1/1.2), formal state machine (1.3), leases + reaper (1.4), idempotency keys (1.5), scheduler leader election (1.6) — see [breakdown](#p1-breakdown--durable-control-plane) |
 | **P2** | 2–3 sprints | Asset event workflows | **Done** — ~~`events.asset.*` bus~~ ([10.2](#phase-10--change-detection--alerting-at-asset-level)); ~~routing policies, webhooks, retries, DLQ, audit trail~~; ~~Jira/ServiceNow/DefectDojo ticket creation~~ as further transports over the same delivery queue ([10.3](#phase-10--change-detection--alerting-at-asset-level)) |
 | **P3** | parallel track | Scale & observability | **Done** — ~~Prometheus~~ (3.4/3.5), ~~OpenTelemetry~~ (opt-in OTLP HTTP on the API; empty endpoint = no TracerProvider), ~~SLOs~~ (3.6), ~~server-side pagination~~ (3.2/3.3), ~~1k/10k/50k-asset test fixtures~~ (3.7), ~~ClickHouse/API profiling~~ (3.8), ~~coverage gate + frontend tests in CI~~ (3.0/3.1) |
-| **P4** | 3–5 sprints | Differentiating features | **Done** — ~~TLS hostname/SAN-CN mismatch check~~ (4.1); ~~IP↔FQDN↔certificate correlation~~ (4.2); ~~ownership graph~~ (4.3); ~~web screenshots with retention/redaction~~ (4.4, closes [9.3](#phase-9--exposure-fingerprinting)); ~~risk-priority explanation~~ (`risk_explanation` from scoring model `mvp-2`, see [docs/pulse-backend.md](docs/pulse-backend.md)) — see [breakdown](#p4-breakdown--differentiating-features) |
+| **P4** | 3–5 sprints | Differentiating features | **Done** — ~~TLS hostname/SAN-CN mismatch check~~ (4.1); ~~IP↔FQDN↔certificate correlation~~ (4.2); ~~ownership graph~~ (4.3); ~~web screenshots with retention/redaction~~ (4.4, closes [9.3](#phase-9--exposure-fingerprinting)); ~~risk-priority explanation~~ (`risk_explanation` from scoring model `nist-1`, see [docs/pulse-backend.md](docs/pulse-backend.md)) — see [breakdown](#p4-breakdown--differentiating-features) |
 
 P0 and P1 are complete — a second API replica is now safe to run; P2 completes the EASM alerting loop already scaffolded in Phase 10; P3 is a parallel hardening track, not a blocking dependency; P4 is scope already flagged as deferred/out-of-scope in Phases 9–10. P4.1 landed ahead of the P0–P2 ordering because it needed nothing from either — it reads certificates the scanner had already collected — but the rest of P4 keeps it: 4.2 feeds asset identity and 4.3 the alerting graph P2 is building.
 
@@ -405,11 +410,12 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 | ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ | Webhook delivery state machine | **Done** | Durable `octo-webhook-fanout` created with `DeliverPolicy.NEW` before bind; DLQ replay refuses `delivered`; claim visibility covers the serial batch so concurrent dispatchers cannot double-POST |
 | ~~[#185](https://github.com/onixus/Shapoclyack/issues/185)~~ | End-to-end API latency under concurrency | **Done** | `tests/fixtures/api_latency.py`; kind-dev 2026-08-20 at 1k/10k/50k × conc 32: list GET p95 < 500 ms, `/api/system` tight; SLO 4/5 not re-derived |
 | ~~[#186](https://github.com/onixus/Shapoclyack/issues/186)~~ | PrometheusRule from SLO + scheduler leadership | **Done** | `examples/prometheus-slo.rules.yaml` + Operator wrapper; `promtool check rules` in CI; `octo_scheduler_is_leader` `> 1` (5 m) and `== 0` (10 m) |
-| ~~[#187](https://github.com/onixus/Shapoclyack/issues/187)~~ | Data-growth bounds (ClickHouse TTL + run retention) | **Done** | ClickHouse `TTL timestamp + INTERVAL 90 DAY` in `init.sql` / configmap; in-process `run_retention` worker deletes expired `runs/*` past `OCTO_RUN_RETENTION_DAYS` (30) |
+| ~~[#187](https://github.com/onixus/Shapoclyack/issues/187)~~ | Data-growth bounds (ClickHouse TTL + run retention) | **Done** | ClickHouse `TTL timestamp + INTERVAL 90 DAY` in `init.sql` / configmap; in-process `run_retention` worker deletes expired `runs/*` past `OCTO_RUN_RETENTION_DAYS` (30). **Does not cover `risk_score_snapshots`** — migration `0023` landed after this issue closed ([#229](https://github.com/onixus/Shapoclyack/issues/229)) |
 | ~~[#188](https://github.com/onixus/Shapoclyack/issues/188)~~ | Multi-replica load run (≥2 API replicas) | **Done** | `tests/fixtures/multi_replica_load.py` & `tests/test_multi_replica_load.py`; concurrent job claims via `FOR UPDATE SKIP LOCKED`, idempotent job submissions, scheduler leader election and reaper lease sweeps across replicas |
 
-Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 follows:
-~~#152~~ → ~~#185/#186~~ → ~~#187~~ → ~~#188~~ (**Wave 1 complete**).
+Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 is done:
+~~#152~~ → ~~#185/#186~~ → ~~#187~~ → ~~#188~~. **Wave 2** ([below](#wave-2--what-was-never-filed))
+is now the GA gate, and the next tag waits for it.
 
 **Wave 1** is now filed rather than described here:
 ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
@@ -432,6 +438,56 @@ replicas — **Done**: concurrent claim race elimination (`FOR UPDATE SKIP LOCKE
 idempotency replay under load, scheduler leadership locks verified.
 
 
+
+### Wave 2 — what was never filed
+
+A code-level review on **2026-08-26** — reading the sources rather than this file — found that
+Wave 1 is genuinely complete and that production readiness is still not. Three P0 and six P1
+items existed that no track covered. Wave 1 being closed does not make the next tag safe: a
+release carrying an unauthenticated bypass of the whole access model is worse than no release.
+
+**The three P0 items are filed as private GitHub Security Advisories, not as issues.** The
+repository is public and `shapoclyack-0.42-0822` images are published to GHCR; describing them
+in the open tracker would disclose a 0-day to everyone already running the product. They are
+published once the fix ships. Without exploitation detail:
+
+1. **Unvalidated path in the SPA fallback** (`api/app.py`), unauthenticated. It reaches the
+   process environment, and from there the JWT secret — which makes RBAC, tenant isolation,
+   login rate limiting and audit irrelevant. It voids Waves 0 and 1 as a whole, so it is fixed
+   first, before anything else in this table.
+2. **Agent SSH deployment accepts any host key** (`api/services/agent_deployer.py`) — the
+   operator credential for the target host and a tenant provisioning key travel over it.
+3. **Agent install URL derived from a request header** (`api/routes/agents.py`), which decides
+   what the target host executes as root and what control plane the agent keeps talking to.
+
+| Issue | Theme | Note |
+|-------|-------|------|
+| [#222](https://github.com/onixus/Shapoclyack/issues/222) | Agent result upload has no body cap and no decompression cap | `_safe_members` checks paths, not size |
+| [#223](https://github.com/onixus/Shapoclyack/issues/223) | Deployment status is not tenant-scoped, and its journal is process-local | Also simply broken at `replicas >= 2` |
+| [#224](https://github.com/onixus/Shapoclyack/issues/224) | Fail-closed startup misses the Postgres password, `OCTO_AGENT_TOKEN` and HSTS | HSTS has no env var at all — the header can never be sent |
+| [#225](https://github.com/onixus/Shapoclyack/issues/225) | ClickHouse and NATS unauthenticated; no NetworkPolicy to stateful services | Revisits the recorded NetworkPolicy decision for ingress only; egress reasoning stands |
+| [#226](https://github.com/onixus/Shapoclyack/issues/226) | No scan-scope authorization — a tenant may scan any network | "Was this tenant allowed to scan that?" is a question MSSP lawyers ask |
+| [#231](https://github.com/onixus/Shapoclyack/issues/231) | Role for minting provisioning keys and SSH deployment | Proposes revisiting what `docs/api-and-rbac.md` records |
+
+### Claimed Done, broken in code
+
+Not GA blockers, but they are the reason Wave 2 exists: the status columns in this file and in
+`CHANGELOG.md` were trusted and should not have been.
+
+| Issue | Theme |
+|-------|-------|
+| ~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~ | Agent auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches. **Fixed** in [#233](https://github.com/onixus/Shapoclyack/pull/233): the promise is removed rather than implemented, because a bundle route without a signed payload is unsigned code delivery to root shells. The installers now take an explicit `--bundle-url` and fail loudly without one |
+| [#228](https://github.com/onixus/Shapoclyack/issues/228) | `risk-history` returns the *oldest* snapshots — the Risk Overview trend freezes on the system's first week |
+| [#229](https://github.com/onixus/Shapoclyack/issues/229) | `risk_score_snapshots` grows unbounded — migration `0023` landed after [#187](https://github.com/onixus/Shapoclyack/issues/187) and was never covered by it |
+| [#230](https://github.com/onixus/Shapoclyack/issues/230) | `ch_ingest_worker` consumes S8 endpoint-inventory events and inflates the SLO 6 denominator |
+
+**Verified and not faulted**, so it is not re-litigated: the webhook SSRF containment
+(`api/services/integrations/delivery.py`), the NIST matrix (`api/services/nist_risk.py` matches
+SP 800-30 Table I-2 row for row), the vulnerability lifecycle and its SLA restart on
+re-detection, Track D end to end, [#188](https://github.com/onixus/Shapoclyack/issues/188)'s
+multi-replica tests, and `web-next/` — all 21 screens read the live API, with no mock data.
+
+---
 
 ## Track C — Vulnerability Management product
 
@@ -457,6 +513,90 @@ what they produce. All of it is on `main`; EPIC [#134](https://github.com/onixus
 Backend before UI: #144/#145/#146 → their dependent UI issues. Two overlaps with Track A
 are worth resolving before either starts, so the work is not built twice: ticketing
 (#138 ↔ 10.3/P2, both done) and asset identity (#146 ↔ P4.2).
+
+---
+
+## Track E — Product direction
+
+**Proposed 2026-08-26.** Tracks A–D answer *is the base complete?* — largely yes. This one
+answers *what is worth building next*, and it is deliberately opinionated rather than a backlog.
+
+Honest position: the platform is technically more mature than most open-source comparables, but
+as a product it is still "an external scanner with an unusually good risk engine", not a
+replacement for Tenable/Qualys/Rapid7 and not a turnkey MSSP pipeline. What is already
+competitive: the explainable NIST risk model, findings as first-class entities with lifecycle
+and SLA, asset identity with an evidence trail, and the operational hardening of Waves 0–1.
+
+### Gaps that block replacement, not just adoption
+
+| Gap | Why it blocks |
+|-----|---------------|
+| No authenticated assessment | Lariska collects installed software, but nothing maps it to CVEs — no CPE or purl anywhere in the tree. Enterprise VM teams live on patch level; the product currently sees only what faces the network. Biggest functional gap and the cheapest to close, because the data is already in Postgres |
+| No SSO | No OIDC, SAML or LDAP; three roles; no service tokens. This is a procurement checklist item — without it there is no pilot |
+| No report factory | A per-run PDF and a SARIF export exist. Templates, scheduled delivery, per-tenant branding and "a quarterly report about the organization" do not. An MSSP sells the report, not the scans |
+| No compliance mapping | Nothing for PCI/ISO/CIS, which is half of an enterprise VM budget |
+| Asset context filled by hand | `business_service`/`environment`/`owner_email` only via PATCH. At 50k assets the dashboard's "unowned assets" will read ~45k and the whole owner/SLA workflow never starts |
+| The loop is not closed | Ticket status is one-way by design, and `VERIFYING → CLOSED` is manual: there is no targeted re-scan. The product still cannot answer "was it actually fixed?" mechanically |
+| No MSSP operations | No quotas, no per-tenant consumption metering, no onboarding wizard, no white-label, no customer read-only portal |
+| Enrichment overlays are stubs | `epss-overlay.json` ships 3 CVEs, `kev-overlay.json` 2. There is an update CronJob but no air-gapped bundle and no product-level "your data is N days stale, so your priorities are wrong" |
+
+### Order
+
+**Now** — remove the reasons a buyer stops: enterprise IAM (OIDC/SAML, service tokens, scopes;
+2–3 sprints); software→CVE matching over the endpoint inventory (5–7 sprints, starting with
+vendor advisories for two distributions, because naive version matching on backports produces a
+false-positive storm); `org_profile` M1–M3 (2–3 sprints, already designed in
+[docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of
+effort on this list, and it gives sales a demo artifact while the matcher is still being built).
+
+**Next** — the report factory and control matrix (3–4 sprints; converts directly into MSSP
+revenue and builds on `controls.py` from `org_profile`); closing the remediation loop (3–4
+sprints, verification re-scan first, because it turns `VERIFYING` from decoration into a fact
+and yields the "share of fixes confirmed by machine" metric); MSSP operations (3–4 sprints,
+after reports — metering means something once there is something to show the customer).
+
+**Later** — asset-context connectors (4–5 sprints; expensive and vendor-specific, and CSV import
+covers the gap until then — start with one cloud and AD, not all of them); ProjectDiscovery
+`httpx`/`tlsx` (2–3 sprints); false-positive feedback and coverage metrics (2 sprints). `httpx`
+is deliberately late: it raises finding volume and precision, and before the loop is closed more
+findings simply means more noise.
+
+### Not doing, and why
+
+- **No DAST of our own** (katana + interactsh, scenarios 3–4 of
+  [docs/projectdiscovery-integration-concept.md](docs/projectdiscovery-integration-concept.md)).
+  Separate product, separate team, competing with Burp/ZAP/Invicti — and active out-of-band
+  testing against a customer perimeter carries legal and reputational risk out of proportion to
+  the gain. Keep the interface, not the implementation.
+- **Lariska does not become an EDR.** Behavioural telemetry and detection is a different market
+  and a different support obligation. Inventory plus patch level is the niche where the agent
+  earns its place.
+- **No attack-path engine yet** (the open P2 remainder in
+  [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md)). There is no data on
+  internal topology, privilege or segmentation; the result would be a handsome graph with
+  invented edges. Revisit after the context connectors land.
+- **No new scoping sources** (`asnmap`, `alterx`, aggressive `subfinder`, related domains) until
+  Later. The bottleneck is not "we find too little" — it is "what we find is not driven to a fix".
+- **No third UI rewrite.** Track C is closed. Targeted screens for new data, not a new IA.
+- **No ticketing system inside the platform.** The remediation board plus ticket links is the
+  right boundary; deepen the synchronization, do not replace Jira.
+- **No CSPM.** Take inventory from clouds, not configuration audit — that is another product.
+
+### What to measure
+
+None of this is currently measurable: the product is self-hosted with no telemetry. The
+precondition is an in-product **Adoption** page built on tables that already exist
+(`vulnerability_events`, `risk_score_snapshots`, `assets`, `jobs`), plus an opt-in aggregated
+export. Then: MTTR by severity and asset criticality; share of findings within SLA; **share of
+findings closed after machine verification** rather than by hand; share of closures marked
+"not confirmed" as a false-positive proxy; findings-per-asset and its direction; percentage of
+assets with an owner and business context; 30-day scan coverage and dual-source coverage
+(network plus agent); time-to-first-value and tenant onboarding time; enrichment overlay age in
+days. The technical SLOs in [docs/slo.md](docs/slo.md) stay as they are — this is a product
+layer above them.
+
+One control question per quarter: **did the number of closed-and-verified findings per analyst
+go up?** If it did not, the new functionality produced data rather than outcomes.
 
 ---
 
