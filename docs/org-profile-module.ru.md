@@ -1,8 +1,10 @@
 # Модуль «Профиль организации» (org_profile)
 
-Проектный документ. Описывает **планируемое** поведение; ничего из этого ещё не
-реализовано. Соглашения по языку: файл на русском по образцу `README.ru.md`;
-при переводе в официальную документацию — английская версия в `docs/`.
+Проектный документ. **Этапы M1 (`ownership.py`) и M2 (`dns_hygiene.py`,
+`mail_posture.py`) реализованы**, остальные стадии описывают планируемое
+поведение. Соглашения по языку: файл на русском по
+образцу `README.ru.md`; при переводе в официальную документацию — английская
+версия в `docs/`.
 
 ## Задача
 
@@ -82,7 +84,7 @@ seed domain
 | `scanner/pipeline/controls.py` | матрица контролей и итоговая сводка |
 | `tests/test_ownership.py` и т.д. | по файлу на модуль, моки `httpx`/DNS как в `test_asn_discovery.py` |
 
-## Стадия 1 — владелец (`ownership.py`)
+## Стадия 1 — владелец (`ownership.py`) — реализовано (M1)
 
 Пассивно, только публичные keyless-источники, fail-soft на каждый вызов —
 та же посадка, что у `asn_discovery.py`.
@@ -113,7 +115,7 @@ seed domain
     {"kind": "cert_org",   "value": "Example Holding LLC", "source": "tls_cert",     "confidence": 0.7}
   ],
   "registrar": "…", "created": "…", "expires": "…",
-  "registrant_status": "public|redacted|unknown",
+  "registrant_status": "public|redacted|natural_person|unidentified|unknown",
   "nameservers": ["ns1.…"],
   "truncated": false, "errors": []
 }
@@ -122,6 +124,85 @@ seed domain
 `identifiers` — вход для стадии 2. `confidence` — не выдумка: фиксированные
 веса по источнику, задокументированные в модуле (RDAP-регистрант надёжнее,
 чем ASN-организация, которая у хостера принадлежит хостеру, а не клиенту).
+
+### Что вошло в M1
+
+Реализовано: `scanner/pipeline/ownership.py` (RDAP домена) и
+`scanner/pipeline/safe_http.py` (исходящий HTTPS сканера). Стадия `ownership`
+врезана в `main.py` рядом с `ct`/`asn`, до `resolve`, с чекпойнтом и таймером.
+
+**Не вошло в M1:** идентификаторы `asn_org` и `cert_org`. `asn_org` берётся из
+вывода `asn_discovery.py`, `cert_org` — из subject сертификата, который
+разбирает `tls_posture.py` намного позже в пайплайне; оба добавляются вместе с
+M2/M3, когда появится агрегатор, читающий чужие артефакты. В M1
+`identifiers[]` содержит только `org_name`, `registrar` и `abuse_email` из
+источника `rdap_domain` с весами 0.9 / 0.8 / 0.7 (константа `_CONFIDENCE`).
+
+**Конфиг** — `org_profile.ownership` в `scanner/config/default.yaml`:
+
+| Параметр | Дефолт | Смысл |
+| --- | --- | --- |
+| `enabled` | `false` | стадия opt-in, как все стадии модуля |
+| `domains` | `[]` | пусто = базовые домены из входных FQDN (`base_domains_from_fqdns`) |
+| `max_domains` | `50` | кап на число доменов, которым уйдёт RDAP-запрос |
+| `timeout_seconds` | `15` | таймаут одного запроса (весь бюджет hop'а, включая редиректы) |
+| `deadline_seconds` | `300` | общий дедлайн стадии — проверяется и между доменами, и перед каждой попыткой запроса, и таймаут одного запроса им подрезается |
+
+**Семантика `truncated`.** Флаг ставится в двух случаях и оба логируются с
+именем параметра, который нужно поднять: сид-список длиннее `max_domains`
+(лишние домены не опрашиваются) и исчерпание `deadline_seconds` (оставшиеся
+домены не опрашиваются). Тихого усечения нет: в `ownership.json` всегда видно
+`seed_domains` и фактически опрошенный `domains`.
+
+**Статусы домена** — инвариант «отсутствие данных никогда не даёт `ok`»:
+
+| `status` | `reason` | Когда |
+| --- | --- | --- |
+| `ok` | `null` | RDAP-объект получен и разобран |
+| `not_checked` | `rdap_not_found` | сервер ответил 404 — объекта нет |
+| `error` | `rdap_unavailable` | транспорт/HTTP-ошибка после ретраев |
+| `error` | `rdap_blocked_target` | адрес RDAP-сервера не прошёл валидацию `safe_http` |
+
+**Статусы регистранта** (`registrant_status`) — модуль различает «скрыто»,
+«человек» и «ничего нет», а не сваливает их в один `null`:
+
+| Значение | Когда |
+| --- | --- |
+| `public` | получено имя организации: поле `org`, либо `fn` при явном `kind: org` |
+| `redacted` | реестр замаскировал поле (RFC 9537 `redacted[]`, remark «REDACTED FOR PRIVACY» или маркер в значении) |
+| `natural_person` | регистрант объявлен как `kind: individual` — имя намеренно не записывается |
+| `unidentified` | регистрант есть, но ничего в нём не опознаётся как организация (голый `fn` без `kind`) |
+| `unknown` | сущности с ролью `registrant` в объекте нет вообще |
+
+`fn` без `kind: org` **не** используется как `org_name`. Это осознанный
+false-negative: у домена частного лица `fn` — это имя человека, а контракт
+модуля запрещает писать его на диск. Реестры, кладущие название компании в
+`fn` без `kind`, теряют идентификатор — потерять идентификатор дешевле, чем
+записать имя физлица с весом 0.9.
+
+**Что пишется на диск.** `ownership.json` и `ownership_findings.txt` содержат
+только `org_name`, `registrar`, `abuse_email`, даты, статусы, флаг DNSSEC и NS.
+Сырой блок `entities[]` / vCard — адрес, телефон, имя физлица, tech/admin —
+разбирается в памяти и не сохраняется (тест
+`test_ownership_never_persists_the_raw_contact_block`). Оба файла — **класс
+ограниченного артефакта** в API (`is_restricted_artifact`, operator+), см.
+`docs/api-and-rbac.md`. В `pdf_report.py`, в ClickHouse и в webhook-payload
+стадия ничего не проводит.
+
+**Исходящий HTTPS.** `safe_http.py` — второй экземпляр границы из
+`api/services/integrations/delivery.py` (`scanner/` не импортирует `api/`):
+только https, запрет userinfo, отказ, если хоть один A/AAAA не `is_global`,
+TCP на провалидированный IP при SNI и проверке сертификата по DNS-имени,
+кап тела 256 KiB, один wall-clock дедлайн на всю цепочку, до 3 редиректов с
+повторной валидацией каждого `Location`. Проверка сертификата и пиннинг не
+настраиваются. Прокси из окружения игнорируются (`http.client`, не `httpx`).
+Bootstrap IANA кэшируется в `state_dir` — на 50k активов это один запрос к
+IANA вместо одного на домен. У кэша есть TTL в сутки (столько же, сколько IANA
+отдаёт в `max-age`), потому что `state_dir` не всегда пер-ран: при
+`runtime.per_run_output: false` это общий `state_base`, и кэш без TTL был бы
+записан один раз и считался бы верным вечно — новый TLD или переехавший
+RDAP-сервер реестра не подхватился бы никогда, а такие домены молча уходили бы
+на `rdap.org`.
 
 ## Стадия 2 — совместные домены (`related_domains.py`)
 
@@ -160,7 +241,7 @@ seed domain
   за авторизацию скана — на операторе (перекликается с предупреждением в
   `README.md`).
 
-## Стадия 3 — DNS структура (`dns_hygiene.py`)
+## Стадия 3 — DNS структура (`dns_hygiene.py`) — реализовано (M2)
 
 Проверки по каждому домену в scope (не по каждому FQDN — контроль зонального
 уровня):
@@ -180,7 +261,7 @@ seed domain
 - **dangling CNAME / typosquat**: **не реализуем заново** — контроль ссылается
   на findings из `domain_monitor.py` и включает их в свой статус.
 
-## Стадия 4 — почтовая защита (`mail_posture.py`)
+## Стадия 4 — почтовая защита (`mail_posture.py`) — реализовано (M2)
 
 Полностью DNS-based, единственное исключение — HTTP-запрос политики MTA-STS.
 
@@ -200,6 +281,159 @@ seed domain
 - **Правило для доменов без почты**: домен без MX обязан иметь `SPF -all` и
   `DMARC p=reject`, иначе его можно подделывать — самый частый и самый дешёвый
   в исправлении finding, поэтому выделен отдельно.
+
+### Что вошло в M2
+
+Реализовано: `scanner/pipeline/dns_hygiene.py`, `scanner/pipeline/mail_posture.py`
+и общая обёртка над dnsx `scanner/pipeline/dnsx.py` (семь типов записей на две
+стадии — механика одного вызова живёт в одном месте, а тонкие именованные
+обёртки остаются в стадиях, потому что именно их подменяют тесты). Обе стадии
+врезаны в `main.py` **после `resolve`**, рядом с `domain_monitor`, с чекпойнтом
+и таймером; обе findings-only и scope не расширяют.
+
+**Не вошло в M2** и почему:
+
+- **`ds_without_rrsig`** — честно не определяется. У dnsx 1.2.3 нет флага
+  DS/RRSIG, `dnspython` в зависимостях нет и добавлять его нельзя. Сломанная
+  цепочка неотличима от отсутствия DNSSEC, а выдать догадку за факт — прямое
+  нарушение инварианта модуля. DNSSEC берётся из RDAP-флага
+  `secureDNS.delegationSigned`, который уже собрал M1: источник назван явно,
+  `source: "rdap_registry"`. Флаг `AD` от резолвера не используется вовсе — это
+  мнение резолвера, а не проверенная цепочка.
+- **Разнесённость NS по ASN** — ASN-запросов стадия не делает. Концентрация
+  считается по родительскому домену NS и по префиксу их адресов (/24 для v4,
+  /48 для v6), поле `ns_diversity.source` так и называется:
+  `ns_parent_domain_and_ip_prefix`. Слабый источник, названный слабым, лучше
+  сильного названия у слабого источника.
+- **Расхождение NS с регистратором** (`lame delegation` в узком смысле) — в M2
+  реализован только вариант «NS не резолвится» (`ns_lame_delegation`). Сверка с
+  NS-списком регистратора — это чтение чужого артефакта, и она уезжает в M3
+  вместе с агрегатором.
+- **Typosquat и dangling CNAME** — как и планировалось, заново не реализуются;
+  M3 сошлётся на findings `domain_monitor.py`.
+- **Матрица контролей** — M3. M2 пишет только findings с полями `kind`,
+  `severity`, `domain` (форма как в `tls_posture.py`).
+
+**Конфиг** — `org_profile.dns_hygiene` и `org_profile.mail_posture`:
+
+| Параметр | Дефолт | Смысл |
+| --- | --- | --- |
+| `dns_hygiene.enabled` | `false` | стадия opt-in |
+| `dns_hygiene.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope |
+| `dns_hygiene.max_domains` | `50` | кап на число доменов стадии |
+| `dns_hygiene.timeout_seconds` | `15` | таймаут одного вызова dnsx |
+| `dns_hygiene.retries` | `1` | ретраи вызова dnsx |
+| `dns_hygiene.deadline_seconds` | `300` | общий дедлайн стадии |
+| `dns_hygiene.axfr_probe` | `false` | **активная** проверка, см. ниже |
+| `dns_hygiene.axfr_timeout_seconds` | `10` | таймаут одной попытки трансфера |
+| `mail_posture.enabled` | `false` | стадия opt-in |
+| `mail_posture.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope |
+| `mail_posture.max_domains` | `50` | кап на число доменов стадии |
+| `mail_posture.timeout_seconds` | `15` | таймаут одного вызова dnsx |
+| `mail_posture.retries` | `1` | ретраи вызова dnsx |
+| `mail_posture.deadline_seconds` | `300` | общий дедлайн стадии |
+| `mail_posture.dkim_selectors` | `[default, google, selector1, selector2, k1, mail]` | ≤ 20 записей, каждая — DNS-лейбл `[a-z0-9-]{1,63}` |
+| `mail_posture.mta_sts_http` | `true` | единственный HTTP-запрос модуля |
+| `mail_posture.mta_sts_timeout_seconds` | `10` | таймаут запроса политики |
+
+Жёсткие капы живут константами в коде, а не в конфиге — их нельзя поднять
+из YAML: `dns_hygiene.MAX_NS_PER_DOMAIN` = 10, `dns_hygiene.WILDCARD_PROBE_LABELS`
+= 2, `mail_posture.MAX_MX_PER_DOMAIN` = 10, `mail_posture.MAX_DKIM_QUERIES` = 500,
+`mail_posture.SPF_MAX_LOOKUPS` = `SPF_MAX_DEPTH` = 10.
+
+**Семантика `truncated`** — та же, что в M1: флаг ставится там, где данные
+сознательно недобраны, и каждый случай логируется с именем параметра, который
+нужно поднять. В M2 таких случаев пять:
+
+1. сид-список длиннее `max_domains` (обе стадии);
+2. домен публикует больше `MAX_NS_PER_DOMAIN` NS — лишние не проверяются
+   (`nameservers_truncated` у домена);
+3. домен публикует больше `MAX_MX_PER_DOMAIN` MX;
+4. `домены × dkim_selectors` превышает `MAX_DKIM_QUERIES` — DKIM проверяется
+   для первых `MAX_DKIM_QUERIES / len(selectors)` доменов, остальные получают
+   `dkim.status: not_checked`, `reason: selector_budget_exhausted`;
+5. дедлайн стадии исчерпан до AXFR-пробы очередного NS.
+
+Ни один из этих случаев не превращается в `ok`: недобранные данные видны в
+артефакте как `not_checked` с причиной.
+
+**Источники данных, названные явно:**
+
+| Что | Источник | Поле |
+| --- | --- | --- |
+| DNSSEC | RDAP-объект домена из `ownership.json` (M1) | `dnssec.source: "rdap_registry"` |
+| Концентрация NS | родительский домен NS + префикс адреса | `ns_diversity.source: "ns_parent_domain_and_ip_prefix"` |
+| NS, SOA, CAA, MX, TXT, wildcard | `dnsx` | — |
+| Политика MTA-STS | HTTPS через `safe_http.py` | `mta_sts.policy` |
+
+Если `ownership` выключен, DNSSEC — это `not_checked` с
+`reason: "no_rdap_secure_dns"`, а не «DNSSEC нет».
+
+**AXFR — единственная активная проверка модуля.** Три обязательных гейта:
+
+1. **конфигурационный:** `axfr_probe: false` по умолчанию, и флаг сознательно
+   недоступен нигде, кроме файла конфига. Его нет в `EDITABLE_PATHS`
+   (`api/services/config_override.py`), потому что оверрайды там
+   установочно-широкие, а не пер-тенантные — платформенный admin включил бы
+   AXFR разом для сканов всех тенантов. И его нет в `StartScanRequest`, потому
+   что это перенесло бы решение об активной проверке на роль `operator`,
+   которая запускает скан, а не отвечает за авторизацию цели;
+2. **runtime по scope:** пробуются только домены сид/scope самого run'а
+   (`base_domains_from_fqdns`), никогда — кандидаты атрибуции из M4;
+3. **по адресу NS:** каждый адрес NS обязан пройти
+   `safe_http.is_public_address`. NS-запись пишет сканируемая сторона, поэтому
+   `ns1.target.example → 10.0.0.5` превращает пробу в TCP/53-коннект по
+   внутренней сети агента. Проверка одна на весь сканер — та же функция, что
+   валидирует адреса исходящего HTTPS.
+
+**Зона не попадает ни в лог, ни в артефакт.** `utils.run_command` логирует
+командную строку и stdout ребёнка в общий лог run'а, а stdout успешного
+трансфера — это вся зона цели; `scan.log` переживает артефакты и не входит в
+класс ограниченного доступа. Поэтому проба ходит в `subprocess` напрямую, без
+`-o`, держит вывод в памяти и записывает только факт трансфера и число записей
+(`{"nameserver": …, "status": "open", "records": N}`).
+
+**MTA-STS — единственный HTTP в M2.** `https://mta-sts.<domain>/.well-known/mta-sts.txt`
+запрашивается только через `safe_http.py`: адрес валидируется и пиннится,
+`max_redirects=0` (RFC 8461 §3.3 прямо запрещает следовать 3xx при получении
+политики — и редирект здесь же является примитивом, нужным для SSRF), кап тела
+64 KiB. Тело сверх капа — это `status: "error"`, `reason: "policy_too_large"`, а
+не «политика распарсена наполовину». `httpx`/`urllib`/`requests` в модуле не
+используются.
+
+**DKIM и инвариант «нет данных ≠ ok».** Селекторы произвольны, поэтому
+«ни один известный селектор не ответил» — это `dkim.status: "not_checked"`,
+`reason: "no_known_selector"`, и **никакого finding**. Утверждение «у домена нет
+DKIM» модуль сделать не может и не делает.
+
+**Findings M2:**
+
+| `kind` | `severity` | Когда |
+| --- | --- | --- |
+| `axfr_open` | critical | NS отдал зону |
+| `spf_all_permissive` | critical | `+all` |
+| `ns_missing` | high | у домена нет NS |
+| `soa_missing` | high | нет SOA |
+| `spf_missing`, `spf_multiple_records` | high | нет SPF / их больше одного (permerror по RFC 7208 §4.5) |
+| `dmarc_missing`, `dmarc_policy_none`, `dmarc_policy_invalid` | high | нет DMARC / `p=none` / `p` отсутствует или не распознан |
+| `no_mx_domain_spoofable` | high | домен без MX (или с `null MX`) без `SPF -all` **и** `DMARC p=reject` |
+| `ns_single_point`, `ns_lame_delegation` | medium | один NS или один провайдер / NS не резолвится |
+| `dnssec_absent` | medium | RDAP говорит `delegationSigned: false` |
+| `wildcard_a_record` | medium | все пробные лейблы резолвятся |
+| `spf_all_neutral`, `spf_too_many_lookups`, `spf_include_cycle` | medium | `?all`/нет `all`, > 10 DNS-lookup, цикл `include:` |
+| `dmarc_policy_quarantine`, `dmarc_subdomain_policy_none`, `dmarc_pct_partial`, `dmarc_multiple_records` | medium | — |
+| `mta_sts_policy_unreachable` | medium | TXT есть, политика не получена |
+| `soa_mname_not_in_ns`, `soa_timers_out_of_range` | low | MNAME вне списка NS, таймеры вне RFC 1912 §2.2 |
+| `caa_missing`, `caa_wildcard_unrestricted` | low | нет CAA / есть `issue`, но нет `issuewild` |
+| `spf_ptr_mechanism` | low | механизм `ptr` (deprecated) |
+| `dmarc_no_rua` | low | нет отчётного адреса |
+| `dkim_key_revoked` | low | селектор есть, `p=` пустой |
+| `mta_sts_missing`, `mta_sts_mode_not_enforce`, `tls_rpt_missing` | low | — |
+
+**Цикл `include:` останавливается, а не фиксируется постфактум.** Обход —
+BFS с visited-set и потолком глубины `SPF_MAX_DEPTH`, один вызов dnsx на
+уровень; `a.example include:b.example` / `b.example include:a.example`
+завершается на втором визите и даёт finding `spf_include_cycle`.
 
 ## Стадия 5 — утечки учётных данных (`credential_leaks.py`)
 
@@ -292,11 +526,11 @@ org_profile:
     merge_into_scope: false
     auto_merge: false
     max_merged_domains: 25
-  dns_hygiene:
-    enabled: true
+  dns_hygiene:            # реализовано в M2, полный список параметров выше
+    enabled: false
     axfr_probe: false         # единственная активная проверка
-  mail_posture:
-    enabled: true
+  mail_posture:           # реализовано в M2, полный список параметров выше
+    enabled: false
     dkim_selectors: [default, google, selector1, selector2, k1, mail]
     mta_sts_http: true
   credential_leaks:
@@ -337,8 +571,8 @@ org_profile:
 
 | Этап | Содержание | Почему в этом порядке |
 | --- | --- | --- |
-| **M1** | `ownership.py` + RDAP + конфиг + тесты | фундамент для стадии 2, ни от чего не зависит |
-| **M2** | `mail_posture.py` + `dns_hygiene.py` | два недостающих контроля с лучшим отношением ценности к цене — чистый DNS, без активного трафика |
+| **M1** ✅ | `ownership.py` + `safe_http.py` + RDAP + конфиг + тесты | фундамент для стадии 2, ни от чего не зависит |
+| **M2** | `mail_posture.py` + `dns_hygiene.py` | **реализовано** — два недостающих контроля с лучшим отношением ценности к цене; чистый DNS, единственные исключения — политика MTA-STS по HTTPS и opt-in AXFR |
 | **M3** | `controls.py` + сводка + API + UI-матрица | **сводка появляется раньше, чем все контроли готовы**: незакрытые честно показываются как «требуется проверка» — ровно исходная таблица |
 | **M4** | `related_domains.py` + promote-flow | самая рискованная часть, делается на устоявшемся фундаменте |
 | **M5** | `credential_leaks.py` + RBAC-гейт | зависит от внешнего вендора и юридического решения по хранению |
@@ -356,6 +590,7 @@ org_profile:
 | Rate limit RDAP / crt.sh | кэш в `state_dir`, backoff, fail-soft per-call (как в `asn_discovery.py`) |
 | Приватность данных об утечках | агрегаты, маскирование, RBAC-гейт, исключение из PDF и вебхуков |
 | Скрытый GDPR-регистрант | статус `redacted` вместо молчаливого «нет владельца» |
+| Регистрант — физлицо, его имя утекает в артефакт как `org_name` | `fn` берётся только при `kind: org`; иначе `natural_person`/`unidentified` и `org_name: null` |
 | Дублирование существующей логики | typosquat/dangling — ссылка на `domain_monitor.py`; TLS/технологии/сервисы — маппинг существующих findings, без новых HTTP-клиентов |
 
 ## Открытые вопросы

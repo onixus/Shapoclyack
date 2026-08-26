@@ -407,6 +407,60 @@ tls_posture:
   probe_concurrency: 20
   probe_tls_ports: [443, 8443, 9443, 4443, 10443, 6443]
 
+# EPIC #182, org_profile M1 — domain ownership via RDAP (opt-in). One HTTPS GET
+# per seed domain to the registry RDAP server from the IANA bootstrap file
+# (rdap.org as fallback), through the pinned/validated client in
+# scanner/pipeline/safe_http.py. Writes only org/registrar/abuse-email/dates/
+# statuses/DNSSEC/NS — the raw RDAP contact block never reaches disk — and
+# ownership.json is an operator-only artifact in the API. max_domains and
+# deadline_seconds cap the registry query burst (the default seed set is every
+# base domain in scope); past either cap the run is flagged truncated.
+org_profile:
+  ownership:
+    enabled: false
+    domains: []             # empty = base domains from input FQDNs
+    max_domains: 50
+    timeout_seconds: 15
+    deadline_seconds: 300
+  # org_profile M2 — zone hygiene (NS/SOA/CAA/DNSSEC/wildcard/AXFR). Everything
+  # except axfr_probe is an ordinary dnsx query, the same risk class as
+  # discovery.domain_monitor. DNSSEC is read from the RDAP secureDNS flag that
+  # ownership.json already carries (source: rdap_registry) — never from a
+  # resolver AD bit — so it reports not_checked when ownership is disabled.
+  #
+  # axfr_probe is the only ACTIVE check in the module: it attempts a zone
+  # transfer, which the target's nameserver logs as such. Enable it only for
+  # domains you are authorized to test — see docs/operations.md. It lives only
+  # here on purpose: not in the API config overrides (installation-wide, not
+  # per-tenant) and not in the start-scan request.
+  dns_hygiene:
+    enabled: false
+    domains: []             # empty = base domains from input FQDNs
+    max_domains: 50
+    timeout_seconds: 15
+    retries: 1
+    deadline_seconds: 300
+    axfr_probe: false       # ACTIVE check — requires target authorization
+    axfr_timeout_seconds: 10
+  # org_profile M2 — mail authentication posture (MX/SPF/DMARC/DKIM/MTA-STS/
+  # TLS-RPT). DNS-only except the MTA-STS policy document, fetched through
+  # safe_http.py with zero redirects (RFC 8461 §3.3) and a 64 KiB cap because
+  # mta-sts.<domain> is an A record the scanned party writes.
+  # dkim_selectors: at most 20 entries, each a DNS label; the stage also caps
+  # total DKIM lookups at mail_posture.MAX_DKIM_QUERIES (500). Selectors are
+  # arbitrary, so "none of these answered" is reported as not_checked — never
+  # as "this domain has no DKIM".
+  mail_posture:
+    enabled: false
+    domains: []             # empty = base domains from input FQDNs
+    max_domains: 50
+    timeout_seconds: 15
+    retries: 1
+    deadline_seconds: 300
+    dkim_selectors: [default, google, selector1, selector2, k1, mail]
+    mta_sts_http: true
+    mta_sts_timeout_seconds: 10
+
 # Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
 #   OCTO_SMTP_HOST, OCTO_SMTP_PORT, OCTO_SMTP_FROM, OCTO_SMTP_TO

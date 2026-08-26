@@ -6,6 +6,102 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Zone hygiene and mail posture — org profile M2** ([#182](https://github.com/onixus/Shapoclyack/issues/182)) —
+  two new opt-in scanner stages, both disabled by default and both findings-only
+  (neither adds an FQDN or an IP to scope). `scanner/pipeline/dns_hygiene.py`
+  (`org_profile.dns_hygiene`) checks the nameserver set and its concentration,
+  lame delegation, SOA sanity against RFC 1912, DNSSEC, CAA and a wildcard
+  record; `scanner/pipeline/mail_posture.py` (`org_profile.mail_posture`) checks
+  MX (including RFC 7505 `null MX`), SPF, DMARC, DKIM, MTA-STS and TLS-RPT. Both
+  run after `resolve`, beside `domain_monitor`, so they see the final in-scope
+  FQDN list, and both carry a checkpoint and a stage timer.
+  A domain with no MX that lacks `SPF -all` **and** `DMARC p=reject` is called
+  out separately as `no_mx_domain_spoofable`: it is the cheapest finding in the
+  module to fix and the easiest to overlook.
+  Sources are named rather than implied. DNSSEC comes from the RDAP
+  `secureDNS.delegationSigned` flag M1 already wrote to `ownership.json`
+  (`source: rdap_registry`) and is `not_checked` without it — never from a
+  resolver's `AD` bit, which is the resolver's opinion and not a validated
+  chain. `ds_without_rrsig` is deliberately not emitted: dnsx 1.2.3 has no
+  DS/RRSIG flag and `dnspython` is not a dependency, so a broken chain cannot
+  honestly be told apart from an unsigned one. Nameserver concentration is
+  judged by parent domain and address prefix, not by ASN, and says so
+  (`ns_diversity.source: ns_parent_domain_and_ip_prefix`).
+  Absence of data never becomes `ok`. For DKIM in particular, "none of the
+  configured selectors answered" is `not_checked` with
+  `reason: no_known_selector` and no finding — selectors are arbitrary strings,
+  so silence is not evidence that a domain does not sign its mail.
+  Caps: `max_domains`/`deadline_seconds` per stage, at most 10 NS and 10 MX per
+  domain, at most 20 DKIM selectors (each validated as a DNS label, since it is
+  interpolated into a query name and passed to dnsx) under an absolute ceiling
+  of 500 DKIM lookups per stage, two fixed random labels for the wildcard probe,
+  and SPF `include:`/`redirect=` traversal bounded by a visited set plus a depth
+  of 10 — enforced as a stop, so two domains that include each other terminate
+  instead of recursing. Every cap sets `truncated` and logs the parameter to
+  raise.
+
+- **AXFR probe (opt-in, off by default)** — `org_profile.dns_hygiene.axfr_probe`
+  is the first and only active check in the org-profile module. Three gates, all
+  mandatory: it exists only in the scanner config file (deliberately not in
+  `EDITABLE_PATHS`, which is installation-wide rather than per-tenant, and not in
+  `StartScanRequest`, which would move the decision onto the `operator` who
+  starts a scan rather than whoever authorizes the target); only this run's own
+  seed domains are probed, never an attribution candidate; and every nameserver
+  address must pass `safe_http.is_public_address`, so an NS record pointing at
+  `10.0.0.5` cannot turn the probe into a TCP/53 connection inside the agent's
+  network. A successful transfer is recorded as a fact and a record count only —
+  the zone reaches neither `dns_hygiene.json` nor `scan.log`, which is why the
+  probe drives `subprocess` directly instead of `utils.run_command` (the latter
+  logs the child's stdout, and on a transfer that stdout is the whole zone). See
+  `docs/operations.md`, "Active checks and target authorization".
+
+- **MTA-STS policy fetch through the SSRF boundary** — the single HTTP request in
+  M2, `https://mta-sts.<domain>/.well-known/mta-sts.txt`, goes through
+  `scanner/pipeline/safe_http.py` with `max_redirects=0` (RFC 8461 section 3.3
+  forbids following 3xx when retrieving a policy, and a redirect is also exactly
+  the primitive an SSRF needs) and a 64 KiB body cap. `mta-sts.<domain>` is an A
+  record the scanned party writes while the scanner often runs inside that
+  party's network, so the address is validated and pinned like any other
+  remote-named hop. A body over the cap is reported as
+  `reason: policy_too_large`, never parsed halfway.
+  `safe_http.is_public_address` is now the single definition of "public
+  address" for the scanner, used by both the URL validator and the AXFR gate.
+
+- **Domain ownership via RDAP — org profile M1** ([#182](https://github.com/onixus/Shapoclyack/issues/182)) —
+  new opt-in scanner stage `scanner/pipeline/ownership.py` (`org_profile.ownership`,
+  disabled by default) resolves each seed domain's registrar, registrant organization,
+  abuse contact, lifecycle dates, EPP statuses, DNSSEC flag and nameservers from the
+  registry's RDAP object (IANA bootstrap cached in `state_dir` under a one-day TTL,
+  matching what IANA serves the document with, `rdap.org` as fallback).
+  `registrant_status` keeps apart `public`, `redacted` (registry-masked), `natural_person`
+  (`kind: individual`), `unidentified` (a registrant with nothing identifiable as an
+  organization) and `unknown`; a vCard `fn` becomes `org_name` only under an explicit
+  `kind: org`, so a private person's name is never promoted to an owner identifier. A domain
+  with no RDAP answer gets `not_checked`/`error` with a reason — never `ok`. `max_domains`
+  and `deadline_seconds` cap the registry query burst; exceeding either sets `truncated`.
+  The deadline bounds a single lookup as well as the gap between two — it is checked
+  before every attempt, clamps that request's timeout and cuts the retry backoff short,
+  so an unresponsive registry cannot spend `(urls x attempts) x timeout` past it.
+  The raw RDAP `entities[]`/vCard block (postal address, phone, natural-person name,
+  tech/admin contacts) is parsed in memory and never written to disk.
+
+- **SSRF boundary for scanner-side outbound HTTPS** — `scanner/pipeline/safe_http.py`
+  is the first outbound client in `scanner/` whose next hop is named by a remote party
+  (RDAP bootstrap entry, `rdap.org` 302). HTTPS only, no userinfo, rejected when any
+  resolved address is non-global, TCP pinned to the validated IP with SNI and certificate
+  verification against the DNS name, 256 KiB body cap, one wall-clock deadline across the
+  whole redirect chain, and every `Location` re-validated by the same code as the first
+  hop. Certificate verification, pinning and proxy-bypass are not configurable.
+
+- **Restricted run artifacts (operator+)** — `api/services/runs.py::is_restricted_artifact`
+  adds a second protected artifact class beside screenshot PNGs. `resolve_artifact`
+  enforces it as well as the two routes (`allow_restricted`, mirroring
+  `allow_screenshots`), so a future endpoint cannot inherit the name without the gate. `ownership.json` and
+  `ownership_findings.txt` carry an abuse contact address, so they are omitted from
+  `GET /api/runs/{id}` artifact listings and answer `404` to a viewer on both the
+  text-preview and the download endpoint. Org profile M5 will add `credential_leaks.*`
+  to the same predicate.
+
 - **Historical risk score snapshots** ([#144](https://github.com/onixus/Shapoclyack/issues/144), Track C) —
   `api/services/risk_snapshots.py` + `risk_score_snapshots` (migration `0023`) persist
   point-in-time estate risk, open/total finding counts, NIST level breakdown and SLA
@@ -27,7 +123,7 @@ All notable changes to Shapoclyack are documented in this file.
   with no `OCTO_NATS_URL` it is a no-op. With the S10 end-to-end lifecycle suite
   (`tests/test_endpoint_inventory_lifecycle.py`), **Track D is complete**.
 
-- **Agent fleet monitoring, UI-driven SSH deployment and auto-update** —
+- **Agent fleet monitoring and UI-driven SSH deployment** —
   `GET /api/agents/summary` (fleet health rollup), `GET /api/agents/{id}`,
   `DELETE /api/agents/{id}`, `POST /api/agents/{id}/upgrade`,
   `POST /api/agent/deploy/ssh` + `GET /api/agent/deploy/{deploy_id}/status`,
@@ -35,13 +131,15 @@ All notable changes to Shapoclyack are documented in this file.
   `api/services/agent_deployer.py` pushes and installs the agent onto a Linux host over SSH
   from the Web UI (in-memory run registry, staged status, bounded history);
   `scripts/install-agent.sh` (Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine, Arch; native or
-  Docker) and `scripts/update-agent.sh` are the installer/self-updater it drives.
+  Docker) is the installer it drives, and `scripts/update-agent.sh` reinstalls the agent
+  package on a host from a bundle URL you supply.
   The UI adds a live fleet view, an agent details drawer and a deploy dialog with polled
-  deployment progress. Known limits, documented in
-  [docs/operations.md](docs/operations.md): the native installer expects the agent source to
-  be present (the `/api/agent/bundle.tar.gz` it tries to fetch is not served), `Upgrade` is a
-  marker on the agent record rather than a command to the host, and deployment runs are held
-  in the API process' memory.
+  deployment progress. **There is no agent self-update**: nothing polls the server for a new
+  version, `Upgrade` marks the agent record for operators rather than commanding the host,
+  and the API serves no agent bundle — so a native install takes `--bundle-url` or a
+  pre-staged package and fails loudly without one. Other known limits, documented in
+  [docs/operations.md](docs/operations.md): deployment runs are held in the API process'
+  memory, and SSH host keys are not verified.
 
 ### Changed
 
@@ -80,6 +178,13 @@ All notable changes to Shapoclyack are documented in this file.
   `411 Length Required`. Rejections increment the same submission-outcome counter as the route.
 
 ### Fixed
+
+- **Uncapped DNS-over-HTTPS read in the alert self-check** —
+  `scanner/pipeline/alerts.py::lookup_txt_records` read the resolver's answer with a
+  bare `response.read()` and used `urllib.request.urlopen`, which follows redirects
+  silently. It now goes through `safe_http` with a 64 KiB cap and zero redirects. One
+  DKIM self-check per run made that survivable; org profile M2 would have turned a DoH
+  client into a per-domain hot path, so the client is fixed rather than reused.
 
 - **CI:** the synthetic load-test composite action now receives the `github_token` secret
   ([#217](https://github.com/onixus/Shapoclyack/pull/217)).

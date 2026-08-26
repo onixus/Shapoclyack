@@ -169,6 +169,30 @@ Webhook payloads are signed by default with HMAC over `{timestamp}.{body}`. The 
 
 Webhook targets are checked for SSRF at configuration time and again before delivery. Loopback, link-local, private, metadata-style, and otherwise non-global destinations are rejected by default; redirects are not followed. `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` is an explicit deployment opt-in for trusted on-cluster receivers.
 
+## Outbound HTTP from the scanner
+
+Most scanner stages talk to a constant, source-literal host (RIPEstat, crt.sh,
+cloud provider endpoints) over `httpx` with default redirect handling. That is
+adequate precisely because the operator's input never chooses the destination.
+
+The org profile module breaks that assumption: the `ownership` stage learns its
+next hop from the IANA RDAP bootstrap file and from `rdap.org`'s 302 to the
+registry server, so a remote party names the address. Those requests go through
+`scanner/pipeline/safe_http.py`, which applies the same boundary the webhook
+dispatcher applies outbound: HTTPS only, no userinfo, rejection when *any*
+resolved A/AAAA is non-global or multicast, and a TCP connection opened to the
+already-validated IP literal while SNI and certificate verification use the DNS
+name. Without that pinning a target with TTL=0 can answer the validating
+`getaddrinfo` and the library's connect-time lookup differently. Bodies are read
+under a byte cap and a single wall-clock deadline covering the whole redirect
+chain, and each `Location` is re-validated by the same code as the first hop, so
+a redirect cannot downgrade to http or walk inward.
+
+None of this is configurable — there is no setting to disable verification or
+pinning. The module is a deliberate second implementation rather than an import
+of `api/services/integrations/delivery.py`: the scanner ships as its own
+container and does not depend on the API package.
+
 ## Storage boundaries
 
 PostgreSQL is the primary transactional store. ClickHouse is an analytical projection, not the source of truth for users, memberships, jobs, webhook state, or asset lifecycle. Run artifacts remain on filesystem/PVC storage so operators can inspect raw tool output and downloadable reports.

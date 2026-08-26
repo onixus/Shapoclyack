@@ -78,6 +78,39 @@ include new assets, open ports, CVEs, certificate-expiry findings, and manual
 decommissioning. Verify that both compared runs use equivalent scope and
 profiles before treating a count change as a security event.
 
+## Active checks and target authorization
+
+Every org-profile stage is passive except one. `org_profile.dns_hygiene.axfr_probe`
+attempts a **zone transfer (AXFR)** against each nameserver of each seed domain.
+That is a request the target's nameserver records as an attempted transfer, so
+it needs the same authorization as any other active test — the platform will not
+infer it from the fact that a scan was started.
+
+- **Default is off**, and the flag exists only in the scanner config file. It is
+  deliberately absent from the API config overrides (`EDITABLE_PATHS` in
+  `api/services/config_override.py`), because those overrides are
+  installation-wide rather than per-tenant and would enable AXFR for every
+  tenant's scans at once; and it is absent from the start-scan request, because
+  that would put the decision on the `operator` who launches a scan rather than
+  on whoever authorizes the target. Enabling it is a deployment change, made by
+  whoever can edit the scanner config and reviewed like one.
+- **Only this run's own seed domains** are probed. Attribution candidates from
+  the related-domains stage are never probed: a wrongly attributed domain would
+  mean an active request against a third party's infrastructure.
+- **A nameserver on a non-public address is refused**, not dialled. NS records
+  are written by the scanned party, so `ns1.target.example -> 10.0.0.5` would
+  turn the probe into a TCP/53 connection inside the agent's own network. The
+  refusal is logged as `refusing AXFR against <ns>` and recorded in the artifact
+  as `status: refused`.
+- **A successful transfer is never written down.** `dns_hygiene.json` records
+  only `status: open` and the number of records; the zone itself reaches neither
+  the artifact directory nor `scan.log`. If you need the zone contents, transfer
+  it yourself with `dig axfr` — the scanner will not keep a copy for you.
+
+Before switching `axfr_probe` on, confirm the engagement covers active testing
+of the domains in `org_profile.dns_hygiene.domains` (or of every base domain the
+run derives from its scope, when that list is empty).
+
 ## Alerts and exports
 
 Supported integrations include Slack/Telegram summary alerts, SMTP, DefectDojo,
@@ -235,13 +268,15 @@ systemd is present — installs and enables `shapoclyack-agent.service`
 systemd the agent is started with `nohup` and is **not** restarted on boot; on
 such a host, supervise it yourself.
 
-**The native path does not ship the agent source.** It installs runtime
-dependencies and then tries to fetch `{server}/api/agent/bundle.tar.gz`,
-which the API does not serve — the fetch is best-effort (`|| true`), so the
-installer reports success while `python -m agent.worker` has nothing to import
-unless the code is already on the host. Use `--docker` (or the Kubernetes
-snippet) for a host that has no checkout, and treat the native path as
-"configure and supervise an agent whose source you placed there".
+**The native path does not ship the agent source.** The API serves no agent
+bundle, so the package has to come from somewhere explicit: pass
+`--bundle-url <URL>` with a tarball containing the `agent` package, or stage
+that package in the install directory beforehand. With neither, the installer
+**fails** and says why — it will not leave systemd restarting a worker that
+cannot import its own module. Before starting the service it runs
+`import agent.worker` and checks the unit is still active three seconds after
+start, because `Type=simple` means "started" on its own proves nothing. Use
+`--docker` (or the Kubernetes snippet) for a host that has no checkout.
 
 **The provisioning key is on the command line.** During installation it is
 visible in the host's process list, and afterwards it lives in `agent.env`.
@@ -273,19 +308,21 @@ Operational limits worth knowing before relying on it:
 `upgrade_requested` on the agent record. That is a marker for the operator
 surface — no channel carries it to the host, and the agent does not act on it.
 The upgrade itself runs on the host. `scripts/update-agent.sh` is not installed
-by the installer — copy it to the target and run it as root:
+by the installer — copy it to the target and run it as root, telling it where
+the new package comes from:
 
 ```bash
-sudo bash update-agent.sh
+sudo bash update-agent.sh --bundle-url https://internal.example/shapoclyack-agent.tar.gz
 ```
 
 It reads `/etc/shapoclyack/agent.env`, refreshes the virtualenv's build tooling,
-tries the same non-existent `/api/agent/bundle.tar.gz`, and restarts
-`shapoclyack-agent.service` or the `shapoclyack-agent` container. In practice it
-is therefore a **restart**, not an upgrade. To actually move an agent to a new
-version today: pull the new image and re-run the installer with `--docker`
-(or roll the Kubernetes deployment); for a native install, update the source on
-the host and restart the unit.
+replaces the `agent` package from that tarball, verifies the result imports, and
+restarts `shapoclyack-agent.service` or the `shapoclyack-agent` container. With
+no `--bundle-url` it refuses to run unless you pass `--restart-only`, which
+refreshes dependencies and restarts **without** changing the agent package and
+reports exactly that. There is no self-update: nothing polls the server for a
+new version. For a Docker install, pull the new image and re-run the installer
+with `--docker` (or roll the Kubernetes deployment).
 
 **Removing an agent** from `/agents` (`DELETE /api/agents/{id}`) only forgets the
 registration. Stop `shapoclyack-agent.service` (or the container) on the host

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+#: One DNS label. Guards config values that are interpolated into a query name
+#: and handed to an external tool (currently mail_posture.dkim_selectors).
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9-]{1,63}$")
 
 
 class RuntimeConfig(BaseModel):
@@ -697,6 +702,126 @@ class TlsPostureConfig(BaseModel):
     )
 
 
+class OwnershipConfig(BaseModel):
+    """Domain ownership via RDAP (org_profile M1, EPIC #182). Opt-in.
+
+    One HTTPS GET per seed domain against the registry RDAP server named by the
+    IANA bootstrap file, plus ``rdap.org`` as fallback. Passive and keyless --
+    same risk class as ``discovery.asn``'s RIPEstat calls, and the same
+    fail-soft posture.
+
+    SAFETY: the next hop is chosen by a remote party (bootstrap entry, or a
+    302 from rdap.org), so requests go through ``scanner/pipeline/safe_http.py``
+    -- https only, address validated and pinned, redirects re-validated. None
+    of that is configurable; there is no switch here to turn off verification
+    or pinning.
+
+    ``max_domains`` caps how many domains the stage will query. The default
+    seed set is every base domain in scope, which on a large estate is
+    unbounded; past the cap the remaining domains are skipped and the run is
+    flagged ``truncated`` rather than quietly issuing thousands of registry
+    queries. ``deadline_seconds`` is the same cap in the time dimension.
+
+    PII: only org/registrar/abuse-email/dates/statuses/DNSSEC/NS are written;
+    the raw RDAP contact block never reaches disk, and ``ownership.json`` is a
+    restricted artifact (operator+) in the API.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    deadline_seconds: int = Field(default=300, ge=10, le=3_600)
+
+
+class DnsHygieneConfig(BaseModel):
+    """Zone hygiene for the org's own domains (org_profile M2, EPIC #182). Opt-in.
+
+    NS/SOA/CAA/DNSSEC/wildcard are ordinary DNS queries through dnsx -- the
+    same risk class as ``discovery.domain_monitor``.
+
+    ``axfr_probe`` is the one active check in the whole module and is off by
+    default: a zone transfer attempt is a request the target's nameserver logs
+    as such. It is deliberately reachable **only** from the config file. It is
+    not in ``EDITABLE_PATHS`` (``api/services/config_override.py``) because
+    those overrides are installation-wide rather than per-tenant, so a platform
+    admin would enable AXFR for every tenant's scans at once; and it is not a
+    field of ``StartScanRequest`` because that would move the decision onto the
+    ``operator`` who starts a scan rather than the party that authorizes the
+    target. Two further gates live in the stage: only this run's own seed
+    domains are probed, and every nameserver address must pass
+    ``safe_http.is_public_address``.
+
+    ``max_domains``/``deadline_seconds`` bound the stage the same way they
+    bound ``ownership``; past either the run is flagged ``truncated``.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    retries: int = Field(default=1, ge=0, le=5)
+    deadline_seconds: int = Field(default=300, ge=10, le=3_600)
+    # The only active check in org_profile. See the class docstring before
+    # moving this anywhere an API caller can reach.
+    axfr_probe: bool = False
+    axfr_timeout_seconds: int = Field(default=10, ge=1, le=60)
+
+
+class MailPostureConfig(BaseModel):
+    """Mail authentication posture (org_profile M2, EPIC #182). Opt-in.
+
+    MX/SPF/DMARC/DKIM/TLS-RPT are DNS-only. ``mta_sts_http`` adds the single
+    HTTP request in the module -- the MTA-STS policy document -- which goes
+    through ``scanner/pipeline/safe_http.py`` with zero redirects (RFC 8461
+    section 3.3) and a 64 KiB body cap, because ``mta-sts.<domain>`` is an A
+    record the scanned party controls.
+
+    ``dkim_selectors`` is capped at 20 entries and each one must be a DNS label
+    (``[a-z0-9-]{1,63}``): it is interpolated into ``{selector}._domainkey.
+    {domain}`` and passed to dnsx. The stage additionally enforces an absolute
+    ceiling of ``mail_posture.MAX_DKIM_QUERIES`` lookups regardless of how many
+    domains and selectors are configured.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    retries: int = Field(default=1, ge=0, le=5)
+    deadline_seconds: int = Field(default=300, ge=10, le=3_600)
+    dkim_selectors: list[str] = Field(
+        default_factory=lambda: ["default", "google", "selector1", "selector2", "k1", "mail"],
+        max_length=20,
+    )
+    mta_sts_http: bool = True
+    mta_sts_timeout_seconds: int = Field(default=10, ge=1, le=60)
+
+    @field_validator("dkim_selectors")
+    @classmethod
+    def validate_dkim_selectors(cls, selectors: list[str]) -> list[str]:
+        for selector in selectors:
+            if not _DNS_LABEL_RE.match(selector):
+                raise ValueError(
+                    f"mail_posture.dkim_selectors entry {selector!r} is not a DNS label "
+                    "([a-z0-9-], 1-63 characters)"
+                )
+        return selectors
+
+
+class OrgProfileConfig(BaseModel):
+    """Organization profile module (EPIC #182). M1 ships ``ownership``, M2 adds
+    ``dns_hygiene`` and ``mail_posture``; the remaining stages
+    (related_domains, controls, credential_leaks) attach here as they land."""
+
+    ownership: OwnershipConfig = Field(default_factory=OwnershipConfig)
+    dns_hygiene: DnsHygieneConfig = Field(default_factory=DnsHygieneConfig)
+    mail_posture: MailPostureConfig = Field(default_factory=MailPostureConfig)
+
+
 class SlackAlertConfig(BaseModel):
     enabled: bool = False
     # Prefer env OCTO_SLACK_WEBHOOK over committing secrets to YAML.
@@ -803,6 +928,7 @@ class AppConfig(BaseModel):
     screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
+    org_profile: OrgProfileConfig = Field(default_factory=OrgProfileConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
