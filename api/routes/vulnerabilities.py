@@ -84,10 +84,17 @@ def get_risk_history(
     until: datetime | None = Query(default=None, description="Filter snapshots recorded on or before this timestamp"),
     limit: int = Query(default=90, ge=1, le=500, description="Max snapshots to return"),
 ) -> list[dict[str, Any]]:
-    """Time-series risk posture snapshots for trend charts (#144, Track C)."""
+    """Time-series risk posture snapshots for trend charts (#144, Track C).
+
+    Always one tenant, unlike ``/summary``: a chart is a line, and merging two
+    tenants' snapshots into one chronological series draws the difference
+    between them as a change over time (#228). A platform admin picks the
+    tenant with the ``tenant_id`` query parameter every route already takes;
+    without one they get their own, which is what the console asks for.
+    """
     return risk_snapshots.list_snapshots(
         settings,
-        tenant_id=_scope(principal),
+        tenant_id=principal.tenant_id,
         since=since,
         until=until,
         limit=limit,
