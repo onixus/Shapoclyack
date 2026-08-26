@@ -155,6 +155,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **The Kubernetes data plane now requires credentials** ([#225](https://github.com/onixus/Shapoclyack/issues/225)) —
+  **breaking for existing installs; read
+  [docs/operations.md](docs/operations.md) § Data-plane credentials before
+  upgrading.** The control plane was authenticated and the three stateful
+  services behind it were not: ClickHouse ran the `default` user with an empty
+  password, `<networks>::/0</networks>` and `access_management=1`, and NATS had
+  neither `authorization` nor `accounts`. Any pod in the cluster could read
+  every tenant's raw scan results over 8123, create ClickHouse users, subscribe
+  to `ingest.results.*` across all tenants and publish forged `jobs.scan`.
+  Passwords now come from `shapoclyack-clickhouse` and `shapoclyack-nats`
+  (dev placeholders generated the same way Postgres' always were), ClickHouse
+  is reachable only from RFC1918 with `access_management=0`, and NATS
+  separates an `api` user from an `agent` user that may do nothing but pull
+  `jobs.scan`. Separate NATS *accounts* are not used: JetStream streams are not
+  shared across accounts without per-subject export/import, which would be a
+  code change.
+  `base/networkpolicy-datastores.yaml` adds default-deny ingress to Postgres,
+  ClickHouse and NATS, allowing only `component: api`. The recorded decision to
+  ship no **egress** policy stands unchanged — CNIs and egress topologies
+  differ per install; only ingress to the stateful services is revised, where
+  the client set is known exactly. Enforcement is a CNI behaviour and has not
+  been verified on a live cluster.
+  Images are pinned by `@sha256:` digest at `shapoclyack-0.42-0822` across all
+  nine manifests, replacing an overwritable tag that still read `0.41-0817`.
+
 - **Static UI fallback no longer serves files from outside the web root**
   ([GHSA-cpcx-h7mr-24pc](https://github.com/onixus/Shapoclyack/security/advisories/GHSA-cpcx-h7mr-24pc)) —
   `spa_fallback` in `api/app.py` built its candidate by joining the URL path
