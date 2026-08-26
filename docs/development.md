@@ -179,6 +179,70 @@ outcome where three guides confidently disagree with one another.
 
 The screenshot process is documented in [ui.md](ui.md).
 
+## Continuous integration
+
+CI runs on a **local Jenkins**, not on GitHub Actions — `.github/workflows/ci.yml`
+is kept as the reference the Jenkinsfile is ported from, and the stage list and
+thresholds are the same in both. The jobs build from the working copy on disk,
+so they do not depend on anything being pushed to GitHub.
+
+| Job | Builds | Notes |
+|-----|--------|-------|
+| `shapoclyack (branches)` | every branch, `main` included | Multibranch. Excludes `worktree-agent-*`. Answers `notifyCommit` and re-indexes every 5 minutes |
+| `shapoclyack` | — | **Paused.** Kept for the build 1–33 history; `main` moved to the multibranch job |
+| `shapoclyack-publish` | manual, parameterized | Pushes images to GHCR (`Jenkinsfile.publish`) |
+
+Every branch is built **before** the merge. Until 2026-08-26 only `main` was
+built, and the job had been left pointed at a feature branch, so a green run
+said nothing about `main` — [#248](https://github.com/onixus/Shapoclyack/pull/248).
+
+### What differs between a branch build and `main`
+
+The load test and the `nmap-legacy` image build run **only on `main`**. A branch
+build exists to catch a regression before the merge, not to re-measure load.
+The guard keys on `BRANCH_NAME`, which only a multibranch job sets, so a
+single-branch job would still run both.
+
+### Rules the Jenkinsfile has to keep
+
+**Docker resource names must be unique per job, not per build number.** Every
+multibranch job numbers from `#1`, so a name built from `BUILD_NUMBER` alone
+collides across branches. The visible half is a network name clash; the
+dangerous half is the image tag, where two builds overwrite each other's image
+and the verification stages then check whichever finished last — green, against
+the wrong artifact. `CI_SLUG` carries `JOB_NAME` too. `disableConcurrentBuilds()`
+does not help: it is per job.
+
+**`${IMAGE_TAG}` inside `sh '''…'''` is not interpolated by Groovy.** Single
+quotes leave it to the shell, which has no such variable, and the tag silently
+becomes empty. Either use `sh """…"""` or pass the value through `withEnv`.
+
+**Clones are shallow (`depth 1`).** Parallel matrix legs each check out their own
+workspace, and on this controller `JENKINS_HOME` is a macOS bind mount where a
+concurrent `index-pack` of the full history has failed with
+`inflate: data stream error` — with `git fsck` clean on the source repository.
+If a stage ever needs real history, give that stage its own checkout rather than
+deepening every clone.
+
+### Reading a run without the UI
+
+There is no API token on this controller. Read `JENKINS_HOME` directly:
+
+```bash
+J=~/jenkins_home/jobs/shapoclyack-branches/branches/main/builds
+sed 's/\x1b\[8m.*\x1b\[0m//g' "$J/<n>/log" | sed 's/\x1b\[[0-9;]*m//g'
+```
+
+The first stage **not** marked `skipped due to earlier failure(s)` is the one
+that failed. `skipped due to when conditional` is a different thing entirely —
+that stage was excluded on purpose.
+
+Force a poll without a commit:
+
+```bash
+curl -s --get --data-urlencode "url=$PWD" http://localhost:8081/git/notifyCommit
+```
+
 ## Pull request structure
 
 Keep changes reviewable:
