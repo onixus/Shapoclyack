@@ -155,6 +155,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Fail-closed startup covers the rest of the shipped secrets**
+  ([#224](https://github.com/onixus/Shapoclyack/issues/224)) — an install that
+  overrode `OCTO_JWT_SECRET` and stopped there started silently on the
+  Postgres, ClickHouse and NATS placeholder passwords from
+  `k8s/shapoclyack/base/kustomization.yaml`. All of them are checked by one
+  mechanism — the shipped literals are looked for inside `OCTO_POSTGRES_URL`,
+  `OCTO_CLICKHOUSE_URL` and `OCTO_NATS_URL` — so the next generated secret is
+  not another check to remember. `OCTO_AGENT_TOKEN` now has an end date:
+  **2027-03-01**. Until then a prod start warns and names the date; from that
+  date a prod start with it set is refused. One shared token authenticates
+  every agent as `tenant_id=default`, which for an MSSP install is the absence
+  of the isolation every other route enforces.
+
 - **The Kubernetes data plane now requires credentials** ([#225](https://github.com/onixus/Shapoclyack/issues/225)) —
   **breaking for existing installs; read
   [docs/operations.md](docs/operations.md) § Data-plane credentials before

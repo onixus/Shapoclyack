@@ -5,6 +5,7 @@ import logging
 import os
 import socket
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 
@@ -22,6 +23,29 @@ VALID_ENVS = (ENV_DEV, ENV_PROD)
 # here rather than being retyped in both places — a check comparing against a
 # stale copy of the literal would pass while the insecure default stayed live.
 DEFAULT_JWT_SECRET = "shapoclyack-dev-secret-change-me"
+
+# The other credentials k8s/shapoclyack/base/kustomization.yaml ships as
+# literals. They are placeholders exactly like the JWT secret above, but they
+# reach the process inside a connection URL rather than as a variable of their
+# own, so the check below looks for the literal *within* whichever URL carries
+# it. One list rather than a check per secret: #225 added ClickHouse and NATS to
+# a base that had only Postgres, and a per-secret check is a per-secret chance
+# to forget the next one.
+DEFAULT_DATA_PLANE_SECRETS: tuple[str, ...] = (
+    "shapoclyack-dev-postgres-change-me",
+    "shapoclyack-dev-clickhouse-change-me",
+    "shapoclyack-dev-nats-api-change-me",
+    "shapoclyack-dev-nats-agent-change-me",
+)
+
+# End of the legacy shared agent token (#224). One OCTO_AGENT_TOKEN maps every
+# agent holding it to tenant_id="default", so for an MSSP install the whole
+# fleet lands in one tenant and the isolation the rest of the product enforces
+# is not there. Until this date a prod start warns; from this date on it is a
+# refusal, because "we will remove it eventually" has been the state since
+# Phase 2 and a warning nobody reads is not a migration plan. The replacement
+# is per-tenant provisioning keys (POST /api/auth/agent/token).
+AGENT_TOKEN_SUNSET = date(2027, 3, 1)
 
 
 class InsecureConfigurationError(RuntimeError):
@@ -67,6 +91,16 @@ class Settings:
     config_path: Path = Path("scanner/config/default.yaml")
     web_dist: Path = Path("web/dist")
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
+    # The URL this installation is reached at, from the outside
+    # (OCTO_PUBLIC_BASE_URL). Everything that hands an operator or a target host
+    # a link back to the API — the install one-liner, the container and
+    # Kubernetes snippets, the OCTO_API_URL the SSH push writes into agent.env —
+    # is built from this. It used to be derived from the request's own Host
+    # header, which is client-controlled: whoever could reach the API decided
+    # which host the next agent would fetch its installer from and report to.
+    # Required under OCTO_ENV=prod; under dev the request URL is still used, so
+    # a laptop needs no extra variable.
+    public_base_url: str = ""
     # Strict-Transport-Security on every response (OCTO_HSTS_ENABLED). On in
     # prod, off in dev: the header pins a browser to HTTPS for a year, and a
     # developer who picks it up from http://localhost cannot clear it the way a
@@ -293,6 +327,32 @@ def _is_sqlite_url(url: str) -> bool:
     return url.strip().lower().startswith("sqlite")
 
 
+def _today() -> date:
+    """UTC date, indirected so the sunset check can be tested without freezing time."""
+    return datetime.now(UTC).date()
+
+
+def _shipped_data_plane_secrets(settings: Settings) -> list[str]:
+    """Variables whose URL still carries a credential published in this repository.
+
+    Returned sorted and de-duplicated: two NATS placeholders live in the same
+    URL, and naming ``OCTO_NATS_URL`` twice would read as two problems.
+    """
+    urls = {
+        "OCTO_POSTGRES_URL": settings.postgres_url,
+        "OCTO_CLICKHOUSE_URL": settings.clickhouse_url,
+        "OCTO_NATS_URL": settings.nats_url,
+    }
+    found = {
+        variable
+        for variable, url in urls.items()
+        if url
+        for literal in DEFAULT_DATA_PLANE_SECRETS
+        if literal in url
+    }
+    return sorted(found)
+
+
 def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     """Refuse to start when prod configuration is still the published default.
 
@@ -352,6 +412,50 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
             "    postgresql+psycopg://user:password@postgres:5432/shapoclyack"
         )
 
+    # The install snippets and the URL the SSH push writes into agent.env are
+    # built from this. Deriving it from the request's Host header let whoever
+    # reached the API choose where the next agent fetches its installer from
+    # and reports to, so there has to be one configured answer.
+    if not settings.public_base_url:
+        problems.append(
+            "OCTO_PUBLIC_BASE_URL is unset.\n"
+            "    The agent install snippets and the SSH push would otherwise take the\n"
+            "    server URL from the request's Host header, which the caller controls.\n"
+            "    Set it to the URL operators and agents reach this API at, e.g.\n"
+            "    https://shapoclyack.example.com"
+        )
+    elif not settings.public_base_url.lower().startswith(("http://", "https://")):
+        problems.append(
+            "OCTO_PUBLIC_BASE_URL is not an absolute http(s) URL.\n"
+            "    It is embedded verbatim in installer commands run on target hosts,\n"
+            "    so a bare hostname produces a command that cannot work.\n"
+            "    Include the scheme, e.g. https://shapoclyack.example.com"
+        )
+
+    # Each of these is a credential printed in k8s/shapoclyack/base — an install
+    # that overrode the JWT secret and stopped there used to start silently.
+    for variable in _shipped_data_plane_secrets(settings):
+        problems.append(
+            f"{variable} still carries the placeholder credential shipped in\n"
+            "    k8s/shapoclyack/base/kustomization.yaml.\n"
+            "    Anyone with the repository can read the data plane it protects.\n"
+            "    Generate one with: openssl rand -hex 32, put it in the matching\n"
+            "    Secret, and see docs/operations.md § Data-plane credentials."
+        )
+
+    # A warning until the sunset date, a refusal after it — see AGENT_TOKEN_SUNSET.
+    if settings.agent_token and _today() >= AGENT_TOKEN_SUNSET:
+        problems.append(
+            f"OCTO_AGENT_TOKEN is set and the legacy shared agent token was retired on "
+            f"{AGENT_TOKEN_SUNSET.isoformat()}.\n"
+            "    Every agent holding it authenticates as tenant_id=default, so one\n"
+            "    token leak covers the whole fleet and no tenant is isolated from\n"
+            "    another's agents.\n"
+            "    Issue a per-tenant provisioning key instead\n"
+            "    (POST /api/tenants/{tenant_id}/provisioning-keys), re-install the\n"
+            "    agents with it, then unset this variable."
+        )
+
     if not problems:
         return
 
@@ -400,6 +504,7 @@ def load_settings() -> Settings:
         config_path=Path(os.environ.get("OCTO_CONFIG", "scanner/config/default.yaml")),
         web_dist=Path(os.environ.get("OCTO_WEB_DIST", "web/dist")),
         cors_origins=cors,
+        public_base_url=os.environ.get("OCTO_PUBLIC_BASE_URL", "").strip().rstrip("/"),
         hsts_enabled=os.environ.get("OCTO_HSTS_ENABLED", "true" if env == ENV_PROD else "false").lower()
         in {"1", "true", "yes"},
         users=users,
@@ -565,14 +670,15 @@ def load_settings() -> Settings:
     if settings.env == ENV_PROD:
         _validate_production(settings, postgres_url_env=postgres_url_env)
         if settings.agent_token:
-            # A warning, not a refusal: the legacy shared token still works and
-            # maps to tenant_id=default (Phase 2), so refusing would break a
-            # working install over a design preference rather than a published
-            # credential. The provisioning-key exchange is the replacement.
+            # Still only a warning *before* the sunset date — after it,
+            # _validate_production above has already refused the start. Breaking
+            # a working install needs notice, which is what the date is for.
             logger.warning(
                 "OCTO_AGENT_TOKEN is set: every agent holding it authenticates as "
-                "tenant_id=default and one leak covers the whole fleet. Prefer "
-                "per-tenant provisioning keys (POST /api/auth/agent/token)."
+                "tenant_id=default and one leak covers the whole fleet. It stops "
+                "being accepted in prod on %s — migrate to per-tenant provisioning "
+                "keys (POST /api/auth/agent/token).",
+                AGENT_TOKEN_SUNSET.isoformat(),
             )
 
     return settings

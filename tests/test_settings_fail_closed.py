@@ -9,10 +9,12 @@ point is what the process does with what the deployment actually hands it.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import pytest
 
 from api.settings import (
+    AGENT_TOKEN_SUNSET,
     DEFAULT_JWT_SECRET,
     ENV_DEV,
     ENV_PROD,
@@ -36,6 +38,10 @@ _DECIDING_VARS = (
     "OCTO_API_CORS",
     "OCTO_POSTGRES_URL",
     "OCTO_HSTS_ENABLED",
+    "OCTO_PUBLIC_BASE_URL",
+    "OCTO_CLICKHOUSE_URL",
+    "OCTO_NATS_URL",
+    "OCTO_AGENT_TOKEN",
 )
 
 
@@ -53,6 +59,7 @@ def _configure_prod(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OCTO_API_USERS", CONFIGURED_USERS)
     monkeypatch.setenv("OCTO_API_CORS", "https://console.example.com")
     monkeypatch.setenv("OCTO_POSTGRES_URL", CONFIGURED_POSTGRES)
+    monkeypatch.setenv("OCTO_PUBLIC_BASE_URL", "https://shapoclyack.example.com")
 
 
 def test_prod_is_the_default_environment(clean_env: pytest.MonkeyPatch) -> None:
@@ -73,6 +80,7 @@ def test_prod_refuses_every_default_and_names_them_all(clean_env: pytest.MonkeyP
     assert "OCTO_JWT_SECRET" in message
     assert "OCTO_API_CORS" in message
     assert "OCTO_POSTGRES_URL" in message
+    assert "OCTO_PUBLIC_BASE_URL" in message
 
 
 def test_console_accounts_are_not_checked_here(clean_env: pytest.MonkeyPatch) -> None:
@@ -245,16 +253,141 @@ def test_env_value_is_case_insensitive(clean_env: pytest.MonkeyPatch) -> None:
 def test_legacy_agent_token_warns_but_starts(
     clean_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A working install must not be broken over a design preference."""
+    """A working install must not be broken over a design preference — yet.
+
+    Before the sunset date this is still a warning, and the warning names the
+    date so "eventually" is not what an operator is left with (#224).
+    """
     _configure_prod(clean_env)
     clean_env.setenv("OCTO_AGENT_TOKEN", "legacy-shared-token")
+    clean_env.setattr("api.settings._today", lambda: AGENT_TOKEN_SUNSET - timedelta(days=1))
 
     with caplog.at_level("WARNING", logger="api.settings"):
         settings = load_settings()
 
     assert settings.agent_token == "legacy-shared-token"
     assert "OCTO_AGENT_TOKEN" in caplog.text
+    assert AGENT_TOKEN_SUNSET.isoformat() in caplog.text
     assert "legacy-shared-token" not in caplog.text
+
+
+def test_legacy_agent_token_is_refused_from_its_sunset_date(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """#224 — one shared token maps the whole fleet to tenant_id=default.
+
+    For an MSSP that is the absence of the isolation every other route
+    enforces, so the deprecation has an end and the end is a refusal.
+    """
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_AGENT_TOKEN", "legacy-shared-token")
+    clean_env.setattr("api.settings._today", lambda: AGENT_TOKEN_SUNSET)
+
+    with pytest.raises(InsecureConfigurationError) as excinfo:
+        load_settings()
+
+    message = str(excinfo.value)
+    assert "OCTO_AGENT_TOKEN" in message
+    assert AGENT_TOKEN_SUNSET.isoformat() in message
+    assert "legacy-shared-token" not in message
+
+
+def test_no_agent_token_still_starts_after_the_sunset(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """The date retires the variable, not the installation."""
+    _configure_prod(clean_env)
+    clean_env.setattr("api.settings._today", lambda: AGENT_TOKEN_SUNSET)
+
+    assert load_settings().agent_token == ""
+
+
+def test_prod_refuses_an_unset_public_base_url(clean_env: pytest.MonkeyPatch) -> None:
+    """The install snippets would otherwise be built from the request's Host header.
+
+    That header is written by whoever calls the API, and the value ends up in a
+    command run as root on a target host and in the agent's permanent
+    OCTO_API_URL.
+    """
+    _configure_prod(clean_env)
+    clean_env.delenv("OCTO_PUBLIC_BASE_URL", raising=False)
+
+    with pytest.raises(InsecureConfigurationError, match="OCTO_PUBLIC_BASE_URL"):
+        load_settings()
+
+
+def test_prod_refuses_a_public_base_url_without_a_scheme(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """It is pasted verbatim into `curl … | bash`, so a bare host cannot work."""
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_PUBLIC_BASE_URL", "shapoclyack.example.com")
+
+    with pytest.raises(InsecureConfigurationError, match="OCTO_PUBLIC_BASE_URL"):
+        load_settings()
+
+
+def test_public_base_url_loses_its_trailing_slash(clean_env: pytest.MonkeyPatch) -> None:
+    """Every use appends a path, and "//api/agent/install.sh" is a 404."""
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_PUBLIC_BASE_URL", "https://shapoclyack.example.com/")
+
+    assert load_settings().public_base_url == "https://shapoclyack.example.com"
+
+
+def test_prod_refuses_the_shipped_postgres_password(clean_env: pytest.MonkeyPatch) -> None:
+    """#224 — an install that overrode the JWT secret and stopped there.
+
+    The literal is in k8s/shapoclyack/base/kustomization.yaml, so it is as
+    published as the JWT secret; it just arrives inside a URL rather than as a
+    variable of its own, which is why it went unchecked.
+    """
+    _configure_prod(clean_env)
+    clean_env.setenv(
+        "OCTO_POSTGRES_URL",
+        "postgresql+psycopg://octo:shapoclyack-dev-postgres-change-me@postgres:5432/shapoclyack",
+    )
+
+    with pytest.raises(InsecureConfigurationError, match="OCTO_POSTGRES_URL"):
+        load_settings()
+
+
+def test_prod_refuses_the_shipped_clickhouse_and_nats_passwords(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """#225 added two more generated secrets with the same kind of placeholder.
+
+    One mechanism covers all of them, so the next secret added to base is not
+    another thing to remember to check — and all of them are reported at once.
+    """
+    _configure_prod(clean_env)
+    clean_env.setenv(
+        "OCTO_CLICKHOUSE_URL",
+        "http://default:shapoclyack-dev-clickhouse-change-me@clickhouse:8123",
+    )
+    clean_env.setenv(
+        "OCTO_NATS_URL",
+        "nats://api:shapoclyack-dev-nats-api-change-me@nats:4222",
+    )
+
+    with pytest.raises(InsecureConfigurationError) as excinfo:
+        load_settings()
+
+    message = str(excinfo.value)
+    assert "OCTO_CLICKHOUSE_URL" in message
+    assert "OCTO_NATS_URL" in message
+    # Named once, not once per literal that happens to live in the same URL.
+    assert message.count("OCTO_NATS_URL still carries") == 1
+    # And the credential itself is never echoed back into logs.
+    assert "shapoclyack-dev-clickhouse-change-me" not in message
+
+
+def test_configured_data_plane_urls_start(clean_env: pytest.MonkeyPatch) -> None:
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_CLICKHOUSE_URL", "http://default:a-real-password@clickhouse:8123")
+    clean_env.setenv("OCTO_NATS_URL", "nats://api:another-real-password@nats:4222")
+
+    assert load_settings().env == ENV_PROD
 
 
 def test_hsts_defaults_to_the_environment(clean_env: pytest.MonkeyPatch) -> None:
