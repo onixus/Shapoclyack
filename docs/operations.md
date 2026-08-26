@@ -268,13 +268,15 @@ systemd is present — installs and enables `shapoclyack-agent.service`
 systemd the agent is started with `nohup` and is **not** restarted on boot; on
 such a host, supervise it yourself.
 
-**The native path does not ship the agent source.** It installs runtime
-dependencies and then tries to fetch `{server}/api/agent/bundle.tar.gz`,
-which the API does not serve — the fetch is best-effort (`|| true`), so the
-installer reports success while `python -m agent.worker` has nothing to import
-unless the code is already on the host. Use `--docker` (or the Kubernetes
-snippet) for a host that has no checkout, and treat the native path as
-"configure and supervise an agent whose source you placed there".
+**The native path does not ship the agent source.** The API serves no agent
+bundle, so the package has to come from somewhere explicit: pass
+`--bundle-url <URL>` with a tarball containing the `agent` package, or stage
+that package in the install directory beforehand. With neither, the installer
+**fails** and says why — it will not leave systemd restarting a worker that
+cannot import its own module. Before starting the service it runs
+`import agent.worker` and checks the unit is still active three seconds after
+start, because `Type=simple` means "started" on its own proves nothing. Use
+`--docker` (or the Kubernetes snippet) for a host that has no checkout.
 
 **The provisioning key is on the command line.** During installation it is
 visible in the host's process list, and afterwards it lives in `agent.env`.
@@ -306,19 +308,21 @@ Operational limits worth knowing before relying on it:
 `upgrade_requested` on the agent record. That is a marker for the operator
 surface — no channel carries it to the host, and the agent does not act on it.
 The upgrade itself runs on the host. `scripts/update-agent.sh` is not installed
-by the installer — copy it to the target and run it as root:
+by the installer — copy it to the target and run it as root, telling it where
+the new package comes from:
 
 ```bash
-sudo bash update-agent.sh
+sudo bash update-agent.sh --bundle-url https://internal.example/shapoclyack-agent.tar.gz
 ```
 
 It reads `/etc/shapoclyack/agent.env`, refreshes the virtualenv's build tooling,
-tries the same non-existent `/api/agent/bundle.tar.gz`, and restarts
-`shapoclyack-agent.service` or the `shapoclyack-agent` container. In practice it
-is therefore a **restart**, not an upgrade. To actually move an agent to a new
-version today: pull the new image and re-run the installer with `--docker`
-(or roll the Kubernetes deployment); for a native install, update the source on
-the host and restart the unit.
+replaces the `agent` package from that tarball, verifies the result imports, and
+restarts `shapoclyack-agent.service` or the `shapoclyack-agent` container. With
+no `--bundle-url` it refuses to run unless you pass `--restart-only`, which
+refreshes dependencies and restarts **without** changing the agent package and
+reports exactly that. There is no self-update: nothing polls the server for a
+new version. For a Docker install, pull the new image and re-run the installer
+with `--docker` (or roll the Kubernetes deployment).
 
 **Removing an agent** from `/agents` (`DELETE /api/agents/{id}`) only forgets the
 registration. Stop `shapoclyack-agent.service` (or the container) on the host

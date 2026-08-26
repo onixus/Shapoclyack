@@ -123,7 +123,7 @@ All notable changes to Shapoclyack are documented in this file.
   with no `OCTO_NATS_URL` it is a no-op. With the S10 end-to-end lifecycle suite
   (`tests/test_endpoint_inventory_lifecycle.py`), **Track D is complete**.
 
-- **Agent fleet monitoring, UI-driven SSH deployment and auto-update** —
+- **Agent fleet monitoring and UI-driven SSH deployment** —
   `GET /api/agents/summary` (fleet health rollup), `GET /api/agents/{id}`,
   `DELETE /api/agents/{id}`, `POST /api/agents/{id}/upgrade`,
   `POST /api/agent/deploy/ssh` + `GET /api/agent/deploy/{deploy_id}/status`,
@@ -131,13 +131,15 @@ All notable changes to Shapoclyack are documented in this file.
   `api/services/agent_deployer.py` pushes and installs the agent onto a Linux host over SSH
   from the Web UI (in-memory run registry, staged status, bounded history);
   `scripts/install-agent.sh` (Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine, Arch; native or
-  Docker) and `scripts/update-agent.sh` are the installer/self-updater it drives.
+  Docker) is the installer it drives, and `scripts/update-agent.sh` reinstalls the agent
+  package on a host from a bundle URL you supply.
   The UI adds a live fleet view, an agent details drawer and a deploy dialog with polled
-  deployment progress. Known limits, documented in
-  [docs/operations.md](docs/operations.md): the native installer expects the agent source to
-  be present (the `/api/agent/bundle.tar.gz` it tries to fetch is not served), `Upgrade` is a
-  marker on the agent record rather than a command to the host, and deployment runs are held
-  in the API process' memory.
+  deployment progress. **There is no agent self-update**: nothing polls the server for a new
+  version, `Upgrade` marks the agent record for operators rather than commanding the host,
+  and the API serves no agent bundle — so a native install takes `--bundle-url` or a
+  pre-staged package and fails loudly without one. Other known limits, documented in
+  [docs/operations.md](docs/operations.md): deployment runs are held in the API process'
+  memory, and SSH host keys are not verified.
 
 ### Changed
 

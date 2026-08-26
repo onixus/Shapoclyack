@@ -231,20 +231,30 @@ def register_agent(
 ) -> AgentInfo:
     settings = _require_settings()
     now = _now()
-    packed_detail = _pack_detail(metrics=metrics, capabilities=capabilities)
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id) if agent_id else None
         if row is not None:
             if row.tenant_id and row.tenant_id != tenant_id:
                 raise PermissionError("agent_id belongs to a different tenant")
+            previous_version = row.version or ""
             row.hostname = hostname or row.hostname or ""
             row.version = version or row.version or ""
             row.tenant_id = tenant_id
             if labels is not None:
                 row.labels = dict(labels)
             row.last_seen_at = now
-            if packed_detail:
-                row.detail = packed_detail
+            # ``upgrade_requested`` is an operator marker, so re-registration must
+            # neither drop it (a plain restart is not an upgrade) nor keep it
+            # forever. A changed reported version is the only evidence the host
+            # acted on it, so that is what clears it.
+            _, prev_metrics, prev_caps, prev_upgrade = _extract_detail(row.detail)
+            if prev_upgrade and row.version != previous_version:
+                prev_upgrade = False
+            row.detail = _pack_detail(
+                metrics=metrics if metrics is not None else prev_metrics,
+                capabilities=capabilities if capabilities is not None else prev_caps,
+                upgrade_requested=prev_upgrade or None,
+            )
             if row.status == "stale":
                 row.status = "idle"
             session.flush()
@@ -258,7 +268,7 @@ def register_agent(
             labels=dict(labels or {}),
             status="idle",
             current_job_id=None,
-            detail=packed_detail,
+            detail=_pack_detail(metrics=metrics, capabilities=capabilities),
             registered_at=now,
             last_seen_at=now,
         )
