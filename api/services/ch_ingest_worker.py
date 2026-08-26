@@ -1,8 +1,17 @@
 """NATS → ClickHouse ingest consumer (Phase 3.2).
 
-Pulls from JetStream stream ``INGEST`` (subjects ``ingest.>``), transforms
-archives, bulk-inserts into ClickHouse. Runs in a background thread when
+Pulls scan results from JetStream stream ``INGEST``, transforms archives,
+bulk-inserts into ClickHouse. Runs in a background thread when
 ``OCTO_CLICKHOUSE_URL`` and ``OCTO_NATS_URL`` are both set.
+
+The consumer filters on ``ingest.results.>`` rather than on the stream's whole
+``ingest.>`` tree. Phase S8 put endpoint inventory on
+``ingest.endpoint_inventory.{tenant}``, which the wide filter also delivered
+here: every inventory event was fetched one at a time by the single-threaded
+pull loop, transformed into nothing, acked, and counted as a successful
+ClickHouse ingest — inflating the SLO 6 denominator with empties (#230). The
+legacy ``ingest.raw_results`` copy of every result drops out with it, so a
+result is no longer transformed and inserted twice.
 """
 
 from __future__ import annotations
@@ -22,8 +31,18 @@ from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.ch-ingest")
 
-CONSUMER_CH_INGEST = "octo-ch-ingest"
-SUBJECT_FILTER = "ingest.>"
+# Renamed together with the narrowed filter: JetStream will not change the
+# filter subject of an existing durable, so a deployment upgrading in place
+# would keep consuming ``ingest.>`` under the old name. See docs/operations.md
+# for removing the retired ``octo-ch-ingest`` consumer.
+CONSUMER_CH_INGEST = "octo-ch-ingest-results"
+SUBJECT_FILTER = "ingest.results.>"
+SUBJECT_PREFIX = "ingest.results."
+
+
+def is_ingest_results_subject(subject: str) -> bool:
+    """True for the scan-result subjects this worker exists to consume."""
+    return (subject or "").startswith(SUBJECT_PREFIX)
 
 
 class ClickHouseIngestWorker:
@@ -150,11 +169,18 @@ class ClickHouseIngestWorker:
     async def _handle_msg(self, client: Any, msg: Any) -> None:
         start = time.perf_counter()
         try:
+            # Second line of defence behind the consumer filter: a durable left
+            # over from before #230 still delivers ingest.endpoint_inventory.*
+            # here, and those must not be counted as ingested results.
+            subject = getattr(msg, "subject", "") or ""
+            if not is_ingest_results_subject(subject):
+                LOG.debug("CH ingest skipping foreign subject %s", subject)
+                await msg.ack()
+                return
             payload = json.loads(msg.data.decode("utf-8"))
             if not isinstance(payload, dict):
                 await msg.term()
                 return
-            # Prefer tenant subject messages; still accept legacy ingest.raw_results.
             vuln_rows, port_rows = await asyncio.to_thread(
                 ch_transform.transform_ingest_payload,
                 payload,
