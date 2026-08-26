@@ -13,6 +13,7 @@ from api.settings import Settings
 from tests.conftest import (
     auth_headers,
     configured_client,
+    make_settings,
     requires_postgres,
 )
 
@@ -251,3 +252,28 @@ def test_retention_sweep_prunes_every_tenant(tmp_path: Path):
     )
     assert risk_snapshots.sweep(settings, now=now) == {"deleted": 0}
     assert len(risk_snapshots.list_snapshots(settings, tenant_id="tenant-a")) == 2
+
+
+def test_app_lifespan_starts_the_retention_worker(tmp_path: Path, monkeypatch):
+    """The sweep has to be wired, not merely written.
+
+    ``prune_snapshots`` existed from the start and was called by nothing but its
+    own test, which is how `risk_score_snapshots` grew unbounded while #187 was
+    marked done (#229). A worker no lifespan starts is the same defect one layer
+    up, so this asserts the wiring rather than the sweep.
+    """
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+    from api.services import risk_snapshots
+
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr("api.auth.load_settings", lambda: settings)
+    monkeypatch.setattr("api.app.get_settings", lambda: settings)
+
+    assert settings.risk_snapshot_retention_enabled is True
+    risk_snapshots.stop_worker()
+    with TestClient(create_app()):
+        assert risk_snapshots.worker_stats() is not None
+    # ...and released on shutdown, so a second app does not inherit a thread.
+    assert risk_snapshots.worker_stats() is None
