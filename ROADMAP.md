@@ -415,7 +415,9 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 
 Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 is done:
 ~~#152~~ → ~~#185/#186~~ → ~~#187~~ → ~~#188~~. **Wave 2** ([below](#wave-2--what-was-never-filed))
-is now the GA gate, and the next tag waits for it.
+is the GA gate and is nearly closed — [#226](https://github.com/onixus/Shapoclyack/issues/226)
+is the only item left. The next tag waits for it, and cutting it is what lets the three
+security advisories be published.
 
 **Wave 1** is now filed rather than described here:
 ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
@@ -449,7 +451,8 @@ release carrying an unauthenticated bypass of the whole access model is worse th
 **The three P0 items are filed as private GitHub Security Advisories, not as issues.** The
 repository is public and `shapoclyack-0.42-0822` images are published to GHCR; describing them
 in the open tracker would disclose a 0-day to everyone already running the product. They are
-published once the fix ships. Without exploitation detail:
+published once the fix ships — **all three are now fixed on `main` and none has shipped in a
+tag**, so the advisories stay drafts until the next release. Without exploitation detail:
 
 1. **Unvalidated path in the SPA fallback** (`api/app.py`), unauthenticated. It reaches the
    process environment, and from there the JWT secret — which makes RBAC, tenant isolation,
@@ -462,12 +465,33 @@ published once the fix ships. Without exploitation detail:
 
 | Issue | Theme | Note |
 |-------|-------|------|
-| [#222](https://github.com/onixus/Shapoclyack/issues/222) | Agent result upload has no body cap and no decompression cap | `_safe_members` checks paths, not size |
-| [#223](https://github.com/onixus/Shapoclyack/issues/223) | Deployment status is not tenant-scoped, and its journal is process-local | Also simply broken at `replicas >= 2` |
-| [#224](https://github.com/onixus/Shapoclyack/issues/224) | Fail-closed startup misses the Postgres password, `OCTO_AGENT_TOKEN` and HSTS | HSTS has no env var at all — the header can never be sent |
-| [#225](https://github.com/onixus/Shapoclyack/issues/225) | ClickHouse and NATS unauthenticated; no NetworkPolicy to stateful services | Revisits the recorded NetworkPolicy decision for ingress only; egress reasoning stands |
-| [#226](https://github.com/onixus/Shapoclyack/issues/226) | No scan-scope authorization — a tenant may scan any network | "Was this tenant allowed to scan that?" is a question MSSP lawyers ask |
-| [#231](https://github.com/onixus/Shapoclyack/issues/231) | Role for minting provisioning keys and SSH deployment | Proposes revisiting what `docs/api-and-rbac.md` records |
+| ~~[#222](https://github.com/onixus/Shapoclyack/issues/222)~~ | Agent result upload has no body cap and no decompression cap | **Done** ([#234](https://github.com/onixus/Shapoclyack/pull/234)) — a 128 MiB transport cap plus a 512 MiB expansion ceiling read from the tar headers, so an over-budget archive is refused before the first write |
+| ~~[#223](https://github.com/onixus/Shapoclyack/issues/223)~~ | Deployment status is not tenant-scoped, and its journal is process-local | **Done** ([#239](https://github.com/onixus/Shapoclyack/pull/239)) — journal moved to Postgres (migration `0024`) with a `tenant_id`; the 403/404 existence oracle in `agents.py` closed with it |
+| ~~[#224](https://github.com/onixus/Shapoclyack/issues/224)~~ | Fail-closed startup misses the Postgres password, `OCTO_AGENT_TOKEN` and HSTS | **Done** — HSTS in [#234](https://github.com/onixus/Shapoclyack/pull/234), default secrets and `OCTO_AGENT_TOKEN` in [#239](https://github.com/onixus/Shapoclyack/pull/239). The secret check also covers the ClickHouse and NATS placeholders #225 introduced, and every problem lands in one list so a misconfigured install is fixed in one restart |
+| ~~[#225](https://github.com/onixus/Shapoclyack/issues/225)~~ | ClickHouse and NATS unauthenticated; no NetworkPolicy to stateful services | **Done** ([#236](https://github.com/onixus/Shapoclyack/pull/236)) — verified against live ClickHouse and NATS containers; images pinned by digest. Revises the recorded NetworkPolicy decision for ingress only, egress reasoning stands. NetworkPolicy **enforcement is a CNI behaviour and is not verified on a live cluster** |
+| [#226](https://github.com/onixus/Shapoclyack/issues/226) | No scan-scope authorization — a tenant may scan any network | **The one item still open.** "Was this tenant allowed to scan that?" is a question MSSP lawyers ask, and it is asked after the fact |
+| ~~[#231](https://github.com/onixus/Shapoclyack/issues/231)~~ | Role for minting provisioning keys and SSH deployment | **Done** ([#239](https://github.com/onixus/Shapoclyack/pull/239)) — raised to `admin` rather than adding an `agent_provisioner` capability: a second authorization model for one pair of endpoints costs more than it returns. `docs/api-and-rbac.md` records the new reasoning |
+
+**Where Wave 2 stands (2026-08-26).** All three P0 items and five of the six P1 items are
+merged to `main`; [#226](https://github.com/onixus/Shapoclyack/issues/226) (scan-scope
+authorization) is the last one open. Nothing here has shipped in a tag, so the advisories stay
+drafts and the GA gate stays closed until the cut.
+
+Three issues were opened *because of* this work rather than found by the original review, and
+they are the honest residue of it:
+[#238](https://github.com/onixus/Shapoclyack/issues/238) — a webhook concurrency test that fails
+roughly every other full run and passes in isolation; it is the test that is supposed to prove
+[#152](https://github.com/onixus/Shapoclyack/issues/152), and a flaky proof is not one;
+[#240](https://github.com/onixus/Shapoclyack/issues/240) — the SSH host-key probe added by
+[#239](https://github.com/onixus/Shapoclyack/pull/239) is a new outbound-connection primitive
+with no SSRF guard, admin-only and tenant-scoped but unreviewed against the hardened path used
+for webhooks; and [#241](https://github.com/onixus/Shapoclyack/issues/241) — a pinned host key
+can only be removed with SQL, and a legitimate operation that has to bypass the product is one
+people will route around instead.
+
+Two limits of what was verified, stated rather than implied: NetworkPolicy **enforcement** was
+never exercised on a live cluster, and the SSH path was never run end to end against a real
+sshd. Both are noted where they apply.
 
 ### Claimed Done, broken in code
 
@@ -477,9 +501,9 @@ Not GA blockers, but they are the reason Wave 2 exists: the status columns in th
 | Issue | Theme |
 |-------|-------|
 | ~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~ | Agent auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches. **Fixed** in [#233](https://github.com/onixus/Shapoclyack/pull/233): the promise is removed rather than implemented, because a bundle route without a signed payload is unsigned code delivery to root shells. The installers now take an explicit `--bundle-url` and fail loudly without one |
-| [#228](https://github.com/onixus/Shapoclyack/issues/228) | `risk-history` returns the *oldest* snapshots — the Risk Overview trend freezes on the system's first week |
-| [#229](https://github.com/onixus/Shapoclyack/issues/229) | `risk_score_snapshots` grows unbounded — migration `0023` landed after [#187](https://github.com/onixus/Shapoclyack/issues/187) and was never covered by it |
-| [#230](https://github.com/onixus/Shapoclyack/issues/230) | `ch_ingest_worker` consumes S8 endpoint-inventory events and inflates the SLO 6 denominator |
+| ~~[#228](https://github.com/onixus/Shapoclyack/issues/228)~~ | `risk-history` returns the *oldest* snapshots — the Risk Overview trend freezes on the system's first week. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235): `DESC` with the limit, reversed for the chart. The cross-tenant series is gone too — `risk-history` is one tenant now, because snapshots are written per finished run rather than on a shared clock, so any bucketing would invent the time axis |
+| ~~[#229](https://github.com/onixus/Shapoclyack/issues/229)~~ | `risk_score_snapshots` grows unbounded — migration `0023` landed after [#187](https://github.com/onixus/Shapoclyack/issues/187) and was never covered by it. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235) and [#237](https://github.com/onixus/Shapoclyack/pull/237). The sweep is one half and the lifespan wiring is the other: an unwired worker is the same defect one layer up |
+| ~~[#230](https://github.com/onixus/Shapoclyack/issues/230)~~ | `ch_ingest_worker` consumes S8 endpoint-inventory events and inflates the SLO 6 denominator. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235): the consumer filters `ingest.results.>` under a new durable name, since JetStream will not narrow an existing one |
 
 **Verified and not faulted**, so it is not re-litigated: the webhook SSRF containment
 (`api/services/integrations/delivery.py`), the NIST matrix (`api/services/nist_risk.py` matches
