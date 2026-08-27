@@ -370,6 +370,22 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Concurrent webhook dispatchers starved each other instead of dividing the
+  queue** ([#238](https://github.com/onixus/Shapoclyack/issues/238)) — the
+  kill-switch claim added in #151 joins `webhook_subscriptions` so a disabled
+  subscription cannot be sent from the backlog, but its `FOR UPDATE SKIP
+  LOCKED` locked the joined *subscription* row as well, and every delivery of
+  one subscription shares that row. While one replica held it, a peer's scan
+  locked each delivery tuple, then hit the locked subscription tuple and had
+  the joined row skipped — leaving those deliveries locked by a transaction
+  that claimed none of them and invisible to every replica until it ended. The
+  batch was neither sent nor marked, nothing raised, and the tick simply
+  reported fewer deliveries than were due: the reverse of the "replicas divide
+  the queue" guarantee of #152, and the cause of
+  `test_concurrent_dispatchers_do_not_double_post` failing in roughly half of
+  the full runs. The claim now locks `webhook_deliveries` only (`FOR UPDATE OF
+  … SKIP LOCKED`); the enabled-at-claim-time filter is unchanged.
+
 - **Enrichment data failed to download during image builds, and the build said
   so only in passing** ([#246](https://github.com/onixus/Shapoclyack/issues/246)) —
   all eight vulscan CVE databases had been answering `403` since

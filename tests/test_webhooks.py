@@ -381,6 +381,54 @@ def test_concurrent_dispatchers_do_not_double_post(settings):
     assert len(seen) == len(set(seen))
 
 
+def test_an_open_claim_does_not_hide_the_rest_of_the_queue(settings):
+    """A peer's in-flight claim must cost the others one row, not the queue (#238).
+
+    The kill-switch claim joins ``webhook_subscriptions``, and every delivery of
+    one subscription joins the same row. Locked ``FOR UPDATE``, that row made
+    the whole backlog invisible to the other replicas — the non-deterministic
+    half of ``test_concurrent_dispatchers_do_not_double_post``, where a tick
+    POSTed four of ten and the rest went nowhere without anything raising.
+    Holding one claim open here is that race made deterministic.
+    """
+    _subscribe(settings)
+    ids = [webhooks.enqueue_event(_event(event_id=f"ev-{i}"))[0] for i in range(5)]
+    seen: list[str] = []
+
+    def _post(url, body, headers, **kwargs):
+        seen.append(headers[delivery_transport.DELIVERY_HEADER])
+        return _ok()
+
+    with get_session(settings.postgres_url) as peer:
+        held = webhooks._claim_due(peer, now=datetime.now(UTC), limit=1)
+        assert len(held) == 1
+        held_id = held[0].delivery_id
+        webhooks.dispatch_once(post=_post, limit=10)
+
+    assert sorted(seen) == sorted(set(ids) - {held_id})
+
+
+def test_disabling_a_subscription_holds_its_queued_backlog(settings):
+    """The #151 kill switch covers what is already queued, not just new events.
+
+    Pinned here because #238 narrows the claim's lock to ``webhook_deliveries``:
+    the enabled-at-claim-time filter is the half of that query that must not
+    move, and nothing else asserted it.
+    """
+    subscription = _subscribe(settings)
+    delivery_id = webhooks.enqueue_event(_event())[0]
+    webhooks.update_subscription(subscription["subscription_id"], enabled=False)
+
+    assert webhooks.dispatch_once(post=_ok)["attempted"] == 0
+    held = webhooks.get_delivery(delivery_id)
+    assert held["status"] == "pending"
+    # Switched off is not a delivery attempt: the retry budget is untouched.
+    assert held["attempts"] == 0
+
+    webhooks.update_subscription(subscription["subscription_id"], enabled=True)
+    assert webhooks.dispatch_once(post=_ok)["delivered"] == 1
+
+
 def test_requeue_puts_a_dead_delivery_back_in_the_queue(settings):
     settings.webhook_max_attempts = 1
     _subscribe(settings)

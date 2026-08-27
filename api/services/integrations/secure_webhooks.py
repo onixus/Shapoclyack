@@ -76,7 +76,19 @@ def rotate_secret(subscription_id: str) -> dict[str, Any] | None:
 
 
 def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.WebhookDelivery]:
-    """Claim only deliveries whose subscription is enabled at claim time."""
+    """Claim only deliveries whose subscription is enabled at claim time.
+
+    ``of=`` is load-bearing (#238). A bare ``FOR UPDATE SKIP LOCKED`` over this
+    join locks the *subscription* row too, and every delivery of a subscription
+    shares one such row. One dispatcher holding it made the whole backlog
+    invisible to its peers — and worse, the peer locked each delivery tuple
+    before reaching the locked subscription tuple, so ``SKIP LOCKED`` dropped
+    the joined row while the delivery lock stayed held for the rest of that
+    transaction. Those rows were then claimed by nobody and sent by nobody:
+    the opposite of the "replicas divide the queue" guarantee in #152.
+    Restricting the lock to ``webhook_deliveries`` keeps the kill switch's
+    enabled-at-claim-time filter while leaving the subscription row unlocked.
+    """
     settings = _base._require_settings()
     rows = session.execute(
         select(models.WebhookDelivery)
@@ -91,7 +103,7 @@ def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.Webhoo
         )
         .order_by(models.WebhookDelivery.next_attempt_at)
         .limit(limit)
-        .with_for_update(skip_locked=True)
+        .with_for_update(skip_locked=True, of=models.WebhookDelivery)
     ).scalars().all()
 
     visibility = timedelta(seconds=max(30, settings.webhook_timeout_seconds * 3))
