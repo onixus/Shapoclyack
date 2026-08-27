@@ -134,10 +134,12 @@ and when. Three rules decide a target:
 Domain entries are suffixes: `example.com` covers `example.com` and its
 subdomains. The literal `*` is the explicit any-value wildcard for either kind.
 
-The check runs twice: when the targets are submitted, and again inside
-`start_scan` at the moment the scan actually starts — which is what covers the
-schedule dispatcher, whose targets were stored days earlier and may no longer
-be inside a scope that has since been narrowed. Refusals are recorded in the
+The check runs three times. Twice in the API: when the targets are submitted,
+and again inside `start_scan` at the moment the scan actually starts — which is
+what covers the schedule dispatcher, whose targets were stored days earlier and
+may no longer be inside a scope that has since been narrowed. The third is
+inside the run itself, on the addresses the scan is really about to touch
+([below](#the-third-barrier-inside-the-run-244)). Refusals are recorded in the
 access-decision journal (`GET /api/auth/events?outcome=denied`, admin) with the
 offending targets in `detail`.
 
@@ -177,18 +179,53 @@ Recommended order per tenant, after the upgrade:
 4. Start one scan and confirm it is accepted; a refusal answers `403` and names
    the offending target.
 
-Two limits worth knowing before relying on this:
+### The third barrier: inside the run (#244)
 
-- **Resolution is checked at admission, not during the scan.** The API resolves
-  the requested names and refuses those whose current addresses land in a
-  denied range (`OCTO_SCAN_SCOPE_RESOLVE_CHECK`), but the scanner resolves
-  again later — a record that changes in between is not covered. Deny entries
-  for addresses that must never be reached belong in the agent's network
-  policy as well, not only here.
-- **Default target files are not read by the API.** When a scan carries no
-  target overrides it runs the installation's own target files; the scope check
-  can only require that the tenant has an approved scope, not compare it
-  against a file the API never opens.
+The two checks above both happen before the scan starts, and both decide about
+*names*. The scanner resolves those names again when it runs — minutes later
+for an ad-hoc scan, hours later for a scheduled one — and the record in between
+belongs to the scanned party, not to you. A name that was in scope at admission
+can be pointing at a denied address by the time the scan reaches it.
+
+Since #244 the approved scope travels with the job and is enforced a third
+time, inside the run:
+
+- `start_scan` writes the tenant's scope to `state/job_inputs/<job_id>/scan_scope.json`
+  and passes it to the pipeline as `--scan-scope`. For an agent job it rides the
+  claim response beside `ranges.txt` and `domains.txt`, and the worker writes it
+  out on its own host.
+- **Resolved addresses are filtered against deny entries only**, exactly as the
+  API filters them. Approving `customer.example` is its own permission and says
+  nothing about the addresses behind it, so requiring them to also sit inside an
+  approved CIDR would refuse every domain-scoped engagement.
+- **Names and ranges get the full check**, including the ones discovery added
+  after admission — CT subdomains, Cloudflare zone imports and ASN ranges are
+  targets no API check has ever seen.
+- **The default target files are now covered.** A run with no target overrides
+  reads the installation's own files; the API never opens them, but the scanner
+  does, and it now holds the scope while it does.
+- **A refused target is dropped, not fatal.** This is not the authorization
+  boundary — the agent host already runs whatever it is handed — it is the last
+  point at which the real target list is known. Failing the whole run instead
+  would let a third party's DNS change end an engagement. The exception is a
+  scope with **no entries**, which stops the run with `INPUT_ERROR` rather than
+  quietly producing an empty result.
+- **Refusals are journalled.** The run writes `scan_scope_denied.json` into its
+  output directory (always, even when nothing was refused, so "filtered and
+  found nothing" is distinguishable from "never filtered"). The scanner has no
+  database, so the entry in `auth_events` is written when the results land —
+  `GET /api/auth/events?outcome=denied`, attributed to whoever requested the
+  scan, with `dropped by the scanner` in `detail`.
+
+A run started outside the API — `python -m scanner.main` with no `--scan-scope`
+— has no tenant behind it and is not filtered. An **agent older than #244**
+ignores the extra input and its runs are likewise unfiltered; upgrade the
+workers before narrowing a scope you intend the runs to respect.
+
+One limit remains: deny entries for addresses that must never be reached still
+belong in the agent's network policy as well, not only here. The pipeline
+filter runs in the same process as the scan and is a control over what that
+process aims at, not a boundary around what it can reach.
 
 ## Alerts and exports
 
