@@ -353,14 +353,30 @@ def test_concurrent_dispatchers_do_not_double_post(settings):
         time.sleep(0.02)
         return _ok()
 
-    threads = [
-        threading.Thread(target=lambda: webhooks.dispatch_once(post=_post, limit=10))
-        for _ in range(2)
-    ]
+    # Исключение внутри потока join() не поднимает, поэтому упавший диспетчер
+    # раньше выглядел как «доставил меньше», и падение сообщало лишь дифф
+    # идентификаторов. Собираем ошибки явно: недоставка и крах — разные
+    # диагнозы, и второй означает, что заявленные #152 гарантии не держатся.
+    errors: list[BaseException] = []
+
+    def _dispatch() -> None:
+        try:
+            webhooks.dispatch_once(post=_post, limit=10)
+        except BaseException as exc:  # noqa: BLE001 - переносим в основной поток
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_dispatch) for _ in range(2)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
+    assert not errors, f"диспетчер упал: {errors!r}"
+    missing = sorted(set(ids) - set(seen))
+    assert not missing, (
+        f"claimed, но не отправлено: {missing} "
+        f"(отправлено {len(seen)} из {len(ids)})"
+    )
     assert sorted(seen) == sorted(ids)
     assert len(seen) == len(set(seen))
 
