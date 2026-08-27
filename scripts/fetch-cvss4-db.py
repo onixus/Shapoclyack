@@ -43,7 +43,16 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from scanner.pipeline.cvss4 import extract_nvd_cwes
+# Run as a script, sys.path[0] is scripts/ — not the repo root — so the scanner
+# package sitting beside it is not importable and this file dies on the next
+# line before parsing a single argument. Every documented invocation is
+# `python3 scripts/fetch-cvss4-db.py …`, including the one in the image build,
+# where the failure showed up only as "==> cvss4: FAILED (continuing)" and was
+# read as one more casualty of the 403s (#246). Fix it here rather than asking
+# each caller for a PYTHONPATH.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scanner.pipeline.cvss4 import extract_nvd_cwes  # noqa: E402 - needs the path above
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
