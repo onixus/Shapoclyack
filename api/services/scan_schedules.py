@@ -8,6 +8,14 @@ which polls ``due_schedules`` and calls ``api.services.jobs.start_scan``.
 ``cron`` and ``interval_seconds`` are mutually exclusive. Cron parsing reuses
 ``scanner.scheduler``'s hand-rolled 5-field parser rather than reimplementing
 one.
+
+Since #244 the stored targets are checked against the tenant's approved scan
+scope when the schedule is written, not only when it fires. The dispatch-time
+check stays and is still the one that decides — a scope narrowed after the
+schedule was saved has to stop it, which only a check at dispatch can do — but
+until now it was the *only* one, so an operator learned that a schedule was
+outside their scope by noticing, some hours later, that no scan had started.
+That is the worst moment to find out and the one furthest from the mistake.
 """
 
 from __future__ import annotations
@@ -21,7 +29,9 @@ from sqlalchemy import func, or_, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import pagination
+from api.services import scan_scopes
 from api.services import tenants as tenants_service
+from api.services.targets import split_target_lines
 from api.settings import Settings
 from scanner.scheduler import next_cron_time, parse_cron
 
@@ -67,6 +77,26 @@ def _to_dict(row: models.ScanSchedule) -> dict[str, Any]:
     }
 
 
+def _assert_targets_in_scope(settings: Settings, tenant_id: str, targets: dict[str, Any]) -> None:
+    """Refuse targets the tenant's approved scope does not cover (#226, #244).
+
+    Raises ``scan_scopes.ScanScopeDenied``, which the route answers 403 with —
+    the same refusal ``POST /api/jobs`` gives for the same targets, at the
+    moment the operator can still fix them.
+
+    Deliberately *not* the resolution check ``assert_scan_allowed`` also runs:
+    what a name resolves to now says nothing about what it will resolve to when
+    the schedule fires hours from now, and refusing a schedule over a record
+    that has since moved would be a verdict with no shelf life. That question
+    belongs to dispatch and to the scanner's own filter.
+    """
+    scope = scan_scopes.load_scope(settings, tenant_id)
+    scope.check(
+        ranges=split_target_lines(targets.get("ranges")),
+        domains=split_target_lines(targets.get("domains")),
+    )
+
+
 def _validate_cadence(cron: str | None, interval_seconds: int | None) -> None:
     if bool(cron) == bool(interval_seconds):
         raise ValueError("exactly one of cron or interval_seconds is required")
@@ -110,6 +140,7 @@ def create_schedule(
     tenant = tenants_service.get_tenant(tenant_id)
     if tenant is None:
         raise ValueError(f"Unknown tenant_id: {tenant_id}")
+    _assert_targets_in_scope(settings, tenant_id, targets)
 
     now = _now()
     row = models.ScanSchedule(
@@ -225,6 +256,10 @@ def update_schedule(schedule_id: str, **fields: Any) -> dict[str, Any] | None:
             merged_targets.update(
                 {k: v for k, v in fields["targets"].items() if k in _TARGET_KEYS}
             )
+            # Checked on the merged result, not on the patch: an edit that only
+            # clears `ranges` still changes what this schedule will scan, and
+            # the answer has to be about what will be stored.
+            _assert_targets_in_scope(settings, row.tenant_id, merged_targets)
             row.targets = merged_targets
 
         session.flush()

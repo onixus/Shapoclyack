@@ -271,6 +271,13 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         ports_udp_path = workdir / "ports_udp.txt"
         ports_udp_path.write_text(inputs["ports_udp.txt"], encoding="utf-8")
         args.extend(["--ports-udp-file", str(ports_udp_path)])
+    if "scan_scope.json" in inputs:
+        # The tenant's approved scope (#244). Handed through unread: this worker
+        # has no opinion about it, and the pipeline that resolves the names is
+        # the only place that can hold the resulting addresses to it.
+        scope_path = workdir / "scan_scope.json"
+        scope_path.write_text(inputs["scan_scope.json"], encoding="utf-8")
+        args.extend(["--scan-scope", str(scope_path)])
     return args
 
 

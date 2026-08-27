@@ -59,6 +59,7 @@ from scanner.pipeline.pdf_report import write_business_pdf
 from scanner.pipeline.report import build_reports
 from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
+from scanner.pipeline import scan_scope
 from scanner.pipeline.run_context import resolve_run_paths, write_run_meta
 from scanner.pipeline.stage_timing import StageTimer
 from scanner.pipeline.utils import load_json, load_yaml, read_lines, setup_logging, write_lines
@@ -73,6 +74,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="scanner/config/default.yaml", help="Path to YAML config")
     parser.add_argument("--ranges", default="scanner/inputs/ranges.txt", help="Path to CIDR/IP inputs")
     parser.add_argument("--domains", default="scanner/inputs/domains.txt", help="Path to FQDN inputs")
+    parser.add_argument(
+        "--scan-scope",
+        help=(
+            "Path to the tenant's approved scan scope (#244). Set by the API for "
+            "every job it starts; targets outside the scope are dropped, and "
+            "resolved addresses inside a denied range are dropped after resolve. "
+            "Omitted for a standalone run, which is then unfiltered."
+        ),
+    )
     parser.add_argument(
         "--ports-file",
         help="Override ports.custom_ports_file for this run (TCP port list)",
@@ -131,6 +141,26 @@ def _run_stage(stage: str, func, timer: StageTimer | None = None):  # type: igno
     if active is not None:
         return active.run(stage, _call)
     return _call()
+
+
+def _keep_in_scope(
+    result: scan_scope.FilterResult, *, what: str, refusals: list[str]
+) -> list[str]:
+    """Log and record what the approved scope refused, and return what it kept.
+
+    Dropping rather than failing is the deliberate choice explained in
+    ``scanner/pipeline/scan_scope.py``: this is not the authorization boundary,
+    it is the last point at which the real target list is known.
+    """
+    if result.refused:
+        refusals.extend(result.refused)
+        logging.warning(
+            "Scan scope dropped %d %s outside the tenant's approved scope: %s",
+            len(result.refused),
+            what,
+            ", ".join(sorted(result.refused)[:8]),
+        )
+    return result.kept
 
 
 def _run_pipeline(args: argparse.Namespace) -> int:
@@ -262,6 +292,22 @@ def _run_pipeline_body(
     if not args.resume:
         checkpoint.clear()
 
+    # The tenant's approved scope, if this run carries one (#244). None means a
+    # standalone run with no control plane behind it, which stays unfiltered; an
+    # *unapproved* scope is a different thing and stops the run here, before any
+    # stage has looked anything up.
+    scope = scan_scope.load_scope_file(args.scan_scope)
+    scope_refusals: list[str] = []
+    if scope is not None and not scope.approved:
+        logging.error(
+            "Tenant %s has no approved scan scope; refusing to scan anything",
+            scope.tenant_id or "(unnamed)",
+        )
+        scan_scope.write_denials(
+            paths.output_dir, scope, ["all targets (tenant has no approved scan scope)"]
+        )
+        return exit_codes.INPUT_ERROR
+
     contract = validate_inputs(Path(args.ranges), Path(args.domains), paths.output_dir)
     checkpoint.mark_done("contract")
     if (
@@ -278,6 +324,19 @@ def _run_pipeline_body(
     # Phase 5: expand FQDN/IP scope via Cloudflare zone import + CT subdomains (before resolve).
     scope_fqdns = list(contract.valid_fqdns)
     scope_ips = list(contract.valid_ips_or_cidr)
+
+    # Filtered before the OSINT stages, not only before the scan: a name the
+    # tenant is not approved for should not be looked up in CT, RDAP or the
+    # cloud-bucket probes either. For a run on the installation's default target
+    # files this is the *only* check these targets ever get — the API does not
+    # open those files (#244).
+    if scope is not None:
+        scope_fqdns = _keep_in_scope(
+            scan_scope.filter_names(scope, scope_fqdns), what="names", refusals=scope_refusals
+        )
+        scope_ips = _keep_in_scope(
+            scan_scope.filter_ranges(scope, scope_ips), what="ranges", refusals=scope_refusals
+        )
 
     if args.resume and checkpoint.is_done("cloudflare"):
         timer.skip("cloudflare")
@@ -366,6 +425,22 @@ def _run_pipeline_body(
         )
         checkpoint.mark_done("cloud")
 
+    # Second pass, over what discovery added since the first one: CT subdomains,
+    # Cloudflare zone entries and ASN ranges are targets nobody submitted and no
+    # API check has ever seen. Re-filtering the whole list rather than the
+    # additions keeps this independent of which stages ran.
+    if scope is not None:
+        scope_fqdns = _keep_in_scope(
+            scan_scope.filter_names(scope, scope_fqdns),
+            what="discovered names",
+            refusals=scope_refusals,
+        )
+        scope_ips = _keep_in_scope(
+            scan_scope.filter_ranges(scope, scope_ips),
+            what="discovered ranges",
+            refusals=scope_refusals,
+        )
+
     if args.resume and checkpoint.is_done("resolve"):
         timer.skip("resolve")
         resolved_ips = read_lines(paths.output_dir / "resolved_ips.txt")
@@ -375,6 +450,22 @@ def _run_pipeline_body(
             lambda: resolve_fqdns(scope_fqdns, paths.output_dir, timeout=timeout, retries=retries),
         )
         checkpoint.mark_done("resolve")
+
+    # The TOCTOU fix itself (#244): the API resolved these names at admission,
+    # but the answer that decides what gets scanned is this one, taken minutes
+    # or — for a schedule — hours later from a record the scanned party owns.
+    # Deny entries only, matching the API's rule: approving a domain says
+    # nothing about the addresses behind it, in either direction.
+    if scope is not None:
+        resolved_ips = _keep_in_scope(
+            scan_scope.filter_resolved(scope, resolved_ips),
+            what="resolved addresses",
+            refusals=scope_refusals,
+        )
+        # Rewritten, so the stage artifact does not keep listing an address the
+        # run refused as if it were a target. The lookup itself is not erased —
+        # dns_resolution.json still holds every record dnsx returned.
+        write_lines(paths.output_dir / "resolved_ips.txt", resolved_ips)
 
     # Phase 8.4: typosquat / dangling-CNAME domain monitoring (findings-only,
     # non-escalating -- see domain_monitor.py module docstring). Runs after
@@ -423,6 +514,13 @@ def _run_pipeline_body(
             ),
         )
         checkpoint.mark_done("mail_posture")
+
+    if scope is not None:
+        # Written before the emptiness check below, so a run that ends with
+        # nothing left says *why* it had nothing left. The artifact rides back
+        # in the results archive and the API folds it into auth_events — the
+        # access-decision journal the scanner has no path to of its own (#244).
+        scan_scope.write_denials(paths.output_dir, scope, scope_refusals)
 
     all_targets = sorted(set(scope_ips + resolved_ips))
     write_lines(paths.output_dir / "all_targets.txt", all_targets)

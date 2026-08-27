@@ -34,8 +34,11 @@ the same bypass as typing the address, so :func:`assert_scan_allowed` resolves
 the requested names and refuses on a denied answer. It is deliberately not an
 *allow* check: a domain suffix approval is its own permission and does not
 imply anything about the addresses behind it. The resolution here is the API's
-own, at admission time — the scanner resolves again later, so a record that
-changes in between is not covered by it (see docs/operations.md).
+own, at admission time. Since #244 the scanner carries the scope into the run
+and applies the same deny check to the resolution it actually scans on, which
+is what covers a record that changes in between — see
+``scanner/pipeline/scan_scope.py``, where the matching rules themselves live so
+that the two barriers cannot answer differently.
 """
 
 from __future__ import annotations
@@ -56,21 +59,25 @@ from api.services import auth_audit
 from api.services import tenants as tenants_service
 from api.services.targets import split_target_lines
 from api.settings import Settings
+from scanner.pipeline import scan_scope as scope_rules
 from scanner.pipeline.utils import is_fqdn, is_ip_or_cidr
 
 _log = logging.getLogger(__name__)
 
-EFFECT_ALLOW = "allow"
-EFFECT_DENY = "deny"
+# The vocabulary is the document's (#244), not a second copy of it: the same
+# strings are written into the scope the scanner reads, so a rename here that
+# did not reach the pipeline would be a scope the run cannot parse.
+EFFECT_ALLOW = scope_rules.EFFECT_ALLOW
+EFFECT_DENY = scope_rules.EFFECT_DENY
 EFFECTS = (EFFECT_ALLOW, EFFECT_DENY)
 
-KIND_CIDR = "cidr"
-KIND_DOMAIN = "domain"
+KIND_CIDR = scope_rules.KIND_CIDR
+KIND_DOMAIN = scope_rules.KIND_DOMAIN
 KINDS = (KIND_CIDR, KIND_DOMAIN)
 
 #: The explicit any-value wildcard. Spelled out rather than implied by an
 #: empty scope, so "this tenant may scan anything" is a decision someone made.
-WILDCARD = "*"
+WILDCARD = scope_rules.WILDCARD
 
 # A name lookup must not become the thing that hangs a scan start: getaddrinfo
 # has no timeout of its own, so it runs in a worker thread this long. A lookup
@@ -103,8 +110,7 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat().replace("+00:00", "Z") if dt else None
 
 
-def _normalize_domain(value: str) -> str:
-    return value.strip().rstrip(".").lower()
+_normalize_domain = scope_rules.normalize_domain
 
 
 def _network(value: str) -> _Network:
@@ -112,24 +118,17 @@ def _network(value: str) -> _Network:
 
 
 @dataclass(frozen=True)
-class ScanScope:
+class ScanScope(scope_rules.ScanScope):
     """One tenant's approved scope, resolved into a form that can be matched.
 
-    Built by :func:`load_scope`; the matching below is pure so that
-    ``api/services/targets.py`` can apply it without reaching for the database.
+    Built by :func:`load_scope`. The matching itself — ``rejects_network``,
+    ``rejects_domain``, and the three rules in this module's docstring — is
+    inherited from ``scanner/pipeline/scan_scope.py`` rather than written here,
+    because since #244 the same scope is enforced a third time inside the
+    scanner and two implementations of "deny beats allow" would eventually be
+    two different answers. What this subclass adds is the part that only the
+    control plane has: refusing, with a ``ScanScopeDenied`` naming the targets.
     """
-
-    tenant_id: str
-    allow_networks: tuple[_Network, ...] = ()
-    deny_networks: tuple[_Network, ...] = ()
-    allow_domains: tuple[str, ...] = ()
-    deny_domains: tuple[str, ...] = ()
-    #: Any entries at all. False is "nothing approved", not "nothing denied".
-    approved: bool = False
-
-    @property
-    def has_deny_networks(self) -> bool:
-        return bool(self.deny_networks)
 
     def require_approved(self) -> None:
         """Refuse a tenant that has no approved scope. Fail-closed entry point."""
@@ -140,33 +139,6 @@ class ScanScope:
                 "any scan can start",
                 tenant_id=self.tenant_id,
             )
-
-    def rejects_network(self, value: str) -> str | None:
-        """Why this IP/CIDR target is out of scope, or None when it is inside it."""
-        try:
-            target = _network(value)
-        except ValueError:
-            # Syntax is the caller's business; an unparseable value cannot be
-            # matched against anything, so it is out of scope here.
-            return "not an IP or CIDR"
-        for denied in self.deny_networks:
-            if denied.version == target.version and target.overlaps(denied):
-                return f"denied by {denied}"
-        for allowed in self.allow_networks:
-            if allowed.version == target.version and target.subnet_of(allowed):
-                return None
-        return "not inside any allowed range"
-
-    def rejects_domain(self, value: str) -> str | None:
-        """Why this domain target is out of scope, or None when it is inside it."""
-        name = _normalize_domain(value)
-        for denied in self.deny_domains:
-            if _suffix_matches(name, denied):
-                return f"denied by {denied}"
-        for allowed in self.allow_domains:
-            if _suffix_matches(name, allowed):
-                return None
-        return "not under any allowed domain"
 
     def rejections(self, *, ranges: Iterable[str], domains: Iterable[str]) -> list[str]:
         """``"<target> (<reason>)"`` for every target the scope refuses."""
@@ -236,13 +208,6 @@ def rejections_for_host(
         if reason and reason.startswith("denied by"):
             refused.append(f"{host} -> {address} ({reason})")
     return refused
-
-
-def _suffix_matches(name: str, entry: str) -> bool:
-    """Domain-suffix match: ``example.com`` covers itself and its subdomains."""
-    if entry == WILDCARD:
-        return True
-    return name == entry or name.endswith("." + entry)
 
 
 def _sample(values: list[str], limit: int = 8) -> str:

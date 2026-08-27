@@ -299,7 +299,9 @@ managed over `GET`/`PUT /api/tenants/{id}/scan-scope` by a platform admin, and
 `/tenants` neither shows nor edits it. What the console does show is the
 consequence — starting a scan outside the scope answers `403` on `/jobs`, with
 the offending targets in the error text, and a tenant whose scope was never
-approved cannot start one at all. See
+approved cannot start one at all. Since #244 saving a **schedule** outside the
+scope answers the same `403` on `/schedules` instead of silently never firing,
+so the schedule form surfaces the refusal where the operator is standing. See
 [api-and-rbac.md](api-and-rbac.md#approved-scanning-scope).
 
 ## Current versus planned UI

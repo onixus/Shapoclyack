@@ -8,12 +8,17 @@ had been allowed to.
 
 from __future__ import annotations
 
+import io
+import json
+import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from agent import worker as agent_worker
 from api.schemas import StartScanRequest
+from api.services import agents as agents_service
 from api.services import auth_audit
 from api.services import jobs as jobs_service
 from api.services import scan_schedules
@@ -21,6 +26,7 @@ from api.services import schedule_dispatcher
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services.targets import parse_target_payload
+from scanner.pipeline import scan_scope
 from tests.conftest import (
     auth_headers,
     configured_client,
@@ -50,6 +56,20 @@ def settings(tmp_path: Path):
     scan_schedules.configure(base)
     scan_schedules.reset_for_tests()
     return base
+
+
+@pytest.fixture()
+def agent_settings(settings):
+    """The same control plane, handing its jobs to a remote worker.
+
+    Agent mode for the #244 delivery tests, and not only for convenience: the
+    remote worker is the case where the scope has to *travel*, and a local job
+    would spawn the pipeline in a thread rather than hand anything over.
+    """
+    settings.job_execution_mode = "agent"
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    return settings
 
 
 def _scope(settings, *entries: dict) -> scan_scopes.ScanScope:
@@ -369,3 +389,156 @@ def test_starting_an_out_of_scope_scan_over_the_api_is_403(tmp_path, monkeypatch
     )
     assert refused.status_code == 403
     assert "outside the approved scan scope" in refused.json()["detail"]
+
+
+# --- the scope travels with the run (#244) ----------------------------------
+
+
+def _run_archive(denials: dict | None) -> bytes:
+    """A results upload, optionally carrying the scanner's scope refusals."""
+    files = {"findings.json": b"{}\n", "summary.json": b'{"alive_hosts": 0}\n'}
+    if denials is not None:
+        files[scan_scope.DENIED_ARTIFACT] = (json.dumps(denials) + "\n").encode("utf-8")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _scope_document(settings, job) -> dict:
+    path = settings.state_dir / "job_inputs" / job.job_id / jobs_service.SCAN_SCOPE_INPUT
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_started_scan_hands_its_scope_to_the_run(agent_settings):
+    """Both barriers so far ran here; the third has to run where the names resolve."""
+    _scope(agent_settings, ALLOW_EXAMPLE, DENY_METADATA)
+
+    job = jobs_service.start_scan(
+        agent_settings,
+        StartScanRequest(mode="balanced", domains="www.example.com"),
+        username="operator",
+    )
+
+    assert "--scan-scope" in job.command
+    restored = scan_scope.from_document(_scope_document(agent_settings, job))
+    assert restored is not None
+    assert restored.approved
+    assert restored.rejects_domain("www.example.com") is None
+    assert restored.rejects_network("169.254.169.254") == "denied by 169.254.0.0/16"
+
+
+def test_a_scan_with_no_target_overrides_still_carries_the_scope(agent_settings):
+    """The default target files the API never opens (#244).
+
+    Such a run reads the installation's own targets, so #226 could only ask
+    whether the tenant had a scope — never whether those files agree with it.
+    The scope goes along regardless, and the scanner compares them.
+    """
+    _scope(agent_settings, ALLOW_TEN_NET)
+
+    job = jobs_service.start_scan(
+        agent_settings, StartScanRequest(mode="balanced"), username="operator"
+    )
+
+    assert job.target_counts is None
+    assert "--scan-scope" in job.command
+    assert _scope_document(agent_settings, job)["entries"] == [
+        {"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}
+    ]
+
+
+def test_the_claim_hands_the_scope_through_to_the_worker(agent_settings, tmp_path):
+    """End of the delivery path: API row, claim response, worker command line."""
+    _scope(agent_settings, ALLOW_EXAMPLE, DENY_METADATA)
+    jobs_service.start_scan(
+        agent_settings,
+        StartScanRequest(mode="balanced", domains="www.example.com"),
+        username="operator",
+    )
+
+    claim = jobs_service.claim_job(agent_settings, "agent-1")
+    assert claim is not None
+    assert jobs_service.SCAN_SCOPE_INPUT in claim.inputs
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    args = agent_worker._write_inputs(workdir, dict(claim.inputs))  # noqa: SLF001
+
+    assert "--scan-scope" in args
+    handed = Path(args[args.index("--scan-scope") + 1])
+    assert json.loads(handed.read_text(encoding="utf-8")) == json.loads(
+        claim.inputs[jobs_service.SCAN_SCOPE_INPUT]
+    )
+
+
+def test_the_scanners_own_refusals_reach_the_access_decision_journal(agent_settings):
+    """The scanner has no database; the journal entry is written where the run lands.
+
+    The agent's host is the only place the real address list is known, and the
+    only place with no path to ``auth_events``. The pipeline writes what it
+    dropped into the run, and the ingest folds it into the same trail the API's
+    own refusals go to — otherwise the refusals that matter most would be the
+    only access decisions nobody can audit.
+    """
+    _scope(agent_settings, ALLOW_EXAMPLE, DENY_METADATA)
+    job = jobs_service.start_scan(
+        agent_settings,
+        StartScanRequest(mode="balanced", domains="metadata.example.com"),
+        username="operator",
+    )
+    claim = jobs_service.claim_job(agent_settings, "agent-1")
+    assert claim is not None
+
+    jobs_service.complete_job(
+        agent_settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=claim.run_id,
+        archive_bytes=_run_archive(
+            {
+                "tenant_id": "default",
+                "approved": True,
+                "denied_count": 1,
+                "denied": ["resolved -> 169.254.169.254 (denied by 169.254.0.0/16)"],
+            }
+        ),
+        attempt=claim.attempt,
+    )
+
+    events, total = auth_audit.list_events(outcome=auth_audit.OUTCOME_DENIED)
+    assert total == 1
+    assert events[0]["username"] == "operator"
+    assert events[0]["reason"] == auth_audit.REASON_SCAN_SCOPE
+    assert "169.254.169.254" in events[0]["detail"]
+
+
+def test_a_run_the_scanner_refused_nothing_in_leaves_no_journal_entry(agent_settings):
+    """The artifact is written on every filtered run; only refusals are decisions."""
+    _scope(agent_settings, ALLOW_EXAMPLE)
+    job = jobs_service.start_scan(
+        agent_settings,
+        StartScanRequest(mode="balanced", domains="www.example.com"),
+        username="operator",
+    )
+    claim = jobs_service.claim_job(agent_settings, "agent-1")
+    assert claim is not None
+
+    jobs_service.complete_job(
+        agent_settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=claim.run_id,
+        archive_bytes=_run_archive(
+            {"tenant_id": "default", "approved": True, "denied_count": 0, "denied": []}
+        ),
+        attempt=claim.attempt,
+    )
+
+    _, total = auth_audit.list_events(outcome=auth_audit.OUTCOME_DENIED)
+    assert total == 0

@@ -7,10 +7,18 @@ from pathlib import Path
 
 import pytest
 
+from api.services import auth_audit
 from api.services import scan_schedules
+from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.settings import Settings
-from tests.conftest import make_settings, requires_postgres
+from tests.conftest import (
+    approve_scan_scope,
+    auth_headers,
+    configured_client,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -28,6 +36,11 @@ def settings(tmp_path):
     tenants_service.load_tenants(s)
     scan_schedules.configure(s)
     scan_schedules.reset_for_tests()
+    auth_audit.configure(s)
+    auth_audit.reset_for_tests()
+    # Writing a schedule needs an approved scan scope since #244, the way
+    # starting a scan has since #226; see tests/conftest.py.
+    approve_scan_scope(s)
     return s
 
 
@@ -166,3 +179,138 @@ def test_record_dispatch_advances_next_run_at(settings):
     assert updated["last_job_id"] == "job1"
     next_run = datetime.fromisoformat(updated["next_run_at"].replace("Z", "+00:00"))
     assert next_run == ran_at + timedelta(seconds=60)
+
+
+# --- the approved scan scope (#244) -----------------------------------------
+
+
+def test_a_schedule_outside_the_approved_scope_is_refused_when_it_is_written(settings):
+    """The refusal moves to the moment the operator can act on it.
+
+    Dispatch already refused this schedule — silently, hours later, by simply
+    not starting a scan. The operator's evidence was an absence.
+    """
+    scan_scopes.replace_scope(
+        settings,
+        tenant_id="default",
+        entries=[{"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}],
+        approved_by="admin",
+    )
+
+    with pytest.raises(scan_scopes.ScanScopeDenied, match="outside the approved scan scope"):
+        scan_schedules.create_schedule(
+            tenant_id="default",
+            name="nightly",
+            cron=None,
+            interval_seconds=3600,
+            scan_options={"mode": "fast"},
+            targets={"ranges": "192.168.0.0/24"},
+            created_by="operator",
+        )
+
+    assert scan_schedules.list_schedules(tenant_id="default")[1] == 0
+
+
+def test_a_tenant_with_no_approved_scope_writes_no_schedule(settings):
+    """Fail-closed here too, including a schedule on the default target files."""
+    scan_scopes.replace_scope(
+        settings, tenant_id="default", entries=[], approved_by="admin"
+    )
+
+    with pytest.raises(scan_scopes.ScanScopeDenied, match="no approved scan scope"):
+        scan_schedules.create_schedule(
+            tenant_id="default",
+            name="nightly",
+            cron=None,
+            interval_seconds=3600,
+            scan_options={"mode": "fast"},
+            targets={},
+            created_by="operator",
+        )
+
+
+def test_editing_a_schedule_into_an_out_of_scope_target_is_refused(settings):
+    """The check is on the merged result, which is what would be stored."""
+    scan_scopes.replace_scope(
+        settings,
+        tenant_id="default",
+        entries=[{"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}],
+        approved_by="admin",
+    )
+    sched = scan_schedules.create_schedule(
+        tenant_id="default",
+        name="nightly",
+        cron=None,
+        interval_seconds=3600,
+        scan_options={"mode": "fast"},
+        targets={"ranges": "10.1.0.0/24"},
+        created_by="operator",
+    )
+
+    with pytest.raises(scan_scopes.ScanScopeDenied, match="outside the approved scan scope"):
+        scan_schedules.update_schedule(
+            sched["schedule_id"], targets={"ranges": "192.168.0.0/24"}
+        )
+
+    assert scan_schedules.get_schedule(sched["schedule_id"])["targets"] == {
+        "ranges": "10.1.0.0/24"
+    }
+
+
+def test_writing_a_schedule_does_not_resolve_its_names(settings, monkeypatch):
+    """A record hours before the run is not evidence about the run.
+
+    The resolution check belongs to dispatch and to the scanner's own filter;
+    refusing a schedule over an answer with no shelf life would be a verdict
+    about a moment nobody is scanning in.
+    """
+    scan_scopes.replace_scope(
+        settings,
+        tenant_id="default",
+        entries=[
+            {"effect": "allow", "kind": "domain", "value": "example.com"},
+            {"effect": "deny", "kind": "cidr", "value": "169.254.0.0/16"},
+        ],
+        approved_by="admin",
+    )
+    monkeypatch.setattr(
+        scan_scopes, "_resolve", lambda host: pytest.fail(f"resolved {host} at write time")
+    )
+
+    sched = scan_schedules.create_schedule(
+        tenant_id="default",
+        name="nightly",
+        cron=None,
+        interval_seconds=3600,
+        scan_options={"mode": "fast"},
+        targets={"domains": "metadata.example.com"},
+        created_by="operator",
+    )
+
+    assert sched["targets"] == {"domains": "metadata.example.com"}
+
+
+def test_an_out_of_scope_schedule_over_the_api_is_403(tmp_path, monkeypatch):
+    """403, not 422: the cadence and the targets are both well-formed."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    # configured_client() approves an allow-all scope; narrow it first.
+    client.put(
+        "/api/tenants/default/scan-scope",
+        headers=admin,
+        json={"entries": [{"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}]},
+    )
+
+    refused = client.post(
+        "/api/schedules",
+        headers=auth_headers(client, "operator"),
+        json={"name": "nightly", "interval_seconds": 3600, "ranges": "192.168.0.0/24"},
+    )
+
+    assert refused.status_code == 403
+    assert "outside the approved scan scope" in refused.json()["detail"]
+
+    events, total = auth_audit.list_events(outcome=auth_audit.OUTCOME_DENIED)
+    assert total == 1
+    assert events[0]["username"] == "operator"
+    assert events[0]["reason"] == auth_audit.REASON_SCAN_SCOPE

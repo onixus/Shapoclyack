@@ -192,6 +192,59 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **A schedule is checked against the approved scan scope when it is written**
+  ([#244](https://github.com/onixus/Shapoclyack/issues/244)) — schedules were
+  validated only at dispatch, so an operator who saved one outside their
+  tenant's scope learned about it hours later, and only by noticing that no scan
+  had run: the evidence was an absence. `POST /api/schedules` and
+  `PATCH /api/schedules/{id}` now answer `403` with the offending target named,
+  the same refusal `POST /api/jobs` gives for the same target, and the decision
+  goes to the access-decision journal like every other one. The dispatch-time
+  check stays and is still the one that decides — a scope narrowed after the
+  schedule was saved has to stop it, which only a check at dispatch can do.
+  Names are deliberately *not* resolved at write time: what a record points at
+  now says nothing about what it will point at when the schedule fires, and
+  that question belongs to dispatch and to the scanner's own filter.
+
+- **The approved scan scope is now enforced on what is scanned, not only on
+  what was asked for** ([#244](https://github.com/onixus/Shapoclyack/issues/244)) —
+  [#226](https://github.com/onixus/Shapoclyack/issues/226) authorized targets at
+  the API's door and named this as the limit it could not reach: both of its
+  checks decide about *names*, and the scanner resolves those names again when
+  it runs. Minutes later for an ad-hoc scan, hours later for a scheduled one,
+  and the record in between belongs to the scanned party — so a name that
+  passed admission could be pointing at a denied address by the time the scan
+  reached it, and nothing looked. The tenant's scope now travels with the job
+  (`state/job_inputs/<job_id>/scan_scope.json`, handed to the pipeline as
+  `--scan-scope` and to a remote worker in the claim response beside the target
+  files), and the run filters its own resolution before scanning it. The
+  matching rules are not restated: `api/services/scan_scopes.ScanScope` is now a
+  subclass of the pipeline's, so "deny beats allow" has one implementation
+  rather than two that can drift.
+
+  Resolved addresses meet deny entries only, exactly as the API's admission
+  check does — approving `customer.example` says nothing about the addresses
+  behind it, and demanding they also sit inside an approved CIDR would refuse
+  every domain-scoped engagement. Names and ranges get the full check, which
+  also covers the targets discovery adds *after* admission (CT subdomains,
+  Cloudflare zone imports, ASN ranges) and closes the second gap #226 left open:
+  a scan with no target overrides reads the installation's own target files,
+  which the API never opens but the scanner does.
+
+  A refused target is dropped, not fatal. This is not the authorization
+  boundary — the agent host already runs whatever it is handed — it is the last
+  point at which the real target list is known, and failing the whole run would
+  let a third party's DNS change end an engagement. A scope with *no entries* is
+  the exception and stops the run, because scanning zero targets quietly is
+  indistinguishable from a clean empty result. Since the scanner has no database
+  and no route to `auth_events`, it writes `scan_scope_denied.json` into the run
+  and the API folds it into the same access-decision journal on ingest
+  (`GET /api/auth/events?outcome=denied`, attributed to whoever requested the
+  scan) — otherwise the refusals made closest to the target would be the only
+  ones nobody could audit. A run started outside the API is unfiltered, and so
+  are runs from an agent older than this change: upgrade the workers before
+  narrowing a scope you intend the runs to respect.
+
 - **The SSH host-key probe is no longer an unrestricted outbound primitive**
   ([#240](https://github.com/onixus/Shapoclyack/issues/240)) —
   `POST /api/agent/deploy/ssh/host-key` opened a TCP connection to a host and

@@ -13,7 +13,7 @@ from api.services import scan_schedules
 from api.services import schedule_dispatcher
 from api.services import tenants as tenants_service
 from api.settings import Settings
-from tests.conftest import make_settings, requires_postgres
+from tests.conftest import approve_scan_scope, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -31,6 +31,9 @@ def settings(tmp_path):
     tenants_service.load_tenants(s)
     scan_schedules.configure(s)
     scan_schedules.reset_for_tests()
+    # Writing a schedule needs an approved scan scope since #244, the way
+    # starting a scan has since #226; see tests/conftest.py.
+    approve_scan_scope(s)
     return s
 
 

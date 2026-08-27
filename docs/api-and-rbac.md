@@ -422,8 +422,14 @@ tenant scans nothing. A malformed entry is `422`, an unknown tenant `404`.
 
 An out-of-scope scan is refused with **`403`, not `422`** — the target is
 well-formed, the tenant is simply not entitled to it — and the refusal is
-recorded in the access-decision journal above. The model, and the
-grandfathering migration `0025` applies on upgrade, are described in
+recorded in the access-decision journal above. Since #244 the same `403` comes
+from `POST /api/schedules` and `PATCH /api/schedules/{id}`, checked against the
+targets that would be stored: a schedule is a scan asked for in advance, and
+until then the only refusal happened at dispatch, so an operator learned their
+schedule was out of scope by noticing hours later that no scan had run. The
+dispatch-time check stays — a scope narrowed after the schedule was written
+still has to stop it. The model, the third barrier inside the run, and the
+grandfathering migration `0025` applies on upgrade are described in
 [operations.md](operations.md#approved-scan-scope-per-tenant).
 
 ## Tenant memberships
