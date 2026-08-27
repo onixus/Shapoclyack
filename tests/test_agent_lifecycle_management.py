@@ -8,6 +8,7 @@ from pathlib import Path
 
 from api.services import agent_deployer
 from tests.conftest import (
+    approve_scan_scope,
     auth_headers,
     configured_client,
     make_settings,
@@ -748,3 +749,358 @@ def test_upgrade_marker_survives_restart_and_clears_on_new_version(
     detail = client.get("/api/agents/agent-marker", headers=admin_hdrs).json()
     assert detail["upgrade_requested"] is False
     assert detail["version"] == "0.42.0"
+
+
+# --------------------------------------------------------------------------
+# Where a deployment may point (#240)
+# --------------------------------------------------------------------------
+
+
+def _denials(client, headers) -> list[dict]:
+    """The deployment targets this installation refused, newest first."""
+    response = client.get(
+        "/api/auth/events", headers=headers, params={"outcome": "denied", "limit": 50}
+    )
+    assert response.status_code == 200
+    return [
+        item for item in response.json()["items"] if item["reason"] == "deploy_target_denied"
+    ]
+
+
+def _trust_changes(client, headers) -> list[dict]:
+    """Every pin this installation set or removed, newest first."""
+    response = client.get(
+        "/api/auth/events", headers=headers, params={"outcome": "trust_change", "limit": 50}
+    )
+    assert response.status_code == 200
+    return response.json()["items"]
+
+
+def test_the_probe_refuses_the_platforms_own_reflection_but_not_private_space(
+    tmp_path: Path, monkeypatch
+):
+    """The deployer's policy is deliberately not the webhook policy (#240).
+
+    An agent belongs inside an RFC1918 network, so refusing private space would
+    refuse the product. What has no legitimate deployment behind it is the API
+    pod's own loopback and the link-local range the cloud metadata service
+    lives on — reaching those reports only on this platform itself.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+
+    for host in ("127.0.0.1", "169.254.169.254", "0.0.0.0"):
+        refused = client.post(
+            "/api/agent/deploy/ssh/host-key",
+            json={"host": host, "port": 22},
+            headers=admin_hdrs,
+        )
+        assert refused.status_code == 403, host
+        assert host in refused.json()["detail"]
+
+    allowed = client.post(
+        "/api/agent/deploy/ssh/host-key",
+        json={"host": "192.168.10.50", "port": 22},
+        headers=admin_hdrs,
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["fingerprint"] == HOST_KEY.fingerprint
+
+    # Every refusal is an access decision, so it lands in the same trail as the
+    # rest of them rather than only in a log line.
+    denied = _denials(client, admin_hdrs)
+    assert len(denied) == 3
+    assert {"127.0.0.1", "169.254.169.254", "0.0.0.0"} == {
+        item["detail"].split("target=")[1].split(":")[0] for item in denied
+    }
+
+
+def test_a_port_outside_the_configured_ssh_list_is_refused(tmp_path: Path, monkeypatch):
+    """Over an open port range the probe is a port scanner with a tidy format."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+
+    refused = client.post(
+        "/api/agent/deploy/ssh/host-key",
+        json={"host": "192.168.10.50", "port": 5432},
+        headers=admin_hdrs,
+    )
+    assert refused.status_code == 403
+    assert "5432" in refused.json()["detail"]
+
+    # The deployment itself is refused on the same grounds: the probe is not
+    # the only way to open that connection.
+    assert (
+        client.post(
+            "/api/agent/deploy/ssh",
+            json=_deploy_payload(port=5432),
+            headers=admin_hdrs,
+        ).status_code
+        == 403
+    )
+
+    # 2222 is on the default list, because that is where SSH goes when 22 is taken.
+    assert (
+        client.post(
+            "/api/agent/deploy/ssh/host-key",
+            json={"host": "192.168.10.50", "port": 2222},
+            headers=admin_hdrs,
+        ).status_code
+        == 200
+    )
+
+
+def test_an_installation_may_reopen_the_full_port_range(tmp_path: Path, monkeypatch):
+    """The restriction is a default, not a wall: a fleet on 2022 says so."""
+    # Passed to configured_client rather than to make_settings: the client
+    # builds the Settings the services are configured with, so an override the
+    # deployer must read has to go through it.
+    client = configured_client(tmp_path, monkeypatch, agent_deploy_ssh_ports="*")
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+
+    assert (
+        client.post(
+            "/api/agent/deploy/ssh/host-key",
+            json={"host": "192.168.10.50", "port": 5432},
+            headers=admin_hdrs,
+        ).status_code
+        == 200
+    )
+
+
+def test_a_host_the_tenant_may_not_scan_is_not_a_deployment_target_either(
+    tmp_path: Path, monkeypatch
+):
+    """A prohibition is a prohibition, whichever route reaches the address (#226).
+
+    The approved scan scope is the only place this platform records "that host
+    is not yours to touch". A deny entry that stops a scan but not an SSH
+    connection opened by the same API would not be recording anything.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+    approve_scan_scope(
+        settings,
+        entries=[
+            {"effect": "allow", "kind": "cidr", "value": "0.0.0.0/0"},
+            {"effect": "deny", "kind": "cidr", "value": "192.168.10.0/24"},
+        ],
+    )
+
+    probed = client.post(
+        "/api/agent/deploy/ssh/host-key",
+        json={"host": "192.168.10.50", "port": 22},
+        headers=admin_hdrs,
+    )
+    assert probed.status_code == 403
+    assert "192.168.10.0/24" in probed.json()["detail"]
+
+    deployed = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert deployed.status_code == 403
+    assert len(_denials(client, admin_hdrs)) == 2
+
+    # A host outside the denied range is unaffected.
+    assert (
+        client.post(
+            "/api/agent/deploy/ssh/host-key",
+            json={"host": "10.20.30.40", "port": 22},
+            headers=admin_hdrs,
+        ).status_code
+        == 200
+    )
+
+
+def test_a_host_merely_outside_the_allowed_scope_still_deploys_by_default(
+    tmp_path: Path, monkeypatch
+):
+    """Where an agent lives is not the same question as what it may scan.
+
+    An agent on a management host that scans a customer range is the ordinary
+    MSSP shape, so containment in the scan scope is an opt-in rather than the
+    default — as the default it would refuse the normal deployment.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+    approve_scan_scope(
+        settings,
+        entries=[{"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}],
+    )
+
+    started = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert started.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, started.json()["deploy_id"])
+
+
+def test_an_installation_may_demand_the_target_be_inside_the_approved_scope(
+    tmp_path: Path, monkeypatch
+):
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, agent_deploy_enforce_scan_scope=True)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+    approve_scan_scope(
+        settings,
+        entries=[{"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}],
+    )
+
+    refused = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert refused.status_code == 403
+    assert "not inside any allowed range" in refused.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# Removing a pin (#241)
+# --------------------------------------------------------------------------
+
+
+def _unpin(client, headers, host: str = "192.168.10.50", port: int = 22):
+    return client.request(
+        "DELETE",
+        "/api/agent/deploy/ssh/host-key",
+        params={"host": host, "port": port},
+        headers=headers,
+    )
+
+
+def test_unpinning_lets_a_rebuilt_machine_be_verified_again(tmp_path: Path, monkeypatch):
+    """The operation docs/operations.md used to describe as a SQL DELETE (#241).
+
+    A machine really is reinstalled, and the pin that no longer matches has to
+    be removable by whoever runs the fleet. If it is not, the way through is to
+    pass whatever fingerprint the target offered as ``expected_host_key``,
+    which leaves the check switched on and meaning nothing.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+
+    first = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert first.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, first.json()["deploy_id"])
+
+    # The machine is rebuilt: a different key answers, and the pinned run stops
+    # even though the request names the fingerprint the target is offering.
+    _stub_host_key(monkeypatch, OTHER_KEY)
+    blocked = client.post(
+        "/api/agent/deploy/ssh",
+        json=_deploy_payload(expected_host_key=OTHER_KEY.fingerprint),
+        headers=admin_hdrs,
+    )
+    assert blocked.status_code == 409
+
+    removed = _unpin(client, admin_hdrs)
+    assert removed.status_code == 200
+    # The receipt names the key that stopped being trusted.
+    assert removed.json()["fingerprint"] == HOST_KEY.fingerprint
+
+    # Unpinned is not re-trusted: the next run needs the fingerprint again.
+    assert (
+        client.post(
+            "/api/agent/deploy/ssh",
+            json=_deploy_payload(expected_host_key=None),
+            headers=admin_hdrs,
+        ).status_code
+        == 409
+    )
+
+    second = client.post(
+        "/api/agent/deploy/ssh",
+        json=_deploy_payload(expected_host_key=OTHER_KEY.fingerprint),
+        headers=admin_hdrs,
+    )
+    assert second.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, second.json()["deploy_id"])
+
+    probed = client.post(
+        "/api/agent/deploy/ssh/host-key",
+        json={"host": "192.168.10.50", "port": 22},
+        headers=admin_hdrs,
+    )
+    assert probed.json()["pinned"] is True
+    assert probed.json()["fingerprint"] == OTHER_KEY.fingerprint
+
+
+def test_the_pin_and_the_unpin_are_both_in_the_audit_trail(tmp_path: Path, monkeypatch):
+    """It is the *pair* that separates a planned rebuild from a substitution."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+
+    started = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert started.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, started.json()["deploy_id"])
+
+    assert _unpin(client, admin_hdrs).status_code == 200
+
+    events = _trust_changes(client, admin_hdrs)
+    assert [item["reason"] for item in events] == [
+        "ssh_host_key_unpinned",
+        "ssh_host_key_pinned",
+    ]
+    for item in events:
+        assert item["username"] == "admin"
+        assert "192.168.10.50:22" in item["detail"]
+        assert HOST_KEY.fingerprint in item["detail"]
+
+
+def test_unpinning_a_target_with_no_pin_is_404(tmp_path: Path, monkeypatch):
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+
+    assert _unpin(client, admin_hdrs).status_code == 404
+
+
+def test_unpinning_takes_admin_like_deploying(tmp_path: Path, monkeypatch):
+    """Deciding to stop trusting a key is not a smaller act than starting to."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    _record_ssh(monkeypatch)
+
+    started = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(), headers=admin_hdrs
+    )
+    assert started.status_code == 200
+    _wait_for_deploy(client, admin_hdrs, started.json()["deploy_id"])
+
+    for role in ("viewer", "operator"):
+        assert (
+            _unpin(client, auth_headers(client, username=role)).status_code == 403
+        ), role
+
+    # And the pin survived every one of those attempts.
+    probed = client.post(
+        "/api/agent/deploy/ssh/host-key",
+        json={"host": "192.168.10.50", "port": 22},
+        headers=admin_hdrs,
+    )
+    assert probed.json()["pinned"] is True

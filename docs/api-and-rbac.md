@@ -75,7 +75,12 @@ GET /api/auth/events?limit=100&outcome=failure&q=10.1.2.3
 ```
 
 Newest first, `Page` envelope like the other lists. `q` matches username or
-client IP; `outcome` filters to one of the four values. Rows older than
+client IP; `outcome` is one of `success`, `failure`, `locked`, `denied` (an
+authenticated principal refused an action — a scan or a deployment target
+outside the tenant's approved scope) or `trust_change` (an admin set or removed
+an SSH host-key pin, #241 — neither an attempt nor a refusal, and kept out of
+`success` so the login counter in `/metrics` keeps answering one question).
+Rows older than
 `OCTO_AUTH_EVENT_RETENTION_DAYS` (default 90) are pruned — but never while they
 are still inside the limiter's window, since the two settings are chosen
 independently and a short retention must not quietly weaken the lockout.
@@ -196,8 +201,9 @@ only source the Risk Overview trend chart reads
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
 | `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
-| `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `502` when the target cannot be read |
-| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side. The target's host key is resolved **synchronously first**: `409` if it is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
+| `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `403` for a host or port outside the deployment target policy (see below), `502` when the target cannot be read |
+| `DELETE /api/agent/deploy/ssh/host-key?host=…&port=22` | **admin** | Removes this tenant's pin for that target and answers with what was removed, so the fingerprint being dropped is in front of the operator. `404` when nothing was pinned. The next deployment needs `expected_host_key` again — a rebuilt machine is re-verified, never silently re-trusted. Both the removal and the next pin are in `GET /api/auth/events?outcome=trust_change` ([#241](https://github.com/onixus/Shapoclyack/issues/241)) |
+| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side. The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
 | `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id`. Scoped to the caller's tenant; a run in another tenant answers `404` |
 | `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential |
 
@@ -252,8 +258,25 @@ Three further properties of this group are worth knowing before it is used:
   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) rather than trusting the
   probe, and send it back. It is then pinned for that tenant and target, and
   later runs need nothing. A key that no longer matches the pin is a `409` that
-  reports both fingerprints; if the host really was rebuilt, delete the row in
-  `agent_ssh_host_keys` and pin the new key deliberately.
+  reports both fingerprints; if the host really was rebuilt, remove the pin with
+  `DELETE /api/agent/deploy/ssh/host-key` and pin the new key deliberately on
+  the next run.
+- **Where a deployment may point is a policy, not the request's choice**
+  ([#240](https://github.com/onixus/Shapoclyack/issues/240)). Both the probe and
+  the run open a TCP connection to a host and port from the request body, so
+  both are checked first. The check is deliberately *not* the webhook boundary:
+  an agent belongs inside a private network, so RFC1918 is the ordinary answer
+  here and refusing it would refuse the product. What is refused is this
+  platform's own reflection — loopback, link-local (`169.254.169.254` is a
+  metadata service, not a Linux box), multicast, the unspecified address — a
+  port outside `OCTO_AGENT_DEPLOY_SSH_PORTS`, and any host the tenant's
+  approved scan scope **denies**
+  ([#226](https://github.com/onixus/Shapoclyack/issues/226)): a prohibition that
+  stopped a scan but not an SSH connection from the same API would not be
+  recording anything. Containment in the *allowed* scope is opt-in
+  (`OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE`), because where an agent lives is not
+  the same question as what it is approved to scan. Every refusal is a `403`
+  and a row in `GET /api/auth/events?outcome=denied`.
 - **SSH credentials are request data.** The password or private key in
   `POST /api/agent/deploy/ssh` is used for the run and never stored, but it does
   cross the API. Prefer a key with a purpose-built account. The minted

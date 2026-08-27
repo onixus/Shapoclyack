@@ -16,7 +16,21 @@ run resolves the target's host key *before* a credential is sent:
   the operator verified out of band, which is then pinned for next time.
 
 The pin is per tenant (``agent_ssh_host_keys``): one tenant must not be able
-to decide which key another tenant's deployment will trust.
+to decide which key another tenant's deployment will trust. Removing a pin is
+:func:`unpin_host_key` and its route (#241) rather than a SQL statement: a
+machine really is rebuilt sometimes, and a legitimate operation that only the
+database can perform is one that ends up performed by handing ``expected_host_key``
+whatever the target offered, which switches the check off while leaving it on.
+
+**Where a deployment may point.** Both the probe and the run open a TCP
+connection to a host and port that came from a request body, so both go
+through :func:`assert_target_allowed` first (#240). That check is deliberately
+*not* the webhook boundary: an agent belongs inside a private network, so
+RFC1918 is the ordinary answer here and refusing it would refuse the product.
+What it refuses instead is the platform's own reflection — loopback,
+link-local, multicast — a port outside the configured SSH list, and any host
+the tenant's approved scan scope prohibits (#226). See
+``api/services/outbound_targets.py`` for the two policies side by side.
 
 Run state lives in ``agent_deployments`` rather than in this process (#223).
 The previous in-memory registry meant the status poll only answered on the
@@ -49,6 +63,9 @@ from api.db import models
 from api.db.engine import get_session
 from api.schemas import AgentDeploySSHRequest, AgentDeployStatusResponse, AgentSSHHostKeyInfo
 from api.services import agents as agents_service
+from api.services import auth_audit
+from api.services import outbound_targets
+from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -97,6 +114,16 @@ class HostKeyUnverified(ValueError):
 
 class HostKeyMismatch(ValueError):
     """The key the target offered is not the one this tenant pinned for it."""
+
+
+class DeployTargetDenied(PermissionError):
+    """This tenant may not open a connection to that host or port (#240).
+
+    A ``PermissionError`` for the same reason ``scan_scopes.ScanScopeDenied``
+    is one: the request is well-formed and the caller is authenticated, they
+    are simply not entitled to that target, so the route answers 403 rather
+    than 422.
+    """
 
 
 @dataclass(frozen=True)
@@ -161,6 +188,81 @@ def normalise_fingerprint(value: str) -> str:
     if not candidate.startswith("SHA256:"):
         candidate = f"SHA256:{candidate}"
     return candidate.rstrip("=")
+
+
+def _deny(actor: str, tenant_id: str, host: str, port: int, reason: str) -> DeployTargetDenied:
+    """Journal one refused target and return the exception to raise.
+
+    Best-effort like ``scan_scopes.record_denial``: the target has already been
+    refused when this runs, and losing the journal write must not turn a clean
+    403 into a 500 — but it is logged, because an access decision that left no
+    trace is itself worth noticing.
+    """
+    try:
+        auth_audit.record_denied(
+            username=actor,
+            reason=auth_audit.REASON_DEPLOY_TARGET,
+            detail=f"tenant={tenant_id} target={host}:{port} {reason}"[:1000],
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        LOG.exception(
+            "Failed to record the refused deployment target %s:%s for tenant %s",
+            host,
+            port,
+            tenant_id,
+        )
+    return DeployTargetDenied(reason)
+
+
+def assert_target_allowed(*, tenant_id: str, host: str, port: int, actor: str) -> None:
+    """Refuse a deployment target this tenant must not connect to (#240).
+
+    Two questions, in the order that makes the cheap one first:
+
+    1. Is this an address and port anything could legitimately be deployed on?
+       ``outbound_targets.ssh_deploy_policy`` accepts private space — that is
+       where agents live — and refuses the API pod's own reflection and any
+       port outside the configured SSH list.
+    2. Is *this tenant* allowed near this host? The approved scan scope (#226)
+       already answers that for scan targets, and a host a tenant was told not
+       to touch must not become reachable by another route. By default only the
+       scope's prohibitions apply; ``agent_deploy_enforce_scan_scope`` also
+       demands containment, which is a stricter claim than most fleets can
+       make (see ``scan_scopes.rejections_for_host``).
+
+    Raises :class:`DeployTargetDenied`; every refusal is journalled first.
+    """
+    settings = _require_settings()
+    policy = outbound_targets.ssh_deploy_policy(
+        allowed_ports=outbound_targets.parse_ports(settings.agent_deploy_ssh_ports)
+    )
+    try:
+        target = outbound_targets.resolve_target(host, port, policy=policy)
+    except outbound_targets.OutboundTargetError as exc:
+        raise _deny(actor, tenant_id, host, port, str(exc)) from exc
+
+    require_allow = settings.agent_deploy_enforce_scan_scope
+    scope = scan_scopes.load_scope(settings, tenant_id)
+    if require_allow:
+        try:
+            scope.require_approved()
+        except scan_scopes.ScanScopeDenied as exc:
+            raise _deny(actor, tenant_id, host, port, str(exc)) from exc
+    refused = scan_scopes.rejections_for_host(
+        scope,
+        host=target.hostname,
+        addresses=[str(address) for address in target.addresses],
+        deny_only=not require_allow,
+    )
+    if refused:
+        raise _deny(
+            actor,
+            tenant_id,
+            host,
+            port,
+            f"deployment target outside the approved scan scope of tenant "
+            f"{tenant_id}: {', '.join(refused)}",
+        )
 
 
 def _probe_with_paramiko(host: str, port: int, timeout: int) -> HostKey | None:
@@ -277,6 +379,104 @@ def get_pinned_host_key(tenant_id: str, host: str, port: int) -> AgentSSHHostKey
         )
 
 
+def describe_host_key(*, tenant_id: str, host: str, port: int, actor: str) -> AgentSSHHostKeyInfo:
+    """The pinned key for this target, or the one it is currently offering.
+
+    The policy check runs first and runs even when a pin already exists: a pin
+    records that this target was once approved, not that it still is, and the
+    tenant's scope may have been narrowed since (#240).
+    """
+    assert_target_allowed(tenant_id=tenant_id, host=host, port=port, actor=actor)
+    pinned = get_pinned_host_key(tenant_id, host, port)
+    if pinned is not None:
+        return pinned
+    key = probe_host_key(host, port)
+    return AgentSSHHostKeyInfo(
+        host=host,
+        port=port,
+        key_type=key.key_type,
+        fingerprint=key.fingerprint,
+        pinned=False,
+    )
+
+
+def unpin_host_key(*, tenant_id: str, host: str, port: int, actor: str) -> AgentSSHHostKeyInfo:
+    """Drop this tenant's pin for ``host:port`` and return what was removed (#241).
+
+    A machine is reinstalled, a box is replaced, a key is rotated — all
+    ordinary, and all of them leave a pin that no longer matches. Until this
+    route existed the only way through was a DELETE against the database,
+    which is a privilege the person running the agent fleet does not have and
+    should not need; the predictable substitute was to pass whatever
+    fingerprint the target offered as ``expected_host_key``, which leaves the
+    check switched on and meaning nothing.
+
+    The removal is journalled with the fingerprint that was dropped, and the
+    next deployment journals the one it pins. That *pair* is the point: one
+    unpin followed by a pin of a different key is either a rebuilt machine or a
+    substitution, and only the trail can tell the two apart afterwards.
+
+    Raises LookupError when this tenant has nothing pinned for the target — the
+    same answer as a target that was never deployed to, because the caller
+    learning which hosts another tenant pinned is the whole of what leaks here.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = _load_pin(session, tenant_id, host, port)
+        if row is None:
+            raise LookupError(f"no SSH host key pinned for {host}:{port}")
+        removed = AgentSSHHostKeyInfo(
+            host=row.host,
+            port=row.port,
+            key_type=row.key_type,
+            fingerprint=row.fingerprint,
+            # False: this is what the pin *was*. The caller is holding a receipt
+            # for a removal, not a description of current state.
+            pinned=False,
+            pinned_at=_iso(row.created_at),
+        )
+        session.delete(row)
+        session.flush()
+
+    _record_pin_change(
+        actor,
+        auth_audit.REASON_HOST_KEY_UNPINNED,
+        tenant_id=tenant_id,
+        host=host,
+        port=port,
+        key=removed.key_type,
+        fingerprint=removed.fingerprint,
+    )
+    return removed
+
+
+def _record_pin_change(
+    actor: str,
+    reason: str,
+    *,
+    tenant_id: str,
+    host: str,
+    port: int,
+    key: str,
+    fingerprint: str,
+) -> None:
+    """Journal a pin being set or removed. Best-effort, like ``_deny``."""
+    try:
+        auth_audit.record_trust_change(
+            username=actor,
+            reason=reason,
+            detail=f"tenant={tenant_id} target={host}:{port} {key} {fingerprint}"[:1000],
+        )
+    except Exception:  # noqa: BLE001 - a lost journal write must not fail the request
+        LOG.exception(
+            "Failed to record SSH host key %s for %s:%s (tenant %s)",
+            reason,
+            host,
+            port,
+            tenant_id,
+        )
+
+
 def _load_pin(session: Any, tenant_id: str, host: str, port: int) -> Any:
     return session.execute(
         select(models.AgentSshHostKey).where(
@@ -293,6 +493,7 @@ def resolve_host_key(
     host: str,
     port: int,
     expected_fingerprint: str | None,
+    actor: str,
 ) -> tuple[HostKey, bool]:
     """Decide which host key this run is allowed to talk to.
 
@@ -301,6 +502,10 @@ def resolve_host_key(
     the run before a credential exists.
     """
     settings = _require_settings()
+    # Before the socket, not after: an unreachable-target message is still an
+    # answer about the network behind this API, so the target has to be one
+    # this tenant may point at at all (#240).
+    assert_target_allowed(tenant_id=tenant_id, host=host, port=port, actor=actor)
     live = probe_host_key(host, port)
 
     with get_session(settings.postgres_url) as session:
@@ -348,7 +553,19 @@ def resolve_host_key(
             )
         )
         session.flush()
-        return live, True
+
+    # Outside the session: the pin is the fact being journalled, so it is
+    # journalled once it is committed rather than once it is staged.
+    _record_pin_change(
+        actor,
+        auth_audit.REASON_HOST_KEY_PINNED,
+        tenant_id=tenant_id,
+        host=host,
+        port=port,
+        key=live.key_type,
+        fingerprint=live.fingerprint,
+    )
+    return live, True
 
 
 def _known_hosts_line(host: str, port: int, key: HostKey) -> str:
@@ -772,7 +989,7 @@ def _deploy_worker(
         _update_stage(deploy_id, status="failed", stage="Fatal error", error=err_msg)
 
 
-def start_ssh_deployment(req: AgentDeploySSHRequest, server_url: str) -> str:
+def start_ssh_deployment(req: AgentDeploySSHRequest, server_url: str, *, actor: str) -> str:
     """Verify the target's host key, then queue the push deployment.
 
     The host key is resolved **before** the run row exists, and synchronously,
@@ -786,6 +1003,7 @@ def start_ssh_deployment(req: AgentDeploySSHRequest, server_url: str) -> str:
         host=req.host,
         port=req.port,
         expected_fingerprint=req.expected_host_key,
+        actor=actor,
     )
 
     deploy_id = f"dep_{uuid.uuid4().hex[:12]}"

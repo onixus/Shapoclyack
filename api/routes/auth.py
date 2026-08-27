@@ -104,13 +104,18 @@ def list_auth_events(
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
     outcome: Annotated[
         str | None,
-        Query(pattern="^(success|failure|locked|denied)$", description="Filter by outcome"),
+        Query(
+            pattern="^(success|failure|locked|denied|trust_change)$",
+            description="Filter by outcome",
+        ),
     ] = None,
 ) -> Page[AuthEventInfo]:
     """Recent access decisions, newest first (#157). Platform admin only.
 
-    Logins, and since #226 the scans refused by a tenant's approved scanning
-    scope (``outcome=denied``) — one trail, because they are one question.
+    Logins; since #226 the scans and (since #240) the deployment targets
+    refused by a tenant's approved scanning scope (``outcome=denied``); and
+    since #241 the SSH host-key pins an admin set or removed
+    (``outcome=trust_change``) — one trail, because they are one question.
 
     ``q`` matches username or client IP. Always newest-first: this is a log,
     and the ``sort``/``order`` parameters the other lists take would only offer
