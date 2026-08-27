@@ -857,9 +857,6 @@ def test_a_port_outside_the_configured_ssh_list_is_refused(tmp_path: Path, monke
 
 def test_an_installation_may_reopen_the_full_port_range(tmp_path: Path, monkeypatch):
     """The restriction is a default, not a wall: a fleet on 2022 says so."""
-    # Passed to configured_client rather than to make_settings: the client
-    # builds the Settings the services are configured with, so an override the
-    # deployer must read has to go through it.
     client = configured_client(tmp_path, monkeypatch, agent_deploy_ssh_ports="*")
     admin_hdrs = auth_headers(client, username="admin")
     _stub_host_key(monkeypatch)
@@ -950,8 +947,8 @@ def test_a_host_merely_outside_the_allowed_scope_still_deploys_by_default(
 def test_an_installation_may_demand_the_target_be_inside_the_approved_scope(
     tmp_path: Path, monkeypatch
 ):
-    settings = make_settings(tmp_path)
-    client = configured_client(tmp_path, monkeypatch, agent_deploy_enforce_scan_scope=True)
+    settings = make_settings(tmp_path, agent_deploy_enforce_scan_scope=True)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
     admin_hdrs = auth_headers(client, username="admin")
     _stub_host_key(monkeypatch)
     _record_ssh(monkeypatch)
