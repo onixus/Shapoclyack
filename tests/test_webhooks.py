@@ -408,6 +408,27 @@ def test_an_open_claim_does_not_hide_the_rest_of_the_queue(settings):
     assert sorted(seen) == sorted(set(ids) - {held_id})
 
 
+def test_disabling_a_subscription_holds_its_queued_backlog(settings):
+    """The #151 kill switch covers what is already queued, not just new events.
+
+    Pinned here because #238 narrows the claim's lock to ``webhook_deliveries``:
+    the enabled-at-claim-time filter is the half of that query that must not
+    move, and nothing else asserted it.
+    """
+    subscription = _subscribe(settings)
+    delivery_id = webhooks.enqueue_event(_event())[0]
+    webhooks.update_subscription(subscription["subscription_id"], enabled=False)
+
+    assert webhooks.dispatch_once(post=_ok)["attempted"] == 0
+    held = webhooks.get_delivery(delivery_id)
+    assert held["status"] == "pending"
+    # Switched off is not a delivery attempt: the retry budget is untouched.
+    assert held["attempts"] == 0
+
+    webhooks.update_subscription(subscription["subscription_id"], enabled=True)
+    assert webhooks.dispatch_once(post=_ok)["delivered"] == 1
+
+
 def test_requeue_puts_a_dead_delivery_back_in_the_queue(settings):
     settings.webhook_max_attempts = 1
     _subscribe(settings)
