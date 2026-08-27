@@ -136,6 +136,7 @@ pipeline {
                   -f ${m.dockerfile} \
                   --build-arg INSTALL_NMAP=${m.nmap} \
                   --build-arg PULSE_VERSION=${PULSE_VERSION} \
+                  --build-arg ENRICHMENT_STRICT=1 \
                   --secret id=github_token,env=GH_TOKEN \
                   --provenance mode=max --sbom true \
                   -t ${m.image}:${version}${m.suffix} \

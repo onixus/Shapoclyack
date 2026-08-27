@@ -750,6 +750,17 @@ class EnrichmentDb(BaseModel):
     modified_at: datetime | None = None
     age_days: float | None = None
     stale: bool = False
+    # Provenance recorded when the data was fetched (#246). Age alone cannot
+    # tell a freshly-pulled corpus from a committed baseline that no fetch has
+    # ever managed to replace. All optional: an image built before the manifest
+    # existed, or a volume with no manifest on it, reports None for each.
+    source: str | None = None
+    # "fetch" (this dataset was refreshed), "seed" (whatever the image shipped),
+    # "stale" (a refresh was attempted and failed), or "missing".
+    origin: str | None = None
+    # The date the feed itself stamped on the data, not the file's mtime.
+    updated: str | None = None
+    entries: int | None = None
 
 
 class ScanConfigSummary(BaseModel):

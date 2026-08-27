@@ -187,6 +187,37 @@ looks more defensive than a paging loop ought to.
   About 1,900 entries do come from CVEs published before 2024, added
   retroactively by CNAs, which is why `--full` does not skip the older corpus.
 
+### Provenance: what the image actually shipped
+
+Every refresh writes `enrichment-manifest.json` next to the data, recording per
+dataset where the bytes came from (`source`), the date the feed itself stamped
+on them (`updated`), how many entries they hold, and — the field that matters —
+`origin`:
+
+| `origin` | Meaning |
+|---|---|
+| `fetch` | This run pulled the dataset from its source |
+| `seed` | The committed baseline, never replaced by a fetch |
+| `stale` | A fetch was attempted and failed; the previous data is still in place |
+| `missing` | No data at this path at all |
+
+`GET /api/system` reports these alongside `age_days` on every enrichment entry
+(`null` for an image built before the manifest existed, or a volume without
+one). Set `OCTO_ENRICHMENT_MANIFEST` when the enrichment volume is mounted
+somewhere other than `scanner/data/`.
+
+This exists because age alone cannot answer the question operators actually
+have. A build whose EPSS fetch returned `403` ships the committed baseline and
+is, from outside, identical to one that pulled a fresh corpus — the same file,
+in the same place, with a build-time mtime
+([#246](https://github.com/onixus/Shapoclyack/issues/246)).
+
+`scripts/fetch-enrichment.sh` exits `0` when everything refreshed, `1` when a
+source was unreachable but every required dataset still holds usable data, and
+`2` when a required dataset (`cvss4`, `epss`, `kev`, `exploit`) is absent or is
+a handful-of-CVEs stub. Only the last is fatal, and only for a release build —
+see [operations](operations.md#enrichment-data-in-a-release-build).
+
 ## Startup safety: `OCTO_ENV`
 
 The API runs as **`prod`** unless told otherwise, and a `prod` process **refuses

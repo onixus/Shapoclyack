@@ -1,0 +1,71 @@
+{
+  "datasets": {
+    "asn": {
+      "origin": "missing",
+      "path": "scanner/data/asn/asn.mmdb",
+      "present": false,
+      "required": false,
+      "size_bytes": null,
+      "source": null,
+      "usable": false
+    },
+    "cvss4": {
+      "entries": 31715,
+      "error": null,
+      "min_entries": 1000,
+      "origin": "seed",
+      "path": "scanner/data/cvss4/cvss4.json",
+      "present": true,
+      "required": true,
+      "source": "nvd-api-2.0",
+      "updated": "2026-08-07",
+      "usable": true
+    },
+    "epss": {
+      "entries": 365017,
+      "error": null,
+      "min_entries": 1000,
+      "origin": "seed",
+      "path": "scanner/data/epss/epss-overlay.json",
+      "present": true,
+      "required": true,
+      "source": "first-epss",
+      "updated": "2026-08-26",
+      "usable": true
+    },
+    "exploit": {
+      "entries": 25943,
+      "error": null,
+      "min_entries": 1000,
+      "origin": "seed",
+      "path": "scanner/data/exploit/exploit-overlay.json",
+      "present": true,
+      "required": true,
+      "source": "exploit-db+metasploit",
+      "updated": null,
+      "usable": true
+    },
+    "geoip": {
+      "origin": "missing",
+      "path": "scanner/data/geoip/geoip.mmdb",
+      "present": false,
+      "required": false,
+      "size_bytes": null,
+      "source": null,
+      "usable": false
+    },
+    "kev": {
+      "entries": 1676,
+      "error": null,
+      "min_entries": 100,
+      "origin": "seed",
+      "path": "scanner/data/kev/kev-overlay.json",
+      "present": true,
+      "required": true,
+      "source": "cisa-kev",
+      "updated": "2026-08-25",
+      "usable": true
+    }
+  },
+  "generated_at": "2026-08-27T04:40:14+00:00"
+}

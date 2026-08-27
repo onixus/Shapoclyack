@@ -21,6 +21,11 @@
 #   - Each source is independent and non-fatal: a failing fetch is logged and
 #     skipped rather than aborting the others, so e.g. no MAXMIND_LICENSE_KEY
 #     or a transient network blip on one feed doesn't block the rest.
+#   - "Source unreachable" and "no data at all" are *different* outcomes, and
+#     the exit code says which (0 / 1 / 2 — see the tail of this script). Every
+#     run also writes an enrichment-manifest.json recording, per dataset, where
+#     the bytes came from and how many entries they hold, which is what makes a
+#     silently-degraded image distinguishable from a fresh one (#246).
 #
 # GeoIP source selection: MaxMind GeoLite2-City if MAXMIND_LICENSE_KEY is set
 # (more accurate, needs a free account), else DB-IP City Lite (no key).
@@ -34,19 +39,26 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${OCTO_ENRICHMENT_DIR:-scanner/data}"
 
-status=0
+# Datasets this run actually refreshed vs. the ones whose fetch failed. The
+# bytes on disk look the same either way, so this is the only place that knows
+# the difference -- it is handed to scripts/enrichment_manifest.py, which
+# records it in the image so GET /api/system can report where each dataset came
+# from instead of only its age (#246).
+refreshed=""
+failed=""
 run() {
-  local label="$1"; shift
+  local name="$1" label="$2"; shift 2
   echo "==> ${label}"
   if "$@"; then
     echo "==> ${label}: ok"
+    refreshed="${refreshed},${name}"
   else
     echo "==> ${label}: FAILED (continuing)" >&2
-    status=1
+    failed="${failed},${name}"
   fi
 }
 
-mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev"
+mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev" "$DEST/exploit"
 
 # Floor: copy any missing seed file to DEST so scoring never runs with zero
 # data even if every fetch below fails (e.g. no network egress). GeoIP is
@@ -62,10 +74,15 @@ SEED_DIR="${OCTO_ENRICHMENT_SEED_DIR:-/opt/shapoclyack/seed-data}"
 if [[ ! -d "$SEED_DIR" ]]; then
   SEED_DIR="$ROOT/scanner/data"
 fi
+# exploit-overlay.json has no fetch step here (scripts/fetch-exploit-db.py is
+# run deliberately, not daily), so the floor is the *only* way it reaches a
+# mounted enrichment volume — without it, exploit-maturity scoring on a k8s
+# deployment reads an absent overlay and reports "nobody asked" for every CVE.
 for pair in \
   "cvss4/cvss4.json" \
   "epss/epss-overlay.json" \
-  "kev/kev-overlay.json"; do
+  "kev/kev-overlay.json" \
+  "exploit/exploit-overlay.json"; do
   src="$SEED_DIR/$pair"
   dst="$DEST/$pair"
   # Same file (source checkout with no volume mounted): nothing to floor.
@@ -80,20 +97,21 @@ done
 # enrichment.geoip.database / OCTO_GEOIP_DATABASE can point at a stable path
 # even if MAXMIND_LICENSE_KEY is added/removed between refreshes.
 GEOIP_MMDB="$DEST/geoip/geoip.mmdb"
+# Also recorded in the manifest: the two providers produce the same file name in
+# the same format, so nothing about the .mmdb on disk says which one wrote it.
 if [[ -n "${MAXMIND_LICENSE_KEY:-}" ]]; then
-  run "geoip (maxmind)" "$ROOT/scripts/fetch-geoip-db.sh" --provider maxmind -o "$GEOIP_MMDB"
+  MMDB_PROVIDER="maxmind"
 else
-  run "geoip (dbip)" "$ROOT/scripts/fetch-geoip-db.sh" --provider dbip -o "$GEOIP_MMDB"
+  MMDB_PROVIDER="dbip"
 fi
+run geoip "geoip (${MMDB_PROVIDER})" "$ROOT/scripts/fetch-geoip-db.sh" \
+  --provider "$MMDB_PROVIDER" -o "$GEOIP_MMDB"
 
 # ASN/org database (attack-surface graph clustering); same stable-path,
 # provider-by-key convention as GeoIP above.
 ASN_MMDB="$DEST/asn/asn.mmdb"
-if [[ -n "${MAXMIND_LICENSE_KEY:-}" ]]; then
-  run "asn (maxmind)" "$ROOT/scripts/fetch-asn-db.sh" --provider maxmind -o "$ASN_MMDB"
-else
-  run "asn (dbip)" "$ROOT/scripts/fetch-asn-db.sh" --provider dbip -o "$ASN_MMDB"
-fi
+run asn "asn (${MMDB_PROVIDER})" "$ROOT/scripts/fetch-asn-db.sh" \
+  --provider "$MMDB_PROVIDER" -o "$ASN_MMDB"
 
 # Incremental, not --full: the committed scanner/data/cvss4/cvss4.json (baked
 # into every image) is the baseline, and this only layers on what NVD changed
@@ -105,14 +123,26 @@ fi
 # a database: the floor above only fires when the file is absent, so without
 # this an upgrade to an image with a bigger baseline would never reach an
 # existing volume. Existing entries always win over the baseline.
-run "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
+run cvss4 "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
   --seed "$SEED_DIR/cvss4/cvss4.json" -o "$DEST/cvss4/cvss4.json"
-run "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
-run "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
+run epss "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
+run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
 
-if [[ $status -eq 0 ]]; then
-  echo "All enrichment sources refreshed under $DEST"
-else
-  echo "One or more enrichment sources failed — existing/seed data under $DEST is still in place" >&2
-fi
+# Record what is actually on disk now, and let the manifest decide the exit
+# code. The three outcomes are deliberately not the same thing:
+#   0  every source refreshed
+#   1  a source was unreachable, but every required dataset still holds usable
+#      data (a warning: a foreign server being down must not fail a build)
+#   2  a required dataset is missing or is a demo stub — the risk model would
+#      be scoring blind, which is what a release build has to refuse (#246)
+python3 "$ROOT/scripts/enrichment_manifest.py" --dir "$DEST" \
+  --refreshed "$refreshed" --failed "$failed" \
+  --source "geoip=$MMDB_PROVIDER" --source "asn=$MMDB_PROVIDER"
+status=$?
+
+case $status in
+  0) echo "All enrichment sources refreshed under $DEST" ;;
+  1) echo "One or more enrichment sources failed — existing/seed data under $DEST is still in place" >&2 ;;
+  *) echo "A required enrichment dataset under $DEST has no usable data (see the manifest above)" >&2 ;;
+esac
 exit $status
