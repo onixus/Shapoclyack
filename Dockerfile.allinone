@@ -210,5 +210,9 @@ RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
 USER octo
 
 EXPOSE 8080
+# CIS Docker Benchmark 4.6/5.27: in-image liveness check for docker/compose
+# runs; under k8s the probes in api-deployment.yaml remain authoritative.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('OCTO_API_PORT', '8080'), timeout=4)"]
 VOLUME ["/app/scanner/inputs", "/app/scanner/output", "/app/scanner/state", "/app/scanner/config"]
 CMD ["python", "-m", "api"]
