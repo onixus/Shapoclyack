@@ -417,6 +417,35 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **A webhook claim expired mid-batch, so a peer re-sent a delivery still in
+  flight** ([#255](https://github.com/onixus/Shapoclyack/issues/255)) — the
+  visibility window was computed twice with two different answers. The live
+  claim (`secure_webhooks._claim_due`, the facade the package exports as
+  `webhooks`) used a fixed `max(30, timeout * 3)`, while the batch-aware
+  `claim_visibility_seconds` sat on a second, shadowed copy of the dispatch
+  loop in `webhooks.py` that nothing called. A batch is POSTed serially, so 50
+  deliveries at `OCTO_WEBHOOK_TIMEOUT_SECONDS=10` take up to 500 seconds under
+  a 30-second lease: the row became due again while it was still being sent,
+  and the next replica claimed and re-sent it — the duplicate POST #152
+  forbids, reached without any race on the claim. The window is now computed in
+  one place and covers one timeout per claimed row plus two of slack. The
+  shadowed `dispatch_once`/`_claim_due` pair is deleted rather than kept in
+  sync: editing it fixed nothing, which is time already lost once while
+  diagnosing #238.
+
+- **An exception in the middle of a batch left its tail claimed and unsent**
+  ([#256](https://github.com/onixus/Shapoclyack/issues/256)) — `dispatch_once`
+  guarded the wire call, but a raise from recording an outcome, from a metric
+  or from the ticket back-link broke the loop with the whole batch already
+  claimed: `attempts` incremented and `next_attempt_at` pushed out by the
+  visibility window. Those rows waited out the window unsent, with nothing in
+  the log saying a delivery had failed, because none had been attempted. The
+  loop now hands the rows it never reached back to the queue through the same
+  release path the #151 kill switch uses — pending, due immediately, and with
+  the retry budget untouched, since no attempt was made — then re-raises. The
+  delivery whose outcome was lost deliberately keeps its claim: its POST may
+  have arrived, and re-sending it at once would be the very duplicate above.
+
 - **Concurrent webhook dispatchers starved each other instead of dividing the
   queue** ([#238](https://github.com/onixus/Shapoclyack/issues/238)) — the
   kill-switch claim added in #151 joins `webhook_subscriptions` so a disabled
