@@ -192,6 +192,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **A schedule is checked against the approved scan scope when it is written**
+  ([#244](https://github.com/onixus/Shapoclyack/issues/244)) — schedules were
+  validated only at dispatch, so an operator who saved one outside their
+  tenant's scope learned about it hours later, and only by noticing that no scan
+  had run: the evidence was an absence. `POST /api/schedules` and
+  `PATCH /api/schedules/{id}` now answer `403` with the offending target named,
+  the same refusal `POST /api/jobs` gives for the same target, and the decision
+  goes to the access-decision journal like every other one. The dispatch-time
+  check stays and is still the one that decides — a scope narrowed after the
+  schedule was saved has to stop it, which only a check at dispatch can do.
+  Names are deliberately *not* resolved at write time: what a record points at
+  now says nothing about what it will point at when the schedule fires, and
+  that question belongs to dispatch and to the scanner's own filter.
+
 - **The approved scan scope is now enforced on what is scanned, not only on
   what was asked for** ([#244](https://github.com/onixus/Shapoclyack/issues/244)) —
   [#226](https://github.com/onixus/Shapoclyack/issues/226) authorized targets at
