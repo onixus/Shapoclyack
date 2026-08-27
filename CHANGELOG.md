@@ -446,6 +446,20 @@ All notable changes to Shapoclyack are documented in this file.
   delivery whose outcome was lost deliberately keeps its claim: its POST may
   have arrived, and re-sending it at once would be the very duplicate above.
 
+- **The test fixtures silently discarded a `Settings` object handed to them**
+  ([#254](https://github.com/onixus/Shapoclyack/issues/254)) — `make_settings`
+  applied overrides with a bare `setattr`, which on a dataclass invents any
+  attribute asked for, and `configured_client` forwarded `**overrides` into it.
+  So `configured_client(tmp_path, monkeypatch, settings=settings)` — the form
+  24 call sites in `tests/test_agent_lifecycle_management.py` use — set a
+  meaningless `settings` attribute on a *fresh* `Settings` and configured the
+  services with that one, at its defaults; the object the test had built was
+  dropped. A misspelled field name went the same way: applied, never read, test
+  green. `make_settings` now raises `TypeError` naming any key that is not a
+  declared `Settings` field, and `configured_client` takes a ready object as an
+  explicit `settings=` parameter, refusing the contradiction of an object plus
+  overrides. Test-only change; no runtime behaviour is affected.
+
 - **Concurrent webhook dispatchers starved each other instead of dividing the
   queue** ([#238](https://github.com/onixus/Shapoclyack/issues/238)) — the
   kill-switch claim added in #151 joins `webhook_subscriptions` so a disabled
