@@ -386,6 +386,37 @@ All notable changes to Shapoclyack are documented in this file.
   the full runs. The claim now locks `webhook_deliveries` only (`FOR UPDATE OF
   … SKIP LOCKED`); the enabled-at-claim-time filter is unchanged.
 
+- **Enrichment data failed to download during image builds, and the build said
+  so only in passing** ([#246](https://github.com/onixus/Shapoclyack/issues/246)) —
+  all eight vulscan CVE databases had been answering `403` since
+  `www.computec.ch` moved behind a Cloudflare managed challenge, which rejects
+  every non-browser client regardless of User-Agent (`cf-mitigated: challenge`).
+  `scripts/fetch-vulscan-db.sh` now reads them from `scipag/vulscan` on GitHub —
+  the same maintainer publishing the same files — with computec.ch kept as a
+  fallback, `VULSCAN_BASE_URLS` to override the list for closed networks, and a
+  content check so a mirror answering `200` with an HTML page can never
+  overwrite a good database.
+  The larger defect was that the image shipped anyway and was indistinguishable
+  from one built with fresh data. Every refresh now writes an
+  `enrichment-manifest.json` beside the data recording, per dataset, its source,
+  the date the feed stamped on it, its entry count, and whether this build
+  actually fetched it (`fetch`) or fell back to what was already there (`seed` /
+  `stale` / `missing`). `GET /api/system` reports those four fields on each
+  enrichment entry — additive and `null` on images built before the manifest
+  existed. `scripts/fetch-enrichment.sh` also separates the two failures it used
+  to merge: a source being unreachable stays a warning (exit `1`), while a
+  required dataset that is absent or is a stub exits `2` and fails a build with
+  `ENRICHMENT_STRICT=1`, which `Jenkinsfile.publish` sets for release images and
+  dev builds leave off. The seed floor now also covers `exploit-overlay.json`,
+  which a mounted enrichment volume previously shadowed with nothing, leaving
+  exploit-maturity scoring reading an absent overlay.
+  The same build log's `==> cvss4: FAILED` turned out **not** to be a 403 at
+  all: run as a script, `scripts/fetch-cvss4-db.py` had `scripts/` rather than
+  the repo root on `sys.path`, so `from scanner.pipeline.cvss4 import …` raised
+  before it parsed an argument — every documented invocation of it, the daily
+  CronJob included, had been failing this way. The script now puts the repo root
+  on the path itself.
+
 - **`python -m agent.worker` started nothing and exited 0** — the module
   defined `main()` but had no `if __name__ == "__main__"` guard, so running it
   directly imported the file, built no parser, contacted no API, and returned

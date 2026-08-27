@@ -28,6 +28,15 @@ before distributing that tag further.
 | nmap-vulners | Git reference | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE vulnerability lookup |
 | Vulscan | Git reference | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE scripts and local data |
 
+**Vulscan's CVE databases no longer come from computec.ch.** Vulscan's own
+`update.sh` downloads its eight CSV databases from `www.computec.ch`, which now
+sits behind a Cloudflare managed challenge: every non-browser client gets
+`HTTP 403` with a `cf-mitigated: challenge` header, regardless of User-Agent.
+`scripts/fetch-vulscan-db.sh` therefore pulls them from `scipag/vulscan` on
+GitHub — the same maintainer, the same files, at the same GPL-3.0 terms as the
+pinned clone the images already ship. `VULSCAN_BASE_URLS` overrides the source
+list for closed networks; computec.ch remains the second entry in the default.
+
 ## Base runtime
 
 The Python images derive from `python:3.12-slim` and include Debian packages.

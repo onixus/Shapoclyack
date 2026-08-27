@@ -704,6 +704,51 @@ availability to zero. Production overlays that need drain-friendly maintenance
 should run two or more API replicas; the scheduler is already protected by its
 PostgreSQL advisory-lock leadership mechanism.
 
+## Enrichment data in a release build
+
+Image builds refresh GeoIP/ASN/CVSS4/EPSS/KEV before the image is sealed. A
+third-party feed being down does not fail that build and should not: refusing to
+produce an image because someone else's server is having a bad day trades a
+small problem for a larger one. What changed
+([#246](https://github.com/onixus/Shapoclyack/issues/246)) is that it no longer
+happens quietly.
+
+Two outcomes, deliberately not the same thing:
+
+- **A source was unreachable.** The previous data — the last good refresh, or
+  the committed baseline — is still in place and still usable. The build prints
+  a warning, `scripts/fetch-enrichment.sh` exits `1`, and the manifest records
+  `origin: stale` for the datasets it could not refresh. `GET /api/system`
+  reports that per dataset, so the degradation is visible on a running install
+  and not only in a build log.
+- **A required dataset is missing or is a stub.** `cvss4`, `epss`, `kev` and
+  `exploit` feed the risk model; with a handful of CVEs in them it keeps issuing
+  confident verdicts while knowing almost nothing. The script exits `2`.
+
+The second one fails a **release** build and warns on a dev build. The switch is
+the `ENRICHMENT_STRICT` build argument, which defaults to `0`; the publish
+pipeline (`Jenkinsfile.publish`) passes `1` for every image in the matrix. That
+line is drawn at publication rather than at CI because a published image outlives
+everyone's memory of the log that built it — a branch build is inspected the day
+it runs, `ghcr.io/onixus/shapoclyack-aio:latest` is pulled for months.
+
+```bash
+# Reproduce the release gate locally.
+docker build --build-arg ENRICHMENT_STRICT=1 -f Dockerfile.allinone -t shapo-aio:strict .
+
+# Check what a built image actually shipped, without starting it.
+docker run --rm shapo-aio:strict cat /app/scanner/data/enrichment-manifest.json
+
+# …or on a running install, which also covers a mounted enrichment volume.
+curl -sH "Authorization: Bearer $TOKEN" http://localhost:8000/api/system \
+  | jq '.enrichment[] | {name, origin, source, updated, entries, age_days}'
+```
+
+An `origin` of `stale` or `seed` on a freshly deployed release is the signal to
+look at the build log or run the refresh CronJob by hand
+(`k8s/shapoclyack/base/enrichment/cronjob.yaml`) — the data is usable, but it is
+not what the release intended to ship.
+
 ## Upgrade and rollback
 
 ### One supported path to the current schema
