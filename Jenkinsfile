@@ -256,16 +256,26 @@ pipeline {
 
         stage('Trivy') {
           steps {
+            // Кэш — на джобу, а не общий том `trivy-db` на всех. Trivy берёт
+            // на своём кэше блокировку, поэтому две сборки разных веток
+            // одновременно роняли друг друга с "Failed to acquire cache or
+            // database lock" — тот же класс, что общий тег образа: ресурс один,
+            // а джоб теперь много. Воркспейс уже свой у каждой джобы, так что
+            // кэш переиспользуется между сборками одной ветки и ни с кем не
+            // делится. Цена — первая сборка новой ветки скачивает базу заново.
             sh """
               set -eu
+              mkdir -p "\$WORKSPACE/.trivy-cache"
+
               # Отчёт — не блокирующий
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v trivy-db:/root/.cache/trivy aquasec/trivy:latest image \
+                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy aquasec/trivy:latest image \
                 --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${IMAGE_TAG}
 
               # Гейт — падаем на исправимых CRITICAL
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v trivy-db:/root/.cache/trivy -v "\$WORKSPACE/.trivyignore":/.trivyignore \
+                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                -v "\$WORKSPACE/.trivyignore":/.trivyignore \
                 aquasec/trivy:latest image \
                 --format table --severity CRITICAL --ignore-unfixed \
                 --ignorefile /.trivyignore --exit-code 1 ${IMAGE_TAG}
