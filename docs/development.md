@@ -217,6 +217,13 @@ does not help: it is per job.
 quotes leave it to the shell, which has no such variable, and the tag silently
 becomes empty. Either use `sh """…"""` or pass the value through `withEnv`.
 
+**Shared caches must be per job.** Trivy takes a lock on its cache directory, so
+the single `trivy-db` volume every build mounted made two branch builds kill each
+other with `Failed to acquire cache or database lock`. The cache now lives in the
+workspace, which is already per job. This is the same class as the shared image
+tag: one resource, many jobs. Before adding any named volume, ask what happens
+when two branches build at once.
+
 **The Python matrix runs sequentially, on one agent.** When the two cells ran in
 parallel they each took their own workspace and cloned the repository at the same
 time, and that clone failed intermittently with `inflate: data stream error`,
