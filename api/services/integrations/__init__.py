@@ -7,10 +7,13 @@ bounded retries, a dead-letter queue and a delivery audit trail.
 Module split:
   - ``delivery.py``  — the wire: URL validation (SSRF), HMAC signing, one POST
                        and the classification of its outcome. No database.
-  - ``webhooks.py``  — subscriptions, routing policy, the delivery queue, and
-                       the dispatch/retention sweeps. No NATS, no HTTP.
+  - ``webhooks.py``  — subscriptions, routing policy, the delivery queue, the
+                       retention sweep and the state machine the dispatch loop
+                       drives. No NATS, no HTTP.
   - ``secure_webhooks.py`` — P0 security facade for write-only header values
-                       and the subscription disable kill switch.
+                       and the subscription disable kill switch.  Claiming has
+                       to filter on that kill switch, so the dispatch loop
+                       lives here too — and only here (#255).
   - ``webhook_worker.py`` — the two background threads that connect the two:
                        a JetStream consumer that enqueues, and a timer that
                        dispatches.

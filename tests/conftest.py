@@ -17,6 +17,7 @@ cannot express without restructuring every test.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -84,7 +85,13 @@ def make_settings(tmp_path: Path, **overrides: Any) -> "Settings":
         jwt_secret=TEST_JWT_SECRET,
         postgres_url=POSTGRES_URL,
     )
+    known = {f.name for f in dataclasses.fields(base)}
     for key, value in overrides.items():
+        # A typo used to be applied silently — ``setattr`` on a dataclass
+        # invents the attribute, the app keeps the default, and the test reads
+        # as if it had configured something (#254).
+        if key not in known:
+            raise TypeError(f"unknown Settings field: {key!r}")
         setattr(base, key, value)
     return base
 
@@ -184,18 +191,35 @@ def api_client() -> "TestClient":
     return TestClient(create_app())
 
 
-def configured_client(tmp_path: Path, monkeypatch, **overrides: Any) -> "TestClient":
+def configured_client(
+    tmp_path: Path,
+    monkeypatch,
+    settings: "Settings | None" = None,
+    **overrides: Any,
+) -> "TestClient":
     """A client over test-owned ``Settings``, with service state reset.
 
     Patches both ``api.auth.load_settings`` and ``api.app.get_settings``: the
     auth layer resolves settings independently of the app, so patching only one
     leaves requests authenticating against a different config than they run on.
+
+    A test that needs the same object the app runs on — to read ``agent_token``
+    off it, or to hand it to :func:`approve_scan_scope` — builds it with
+    :func:`make_settings` and passes it as ``settings``; anything else passes
+    field overrides. Passing both is a contradiction, not a merge: before #254
+    ``settings=`` fell into ``**overrides`` and the ready object was dropped.
     """
     from fastapi.testclient import TestClient
 
     from api.app import create_app
 
-    settings = make_settings(tmp_path, **overrides)
+    if settings is not None and overrides:
+        raise TypeError(
+            "pass either a ready Settings object or field overrides, not both: "
+            f"{sorted(overrides)}"
+        )
+    if settings is None:
+        settings = make_settings(tmp_path, **overrides)
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     settings.state_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("api.auth.load_settings", lambda: settings)
