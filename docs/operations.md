@@ -461,12 +461,42 @@ tenant and target, and later deployments need no fingerprint.
 
 A host whose key no longer matches the pin is a `409` naming both fingerprints,
 and nothing is sent to it. If the host genuinely was rebuilt, confirm that with
-whoever owns it, delete the row and pin the new key deliberately:
+whoever owns it, then drop the pin — tenant **admin**, the same bar as
+deploying ([#241](https://github.com/onixus/Shapoclyack/issues/241)):
 
-```sql
-DELETE FROM agent_ssh_host_keys
- WHERE tenant_id = 'ten_acme' AND host = '10.0.0.5' AND port = 22;
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "$OCTO_API/api/agent/deploy/ssh/host-key?host=10.0.0.5&port=22"
 ```
+
+The response is the pin that was removed, so the fingerprint you stopped
+trusting is in front of you. The next deployment to that host needs
+`expected_host_key` again, which is the point: a rebuilt machine is re-verified
+against the target rather than silently re-trusted.
+
+This used to be a `DELETE` against `agent_ssh_host_keys` in Postgres. That
+required database access — a privilege an order of magnitude above running an
+agent fleet — so the predictable substitute was to pass whatever fingerprint
+the target offered as `expected_host_key`, which leaves the check switched on
+and meaning nothing. **Do not do that.** Read the key on the host itself.
+
+Both halves are journalled: the removal and the pin that replaces it appear in
+`GET /api/auth/events?outcome=trust_change` (platform admin), each with the
+tenant, the target and the fingerprint. That *pair* is what separates a planned
+rebuild from a substitution after the fact — one host, two fingerprints, and
+the operator who decided.
+
+**Where a deployment may point.** Both the probe and the run open a TCP
+connection to a host and port taken from the request body, so both are checked
+against a target policy first ([#240](https://github.com/onixus/Shapoclyack/issues/240)).
+It is not the webhook policy: agents live inside private networks, so RFC1918
+is allowed here. Refused with `403` (and a row in
+`GET /api/auth/events?outcome=denied`) are this platform's own reflection —
+loopback, link-local, multicast, the unspecified address — a port outside
+`OCTO_AGENT_DEPLOY_SSH_PORTS` (default `22,2222`), and any host the tenant's
+approved scan scope denies. If your fleet listens on another port, name it in
+`OCTO_AGENT_DEPLOY_SSH_PORTS` rather than working around the refusal; see
+[configuration.md](configuration.md#environment-variables).
 
 Operational limits worth knowing before relying on it:
 

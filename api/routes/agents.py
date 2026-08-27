@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import PlainTextResponse
 
 from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
@@ -251,23 +251,53 @@ def probe_ssh_host_key(
     compare against the target's own ``ssh-keygen -lf`` output before allowing
     credentials anywhere near it. Reading a key here does not trust it: that is
     the ``expected_host_key`` on the deployment request.
+
+    It is still a connection this API opens to an address the caller chose, so
+    the target has to pass the deployment policy first (#240): `403` for a
+    host or port this tenant may not point at.
     """
-    pinned = agent_deployer.get_pinned_host_key(principal.tenant_id, body.host, body.port)
-    if pinned is not None:
-        return pinned
     try:
-        key = agent_deployer.probe_host_key(body.host, body.port)
+        return agent_deployer.describe_host_key(
+            tenant_id=principal.tenant_id,
+            host=body.host,
+            port=body.port,
+            actor=principal.username,
+        )
+    except agent_deployer.DeployTargetDenied as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except agent_deployer.HostKeyUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
         ) from exc
-    return AgentSSHHostKeyInfo(
-        host=body.host,
-        port=body.port,
-        key_type=key.key_type,
-        fingerprint=key.fingerprint,
-        pinned=False,
-    )
+
+
+@router.delete("/agent/deploy/ssh/host-key", response_model=AgentSSHHostKeyInfo)
+def unpin_ssh_host_key(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    host: Annotated[str, Query(min_length=1, max_length=255, description="Pinned target host")],
+    port: Annotated[int, Query(ge=1, le=65535, description="Pinned target port")] = 22,
+) -> AgentSSHHostKeyInfo:
+    """Remove this tenant's pinned SSH host key for a target (#241).
+
+    **admin**, the same bar as deploying — deciding that the platform should
+    stop trusting a key is not a smaller act than deciding it should start.
+    Answers with the pin that was removed, so the fingerprint being dropped is
+    in front of the operator, and `404` when there was nothing pinned.
+
+    The next deployment to that host needs `expected_host_key` again, which is
+    the point: a rebuilt machine is re-verified against the target rather than
+    silently re-trusted. Both events are in the audit trail
+    (`GET /api/auth/events?outcome=trust_change`).
+    """
+    try:
+        return agent_deployer.unpin_host_key(
+            tenant_id=principal.tenant_id,
+            host=host,
+            port=port,
+            actor=principal.username,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post("/agent/deploy/ssh", response_model=AgentDeployStatusResponse)
@@ -283,7 +313,13 @@ def deploy_agent_ssh(
 
     server_url = _server_url(settings, request)
     try:
-        deploy_id = agent_deployer.start_ssh_deployment(body, server_url=server_url)
+        deploy_id = agent_deployer.start_ssh_deployment(
+            body, server_url=server_url, actor=principal.username
+        )
+    except agent_deployer.DeployTargetDenied as exc:
+        # 403, not 422: the request is well-formed, this tenant is simply not
+        # entitled to that target (#240). The refusal is already journalled.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except agent_deployer.HostKeyUnavailable as exc:
         # The target could not be reached at all, so there is nothing to refuse
         # or to trust — an upstream problem, not a malformed request.

@@ -194,6 +194,50 @@ class ScanScope:
             )
 
 
+def rejections_for_host(
+    scope: ScanScope,
+    *,
+    host: str,
+    addresses: Iterable[str],
+    deny_only: bool,
+) -> list[str]:
+    """Why one already-resolved host is out of ``scope``, or an empty list.
+
+    Asked by the SSH deployer (#240) rather than by a scan: the target is a
+    single host with its addresses already in hand, and the deployer asks the
+    question in two strengths.
+
+    ``deny_only`` applies the half of the scope that is a *prohibition* — a
+    host the tenant was explicitly told not to touch — without also requiring
+    the host to sit inside an approved range. Where a tenant's agent lives is
+    not the same question as what that agent is approved to scan: an agent on
+    a management host that scans a customer range is the ordinary case, and
+    demanding containment would refuse it. Full containment is the deployer's
+    opt-in (``OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE``).
+
+    The addresses behind a *name* are always checked against the prohibitions
+    only, exactly as :func:`assert_scan_allowed` does: approving a domain
+    suffix is its own permission and implies nothing about what it currently
+    resolves to.
+    """
+    name = _normalize_domain(host)
+    if is_ip_or_cidr(name):
+        reason = scope.rejects_network(name)
+        if reason and (not deny_only or reason.startswith("denied by")):
+            return [f"{host} ({reason})"]
+        return []
+
+    refused: list[str] = []
+    reason = scope.rejects_domain(name)
+    if reason and (not deny_only or reason.startswith("denied by")):
+        refused.append(f"{host} ({reason})")
+    for address in addresses:
+        reason = scope.rejects_network(str(address))
+        if reason and reason.startswith("denied by"):
+            refused.append(f"{host} -> {address} ({reason})")
+    return refused
+
+
 def _suffix_matches(name: str, entry: str) -> bool:
     """Domain-suffix match: ``example.com`` covers itself and its subdomains."""
     if entry == WILDCARD:

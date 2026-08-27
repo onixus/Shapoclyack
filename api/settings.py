@@ -117,6 +117,20 @@ class Settings:
     # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables legacy agent auth.
     agent_token: str = ""
     agent_stale_seconds: int = 120
+    # TCP ports the SSH push deployer and its host-key probe may dial (#240).
+    # The probe opens a connection to a host and port taken from the request
+    # body and reports what answered, which over an open range is a port
+    # scanner with a tidy response format. SSH is 22 nearly everywhere and 2222
+    # where 22 is taken; a target on anything else is named here deliberately.
+    # "*" restores the full range — see docs/configuration.md.
+    agent_deploy_ssh_ports: str = "22,2222"
+    # Whether a deployment target must sit *inside* the tenant's approved scan
+    # scope (#226), not merely outside its denied ranges. Off by default:
+    # where a tenant's agent lives is not the same question as what it is
+    # approved to scan — an agent on a management host that scans a customer
+    # range is the ordinary case — so only the prohibitions apply unless an
+    # operator decides the two scopes are the same set.
+    agent_deploy_enforce_scan_scope: bool = False
     # Short-lived agent JWT lifetime after provisioning-key exchange (Phase 2).
     agent_jwt_expire_minutes: int = 60
     # Hard request-body cap on POST /api/agent/jobs/{job_id}/results, read from
@@ -519,6 +533,11 @@ def load_settings() -> Settings:
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
+        agent_deploy_ssh_ports=os.environ.get("OCTO_AGENT_DEPLOY_SSH_PORTS", "22,2222").strip(),
+        agent_deploy_enforce_scan_scope=os.environ.get(
+            "OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE", "false"
+        ).lower()
+        in {"1", "true", "yes"},
         agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
         agent_results_max_body_bytes=int(
             os.environ.get("OCTO_AGENT_RESULTS_MAX_BODY_BYTES", str(128 * 1024 * 1024))

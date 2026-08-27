@@ -575,12 +575,14 @@ class GrantMembershipRequest(BaseModel):
 
 
 class AuthEventInfo(BaseModel):
-    """One recorded access decision (#157, #226).
+    """One recorded access decision (#157, #226, #241).
 
     ``outcome`` is ``success``, ``failure`` (credentials checked and
     rejected), ``locked`` (refused by the rate limiter before they were
-    checked) or ``denied`` (an authenticated principal refused an action, e.g.
-    a scan outside the tenant's approved scope). ``reason`` is NULL on success.
+    checked), ``denied`` (an authenticated principal refused an action, e.g. a
+    scan outside the tenant's approved scope, or a deployment target outside
+    it) or ``trust_change`` (an admin set or removed an SSH host-key pin, which
+    is neither an attempt nor a refusal). ``reason`` is NULL on success.
     ``detail`` names the subject of a non-login decision and is NULL for login
     attempts, whose subject is the username/IP pair; ``client_ip`` is empty for
     the decisions taken in the service layer, which have no request to read it
@@ -591,7 +593,7 @@ class AuthEventInfo(BaseModel):
     occurred_at: str | None = None
     username: str
     client_ip: str
-    outcome: Literal["success", "failure", "locked", "denied"]
+    outcome: Literal["success", "failure", "locked", "denied", "trust_change"]
     reason: str | None = None
     detail: str | None = None
 

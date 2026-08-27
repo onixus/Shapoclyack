@@ -6,6 +6,25 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Removing an SSH host-key pin is a route, not a SQL statement**
+  ([#241](https://github.com/onixus/Shapoclyack/issues/241)) —
+  `DELETE /api/agent/deploy/ssh/host-key?host=…&port=…` (tenant **admin**, the
+  same bar as deploying) drops this tenant's pin and answers with what it
+  removed, so the fingerprint being dropped is in front of the operator; `404`
+  when nothing was pinned. Reinstalling a machine is ordinary, and until now
+  the only way through was a `DELETE` against `agent_ssh_host_keys` in
+  Postgres — a privilege an order of magnitude above running an agent fleet, so
+  the predictable substitute was passing whatever fingerprint the target
+  offered as `expected_host_key`, which leaves the check formally on and
+  meaning nothing. The next deployment needs `expected_host_key` again: a
+  rebuilt machine is re-verified, never silently re-trusted. Setting and
+  removing a pin are both journalled with the tenant, target and fingerprint
+  under the new `trust_change` outcome
+  (`GET /api/auth/events?outcome=trust_change`) — that pair is what separates a
+  planned rebuild from a substitution after the fact. No schema change; the
+  SQL procedure in [docs/operations.md](docs/operations.md#ssh-push-deployment)
+  is replaced by the route.
+
 - **Approved scanning scope per tenant** ([#226](https://github.com/onixus/Shapoclyack/issues/226)) —
   target validation used to be a syntax check, so any well-formed CIDR or FQDN
   from any tenant was accepted: `169.254.169.254/32`, the provider's cluster
@@ -172,6 +191,34 @@ All notable changes to Shapoclyack are documented in this file.
   memory, and SSH host keys are not verified.
 
 ### Changed
+
+- **The SSH host-key probe is no longer an unrestricted outbound primitive**
+  ([#240](https://github.com/onixus/Shapoclyack/issues/240)) —
+  `POST /api/agent/deploy/ssh/host-key` opened a TCP connection to a host and
+  port taken straight from the request body and reported what answered, which
+  over an open port range is a port scanner with a tidy response format: "there
+  is SSH here" is what an internal network map is built from. Parsing and
+  address validation now live in one module (`api/services/outbound_targets.py`)
+  used by both the webhook wire (`delivery.py`) and the deployer, with
+  **different policies on purpose**. The webhook boundary from
+  [#151](https://github.com/onixus/Shapoclyack/issues/151) is unchanged —
+  public addresses unless `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS`, the validated
+  address pinned into the connection, no redirects, no userinfo. The deployer
+  *allows* RFC1918, because an agent living inside a private network is the
+  product; what it refuses is this platform's own reflection (loopback,
+  link-local — `169.254.169.254` is a metadata service, not a Linux box —
+  multicast, unspecified), a port outside `OCTO_AGENT_DEPLOY_SSH_PORTS`
+  (default `22,2222`, `*` reopens the range), and any host the tenant's
+  approved scan scope **denies**
+  ([#226](https://github.com/onixus/Shapoclyack/issues/226)) — a prohibition
+  that stopped a scan but not an SSH connection from the same API would not be
+  recording anything. Requiring the target to be *inside* the allowed scope is
+  opt-in (`OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE`, default off): where a tenant's
+  agent lives is not the same question as what it is approved to scan, and as a
+  default it would refuse the ordinary MSSP deployment onto a management host.
+  Refusals answer `403` and are journalled like every other access decision
+  (`GET /api/auth/events?outcome=denied`). The deployment route is checked on
+  the same terms — the probe was not the only way to open that connection.
 
 - **UX/UI refactor across the dashboard** — light-theme contrast reworked in `globals.css`,
   redesigned sidebar/top header, KPI cards, data-table and status configuration
