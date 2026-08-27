@@ -340,6 +340,89 @@ def test_claim_visibility_covers_the_serial_batch(settings):
     assert all(webhooks.get_delivery(did)["status"] == "delivered" for did in ids)
 
 
+def test_a_long_batch_is_not_reclaimed_while_it_is_still_being_sent(settings, monkeypatch):
+    """The claim window covers the whole batch, not three timeouts (#255).
+
+    The live claim is ``secure_webhooks._claim_due``, and it carried its own
+    ``max(30, timeout * 3)`` while the batch-aware formula sat on a copy of the
+    dispatch loop nothing called. Charging every POST a full
+    ``webhook_timeout_seconds`` of *queue* time makes the consequence
+    deterministic: five deliveries cost 100 seconds of it, the old lease
+    expired after 60, and a peer replica legally re-sent a row this dispatcher
+    had not reached yet — the duplicate POST #152 forbids, with no race at all.
+    """
+    settings.webhook_timeout_seconds = 20
+    _subscribe(settings)
+    ids = [webhooks.enqueue_event(_event(event_id=f"ev-{i}"))[0] for i in range(5)]
+
+    fake_now = datetime.now(UTC)
+    monkeypatch.setattr(webhooks._base, "_now", lambda: fake_now)  # noqa: SLF001
+    stolen: list[str] = []
+
+    def _peer(url, body, headers, **kwargs):
+        stolen.append(headers[delivery_transport.DELIVERY_HEADER])
+        return _ok()
+
+    def _slow(*args, **kwargs):
+        nonlocal fake_now
+        fake_now += timedelta(seconds=settings.webhook_timeout_seconds)
+        # A second replica ticking while this batch is still mid-flight.
+        webhooks.dispatch_once(post=_peer, limit=10)
+        return _ok()
+
+    webhooks.dispatch_once(post=_slow, limit=5)
+
+    assert not stolen, f"claimed by a peer while still being sent: {stolen}"
+    assert all(webhooks.get_delivery(delivery_id)["status"] == "delivered" for delivery_id in ids)
+
+
+def test_a_failure_mid_batch_releases_the_rest_of_the_claim(settings, monkeypatch):
+    """A raise after the POST must not strand the rows behind it (#256).
+
+    The batch is claimed in one transaction — ``attempts`` incremented,
+    ``next_attempt_at`` pushed out by the visibility window — so an exception
+    from the bookkeeping left the tail claimed, unsent and invisible until that
+    window expired. Only the row whose outcome was lost keeps its claim: its
+    POST may well have arrived.
+    """
+    _subscribe(settings)
+    ids = [webhooks.enqueue_event(_event(event_id=f"ev-{i}"))[0] for i in range(4)]
+    sent: list[str] = []
+    record_result = webhooks._base._record_result  # noqa: SLF001
+
+    def _post(url, body, headers, **kwargs):
+        sent.append(headers[delivery_transport.DELIVERY_HEADER])
+        return _ok()
+
+    def _flaky_record(*, delivery_id, result, now):
+        if len(sent) == 2:  # the second delivery's outcome, two rows still unsent
+            raise RuntimeError("bookkeeping is down")
+        return record_result(delivery_id=delivery_id, result=result, now=now)
+
+    monkeypatch.setattr(webhooks._base, "_record_result", _flaky_record)  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="bookkeeping"):
+        webhooks.dispatch_once(post=_post, limit=4)
+
+    rows = {delivery_id: webhooks.get_delivery(delivery_id) for delivery_id in ids}
+    assert rows[sent[0]]["status"] == "delivered"
+    assert rows[sent[1]]["status"] == "pending"
+    assert rows[sent[1]]["attempts"] == 1
+
+    tail = [delivery_id for delivery_id in ids if delivery_id not in sent]
+    assert len(tail) == 2
+    for delivery_id in tail:
+        assert rows[delivery_id]["status"] == "pending"
+        # No attempt was made, so the claim must not have cost retry budget.
+        assert rows[delivery_id]["attempts"] == 0
+
+    monkeypatch.setattr(webhooks._base, "_record_result", record_result)  # noqa: SLF001
+    sent.clear()
+    # Due again on the very next tick, and only the tail: the row that raised
+    # keeps its window so its receiver is not POSTed twice.
+    assert webhooks.dispatch_once(post=_post, limit=4)["delivered"] == 2
+    assert sorted(sent) == sorted(tail)
+
+
 def test_concurrent_dispatchers_do_not_double_post(settings):
     """Two replicas divide the queue; a delivery is POSTed once (#152)."""
     _subscribe(settings)

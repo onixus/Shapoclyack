@@ -10,6 +10,13 @@ the state machine around it. That split is what lets the dispatch loop be
 tested end-to-end against a stub transport, and it is why a receiver that
 hangs cannot hold a database transaction open — a delivery is *claimed* in one
 short transaction, POSTed outside any transaction, and recorded in a second.
+
+The loop itself lives in ``secure_webhooks``, the facade the package exports
+under this module's name: claiming has to filter on the #151 kill switch, so
+one dispatcher is one claim query.  This module keeps the pieces that loop
+calls — ``claim_visibility_seconds``, ``backoff_seconds``, ``_record_result``
+(#255: a second copy of the loop here was shadowed by the facade, so fixing a
+bug in it changed nothing).
 """
 
 from __future__ import annotations
@@ -18,7 +25,7 @@ import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy import delete, func, or_, select
 
@@ -647,6 +654,11 @@ def claim_visibility_seconds(*, timeout_seconds: int, batch_len: int) -> int:
     reclaimed a row still being sent and the receiver got a duplicate (#152).
     The window covers one timeout per claimed row plus two timeouts of slack,
     and is never shorter than 30s.
+
+    This is the only place the window is computed; ``secure_webhooks._claim_due``
+    is the only caller.  It briefly was not — the facade carried its own
+    ``timeout * 3`` and this batch-aware formula sat on the shadowed copy of the
+    loop, which is exactly the duplicate POST above (#255).
     """
     return max(30, int(timeout_seconds) * (max(int(batch_len), 1) + 2))
 
@@ -662,40 +674,6 @@ def backoff_seconds(attempts: int, settings: Settings) -> int:
         settings.webhook_retry_base_seconds * (2**exponent),
         settings.webhook_retry_max_seconds,
     )
-
-
-def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.WebhookDelivery]:
-    """Take up to ``limit`` due deliveries, marking them in-flight.
-
-    ``SELECT … FOR UPDATE SKIP LOCKED`` (a no-op on SQLite, which has one
-    writer anyway) keeps two API replicas dividing the queue instead of both
-    POSTing the same delivery. The claim also pushes ``next_attempt_at``
-    forward by a visibility timeout, so a replica that dies mid-POST releases
-    the row after that window rather than stranding it.
-    """
-    settings = _require_settings()
-    rows = session.execute(
-        select(models.WebhookDelivery)
-        .where(
-            models.WebhookDelivery.status == "pending",
-            models.WebhookDelivery.next_attempt_at <= now,
-        )
-        .order_by(models.WebhookDelivery.next_attempt_at)
-        .limit(limit)
-        .with_for_update(skip_locked=True)
-    ).scalars().all()
-    visibility = timedelta(
-        seconds=claim_visibility_seconds(
-            timeout_seconds=settings.webhook_timeout_seconds,
-            batch_len=len(rows),
-        )
-    )
-    for row in rows:
-        row.attempts += 1
-        row.next_attempt_at = now + visibility
-        row.updated_at = now
-    session.flush()
-    return rows
 
 
 def _record_result(
@@ -735,99 +713,6 @@ def _record_result(
             subscription.last_status = "delivered" if result.ok else (result.error or "failed")[:200]
         session.flush()
     return status
-
-
-def dispatch_once(
-    *,
-    limit: int | None = None,
-    post: Callable[..., delivery_transport.DeliveryResult] | None = None,
-) -> dict[str, int]:
-    """One dispatch tick: claim due deliveries, POST them, record outcomes.
-
-    ``post`` is injectable so the retry/DLQ state machine can be tested without
-    a listening socket. Returns counts by outcome.
-    """
-    settings = _require_settings()
-    send = post or delivery_transport.post
-    outcome = {"attempted": 0, "delivered": 0, "retrying": 0, "dead": 0}
-
-    now = _now()
-    claimed: list[tuple[str, str, dict[str, Any], str | None, dict[str, Any], str, str, str]] = []
-    with get_session(settings.postgres_url) as session:
-        for row in _claim_due(session, now=now, limit=limit or settings.webhook_dispatch_batch_size):
-            subscription = session.get(models.WebhookSubscription, row.subscription_id)
-            if subscription is None:  # pragma: no cover - FK cascade should prevent this
-                continue
-            claimed.append(
-                (
-                    row.delivery_id,
-                    subscription.url,
-                    dict(row.payload or {}),
-                    subscription.secret,
-                    dict(subscription.headers or {}),
-                    row.tenant_id,
-                    row.event_kind,
-                    row.event_id,
-                )
-            )
-
-    for (
-        delivery_id,
-        url,
-        payload,
-        secret,
-        headers,
-        tenant_id,
-        event_kind,
-        event_id,
-    ) in claimed:
-        outcome["attempted"] += 1
-        try:
-            body, request_headers = delivery_transport.build_request(
-                payload=payload,
-                secret=secret,
-                extra_headers=headers,
-                delivery_id=delivery_id,
-                tenant_id=tenant_id,
-                event_kind=event_kind,
-                event_id=event_id,
-            )
-            result = send(
-                url,
-                body,
-                request_headers,
-                timeout_seconds=settings.webhook_timeout_seconds,
-                allow_private=settings.webhook_allow_private_targets,
-            )
-        except Exception as exc:  # noqa: BLE001 - a bug here must not stall the queue
-            LOG.exception("Webhook delivery %s raised before/while sending", delivery_id)
-            result = delivery_transport.DeliveryResult(
-                ok=False,
-                status_code=None,
-                error=f"{type(exc).__name__}: {exc}"[:500],
-                # Not retryable: this is our own failure to build a request, and
-                # it will fail identically on every attempt.
-                retryable=False,
-            )
-        metrics.WEBHOOK_DELIVERY_DURATION_SECONDS.observe(result.duration_seconds)
-        status = _record_result(delivery_id=delivery_id, result=result, now=_now())
-        if status == "delivered":
-            outcome["delivered"] += 1
-            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="delivered").inc()
-        elif status == "pending":
-            outcome["retrying"] += 1
-            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="retrying").inc()
-        elif status == "dead":
-            outcome["dead"] += 1
-            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="dead").inc()
-            LOG.warning(
-                "Webhook delivery %s dead-lettered (kind=%s status_code=%s error=%s)",
-                delivery_id,
-                event_kind,
-                result.status_code,
-                result.error,
-            )
-    return outcome
 
 
 def link_created_ticket(
