@@ -5,6 +5,7 @@ export const POLL_INTERVALS = {
   runs: 10_000,
   dashboard: 15_000,
   assets: 30_000,
+  vulnerabilities: 15_000,
 } as const;
 
 /** Backend caps for per-run collections (api/routes/runs.py Query le=…). */

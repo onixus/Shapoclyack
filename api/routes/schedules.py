@@ -8,6 +8,7 @@ from api.auth import Role, TenantPrincipal, require_tenant
 from api.routes._pagination import PageParams, build_page
 from api.schemas import CreateScheduleRequest, Page, ScheduleInfo, UpdateScheduleRequest
 from api.services import scan_schedules
+from api.services import scan_scopes
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -71,6 +72,12 @@ def create_schedule(
             targets=targets,
             created_by=principal.username,
         )
+    except scan_scopes.ScanScopeDenied as exc:
+        # 403 and journalled, exactly as POST /api/jobs answers for the same
+        # targets (#226) — a schedule is a scan the operator is asking for in
+        # advance, and hearing "no" now beats hearing nothing tonight (#244).
+        scan_scopes.record_denial(username=principal.username, denied=exc)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -100,6 +107,9 @@ def update_schedule(
         fields["targets"] = targets
     try:
         schedule = scan_schedules.update_schedule(schedule_id, **fields)
+    except scan_scopes.ScanScopeDenied as exc:
+        scan_scopes.record_denial(username=principal.username, denied=exc)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if schedule is None:

@@ -38,7 +38,7 @@ spec:
               app.kubernetes.io/component: agent
       containers:
         - name: agent
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.42-0822@sha256:4847c4ac8437583d870ae52d779f4aa869957363da3e855cbba77874054dbd9a
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "agent"]
           args:
@@ -65,9 +65,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            # Optional Phase 1 JetStream job pull (see nats-agent-patch.yaml):
+            # Optional Phase 1 JetStream job pull (see nats-agent-patch.yaml).
+            # NATS requires credentials since the data-plane hardening: the
+            # `agent` user may pull and ack jobs.scan and nothing else.
+            # - name: NATS_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: shapoclyack-nats
+            #       key: agent_password
             # - name: OCTO_NATS_URL
-            #   value: nats://shapoclyack-nats-client:4222
+            #   value: nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
           securityContext:
             # This worker runs the full scanner pipeline (nmap -O / naabu need
             # NET_RAW+NET_ADMIN file capabilities, set at build time via

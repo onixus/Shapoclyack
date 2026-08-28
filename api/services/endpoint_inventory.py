@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,6 +27,7 @@ from api.schemas import EndpointInventorySnapshotRequest
 from api.services import metrics as metrics_service
 from api.settings import Settings
 
+_log = logging.getLogger("shapoclyack.endpoint-inventory")
 _settings: Settings | None = None
 
 
@@ -407,6 +409,36 @@ def ingest_snapshot(
     for event_type, count in changes.items():
         if count:
             metrics_service.ENDPOINT_SOFTWARE_CHANGES_TOTAL.labels(event_type).inc(count)
+
+    # Phase S8: publish accepted endpoint inventory summary to NATS (fail-soft)
+    if settings.endpoint_nats_events_enabled and settings.nats_url:
+        try:
+            from api.services import nats_bus
+
+            bus = nats_bus.get_bus(settings.nats_url)
+            if bus is not None:
+                bus.publish_endpoint_inventory(
+                    {
+                        "event_type": "endpoint_inventory_accepted",
+                        "tenant_id": tenant_id,
+                        "device_id": response["device_id"],
+                        "asset_id": response["asset_id"],
+                        "snapshot_id": response["snapshot_id"],
+                        "payload_digest": digest,
+                        "software_count": response["software_count"],
+                        "changes_summary": changes,
+                        "reconciliation_status": response["reconciliation_status"],
+                        "collected_at": _iso(collected_at),
+                        "received_at": _iso(now),
+                    }
+                )
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "Failed to publish endpoint inventory NATS event for snapshot %s",
+                request.snapshot_id,
+                exc_info=True,
+            )
+
     return {**response, "_replay": False}
 
 

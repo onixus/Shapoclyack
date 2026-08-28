@@ -14,9 +14,11 @@ from typing import Any
 import jwt
 
 DEFAULT_ALGORITHM = "HS256"
+ALLOWED_ALGORITHMS = frozenset({"HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"})
 AGENT_TOKEN_TYP = "agent"
 # Plan default for provisioning-key exchange TTL.
 DEFAULT_EXCHANGE_TTL_MINUTES = 120
+DEFAULT_DECODE_LEEWAY_SECONDS = 10
 
 
 def get_api_secret_key() -> str:
@@ -28,7 +30,10 @@ def get_api_secret_key() -> str:
 
 
 def get_jwt_algorithm() -> str:
-    return os.environ.get("OCTO_JWT_ALGORITHM", DEFAULT_ALGORITHM).strip() or DEFAULT_ALGORITHM
+    algo = os.environ.get("OCTO_JWT_ALGORITHM", DEFAULT_ALGORITHM).strip() or DEFAULT_ALGORITHM
+    if algo not in ALLOWED_ALGORITHMS:
+        raise ValueError(f"Insecure or unsupported JWT algorithm: {algo!r}. Must be one of {sorted(ALLOWED_ALGORITHMS)}")
+    return algo
 
 
 def encode_jwt(
@@ -44,10 +49,13 @@ def encode_jwt(
     payload.setdefault("iat", now)
     if "exp" not in payload:
         payload["exp"] = now + timedelta(minutes=expires_minutes)
+    algo = algorithm or get_jwt_algorithm()
+    if algo not in ALLOWED_ALGORITHMS:
+        raise ValueError(f"Insecure or unsupported JWT algorithm: {algo!r}")
     return jwt.encode(
         payload,
         secret or get_api_secret_key(),
-        algorithm=algorithm or get_jwt_algorithm(),
+        algorithm=algo,
     )
 
 
@@ -56,12 +64,17 @@ def decode_jwt(
     *,
     secret: str | None = None,
     algorithm: str | None = None,
+    leeway: int = DEFAULT_DECODE_LEEWAY_SECONDS,
 ) -> dict[str, Any]:
     """Decode and verify a JWT; raises ``jwt.PyJWTError`` on failure."""
+    algo = algorithm or get_jwt_algorithm()
+    if algo not in ALLOWED_ALGORITHMS:
+        raise ValueError(f"Insecure or unsupported JWT algorithm: {algo!r}")
     return jwt.decode(
         token,
         secret or get_api_secret_key(),
-        algorithms=[algorithm or get_jwt_algorithm()],
+        algorithms=[algo],
+        leeway=leeway,
     )
 
 

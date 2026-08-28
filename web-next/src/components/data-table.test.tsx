@@ -99,7 +99,7 @@ describe("DataTable server pagination", () => {
       />,
     );
 
-    expect(screen.getByText("5")).toBeInTheDocument(); // total, not the 2 loaded rows
+    expect(screen.getByText("Showing 2 of 5 entries")).toBeInTheDocument();
     expect(screen.getByText("1 / 3")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Next" }));

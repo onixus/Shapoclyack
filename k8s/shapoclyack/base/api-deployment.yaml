@@ -33,11 +33,19 @@ spec:
       # hard dependency (tenant store lives there), and migrations aren't
       # safely idempotent across N replicas starting concurrently the way
       # ClickHouse's CREATE TABLE IF NOT EXISTS init-SQL is.
+      #
+      # `python -m api.db.migrate`, not bare `alembic upgrade head` (#159): it
+      # takes a Postgres advisory lock first, so the replicas of a scaled
+      # Deployment queue behind each other instead of migrating concurrently.
+      # Waiters still run the upgrade after acquiring the lock — a no-op once
+      # the first replica is done, and still correct if it failed halfway.
+      # OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS bounds the wait so a stuck
+      # migration fails the pod with a cause instead of hanging at Init:0/1.
       initContainers:
         - name: migrate
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.42-0822@sha256:4847c4ac8437583d870ae52d779f4aa869957363da3e855cbba77874054dbd9a
           imagePullPolicy: IfNotPresent
-          command: ["alembic", "-c", "api/db/alembic.ini", "upgrade", "head"]
+          command: ["python", "-m", "api.db.migrate"]
           env:
             - name: POSTGRES_PASSWORD
               valueFrom:
@@ -53,7 +61,7 @@ spec:
                 - ALL
       containers:
         - name: api
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.42-0822@sha256:4847c4ac8437583d870ae52d779f4aa869957363da3e855cbba77874054dbd9a
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -71,12 +79,28 @@ spec:
               value: "true"
             - name: OCTO_JOB_EXECUTION_MODE
               value: local
+            # Declared here, ahead of the two URLs below, even though base
+            # leaves both URLs empty: $(VAR) in an env value only expands
+            # against variables defined EARLIER in the same container's list,
+            # and the overlays that switch NATS/ClickHouse on patch the URL
+            # entries in place without moving them. Defining the passwords
+            # afterwards would leave a literal "$(NATS_PASSWORD)" in the URL.
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nats
+                  key: api_password
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-clickhouse
+                  key: password
             # Empty disables NATS (HTTP agent claim/upload only). Enable with:
-            # nats://shapoclyack-nats-client:4222
+            # nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
             - name: OCTO_NATS_URL
               value: ""
             # Empty disables ClickHouse client / ingest worker. Enable with:
-            # http://shapoclyack-clickhouse-client:8123
+            # http://default:$(CLICKHOUSE_PASSWORD)@shapoclyack-clickhouse-client:8123
             - name: OCTO_CLICKHOUSE_URL
               value: ""
             - name: OCTO_CH_INGEST_ENABLED

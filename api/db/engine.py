@@ -30,9 +30,37 @@ def get_engine(url: str) -> Engine:
             _engine = create_engine(url, pool_pre_ping=True, future=True)
             _engine_url = url
             _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
-            from api.db import models
-            models.Base.metadata.create_all(_engine)
+            _create_schema_if_unmanaged(_engine)
         return _engine
+
+
+def get_session_factory(url: str) -> sessionmaker[Session]:
+    """Return a sessionmaker factory configured for ``url``."""
+    get_engine(url)
+    assert _SessionLocal is not None
+    return _SessionLocal
+
+
+def _create_schema_if_unmanaged(engine: Engine) -> None:
+    """Create tables from the models — **only** where Alembic does not run (#159).
+
+    Two ways of bringing a database to the right shape means the two disagree
+    eventually, and the disagreement is discovered in production: ``create_all``
+    builds today's models and knows nothing of the ``alembic_version`` row, so a
+    Postgres database it touched looks migrated to no revision at all while
+    carrying columns a migration was supposed to add. It also silently papers
+    over the case this is meant to catch — an API replica started against a
+    database nobody migrated.
+
+    SQLite is the exception rather than a second path: it is the dev and
+    test-suite fallback (#174 refuses it in prod), it cannot be shared between
+    replicas, and requiring a migration run before ``pytest`` would buy nothing.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    from api.db import models
+
+    models.Base.metadata.create_all(engine)
 
 
 @contextmanager

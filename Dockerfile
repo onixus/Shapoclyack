@@ -15,7 +15,7 @@ RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/c
 # Prefer: COPY --from=ghcr.io/onixus/pulse:0.2.0 when GHCR is public/logged-in.
 # Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
 FROM debian:bookworm-slim AS pulse-bin
-ARG PULSE_VERSION=v0.9.1
+ARG PULSE_VERSION=v1.1.0
 ARG PULSE_GITHUB_REPO=onixus/GenDec
 RUN --mount=type=secret,id=github_token,required=false \
     set -eux; \
@@ -184,12 +184,31 @@ COPY scanner/data /opt/shapoclyack/seed-data
 COPY agent /app/agent
 COPY scripts /app/scripts
 
-# Best-effort: bake real GeoIP/CVSS4/EPSS/KEV data into the image so a fresh
-# deployment isn't limited to the committed seed stubs (a 5-IP GeoIP demo
-# overlay, a handful of seed CVEs). Uses the keyless DB-IP provider (no
-# license key to leak into image layers); never fails the build — an
-# offline/network-restricted build just keeps the seed data, same as today.
-RUN bash scripts/fetch-enrichment.sh || true
+# Bake real GeoIP/CVSS4/EPSS/KEV data into the image so a fresh deployment
+# isn't limited to whatever the repo committed. Uses the keyless DB-IP provider
+# (no license key to leak into image layers).
+#
+# Two failures live here and they are not the same (#246):
+#   - a source was unreachable (exit 1). The previous data is still in place and
+#     still usable; a foreign server having a bad day must not fail a build, so
+#     this stays a warning in every build. The manifest the script writes records
+#     which datasets were left behind, and GET /api/system reports it — that is
+#     what stops a degraded image from looking identical to a fresh one.
+#   - a required dataset is missing or is a stub (exit 2). The risk model would
+#     be scoring blind. ENRICHMENT_STRICT=1 refuses to build such an image; the
+#     release pipeline (Jenkinsfile.publish) sets it, because a published image
+#     is the one that outlives the operator's memory of this build log. A dev or
+#     branch build keeps warning, so nobody is blocked by a bad network.
+ARG ENRICHMENT_STRICT=0
+RUN set -eu; \
+    status=0; bash scripts/fetch-enrichment.sh || status=$?; \
+    if [ "$status" -ge 2 ]; then \
+      if [ "${ENRICHMENT_STRICT}" = "1" ]; then \
+        echo "ENRICHMENT_STRICT=1: refusing to publish an image whose enrichment data is missing or stubbed" >&2; \
+        exit 1; \
+      fi; \
+      echo "warning: enrichment data is missing or stubbed; continuing (ENRICHMENT_STRICT=0)" >&2; \
+    fi
 
 # Best-effort: refresh vulscan's offline CVE databases beyond whatever was
 # bundled at the pinned VULSCAN_REF commit above, so "vuln-offline" scans use

@@ -17,6 +17,7 @@ from .cvss4 import Cvss4Database, enrich_vulnerabilities
 from .asn_enrich import AsnDatabase, enrich_hosts_asn
 from .geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
 from .pulse_probe import load_service_artifacts
+from .sarif_report import build_sarif_report
 from .utils import save_json
 
 _CVE_WITH_SCORE_RE = re.compile(r"(CVE-\d{4}-\d{3,7})\s+(\d{1,2}(?:\.\d+)?)", re.IGNORECASE)
@@ -203,6 +204,7 @@ def build_reports(
     html_summary: bool,
     csv_export: bool,
     json_export: bool,
+    sarif_export: bool = True,
     hostnames_map: dict | None = None,
     *,
     cvss4_enabled: bool = True,
@@ -436,6 +438,9 @@ def build_reports(
             "".join(json.dumps(item, ensure_ascii=True) + "\n" for item in findings),
             encoding="utf-8",
         )
+
+    if sarif_export:
+        build_sarif_report(output_dir, vulnerabilities, findings)
 
     if csv_export:
         csv_path = output_dir / "findings.csv"

@@ -111,7 +111,13 @@ Findings are not all equivalent. The normalized finding contract can carry a cla
 
 Confirmed vulnerabilities and lower-confidence exposure/hypothesis records therefore remain distinguishable through the pipeline and UI. The scoring layer must not promote an unconfirmed observation above a confirmed high-risk vulnerability solely because a text pattern resembled a CVE.
 
-The current model provides contextual prioritization for run findings. The broader product roadmap extends this toward asset-level risk, SLA, remediation lifecycle, and business context; those planned capabilities are documented in `docs/ui-ux-redesign-roadmap.md`, not assumed to exist here.
+The current model provides contextual prioritization for run findings (`nist-1`)
+and tracks findings as entities with lifecycle, SLA and an audit trail
+([vulnerability-lifecycle.md](vulnerability-lifecycle.md)). Asset business
+context (owner, service, environment, data class, exposure) and a per-asset
+risk rollup live on the asset card ([asset-context.md](asset-context.md)).
+Remaining product surfaces (full asset-centric view, exposure management)
+are tracked in `docs/ui-ux-redesign-roadmap.md`.
 
 ## Identity and tenancy
 
@@ -155,13 +161,37 @@ This split keeps slow or broken receivers from creating JetStream consumer lag a
 
 `webhook_deliveries` is intentionally the retry queue, dead-letter queue, and audit trail in one table. Pending rows carry `next_attempt_at`; exhausted or non-retryable rows become `dead`; delivered rows remain as delivery history until retention removes them. Replay of a dead delivery does not require the broker because the row contains the payload.
 
-The dispatcher runs in every API replica. It does not need leader election: due rows are claimed with `FOR UPDATE SKIP LOCKED`, and a visibility timeout moves the claim deadline forward so replicas divide work and abandoned claims become eligible again.
+The dispatcher runs in every API replica. It does not need leader election: due rows are claimed with `FOR UPDATE SKIP LOCKED`, and a visibility timeout moves the claim deadline forward so replicas divide work and abandoned claims become eligible again. A batch is POSTed serially, so that timeout scales with the size of the claim — one `OCTO_WEBHOOK_TIMEOUT_SECONDS` per claimed row plus two of slack, never under 30 seconds — otherwise the lease expires mid-batch and a peer re-sends a delivery still in flight. A dispatcher that fails part-way through a batch releases the rows it never attempted back to the queue instead of letting them sit out that window; they keep their retry budget, because no attempt was made.
 
 Retry classification is bounded and explicit: timeouts, 5xx, 408, and 429 retry with capped exponential backoff; other 4xx responses are dead-lettered immediately rather than replaying the same malformed request until the budget is exhausted.
 
 Webhook payloads are signed by default with HMAC over `{timestamp}.{body}`. The secret is generated at subscription creation, returned once, stored write-only from the API perspective, and rotatable. Receivers should validate both the signature and timestamp freshness.
 
 Webhook targets are checked for SSRF at configuration time and again before delivery. Loopback, link-local, private, metadata-style, and otherwise non-global destinations are rejected by default; redirects are not followed. `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` is an explicit deployment opt-in for trusted on-cluster receivers.
+
+## Outbound HTTP from the scanner
+
+Most scanner stages talk to a constant, source-literal host (RIPEstat, crt.sh,
+cloud provider endpoints) over `httpx` with default redirect handling. That is
+adequate precisely because the operator's input never chooses the destination.
+
+The org profile module breaks that assumption: the `ownership` stage learns its
+next hop from the IANA RDAP bootstrap file and from `rdap.org`'s 302 to the
+registry server, so a remote party names the address. Those requests go through
+`scanner/pipeline/safe_http.py`, which applies the same boundary the webhook
+dispatcher applies outbound: HTTPS only, no userinfo, rejection when *any*
+resolved A/AAAA is non-global or multicast, and a TCP connection opened to the
+already-validated IP literal while SNI and certificate verification use the DNS
+name. Without that pinning a target with TTL=0 can answer the validating
+`getaddrinfo` and the library's connect-time lookup differently. Bodies are read
+under a byte cap and a single wall-clock deadline covering the whole redirect
+chain, and each `Location` is re-validated by the same code as the first hop, so
+a redirect cannot downgrade to http or walk inward.
+
+None of this is configurable — there is no setting to disable verification or
+pinning. The module is a deliberate second implementation rather than an import
+of `api/services/integrations/delivery.py`: the scanner ships as its own
+container and does not depend on the API package.
 
 ## Storage boundaries
 

@@ -64,6 +64,25 @@ authorized targets and a suitable maintenance window.
 Nuclei is an optional stage. Template version, severity filters, concurrency,
 and rate limits should be pinned in production.
 
+## Web screenshots
+
+`screenshots.enabled` (default `false`) takes a viewport PNG of each
+already-open web port — the same candidates as `fingerprint`, no new scan.
+`max_targets` (50) and `concurrency` (4) cap the work. Capture needs
+Playwright + Chromium on the scanner host; without them the stage skips and
+writes `skipped_reason: playwright.unavailable`. Playwright is not a
+required dependency and is not baked into the default image.
+
+Obvious form fields are covered with a black overlay in the live DOM, then
+the screenshot is taken. Unredacted bytes are never written. A name in a
+heading is not redacted. That is why PNG access is operator-only and why
+the API reaper deletes the files after
+`OCTO_SCREENSHOT_RETENTION_DAYS` (see [operations.md](operations.md)).
+
+The System page **Pipeline Stages** tile and the config-override whitelist
+expose `screenshots.enabled`. Leave it off until Playwright is installed
+and the retention window matches the site's data-handling policy.
+
 ## Discovery modules
 
 Optional modules include:
@@ -168,6 +187,37 @@ looks more defensive than a paging loop ought to.
   About 1,900 entries do come from CVEs published before 2024, added
   retroactively by CNAs, which is why `--full` does not skip the older corpus.
 
+### Provenance: what the image actually shipped
+
+Every refresh writes `enrichment-manifest.json` next to the data, recording per
+dataset where the bytes came from (`source`), the date the feed itself stamped
+on them (`updated`), how many entries they hold, and — the field that matters —
+`origin`:
+
+| `origin` | Meaning |
+|---|---|
+| `fetch` | This run pulled the dataset from its source |
+| `seed` | The committed baseline, never replaced by a fetch |
+| `stale` | A fetch was attempted and failed; the previous data is still in place |
+| `missing` | No data at this path at all |
+
+`GET /api/system` reports these alongside `age_days` on every enrichment entry
+(`null` for an image built before the manifest existed, or a volume without
+one). Set `OCTO_ENRICHMENT_MANIFEST` when the enrichment volume is mounted
+somewhere other than `scanner/data/`.
+
+This exists because age alone cannot answer the question operators actually
+have. A build whose EPSS fetch returned `403` ships the committed baseline and
+is, from outside, identical to one that pulled a fresh corpus — the same file,
+in the same place, with a build-time mtime
+([#246](https://github.com/onixus/Shapoclyack/issues/246)).
+
+`scripts/fetch-enrichment.sh` exits `0` when everything refreshed, `1` when a
+source was unreachable but every required dataset still holds usable data, and
+`2` when a required dataset (`cvss4`, `epss`, `kev`, `exploit`) is absent or is
+a handful-of-CVEs stub. Only the last is fatal, and only for a release build —
+see [operations](operations.md#enrichment-data-in-a-release-build).
+
 ## Startup safety: `OCTO_ENV`
 
 The API runs as **`prod`** unless told otherwise, and a `prod` process **refuses
@@ -177,7 +227,11 @@ to start** while any of the following is still at its built-in default:
 |---|---|
 | `OCTO_JWT_SECRET` (or `API_SECRET_KEY`) unset, empty, or equal to the shipped default | The default is published in this repository, so anyone can mint a valid admin token |
 | `OCTO_API_CORS` containing `*` (including when unset, which means `*`) | With credentials in play, any page a logged-in operator visits could call this API with their session. A `*` listed beside real origins is refused too — the wildcard matches everything regardless of what sits next to it |
+| `OCTO_POSTGRES_URL` unset (it would fall back to a local SQLite file) or pointing at `sqlite://` | Postgres is a hard dependency, not an opt-in sidecar: tenants, users, assets, jobs, agents and webhook deliveries live there. A per-replica file means a per-replica control plane, and the guarantees the durable control plane rests on — `SELECT … FOR UPDATE SKIP LOCKED` for job claims and leases, advisory locks for scheduler leader election — stop holding without saying so. The file also sits on the pod's ephemeral disk |
 | **No console account exists** — the `users` table is empty and `OCTO_API_USERS` is unset (checked at startup, once the database is up) | The built-in demo accounts are not seeded in `prod`; their passwords are published in this repository. An install nobody can log into is a failure whether it is reported at startup or discovered at the login form |
+| `OCTO_PUBLIC_BASE_URL` unset, or set to something without an `http(s)://` scheme | It is the URL the agent install snippets tell a target host to fetch the installer from and report to, and it is written into the agent's permanent `OCTO_API_URL`. With no configured value the API would fall back to the request's own `Host` header, letting the caller choose that URL ([#233](https://github.com/onixus/Shapoclyack/issues/233)) |
+| `OCTO_POSTGRES_URL`, `OCTO_CLICKHOUSE_URL` or `OCTO_NATS_URL` still carrying a placeholder password from `k8s/shapoclyack/base/kustomization.yaml` | Those literals are as published as the JWT secret; they were unchecked only because they arrive inside a connection URL rather than as a variable of their own. All of them are checked by one rule, so a secret added to `base` later is covered without a new check ([#224](https://github.com/onixus/Shapoclyack/issues/224)) |
+| `OCTO_AGENT_TOKEN` set on or after **2027-03-01** | The legacy shared agent token authenticates every agent holding it as `tenant_id=default`. For an MSSP install that is the absence of the tenant isolation every other route enforces, so the deprecation has an end date rather than an open-ended warning ([#224](https://github.com/onixus/Shapoclyack/issues/224)) |
 
 The point is that *"forgot to configure"* and *"configured"* must not look alike.
 All problems are reported in one message, so fixing them does not take one
@@ -194,18 +248,23 @@ the test suite. The `dev` overlay (`k8s/shapoclyack/overlays/dev`, inherited by
 value is rejected outright rather than guessed in either direction — a
 misspelled `prodution` must not silently disable the checks.
 
-A set `OCTO_AGENT_TOKEN` **warns** rather than refuses: the legacy shared token
-still works and maps to `tenant_id=default`, so refusing would break a working
-install over a design preference rather than a published credential. Prefer
-per-tenant provisioning keys (`POST /api/auth/agent/token`).
+Until **2027-03-01** a set `OCTO_AGENT_TOKEN` **warns** rather than refuses, and
+the warning names that date. Breaking a working install needs notice, which is
+what the date buys; what it does not buy is an indefinite warning nobody acts
+on. Migrate before then: mint a per-tenant provisioning key
+(`POST /api/tenants/{tenant_id}/provisioning-keys`), re-install the agents with
+it so they exchange it for a scoped agent JWT
+(`POST /api/auth/agent/token`), then unset the variable.
 
-The first two are checked in `load_settings()` from the environment alone. The
-third needs the database and therefore runs at startup
-(`api/services/users.py:bootstrap`) — only the table can tell an installation
-with a real admin from one with none.
+Everything except the console-account check is decided in `load_settings()`
+from the environment alone. That one needs the database and therefore runs at
+startup (`api/services/users.py:bootstrap`) — only the table can tell an
+installation with a real admin from one with none.
 
-> Related, not yet covered: `OCTO_POSTGRES_URL` still falls back to local SQLite
-> when unset, which is the same fail-open shape as the defaults above.
+The database refusal distinguishes an unset variable from one set to SQLite,
+because those are different mistakes with the same consequence. Under
+`OCTO_ENV=dev` the SQLite fallback stays exactly as it was: a laptop and the test
+suite must not need a database to start.
 
 ## Environment variables
 
@@ -220,13 +279,20 @@ Core deployment variables:
 | `OCTO_JWT_SECRET` | User JWT signing secret. **Required in `prod`**; must be identical across API replicas |
 | `OCTO_API_USERS` | **One-time bootstrap only** since #156. Accounts live in the Postgres `users` table; this JSON list is imported on a first start with an empty table and ignored afterwards. Manage accounts through `/api/users` — see [api-and-rbac.md](api-and-rbac.md#console-accounts) |
 | `OCTO_API_CORS` | Comma-separated allowed origins. **Must not be `*` in `prod`** |
-| `OCTO_POSTGRES_URL` | Primary database connection |
+| `OCTO_PUBLIC_BASE_URL` | The URL this installation is reached at from outside, e.g. `https://shapoclyack.example.com`. **Required in `prod`.** Everything that hands an operator or a target host a link back to the API is built from it: the install one-liner, the container and Kubernetes snippets, and the `OCTO_API_URL` the SSH push writes into `agent.env`. Never taken from the request's `Host` header, which the caller writes. Under `OCTO_ENV=dev` an unset value falls back to the request URL so a laptop needs no extra variable |
+| `OCTO_POSTGRES_URL` | Primary database connection. **Required in `prod`** — an unset value or a `sqlite://` URL refuses startup, see [above](#startup-safety-octo_env). Falls back to a local SQLite file only under `OCTO_ENV=dev` |
 | `OCTO_NATS_URL` | JetStream connection; empty disables NATS |
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
 | `OCTO_JOB_EXECUTION_MODE` | `local` or `agent` |
+| `OCTO_AGENT_TOKEN` | **Deprecated, refused in `prod` from 2027-03-01.** Legacy shared bearer token for remote agents; every agent holding it is `tenant_id=default`. Use per-tenant provisioning keys instead |
+| `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` | Hard request-body cap on `POST /api/agent/jobs/{job_id}/results`, read from `Content-Length` before the multipart body is buffered (default `134217728` — 128 MiB). A length-less upload is answered `411` |
+| `OCTO_AGENT_DEPLOY_SSH_PORTS` | TCP ports the SSH push deployer and its host-key probe may dial (default `22,2222`, #240). Both open a connection to a host and port taken from the request body, which over an open range makes the probe a port scanner with a tidy response format. Name the port here if your fleet listens elsewhere; `*` restores the full range. A value that is not a port list refuses startup rather than narrowing the list silently |
+| `OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE` | Require a deployment target to sit **inside** the tenant's approved scan scope, not merely outside its denied ranges (default `false`, #240 / #226). Off, the scope's *prohibitions* still apply — a host a tenant was told not to touch is not reachable by SSH from this API either. On is a stricter claim than most fleets can make: an agent on a management host that scans a customer range is the ordinary MSSP shape, and with this set that deployment is refused |
+| `OCTO_HSTS_ENABLED` | Send `Strict-Transport-Security` on every response. Defaults to on under `OCTO_ENV=prod` and off under `dev`, since a browser that picks the header up from `http://localhost` pins itself to HTTPS for a year |
 | `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
+| `OCTO_SCAN_SCOPE_RESOLVE_CHECK` | Resolve requested scan domains at admission and refuse the ones whose current addresses fall in a range the tenant's approved scope denies (default `true`, #226). Only runs when the scope has deny ranges; a lookup that does not answer within 3s leaves the name checked as a string and is logged. Turn it off only where the API cannot resolve names at all |
 | `OCTO_ASSET_STALE_DAYS` | Age threshold for stale assets |
 | `OCTO_ASSET_EVENTS_ENABLED` | Publish asset-level events to `events.asset.{tenant}.{kind}` after each run (default `true`; inert without `OCTO_NATS_URL`) |
 | `OCTO_ASSET_EVENTS_MAX_PER_RUN` | Per-run publish cap (default `1000`); the overflow is logged and counted, and `diff.json` always keeps the full set |
@@ -247,6 +313,15 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS` | `30` | Age past which delivered/dead rows are pruned; `0` keeps the audit trail forever. Pending rows are never pruned |
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
+
+OpenTelemetry (ROADMAP P3). Empty endpoint means no TracerProvider — the
+API does not buffer spans nobody will read. Traces are request timing, not
+scan observations.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_OTEL_EXPORTER_OTLP_ENDPOINT` | *(empty)* | OTLP HTTP traces URL (`http://collector:4318/v1/traces`). Empty disables tracing |
+| `OCTO_OTEL_SERVICE_NAME` | `shapoclyack-api` | `service.name` resource attribute |
 
 Login rate limiting and the auth audit trail (see
 [api-and-rbac.md](api-and-rbac.md#login-rate-limiting-and-the-auth-audit-trail)):
@@ -282,6 +357,7 @@ Endpoint inventory (Lariska ingestion):
 |---|---|---|
 | `OCTO_ENDPOINT_INVENTORY_ENABLED` | `true` | Register the `/api/endpoint` router at all |
 | `OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES` | `15728640` | Hard request-body cap, checked from `Content-Length` before JSON parsing |
+| `OCTO_ENDPOINT_NATS_EVENTS_ENABLED` | `true` | Publish an `endpoint_inventory_accepted` event to `ingest.endpoint_inventory.{tenant_id}` when a snapshot is accepted (Track D S8). Fail-soft; a no-op without `OCTO_NATS_URL` |
 | `OCTO_ENDPOINT_INVENTORY_MAX_SOFTWARE_ITEMS` | `5000` | Software entries per snapshot |
 | `OCTO_ENDPOINT_INVENTORY_MAX_IDENTIFIERS` | `16` | Hashed platform identifiers per snapshot |
 | `OCTO_ENDPOINT_INVENTORY_MAX_LABELS` | `32` | Labels per snapshot |
@@ -295,6 +371,31 @@ Endpoint inventory (Lariska ingestion):
 | `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` | `365` | Age after which software change events are deleted |
 | `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval |
 | `OCTO_ENDPOINT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per statement |
+
+Web screenshots (ROADMAP P4.4 / Phase 9.3):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SCREENSHOT_RETENTION_ENABLED` | `true` | Run the in-process PNG reaper. Safe in every replica; deletes are idempotent |
+| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is unlinked. `0` disables the reaper. `screenshots.json` is never deleted by this worker |
+| `OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
+
+Scan run artifact retention (ROADMAP #187):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RUN_RETENTION_ENABLED` | `true` | Run the in-process scan artifact reaper. Safe in every replica; directory removals are idempotent |
+| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which `output_dir/runs/<run_id>` directories are deleted. `0` disables the reaper |
+| `OCTO_RUN_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
+
+Risk snapshot retention (#229):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED` | `true` | Run the in-process `risk_score_snapshots` sweep. Safe in every replica; the delete is a range delete |
+| `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` | `90` | Age after which risk snapshots are deleted. `0` disables the sweep. Keep at or above the window the trend chart requests |
+| `OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval (floored at 60) |
+
 
 Never commit real URLs containing credentials. Supply them through the platform
 secret mechanism.

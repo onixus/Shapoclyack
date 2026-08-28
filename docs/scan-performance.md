@@ -78,8 +78,9 @@ Same agents, same packet budget, far less average wall-clock per day.
    batch is a code change that reuses existing `*_concurrency` workers.
 4. **Caching** — DNS TTL, previous open ports, banner/cert hash → skip nuclei
    when fingerprint unchanged (future).
-5. **Observability** — stage timings (done); OpenTelemetry still open in
-   [slo.md](slo.md).
+5. **Observability** — stage timings (done). OpenTelemetry on the API is
+   opt-in (`OCTO_OTEL_EXPORTER_OTLP_ENDPOINT`); scanner processes still do
+   not export traces — `stage_timings.json` is the per-run answer.
 
 ## What *not* to do first
 

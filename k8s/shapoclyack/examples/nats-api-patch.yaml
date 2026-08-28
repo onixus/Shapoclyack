@@ -11,5 +11,14 @@ spec:
       containers:
         - name: api
           env:
+            # Repeated from base/api-deployment.yaml on purpose: a strategic
+            # merge puts this patch's env entries ahead of the base list, and
+            # $(NATS_PASSWORD) only expands against a variable defined earlier.
+            # Declaring it here keeps that true wherever the patch is applied.
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nats
+                  key: api_password
             - name: OCTO_NATS_URL
-              value: nats://shapoclyack-nats-client:4222
+              value: nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222

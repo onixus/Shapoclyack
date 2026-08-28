@@ -30,7 +30,7 @@ spec:
             fsGroup: 1000
           containers:
             - name: fetch-enrichment
-              image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.41-0812
+              image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.42-0822@sha256:4847c4ac8437583d870ae52d779f4aa869957363da3e855cbba77874054dbd9a
               imagePullPolicy: IfNotPresent
               command: ["scripts/fetch-enrichment.sh"]
               env:

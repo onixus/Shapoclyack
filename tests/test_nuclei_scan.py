@@ -36,13 +36,18 @@ def test_to_finding_extracts_cve_and_severity():
             "name": "Log4Shell",
             "severity": "Critical",
             "tags": ["cve", "cve2021", "rce"],
-            "classification": {"cve-id": ["CVE-2021-44228"], "cvss-score": 10.0},
+            "classification": {
+                "cve-id": ["CVE-2021-44228"],
+                "cvss-score": 10.0,
+                "cwe-id": ["CWE-20", "CWE-400"],
+            },
         },
     }
     finding = _to_finding(raw)
     assert finding["severity"] == "critical"
     assert finding["cve"] == ["CVE-2021-44228"]
     assert finding["cvss_score"] == 10.0
+    assert finding["cwe"] == ["CWE-20", "CWE-400"]
 
 
 def test_to_vulnerability_rows_empty_without_cve():
@@ -69,6 +74,7 @@ def test_to_vulnerability_rows_falls_back_to_severity_floor_without_cvss():
             "severity": "high",
             "script_id": "nuclei:some-cve-check",
             "source": "nuclei",
+            "cwe": [],
         }
     ]
 
@@ -199,3 +205,35 @@ def test_run_nuclei_scan_truncates_over_max_targets(tmp_path: Path, monkeypatch)
     assert result["targets_considered"] == 5
     assert result["checked_count"] == 2
     assert result["truncated"] is True
+
+
+def test_run_nuclei_scan_passes_tags_and_custom_templates(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+    custom_dir = tmp_path / "custom-templates"
+    custom_dir.mkdir()
+
+    captured_command: list[str] = []
+
+    def fake_run_command(command, **kwargs):
+        nonlocal captured_command
+        captured_command = list(command)
+        jsonl_path = Path(command[command.index("-jsonl-export") + 1])
+        jsonl_path.write_text("", encoding="utf-8")
+        return MagicMock()
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", fake_run_command)
+    config = NucleiConfig(
+        enabled=True,
+        templates_dir=str(templates_dir),
+        custom_templates_dir=str(custom_dir),
+        tags=["cve", "panel"],
+        exclude_tags=["dos"],
+    )
+    result = run_nuclei_scan(["10.0.0.1:80/tcp"], config, tmp_path)
+    assert result["skipped_reason"] is None
+    assert "-tags" in captured_command
+    assert captured_command[captured_command.index("-tags") + 1] == "cve,panel"
+    assert captured_command.count("-templates") == 2
+    assert str(custom_dir) in captured_command

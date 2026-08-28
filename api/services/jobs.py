@@ -47,15 +47,27 @@ from api.services import job_states
 from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
+from api.services import auth_audit
 from api.services import results_ingest
 from api.services import runs as runs_service
+from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services import scan_intents
+from api.services import vulnerabilities as vulns_service
 from api.services import wordlists as wordlists_service
 from api.services.targets import parse_target_payload
 from api.settings import Settings
+from scanner.pipeline import scan_scope
 
 _log = logging.getLogger(__name__)
+
+#: The tenant's approved scope, handed to the run beside its target files so the
+#: scanner can hold the resolution it actually scans on to the same rules (#244).
+SCAN_SCOPE_INPUT = "scan_scope.json"
+
+#: What a job hands to its worker. The scope rides the same channel as the
+#: targets on purpose: a worker that receives one receives the other.
+_JOB_INPUT_FILES = ("ranges.txt", "domains.txt", "ports.txt", "ports_udp.txt", SCAN_SCOPE_INPUT)
 
 
 def _now() -> datetime:
@@ -390,24 +402,42 @@ def _prepare_target_inputs(
     settings: Settings,
     job_id: str,
     request: StartScanRequest,
+    *,
+    tenant_id: str,
 ) -> tuple[Path | None, dict[str, int] | None, list[str]]:
-    """Write per-job input files when overrides are provided.
+    """Write per-job input files, and the scope the run is to be held to.
 
-    Returns (inputs_dir, target_counts, extra_cli_args).
+    Returns (inputs_dir, target_counts, extra_cli_args). Raises
+    ``scan_scopes.ScanScopeDenied`` when the tenant's approved scope does not
+    cover the requested targets — the first of the two barriers (#226).
+
+    The scope document is written for *every* job, including one that carries no
+    target overrides at all (#244). That is the case the API cannot check any
+    other way: such a run reads the installation's own target files, which the
+    API never opens, so the only thing #226 could ask was whether the tenant had
+    a scope — not whether the files agree with it. The scanner opens them, and
+    now has the scope in hand when it does.
     """
+    scope = scan_scopes.load_scope(settings, tenant_id)
     parsed = parse_target_payload(
+        scope=scope,
         ranges_text=request.ranges,
         domains_text=request.domains,
         ports_text=request.ports,
         ports_udp_text=request.ports_udp,
     )
-    if parsed is None:
-        return None, None, []
 
     inputs_dir = settings.state_dir / "job_inputs" / job_id
     inputs_dir.mkdir(parents=True, exist_ok=True)
-    extra: list[str] = []
+    scope_path = inputs_dir / SCAN_SCOPE_INPUT
+    scope_path.write_text(
+        json.dumps(scope.to_document(), indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
+    extra: list[str] = ["--scan-scope", str(scope_path)]
     counts: dict[str, int] = {}
+
+    if parsed is None:
+        return inputs_dir, None, extra
 
     if parsed.ranges is not None and parsed.domains is not None:
         ranges_path = inputs_dir / "ranges.txt"
@@ -563,6 +593,35 @@ def _upsert_assets_best_effort(
             _update_job(settings, job_id, asset_upsert_error=f"{type(exc).__name__}: {exc}"[:2000])
 
 
+def _track_vulnerabilities_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+) -> None:
+    """Best-effort fold of the run's findings into the tracker (#145).
+
+    Runs after the asset upsert in both completion paths, and only for a
+    *succeeded* run: a finding is attached to an asset, so the registry has to
+    be current first, and a failed run's ``vulnerabilities.json`` may be a
+    partial write from a scan that stopped mid-stage. Findings the tracker
+    misses are not lost — the next successful scan observes them again.
+
+    Quiet on failure, like the event publish and unlike the asset upsert: an
+    un-tracked finding is still in the run's artifacts and in ClickHouse, so
+    nothing is unrecoverable, whereas an empty asset list means the run
+    produced no inventory at all.
+    """
+    if not run_id:
+        return
+    try:
+        vulns_service.register_findings_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        logging.exception(
+            "Vulnerability tracking failed for run %s (tenant=%s, job=%s)",
+            run_id,
+            tenant_id,
+            job_id,
+        )
+
+
 def _publish_asset_events_best_effort(
     settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
 ) -> None:
@@ -590,6 +649,58 @@ def _publish_asset_events_best_effort(
         )
     except Exception:  # noqa: BLE001
         logging.exception("Asset event publish failed for run %s (tenant=%s)", run_id, tenant_id)
+
+
+def _requested_by(settings: Settings, job_id: str) -> str:
+    """Who asked for this scan, or "" when the row is gone."""
+    job = get_job(settings, job_id)
+    return job.requested_by if job else ""
+
+
+def _record_scope_denials_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, requested_by: str
+) -> None:
+    """Fold the scanner's own scope refusals into the access-decision journal (#244).
+
+    The scanner drops a target that the tenant's approved scope refuses, but it
+    runs on the agent's host with no database, no ``auth_events`` and no route
+    to either — so it writes what it refused into ``scan_scope_denied.json`` and
+    the decision is journalled here, where the run's artifacts land. Without
+    this the refusals the *scanner* makes would be the only access decisions in
+    the platform that leave no trail, and "who was stopped from scanning what"
+    would have two answers depending on which barrier stopped them.
+
+    Attributed to the job's requester, not to the agent: the agent executed a
+    scan somebody else asked for, and it is the asker whose request was cut
+    down. Called for a failed run too — a refusal happened whether or not the
+    scan that followed it succeeded.
+
+    Best-effort, like ``record_denial``: the scan is long over by the time this
+    runs, and a lost journal write must not turn a completed upload into a 500.
+    """
+    if not run_id:
+        return
+    artifact = settings.output_dir / "runs" / run_id / scan_scope.DENIED_ARTIFACT
+    try:
+        report = json.loads(artifact.read_text(encoding="utf-8"))
+        denied = [str(item) for item in (report.get("denied") or [])]
+        if not denied:
+            return
+        auth_audit.record_denied(
+            username=requested_by or "scanner",
+            reason=auth_audit.REASON_SCAN_SCOPE,
+            detail=f"tenant={tenant_id} run={run_id} dropped by the scanner: "
+            f"{', '.join(denied[:8])}"[:1000],
+        )
+    except FileNotFoundError:
+        # An older agent, or a run the pipeline never got far enough to filter.
+        return
+    except Exception:  # noqa: BLE001 - see docstring
+        logging.exception(
+            "Failed to record scanner scan-scope denials for run %s (tenant=%s)",
+            run_id,
+            tenant_id,
+        )
 
 
 def _lease_deadline(settings: Settings) -> datetime:
@@ -777,14 +888,25 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             run_id=str(run_id) if run_id else None,
             error=error,
         )
+        job = get_job(settings, job_id)
+        tenant_id = job.tenant_id if job else tenants_service.DEFAULT_TENANT_ID
+        # Outside the success gate: a target the scanner refused was refused
+        # whether or not the scan that followed it finished cleanly.
+        _record_scope_denials_best_effort(
+            settings,
+            tenant_id=tenant_id,
+            run_id=str(run_id) if run_id else None,
+            requested_by=job.requested_by if job else "",
+        )
         if status == job_states.SUCCEEDED:
-            job = get_job(settings, job_id)
-            tenant_id = job.tenant_id if job else tenants_service.DEFAULT_TENANT_ID
             # Tag the run before the asset upsert: an untagged run reads back as
             # the default tenant, which would leak it to every tenant's run list.
             if run_id:
                 runs_service.write_run_tenant(settings, str(run_id), tenant_id, job_id=job_id)
             _upsert_assets_best_effort(
+                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
+            )
+            _track_vulnerabilities_best_effort(
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
             _publish_asset_events_best_effort(
@@ -865,7 +987,24 @@ def start_scan(
     if execution == "agent" and not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
-    _, target_counts, target_args = _prepare_target_inputs(settings, job_id, request)
+    try:
+        _, target_counts, target_args = _prepare_target_inputs(
+            settings, job_id, request, tenant_id=tenant_id
+        )
+        # Second barrier, deliberately redundant. start_scan is also reached
+        # from schedule_dispatcher, which replays targets stored days ago and
+        # never passed through the check above, and the approved scope may
+        # have been narrowed since the targets were entered — the moment that
+        # matters is the moment the scan starts, not the moment it was typed.
+        scan_scopes.assert_scan_allowed(
+            settings,
+            tenant_id=tenant_id,
+            ranges_text=request.ranges,
+            domains_text=request.domains,
+        )
+    except scan_scopes.ScanScopeDenied as denied:
+        scan_scopes.record_denial(username=username, denied=denied)
+        raise
 
     try:
         resolved = scan_intents.resolve_scan_options(
@@ -1023,7 +1162,7 @@ def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
     if not inputs_dir.is_dir():
         return {}
     out: dict[str, str] = {}
-    for name in ("ranges.txt", "domains.txt", "ports.txt", "ports_udp.txt"):
+    for name in _JOB_INPUT_FILES:
         path = inputs_dir / name
         if path.is_file():
             out[name] = path.read_text(encoding="utf-8")
@@ -1343,11 +1482,23 @@ def complete_job(
             _upsert_assets_best_effort(
                 settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
             )
+            # Ungated, matching the local path: this is where the agent's copy
+            # of the run reaches disk, and a refusal the scanner made is a
+            # decision to journal regardless of how the scan ended (#244).
+            _record_scope_denials_best_effort(
+                settings,
+                tenant_id=job_tenant,
+                run_id=str(resolved_run_id),
+                requested_by=_requested_by(settings, job_id),
+            )
             # Gated on the outcome, matching the local path. An agent may attach
             # diagnostics to a *failed* run, and a partial diff read as a change
             # set would alert on hosts and ports that a broken scan simply
             # failed to observe — a disappearance is not a discovery.
             if status == job_states.SUCCEEDED:
+                _track_vulnerabilities_best_effort(
+                    settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+                )
                 _publish_asset_events_best_effort(
                     settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
                 )

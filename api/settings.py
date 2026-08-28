@@ -5,6 +5,7 @@ import logging
 import os
 import socket
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 
@@ -22,6 +23,29 @@ VALID_ENVS = (ENV_DEV, ENV_PROD)
 # here rather than being retyped in both places — a check comparing against a
 # stale copy of the literal would pass while the insecure default stayed live.
 DEFAULT_JWT_SECRET = "shapoclyack-dev-secret-change-me"
+
+# The other credentials k8s/shapoclyack/base/kustomization.yaml ships as
+# literals. They are placeholders exactly like the JWT secret above, but they
+# reach the process inside a connection URL rather than as a variable of their
+# own, so the check below looks for the literal *within* whichever URL carries
+# it. One list rather than a check per secret: #225 added ClickHouse and NATS to
+# a base that had only Postgres, and a per-secret check is a per-secret chance
+# to forget the next one.
+DEFAULT_DATA_PLANE_SECRETS: tuple[str, ...] = (
+    "shapoclyack-dev-postgres-change-me",
+    "shapoclyack-dev-clickhouse-change-me",
+    "shapoclyack-dev-nats-api-change-me",
+    "shapoclyack-dev-nats-agent-change-me",
+)
+
+# End of the legacy shared agent token (#224). One OCTO_AGENT_TOKEN maps every
+# agent holding it to tenant_id="default", so for an MSSP install the whole
+# fleet lands in one tenant and the isolation the rest of the product enforces
+# is not there. Until this date a prod start warns; from this date on it is a
+# refusal, because "we will remove it eventually" has been the state since
+# Phase 2 and a warning nobody reads is not a migration plan. The replacement
+# is per-tenant provisioning keys (POST /api/auth/agent/token).
+AGENT_TOKEN_SUNSET = date(2027, 3, 1)
 
 
 class InsecureConfigurationError(RuntimeError):
@@ -67,15 +91,56 @@ class Settings:
     config_path: Path = Path("scanner/config/default.yaml")
     web_dist: Path = Path("web/dist")
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
+    # The URL this installation is reached at, from the outside
+    # (OCTO_PUBLIC_BASE_URL). Everything that hands an operator or a target host
+    # a link back to the API — the install one-liner, the container and
+    # Kubernetes snippets, the OCTO_API_URL the SSH push writes into agent.env —
+    # is built from this. It used to be derived from the request's own Host
+    # header, which is client-controlled: whoever could reach the API decided
+    # which host the next agent would fetch its installer from and report to.
+    # Required under OCTO_ENV=prod; under dev the request URL is still used, so
+    # a laptop needs no extra variable.
+    public_base_url: str = ""
+    # Strict-Transport-Security on every response (OCTO_HSTS_ENABLED). On in
+    # prod, off in dev: the header pins a browser to HTTPS for a year, and a
+    # developer who picks it up from http://localhost cannot clear it the way a
+    # cookie is cleared (#224).
+    hsts_enabled: bool = True
     users: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_USERS))
     allow_scan_start: bool = True
+    # Resolve requested scan domains at admission and refuse the ones whose
+    # current addresses land in a denied range (#226). Off leaves the name
+    # checked as a string only — see docs/configuration.md.
+    scan_scope_resolve_check: bool = True
     # local = API pod runs scanner in a thread; agent = remote workers claim jobs.
     job_execution_mode: str = "local"
     # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables legacy agent auth.
     agent_token: str = ""
     agent_stale_seconds: int = 120
+    # TCP ports the SSH push deployer and its host-key probe may dial (#240).
+    # The probe opens a connection to a host and port taken from the request
+    # body and reports what answered, which over an open range is a port
+    # scanner with a tidy response format. SSH is 22 nearly everywhere and 2222
+    # where 22 is taken; a target on anything else is named here deliberately.
+    # "*" restores the full range — see docs/configuration.md.
+    agent_deploy_ssh_ports: str = "22,2222"
+    # Whether a deployment target must sit *inside* the tenant's approved scan
+    # scope (#226), not merely outside its denied ranges. Off by default:
+    # where a tenant's agent lives is not the same question as what it is
+    # approved to scan — an agent on a management host that scans a customer
+    # range is the ordinary case — so only the prohibitions apply unless an
+    # operator decides the two scopes are the same set.
+    agent_deploy_enforce_scan_scope: bool = False
     # Short-lived agent JWT lifetime after provisioning-key exchange (Phase 2).
     agent_jwt_expire_minutes: int = 60
+    # Hard request-body cap on POST /api/agent/jobs/{job_id}/results, read from
+    # Content-Length before the multipart body is buffered (#222). A run archive
+    # is a tar.gz of one scan directory — single-digit MiB in practice, more with
+    # screenshots; 128 MiB leaves room for an unusually large run while keeping a
+    # compromised agent from streaming the API out of memory. An order of
+    # magnitude above endpoint_inventory_max_body_bytes because, unlike a bounded
+    # JSON document, the archive has no per-field ceiling to fall back on.
+    agent_results_max_body_bytes: int = 128 * 1024 * 1024
     # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
     # ClickHouse HTTP URL (e.g. http://shapoclyack-clickhouse-client:8123). Empty disables CH.
@@ -90,9 +155,11 @@ class Settings:
     # CronJob's new feeds reach every replica without a restart.
     # Postgres PRIMARY_DB (Phase 7 — asset inventory + tenants/provisioning keys).
     # UNLIKE nats_url/clickhouse_url, this is NOT an opt-in sidecar: the tenant
-    # store lives here, so an empty value makes API startup fail fast (see
-    # api/services/tenants.py:load_tenants) rather than silently disabling a
-    # feature. Empty-string default is kept only for config-shape consistency.
+    # store lives here. load_settings() still falls back to a local SQLite file
+    # so dev and the test suite need no database, but under OCTO_ENV=prod that
+    # fallback — and any explicit sqlite:// URL — is a startup refusal (#174):
+    # a per-replica file means a per-replica control plane. Empty-string default
+    # is kept only for config-shape consistency.
     postgres_url: str = ""
     # Asset lifecycle: active assets not re-observed within this many days flip
     # to "stale" at the end of every ingest (api/services/assets.py).
@@ -142,8 +209,8 @@ class Settings:
     # Bound on how much fan-out one event can cause per tenant.
     webhook_max_subscriptions_per_tenant: int = 20
     # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
-    # default since postgres_url always resolves (sqlite fallback), unlike
-    # the opt-in NATS/ClickHouse sidecars.
+    # default since postgres_url always resolves — Postgres in prod, the SQLite
+    # fallback in dev — unlike the opt-in NATS/ClickHouse sidecars.
     scheduler_dispatch_enabled: bool = True
     # Lariska endpoint-inventory ingestion (Agent_plan.md S1-S7). Router is
     # only registered when this is true.
@@ -159,6 +226,8 @@ class Settings:
     # 15 MiB covers the worst case allowed by the per-field limits above
     # (5000 items x ~6 bounded 512-byte strings).
     endpoint_inventory_max_body_bytes: int = 15 * 1024 * 1024
+    # Phase S8: publish accepted endpoint inventory summary to NATS
+    endpoint_nats_events_enabled: bool = True
     # Tenant-uploaded brute-force wordlists (Phase 8.2). The word cap mirrors
     # BruteForceSubdomainConfig.max_candidates' ceiling — a list longer than the
     # scanner would ever iterate is a mistake, not a feature. The byte cap is
@@ -177,6 +246,28 @@ class Settings:
     endpoint_change_retention_days: int = 365
     endpoint_retention_interval_seconds: int = 21600
     endpoint_retention_batch_size: int = 5000
+    # P4.4: screenshot PNG retention. 0 disables the reaper (files stay until
+    # the run directory is pruned). Default is short — these images can hold
+    # personal data even after DOM redaction.
+    screenshot_retention_enabled: bool = True
+    screenshot_retention_days: int = 14
+    screenshot_retention_interval_seconds: int = 3600
+    # Run artifact retention (#187). Old scan run directories in output_dir/runs/*
+    # are deleted past run_retention_days. 0 disables the reaper.
+    run_retention_enabled: bool = True
+    run_retention_days: int = 30
+    run_retention_interval_seconds: int = 3600
+    # Risk snapshot retention (#229). risk_score_snapshots gains a row per
+    # tenant per finished run; migration 0023 landed after #187, so nothing
+    # bounded it. 0 disables the sweep.
+    risk_snapshot_retention_enabled: bool = True
+    risk_snapshot_retention_days: int = 90
+    risk_snapshot_retention_interval_seconds: int = 21600
+
+    # OpenTelemetry (ROADMAP P3). Empty = no TracerProvider, no export.
+    # The value is the OTLP HTTP traces URL, e.g. http://otel-collector:4318/v1/traces
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "shapoclyack-api"
     # Identity of this API process in the shared control plane (ROADMAP P1.2).
     # Local-mode jobs execute in a thread inside one specific replica, so the
     # jobs table records which one; on startup a replica only reconciles the
@@ -250,7 +341,37 @@ def _resolve_env() -> str:
     return raw
 
 
-def _validate_production(settings: Settings) -> None:
+def _is_sqlite_url(url: str) -> bool:
+    return url.strip().lower().startswith("sqlite")
+
+
+def _today() -> date:
+    """UTC date, indirected so the sunset check can be tested without freezing time."""
+    return datetime.now(UTC).date()
+
+
+def _shipped_data_plane_secrets(settings: Settings) -> list[str]:
+    """Variables whose URL still carries a credential published in this repository.
+
+    Returned sorted and de-duplicated: two NATS placeholders live in the same
+    URL, and naming ``OCTO_NATS_URL`` twice would read as two problems.
+    """
+    urls = {
+        "OCTO_POSTGRES_URL": settings.postgres_url,
+        "OCTO_CLICKHOUSE_URL": settings.clickhouse_url,
+        "OCTO_NATS_URL": settings.nats_url,
+    }
+    found = {
+        variable
+        for variable, url in urls.items()
+        if url
+        for literal in DEFAULT_DATA_PLANE_SECRETS
+        if literal in url
+    }
+    return sorted(found)
+
+
+def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     """Refuse to start when prod configuration is still the published default.
 
     Every problem is reported at once: an operator fixing these one restart at a
@@ -284,6 +405,75 @@ def _validate_production(settings: Settings) -> None:
             "    Name the exact origins the console is served from, comma-separated."
         )
 
+    # Postgres is a hard dependency, not an opt-in sidecar like NATS or
+    # ClickHouse: tenants, users, assets, jobs, agents and webhook deliveries
+    # all live there. The SQLite fallback below load_settings() is what makes
+    # this check necessary — tenants_service.load_tenants() already refuses an
+    # empty URL, but it never sees one, because the fallback has already
+    # supplied a URL that resolves.
+    if _is_sqlite_url(settings.postgres_url):
+        unset = not postgres_url_env
+        lead = (
+            "OCTO_POSTGRES_URL is unset, so the API falls back to a local SQLite file."
+            if unset
+            else "OCTO_POSTGRES_URL points at SQLite."
+        )
+        problems.append(
+            f"{lead}\n"
+            "    SQLite cannot carry the control plane: each replica would open its\n"
+            "    own file, so two replicas mean two disagreeing control planes, and\n"
+            "    the guarantees P1 was built on — SELECT ... FOR UPDATE SKIP LOCKED\n"
+            "    for job claims and leases, advisory locks for scheduler leader\n"
+            "    election — quietly stop holding. The file also sits on the pod's\n"
+            "    ephemeral disk and is lost on restart.\n"
+            "    Set OCTO_POSTGRES_URL to the PostgreSQL instance, e.g.\n"
+            "    postgresql+psycopg://user:password@postgres:5432/shapoclyack"
+        )
+
+    # The install snippets and the URL the SSH push writes into agent.env are
+    # built from this. Deriving it from the request's Host header let whoever
+    # reached the API choose where the next agent fetches its installer from
+    # and reports to, so there has to be one configured answer.
+    if not settings.public_base_url:
+        problems.append(
+            "OCTO_PUBLIC_BASE_URL is unset.\n"
+            "    The agent install snippets and the SSH push would otherwise take the\n"
+            "    server URL from the request's Host header, which the caller controls.\n"
+            "    Set it to the URL operators and agents reach this API at, e.g.\n"
+            "    https://shapoclyack.example.com"
+        )
+    elif not settings.public_base_url.lower().startswith(("http://", "https://")):
+        problems.append(
+            "OCTO_PUBLIC_BASE_URL is not an absolute http(s) URL.\n"
+            "    It is embedded verbatim in installer commands run on target hosts,\n"
+            "    so a bare hostname produces a command that cannot work.\n"
+            "    Include the scheme, e.g. https://shapoclyack.example.com"
+        )
+
+    # Each of these is a credential printed in k8s/shapoclyack/base — an install
+    # that overrode the JWT secret and stopped there used to start silently.
+    for variable in _shipped_data_plane_secrets(settings):
+        problems.append(
+            f"{variable} still carries the placeholder credential shipped in\n"
+            "    k8s/shapoclyack/base/kustomization.yaml.\n"
+            "    Anyone with the repository can read the data plane it protects.\n"
+            "    Generate one with: openssl rand -hex 32, put it in the matching\n"
+            "    Secret, and see docs/operations.md § Data-plane credentials."
+        )
+
+    # A warning until the sunset date, a refusal after it — see AGENT_TOKEN_SUNSET.
+    if settings.agent_token and _today() >= AGENT_TOKEN_SUNSET:
+        problems.append(
+            f"OCTO_AGENT_TOKEN is set and the legacy shared agent token was retired on "
+            f"{AGENT_TOKEN_SUNSET.isoformat()}.\n"
+            "    Every agent holding it authenticates as tenant_id=default, so one\n"
+            "    token leak covers the whole fleet and no tenant is isolated from\n"
+            "    another's agents.\n"
+            "    Issue a per-tenant provisioning key instead\n"
+            "    (POST /api/tenants/{tenant_id}/provisioning-keys), re-install the\n"
+            "    agents with it, then unset this variable."
+        )
+
     if not problems:
         return
 
@@ -313,6 +503,11 @@ def load_settings() -> Settings:
     origins = os.environ.get("OCTO_API_CORS", "*").strip()
     cors = [part.strip() for part in origins.split(",") if part.strip()] or ["*"]
 
+    # Kept separately from the resolved URL so the refusal below can tell
+    # "forgot to set it" from "set it to the wrong thing" — the fallback erases
+    # that difference the moment it is applied.
+    postgres_url_env = os.environ.get("OCTO_POSTGRES_URL", "").strip()
+
     mode = os.environ.get("OCTO_JOB_EXECUTION_MODE", "local").strip().lower()
     if mode not in {"local", "agent"}:
         mode = "local"
@@ -327,18 +522,31 @@ def load_settings() -> Settings:
         config_path=Path(os.environ.get("OCTO_CONFIG", "scanner/config/default.yaml")),
         web_dist=Path(os.environ.get("OCTO_WEB_DIST", "web/dist")),
         cors_origins=cors,
+        public_base_url=os.environ.get("OCTO_PUBLIC_BASE_URL", "").strip().rstrip("/"),
+        hsts_enabled=os.environ.get("OCTO_HSTS_ENABLED", "true" if env == ENV_PROD else "false").lower()
+        in {"1", "true", "yes"},
         users=users,
         allow_scan_start=os.environ.get("OCTO_ALLOW_SCAN_START", "true").lower()
+        in {"1", "true", "yes"},
+        scan_scope_resolve_check=os.environ.get("OCTO_SCAN_SCOPE_RESOLVE_CHECK", "true").lower()
         in {"1", "true", "yes"},
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
+        agent_deploy_ssh_ports=os.environ.get("OCTO_AGENT_DEPLOY_SSH_PORTS", "22,2222").strip(),
+        agent_deploy_enforce_scan_scope=os.environ.get(
+            "OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE", "false"
+        ).lower()
+        in {"1", "true", "yes"},
         agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
+        agent_results_max_body_bytes=int(
+            os.environ.get("OCTO_AGENT_RESULTS_MAX_BODY_BYTES", str(128 * 1024 * 1024))
+        ),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
-        postgres_url=os.environ.get("OCTO_POSTGRES_URL", "").strip() or _default_sqlite_url(),
+        postgres_url=postgres_url_env or _default_sqlite_url(),
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
         asset_events_enabled=os.environ.get("OCTO_ASSET_EVENTS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
@@ -401,6 +609,8 @@ def load_settings() -> Settings:
         endpoint_inventory_max_body_bytes=int(
             os.environ.get("OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES", str(15 * 1024 * 1024))
         ),
+        endpoint_nats_events_enabled=os.environ.get("OCTO_ENDPOINT_NATS_EVENTS_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
         wordlist_max_words=int(os.environ.get("OCTO_WORDLIST_MAX_WORDS", "50000")),
         wordlist_max_body_bytes=int(
             os.environ.get("OCTO_WORDLIST_MAX_BODY_BYTES", str(8 * 1024 * 1024))
@@ -420,6 +630,36 @@ def load_settings() -> Settings:
         endpoint_retention_batch_size=int(
             os.environ.get("OCTO_ENDPOINT_RETENTION_BATCH_SIZE", "5000")
         ),
+        screenshot_retention_enabled=os.environ.get("OCTO_SCREENSHOT_RETENTION_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        screenshot_retention_days=max(
+            0, int(os.environ.get("OCTO_SCREENSHOT_RETENTION_DAYS", "14"))
+        ),
+        screenshot_retention_interval_seconds=max(
+            60, int(os.environ.get("OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS", "3600"))
+        ),
+        run_retention_enabled=os.environ.get("OCTO_RUN_RETENTION_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        run_retention_days=max(
+            0, int(os.environ.get("OCTO_RUN_RETENTION_DAYS", "30"))
+        ),
+        run_retention_interval_seconds=max(
+            60, int(os.environ.get("OCTO_RUN_RETENTION_INTERVAL_SECONDS", "3600"))
+        ),
+        risk_snapshot_retention_enabled=os.environ.get(
+            "OCTO_RISK_SNAPSHOT_RETENTION_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"},
+        risk_snapshot_retention_days=max(
+            0, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_DAYS", "90"))
+        ),
+        risk_snapshot_retention_interval_seconds=max(
+            60, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS", "21600"))
+        ),
+
+        otel_exporter_otlp_endpoint=os.environ.get("OCTO_OTEL_EXPORTER_OTLP_ENDPOINT", "").strip(),
+        otel_service_name=os.environ.get("OCTO_OTEL_SERVICE_NAME", "shapoclyack-api").strip()
+        or "shapoclyack-api",
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),
@@ -453,16 +693,17 @@ def load_settings() -> Settings:
     )
 
     if settings.env == ENV_PROD:
-        _validate_production(settings)
+        _validate_production(settings, postgres_url_env=postgres_url_env)
         if settings.agent_token:
-            # A warning, not a refusal: the legacy shared token still works and
-            # maps to tenant_id=default (Phase 2), so refusing would break a
-            # working install over a design preference rather than a published
-            # credential. The provisioning-key exchange is the replacement.
+            # Still only a warning *before* the sunset date — after it,
+            # _validate_production above has already refused the start. Breaking
+            # a working install needs notice, which is what the date is for.
             logger.warning(
                 "OCTO_AGENT_TOKEN is set: every agent holding it authenticates as "
-                "tenant_id=default and one leak covers the whole fleet. Prefer "
-                "per-tenant provisioning keys (POST /api/auth/agent/token)."
+                "tenant_id=default and one leak covers the whole fleet. It stops "
+                "being accepted in prod on %s — migrate to per-tenant provisioning "
+                "keys (POST /api/auth/agent/token).",
+                AGENT_TOKEN_SUNSET.isoformat(),
             )
 
     return settings

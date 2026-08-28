@@ -283,3 +283,53 @@ def test_viewer_cannot_cancel_a_job(tmp_path, monkeypatch):
 
     viewer = {"Authorization": f"Bearer {login(client, 'viewer')}"}
     assert client.post(f"/api/jobs/{job_id}/cancel", headers=viewer).status_code == 403
+
+
+def test_results_upload_over_body_cap_is_rejected_before_the_route(tmp_path, monkeypatch):
+    """#222: the archive part was buffered in full before anything looked at it.
+
+    The cap is a Content-Length check, so the rejection is a middleware response
+    and the job is left untouched — no run directory, no terminal status.
+    """
+    client = _client(tmp_path, monkeypatch, agent_results_max_body_bytes=512)
+    reg = client.post(
+        "/api/agent/register",
+        headers=_agent_headers(),
+        json={"hostname": "worker"},
+    )
+    agent_id = reg.json()["agent_id"]
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = b"x" * 8192
+        info = tarfile.TarInfo(name="findings.json")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    resp = client.post(
+        "/api/agent/jobs/job-does-not-exist/results",
+        headers=_agent_headers(),
+        data={"agent_id": agent_id, "exit_code": "0", "run_id": "run-1"},
+        files={"archive": ("run.tar.gz", buf.getvalue(), "application/gzip")},
+    )
+    assert resp.status_code == 413
+    assert "exceeds limit 512" in resp.json()["detail"]
+    # A missing job would answer 404 — proof the cap ran before routing.
+    assert not (make_settings(tmp_path).output_dir / "runs" / "run-1").exists()
+
+
+def test_claim_endpoint_is_not_capped_by_the_results_limit(tmp_path, monkeypatch):
+    """The results cap is matched by pattern, not by the shared path prefix:
+    ``/api/agent/jobs/claim`` must keep answering normally."""
+    client = _client(tmp_path, monkeypatch, agent_results_max_body_bytes=1)
+    reg = client.post(
+        "/api/agent/register",
+        headers=_agent_headers(),
+        json={"hostname": "worker"},
+    )
+    agent_id = reg.json()["agent_id"]
+    claimed = client.post(
+        f"/api/agent/jobs/claim?agent_id={agent_id}",
+        headers=_agent_headers(),
+    )
+    assert claimed.status_code == 204

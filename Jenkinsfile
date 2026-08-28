@@ -9,7 +9,14 @@
 //   * образ собирается только под нативный linux/arm64, без QEMU-матрицы.
 
 def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
-def IMAGE_TAG = 'network-scan-cli:ci'
+
+// Уникально на джобу, а не только на номер билда. В multibranch у каждой
+// ветки своя нумерация с #1, поэтому общий тег означал бы, что параллельные
+// сборки разных веток перетирают друг другу образ, а Smoke/E2E/Trivy молча
+// проверяют чужой — это хуже падения. disableConcurrentBuilds() тут не
+// помогает: он про одну джобу, а ветки это разные джобы.
+def CI_SLUG = "${env.JOB_NAME}-${env.BUILD_NUMBER}".replaceAll(/[^A-Za-z0-9]+/, '-').toLowerCase()
+def IMAGE_TAG = "network-scan-cli:ci-${CI_SLUG}"
 
 pipeline {
   agent none
@@ -65,79 +72,81 @@ pipeline {
     }
 
     stage('Tests') {
-      matrix {
-        axes {
-          axis { name 'PY'; values '3.11', '3.12' }
-        }
-        agent any
-        stages {
-          stage('pytest') {
-            steps {
-              script {
-                // Своя сеть на сборку: postgres и nats резолвятся по alias'ам.
-                // 127.0.0.1 из GitHub Actions тут не работает — у каждого
-                // контейнера свой netns, общего loopback с раннером нет.
-                def net = "shapoclyack-ci-${env.BUILD_NUMBER}-${PY}"
-                sh "docker network create ${net}"
-                try {
-                  docker.image('postgres:16-alpine').withRun(
-                    "--network ${net} --network-alias pg " +
-                    "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
-                  ) { pg ->
-                    // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
-                    // причина, по которой в GHA это был ручной docker run.
-                    docker.image('nats:2.10.24-alpine').withRun(
-                      "--network ${net} --network-alias nats",
-                      "--jetstream --store_dir=/data --http_port=8222"
-                    ) { nats ->
-                      docker.image("python:${PY}-slim").inside("--network ${net} ${PIP_CACHE}") {
-                        withEnv([
-                          'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
-                          'OCTO_NATS_URL=nats://nats:4222',
-                        ]) {
-                          sh '''
-                            set -eu
-                            # Без apt намеренно: psycopg[binary] везёт libpq в
-                            # колесе, компилятор не нужен, а ожидание сервисов
-                            # сделано на stdlib. Раньше тут стоял apt-get, и
-                            # матрица падала, когда deb.debian.org не ответил.
-                            pip install --quiet -r requirements-dev.txt
+      // Матрица развёрнута в последовательный цикл намеренно. Параллельные
+      // ячейки получали каждая свой воркспейс и клонировали репозиторий
+      // одновременно, и этот клон перемежающимся образом падал с
+      // "inflate: data stream error" ещё на 154 объектах: git fsck исходного
+      // репозитория чист, мелкий клон не помог, а в изоляции (хост и контейнер,
+      // bind-mount и ФС контейнера, параллельно и по одному) 12 попыток прошли
+      // без единого сбоя. Один агент — один воркспейс — один чекаут, и целый
+      // класс гонок исчезает. Цена — около трёх минут: прогоны идут по очереди.
+      agent any
+      steps {
+        script {
+          for (PY in ['3.11', '3.12']) {
+            try {
+              // Своя сеть на прогон: postgres и nats резолвятся по alias'ам.
+              // 127.0.0.1 из GitHub Actions тут не работает — у каждого
+              // контейнера свой netns, общего loopback с раннером нет.
+              def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
+              sh "docker network create ${net}"
+              try {
+                docker.image('postgres:16-alpine').withRun(
+                  "--network ${net} --network-alias pg " +
+                  "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
+                ) { pg ->
+                  // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
+                  // причина, по которой в GHA это был ручной docker run.
+                  docker.image('nats:2.10.24-alpine').withRun(
+                    "--network ${net} --network-alias nats",
+                    "--jetstream --store_dir=/data --http_port=8222"
+                  ) { nats ->
+                    docker.image("python:${PY}-slim").inside("--network ${net} ${PIP_CACHE}") {
+                      withEnv([
+                        'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
+                        'OCTO_NATS_URL=nats://nats:4222',
+                      ]) {
+                        sh '''
+                          set -eu
+                          # Без apt намеренно: psycopg[binary] везёт libpq в
+                          # колесе, компилятор не нужен, а ожидание сервисов
+                          # сделано на stdlib. Раньше тут стоял apt-get, и
+                          # матрица падала, когда deb.debian.org не ответил.
+                          pip install --quiet -r requirements-dev.txt
 
-                            python -m compileall scanner api tests agent
+                          python -m compileall scanner api tests agent
 
-                            echo "[ci] waiting for postgres and jetstream"
-                            for i in $(seq 1 60); do
-                              python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
-                              sleep 1
-                            done
-                            for i in $(seq 1 60); do
-                              python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
-                              sleep 1
-                            done
+                          echo "[ci] waiting for postgres and jetstream"
+                          for i in $(seq 1 60); do
+                            python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
+                            sleep 1
+                          done
+                          for i in $(seq 1 60); do
+                            python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
+                            sleep 1
+                          done
 
-                            alembic -c api/db/alembic.ini upgrade head
+                          alembic -c api/db/alembic.ini upgrade head
 
-                            python -m pytest -q \
-                              --junitxml=junit-''' + PY + '''.xml \
-                              --cov=api --cov=scanner \
-                              --cov-report=xml:coverage-''' + PY + '''.xml \
-                              --cov-report=term-missing \
-                              --cov-fail-under=74
-                          '''
-                        }
+                          python -m pytest -q \
+                            --junitxml=junit-''' + PY + '''.xml \
+                            --cov=api --cov=scanner \
+                            --cov-report=xml:coverage-''' + PY + '''.xml \
+                            --cov-report=term-missing \
+                            --cov-fail-under=74
+                        '''
                       }
                     }
                   }
-                } finally {
-                  sh "docker network rm ${net} || true"
                 }
+              } finally {
+                sh "docker network rm ${net} || true"
               }
-            }
-            post {
-              always {
-                junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
-                archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
-              }
+            } finally {
+              // В finally, а не после цикла: падение на 3.11 не должно съедать
+              // отчёт, который уже написан.
+              junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
+              archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
             }
           }
         }
@@ -147,16 +156,36 @@ pipeline {
     stage('Web dashboard') {
       agent { docker { image 'node:26-bookworm-slim'; args '-v shapoclyack-npm-cache:/root/.npm'; reuseNode true } }
       steps {
-        dir('web-next') {
-          sh '''
-            set -eu
-            npm ci
-            npm run lint
-            npm run typecheck
-            npm test
-            npm run build
-          '''
-        }
+        // npm ci must not unpack node_modules into the workspace: on macOS that
+        // is a VirtioFS bind mount, which drops writes silently. Build #25 died
+        // in eslint on a 60 KB run of NUL bytes inside
+        // node_modules/language-subtag-registry/data/json/registry.json — the
+        // hole was page-aligned and the file kept its correct size, so npm saw
+        // nothing to report. #24 had passed on that same revision, which is how
+        // the same commit produced both a green and a red build.
+        //
+        // Building on the container's own filesystem avoids the mount entirely.
+        // A named volume over node_modules would too, but it has to be pinned to
+        // the workspace path, and parallel stages get their own (shapoclyack@2)
+        // — two concurrent builds would then share one node_modules.
+        //
+        // Nothing downstream consumes web-next/out from the workspace: both
+        // Dockerfile.allinone and Dockerfile.api run their own npm ci in a
+        // web-build stage. This stage is a gate, not a producer.
+        sh '''
+          set -eu
+          BUILD_DIR=/tmp/web-next-build
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+          cp -R web-next/. "$BUILD_DIR/"
+          rm -rf "$BUILD_DIR/node_modules" "$BUILD_DIR/.next"
+          cd "$BUILD_DIR"
+          npm ci
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+        '''
       }
     }
 
@@ -168,6 +197,7 @@ pipeline {
         // ("not found" на 1.31), а registry.k8s.io/kubectl — distroless, в нём
         // нет bash для запуска скрипта.
         sh 'k8s/scripts/validate-kustomize.sh'
+        sh 'k8s/scripts/validate-prometheus-rules.sh'
       }
     }
 
@@ -226,16 +256,26 @@ pipeline {
 
         stage('Trivy') {
           steps {
+            // Кэш — на джобу, а не общий том `trivy-db` на всех. Trivy берёт
+            // на своём кэше блокировку, поэтому две сборки разных веток
+            // одновременно роняли друг друга с "Failed to acquire cache or
+            // database lock" — тот же класс, что общий тег образа: ресурс один,
+            // а джоб теперь много. Воркспейс уже свой у каждой джобы, так что
+            // кэш переиспользуется между сборками одной ветки и ни с кем не
+            // делится. Цена — первая сборка новой ветки скачивает базу заново.
             sh """
               set -eu
+              mkdir -p "\$WORKSPACE/.trivy-cache"
+
               # Отчёт — не блокирующий
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v trivy-db:/root/.cache/trivy aquasec/trivy:latest image \
+                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy aquasec/trivy:latest image \
                 --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${IMAGE_TAG}
 
               # Гейт — падаем на исправимых CRITICAL
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v trivy-db:/root/.cache/trivy -v "\$WORKSPACE/.trivyignore":/.trivyignore \
+                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                -v "\$WORKSPACE/.trivyignore":/.trivyignore \
                 aquasec/trivy:latest image \
                 --format table --severity CRITICAL --ignore-unfixed \
                 --ignorefile /.trivyignore --exit-code 1 ${IMAGE_TAG}
@@ -256,6 +296,18 @@ pipeline {
         }
 
         stage('Load test') {
+        // Тяжёлый хвост: 16 контейнеров-мишеней и полный прогон сканера,
+        // это самая длинная стадия пайплайна. На ветках она не окупается —
+        // сборка ветки нужна, чтобы поймать регресс до мержа, а не чтобы
+        // перемерить нагрузку. BRANCH_NAME есть только у multibranch-джобы;
+        // у одноветочной 'shapoclyack' он null, поэтому там стадия идёт как
+        // раньше.
+        when {
+          anyOf {
+            expression { env.BRANCH_NAME == null }
+            branch 'main'
+          }
+        }
           steps {
             // Порт .github/actions/synthetic-load-test с теми же параметрами,
             // что и в ci.yml: 16 хостов, tests/load/config.yaml, без resume.
@@ -264,9 +316,13 @@ pipeline {
             //
             // TMPDIR — по той же причине, что и в E2E: run.sh делает mktemp -d
             // и монтирует этот путь в docker run на хостовый демон.
+            // rm -f метрик: воркспейс между билдами не чистится, и упавший
+            // прогон архивировал/гейтил load-metrics.json от прошлого билда
+            // (см. #26 — зелёные метрики на ABORTED-сборке).
             sh """
               set -eu
               mkdir -p "\$WORKSPACE/.load-tmp"
+              rm -f "\$WORKSPACE/load-metrics.json"
               TMPDIR="\$WORKSPACE/.load-tmp" \
               SCAN_TIMEOUT_SEC=2400 \
               MIN_FRACTION=0.95 \
@@ -314,20 +370,40 @@ PY
           }
         }
       }
+      post {
+        always {
+          // Тег уникален на сборку, поэтому образы копились бы на диске —
+          // раньше их перезаписывал следующий билд под тем же именем.
+          sh "docker rmi -f ${IMAGE_TAG} || true"
+        }
+      }
     }
 
     stage('Image nmap-legacy') {
       agent any
+      // Второй вариант образа (с Nmap) нужен на релизном пути, а не на
+      // каждой ветке: ещё одна полная сборка образа ради проверки, что
+      // легаси-тег собирается.
+      when {
+        anyOf {
+          expression { env.BRANCH_NAME == null }
+          branch 'main'
+        }
+      }
       steps {
+        // Этот sh — в одинарных кавычках, поэтому ${IMAGE_TAG} раскрывает не
+        // Groovy, а шелл: значение приходит через env, иначе тег молча стал бы
+        // пустым и docker build собрал бы "-nmap".
+        withEnv(["IMAGE_TAG=${IMAGE_TAG}"]) {
         withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
           sh '''
             set -eu
             DOCKER_BUILDKIT=1 docker build \
               --secret id=github_token,env=GH_TOKEN \
               --build-arg INSTALL_NMAP=1 \
-              -t network-scan-cli:ci-nmap .
+              -t ${IMAGE_TAG}-nmap .
 
-            docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh network-scan-cli:ci-nmap -c '
+            docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh ${IMAGE_TAG}-nmap -c '
               set -e
               naabu -version
               dnsx -version
@@ -338,6 +414,12 @@ PY
               python -m compileall scanner
             '
           '''
+        }
+        }
+      }
+      post {
+        always {
+          sh "docker rmi -f ${IMAGE_TAG}-nmap || true"
         }
       }
     }

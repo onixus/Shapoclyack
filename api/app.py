@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request, Response
@@ -11,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
-from api.middleware import BodySizeLimitMiddleware
+from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
@@ -22,15 +23,19 @@ from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import system as system_routes
 from api.routes import users as users_routes
+from api.routes import vulnerabilities as vulnerabilities_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse
+from api.services import agent_deployer
 from api.services import agents as agents_service
 from api.services import auth_audit
 from api.services import ch_ingest_worker
 from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
+from api.services import screenshot_retention
+from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
 from api.services.integrations import webhook_worker
 from api.services.integrations import webhooks as webhooks_service
@@ -40,6 +45,7 @@ from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
+from api.services import tracing as tracing_service
 from api.services import tenants as tenants_service
 from api.services import users as users_service
 from api.services import wordlists as wordlists_service
@@ -60,6 +66,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # advisory lock (ROADMAP P1.6).
     schedule_dispatcher.start_worker(settings)
     endpoint_retention.start_worker(settings)
+    screenshot_retention.start_worker(settings)
+    run_retention.start_worker(settings)
+    risk_snapshots.start_worker(settings)
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
@@ -72,10 +81,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
+        risk_snapshots.stop_worker()
+        run_retention.stop_worker()
+        screenshot_retention.stop_worker()
+        tracing_service.shutdown()
         endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()
         nats_bus.shutdown_bus()
+
 
 
 def create_app() -> FastAPI:
@@ -87,6 +101,7 @@ def create_app() -> FastAPI:
     users_service.bootstrap(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
+    agent_deployer.configure(settings)
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
     auth_audit.configure(settings)
@@ -100,6 +115,7 @@ def create_app() -> FastAPI:
         description="HTTP API for Shapoclyack scan runs, jobs, remote agents, and RBAC-protected access.",
         lifespan=lifespan,
     )
+    tracing_service.configure(app, settings)
     if settings.endpoint_inventory_enabled:
         # Runs before routing and body parsing: the cap is decided from the
         # request headers, never by buffering the payload first (S9). Added
@@ -110,6 +126,18 @@ def create_app() -> FastAPI:
             max_bytes=settings.endpoint_inventory_max_body_bytes,
             paths=("/api/endpoint/inventory",),
         )
+    # Same reasoning for the agent results upload (#222): the archive part is a
+    # whole run directory, and the route buffered it in full before deciding
+    # anything about it. Its own cap because the two contracts are different
+    # sizes, and no endpoint-submission counter because those rejections are not
+    # endpoint submissions.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=settings.agent_results_max_body_bytes,
+        path_patterns=(r"^/api/agent/jobs/[^/]+/results/?$",),
+        count_endpoint_submissions=False,
+    )
+    app.add_middleware(SecurityHeadersMiddleware, enable_hsts=settings.hsts_enabled)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -162,6 +190,7 @@ def create_app() -> FastAPI:
     app.include_router(schedules_routes.router, prefix="/api")
     app.include_router(wordlists_routes.router, prefix="/api")
     app.include_router(users_routes.router, prefix="/api")
+    app.include_router(vulnerabilities_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:
@@ -178,21 +207,43 @@ def create_app() -> FastAPI:
         elif vite_assets.is_dir():
             app.mount("/assets", StaticFiles(directory=vite_assets), name="assets")
 
+        web_root = web_dist.resolve()
+
+        def _contained_file(candidate: Path) -> Path | None:
+            """Resolve ``candidate`` and keep it only if it stays under the web root.
+
+            Same containment check as ``runs.resolve_artifact``: resolve, then
+            require ``relative_to`` the root to succeed. ``full_path`` reaches the
+            handler percent-decoded, so a ``%2e%2e%2f`` segment arrives here as a
+            real ``..`` that no ASGI-level path normalization ever saw — and this
+            route is unauthenticated, which made every file the API process can
+            read, its environment included, readable to anyone
+            (GHSA-cpcx-h7mr-24pc).
+            """
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(web_root)
+            except ValueError:
+                return None
+            return resolved if resolved.is_file() else None
+
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
             # Next `output: "export"` emits `runs.html` / `runs/view.html` (and optionally
             # directory `index.html`). Prefer explicit files before the SPA shell.
             if full_path:
                 cleaned = full_path.rstrip("/")
-                candidate = web_dist / cleaned
-                if candidate.is_file():
+                candidate = _contained_file(web_dist / cleaned)
+                if candidate is not None:
                     return FileResponse(candidate)
-                html_candidate = web_dist / f"{cleaned}.html"
-                if html_candidate.is_file():
+                html_candidate = _contained_file(web_dist / f"{cleaned}.html")
+                if html_candidate is not None:
                     return FileResponse(html_candidate)
-                index_candidate = candidate / "index.html"
-                if index_candidate.is_file():
+                index_candidate = _contained_file(web_dist / cleaned / "index.html")
+                if index_candidate is not None:
                     return FileResponse(index_candidate)
+            # An escaping path lands here, on the SPA shell, exactly like any
+            # other unknown route: the client-side router owns 404 rendering.
             return FileResponse(web_dist / "index.html")
 
     return app

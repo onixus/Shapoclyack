@@ -120,6 +120,10 @@ export type RunSummary = {
   alive_hosts: number | null;
   open_host_port_pairs: number | null;
   potential_vulnerabilities: number | null;
+  /** Subset of `potential_vulnerabilities` the scanner could not confirm —
+   * `exposure` observations and unverified `keyword_cve` hits. Null for runs
+   * scanned before the field existed. */
+  unconfirmed_findings: number | null;
   vulnerable_hosts: number | null;
   has_diff: boolean;
   has_summary: boolean;
@@ -131,6 +135,26 @@ export type RunDetail = {
   summary: Record<string, unknown> | null;
   diff: Record<string, unknown> | null;
   artifacts: string[];
+};
+
+/** Operator-only screenshot manifest (P4.4). Pixels can still hold PII. */
+export type ScreenshotItem = {
+  host: string | null;
+  port: number | string | null;
+  scheme: string | null;
+  url: string | null;
+  file: string;
+  redacted_fields: number;
+  available: boolean;
+};
+
+export type ScreenshotManifest = {
+  skipped_reason: string | null;
+  captured_count: number;
+  redacted_fields: number;
+  truncated: boolean;
+  retention_days: number;
+  items: ScreenshotItem[];
 };
 
 export type Vulnerability = {
@@ -178,6 +202,12 @@ export type AliveHost = {
   asn: string | null;
   asn_org: string | null;
   vulnerability_count: number;
+  /** P4.3: operator-set. Never inferred from a public IP or ASN. */
+  owner_email?: string | null;
+  business_unit?: string | null;
+  asset_id?: string | null;
+  registrable_domain?: string | null;
+  ownership_source?: string | null;
 };
 
 export type PortAggregate = {
@@ -281,6 +311,87 @@ export type AgentInfo = {
   last_seen_at: string | null;
   online: boolean;
   tenant_id?: string | null;
+  metrics?: {
+    cpu_percent?: number;
+    memory_used_mb?: number;
+    memory_total_mb?: number;
+    memory_percent?: number;
+    disk_free_gb?: number;
+    disk_total_gb?: number;
+    disk_percent?: number;
+    uptime_seconds?: number;
+    os?: string;
+    release?: string;
+    arch?: string;
+    load_1m?: number;
+    load_5m?: number;
+  };
+  capabilities?: string[];
+  is_outdated?: boolean;
+  latest_version?: string;
+  upgrade_requested?: boolean;
+};
+
+export type AgentFleetSummary = {
+  total_agents: number;
+  online_agents: number;
+  busy_agents: number;
+  stale_agents: number;
+  error_agents: number;
+  outdated_agents: number;
+  latest_version: string;
+  by_tenant: Record<string, number>;
+};
+
+export type AgentDeploySSHRequest = {
+  host: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  private_key?: string;
+  tenant_id?: string;
+  agent_id?: string;
+  install_dir?: string;
+  use_docker?: boolean;
+  /** SHA256 fingerprint the operator read off the target itself. Required the
+   * first time this tenant deploys to a host; afterwards the stored pin is what
+   * is checked. Without it the API refuses rather than trusting any key. */
+  expected_host_key?: string | null;
+};
+
+export type AgentSSHHostKeyInfo = {
+  host: string;
+  port: number;
+  key_type: string;
+  fingerprint: string;
+  /** True when this is the tenant's stored key. False means it was just read
+   * off the wire and is a claim by whoever answered, not yet trusted. */
+  pinned: boolean;
+  pinned_at: string | null;
+};
+
+export type AgentDeployStatusResponse = {
+  deploy_id: string;
+  status: "queued" | "connecting" | "installing" | "verifying" | "completed" | "failed";
+  stage: string;
+  progress_percent: number;
+  logs: string[];
+  agent_id: string | null;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type AgentDeploymentSnippetResponse = {
+  tenant_id: string;
+  /** Plaintext only on the minting POST; null on the read-only GET. */
+  provisioning_key: string | null;
+  key_minted: boolean;
+  server_url: string;
+  systemd_oneliner: string;
+  docker_run: string;
+  docker_compose: string;
+  kubernetes_yaml: string;
 };
 
 export type TenantInfo = {
@@ -305,6 +416,33 @@ export type AssetSummary = {
   primary_identifier: string | null;
   identifier_count: number;
   asset_criticality: number | null;
+  owner_email: string | null;
+  business_service: string | null;
+  environment: string | null;
+  exposure_level: string | null;
+  open_findings: number;
+  unassigned_findings: number;
+  estate_risk: string | null;
+};
+
+export type AssetEnvironment = "production" | "staging" | "development" | "lab" | "other";
+export type AssetDataClassification = "public" | "internal" | "confidential" | "restricted";
+export type AssetExposureLevel = "internet" | "partner" | "internal" | "unknown";
+export type AssetContextSource = "operator" | "cmdb" | "ad" | "other";
+
+export type AssetRisk = {
+  total: number;
+  open_total: number;
+  untriaged: number;
+  unassigned: number;
+  estate_risk: string | null;
+  by_state: Record<string, number>;
+  by_severity_open: Record<string, number>;
+  by_risk_level_open: Record<string, number>;
+  by_sla: Record<string, number>;
+  breached: number;
+  worst_breached_severity: string | null;
+  generated_at: string | null;
 };
 
 export type AssetDetail = {
@@ -316,14 +454,48 @@ export type AssetDetail = {
   owner_email: string | null;
   business_unit: string | null;
   asset_criticality: number | null;
+  business_service: string | null;
+  environment: string | null;
+  data_classification: string | null;
+  exposure_level: string | null;
+  context_source: string | null;
   identifiers: AssetIdentifier[];
   tags: Record<string, string>;
+  /** P4.2: named IP↔FQDN evidence. shared/not merged on purpose. */
+  identity_links?: AssetIdentityLink[];
+  risk: AssetRisk | null;
+};
+
+export type AssetIdentityLink = {
+  ip: string;
+  fqdn: string;
+  sources: string[];
+  confidence: string;
+  shared: boolean;
+  merged: boolean;
+};
+
+export type AssetContextEvent = {
+  id: number;
+  asset_id: string;
+  tenant_id: string;
+  occurred_at: string | null;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  actor: string | null;
+  source: string | null;
 };
 
 export type UpdateAssetBody = {
   owner_email?: string | null;
   business_unit?: string | null;
   asset_criticality?: number | null;
+  business_service?: string | null;
+  environment?: AssetEnvironment | null;
+  data_classification?: AssetDataClassification | null;
+  exposure_level?: AssetExposureLevel | null;
+  context_source?: AssetContextSource | null;
   status?: "decommissioned";
 };
 
@@ -399,6 +571,7 @@ export type EnrichmentDb = {
   size_bytes: number | null;
   modified_at: string | null;
   age_days: number | null;
+  stale?: boolean;
 };
 
 export type ScanConfigSummary = {
@@ -609,9 +782,127 @@ export async function downloadArtifact(runId: string, path: string) {
   }
 }
 
+/** Operator-only screenshot manifest. Viewers 403. */
+export async function fetchScreenshots(runId: string) {
+  try {
+    const { data } = await api.get<ScreenshotManifest>(
+      `/runs/${encodeURIComponent(runId)}/screenshots`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Raw PNG bytes for an operator-only screenshot. Caller owns the blob URL. */
+export async function fetchScreenshotBlob(runId: string, path: string) {
+  try {
+    const { data } = await api.get<Blob>(
+      `/runs/${encodeURIComponent(runId)}/download/${encodeArtifactPath(path)}`,
+      { responseType: "blob" },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchAgents(page?: PageParams) {
   try {
     const { data } = await api.get<Page<AgentInfo>>(`/agents?${pageSearchParams(page)}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAgentSummary() {
+  try {
+    const { data } = await api.get<AgentFleetSummary>("/agents/summary");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAgentDetail(agentId: string) {
+  try {
+    const { data } = await api.get<AgentInfo>(`/agents/${encodeURIComponent(agentId)}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteAgent(agentId: string) {
+  try {
+    const { data } = await api.delete<{ status: string; agent_id: string }>(
+      `/agents/${encodeURIComponent(agentId)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function triggerAgentUpgrade(agentId: string) {
+  try {
+    const { data } = await api.post<{ status: string; agent_id: string; target_version: string }>(
+      `/agents/${encodeURIComponent(agentId)}/upgrade`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAgentDeploymentSnippets() {
+  try {
+    const { data } = await api.get<AgentDeploymentSnippetResponse>("/agent/deployment-command");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createAgentDeploymentKey(label?: string) {
+  try {
+    const { data } = await api.post<AgentDeploymentSnippetResponse>(
+      "/agent/deployment-command",
+      { label: label ?? "" },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function probeAgentSSHHostKey(host: string, port: number) {
+  try {
+    const { data } = await api.post<AgentSSHHostKeyInfo>("/agent/deploy/ssh/host-key", {
+      host,
+      port,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deployAgentSSH(body: AgentDeploySSHRequest) {
+  try {
+    const { data } = await api.post<AgentDeployStatusResponse>("/agent/deploy/ssh", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchDeployStatus(deployId: string) {
+  try {
+    const { data } = await api.get<AgentDeployStatusResponse>(
+      `/agent/deploy/${encodeURIComponent(deployId)}/status`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -740,13 +1031,29 @@ export async function deleteSchedule(scheduleId: string) {
 
 /** Cross-run asset inventory (Phase 7) — distinct from the per-run hosts/ports/vulns above. */
 export async function fetchAssets(
-  opts?: { tenantId?: string; status?: AssetStatus | "" },
+  opts?: {
+    tenantId?: string;
+    status?: AssetStatus | "";
+    unowned?: boolean;
+    exposure?: AssetExposureLevel | "";
+  },
   page?: PageParams,
 ) {
   try {
     const params = pageSearchParams(page, tenantParam(opts?.tenantId));
     if (opts?.status) params.set("status", opts.status);
+    if (opts?.unowned) params.set("unowned", "true");
+    if (opts?.exposure) params.set("exposure", opts.exposure);
     const { data } = await api.get<Page<AssetSummary>>(`/assets?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAssetSummary() {
+  try {
+    const { data } = await api.get<AssetInventorySummary>("/assets/summary");
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -757,6 +1064,18 @@ export async function fetchAsset(assetId: string, tenantId = "default") {
   try {
     const params = new URLSearchParams(tenantParam(tenantId));
     const { data } = await api.get<AssetDetail>(`/assets/${encodeURIComponent(assetId)}?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAssetContextEvents(assetId: string, tenantId = "default", page?: PageParams) {
+  try {
+    const params = pageSearchParams(page, tenantParam(tenantId));
+    const { data } = await api.get<Page<AssetContextEvent>>(
+      `/assets/${encodeURIComponent(assetId)}/events?${params}`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -888,6 +1207,28 @@ export async function fetchTenants() {
   }
 }
 
+export type TenantPosture = {
+  tenant_id: string;
+  name: string;
+  status: string;
+  estate_risk: string | null;
+  open_total: number;
+  unassigned: number;
+  breached: number;
+  in_kev_open: number;
+  unowned_assets: number;
+  declared_internet_assets: number;
+};
+
+export async function fetchTenantPosture() {
+  try {
+    const { data } = await api.get<TenantPosture[]>("/tenants/posture");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function createTenant(body: { name: string; tenant_id?: string }) {
   try {
     const { data } = await api.post<TenantInfo>("/tenants", body);
@@ -908,3 +1249,329 @@ export async function createProvisioningKey(tenantId: string, label = "") {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+/** Persistent finding across runs (#145). Distinct from `Vulnerability`, which
+ * is a *run's* observation read off disk. */
+export type VulnLifecycleState =
+  | "OPEN"
+  | "ACKNOWLEDGED"
+  | "PLANNED"
+  | "FIXING"
+  | "VERIFYING"
+  | "CLOSED";
+
+export type SlaState = "on_track" | "due_soon" | "breached" | "accepted" | "none";
+
+export type TrackedVulnerability = {
+  vuln_id: string;
+  tenant_id: string;
+  asset_id: string;
+  finding_key: string;
+  cve: string | null;
+  cwe: string[];
+  script_id: string | null;
+  title: string;
+  port: string | null;
+  severity: string;
+  risk_level: string | null;
+  contextual_score: number | null;
+  cvss: number | null;
+  in_kev: boolean;
+  exploit_maturity: string | null;
+  network_exposure: string | null;
+  network_exposure_source: string | null;
+  state: VulnLifecycleState;
+  state_changed_at: string | null;
+  state_changed_by: string | null;
+  assignee: string | null;
+  owner_team: string | null;
+  due_at: string | null;
+  sla_days: number | null;
+  sla_source: string | null;
+  sla_state: SlaState;
+  exception_until: string | null;
+  exception_reason: string | null;
+  exception_by: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  sla_started_at: string | null;
+  first_seen_run_id: string | null;
+  last_seen_run_id: string | null;
+  observation_count: number;
+  reopen_count: number;
+  closed_at: string | null;
+  ticket_system: string | null;
+  ticket_key: string | null;
+  ticket_url: string | null;
+};
+
+export type TicketSystem = "jira" | "servicenow" | "smax" | "defectdojo" | "other";
+
+export type VulnerabilityTicketBody = {
+  system: TicketSystem;
+  key?: string | null;
+  url?: string | null;
+  note?: string | null;
+};
+
+export type VulnerabilityEventInfo = {
+  id: number;
+  vuln_id: string;
+  tenant_id: string;
+  occurred_at: string | null;
+  kind: string;
+  from_state: string | null;
+  to_state: string | null;
+  actor: string | null;
+  note: string | null;
+  detail: Record<string, unknown>;
+};
+
+export type NistRiskLevel = "very_low" | "low" | "moderate" | "high" | "very_high";
+
+export type VulnerabilitySummary = {
+  total: number;
+  open_total: number;
+  untriaged: number;
+  unassigned: number;
+  estate_risk: NistRiskLevel | null;
+  by_state: Record<string, number>;
+  by_severity_open: Record<string, number>;
+  by_risk_level_open: Record<string, number>;
+  by_sla: Record<string, number>;
+  breached: number;
+  worst_breached_severity: string | null;
+  generated_at: string | null;
+};
+
+export type AssetInventorySummary = {
+  total: number;
+  unowned: number;
+  by_status: Record<string, number>;
+  by_criticality: Record<string, number>;
+  generated_at: string | null;
+};
+
+export type VulnerabilityListFilters = {
+  state?: VulnLifecycleState | "";
+  open_only?: boolean;
+  severity?: string;
+  asset_id?: string;
+  assignee?: string;
+  unassigned?: boolean;
+  sla?: SlaState | "";
+  stale_days?: number;
+  in_kev?: boolean;
+};
+
+export type VulnerabilityTransitionBody = {
+  state: VulnLifecycleState;
+  note?: string | null;
+};
+
+export type VulnerabilityAssignBody = {
+  assignee?: string | null;
+  owner_team?: string | null;
+  note?: string | null;
+};
+
+export type VulnerabilityExceptionBody = {
+  until: string;
+  reason: string;
+};
+
+export async function fetchTrackedVulnerabilities(
+  filters?: VulnerabilityListFilters,
+  page?: PageParams,
+) {
+  try {
+    const params = pageSearchParams(page);
+    if (filters?.state) params.set("state", filters.state);
+    if (filters?.open_only) params.set("open_only", "true");
+    if (filters?.severity) params.set("severity", filters.severity);
+    if (filters?.asset_id) params.set("asset_id", filters.asset_id);
+    if (filters?.assignee) params.set("assignee", filters.assignee);
+    if (filters?.unassigned) params.set("unassigned", "true");
+    if (filters?.sla) params.set("sla", filters.sla);
+    if (filters?.in_kev) params.set("in_kev", "true");
+    if (filters?.stale_days != null) params.set("stale_days", String(filters.stale_days));
+    const { data } = await api.get<Page<TrackedVulnerability>>(`/vulnerabilities?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchVulnerabilitySummary() {
+  try {
+    const { data } = await api.get<VulnerabilitySummary>("/vulnerabilities/summary");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchTrackedVulnerability(vulnId: string) {
+  try {
+    const { data } = await api.get<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchVulnerabilityEvents(vulnId: string, page?: PageParams) {
+  try {
+    const { data } = await api.get<Page<VulnerabilityEventInfo>>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/events?${pageSearchParams(page)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchVulnerabilityActivity(page?: PageParams) {
+  try {
+    const { data } = await api.get<Page<VulnerabilityEventInfo>>(
+      `/vulnerabilities/events?${pageSearchParams(page)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function transitionVulnerability(vulnId: string, body: VulnerabilityTransitionBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/transition`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function assignVulnerability(vulnId: string, body: VulnerabilityAssignBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/assign`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function setVulnerabilityException(vulnId: string, body: VulnerabilityExceptionBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/exception`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function clearVulnerabilityException(vulnId: string) {
+  try {
+    const { data } = await api.delete<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/exception`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function commentOnVulnerability(vulnId: string, note: string) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/comment`,
+      { note },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function setVulnerabilityTicket(vulnId: string, body: VulnerabilityTicketBody) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function clearVulnerabilityTicket(vulnId: string) {
+  try {
+    const { data } = await api.delete<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type RiskScoreSnapshot = {
+  snapshot_id: string;
+  tenant_id: string;
+  recorded_at: string | null;
+  estate_risk: NistRiskLevel | null;
+  open_total: number;
+  total: number;
+  untriaged: number;
+  unassigned: number;
+  breached: number;
+  worst_breached_severity: string | null;
+  by_severity_open: Record<string, number>;
+  by_risk_level_open: Record<string, number>;
+  by_state: Record<string, number>;
+  by_sla: Record<string, number>;
+  source: string;
+};
+
+export async function fetchRiskHistory(params?: {
+  since?: string;
+  until?: string;
+  limit?: number;
+}) {
+  try {
+    const sp = new URLSearchParams();
+    if (params?.since) sp.set("since", params.since);
+    if (params?.until) sp.set("until", params.until);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    const qs = sp.toString();
+    const { data } = await api.get<RiskScoreSnapshot[]>(
+      `/vulnerabilities/risk-history${qs ? `?${qs}` : ""}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function triggerRiskSnapshot() {
+  try {
+    const { data } = await api.post<RiskScoreSnapshot>(
+      "/vulnerabilities/risk-history/snapshot",
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+

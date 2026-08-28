@@ -4,8 +4,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   fetchAsset,
+  fetchAssetContextEvents,
+  fetchAssetSummary,
   fetchAssets,
   updateAsset,
+  type AssetExposureLevel,
   type AssetStatus,
   type PageParams,
   type UpdateAssetBody,
@@ -13,10 +16,28 @@ import {
 import { POLL_INTERVALS } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
-export function useAssets(filters: { status: AssetStatus | "" }, page?: PageParams) {
+export function useAssets(
+  filters: { status: AssetStatus | ""; unowned?: boolean; exposure?: AssetExposureLevel | "" },
+  page?: PageParams,
+) {
   return useQuery({
-    queryKey: queryKeys.assetsPage({ status: filters.status }, page),
-    queryFn: () => fetchAssets({ status: filters.status }, page),
+    queryKey: queryKeys.assetsPage(
+      { status: filters.status, unowned: filters.unowned, exposure: filters.exposure },
+      page,
+    ),
+    queryFn: () =>
+      fetchAssets(
+        { status: filters.status, unowned: filters.unowned, exposure: filters.exposure },
+        page,
+      ),
+    refetchInterval: POLL_INTERVALS.assets,
+  });
+}
+
+export function useAssetSummary() {
+  return useQuery({
+    queryKey: queryKeys.assetSummary,
+    queryFn: fetchAssetSummary,
     refetchInterval: POLL_INTERVALS.assets,
   });
 }
@@ -29,6 +50,14 @@ export function useAssetDetail(assetId: string | null, tenantId = "default") {
   });
 }
 
+export function useAssetContextEvents(assetId: string | null, tenantId = "default") {
+  return useQuery({
+    queryKey: queryKeys.assetEvents(assetId ?? "", tenantId),
+    queryFn: () => fetchAssetContextEvents(assetId!, tenantId, { limit: 50 }),
+    enabled: Boolean(assetId),
+  });
+}
+
 export function useUpdateAsset(assetId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -36,6 +65,7 @@ export function useUpdateAsset(assetId: string) {
     onSuccess: async (updated) => {
       queryClient.setQueryData(queryKeys.asset(assetId), updated);
       await queryClient.invalidateQueries({ queryKey: ["assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["asset", assetId] });
       toast.success("Asset updated");
     },
     onError: (err) => {

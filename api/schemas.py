@@ -43,6 +43,12 @@ class RunSummary(BaseModel):
     alive_hosts: int | None = None
     open_host_port_pairs: int | None = None
     potential_vulnerabilities: int | None = None
+    # Subset of `potential_vulnerabilities` the scanner itself could not
+    # confirm — `exposure` observations and unverified `keyword_cve` hits (see
+    # VulnerabilityItem.finding_class). Carried alongside the total so a reader
+    # can tell a run with 40 confirmed CVEs from one with 40 keyword guesses;
+    # None for runs written before the scanner recorded it.
+    unconfirmed_findings: int | None = None
     vulnerable_hosts: int | None = None
     has_diff: bool = False
     has_summary: bool = False
@@ -100,6 +106,13 @@ class VulnerabilityItem(BaseModel):
     # True when a working check fired against this host, rather than the level
     # being inferred from a list keyed by CVE.
     exploit_verified_on_host: bool = False
+    # Host reachability for likelihood (#171). Not inferred from a public IP.
+    network_exposure: str | None = None
+    network_exposure_source: str | None = None
+    # On-path CDN/WAF names from fingerprint.json on the same host:port (#173).
+    # Empty means we did not observe one, not that the service is unprotected.
+    cdn_waf: list[str] = Field(default_factory=list)
+    compensating_control_source: str | None = None
 
 
 class AliveHostItem(BaseModel):
@@ -122,6 +135,13 @@ class AliveHostItem(BaseModel):
     asn: str | None = None
     asn_org: str | None = None
     vulnerability_count: int = 0
+    # P4.3: operator-set ownership from the asset registry. Never inferred
+    # from a public IP or an ASN. ``ownership_source`` is operator | domain | none.
+    owner_email: str | None = None
+    business_unit: str | None = None
+    asset_id: str | None = None
+    registrable_domain: str | None = None
+    ownership_source: str | None = None
 
 
 class PortAggregateItem(BaseModel):
@@ -138,6 +158,15 @@ class AssetIdentifier(BaseModel):
     identifier_value: str
 
 
+class AssetIdentityLink(BaseModel):
+    ip: str
+    fqdn: str
+    sources: list[str] = Field(default_factory=list)
+    confidence: str
+    shared: bool = False
+    merged: bool = False
+
+
 class AssetSummary(BaseModel):
     asset_id: str
     status: str
@@ -146,6 +175,14 @@ class AssetSummary(BaseModel):
     primary_identifier: str | None = None
     identifier_count: int = 0
     asset_criticality: int | None = None
+    owner_email: str | None = None
+    business_service: str | None = None
+    environment: str | None = None
+    exposure_level: str | None = None
+    # Page-scoped rollup (#136): one query for the page, not one per row.
+    open_findings: int = 0
+    unassigned_findings: int = 0
+    estate_risk: str | None = None
 
 
 class AssetDetail(BaseModel):
@@ -157,14 +194,42 @@ class AssetDetail(BaseModel):
     owner_email: str | None = None
     business_unit: str | None = None
     asset_criticality: int | None = None
+    business_service: str | None = None
+    environment: str | None = None
+    data_classification: str | None = None
+    exposure_level: str | None = None
+    context_source: str | None = None
     identifiers: list[AssetIdentifier] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
+    # P4.2: named IP↔FQDN evidence. ``merged`` is false when shared hosting
+    # forbade a collapse — two assets on purpose.
+    identity_links: list[AssetIdentityLink] = Field(default_factory=list)
+    # Open-finding rollup from the tracker — why this asset is risky (#146).
+    risk: VulnerabilitySummary | None = None
+
+
+class AssetContextEventInfo(BaseModel):
+    id: int
+    asset_id: str
+    tenant_id: str
+    occurred_at: str | None = None
+    field: str
+    old_value: str | None = None
+    new_value: str | None = None
+    actor: str | None = None
+    source: str | None = None
 
 
 class UpdateAssetRequest(BaseModel):
     owner_email: str | None = None
     business_unit: str | None = None
     asset_criticality: int | None = Field(default=None, ge=0, le=4)
+    business_service: str | None = Field(default=None, max_length=200)
+    environment: Literal["production", "staging", "development", "lab", "other"] | None = None
+    data_classification: Literal["public", "internal", "confidential", "restricted"] | None = None
+    # Operator-set posture, not a scan measurement (#171 is the network fact).
+    exposure_level: Literal["internet", "partner", "internal", "unknown"] | None = None
+    context_source: Literal["operator", "cmdb", "ad", "other"] | None = None
     # Manual decommission only — "active"/"stale" stay system-managed
     # (upsert_assets_from_run / mark_stale_assets), never operator-set.
     status: Literal["decommissioned"] | None = None
@@ -235,6 +300,8 @@ class AgentHeartbeatRequest(BaseModel):
     status: Literal["idle", "busy", "error"] = "idle"
     current_job_id: str | None = None
     detail: str | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class AgentInfo(BaseModel):
@@ -249,6 +316,90 @@ class AgentInfo(BaseModel):
     last_seen_at: str | None = None
     online: bool = False
     tenant_id: str = "default"
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+    is_outdated: bool = False
+    latest_version: str = ""
+    upgrade_requested: bool = False
+
+
+class AgentFleetSummary(BaseModel):
+    total_agents: int = 0
+    online_agents: int = 0
+    busy_agents: int = 0
+    stale_agents: int = 0
+    error_agents: int = 0
+    outdated_agents: int = 0
+    latest_version: str = ""
+    by_tenant: dict[str, int] = Field(default_factory=dict)
+
+
+class AgentDeploySSHRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=64, default="root")
+    password: str | None = None
+    private_key: str | None = None
+    tenant_id: str = "default"
+    agent_id: str | None = None
+    install_dir: str = "/opt/shapoclyack-agent"
+    use_docker: bool = False
+    # The target's SSH host key fingerprint (SHA256:…), as the operator read it
+    # off the target itself. Required the first time this tenant deploys to a
+    # host and pinned on success; afterwards the pin is what is checked and
+    # this field is ignored. Without it the deployment is refused rather than
+    # trusting whatever key answers (#232).
+    expected_host_key: str | None = Field(default=None, max_length=200)
+
+
+class AgentSSHHostKeyProbeRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+
+
+class AgentSSHHostKeyInfo(BaseModel):
+    """A target's SSH host key as the API currently sees it.
+
+    ``pinned`` says whether this is the tenant's stored key or one just read
+    off the wire — an unpinned fingerprint is a claim by whoever answered, and
+    the operator is expected to check it against the host before trusting it.
+    """
+
+    host: str
+    port: int
+    key_type: str
+    fingerprint: str
+    pinned: bool = False
+    pinned_at: str | None = None
+
+
+class AgentDeployStatusResponse(BaseModel):
+    deploy_id: str
+    status: Literal["queued", "connecting", "installing", "verifying", "completed", "failed"] = "queued"
+    stage: str = "Initializing"
+    progress_percent: int = 0
+    logs: list[str] = Field(default_factory=list)
+    agent_id: str | None = None
+    error: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+class AgentDeploymentSnippetResponse(BaseModel):
+    tenant_id: str
+    # Null on the read-only GET: the snippets then carry a placeholder the
+    # caller must replace. Only the minting POST returns plaintext, once.
+    provisioning_key: str | None = None
+    key_minted: bool = False
+    server_url: str
+    systemd_oneliner: str
+    docker_run: str
+    docker_compose: str
+    kubernetes_yaml: str
+
+
+class CreateAgentDeploymentKeyRequest(BaseModel):
+    label: str = Field(default="", max_length=200)
 
 
 class AgentClaimResponse(BaseModel):
@@ -333,6 +484,9 @@ class CreateWebhookRequest(BaseModel):
     secret: str | None = Field(default=None, max_length=512)
     headers: dict[str, str] | None = None
     enabled: bool = True
+    # webhook (default HMAC POST) | jira | servicenow | defectdojo
+    transport: Literal["webhook", "jira", "servicenow", "defectdojo"] | None = None
+    transport_config: dict[str, Any] | None = None
 
 
 class UpdateWebhookRequest(BaseModel):
@@ -342,6 +496,8 @@ class UpdateWebhookRequest(BaseModel):
     event_kinds: list[str] | None = None
     min_severity: Literal["low", "medium", "high", "critical"] | None = None
     headers: dict[str, str] | None = None
+    transport: Literal["webhook", "jira", "servicenow", "defectdojo"] | None = None
+    transport_config: dict[str, Any] | None = None
 
 
 class WebhookInfo(BaseModel):
@@ -354,6 +510,8 @@ class WebhookInfo(BaseModel):
     min_severity: str | None = None
     has_secret: bool = False
     headers: dict[str, str] = Field(default_factory=dict)
+    transport: str = "webhook"
+    transport_config: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
     created_by: str | None = None
     updated_at: str | None = None
@@ -417,19 +575,27 @@ class GrantMembershipRequest(BaseModel):
 
 
 class AuthEventInfo(BaseModel):
-    """One recorded login attempt (#157).
+    """One recorded access decision (#157, #226, #241).
 
-    ``outcome`` is ``success``, ``failure`` (credentials checked and rejected)
-    or ``locked`` (refused by the rate limiter before they were checked).
-    ``reason`` is NULL on success.
+    ``outcome`` is ``success``, ``failure`` (credentials checked and
+    rejected), ``locked`` (refused by the rate limiter before they were
+    checked), ``denied`` (an authenticated principal refused an action, e.g. a
+    scan outside the tenant's approved scope, or a deployment target outside
+    it) or ``trust_change`` (an admin set or removed an SSH host-key pin, which
+    is neither an attempt nor a refusal). ``reason`` is NULL on success.
+    ``detail`` names the subject of a non-login decision and is NULL for login
+    attempts, whose subject is the username/IP pair; ``client_ip`` is empty for
+    the decisions taken in the service layer, which have no request to read it
+    from.
     """
 
     id: int
     occurred_at: str | None = None
     username: str
     client_ip: str
-    outcome: Literal["success", "failure", "locked"]
+    outcome: Literal["success", "failure", "locked", "denied", "trust_change"]
     reason: str | None = None
+    detail: str | None = None
 
 
 class UserInfo(BaseModel):
@@ -505,6 +671,41 @@ class ProvisioningKeyInfo(BaseModel):
     key: str | None = None
 
 
+class ScanScopeEntry(BaseModel):
+    """One allow/deny entry of a tenant's approved scanning scope (#226).
+
+    ``value`` is a CIDR (``kind="cidr"``), a domain suffix covering itself and
+    its subdomains (``kind="domain"``), or the literal ``*`` for either kind,
+    which is the explicit any-value wildcard.
+    """
+
+    effect: Literal["allow", "deny"]
+    kind: Literal["cidr", "domain"]
+    value: str = Field(min_length=1, max_length=255)
+    note: str = Field(default="", max_length=500)
+
+
+class ScanScopeEntryInfo(ScanScopeEntry):
+    """A stored entry, with the approval it was written under."""
+
+    id: int
+    tenant_id: str
+    approved_by: str = ""
+    approved_at: str | None = None
+
+
+class ReplaceScanScopeRequest(BaseModel):
+    """The scope a tenant should have after this request — the whole of it.
+
+    A replacement rather than a patch: a scope is evaluated as a set (deny
+    beats allow), so applying a narrowing entry by entry would leave a window
+    in which a half-applied set is the one being enforced. An empty list is
+    accepted and means "this tenant scans nothing".
+    """
+
+    entries: list[ScanScopeEntry] = Field(default_factory=list, max_length=1000)
+
+
 class AgentTokenRequest(BaseModel):
     provisioning_key: str = Field(min_length=8, max_length=256)
     agent_id: str | None = Field(default=None, max_length=128)
@@ -550,6 +751,18 @@ class EnrichmentDb(BaseModel):
     size_bytes: int | None = None
     modified_at: datetime | None = None
     age_days: float | None = None
+    stale: bool = False
+    # Provenance recorded when the data was fetched (#246). Age alone cannot
+    # tell a freshly-pulled corpus from a committed baseline that no fetch has
+    # ever managed to replace. All optional: an image built before the manifest
+    # existed, or a volume with no manifest on it, reports None for each.
+    source: str | None = None
+    # "fetch" (this dataset was refreshed), "seed" (whatever the image shipped),
+    # "stale" (a refresh was attempted and failed), or "missing".
+    origin: str | None = None
+    # The date the feed itself stamped on the data, not the file's mtime.
+    updated: str | None = None
+    entries: int | None = None
 
 
 class ScanConfigSummary(BaseModel):
@@ -737,3 +950,215 @@ class EndpointSoftwareItemInfo(BaseModel):
     architecture: str | None = None
     source: str
     install_location: str | None = None
+
+
+class VulnerabilityInfo(BaseModel):
+    """One tracked finding with its lifecycle and SLA state (#145).
+
+    Distinct from ``VulnerabilityItem`` above, which is a *run's* finding read
+    off disk and scored per request. This is the persistent entity: the same
+    finding across runs, plus everything a person decided about it. ``sla_state``
+    and nothing else is derived per response — see the model docstring for why
+    breach is not a column.
+    """
+
+    vuln_id: str
+    tenant_id: str
+    asset_id: str
+    finding_key: str
+    cve: str | None = None
+    cwe: list[str] = Field(default_factory=list)
+    script_id: str | None = None
+    port: str | None = None
+    title: str = ""
+    severity: str = "unknown"
+    risk_level: str | None = None
+    contextual_score: float | None = None
+    cvss: float | None = None
+    in_kev: bool = False
+    exploit_maturity: str | None = None
+    network_exposure: str | None = None
+    network_exposure_source: str | None = None
+    state: str
+    state_changed_at: str | None = None
+    state_changed_by: str | None = None
+    assignee: str | None = None
+    owner_team: str | None = None
+    due_at: str | None = None
+    sla_days: int | None = None
+    sla_source: str | None = None
+    sla_state: str
+    exception_until: str | None = None
+    exception_reason: str | None = None
+    exception_by: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    sla_started_at: str | None = None
+    first_seen_run_id: str | None = None
+    last_seen_run_id: str | None = None
+    observation_count: int = 1
+    reopen_count: int = 0
+    closed_at: str | None = None
+    ticket_system: str | None = None
+    ticket_key: str | None = None
+    ticket_url: str | None = None
+
+
+class VulnerabilityEventInfo(BaseModel):
+    """One audit entry. ``actor`` is null when the platform, not a person, did it."""
+
+    id: int
+    vuln_id: str
+    tenant_id: str
+    occurred_at: str | None = None
+    kind: str
+    from_state: str | None = None
+    to_state: str | None = None
+    actor: str | None = None
+    note: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class VulnerabilityTransitionRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/transition``.
+
+    ``note`` is optional in general but is the only way to record *why* a
+    finding was closed, which is the transition anyone auditing this will ask
+    about first.
+    """
+
+    state: Literal["OPEN", "ACKNOWLEDGED", "PLANNED", "FIXING", "VERIFYING", "CLOSED"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class VulnerabilityAssignRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/assign``. An explicit ``null``
+    clears the field; an omitted key leaves it untouched."""
+
+    assignee: str | None = Field(default=None, max_length=320)
+    owner_team: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class VulnerabilityExceptionRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/exception`` — accepted risk.
+
+    Both fields are required: an acceptance with no expiry is a decision nobody
+    revisits, and one with no reason cannot be reviewed by whoever inherits it.
+    """
+
+    until: datetime
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityCommentRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/comment`` (#138)."""
+
+    note: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityTicketRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/ticket`` — link, not create.
+
+    Native Jira/ServiceNow/SMAX/DefectDojo creation is the 10.3/P2 transport
+    over the existing delivery queue. This only records where the work lives.
+    """
+
+    system: Literal["jira", "servicenow", "smax", "defectdojo", "other"]
+    key: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class SlaPolicyInfo(BaseModel):
+    policy_id: str
+    tenant_id: str
+    # null = this severity's tenant-wide fallback.
+    asset_criticality: int | None = None
+    severity: str
+    remediation_days: int
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+
+
+class SlaPolicyRequest(BaseModel):
+    """Body for ``PUT /vulnerabilities/sla-policies`` — upsert by scope."""
+
+    severity: Literal["critical", "high", "medium", "low", "unknown"]
+    remediation_days: int = Field(ge=1, le=3650)
+    asset_criticality: int | None = Field(default=None, ge=0, le=4)
+
+
+class VulnerabilitySummary(BaseModel):
+    """Aggregates for the Vulnerability Center header and the Risk Dashboard
+    (#135, #137). ``estate_risk`` is the worst open NIST ``risk_level``."""
+
+    total: int
+    open_total: int
+    untriaged: int
+    unassigned: int = 0
+    estate_risk: str | None = None
+    by_state: dict[str, int] = Field(default_factory=dict)
+    by_severity_open: dict[str, int] = Field(default_factory=dict)
+    by_risk_level_open: dict[str, int] = Field(default_factory=dict)
+    by_sla: dict[str, int] = Field(default_factory=dict)
+    breached: int
+    worst_breached_severity: str | None = None
+    generated_at: str | None = None
+
+
+class RiskScoreSnapshotInfo(BaseModel):
+    """Historical risk snapshot schema (#144, Track C)."""
+
+    snapshot_id: str
+    tenant_id: str
+    recorded_at: str | None = None
+    estate_risk: str | None = None
+    open_total: int = 0
+    total: int = 0
+    untriaged: int = 0
+    unassigned: int = 0
+    breached: int = 0
+    worst_breached_severity: str | None = None
+    by_severity_open: dict[str, int] = Field(default_factory=dict)
+    by_risk_level_open: dict[str, int] = Field(default_factory=dict)
+    by_state: dict[str, int] = Field(default_factory=dict)
+    by_sla: dict[str, int] = Field(default_factory=dict)
+    source: str = "run"
+
+
+
+class TenantPosture(BaseModel):
+    """One customer's risk posture for the MSSP comparison (#139).
+
+    ``declared_internet_assets`` is operator-set ``exposure_level='internet'``,
+    not a scan measurement (#171).
+    """
+
+    tenant_id: str
+    name: str
+    status: str
+    estate_risk: str | None = None
+    open_total: int = 0
+    unassigned: int = 0
+    breached: int = 0
+    in_kev_open: int = 0
+    unowned_assets: int = 0
+    declared_internet_assets: int = 0
+
+
+class AssetInventorySummary(BaseModel):
+    """Tenant asset posture for the Risk Dashboard (#135).
+
+    ``unowned`` is active+stale assets with no ``owner_email`` — decommissioned
+    boxes are out of the working set, so they do not inflate the number.
+    Internet-facing exposure is **not** counted: that input does not exist yet
+    ([#171](https://github.com/onixus/Shapoclyack/issues/171) / #146).
+    """
+
+    total: int
+    unowned: int
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_criticality: dict[str, int] = Field(default_factory=dict)
+    generated_at: str | None = None

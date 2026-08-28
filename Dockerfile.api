@@ -1,5 +1,5 @@
 # Shapoclyack thin API + Web UI v2 image (no scanner tools).
-FROM node:24-bookworm-slim AS web-build
+FROM node:26-bookworm-slim AS web-build
 WORKDIR /web
 COPY web-next/package.json web-next/package-lock.json ./
 RUN npm ci
@@ -32,12 +32,33 @@ COPY api /app/api
 COPY scripts /app/scripts
 COPY --from=web-build /web/out /app/web/dist
 
-# Best-effort: bake real EPSS/KEV data into the image (used by
-# api/services/risk_scoring.py's contextual scoring) so a fresh deployment
-# isn't limited to the committed seed stubs. This image has no scanner
-# tools, so GeoIP/CVSS4 (scanner-side enrichment) don't apply here. Never
-# fails the build — offline/network-restricted builds just keep the seed data.
-RUN bash scripts/fetch-epss-db.sh || true; bash scripts/fetch-kev-db.sh || true
+# Bake real EPSS/KEV data into the image (used by api/services/risk_scoring.py's
+# contextual scoring) so a fresh deployment isn't limited to what the repo
+# committed. This image has no scanner tools, so GeoIP/CVSS4 (scanner-side
+# enrichment) aren't fetched here — the committed baselines are copied in above
+# and reported as such.
+#
+# A feed being unreachable stays non-fatal, but it no longer disappears: the
+# manifest records which datasets this build actually refreshed, and the image
+# serves it back through GET /api/system (#246). ENRICHMENT_STRICT=1 — set by
+# the release pipeline, see Jenkinsfile.publish — additionally refuses to build
+# an image whose required data is missing or is a stub, which is the case that
+# would have the risk model scoring blind.
+ARG ENRICHMENT_STRICT=0
+RUN set -eu; \
+    refreshed=""; failed=""; \
+    if bash scripts/fetch-epss-db.sh; then refreshed="$refreshed,epss"; else failed="$failed,epss"; fi; \
+    if bash scripts/fetch-kev-db.sh; then refreshed="$refreshed,kev"; else failed="$failed,kev"; fi; \
+    status=0; \
+    python3 scripts/enrichment_manifest.py --dir /app/scanner/data \
+      --refreshed "$refreshed" --failed "$failed" || status=$?; \
+    if [ "$status" -ge 2 ]; then \
+      if [ "${ENRICHMENT_STRICT}" = "1" ]; then \
+        echo "ENRICHMENT_STRICT=1: refusing to publish an image whose enrichment data is missing or stubbed" >&2; \
+        exit 1; \
+      fi; \
+      echo "warning: enrichment data is missing or stubbed; continuing (ENRICHMENT_STRICT=0)" >&2; \
+    fi
 
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
     mkdir -p /app/scanner/output /app/scanner/state && \
@@ -45,4 +66,8 @@ RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
 USER octo
 
 EXPOSE 8080
+# CIS Docker Benchmark 4.6/5.27: in-image liveness check for docker/compose
+# runs; under k8s the probes in api-deployment.yaml remain authoritative.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('OCTO_API_PORT', '8080'), timeout=4)"]
 CMD ["python", "-m", "api"]

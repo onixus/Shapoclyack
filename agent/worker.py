@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -38,6 +39,46 @@ HEARTBEAT_INTERVAL_SECONDS = 60.0
 SUBJECT_JOBS_SCAN = "jobs.scan"
 STREAM_JOBS = "JOBS"
 CONSUMER_AGENTS = "octo-agents"
+
+
+def _collect_system_metrics() -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    try:
+        import platform
+        metrics["os"] = platform.system()
+        metrics["release"] = platform.release()
+        metrics["arch"] = platform.machine()
+    except Exception:
+        pass
+
+    try:
+        import psutil
+        metrics["cpu_percent"] = psutil.cpu_percent(interval=None)
+        mem = psutil.virtual_memory()
+        metrics["memory_used_mb"] = round((mem.total - mem.available) / (1024 * 1024), 1)
+        metrics["memory_total_mb"] = round(mem.total / (1024 * 1024), 1)
+        metrics["memory_percent"] = mem.percent
+        disk = psutil.disk_usage("/")
+        metrics["disk_free_gb"] = round(disk.free / (1024 * 1024 * 1024), 1)
+        metrics["disk_total_gb"] = round(disk.total / (1024 * 1024 * 1024), 1)
+        metrics["disk_percent"] = disk.percent
+        metrics["uptime_seconds"] = int(time.time() - psutil.boot_time())
+    except ImportError:
+        try:
+            import os
+            load1, load5, _ = os.getloadavg()
+            metrics["load_1m"] = round(load1, 2)
+            metrics["load_5m"] = round(load5, 2)
+        except Exception:
+            pass
+        try:
+            import shutil
+            total, _, free = shutil.disk_usage("/")
+            metrics["disk_free_gb"] = round(free / (1024 * 1024 * 1024), 1)
+            metrics["disk_total_gb"] = round(total / (1024 * 1024 * 1024), 1)
+        except Exception:
+            pass
+    return metrics
 
 
 class AgentClient:
@@ -74,23 +115,34 @@ class AgentClient:
         body: bytes | None = None,
         content_type: str | None = "application/json",
         expect_json: bool = True,
+        max_retries: int = 2,
     ) -> Any:
         url = f"{self.base_url}{path}"
         headers = {"Authorization": f"Bearer {self.token}"}
         if body is not None and content_type:
             headers["Content-Type"] = content_type
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read()
-                if resp.status == 204 or not raw:
-                    return None
-                if expect_json:
-                    return json.loads(raw.decode("utf-8"))
-                return raw
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
+
+        for attempt in range(max_retries + 1):
+            req = urllib.request.Request(url, data=body, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    raw = resp.read()
+                    if resp.status == 204 or not raw:
+                        return None
+                    if expect_json:
+                        return json.loads(raw.decode("utf-8"))
+                    return raw
+            except urllib.error.HTTPError as exc:
+                if exc.code in (429, 502, 503, 504) and attempt < max_retries:
+                    time.sleep(0.5 * (2**attempt))
+                    continue
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if attempt < max_retries:
+                    time.sleep(0.5 * (2**attempt))
+                    continue
+                raise RuntimeError(f"{method} {path} -> network error: {exc}") from exc
 
     def register(
         self,
@@ -118,12 +170,14 @@ class AgentClient:
         status: str = "idle",
         current_job_id: str | None = None,
         detail: str | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "agent_id": agent_id,
             "status": status,
             "current_job_id": current_job_id,
             "detail": detail,
+            "metrics": metrics or _collect_system_metrics(),
         }
         return self._request(
             "POST",
@@ -217,6 +271,13 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         ports_udp_path = workdir / "ports_udp.txt"
         ports_udp_path.write_text(inputs["ports_udp.txt"], encoding="utf-8")
         args.extend(["--ports-udp-file", str(ports_udp_path)])
+    if "scan_scope.json" in inputs:
+        # The tenant's approved scope (#244). Handed through unread: this worker
+        # has no opinion about it, and the pipeline that resolves the names is
+        # the only place that can hold the resulting addresses to it.
+        scope_path = workdir / "scan_scope.json"
+        scope_path.write_text(inputs["scan_scope.json"], encoding="utf-8")
+        args.extend(["--scan-scope", str(scope_path)])
     return args
 
 
@@ -227,12 +288,44 @@ def _tar_directory(source: Path, archive_path: Path) -> None:
                 tf.add(path, arcname=str(path.relative_to(source)))
 
 
+def _detect_current_stage(output_dir: Path | None, run_id: str | None) -> str | None:
+    if output_dir is None or run_id is None:
+        return None
+    run_dir = output_dir / "runs" / run_id
+    if not run_dir.is_dir():
+        return None
+    # 1. Inspect stage_timings.json for completed stages
+    timings_file = run_dir / "stage_timings.json"
+    if timings_file.is_file():
+        try:
+            data = json.loads(timings_file.read_text(encoding="utf-8"))
+            stages = data.get("stages") or []
+            if stages:
+                last_stage = stages[-1].get("name")
+                if last_stage:
+                    return str(last_stage)
+        except Exception:
+            pass
+    # 2. Inspect checkpoint.json
+    checkpoint_file = run_dir / "checkpoint.json"
+    if checkpoint_file.is_file():
+        try:
+            data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+            completed = data.get("completed_stages") or []
+            if completed:
+                return str(completed[-1])
+        except Exception:
+            pass
+    return None
+
+
 def _run_scan(
     *,
     config: Path,
     job: dict[str, Any],
     workdir: Path,
     output_dir: Path,
+    timeout: float | None = 7200.0,
 ) -> tuple[int, str | None, Path | None]:
     target_args = _write_inputs(workdir, dict(job.get("inputs") or {}))
     run_id = str(job["run_id"])
@@ -258,10 +351,40 @@ def _run_scan(
     command.extend(target_args)
 
     LOG.info("Running: %s", " ".join(command))
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
-        err = (completed.stderr or completed.stdout or f"exit {completed.returncode}")[:2000]
-        return completed.returncode, err, None
+
+    use_session = sys.platform != "win32"
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=use_session,
+        )
+    except Exception as exc:
+        return 1, f"failed to spawn scan process: {exc}", None
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        LOG.warning("Scan run %s timed out after %ss; terminating process group", run_id, timeout)
+        if use_session:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                proc.wait(timeout=5.0)
+            except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+        else:
+            proc.kill()
+        proc.wait()
+        return 124, f"scan timed out after {timeout}s", None
+
+    if proc.returncode != 0:
+        err = (stderr or stdout or f"exit {proc.returncode}")[:2000]
+        return proc.returncode, err, None
 
     run_dir = output_dir / "runs" / run_id
     if not run_dir.is_dir():
@@ -274,9 +397,15 @@ def _run_scan(
 
 @contextlib.contextmanager
 def _busy_heartbeats(
-    client: AgentClient, *, agent_id: str, job_id: str, interval: float
+    client: AgentClient,
+    *,
+    agent_id: str,
+    job_id: str,
+    run_id: str | None = None,
+    output_dir: Path | None = None,
+    interval: float,
 ) -> Iterator[None]:
-    """Keep reporting this job for as long as the scan runs.
+    """Keep reporting this job for as long as the scan runs with live telemetry.
 
     The server leases in-flight jobs and treats a lapsed lease as a dead worker
     (ROADMAP P1.4), and the heartbeat is what renews it. One heartbeat at the
@@ -286,11 +415,17 @@ def _busy_heartbeats(
     control plane must not abort a running scan.
     """
     stop = threading.Event()
+    t0 = time.perf_counter()
 
     def _loop() -> None:
         while not stop.wait(interval):
             try:
-                client.heartbeat(agent_id, status="busy", current_job_id=job_id)
+                elapsed_sec = int(time.perf_counter() - t0)
+                stage = _detect_current_stage(output_dir, run_id)
+                detail = f"stage={stage or 'running'} elapsed={elapsed_sec}s"
+                client.heartbeat(
+                    agent_id, status="busy", current_job_id=job_id, detail=detail
+                )
             except Exception:  # noqa: BLE001
                 LOG.warning("Heartbeat failed for job %s", job_id, exc_info=True)
 
@@ -311,19 +446,31 @@ def _execute_job(
     config: Path,
     output_dir: Path,
     heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
+    scan_timeout: float | None = 7200.0,
 ) -> None:
     LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
-    client.heartbeat(agent_id, status="busy", current_job_id=job["job_id"])
+    client.heartbeat(
+        agent_id,
+        status="busy",
+        current_job_id=job["job_id"],
+        detail=f"stage=starting run_id={job['run_id']}",
+    )
     with tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp:
         workdir = Path(tmp)
         with _busy_heartbeats(
-            client, agent_id=agent_id, job_id=job["job_id"], interval=heartbeat_interval
+            client,
+            agent_id=agent_id,
+            job_id=job["job_id"],
+            run_id=str(job.get("run_id") or ""),
+            output_dir=output_dir,
+            interval=heartbeat_interval,
         ):
             exit_code, error, archive = _run_scan(
                 config=config,
                 job=job,
                 workdir=workdir,
                 output_dir=output_dir,
+                timeout=scan_timeout,
             )
         client.upload_results(
             job["job_id"],
@@ -580,8 +727,21 @@ def run_loop(args: argparse.Namespace) -> int:
 
     token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))
 
+    shutdown_event = threading.Event()
+
+    def _sig_handler(signum: int, frame: Any) -> None:
+        LOG.info("Received signal %s, initiating graceful shutdown", signum)
+        shutdown_event.set()
+
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _sig_handler)
+            except (ValueError, AttributeError):
+                pass
+
     try:
-        while True:
+        while not shutdown_event.is_set():
             try:
                 if args.provisioning_key and time.time() >= token_refresh_at:
                     exchanged = client.exchange_provisioning_key(args.provisioning_key)
@@ -614,6 +774,7 @@ def run_loop(args: argparse.Namespace) -> int:
                     job=job,
                     config=Path(args.config),
                     output_dir=Path(args.output_dir),
+                    scan_timeout=getattr(args, "scan_timeout", 7200.0),
                 )
             except KeyboardInterrupt:
                 LOG.info("Shutting down")
@@ -624,6 +785,7 @@ def run_loop(args: argparse.Namespace) -> int:
     finally:
         if nats_session is not None:
             nats_session.close()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -659,6 +821,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("OCTO_OUTPUT_DIR", "scanner/output"),
         help="Local scanner output dir (run artifacts are read from here)",
     )
+    parser.add_argument(
+        "--scan-timeout",
+        type=float,
+        default=float(os.environ.get("OCTO_AGENT_SCAN_TIMEOUT_SECONDS", "7200")),
+        help="Maximum duration for a single scan execution in seconds (default: 7200)",
+    )
     parser.add_argument("--agent-id", default=os.environ.get("OCTO_AGENT_ID"), help="Stable agent id")
     parser.add_argument("--hostname", default=os.environ.get("OCTO_AGENT_HOSTNAME"), help="Agent hostname")
     parser.add_argument(
@@ -692,3 +860,12 @@ def main(argv: list[str] | None = None) -> int:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
     return run_loop(args)
+
+
+# `python -m agent.worker` used to import this module as __main__, define
+# main(), and exit 0 without ever calling it — a silent no-op that looked like
+# a clean start, and that systemd then restarted forever under Restart=always.
+# `python -m agent` (agent/__main__.py) remains the documented entry point;
+# this guard makes the other spelling do the same thing instead of nothing.
+if __name__ == "__main__":
+    raise SystemExit(main())

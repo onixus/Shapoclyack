@@ -1,0 +1,124 @@
+# Ingress to the three stateful services. Base resource, not an example —
+# unlike egress, the set of legitimate clients here is known exactly and does
+# not vary by environment: Postgres is reached by the API (and its migrate init
+# container) plus the backup CronJob, ClickHouse by the API only, NATS by the
+# API and by scanner agents. See docs/operations.md § NetworkPolicy decision
+# for why the egress half of that decision still stands.
+#
+# Each policy is default-deny-by-omission: naming a pod in `podSelector` with
+# policyTypes: [Ingress] drops everything not matched by an `ingress` rule.
+# There is deliberately no separate blanket deny-all object — one policy per
+# datastore keeps the allowed clients next to the thing they reach.
+#
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, kindnet+Calico,
+# most managed clusters). Under a CNI that ignores it these objects are inert:
+# they are never a substitute for the credentials on each service, which is why
+# both landed together.
+#
+# One CNI-specific thing to check on first rollout: kubelet health probes come
+# from the node address, which matches no podSelector. Calico and Cilium let
+# host traffic through to the pod by default, so ClickHouse's httpGet :8123 and
+# NATS's :8222 probes keep passing; Postgres probes are `exec` and never touch
+# the network. If a datastore goes NotReady with "connection refused"-shaped
+# probe failures right after applying this, that host-traffic default is the
+# first thing to look at, not the rules below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-postgres-ingress
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: api
+        # The backup CronJob's pg_dump. Dropping it here would not fail the
+        # backup loudly — it would time out, and the alert for that is a
+        # PrometheusRule an installation may not have applied yet.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: backup
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-clickhouse-ingress
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: clickhouse
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: clickhouse
+  policyTypes:
+    - Ingress
+  ingress:
+    # HTTP 8123 and native 9000 both, because OCTO_CLICKHOUSE_URL accepts
+    # either scheme; 9009 (interserver) is not listed — base runs a single
+    # replica and nothing else should reach it.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: 8123
+        - protocol: TCP
+          port: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-nats-ingress
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: nats
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: nats
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: api
+        # In-cluster agents (base/agents, overlays/agents) pull jobs.scan over
+        # 4222. Agents that run OUTSIDE the cluster are not covered by any pod
+        # selector: an installation that exposes 4222 through an Ingress,
+        # LoadBalancer or NodePort must add its own rule for that source — see
+        # docs/operations.md § NetworkPolicy decision. Their authentication is
+        # the `agent` user in nats/configmap.yaml either way.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: agent
+      ports:
+        - protocol: TCP
+          port: 4222
+    # Monitoring endpoint (/healthz, /varz). Kubelet probes come from the node,
+    # not from a pod, and a node address matches no podSelector — but probe
+    # traffic is exempt from NetworkPolicy on conformant CNIs. This rule is for
+    # Prometheus, wherever it runs.
+    - ports:
+        - protocol: TCP
+          port: 8222

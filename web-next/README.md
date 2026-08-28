@@ -56,7 +56,9 @@ FastAPI routes.
 | Route | Surface |
 |---|---|
 | `/login` | JWT login |
-| `/` | Exposure dashboard |
+| `/` | Risk Overview (estate NIST verdict, SLA, owners) |
+| `/vulnerabilities` and `/vulnerabilities/view` | Vulnerability Center (lifecycle, owner, SLA) |
+| `/remediation` | Remediation Kanban (move, assign, comment, ticket link) |
 | `/assets` and `/assets/view` | Persistent inventory and asset detail |
 | `/attack-surface` | Hostname/IP/port/service graph |
 | `/jobs` | Scan job creation and status |

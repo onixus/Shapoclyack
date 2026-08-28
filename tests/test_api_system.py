@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 
 from api.auth import get_settings
 from tests.conftest import api_client, login, requires_postgres
@@ -32,9 +33,20 @@ def test_system_status_shape():
             assert tool.get("optional") is False
 
     enrichment_names = {db["name"] for db in body["enrichment"]}
-    assert enrichment_names == {"epss", "kev", "geoip", "cvss4", "asn"}
+    assert enrichment_names == {"epss", "kev", "exploit", "geoip", "cvss4", "asn"}
+    for db in body["enrichment"]:
+        assert "stale" in db
+        # Provenance is always present as keys, even with no manifest to read
+        # (#246) — an older image reports None rather than dropping the fields.
+        assert set(db) >= {"source", "origin", "updated", "entries"}
 
-    assert set(body["scan_config"]["stages"]) >= {"fingerprint", "tls_posture", "nuclei", "pdf_summary"}
+    assert set(body["scan_config"]["stages"]) >= {
+        "fingerprint",
+        "screenshots",
+        "tls_posture",
+        "nuclei",
+        "pdf_summary",
+    }
     assert "balanced" in body["scan_config"]["profiles"]
     assert body["scan_config"].get("service_backend") in ("pulse", "nmap", "hybrid", None)
 
@@ -82,6 +94,75 @@ def test_system_status_reports_only_parsed_trusted_proxies(tmp_path, monkeypatch
     real = configured_client(tmp_path, monkeypatch, trusted_proxies=["10.0.0.0/8"])
     runtime = real.get("/api/system", headers=auth_headers(real, "admin")).json()["runtime"]
     assert runtime["trusted_proxies_configured"] is True
+
+
+def test_system_status_reports_where_each_dataset_came_from(tmp_path, monkeypatch):
+    """Age answers "how old", never "where from". An image whose EPSS fetch
+    403'd ships the committed baseline and looks, from outside, exactly like one
+    that pulled a fresh corpus — which is the defect in #246. The manifest the
+    build writes is what tells them apart, and it has to reach the API."""
+    from tests.conftest import auth_headers, configured_client
+
+    manifest = tmp_path / "enrichment-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-08-27T00:00:00+00:00",
+                "datasets": {
+                    "epss": {
+                        "source": "first-epss",
+                        "origin": "stale",
+                        "updated": "2026-08-26",
+                        "entries": 365017,
+                        "required": True,
+                        "usable": True,
+                    },
+                    "kev": {
+                        "source": "cisa-kev",
+                        "origin": "fetch",
+                        "updated": "2026-08-25",
+                        "entries": 1676,
+                        "required": True,
+                        "usable": True,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OCTO_ENRICHMENT_MANIFEST", str(manifest))
+
+    client = configured_client(tmp_path, monkeypatch)
+    body = client.get("/api/system", headers=auth_headers(client, "admin")).json()
+    databases = {db["name"]: db for db in body["enrichment"]}
+
+    assert databases["epss"]["source"] == "first-epss"
+    assert databases["epss"]["updated"] == "2026-08-26"
+    assert databases["epss"]["entries"] == 365017
+    # The dataset the build could not refresh says so by name, rather than
+    # blending in with the ones it did.
+    assert databases["epss"]["origin"] == "stale"
+    assert databases["kev"]["origin"] == "fetch"
+    # A dataset the manifest says nothing about still reports its own fields,
+    # as None — the payload shape must not depend on the manifest's coverage.
+    assert databases["cvss4"]["origin"] is None
+    assert databases["cvss4"]["source"] is None
+
+
+def test_system_status_survives_an_unreadable_manifest(tmp_path, monkeypatch):
+    """Fail-soft like every other panel: a truncated sidecar on a shared volume
+    degrades the origin fields to None, it does not 500 the status page."""
+    from tests.conftest import auth_headers, configured_client
+
+    manifest = tmp_path / "broken-manifest.json"
+    manifest.write_text('{"datasets": {"epss": ', encoding="utf-8")
+    monkeypatch.setenv("OCTO_ENRICHMENT_MANIFEST", str(manifest))
+
+    client = configured_client(tmp_path, monkeypatch)
+    response = client.get("/api/system", headers=auth_headers(client, "admin"))
+
+    assert response.status_code == 200
+    assert all(db["origin"] is None for db in response.json()["enrichment"])
 
 
 def test_system_status_requires_auth():

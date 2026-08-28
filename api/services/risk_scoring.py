@@ -22,6 +22,13 @@ Table I-2 (see ``api/services/nist_risk.py``):
     exploit cannot come out Low, and one nobody has ever demonstrated cannot
     come out High no matter how alarming its CVSS. Discounted by scanner
     confidence when the finding is a hypothesis rather than an observation.
+    Then shifted by **network exposure** (#171): whether *this* host is
+    reachable from outside, which is not what CVSS ``AV:N`` says. Then a
+    small **compensating-control** discount (#173) only if fingerprint
+    observed a CDN/WAF on the same host:port — named, never "WAF = safe".
+    Then a small **same-asset path** raise (#173) when a local finding
+    shares a P4.2-correlated asset with a network foothold — named, never
+    "this is a domain takeover".
 
 **Impact** — how bad if it is?
     The CVSS vector's impact metrics (VC/VI/VA, or C/I/A on v3), shifted by
@@ -60,12 +67,14 @@ volume, and ``get_scorer`` hot-reloads changed overlays without a restart
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import math
 import os
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +119,37 @@ _MATURITY_BOUNDS: dict[str, tuple[float, float]] = {
 #: ±40 spans two adjacent levels, so a crown-jewel asset can lift a Moderate
 #: impact to High and a lab box can drop it to Low — both directions matter.
 _CRITICALITY_SWING = 20.0
+
+#: How far network exposure (#171) may move likelihood, in Table D-2 points.
+#: Same magnitude as criticality so "this host is on the internet" can change
+#: the verdict. ``unknown`` shifts nothing — no observation is not "not
+#: exposed".
+_NETWORK_EXPOSURE_SWING = 20.0
+#: Weak raise-only likelihood bump for an old CVE (#172). Never negative —
+#: an unpatched old flaw is not safer for having been ignored. How long *we*
+#: have had the finding open is SLA (#145), not this.
+_CVE_AGE_RAISE = ((1.0, 0.0), (3.0, 4.0), (7.0, 8.0), (None, 12.0))
+#: Small on-path likelihood discount when fingerprint saw a CDN/WAF on the
+#: *same* host:port (#173). One observation, one discount — never per vendor
+#: and never a qualitative "minus a level" rule. Seeing Cloudflare is not
+#: evidence the WAF blocks this CVE. Names stay in lockstep with
+#: ``scanner.pipeline.fingerprint._CDN_WAF_SIGNATURES``.
+COMPENSATING_CONTROL_DISCOUNT = 6.0
+CDN_WAF_PROVIDERS = frozenset(
+    {"cloudflare", "akamai", "sucuri", "imperva_incapsula", "cloudfront", "fastly"}
+)
+#: Small raise when a local finding sits on the same asset as a network
+#: foothold (#173). Not a step-model of privilege escalation, and not a
+#: qualitative level rule. Two Moderates still do not become a takeover.
+ATTACK_PATH_RAISE = 8.0
+FOOTHOLD = "foothold"
+LOCAL = "local"
+ENRICHMENT_STALE_DAYS = 30
+_CVE_ID_YEAR = re.compile(r"^CVE-(\d{4})-", re.I)
+EXTERNAL = "external"
+INTERNAL = "internal"
+UNKNOWN_EXPOSURE = "unknown"
+NETWORK_EXPOSURES = (EXTERNAL, INTERNAL, UNKNOWN_EXPOSURE)
 
 _VECTOR_METRIC_RE = re.compile(r"([A-Z]{1,2}):([A-Z])")
 
@@ -306,6 +346,222 @@ def apply_criticality(technical_impact: float, criticality: int) -> float:
     return max(0.0, min(100.0, technical_impact + shift))
 
 
+def _is_non_routable(host: str) -> bool:
+    """RFC1918 / loopback / link-local / reserved — not internet-reachable."""
+    try:
+        addr = ipaddress.ip_address(host.strip())
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved
+
+
+def resolve_network_exposure(
+    *,
+    host: str | None = None,
+    operator_exposure: str | None = None,
+    explicit: str | None = None,
+) -> tuple[str, str]:
+    """``(exposure, source)`` for likelihood (#171).
+
+    Order is load-bearing. A public address is **not** evidence the host is
+    internet-facing — that would launder a routing fact as a scan observation.
+    RFC1918 *is* evidence it is not. Operator-set ``exposure_level=internet``
+    is a named decision, not a measurement. ``unknown`` is the default so
+    absence of data does not score as "nothing is exposed".
+    """
+    if explicit in NETWORK_EXPOSURES:
+        return explicit, "finding"
+    if host and _is_non_routable(host):
+        return INTERNAL, "address-space"
+    if operator_exposure == "internet":
+        return EXTERNAL, "operator-set"
+    if operator_exposure == "internal":
+        return INTERNAL, "operator-set"
+    return UNKNOWN_EXPOSURE, "none"
+
+
+def apply_network_exposure(likelihood: float, exposure: str) -> float:
+    """Shift likelihood after maturity bounds. ``unknown`` is a no-op."""
+    if exposure == EXTERNAL:
+        shift = _NETWORK_EXPOSURE_SWING
+    elif exposure == INTERNAL:
+        shift = -_NETWORK_EXPOSURE_SWING
+    else:
+        return likelihood
+    return max(0.0, min(100.0, likelihood + shift))
+
+
+def resolve_cve_age(
+    *,
+    cve: str,
+    published: str | None = None,
+    now: datetime | None = None,
+) -> tuple[float | None, str]:
+    """Years since the CVE became public, and where that date came from.
+
+    Prefer NVD ``published``. The CVE-ID year is a coarse fallback so an
+    un-refreshed ``cvss4.json`` (no ``published`` field yet) still distinguishes
+    2015 from 2026. Missing both is ``none`` — no raise, not a penalty.
+    """
+    clock = now or datetime.now(UTC)
+    if published:
+        try:
+            stamp = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            years = max(0.0, (clock - stamp.astimezone(UTC)).total_seconds() / (86400.0 * 365.25))
+            return years, "nvd-published"
+        except ValueError:
+            pass
+    match = _CVE_ID_YEAR.match(cve or "")
+    if match:
+        year = int(match.group(1))
+        if 1999 <= year <= clock.year + 1:
+            return float(max(0, clock.year - year)), "cve-id"
+    return None, "none"
+
+
+def cve_age_raise(years: float | None) -> float:
+    """Raise-only likelihood bump. Under one year, and unknown age, add nothing."""
+    if years is None or years < 1.0:
+        return 0.0
+    previous = 0.0
+    for ceiling, bump in _CVE_AGE_RAISE:
+        if ceiling is None or years < ceiling:
+            return bump
+        previous = bump
+    return previous
+
+
+def _endpoint_key(host: str | None, port: Any) -> tuple[str, int] | None:
+    """``(host, port)`` identity for an on-path control. Port-less is not a match."""
+    if not host:
+        return None
+    try:
+        port_n = int(str(port).split("/")[0])
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if port_n <= 0:
+        return None
+    return str(host).strip().lower(), port_n
+
+
+def _normalize_cdn_waf(raw: Any) -> tuple[str, ...]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    seen: list[str] = []
+    for item in raw:
+        name = str(item).strip().lower().replace("-", "_").replace(" ", "_")
+        if name in CDN_WAF_PROVIDERS and name not in seen:
+            seen.append(name)
+    return tuple(seen)
+
+
+def index_cdn_waf(fingerprint: Any) -> dict[tuple[str, int], tuple[str, ...]]:
+    """``fingerprint.json`` → ``{(host, port): providers}`` for on-path CDN/WAF.
+
+    CMS/framework hits are ignored: a WordPress marker is not a control.
+    Several findings for the same host:port (http and https) are unioned.
+    """
+    if not isinstance(fingerprint, dict):
+        return {}
+    findings = fingerprint.get("findings")
+    if not isinstance(findings, list):
+        return {}
+    collected: dict[tuple[str, int], list[str]] = {}
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        key = _endpoint_key(finding.get("host"), finding.get("port"))
+        if key is None:
+            continue
+        names = _normalize_cdn_waf(finding.get("cdn_waf"))
+        if not names:
+            continue
+        existing = collected.setdefault(key, [])
+        for name in names:
+            if name not in existing:
+                existing.append(name)
+    return {key: tuple(names) for key, names in collected.items()}
+
+
+def resolve_compensating_control(
+    *,
+    host: str | None = None,
+    port: Any = None,
+    cdn_waf: Any = None,
+    index: dict[tuple[str, int], tuple[str, ...]] | None = None,
+) -> tuple[tuple[str, ...], str]:
+    """``(providers, source)`` for an on-path CDN/WAF (#173).
+
+    An explicit list on the finding wins (``finding``). Otherwise a fingerprint
+    index hit on the **same** host:port (``fingerprint``). Anything else is
+    ``none`` — we did not observe a control, which is not "there is none".
+    """
+    names = _normalize_cdn_waf(cdn_waf)
+    if names:
+        return names, "finding"
+    if index:
+        key = _endpoint_key(host, port)
+        if key is not None:
+            hit = index.get(key)
+            if hit:
+                return hit, "fingerprint"
+    return (), "none"
+
+
+def apply_compensating_control(
+    likelihood: float, providers: tuple[str, ...] | list[str]
+) -> float:
+    """Small named discount. Several vendors on one endpoint still count once."""
+    if not providers:
+        return likelihood
+    return max(0.0, min(100.0, likelihood - COMPENSATING_CONTROL_DISCOUNT))
+
+
+def path_role(item: dict[str, Any]) -> str:
+    """``foothold`` / ``local`` / ``""`` from what this finding actually says.
+
+    An ``exposure`` is a reachable service, not a CVE — that is a foothold.
+    Otherwise the CVSS attack vector: ``AV:N`` is network-reachable,
+    ``AV:L`` / ``AV:P`` need a presence on the box. No vector is not a path.
+    """
+    finding_class = str(item.get("finding_class") or "").strip().lower()
+    if finding_class == "exposure":
+        return FOOTHOLD
+    vector = _parse_vector(_finding_vector(item))
+    av = vector.get("AV")
+    if av == "N":
+        return FOOTHOLD
+    if av in {"L", "P"}:
+        return LOCAL
+    return ""
+
+
+def apply_attack_path(likelihood: float, *, role: str, has_foothold: bool) -> float:
+    """Raise only the local finding, and only when a foothold is on the same asset."""
+    if role != LOCAL or not has_foothold:
+        return likelihood
+    return max(0.0, min(100.0, likelihood + ATTACK_PATH_RAISE))
+
+
+def overlay_staleness(*, now: datetime | None = None) -> list[tuple[str, float]]:
+    """``(name, age_days)`` for EPSS/KEV/exploit overlays older than the threshold."""
+    clock = now or datetime.now(UTC)
+    stale: list[tuple[str, float]] = []
+    names = ("EPSS", "KEV", "exploit")
+    for name, path in zip(names, _overlay_paths(), strict=True):
+        try:
+            age = (clock.timestamp() - path.stat().st_mtime) / 86400.0
+        except OSError:
+            continue
+        if age > ENRICHMENT_STALE_DAYS:
+            stale.append((name, age))
+    return stale
+
+
 class RiskScoring:
     """Stateless scorer with optional EPSS / KEV / exploit overlays."""
 
@@ -315,6 +571,7 @@ class RiskScoring:
         epss: dict[str, float] | None = None,
         kev: set[str] | None = None,
         exploits: ExploitEvidence | None = None,
+        report_overlay_age: bool = False,
     ) -> None:
         self._epss = epss or {}
         self._kev = kev or set()
@@ -322,6 +579,10 @@ class RiskScoring:
         # assume it exists; with no overlay and no template corpus it still
         # answers from KEV and per-finding signals.
         self._exploits = exploits if exploits is not None else ExploitEvidence()
+        # Tests construct a scorer in-memory; wall-clock overlay age must not
+        # leak into their explanations. The process-wide get_scorer() turns this
+        # on so a stale EPSS/KEV file is visible to operators (#172).
+        self._report_overlay_age = report_overlay_age
 
     @classmethod
     def from_env(cls) -> RiskScoring:
@@ -333,6 +594,7 @@ class RiskScoring:
             epss=_load_cve_float_map(epss_path),
             kev=_load_kev_set(kev_path),
             exploits=ExploitEvidence.from_env(),
+            report_overlay_age=True,
         )
 
     @staticmethod
@@ -480,7 +742,13 @@ class RiskScoring:
         return round(math.sqrt(max(0.0, likelihood) * max(0.0, impact)) / 10.0, 2)
 
     def score_vulnerability(
-        self, item: dict[str, Any], *, asset_criticality_override: int | None = None
+        self,
+        item: dict[str, Any],
+        *,
+        asset_criticality_override: int | None = None,
+        operator_exposure: str | None = None,
+        cdn_waf_index: dict[tuple[str, int], tuple[str, ...]] | None = None,
+        same_asset_foothold: bool = False,
     ) -> dict[str, Any]:
         cve = str(item.get("cve") or item.get("script_id") or "")
         is_cve = cve.upper().startswith("CVE-")
@@ -515,12 +783,35 @@ class RiskScoring:
         technical_impact, impact_source = impact_pct(vector, base)
         contextual_impact = apply_criticality(technical_impact, criticality)
 
-        likelihood = self.likelihood_pct(
+        raw_likelihood = self.likelihood_pct(
             exploitability=exploitability,
             epss=epss,
             maturity=assessment.maturity,
             confidence_factor=factor,
         )
+        exposure, exposure_source = resolve_network_exposure(
+            host=str(item.get("host") or "") or None,
+            operator_exposure=operator_exposure,
+            explicit=str(item["network_exposure"]) if item.get("network_exposure") else None,
+        )
+        exposed = apply_network_exposure(raw_likelihood, exposure)
+        published = str(item.get("cve_published") or item.get("published") or "") or None
+        age_years, age_source = resolve_cve_age(cve=cve, published=published)
+        age_bump = cve_age_raise(age_years)
+        providers, control_source = resolve_compensating_control(
+            host=str(item.get("host") or "") or None,
+            port=item.get("port"),
+            cdn_waf=item.get("cdn_waf"),
+            index=cdn_waf_index,
+        )
+        aged = min(100.0, exposed + age_bump)
+        shielded = apply_compensating_control(aged, providers)
+        role = path_role(item)
+        likelihood = apply_attack_path(
+            shielded, role=role, has_foothold=same_asset_foothold
+        )
+        path_bump = likelihood - shielded
+        stale_overlays = overlay_staleness() if self._report_overlay_age else []
         likelihood_level = nist_risk.level_for(likelihood)
         impact_level = nist_risk.level_for(contextual_impact)
         risk = nist_risk.risk_level(likelihood_level, impact_level)
@@ -549,6 +840,11 @@ class RiskScoring:
             "impact_score": round(contextual_impact, 1),
             "technical_impact_score": technical_impact,
             "exploitability_score": exploitability,
+            "network_exposure": exposure,
+            "network_exposure_source": exposure_source,
+            "cdn_waf": list(providers),
+            "compensating_control_source": control_source,
+            "attack_path": "same-asset" if path_bump > 0 else None,
             **assessment.as_dict(),
             "risk_explanation": self._explain(
                 item,
@@ -570,6 +866,17 @@ class RiskScoring:
                 unconfirmed=unconfirmed,
                 capped=capped,
                 decision=decision,
+                raw_likelihood=raw_likelihood,
+                network_exposure=exposure,
+                network_exposure_source=exposure_source,
+                cve_age_years=age_years,
+                cve_age_source=age_source,
+                cve_age_bump=age_bump,
+                compensating_control=providers,
+                compensating_control_source=control_source,
+                compensating_drop=aged - shielded,
+                attack_path_bump=path_bump,
+                stale_overlays=stale_overlays,
             ),
         }
 
@@ -595,6 +902,17 @@ class RiskScoring:
         unconfirmed: bool,
         capped: bool,
         decision: str,
+        raw_likelihood: float,
+        network_exposure: str,
+        network_exposure_source: str,
+        cve_age_years: float | None,
+        cve_age_source: str,
+        cve_age_bump: float,
+        compensating_control: tuple[str, ...],
+        compensating_control_source: str,
+        compensating_drop: float,
+        attack_path_bump: float,
+        stale_overlays: list[tuple[str, float]],
     ) -> str:
         """One line explaining the verdict, reading as the assessment's argument.
 
@@ -640,6 +958,47 @@ class RiskScoring:
             if capped:
                 note += f", decision capped at {decision}"
             why_likely.append(note)
+        source_label = {
+            "address-space": "address-space",
+            "operator-set": "operator-set",
+            "finding": "finding",
+            "none": "no observation",
+        }.get(network_exposure_source, network_exposure_source)
+        shifted = apply_network_exposure(raw_likelihood, network_exposure)
+        if network_exposure == UNKNOWN_EXPOSURE:
+            why_likely.append(f"network exposure unknown ({source_label}) — no shift")
+        elif abs(shifted - raw_likelihood) >= 0.05:
+            direction = "raised" if shifted > raw_likelihood else "lowered"
+            why_likely.append(
+                f"network exposure {network_exposure} ({source_label}) {direction} "
+                f"likelihood to {shifted:g}/100"
+            )
+        else:
+            why_likely.append(
+                f"network exposure {network_exposure} ({source_label}), no shift"
+            )
+        if cve_age_years is not None:
+            if cve_age_bump > 0:
+                why_likely.append(
+                    f"CVE age {cve_age_years:.0f}y ({cve_age_source}) raised likelihood by {cve_age_bump:g}"
+                )
+            else:
+                why_likely.append(f"CVE age {cve_age_years:.0f}y ({cve_age_source}), no raise")
+        if compensating_control:
+            why_likely.append(
+                f"CDN/WAF {', '.join(compensating_control)} on this host:port "
+                f"({compensating_control_source}) lowered likelihood by {compensating_drop:g} "
+                f"— not proof the vuln is blocked"
+            )
+        if attack_path_bump > 0:
+            why_likely.append(
+                f"same-asset path: network foothold + local finding raised likelihood "
+                f"by {attack_path_bump:g} — not a modelled exploit chain"
+            )
+        for overlay_name, age_days in stale_overlays:
+            why_likely.append(
+                f"{overlay_name} overlay {age_days:.0f}d old — not a fresh assessment"
+            )
 
         # --- why this impact ---
         origin = "operator-set" if asset_criticality_override is not None else "heuristic"

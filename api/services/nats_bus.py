@@ -365,6 +365,25 @@ class NatsBus:
             retries=retries,
         )
 
+    def publish_endpoint_inventory(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
+        """Publish accepted endpoint inventory summary to ``ingest.endpoint_inventory.{tenant_id}`` (Phase S8)."""
+        tenant_id = str(envelope.get("tenant_id") or "default")
+        snapshot_id = str(envelope.get("snapshot_id") or "")
+        digest = str(envelope.get("payload_digest") or "")
+        msg_id = endpoint_inventory_msg_id(
+            tenant_id=tenant_id, snapshot_id=snapshot_id, payload_digest=digest
+        )
+        return self.publish_json(
+            endpoint_inventory_subject(tenant_id),
+            envelope,
+            msg_id=msg_id,
+            headers={
+                "tenant_id": tenant_id,
+                "event_type": "endpoint_inventory_accepted",
+            },
+            retries=retries,
+        )
+
 
 _BUS: NatsBus | None = None
 _BUS_LOCK = threading.Lock()
@@ -423,6 +442,17 @@ def ingest_results_subject(tenant_id: str) -> str:
 def asset_event_subject(tenant_id: str, kind: str) -> str:
     """NATS subject ``events.asset.{tenant_id}.{kind}`` with safe tokens."""
     return f"events.asset.{_subject_token(tenant_id, 'default')}.{_subject_token(kind, 'unknown')}"
+
+
+def endpoint_inventory_subject(tenant_id: str) -> str:
+    """NATS subject ``ingest.endpoint_inventory.{tenant_id}`` with safe token (Phase S8)."""
+    return f"ingest.endpoint_inventory.{_subject_token(tenant_id, 'default')}"
+
+
+def endpoint_inventory_msg_id(*, tenant_id: str, snapshot_id: str, payload_digest: str) -> str:
+    """Stable idempotency key for endpoint inventory publish (JetStream Nats-Msg-Id)."""
+    raw = f"{tenant_id}:{snapshot_id}:{payload_digest}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
 
 
 def ingest_msg_id(*, job_id: str, run_id: str, archive_sha256: str) -> str:

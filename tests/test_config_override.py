@@ -17,6 +17,7 @@ def test_validate_accepts_whitelisted():
     data = cfg.unflatten(
         {
             "fingerprint.enabled": True,
+            "screenshots.enabled": True,
             "nuclei.severities": ["critical", "high"],
             "profiles.balanced.nmap_timing": "T3",
             "profiles.fast.top_ports": 1000,

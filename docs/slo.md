@@ -5,11 +5,12 @@ series the API already exports (`GET /metrics`, ROADMAP P3.4). Scrape wiring is
 in [k8s/README.md](../k8s/README.md) ("Metrics scraping"); the series catalogue
 for endpoint inventory is in [operations.md](operations.md).
 
-**These targets are starting values, not measured commitments.** They were set
-from the shape of the system, not from a production baseline — no scale
-fixtures exist yet (ROADMAP P3.7/P3.8). Run the platform for a full window,
-look at the achieved numbers, and move the targets before you page anyone on
-them.
+**SLO 2 (GET p95 < 500 ms) is backed by a recorded end-to-end run**
+([#185](https://github.com/onixus/Shapoclyack/issues/185), 2026-08-20, below).
+SLO 4 remains per-installation (scan duration depends on target-set size).
+SLO 5 still has no ingest-enabled measurement on the kind lab — the 1 000
+message lag stays a starting value until ClickHouse ingest is on. Move a
+target before you page anyone on it if your stand is slower than this lab.
 
 ## Scope and measurement window
 
@@ -71,6 +72,44 @@ topk(5, histogram_quantile(0.95, sum by (le, path) (
 The default `prometheus_client` histogram buckets top out at 10 s; anything
 slower lands in `+Inf` and the quantile saturates. That is the signal to
 profile (P3.8), not to widen the buckets.
+
+### Measured GET latency (#185)
+
+Recorded 2026-08-20 on kind `shapoclyack-dev`, overlay `kind-dev`, **one** API
+replica (`shapoclyack-aio:kind-dev`), Mac host, `GET` through FastAPI with
+JWT. Dataset: tenant `scale-test` from `tests/fixtures/scale_seed.py`
+(`--skip-clickhouse`). 40 requests per cell. Probe:
+`python -m tests.fixtures.api_latency` ([development.md](development.md#end-to-end-api-latency-185)).
+
+p95 milliseconds:
+
+| Route | 1k × conc 1 | 1k × 32 | 10k × 32 | 50k × 32 |
+|---|---:|---:|---:|---:|
+| `/api/assets?limit=100` | 5.4 | 166.5 | 179.9 | 179.8 |
+| `/api/runs?limit=100` | 1.3 | 32.0 | 34.6 | 33.1 |
+| `/api/jobs?limit=100` | 2.3 | 69.9 | 69.7 | 67.3 |
+| `/api/agents?limit=100` | 2.1 | 72.7 | 72.9 | 97.1 |
+| `/api/schedules?limit=100` | 2.3 | 84.2 | 67.8 | 67.1 |
+| `/api/vulnerabilities?limit=100` | 2.4 | 88.4 | 74.1 | 93.2 |
+| `/api/system` | 20.8 | 538.3 | 583.0 | 498.1 |
+
+Server histogram `octo_http_request_duration_seconds` GET p95 (cumulative
+since process start, all GET routes) was **89–159 ms** across these runs —
+the same order as the client p95 on list routes, so the queue is not sitting
+in front of the metrics middleware on this stand.
+
+**What this says about SLO 2.** The 500 ms GET p95 holds for paginated list
+routes at 50k assets and 32 concurrent clients on one replica. It is **tight
+or missed** on `GET /api/system` at 32 concurrent (p95 498–583 ms) — that
+route is versions + enrichment-DB freshness, not the estate list. Keep 500 ms
+for the list SLO; treat `/api/system` as a separate, heavier read. Two
+replicas (#188) are not in this baseline.
+
+**SLO 4 / 5 on this stand.** After the API pod restart there were no
+`octo_job_duration_seconds` observations, and `octo_nats_consumer_pending` for
+`octo-ch-ingest` was absent (ingest off). Those two targets stay
+installation-specific / starting values until a stand with job history and
+ClickHouse ingest is measured.
 
 ### 3. Job completion
 
@@ -204,6 +243,16 @@ Alert on **budget burn rate**, not on threshold crossings — a single slow scra
 is not an incident. A fast-burn page (2 % of the monthly budget in 1 h) and a
 slow-burn ticket (5 % in 6 h) are the usual starting pair.
 
+The expressions that actually fire live in
+[`k8s/shapoclyack/examples/prometheus-slo.rules.yaml`](../k8s/shapoclyack/examples/prometheus-slo.rules.yaml)
+(#186). Do not copy thresholds from this page into a scrape config — they will
+drift. The Prometheus Operator wrapper is
+[`prometheusrule-slo.example.yaml`](../k8s/shapoclyack/examples/prometheusrule-slo.example.yaml);
+installs without the operator load the same file via `rule_files` (see
+[k8s/README.md](../k8s/README.md#metrics-scraping-prometheus)). Scheduler
+leadership (`sum(octo_scheduler_is_leader) > 1` and `== 0`) is in that file
+too, with `for:` windows that survive a rolling update.
+
 ## Known gaps
 
 Each of these limits what can honestly be claimed today:
@@ -217,25 +266,24 @@ Each of these limits what can honestly be claimed today:
   no longer sits in flight forever with the gauge stuck above zero. It is
   requeued or failed within `OCTO_JOB_LEASE_SECONDS`, and either way it now
   reaches the histogram or the counter above rather than nothing.
-- **Scheduler leadership is observable but unaliased.** `octo_scheduler_is_leader`
-  (ROADMAP P1.6) is 1 on exactly one replica. A sustained
-  `sum(octo_scheduler_is_leader) > 1` means two replicas both believe they
-  lead; `== 0` means recurring scans are not being dispatched at all. Neither
-  has an alert rule here yet.
+- ~~**Scheduler leadership is observable but unaliased.**~~ Closed by
+  [#186](https://github.com/onixus/Shapoclyack/issues/186):
+  `ShapoclyackSchedulerSplitBrain` (`sum > 1`, `for: 5m`) and
+  `ShapoclyackSchedulerNoLeader` (`sum == 0`, `for: 10m`) in
+  `prometheus-slo.rules.yaml`. Both require the series to exist so a missing
+  scrape does not page.
 - **No per-tenant SLIs.** No metric carries a tenant label (deliberate —
   cardinality), so per-customer objectives are not derivable from `/metrics`.
-- **No tracing.** OpenTelemetry is not wired up, so a slow request cannot be
-  attributed to Postgres vs. ClickHouse vs. filesystem from metrics alone.
-  Scanner runs now write per-stage wall-clock to `stage_timings.json` (see
-  [scan-performance.md](scan-performance.md)); that is process-local, not a
-  Prometheus series.
-- **No baseline at scale.** Targets 2, 4, and 5 are still starting values. The
-  1k/10k/50k fixtures exist (`tests/fixtures/scale_seed.py`, P3.7) and the
-  query paths behind them have been profiled ([scale-profile.md](scale-profile.md),
-  P3.8) — but that pass calls the services in-process, so it excludes FastAPI
-  routing, serialization, auth, and the network, and it runs one query at a
-  time. Re-deriving the API-latency target still needs an end-to-end
-  measurement under concurrency. What the profiling did establish: the asset
-  list is no longer N+1-bound (77 ms for a 5000-row page at 50k assets), and
-  the ClickHouse diff helpers are bounded rather than fast — they refuse
-  above `max_rows` instead of returning a truncated, silently wrong diff.
+- **Tracing is opt-in.** Set `OCTO_OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP
+  HTTP traces URL; empty means no TracerProvider. API request spans do not
+  replace Prometheus SLIs, and they are not scan observations. Scanner
+  wall-clock stays in `stage_timings.json` (see
+  [scan-performance.md](scan-performance.md)).
+- ~~**No baseline at scale for API latency.**~~ Closed by
+  [#185](https://github.com/onixus/Shapoclyack/issues/185): GET p95 was
+  measured through FastAPI under concurrency on kind `shapoclyack-dev` (see
+  [Measured GET latency](#measured-get-latency-185)). SLO 4 (job duration) is
+  still per-installation — this stand had no `octo_job_duration_seconds`
+  samples after the API restart. SLO 5 (ingest lag) does not apply until
+  ClickHouse ingest is enabled; the series was absent on this lab. In-process
+  query-path numbers remain in [scale-profile.md](scale-profile.md).

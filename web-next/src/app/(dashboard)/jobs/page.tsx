@@ -5,6 +5,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { Play, Terminal, ArrowUpRight, Cpu, Timer, TriangleAlert } from "lucide-react";
+import { useT } from "@/lib/i18n";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,6 +41,7 @@ import { useAuthStore } from "@/lib/auth-store";
 const NO_INTENT = "__none__";
 
 export default function JobsPage() {
+  const t = useT();
   const { canOperate } = useAuthStore();
   const [mode, setMode] = useState("balanced");
   const [intent, setIntent] = useState<ScanIntent | "">("inventory");
@@ -67,12 +69,12 @@ export default function JobsPage() {
     () => [
       {
         accessorKey: "job_id",
-        header: "Job ID",
+        header: t("col.jobId"),
         cell: ({ getValue }) => <code className="font-mono text-xs text-sky-400 font-semibold">{String(getValue())}</code>,
       },
       {
         accessorKey: "status",
-        header: "Status",
+        header: t("col.status"),
         cell: ({ row }) => (
           <span className="inline-flex items-center gap-1.5">
             <StatusBadge
@@ -96,7 +98,7 @@ export default function JobsPage() {
       },
       {
         accessorKey: "mode",
-        header: "Profile",
+        header: t("col.profile"),
         cell: ({ row }) => {
           const intentVal = row.original.scan_options?.intent;
           return (
@@ -115,7 +117,7 @@ export default function JobsPage() {
       },
       {
         accessorKey: "run_id",
-        header: "Associated Run",
+        header: t("col.run"),
         enableSorting: false,
         cell: ({ row }) => {
           const runId = row.original.run_id;
@@ -134,7 +136,7 @@ export default function JobsPage() {
       },
       {
         accessorKey: "execution",
-        header: "Execution",
+        header: t("col.execution"),
         cell: ({ getValue }) => (
           <span className="inline-flex items-center gap-1 text-xs text-slate-300 font-medium">
             <Cpu className="h-3 w-3 text-slate-400" />
@@ -144,7 +146,7 @@ export default function JobsPage() {
       },
       {
         accessorKey: "started_at",
-        header: "Started At",
+        header: t("col.started"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at
@@ -153,19 +155,19 @@ export default function JobsPage() {
       },
       {
         accessorKey: "requested_by",
-        header: "Operator",
+        header: t("col.operator"),
         cell: ({ getValue }) => <span className="text-xs font-semibold text-slate-200">{String(getValue())}</span>,
       },
     ],
-    [],
+    [t],
   );
 
   if (!canOperate) {
     return (
       <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/80 p-8 text-center">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-100">Scan Job Orchestration</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-100">{t("page.jobs.orchestration")}</h1>
         <p className="text-xs text-slate-400">
-          Operator or admin role privileges required to launch and monitor scan jobs.
+          {t("page.jobs.denied")}
         </p>
       </div>
     );
@@ -200,11 +202,11 @@ export default function JobsPage() {
         <div>
           <div className="flex items-center gap-2.5">
             <Terminal className="h-5 w-5 text-sky-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Scan Jobs Orchestrator</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.jobs.title")}</h1>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Control center for launching network discovery and vulnerability scan jobs.
-            {isFetching ? " · Refreshing job queue…" : ""}
+            {t("page.jobs.subtitle")}
+            {isFetching ? t("common.refreshing") : ""}
           </p>
         </div>
         <Link
@@ -212,7 +214,7 @@ export default function JobsPage() {
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-slate-100"
         >
           <Timer className="h-3.5 w-3.5" />
-          Manage schedules
+          {t("common.manageSchedules")}
         </Link>
       </div>
 
@@ -411,7 +413,7 @@ export default function JobsPage() {
         isLoading={isLoading}
         error={error}
         initialSorting={[{ id: "started_at", desc: true }]}
-        searchPlaceholder="Search jobs by ID or operator…"
+        searchPlaceholder={t("search.jobs")}
         loadingMessage="Retrieving scan jobs stream…"
         emptyMessage="No scan jobs recorded."
         meta={`${data?.total ?? 0} jobs`}

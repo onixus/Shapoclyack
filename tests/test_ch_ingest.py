@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
 import tarfile
 from datetime import datetime
 
+from api.services import ch_ingest_worker
 from api.services import ch_transform
+from api.services import metrics as metrics_service
+from api.services import nats_bus
 from api.services.clickhouse_client import _parse_url
 from tests.conftest import POSTGRES_URL, requires_postgres
 
@@ -70,6 +74,43 @@ def test_transform_vulnerabilities_and_ports(monkeypatch):
     assert ("10.0.0.1", 22, "tcp") in ports
     assert ("10.0.0.2", 443, "tcp") in ports
     reset_scorer_for_tests(None)
+
+
+def test_vulnerabilities_to_rows_applies_on_path_waf_from_fingerprint():
+    """fingerprint.json on the same host:port is a named discount at ingest (#173)."""
+    from api.services.risk_scoring import RiskScoring, reset_scorer_for_tests
+
+    reset_scorer_for_tests(RiskScoring())
+    try:
+        item = {
+            "host": "8.8.8.8",
+            "port": "443",
+            "cve": "CVE-2020-1",
+            "cvss": 7.5,
+            "cvss4": 7.5,
+            "severity": "high",
+        }
+        fingerprint = {
+            "findings": [{"host": "8.8.8.8", "port": 443, "cdn_waf": ["cloudflare"]}]
+        }
+        meta = json.dumps({"started_at": "2026-07-17T10:00:00Z"}).encode()
+        vulns = json.dumps([item]).encode()
+        payload = {"tenant_id": "ten_acme"}
+        with_fp = ch_transform.vulnerabilities_to_rows(
+            payload,
+            {
+                "vulnerabilities.json": vulns,
+                "run_meta.json": meta,
+                "fingerprint.json": json.dumps(fingerprint).encode(),
+            },
+        )
+        without = ch_transform.vulnerabilities_to_rows(
+            payload,
+            {"vulnerabilities.json": vulns, "run_meta.json": meta},
+        )
+        assert with_fp[0][8] < without[0][8]
+    finally:
+        reset_scorer_for_tests(None)
 
 
 def test_tenant_uuid_stable():
@@ -245,3 +286,94 @@ def test_vulnerabilities_to_rows_batches_lookup_per_host(tmp_path):
         assert spy.call_count == 1
     finally:
         reset_scorer_for_tests(None)
+
+
+# --------------------------------------------------------------------------
+# Consumer subject filter (#230)
+# --------------------------------------------------------------------------
+
+
+class _FakeMsg:
+    """Minimal JetStream message: subject, payload, and the ack surface."""
+
+    def __init__(self, subject: str, payload: dict) -> None:
+        self.subject = subject
+        self.data = json.dumps(payload).encode("utf-8")
+        self.acked = False
+        self.naked = False
+        self.termed = False
+
+    async def ack(self) -> None:
+        self.acked = True
+
+    async def nak(self) -> None:
+        self.naked = True
+
+    async def term(self) -> None:
+        self.termed = True
+
+
+def _counter(result: str) -> float:
+    return metrics_service.CH_INGEST_MESSAGES_TOTAL.labels(result=result)._value.get()  # noqa: SLF001
+
+
+def test_consumer_filter_excludes_endpoint_inventory_subjects():
+    """The stream is ``ingest.>``; this consumer wants only scan results.
+
+    S8 published endpoint inventory under the same tree
+    (``ingest.endpoint_inventory.{tenant}``), so the ``ingest.>`` filter handed
+    those to the ClickHouse worker as well (#230).
+    """
+    assert ch_ingest_worker.SUBJECT_FILTER == "ingest.results.>"
+    assert ch_ingest_worker.is_ingest_results_subject(nats_bus.ingest_results_subject("ten_acme"))
+    assert not ch_ingest_worker.is_ingest_results_subject(
+        nats_bus.endpoint_inventory_subject("ten_acme")
+    )
+    assert not ch_ingest_worker.is_ingest_results_subject(nats_bus.SUBJECT_INGEST_RAW)
+
+
+def test_endpoint_inventory_message_is_not_counted_as_an_ingest(monkeypatch):
+    """An inventory event acks without touching ClickHouse or the SLO counter.
+
+    Before the fix it transformed to nothing, inserted nothing, logged
+    ``vulns=0 ports=0`` and still incremented ``result="ok"`` — SLO 6 read the
+    empties as successful ingests, so its ratio improved with every endpoint.
+    """
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    inserted: list[str] = []
+    monkeypatch.setattr(
+        ch_ingest_worker.ch,
+        "insert_rows",
+        lambda client, table, columns, rows: inserted.append(table) or len(rows),
+    )
+    monkeypatch.setattr(
+        ch_ingest_worker.ch_transform,
+        "transform_ingest_payload",
+        lambda payload, settings=None: ([], []),
+    )
+
+    before_ok, before_err = _counter("ok"), _counter("error")
+
+    inventory = _FakeMsg(
+        nats_bus.endpoint_inventory_subject("ten_acme"),
+        {"tenant_id": "ten_acme", "snapshot_id": "esnap_1", "payload_digest": "abc"},
+    )
+    asyncio.run(worker._handle_msg(object(), inventory))  # noqa: SLF001
+
+    assert inventory.acked is True
+    assert inserted == []
+    assert _counter("ok") == before_ok
+    assert _counter("error") == before_err
+    assert worker.stats["messages"] == 0
+
+    result = _FakeMsg(
+        nats_bus.ingest_results_subject("ten_acme"),
+        {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+    )
+    asyncio.run(worker._handle_msg(object(), result))  # noqa: SLF001
+
+    assert result.acked is True
+    assert _counter("ok") == before_ok + 1
+    assert worker.stats["messages"] == 1

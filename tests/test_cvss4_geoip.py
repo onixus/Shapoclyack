@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from scanner.pipeline.cvss4 import Cvss4Database, enrich_vulnerabilities, score_to_severity
+from scanner.pipeline.cvss4 import (
+    Cvss4Database,
+    enrich_vulnerabilities,
+    extract_nvd_cwes,
+    normalize_cwes,
+    score_to_severity,
+)
 from scanner.pipeline.geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
 from scanner.pipeline.report import build_reports
 
@@ -29,6 +35,8 @@ def test_cvss4_load_wrapped_and_enrich(tmp_path: Path):
                         "score": 10.0,
                         "vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H",
                         "severity": "critical",
+                        "published": "2021-12-10",
+                        "cwe": ["CWE-20", "CWE-400"],
                     }
                 },
             }
@@ -59,7 +67,40 @@ def test_cvss4_load_wrapped_and_enrich(tmp_path: Path):
     assert vulns[0]["cvss4"] == 10.0
     assert vulns[0]["cvss4_severity"] == "critical"
     assert vulns[0]["severity"] == "critical"
+    assert vulns[0]["cve_published"] == "2021-12-10"
+    assert vulns[0]["cwe"] == ["CWE-20", "CWE-400"]
     assert vulns[1]["cvss4"] is None
+    assert vulns[1]["cwe"] == []
+
+
+def test_normalize_cwes_drops_nvd_placeholders():
+    assert normalize_cwes(["CWE-79", "NVD-CWE-noinfo", "cwe-79", "89"]) == ["CWE-79", "CWE-89"]
+    assert normalize_cwes("CWE-22, not-a-cwe") == ["CWE-22"]
+    assert normalize_cwes(None) == []
+
+
+def test_extract_nvd_cwes_primary_first():
+    cve = {
+        "weaknesses": [
+            {
+                "type": "Secondary",
+                "description": [{"lang": "en", "value": "CWE-200"}],
+            },
+            {
+                "type": "Primary",
+                "description": [{"lang": "en", "value": "CWE-79"}],
+            },
+        ]
+    }
+    assert extract_nvd_cwes(cve) == ["CWE-79", "CWE-200"]
+
+
+def test_enrich_keeps_nuclei_cwe_when_nvd_silent(tmp_path: Path):
+    db_path = tmp_path / "cvss4.json"
+    db_path.write_text(json.dumps({"entries": {}}), encoding="utf-8")
+    vulns = [{"cve": "CVE-1999-0001", "cwe": ["CWE-22"], "cvss": 5.0, "severity": "medium"}]
+    enrich_vulnerabilities(vulns, Cvss4Database.load(db_path))
+    assert vulns[0]["cwe"] == ["CWE-22"]
 
 
 def test_geoip_private_ip_labeled():

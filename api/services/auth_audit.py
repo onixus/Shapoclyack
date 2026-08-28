@@ -49,12 +49,34 @@ logger = logging.getLogger(__name__)
 OUTCOME_SUCCESS = "success"
 OUTCOME_FAILURE = "failure"
 OUTCOME_LOCKED = "locked"
+# An authenticated principal refused an action they are not entitled to — not
+# a login attempt, and deliberately not counted as one by the limiter, which
+# reads OUTCOME_FAILURE rows only. The trail is the same because the question
+# it answers is the same one: which access decisions did this platform make.
+OUTCOME_DENIED = "denied"
+# An admin changed what this platform trusts, rather than attempted anything:
+# an SSH host-key pin was set or removed (#241). Its own outcome and not
+# ``success``, which in this table means "signed in" and feeds the login
+# counter in /metrics — recording a pin change there would inflate a series
+# that answers a different question.
+OUTCOME_TRUST_CHANGE = "trust_change"
 
 # Values allowed in ``auth_events.reason``. Kept as constants so the admin
 # endpoint's consumers have a closed set to switch on.
 REASON_INVALID_CREDENTIALS = "invalid_credentials"
 REASON_RATE_LIMITED_PAIR = "rate_limited_user_ip"
 REASON_RATE_LIMITED_IP = "rate_limited_ip"
+# Scan refused by the tenant's approved scanning scope (#226). The offending
+# targets go in ``detail``.
+REASON_SCAN_SCOPE = "scan_scope_denied"
+# Deployment target refused by the outbound-target policy or by the tenant's
+# approved scan scope (#240). The host, port and reason go in ``detail``.
+REASON_DEPLOY_TARGET = "deploy_target_denied"
+# An SSH host key was pinned for a tenant and target, or the pin was removed
+# (#241). The fingerprint goes in ``detail``: it is the pair of these two
+# events that distinguishes a planned rebuild from a substitution.
+REASON_HOST_KEY_PINNED = "ssh_host_key_pinned"
+REASON_HOST_KEY_UNPINNED = "ssh_host_key_unpinned"
 
 _settings: Settings | None = None
 _prune_lock = threading.Lock()
@@ -100,6 +122,7 @@ def _to_dict(row: models.AuthEvent) -> dict[str, Any]:
         "client_ip": row.client_ip,
         "outcome": row.outcome,
         "reason": row.reason,
+        "detail": row.detail,
     }
 
 
@@ -172,6 +195,7 @@ def _record(
     client_ip: str,
     outcome: str,
     reason: str | None = None,
+    detail: str | None = None,
 ) -> None:
     """Append one attempt to the audit trail and count it in ``/metrics``."""
     metrics_service.AUTH_ATTEMPTS_TOTAL.labels(outcome).inc()
@@ -182,8 +206,52 @@ def _record(
             client_ip=client_ip[:64],
             outcome=outcome,
             reason=reason,
+            detail=detail,
         )
     )
+
+
+def record_denied(*, username: str, reason: str, detail: str | None = None) -> None:
+    """Record one authorization refusal of an already-authenticated principal.
+
+    Used by the scan-scope barriers (#226), which run in the service layer and
+    therefore have no request to read a client address from — ``client_ip`` is
+    left empty rather than guessed, and ``detail`` carries what was refused.
+
+    Writes in its own transaction: unlike a login attempt, this decision was
+    not taken under the limiter's serialized lock and shares nothing with it.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        _record(
+            session,
+            username=username,
+            client_ip="",
+            outcome=OUTCOME_DENIED,
+            reason=reason,
+            detail=detail,
+        )
+
+
+def record_trust_change(*, username: str, reason: str, detail: str | None = None) -> None:
+    """Record one deliberate change to what this platform trusts (#241).
+
+    Not a login attempt and not a refusal: the SSH host-key pin routes write
+    here so that removing a pin and re-adding a different one leave a pair of
+    rows in the same trail as the access decisions around them. Like
+    :func:`record_denied` it runs in its own transaction and takes no client
+    address — the service layer has no request to read one from.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        _record(
+            session,
+            username=username,
+            client_ip="",
+            outcome=OUTCOME_TRUST_CHANGE,
+            reason=reason,
+            detail=detail,
+        )
 
 
 def _record_locked(

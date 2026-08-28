@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Download, Eye, FileText } from "lucide-react";
+import { Download, Eye, FileText, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { SarifViewerDialog } from "@/components/run/sarif-viewer";
 import { downloadArtifact, fetchArtifactText } from "@/lib/api";
 
 const TEXT_EXTS = [".json", ".txt", ".md", ".csv", ".xml", ".log", ".yaml", ".yml"];
@@ -29,8 +30,11 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
   const [previewText, setPreviewText] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [busyPath, setBusyPath] = useState<string | null>(null);
+  const [sarifOpen, setSarifOpen] = useState(false);
+  const [sarifText, setSarifText] = useState("");
 
   const pdfReport = artifacts.find((path) => path === "summary.pdf");
+  const sarifReport = artifacts.find((path) => path === "sarif.json");
   const rest = artifacts.filter((path) => path !== "summary.pdf");
 
   async function handleDownload(path: string) {
@@ -44,7 +48,23 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
     }
   }
 
+  async function openSarifViewer() {
+    setBusyPath("sarif.json");
+    try {
+      const text = await fetchArtifactText(runId, "sarif.json");
+      setSarifText(text);
+      setSarifOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load SARIF report");
+    } finally {
+      setBusyPath(null);
+    }
+  }
+
   async function handlePreview(path: string) {
+    if (path === "sarif.json") {
+      return openSarifViewer();
+    }
     setPreviewPath(path);
     setPreviewLoading(true);
     setPreviewText("");
@@ -89,6 +109,46 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
         </div>
       ) : null}
 
+      {sarifReport ? (
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-indigo-500/30 bg-indigo-950/20 p-4 shadow-lg backdrop-blur">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-md">
+              <ShieldAlert className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="font-semibold text-slate-100">OASIS SARIF 2.1.0 Security Findings</p>
+                <Badge variant="outline" className="font-mono text-[10px] text-indigo-300 border-indigo-500/30 bg-indigo-500/10">
+                  SARIF 2.1.0
+                </Badge>
+              </div>
+              <p className="text-xs text-slate-400">
+                Industry-standard static & dynamic security telemetry for GitHub, GitLab, and DefectDojo.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={openSarifViewer}
+              disabled={busyPath === "sarif.json"}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs gap-1.5"
+            >
+              <Eye className="h-4 w-4" />
+              View SARIF Findings
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => handleDownload("sarif.json")}
+              disabled={busyPath === "sarif.json"}
+              className="border-indigo-500/30 bg-indigo-950/40 text-indigo-200 hover:bg-indigo-900/50 text-xs gap-1.5"
+            >
+              <Download className="h-4 w-4" />
+              Download JSON
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
         <table className="w-full text-left text-xs">
           <tbody className="divide-y divide-slate-800/60">
@@ -127,6 +187,14 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
           </tbody>
         </table>
       </div>
+
+      <SarifViewerDialog
+        open={sarifOpen}
+        onOpenChange={setSarifOpen}
+        sarifText={sarifText}
+        runId={runId}
+        onDownload={() => handleDownload("sarif.json")}
+      />
 
       <Dialog open={Boolean(previewPath)} onOpenChange={(open) => !open && setPreviewPath(null)}>
         <DialogContent className="max-w-3xl bg-slate-900 border-slate-800 text-slate-100">

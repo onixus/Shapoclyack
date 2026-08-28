@@ -34,6 +34,8 @@ The roadmap is **planned product behavior**, not documentation of already-delive
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
+| [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
+| [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD-ready audit trail |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
 
@@ -56,6 +58,7 @@ The roadmap is **planned product behavior**, not documentation of already-delive
 | [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md) | Planned VM/Exposure Management UI and backend dependencies |
 | [Endpoint inventory design record](../Agent_plan.md) | Lariska integration history and design decisions; not the general product roadmap |
 | [Roadmap](../ROADMAP.md) | Product delivery phases and remaining work |
+| [ProjectDiscovery integration concept](projectdiscovery-integration-concept.md) | Architecture concept and scenarios for expanding ProjectDiscovery tools |
 | [Changelog](../CHANGELOG.md) | Released and unreleased behavior changes |
 
 ## Source-of-truth rules

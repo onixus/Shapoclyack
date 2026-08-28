@@ -2,13 +2,21 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { createProvisioningKey, createTenant, fetchTenants } from "@/lib/api";
+import { createProvisioningKey, createTenant, fetchTenantPosture, fetchTenants } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useTenants(enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.tenants,
     queryFn: fetchTenants,
+    enabled,
+  });
+}
+
+export function useTenantPosture(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.tenantPosture,
+    queryFn: fetchTenantPosture,
     enabled,
   });
 }

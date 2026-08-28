@@ -34,13 +34,43 @@ data:
     <clickhouse>
       <users>
         <default>
-          <password></password>
-          <networks>
-            <ip>::/0</ip>
+          <!-- from_env reads CLICKHOUSE_PASSWORD, which statefulset.yaml wires
+               to the shapoclyack-clickhouse Secret (secretGenerator in
+               base/kustomization.yaml, same mechanism as Postgres). The
+               entrypoint uses that same variable for the first-boot init.sql
+               client, so the two can never drift apart.
+
+               Do not put the password literally here: this file is a
+               ConfigMap, readable by anything that can GET configmaps in the
+               namespace.
+
+               replace="replace" is required, not decorative: the image ships
+               /etc/clickhouse-server/users.xml with <password></password>, and
+               merging from_env onto an element that already has a value is a
+               hard startup error ("has value and does not have 'replace'
+               attribute"). Same for <networks> below, which would otherwise
+               keep the image's ::/0 entry alongside ours. -->
+          <password from_env="CLICKHOUSE_PASSWORD" replace="replace"/>
+          <!-- Was ::/0 — every address on earth, which with a NodePort or a
+               LoadBalancer in front of 8123 is exactly what it says. Private
+               ranges are the widest set that is still correct on any CNI;
+               narrow this to the actual pod CIDR in an overlay if you know it.
+               The real boundary is the password above plus
+               base/networkpolicy-datastores.yaml, since pod IPs live in these
+               ranges too. -->
+          <networks replace="replace">
+            <ip>10.0.0.0/8</ip>
+            <ip>172.16.0.0/12</ip>
+            <ip>192.168.0.0/16</ip>
+            <ip>127.0.0.1</ip>
+            <ip>::1</ip>
           </networks>
           <profile>default</profile>
           <quota>default</quota>
-          <access_management>1</access_management>
+          <!-- 0, not 1: the API only reads and inserts. With access_management
+               on, anyone reaching 8123 with this account could CREATE USER and
+               keep access across a password rotation. -->
+          <access_management>0</access_management>
         </default>
       </users>
       <profiles>
@@ -81,7 +111,8 @@ data:
         scoring_model_version String,
         timestamp DateTime
     ) ENGINE = ReplacingMergeTree()
-    ORDER BY (tenant_id, asset_ip, cve_id);
+    ORDER BY (tenant_id, asset_ip, cve_id)
+    TTL timestamp + INTERVAL 90 DAY;
 
     -- Port-state table (roadmap 3.3 keys: tenant_id, target_ip, port)
     CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_open_ports (
@@ -92,4 +123,6 @@ data:
         run_id String,
         timestamp DateTime
     ) ENGINE = ReplacingMergeTree()
-    ORDER BY (tenant_id, target_ip, port);
+    ORDER BY (tenant_id, target_ip, port)
+    TTL timestamp + INTERVAL 90 DAY;
+

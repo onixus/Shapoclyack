@@ -136,11 +136,51 @@ docker_scan() {
 _run_with_timeout() {
   local limit="$1"
   shift
+
+  local runner=""
   if command -v timeout >/dev/null 2>&1; then
-    timeout "${limit}" "$@"
-  else
-    "$@"
+    runner="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    runner="gtimeout"
   fi
+  if [[ -n "${runner}" ]]; then
+    "${runner}" "${limit}" "$@"
+    return $?
+  fi
+
+  # No coreutils `timeout` (stock macOS agents): this used to fall through to an
+  # unbounded "$@", so SCAN_TIMEOUT_SEC was silently never enforced there and a
+  # stuck scanner ran until the CI job timeout killed the whole build. Watchdog
+  # below keeps the contract callers rely on: SIGTERM at the limit, exit 124.
+  echo "[load] no timeout(1) — using shell watchdog for ${limit}s limit" >&2
+  local fired="${WORK}/.timeout_fired"
+  rm -f "${fired}"
+
+  "$@" &
+  local cmd_pid=$!
+  (
+    sleep "${limit}"
+    kill -0 "${cmd_pid}" 2>/dev/null || exit 0
+    : > "${fired}"
+    kill -TERM "${cmd_pid}" 2>/dev/null || true
+    # Killing the `docker run` client does not stop the container it started,
+    # so stop the scanner explicitly; cleanup() would otherwise be the only
+    # thing that reaps it, long after we reported the timeout.
+    docker kill "${SCANNER_NAME}" >/dev/null 2>&1 || true
+    sleep 10
+    kill -KILL "${cmd_pid}" 2>/dev/null || true
+  ) &
+  local watchdog_pid=$!
+
+  local rc=0
+  wait "${cmd_pid}" || rc=$?
+  kill -TERM "${watchdog_pid}" 2>/dev/null || true
+  wait "${watchdog_pid}" 2>/dev/null || true
+  if [[ -e "${fired}" ]]; then
+    rm -f "${fired}"
+    return 124
+  fi
+  return "${rc}"
 }
 
 _start_peak_monitor() {

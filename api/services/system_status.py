@@ -6,6 +6,7 @@ ever included in the payload."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -25,6 +26,14 @@ from api.services import pagination
 from api.settings import Settings
 
 LOG = logging.getLogger(__name__)
+
+# Same threshold the scorer uses when it warns that an overlay is stale (#172).
+ENRICHMENT_STALE_DAYS = 30
+
+# Provenance sidecar written by scripts/fetch-enrichment.sh (see
+# scripts/enrichment_manifest.py). Overridable for deployments that mount the
+# enrichment volume somewhere other than the scan-config default.
+_DEFAULT_MANIFEST_PATH = "scanner/data/enrichment-manifest.json"
 
 # `<binary>: <version-probe args>` for the external scanner toolchain.
 # Phase 5: nmap is optional (default path is Pulse); pulse/nuclei/naabu/dnsx
@@ -100,13 +109,58 @@ def _load_config(settings: Settings) -> dict[str, Any]:
         return {}
 
 
-def _stat_db(name: str, path_str: str) -> dict[str, Any]:
+def _provenance(record: dict[str, Any] | None) -> dict[str, Any]:
+    """Origin fields for one dataset, from its manifest record.
+
+    Always the same four keys so the payload shape does not depend on whether a
+    manifest was found — a missing one reports ``None`` everywhere, exactly like
+    an image built before #246.
+    """
+    record = record if isinstance(record, dict) else {}
+    entries = record.get("entries")
+    return {
+        "source": record.get("source") or None,
+        "origin": record.get("origin") or None,
+        "updated": str(record.get("updated")) if record.get("updated") else None,
+        "entries": entries if isinstance(entries, int) else None,
+    }
+
+
+def enrichment_manifest() -> dict[str, Any]:
+    """Per-dataset provenance recorded at build/refresh time.
+
+    ``scripts/fetch-enrichment.sh`` writes this next to the data because the
+    files themselves cannot answer the question: a stale EPSS overlay and a
+    freshly-pulled one are the same bytes in the same place, and before #246 an
+    image whose every fetch had 403'd was indistinguishable from a healthy one.
+    Fail-soft like every other panel here — no manifest just means the origin
+    fields report ``None``.
+    """
+    path = Path(os.environ.get("OCTO_ENRICHMENT_MANIFEST") or _DEFAULT_MANIFEST_PATH)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    datasets = payload.get("datasets") if isinstance(payload, dict) else None
+    return datasets if isinstance(datasets, dict) else {}
+
+
+def _stat_db(name: str, path_str: str, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    origin = _provenance((manifest or {}).get(name))
     path = Path(path_str)
     try:
         stat = path.stat()
     except OSError:
-        return {"name": name, "present": False, "path": path_str, "size_bytes": None,
-                "modified_at": None, "age_days": None}
+        return {
+            "name": name,
+            "present": False,
+            "path": path_str,
+            "size_bytes": None,
+            "modified_at": None,
+            "age_days": None,
+            "stale": False,
+            **origin,
+        }
     modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
     age_days = round((datetime.now(tz=timezone.utc) - modified).total_seconds() / 86400, 1)
     return {
@@ -116,11 +170,13 @@ def _stat_db(name: str, path_str: str) -> dict[str, Any]:
         "size_bytes": stat.st_size,
         "modified_at": modified,
         "age_days": age_days,
+        "stale": age_days > ENRICHMENT_STALE_DAYS,
+        **origin,
     }
 
 
 def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Freshness of the enrichment databases at their effective paths
+    """Freshness and origin of the enrichment databases at their effective paths
     (env override → scan-config default → hardcoded fallback)."""
     enrichment = config.get("enrichment", {}) if isinstance(config, dict) else {}
     geoip_default = (enrichment.get("geoip", {}) or {}).get("database", "scanner/data/geoip/geoip.mmdb")
@@ -129,11 +185,13 @@ def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
     paths = {
         "epss": os.environ.get("OCTO_EPSS_DATABASE") or "scanner/data/epss/epss-overlay.json",
         "kev": os.environ.get("OCTO_KEV_DATABASE") or "scanner/data/kev/kev-overlay.json",
+        "exploit": os.environ.get("OCTO_EXPLOIT_DATABASE") or "scanner/data/exploit/exploit-overlay.json",
         "geoip": os.environ.get("OCTO_GEOIP_DATABASE") or geoip_default,
         "cvss4": os.environ.get("OCTO_CVSS4_DATABASE") or cvss4_default,
         "asn": os.environ.get("OCTO_ASN_DATABASE") or asn_default,
     }
-    return [_stat_db(name, path) for name, path in paths.items()]
+    manifest = enrichment_manifest()
+    return [_stat_db(name, path, manifest) for name, path in paths.items()]
 
 
 def _stage_enabled(config: dict[str, Any], section: str, key: str = "enabled") -> bool:
@@ -170,6 +228,7 @@ def scan_config_summary(config: dict[str, Any], effective: dict[str, Any] | None
             # -- prefer the effective (overridden) value over the base file so
             # this panel doesn't lag behind what an admin actually saved.
             "fingerprint": bool(effective.get("fingerprint.enabled", _stage_enabled(config, "fingerprint"))),
+            "screenshots": bool(effective.get("screenshots.enabled", _stage_enabled(config, "screenshots"))),
             "tls_posture": bool(effective.get("tls_posture.enabled", _stage_enabled(config, "tls_posture"))),
             "nuclei": bool(effective.get("nuclei.enabled", _stage_enabled(config, "nuclei"))),
             "pdf_summary": bool(

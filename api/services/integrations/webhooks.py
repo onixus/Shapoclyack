@@ -10,6 +10,13 @@ the state machine around it. That split is what lets the dispatch loop be
 tested end-to-end against a stub transport, and it is why a receiver that
 hangs cannot hold a database transaction open — a delivery is *claimed* in one
 short transaction, POSTed outside any transaction, and recorded in a second.
+
+The loop itself lives in ``secure_webhooks``, the facade the package exports
+under this module's name: claiming has to filter on the #151 kill switch, so
+one dispatcher is one claim query.  This module keeps the pieces that loop
+calls — ``claim_visibility_seconds``, ``backoff_seconds``, ``_record_result``
+(#255: a second copy of the loop here was shadowed by the facade, so fixing a
+bug in it changed nothing).
 """
 
 from __future__ import annotations
@@ -18,7 +25,7 @@ import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy import delete, func, or_, select
 
@@ -26,7 +33,9 @@ from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.services import asset_events, metrics, pagination
 from api.services import tenants as tenants_service
+from api.services import vulnerabilities as vulns_service
 from api.services.integrations import delivery as delivery_transport
+from api.services.integrations import tickets as ticket_transport
 from api.settings import Settings
 from scanner.pipeline.report import SEVERITY_ORDER
 
@@ -94,6 +103,8 @@ def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
         "min_severity": row.min_severity,
         "has_secret": bool(row.secret),
         "headers": dict(row.headers or {}),
+        "transport": row.transport or "webhook",
+        "transport_config": dict(row.transport_config or {}),
         "created_at": _iso(row.created_at),
         "created_by": row.created_by,
         "updated_at": _iso(row.updated_at),
@@ -139,6 +150,8 @@ def create_subscription(
     headers: dict[str, Any] | None = None,
     enabled: bool = True,
     created_by: str | None = None,
+    transport: str | None = None,
+    transport_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a subscription. The returned dict carries ``secret`` once.
 
@@ -160,7 +173,17 @@ def create_subscription(
     kinds = _validate_event_kinds(event_kinds)
     severity = _validate_min_severity(min_severity)
     clean_headers = delivery_transport.sanitize_headers(headers)
-    secret_value = (secret or "").strip() or secrets.token_urlsafe(32)
+    kind = ticket_transport.validate_transport(transport)
+    config = ticket_transport.validate_transport_config(kind, transport_config)
+    if kind == "webhook":
+        secret_value = (secret or "").strip() or secrets.token_urlsafe(32)
+    else:
+        secret_value = (secret or "").strip() or None
+        has_auth = any(k.lower() == "authorization" for k in clean_headers)
+        if not secret_value and not has_auth:
+            raise ValueError(
+                f"{kind} subscription needs a secret (API token) or an Authorization header"
+            )
 
     now = _now()
     row = models.WebhookSubscription(
@@ -173,6 +196,8 @@ def create_subscription(
         min_severity=severity,
         secret=secret_value,
         headers=clean_headers,
+        transport=kind,
+        transport_config=config,
         created_at=now,
         created_by=created_by,
         updated_at=now,
@@ -275,6 +300,13 @@ def update_subscription(subscription_id: str, **fields: Any) -> dict[str, Any] |
             row.min_severity = _validate_min_severity(fields["min_severity"])
         if "headers" in fields:
             row.headers = delivery_transport.sanitize_headers(fields["headers"])
+        if "transport" in fields or "transport_config" in fields:
+            kind = ticket_transport.validate_transport(
+                fields["transport"] if "transport" in fields else row.transport
+            )
+            cfg = fields["transport_config"] if "transport_config" in fields else (row.transport_config or {})
+            row.transport = kind
+            row.transport_config = ticket_transport.validate_transport_config(kind, cfg)
         if "secret" in fields:
             # An explicit empty string clears signing; a non-empty value sets
             # it; ``rotate_secret`` (below) is the "give me a new one" path.
@@ -289,7 +321,20 @@ def update_subscription(subscription_id: str, **fields: Any) -> dict[str, Any] |
 
 
 def rotate_secret(subscription_id: str) -> dict[str, Any] | None:
-    """Generate a fresh signing secret and return it once."""
+    """Generate a fresh HMAC signing secret and return it once.
+
+    Ticket transports use ``secret`` as the tracker API token, so rotating
+    it to a random value would silently break Jira/ServiceNow/DefectDojo.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.WebhookSubscription, subscription_id)
+        if row is None:
+            return None
+        if (row.transport or "webhook") != "webhook":
+            raise ValueError(
+                "rotate-secret is for webhook HMAC keys; PATCH secret with the tracker token instead"
+            )
     return update_subscription(subscription_id, secret=secrets.token_urlsafe(32))
 
 
@@ -562,6 +607,11 @@ def get_delivery(delivery_id: str) -> dict[str, Any] | None:
 def requeue_delivery(delivery_id: str) -> dict[str, Any] | None:
     """Take one delivery back out of the DLQ.
 
+    Only ``dead`` rows are replayable (#152). A successful delivery must not
+    be POSTed again through this API — that is a second notification of a
+    fact the receiver already accepted. ``pending`` is returned unchanged so
+    a double-click on retry is a no-op rather than a reset of the ladder.
+
     ``attempts`` is reset, so a redelivery gets the full retry ladder again
     rather than dying on its first failure — the operator requeues *because*
     something changed at the receiver, and the previous attempt count describes
@@ -576,6 +626,11 @@ def requeue_delivery(delivery_id: str) -> dict[str, Any] | None:
             return None
         if row.status == "pending":
             return _delivery_to_dict(row)
+        if row.status != "dead":
+            raise ValueError(
+                f"delivery {delivery_id} is {row.status}; "
+                "only dead-lettered rows can be replayed"
+            )
         LOG.info(
             "Requeueing webhook delivery %s (was %s after %s attempts)",
             delivery_id,
@@ -588,6 +643,24 @@ def requeue_delivery(delivery_id: str) -> dict[str, Any] | None:
         row.updated_at = now
         session.flush()
         return _delivery_to_dict(row)
+
+
+def claim_visibility_seconds(*, timeout_seconds: int, batch_len: int) -> int:
+    """How long a claimed batch stays off the due queue.
+
+    The dispatcher POSTs the claimed rows serially. Each POST can take the
+    full ``webhook_timeout_seconds``. A lease of ``timeout * 3`` (the old
+    constant) expired in the middle of a large batch, so a second replica
+    reclaimed a row still being sent and the receiver got a duplicate (#152).
+    The window covers one timeout per claimed row plus two timeouts of slack,
+    and is never shorter than 30s.
+
+    This is the only place the window is computed; ``secure_webhooks._claim_due``
+    is the only caller.  It briefly was not — the facade carried its own
+    ``timeout * 3`` and this batch-aware formula sat on the shadowed copy of the
+    loop, which is exactly the duplicate POST above (#255).
+    """
+    return max(30, int(timeout_seconds) * (max(int(batch_len), 1) + 2))
 
 
 def backoff_seconds(attempts: int, settings: Settings) -> int:
@@ -603,35 +676,6 @@ def backoff_seconds(attempts: int, settings: Settings) -> int:
     )
 
 
-def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.WebhookDelivery]:
-    """Take up to ``limit`` due deliveries, marking them in-flight.
-
-    ``SELECT … FOR UPDATE SKIP LOCKED`` (a no-op on SQLite, which has one
-    writer anyway) keeps two API replicas dividing the queue instead of both
-    POSTing the same delivery. The claim also pushes ``next_attempt_at``
-    forward by a visibility timeout, so a replica that dies mid-POST releases
-    the row after that window rather than stranding it.
-    """
-    settings = _require_settings()
-    rows = session.execute(
-        select(models.WebhookDelivery)
-        .where(
-            models.WebhookDelivery.status == "pending",
-            models.WebhookDelivery.next_attempt_at <= now,
-        )
-        .order_by(models.WebhookDelivery.next_attempt_at)
-        .limit(limit)
-        .with_for_update(skip_locked=True)
-    ).scalars().all()
-    visibility = timedelta(seconds=max(30, settings.webhook_timeout_seconds * 3))
-    for row in rows:
-        row.attempts += 1
-        row.next_attempt_at = now + visibility
-        row.updated_at = now
-    session.flush()
-    return rows
-
-
 def _record_result(
     *,
     delivery_id: str,
@@ -644,6 +688,10 @@ def _record_result(
         row = session.get(models.WebhookDelivery, delivery_id)
         if row is None:  # pragma: no cover - deleted mid-flight
             return "gone"
+        # A late POST from a duplicate claim must not un-deliver a row the
+        # receiver already accepted (#152).
+        if row.status == "delivered":
+            return "delivered"
         row.last_status_code = result.status_code
         row.last_error = result.error
         row.updated_at = now
@@ -667,97 +715,86 @@ def _record_result(
     return status
 
 
-def dispatch_once(
+def link_created_ticket(
     *,
-    limit: int | None = None,
-    post: Callable[..., delivery_transport.DeliveryResult] | None = None,
-) -> dict[str, int]:
-    """One dispatch tick: claim due deliveries, POST them, record outcomes.
+    tenant_id: str,
+    payload: dict[str, Any],
+    transport: str,
+    ticket_key: str | None,
+    ticket_url: str | None,
+) -> bool:
+    """Attach a newly created ticket to the matching tracked finding.
 
-    ``post`` is injectable so the retry/DLQ state machine can be tested without
-    a listening socket. Returns counts by outcome.
+    No-op when there is no finding, when the finding already has a ticket
+    (an operator-set link wins), or when the adapter returned no key/url.
+    Never raises: a ticket that exists in Jira must not fail the delivery
+    because the tracker row is missing.
     """
+    if not ticket_key and not ticket_url:
+        return False
+    if transport not in ticket_transport.TICKET_TRANSPORTS:
+        return False
+    envelope = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    host = str(envelope.get("host") or "").strip()
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    cve = str(data.get("cve") or envelope.get("cve") or "").strip() or None
+    script_id = str(data.get("script_id") or "").strip() or None
+    port = envelope.get("port")
+    port_s = "" if port is None else str(port).strip()
+    if not host or (not cve and not script_id):
+        return False
     settings = _require_settings()
-    send = post or delivery_transport.post
-    outcome = {"attempted": 0, "delivered": 0, "retrying": 0, "dead": 0}
-
-    now = _now()
-    claimed: list[tuple[str, str, dict[str, Any], str | None, dict[str, Any], str, str, str]] = []
-    with get_session(settings.postgres_url) as session:
-        for row in _claim_due(session, now=now, limit=limit or settings.webhook_dispatch_batch_size):
-            subscription = session.get(models.WebhookSubscription, row.subscription_id)
-            if subscription is None:  # pragma: no cover - FK cascade should prevent this
-                continue
-            claimed.append(
-                (
-                    row.delivery_id,
-                    subscription.url,
-                    dict(row.payload or {}),
-                    subscription.secret,
-                    dict(subscription.headers or {}),
-                    row.tenant_id,
-                    row.event_kind,
-                    row.event_id,
-                )
+    try:
+        with get_session(settings.postgres_url) as session:
+            asset_ids = list(
+                session.execute(
+                    select(models.AssetIdentifier.asset_id).where(
+                        models.AssetIdentifier.tenant_id == tenant_id,
+                        func.lower(models.AssetIdentifier.identifier_value) == host.lower(),
+                    )
+                ).scalars().all()
             )
-
-    for (
-        delivery_id,
-        url,
-        payload,
-        secret,
-        headers,
-        tenant_id,
-        event_kind,
-        event_id,
-    ) in claimed:
-        outcome["attempted"] += 1
-        try:
-            body, request_headers = delivery_transport.build_request(
-                payload=payload,
-                secret=secret,
-                extra_headers=headers,
-                delivery_id=delivery_id,
-                tenant_id=tenant_id,
-                event_kind=event_kind,
-                event_id=event_id,
+            if not asset_ids:
+                return False
+            query = select(models.Vulnerability).where(
+                models.Vulnerability.tenant_id == tenant_id,
+                models.Vulnerability.asset_id.in_(asset_ids),
             )
-            result = send(
-                url,
-                body,
-                request_headers,
-                timeout_seconds=settings.webhook_timeout_seconds,
-                allow_private=settings.webhook_allow_private_targets,
-            )
-        except Exception as exc:  # noqa: BLE001 - a bug here must not stall the queue
-            LOG.exception("Webhook delivery %s raised before/while sending", delivery_id)
-            result = delivery_transport.DeliveryResult(
-                ok=False,
-                status_code=None,
-                error=f"{type(exc).__name__}: {exc}"[:500],
-                # Not retryable: this is our own failure to build a request, and
-                # it will fail identically on every attempt.
-                retryable=False,
-            )
-        metrics.WEBHOOK_DELIVERY_DURATION_SECONDS.observe(result.duration_seconds)
-        status = _record_result(delivery_id=delivery_id, result=result, now=_now())
-        if status == "delivered":
-            outcome["delivered"] += 1
-            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="delivered").inc()
-        elif status == "pending":
-            outcome["retrying"] += 1
-            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="retrying").inc()
-        elif status == "dead":
-            outcome["dead"] += 1
-            metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome="dead").inc()
-            LOG.warning(
-                "Webhook delivery %s dead-lettered (kind=%s status_code=%s error=%s)",
-                delivery_id,
-                event_kind,
-                result.status_code,
-                result.error,
-            )
-    return outcome
+            if cve:
+                query = query.where(func.upper(models.Vulnerability.cve) == cve.upper())
+            else:
+                query = query.where(models.Vulnerability.script_id == script_id)
+            if port_s:
+                query = query.where(models.Vulnerability.port == port_s)
+            rows = list(session.execute(query).scalars().all())
+            if not rows:
+                return False
+            rows.sort(key=lambda row: 0 if row.state != "CLOSED" else 1)
+            target = rows[0]
+            if target.ticket_key or target.ticket_url:
+                return False
+            vuln_id = target.vuln_id
+        linked = vulns_service.set_ticket(
+            settings,
+            tenant_id=tenant_id,
+            vuln_id=vuln_id,
+            system=transport,
+            key=ticket_key,
+            url=ticket_url,
+            actor="shapoclyack",
+            note="opened by ticket transport",
+        )
+        return linked is not None
+    except Exception:  # noqa: BLE001
+        LOG.warning(
+            "ticket link failed transport=%s tenant=%s host=%s cve=%s",
+            transport,
+            tenant_id,
+            host,
+            cve,
+            exc_info=True,
+        )
+        return False
 
 
 def queue_depth() -> dict[str, int]:

@@ -12,6 +12,9 @@ not about arithmetic. The three that matter most:
 
 from __future__ import annotations
 
+import os
+from datetime import UTC, datetime
+
 import pytest
 
 from api.services import nist_risk
@@ -25,11 +28,27 @@ from api.services.exploit_evidence import (
     ExploitEvidence,
 )
 from api.services.risk_scoring import (
+    ATTACK_PATH_RAISE,
+    COMPENSATING_CONTROL_DISCOUNT,
+    EXTERNAL,
+    FOOTHOLD,
+    INTERNAL,
+    LOCAL,
+    UNKNOWN_EXPOSURE,
     RiskScoring,
+    apply_attack_path,
+    apply_compensating_control,
     apply_criticality,
+    apply_network_exposure,
+    cve_age_raise,
     epss_pct,
     exploitability_pct,
     impact_pct,
+    index_cdn_waf,
+    path_role,
+    resolve_compensating_control,
+    resolve_cve_age,
+    resolve_network_exposure,
 )
 from api.services.risk_scoring import _parse_vector as parse_vector
 
@@ -342,3 +361,233 @@ def test_every_mvp2_output_key_survives():
     ):
         assert key in scored, key
     assert 0.0 <= scored["contextual_score"] <= 10.0
+
+
+# ---------------------------------------------------------------------------
+# Network exposure (#171) — this host, not the CVSS vector
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_network_exposure_does_not_treat_a_public_ip_as_internet():
+    """A routable address is not evidence the host is facing the internet."""
+    assert resolve_network_exposure(host="8.8.8.8") == (UNKNOWN_EXPOSURE, "none")
+    assert resolve_network_exposure(host="10.0.0.5") == (INTERNAL, "address-space")
+    assert resolve_network_exposure(host="8.8.8.8", operator_exposure="internet") == (
+        EXTERNAL,
+        "operator-set",
+    )
+    assert resolve_network_exposure(host="8.8.8.8", operator_exposure="partner") == (
+        UNKNOWN_EXPOSURE,
+        "none",
+    )
+    assert resolve_network_exposure(host="10.0.0.5", explicit=EXTERNAL) == (EXTERNAL, "finding")
+
+
+def test_same_finding_scores_differently_on_external_and_internal_hosts():
+    scorer = _scorer()
+    item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST}
+    external = scorer.score_vulnerability({**item, "network_exposure": EXTERNAL})
+    internal = scorer.score_vulnerability({**item, "network_exposure": INTERNAL})
+    unknown = scorer.score_vulnerability(item)
+
+    assert external["likelihood_score"] > unknown["likelihood_score"]
+    assert internal["likelihood_score"] < unknown["likelihood_score"]
+    assert external["likelihood"] != internal["likelihood"] or (
+        external["likelihood_score"] != internal["likelihood_score"]
+    )
+
+
+def test_unknown_network_exposure_does_not_change_likelihood():
+    scorer = _scorer()
+    item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST}
+    bare = scorer.score_vulnerability(item)
+    marked = scorer.score_vulnerability({**item, "network_exposure": UNKNOWN_EXPOSURE})
+    public = scorer.score_vulnerability({**item, "host": "8.8.8.8"})
+    assert bare["likelihood_score"] == marked["likelihood_score"] == public["likelihood_score"]
+    assert "network exposure unknown" in marked["risk_explanation"]
+
+
+def test_network_exposure_explanation_names_the_source():
+    scorer = _scorer()
+    item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST, "host": "10.1.2.3"}
+    scored = scorer.score_vulnerability(item)
+    assert scored["network_exposure"] == INTERNAL
+    assert scored["network_exposure_source"] == "address-space"
+    assert "network exposure internal (address-space) lowered likelihood" in scored["risk_explanation"]
+
+    decided = scorer.score_vulnerability(
+        {**item, "host": "8.8.8.8"}, operator_exposure="internet"
+    )
+    assert decided["network_exposure"] == EXTERNAL
+    assert "network exposure external (operator-set) raised likelihood" in decided["risk_explanation"]
+
+
+def test_apply_network_exposure_unknown_is_a_noop():
+    assert apply_network_exposure(50.0, UNKNOWN_EXPOSURE) == 50.0
+    assert apply_network_exposure(50.0, EXTERNAL) == 70.0
+    assert apply_network_exposure(50.0, INTERNAL) == 30.0
+
+
+# ---------------------------------------------------------------------------
+# CVE age (#172) — raise-only, never a decay
+# ---------------------------------------------------------------------------
+
+
+def test_cve_age_raise_is_never_negative():
+    assert cve_age_raise(None) == 0.0
+    assert cve_age_raise(0.2) == 0.0
+    assert cve_age_raise(2.0) == 4.0
+    assert cve_age_raise(5.0) == 8.0
+    assert cve_age_raise(20.0) == 12.0
+    assert cve_age_raise(-3.0) == 0.0
+
+
+def test_older_cve_is_not_scored_below_a_fresh_one_with_the_same_evidence():
+    scorer = _scorer()
+    item = {"cvss4": 7.0, "cvss4_vector": V4_WORST, "network_exposure": "unknown"}
+    fresh = scorer.score_vulnerability({**item, "cve": "CVE-2026-0001", "cve_published": "2026-07-01"})
+    old = scorer.score_vulnerability({**item, "cve": "CVE-2015-0001", "cve_published": "2015-01-15"})
+    assert old["likelihood_score"] >= fresh["likelihood_score"]
+    assert "raised likelihood" in old["risk_explanation"]
+    assert "nvd-published" in old["risk_explanation"]
+
+
+def test_cve_id_year_is_a_named_fallback_when_published_is_missing():
+    years, source = resolve_cve_age(cve="CVE-2015-1234", published=None, now=datetime(2026, 8, 19, tzinfo=UTC))
+    assert source == "cve-id"
+    assert years == 11.0
+    years_pub, source_pub = resolve_cve_age(
+        cve="CVE-2015-1234", published="2015-03-01", now=datetime(2026, 8, 19, tzinfo=UTC)
+    )
+    assert source_pub == "nvd-published"
+    assert years_pub > 10.0
+
+
+def test_overlay_staleness_lists_only_old_present_files(tmp_path, monkeypatch):
+    from api.services import risk_scoring as scoring
+
+    fresh = tmp_path / "epss.json"
+    fresh.write_text("{}", encoding="utf-8")
+    missing = tmp_path / "nope.json"
+    old = tmp_path / "exploit.json"
+    old.write_text("{}", encoding="utf-8")
+    os.utime(old, (0, 0))
+    monkeypatch.setattr(
+        scoring,
+        "_overlay_paths",
+        lambda: (fresh, missing, old),
+    )
+    stale = scoring.overlay_staleness()
+    assert stale == [("exploit", stale[0][1])]
+    assert stale[0][1] > scoring.ENRICHMENT_STALE_DAYS
+
+
+# ---------------------------------------------------------------------------
+# Compensating controls (#173) — observed on-path CDN/WAF, never "WAF = safe"
+# ---------------------------------------------------------------------------
+
+
+def test_index_cdn_waf_matches_the_same_host_port_only():
+    index = index_cdn_waf(
+        {
+            "findings": [
+                {"host": "8.8.8.8", "port": 443, "cdn_waf": ["cloudflare"], "cms_framework": ["wordpress"]},
+                {"host": "8.8.8.8", "port": 80, "cdn_waf": [], "cms_framework": ["wordpress"]},
+                {"host": "1.1.1.1", "port": 443, "cdn_waf": ["akamai"]},
+            ]
+        }
+    )
+    assert index[("8.8.8.8", 443)] == ("cloudflare",)
+    assert ("8.8.8.8", 80) not in index
+    assert index[("1.1.1.1", 443)] == ("akamai",)
+
+
+def test_cms_alone_is_not_a_compensating_control():
+    assert index_cdn_waf({"findings": [{"host": "8.8.8.8", "port": 443, "cms_framework": ["wordpress"]}]}) == {}
+    assert resolve_compensating_control(cdn_waf=["wordpress"]) == ((), "none")
+
+
+def test_unknown_cdn_waf_names_are_ignored():
+    assert resolve_compensating_control(cdn_waf=["made-up-waf", "cloudflare"]) == (
+        ("cloudflare",),
+        "finding",
+    )
+
+
+def test_apply_compensating_control_is_one_discount_not_per_vendor():
+    assert apply_compensating_control(50.0, ()) == 50.0
+    assert apply_compensating_control(50.0, ("cloudflare",)) == 50.0 - COMPENSATING_CONTROL_DISCOUNT
+    assert apply_compensating_control(50.0, ("cloudflare", "akamai")) == 50.0 - COMPENSATING_CONTROL_DISCOUNT
+
+
+def test_on_path_waf_lowers_likelihood_and_is_named():
+    scorer = _scorer()
+    item = {
+        "cve": "CVE-1",
+        "cvss4": 7.0,
+        "cvss4_vector": V4_WORST,
+        "host": "8.8.8.8",
+        "port": "443",
+        "network_exposure": UNKNOWN_EXPOSURE,
+    }
+    bare = scorer.score_vulnerability(item)
+    shielded = scorer.score_vulnerability({**item, "cdn_waf": ["cloudflare"]})
+    other_port = scorer.score_vulnerability(
+        item,
+        cdn_waf_index={("8.8.8.8", 80): ("cloudflare",)},
+    )
+    on_path = scorer.score_vulnerability(
+        item,
+        cdn_waf_index={("8.8.8.8", 443): ("cloudflare",)},
+    )
+
+    assert shielded["likelihood_score"] == pytest.approx(
+        bare["likelihood_score"] - COMPENSATING_CONTROL_DISCOUNT
+    )
+    assert on_path["likelihood_score"] == shielded["likelihood_score"]
+    assert other_port["likelihood_score"] == bare["likelihood_score"]
+    assert shielded["cdn_waf"] == ["cloudflare"]
+    assert shielded["compensating_control_source"] == "finding"
+    assert on_path["compensating_control_source"] == "fingerprint"
+    assert "CDN/WAF cloudflare on this host:port (fingerprint)" in on_path["risk_explanation"]
+    assert "not proof the vuln is blocked" in on_path["risk_explanation"]
+    assert "CDN/WAF" not in bare["risk_explanation"]
+    # A small named discount, not a qualitative "Cloudflare → minus a level" rule.
+    assert shielded["likelihood"] == bare["likelihood"]
+
+
+# ---------------------------------------------------------------------------
+# Same-asset path (#173) — composition after P4.2, not a takeover model
+# ---------------------------------------------------------------------------
+
+
+def test_path_role_from_vector_and_exposure():
+    assert path_role({"finding_class": "exposure"}) == FOOTHOLD
+    assert path_role({"cvss4_vector": V4_WORST}) == FOOTHOLD
+    assert path_role({"cvss4_vector": V4_AWKWARD}) == LOCAL
+    assert path_role({"cvss4": 7.0}) == ""
+
+
+def test_local_finding_is_raised_only_when_the_same_asset_has_a_foothold():
+    scorer = _scorer()
+    local = {
+        "cve": "CVE-1",
+        "cvss4": 7.0,
+        "cvss4_vector": V4_AWKWARD,
+        "network_exposure": UNKNOWN_EXPOSURE,
+    }
+    bare = scorer.score_vulnerability(local)
+    chained = scorer.score_vulnerability(local, same_asset_foothold=True)
+    assert chained["likelihood_score"] == pytest.approx(
+        bare["likelihood_score"] + ATTACK_PATH_RAISE
+    )
+    assert chained["attack_path"] == "same-asset"
+    assert "same-asset path" in chained["risk_explanation"]
+    assert "not a modelled exploit chain" in chained["risk_explanation"]
+    assert apply_attack_path(50.0, role=FOOTHOLD, has_foothold=True) == 50.0
+    foothold = scorer.score_vulnerability(
+        {"cve": "CVE-2", "cvss4": 7.0, "cvss4_vector": V4_WORST, "network_exposure": UNKNOWN_EXPOSURE},
+        same_asset_foothold=True,
+    )
+    assert foothold["attack_path"] is None
+    assert "same-asset path" not in foothold["risk_explanation"]

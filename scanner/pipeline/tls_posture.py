@@ -68,8 +68,9 @@ host:port endpoints inspected is capped by ``max_targets`` -- past the cap,
 remaining endpoints are skipped and the run is flagged "truncated" rather
 than silently processing everything. Findings are reported only
 (``tls_posture.json`` / ``tls_posture_findings.txt``) -- never merged into
-scan scope or asset identity (same non-escalation principle as
-``fingerprint.py`` / ``cloud_discovery.py``).
+scan scope. Asset identity (P4.2) may *read* the certificate names from
+this artifact, together with forward DNS, to correlate an IP with an
+FQDN; that is not adding targets.
 """
 
 from __future__ import annotations

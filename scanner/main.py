@@ -35,8 +35,11 @@ from scanner.pipeline.errors import StageFailureError
 from scanner.pipeline.asn_discovery import discover_asn_ranges
 from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
 from scanner.pipeline.discover import import_cloudflare_dns_targets
+from scanner.pipeline.dns_hygiene import check_dns_hygiene
 from scanner.pipeline.domain_monitor import monitor_domains
+from scanner.pipeline.mail_posture import check_mail_posture
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
+from scanner.pipeline.screenshots import capture_screenshots_sync
 from scanner.pipeline.nuclei_scan import run_nuclei_scan
 from scanner.pipeline.tls_posture import check_tls_posture
 from scanner.pipeline.hostnames import (
@@ -46,6 +49,7 @@ from scanner.pipeline.hostnames import (
     merge_name_lists,
 )
 from scanner.pipeline.nse import run_nse
+from scanner.pipeline.ownership import resolve_ownership
 from scanner.pipeline.ports import fast_port_scan
 from scanner.pipeline.pulse_probe import run_pulse_probe, sync_report_primary_marker
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
@@ -55,6 +59,7 @@ from scanner.pipeline.pdf_report import write_business_pdf
 from scanner.pipeline.report import build_reports
 from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
+from scanner.pipeline import scan_scope
 from scanner.pipeline.run_context import resolve_run_paths, write_run_meta
 from scanner.pipeline.stage_timing import StageTimer
 from scanner.pipeline.utils import load_json, load_yaml, read_lines, setup_logging, write_lines
@@ -69,6 +74,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="scanner/config/default.yaml", help="Path to YAML config")
     parser.add_argument("--ranges", default="scanner/inputs/ranges.txt", help="Path to CIDR/IP inputs")
     parser.add_argument("--domains", default="scanner/inputs/domains.txt", help="Path to FQDN inputs")
+    parser.add_argument(
+        "--scan-scope",
+        help=(
+            "Path to the tenant's approved scan scope (#244). Set by the API for "
+            "every job it starts; targets outside the scope are dropped, and "
+            "resolved addresses inside a denied range are dropped after resolve. "
+            "Omitted for a standalone run, which is then unfiltered."
+        ),
+    )
     parser.add_argument(
         "--ports-file",
         help="Override ports.custom_ports_file for this run (TCP port list)",
@@ -127,6 +141,26 @@ def _run_stage(stage: str, func, timer: StageTimer | None = None):  # type: igno
     if active is not None:
         return active.run(stage, _call)
     return _call()
+
+
+def _keep_in_scope(
+    result: scan_scope.FilterResult, *, what: str, refusals: list[str]
+) -> list[str]:
+    """Log and record what the approved scope refused, and return what it kept.
+
+    Dropping rather than failing is the deliberate choice explained in
+    ``scanner/pipeline/scan_scope.py``: this is not the authorization boundary,
+    it is the last point at which the real target list is known.
+    """
+    if result.refused:
+        refusals.extend(result.refused)
+        logging.warning(
+            "Scan scope dropped %d %s outside the tenant's approved scope: %s",
+            len(result.refused),
+            what,
+            ", ".join(sorted(result.refused)[:8]),
+        )
+    return result.kept
 
 
 def _run_pipeline(args: argparse.Namespace) -> int:
@@ -258,6 +292,22 @@ def _run_pipeline_body(
     if not args.resume:
         checkpoint.clear()
 
+    # The tenant's approved scope, if this run carries one (#244). None means a
+    # standalone run with no control plane behind it, which stays unfiltered; an
+    # *unapproved* scope is a different thing and stops the run here, before any
+    # stage has looked anything up.
+    scope = scan_scope.load_scope_file(args.scan_scope)
+    scope_refusals: list[str] = []
+    if scope is not None and not scope.approved:
+        logging.error(
+            "Tenant %s has no approved scan scope; refusing to scan anything",
+            scope.tenant_id or "(unnamed)",
+        )
+        scan_scope.write_denials(
+            paths.output_dir, scope, ["all targets (tenant has no approved scan scope)"]
+        )
+        return exit_codes.INPUT_ERROR
+
     contract = validate_inputs(Path(args.ranges), Path(args.domains), paths.output_dir)
     checkpoint.mark_done("contract")
     if (
@@ -274,6 +324,19 @@ def _run_pipeline_body(
     # Phase 5: expand FQDN/IP scope via Cloudflare zone import + CT subdomains (before resolve).
     scope_fqdns = list(contract.valid_fqdns)
     scope_ips = list(contract.valid_ips_or_cidr)
+
+    # Filtered before the OSINT stages, not only before the scan: a name the
+    # tenant is not approved for should not be looked up in CT, RDAP or the
+    # cloud-bucket probes either. For a run on the installation's default target
+    # files this is the *only* check these targets ever get — the API does not
+    # open those files (#244).
+    if scope is not None:
+        scope_fqdns = _keep_in_scope(
+            scan_scope.filter_names(scope, scope_fqdns), what="names", refusals=scope_refusals
+        )
+        scope_ips = _keep_in_scope(
+            scan_scope.filter_ranges(scope, scope_ips), what="ranges", refusals=scope_refusals
+        )
 
     if args.resume and checkpoint.is_done("cloudflare"):
         timer.skip("cloudflare")
@@ -329,6 +392,26 @@ def _run_pipeline_body(
     if config.discovery.asn.enabled:
         scope_ips = sorted(set(scope_ips + list(asn_result.get("ip_ranges") or [])))
 
+    # EPIC #182 (org_profile M1): domain ownership via RDAP. Sits beside ct/asn
+    # and before resolve because the owner identifiers it produces are the seed
+    # for the related-domains stage, which may influence scope. Findings-only
+    # here: it adds neither FQDNs nor IPs, so --resume just skips it.
+    if args.resume and checkpoint.is_done("ownership"):
+        timer.skip("ownership")
+    else:
+        ownership_config = config.org_profile.ownership
+        ownership_domains = ownership_config.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "ownership",
+            lambda: resolve_ownership(
+                ownership_domains,
+                ownership_config,
+                paths.output_dir,
+                paths.state_dir,
+            ),
+        )
+        checkpoint.mark_done("ownership")
+
     # Phase 8.3: cloud storage bucket enumeration (asset-inventory finding,
     # not scope-expanding -- see module docstring). Domains only; no merge
     # into scope_ips/scope_fqdns, so --resume just needs to skip re-running.
@@ -342,6 +425,22 @@ def _run_pipeline_body(
         )
         checkpoint.mark_done("cloud")
 
+    # Second pass, over what discovery added since the first one: CT subdomains,
+    # Cloudflare zone entries and ASN ranges are targets nobody submitted and no
+    # API check has ever seen. Re-filtering the whole list rather than the
+    # additions keeps this independent of which stages ran.
+    if scope is not None:
+        scope_fqdns = _keep_in_scope(
+            scan_scope.filter_names(scope, scope_fqdns),
+            what="discovered names",
+            refusals=scope_refusals,
+        )
+        scope_ips = _keep_in_scope(
+            scan_scope.filter_ranges(scope, scope_ips),
+            what="discovered ranges",
+            refusals=scope_refusals,
+        )
+
     if args.resume and checkpoint.is_done("resolve"):
         timer.skip("resolve")
         resolved_ips = read_lines(paths.output_dir / "resolved_ips.txt")
@@ -351,6 +450,22 @@ def _run_pipeline_body(
             lambda: resolve_fqdns(scope_fqdns, paths.output_dir, timeout=timeout, retries=retries),
         )
         checkpoint.mark_done("resolve")
+
+    # The TOCTOU fix itself (#244): the API resolved these names at admission,
+    # but the answer that decides what gets scanned is this one, taken minutes
+    # or — for a schedule — hours later from a record the scanned party owns.
+    # Deny entries only, matching the API's rule: approving a domain says
+    # nothing about the addresses behind it, in either direction.
+    if scope is not None:
+        resolved_ips = _keep_in_scope(
+            scan_scope.filter_resolved(scope, resolved_ips),
+            what="resolved addresses",
+            refusals=scope_refusals,
+        )
+        # Rewritten, so the stage artifact does not keep listing an address the
+        # run refused as if it were a target. The lookup itself is not erased —
+        # dns_resolution.json still holds every record dnsx returned.
+        write_lines(paths.output_dir / "resolved_ips.txt", resolved_ips)
 
     # Phase 8.4: typosquat / dangling-CNAME domain monitoring (findings-only,
     # non-escalating -- see domain_monitor.py module docstring). Runs after
@@ -365,6 +480,47 @@ def _run_pipeline_body(
             lambda: monitor_domains(dm_domains, scope_fqdns, dm_config, paths.output_dir),
         )
         checkpoint.mark_done("domain_monitor")
+
+    # EPIC #182 (org_profile M2): zone hygiene and mail authentication posture.
+    # Beside domain_monitor and for the same reason -- after resolve, so both
+    # see the final in-scope FQDN list. Findings-only: neither adds FQDNs or
+    # IPs, so --resume just skips them.
+    if args.resume and checkpoint.is_done("dns_hygiene"):
+        timer.skip("dns_hygiene")
+    else:
+        dns_hygiene_config = config.org_profile.dns_hygiene
+        dns_hygiene_domains = dns_hygiene_config.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "dns_hygiene",
+            lambda: check_dns_hygiene(
+                dns_hygiene_domains,
+                dns_hygiene_config,
+                paths.output_dir,
+            ),
+        )
+        checkpoint.mark_done("dns_hygiene")
+
+    if args.resume and checkpoint.is_done("mail_posture"):
+        timer.skip("mail_posture")
+    else:
+        mail_posture_config = config.org_profile.mail_posture
+        mail_posture_domains = mail_posture_config.domains or base_domains_from_fqdns(scope_fqdns)
+        _run_stage(
+            "mail_posture",
+            lambda: check_mail_posture(
+                mail_posture_domains,
+                mail_posture_config,
+                paths.output_dir,
+            ),
+        )
+        checkpoint.mark_done("mail_posture")
+
+    if scope is not None:
+        # Written before the emptiness check below, so a run that ends with
+        # nothing left says *why* it had nothing left. The artifact rides back
+        # in the results archive and the API folds it into auth_events — the
+        # access-decision journal the scanner has no path to of its own (#244).
+        scan_scope.write_denials(paths.output_dir, scope, scope_refusals)
 
     all_targets = sorted(set(scope_ips + resolved_ips))
     write_lines(paths.output_dir / "all_targets.txt", all_targets)
@@ -457,6 +613,7 @@ def _run_pipeline_body(
                     custom_udp_ports_file=custom_udp_ports_file,
                     udp_probes=port_cfg.udp_probes,
                     tag=bid,
+                    scan_type=port_cfg.scan_type,
                 ),
                 aggregate=open_set,
                 aggregate_file=open_file,
@@ -536,6 +693,11 @@ def _run_pipeline_body(
 
         def _do_pulse() -> None:
             pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
+            # Chunks that still report every port closed after their retry are
+            # contradictions, not results (see pulse_probe). Marking the stage done
+            # would let --resume skip it and keep that zero forever, so the flag is
+            # withheld until a later run gets an answer for those hosts.
+            unresolved: list[str] = []
             _run_stage(
                 "pulse",
                 lambda: run_pulse_probe(
@@ -560,9 +722,19 @@ def _run_pipeline_body(
                     on_host_done=lambda host: checkpoint.mark_item_done("pulse", host),
                     chunk_hosts=pulse_cfg.chunk_hosts,
                     report_primary=report_primary_pulse,
+                    retry_settle_seconds=pulse_cfg.retry_settle_seconds,
+                    on_unresolved=unresolved.extend,
                 ),
             )
-            checkpoint.mark_done("pulse")
+            if unresolved:
+                logging.warning(
+                    "pulse: %s host(s) still reported no services after re-probing; leaving the "
+                    "stage open so --resume asks again: %s",
+                    len(unresolved),
+                    ", ".join(sorted(unresolved)[:10]),
+                )
+            else:
+                checkpoint.mark_done("pulse")
 
         def _do_nse() -> Path:
             nse_profile = config.nse_profiles[profile.nse_profile]
@@ -687,6 +859,17 @@ def _run_pipeline_body(
         )
         checkpoint.mark_done("fingerprint")
 
+    # P4.4 / Phase 9.3: screenshots of already-open web ports. Opt-in,
+    # redacted in-DOM, never a new scan. Playwright missing → skip.
+    if args.resume and checkpoint.is_done("screenshots"):
+        timer.skip("screenshots")
+    else:
+        _run_stage(
+            "screenshots",
+            lambda: capture_screenshots_sync(open_ports, config.screenshots, paths.output_dir),
+        )
+        checkpoint.mark_done("screenshots")
+
     # Phase 4.2: Nuclei web CVE/misconfig scan (default on; see nuclei_scan.py).
     # CVE path without nmap-vulners: Pulse --cve + Nuclei + CVSS4 enrichment.
     # CVE-tagged matches feed into build_reports alongside Pulse/NSE vulns.
@@ -731,6 +914,7 @@ def _run_pipeline_body(
             html_summary=reporting.html_summary,
             csv_export=reporting.csv_export,
             json_export=reporting.json_export,
+            sarif_export=reporting.sarif_export,
             cvss4_enabled=enrichment.cvss4.enabled,
             cvss4_database=cvss4_database,
             geoip_enabled=enrichment.geoip.enabled,

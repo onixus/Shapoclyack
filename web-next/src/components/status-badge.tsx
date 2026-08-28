@@ -1,5 +1,8 @@
+"use client";
+
 import { Badge } from "@/components/ui/badge";
 import type { StatusStyle } from "@/lib/config/statuses";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export function StatusBadge({
@@ -13,6 +16,7 @@ export function StatusBadge({
   fallback?: StatusStyle;
   showPulse?: boolean;
 }) {
+  const t = useT();
   const style = map[value] ?? fallback ?? { label: value, variant: "secondary" as const };
   const isRunning = value === "running" || value === "active" || showPulse;
 
@@ -27,7 +31,7 @@ export function StatusBadge({
           <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-current" />
         </span>
       )}
-      <span>{style.label}</span>
+      <span>{t.label(style.label)}</span>
     </Badge>
   );
 }

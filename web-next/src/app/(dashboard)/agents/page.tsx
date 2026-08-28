@@ -1,20 +1,34 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Cpu } from "lucide-react";
+import {
+  ArrowUpCircle,
+  Cpu,
+  Eye,
+  Server,
+} from "lucide-react";
+import { AgentDetailsDrawer } from "@/components/agent/agent-details-drawer";
+import { DeployAgentDialog } from "@/components/agent/deploy-agent-dialog";
 import { DataTable } from "@/components/data-table";
+import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
-import { useAgents } from "@/hooks/use-agents";
+import { Button } from "@/components/ui/button";
+import { useAgents, useAgentSummary } from "@/hooks/use-agents";
 import { usePagination } from "@/hooks/use-pagination";
 import { type AgentInfo } from "@/lib/api";
 import { AGENT_STATUS, agentEffectiveStatus } from "@/lib/config/statuses";
+import { useT } from "@/lib/i18n";
 
 export default function AgentsPage() {
+  const t = useT();
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+
   // Server-side paging/search/sort (ROADMAP P3.3): the fleet list is unbounded.
   const pagination = usePagination({ sort: "hostname", order: "asc" });
   const { data, isLoading, error, isFetching } = useAgents(pagination.params);
+  const { data: summary } = useAgentSummary();
   const agents = data?.items ?? [];
 
   const columns = useMemo<ColumnDef<AgentInfo>[]>(
@@ -22,83 +36,187 @@ export default function AgentsPage() {
       {
         id: "hostname",
         accessorFn: (agent) => `${agent.hostname} ${agent.agent_id}`,
-        header: "Agent Hostname & ID",
+        header: t("col.agentHost"),
         cell: ({ row }) => (
-          <div>
-            <p className="font-mono font-bold text-slate-100">{row.original.hostname || "—"}</p>
-            <p className="font-mono text-[10px] text-slate-400">{row.original.agent_id}</p>
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/60 text-sky-500 shadow-sm">
+              <Server className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="font-mono font-bold text-foreground">{row.original.hostname || "—"}</p>
+              <p className="font-mono text-[10px] text-muted-foreground">{row.original.agent_id}</p>
+            </div>
           </div>
         ),
       },
       {
         id: "status",
         accessorFn: (agent) => agentEffectiveStatus(agent),
-        header: "Status",
+        header: t("col.status"),
         cell: ({ row }) => (
           <StatusBadge value={agentEffectiveStatus(row.original)} map={AGENT_STATUS} />
         ),
       },
       {
         accessorKey: "tenant_id",
-        header: "Tenant",
-        cell: ({ getValue }) => <span className="font-semibold text-slate-300">{String(getValue() || "default")}</span>,
+        header: t("col.tenantId"),
+        cell: ({ getValue }) => <span className="font-semibold text-foreground">{String(getValue() || "default")}</span>,
       },
       {
         accessorKey: "version",
-        header: "Version",
-        cell: ({ getValue }) => <code className="rounded bg-slate-950 px-2 py-0.5 font-mono text-xs text-sky-400 border border-slate-800">{String(getValue() || "—")}</code>,
+        header: t("col.version"),
+        cell: ({ row }) => {
+          const isOutdated = row.original.is_outdated;
+          return (
+            <div className="flex items-center gap-1.5">
+              <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-sky-700 dark:text-sky-300 border border-border">
+                v{row.original.version || "—"}
+              </code>
+              {isOutdated && (
+                <span title={`Update available: v${row.original.latest_version || "0.42.0"}`} className="flex items-center">
+                  <ArrowUpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                </span>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: "telemetry",
+        header: "CPU / Mem",
+        enableSorting: false,
+        cell: ({ row }) => {
+          const m = row.original.metrics;
+          if (!m || (m.cpu_percent === undefined && m.memory_percent === undefined)) {
+            return <span className="text-muted-foreground text-xs">—</span>;
+          }
+          return (
+            <div className="flex items-center gap-2 font-mono text-[11px] text-foreground">
+              {m.cpu_percent !== undefined && (
+                <span className="rounded bg-muted px-1.5 py-0.5 border border-border">
+                  <span className="text-muted-foreground">CPU:</span> {m.cpu_percent}%
+                </span>
+              )}
+              {m.memory_used_mb !== undefined && (
+                <span className="rounded bg-muted px-1.5 py-0.5 border border-border">
+                  <span className="text-muted-foreground">RAM:</span> {m.memory_used_mb}M
+                </span>
+              )}
+            </div>
+          );
+        },
       },
       {
         accessorKey: "current_job_id",
-        header: "Active Job",
+        header: t("col.activeJob"),
         enableSorting: false,
         cell: ({ getValue }) => {
           const value = getValue();
-          return value ? <code className="rounded bg-slate-950 px-2 py-0.5 font-mono text-xs text-indigo-400 border border-slate-800">{String(value)}</code> : <span className="text-slate-500">—</span>;
+          return value ? (
+            <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-indigo-700 dark:text-indigo-300 border border-border">
+              {String(value)}
+            </code>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          );
         },
       },
       {
         accessorKey: "last_seen_at",
-        header: "Last Heartbeat",
+        header: t("col.lastHeartbeat"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.last_seen_at ? (
-            <span className="font-mono text-xs text-slate-300">
+            <span className="font-mono text-xs text-muted-foreground">
               {format(new Date(row.original.last_seen_at), "yyyy-MM-dd HH:mm:ss")}
             </span>
           ) : (
             "—"
           ),
       },
+      {
+        id: "actions",
+        header: "Actions",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setSelectedAgentId(row.original.agent_id)}
+            className="h-8 gap-1.5 px-2.5 text-xs text-primary hover:bg-primary/10"
+          >
+            <Eye className="h-3.5 w-3.5" />
+            Inspect
+          </Button>
+        ),
+      },
     ],
-    [],
+    [t],
   );
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/80 pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-500 border border-sky-500/20 shadow-sm">
             <Cpu className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Distributed Agent Fleet</h1>
-            <p className="text-xs text-slate-400">
-              Active worker nodes polling JetStream scan queues.
-              {isFetching ? " · Refreshing fleet status…" : ""}
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.agents.title")}</h1>
+            <p className="text-xs text-muted-foreground">
+              {t("page.agents.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
+
+        <DeployAgentDialog />
       </div>
 
+      {/* Fleet KPIs Banner */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        <KpiCard
+          label="Total Agents"
+          value={summary?.total_agents ?? data?.total ?? 0}
+          hint="Registered scan nodes"
+          decorationColor="sky"
+        />
+        <KpiCard
+          label="Online / Active"
+          value={summary?.online_agents ?? 0}
+          hint="Sending heartbeats"
+          decorationColor="emerald"
+        />
+        <KpiCard
+          label="Scanning (Busy)"
+          value={summary?.busy_agents ?? 0}
+          hint="Executing scan tasks"
+          decorationColor="blue"
+        />
+        <KpiCard
+          label="Stale / Offline"
+          value={summary?.stale_agents ?? 0}
+          hint="Heartbeat timed out"
+          decorationColor="rose"
+        />
+        <KpiCard
+          label="Updates Available"
+          value={summary?.outdated_agents ?? 0}
+          hint={`Target: v${summary?.latest_version || "0.42.0"}`}
+          decorationColor="amber"
+        />
+      </div>
+
+      {/* Agents Table */}
       <DataTable
         columns={columns}
         data={agents}
         isLoading={isLoading}
         error={error}
-        searchPlaceholder="Search agent hostname or ID…"
-        loadingMessage="Retrieving agent fleet telemetry…"
-        emptyMessage="No distributed agents registered."
+        searchPlaceholder={t("search.agents")}
+        loadingMessage={t("loading.agents")}
+        emptyMessage={t("empty.agents")}
         meta={`${data?.total ?? 0} agents`}
         serverPagination={{
           offset: pagination.offset,
@@ -113,7 +231,15 @@ export default function AgentsPage() {
           onSortChange: pagination.setSort,
         }}
       />
+
+      {/* Agent Details Drawer */}
+      <AgentDetailsDrawer
+        agentId={selectedAgentId}
+        open={Boolean(selectedAgentId)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedAgentId(null);
+        }}
+      />
     </div>
   );
 }
-

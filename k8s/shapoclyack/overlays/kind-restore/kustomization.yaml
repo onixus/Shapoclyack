@@ -1,0 +1,93 @@
+# Isolated restore-drill overlay (#158).
+#
+# Same image and Postgres/API as kind-dev, in namespace shapoclyack-restore,
+# without NodePort (so it does not steal :8080 from the source lab) and
+# without NATS/ClickHouse/scan Jobs (ingress and external integrations stay
+# off, as docs/operations.md requires). Postgres + API is the path
+# scripts/restore-postgres.sh validates.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: shapoclyack-restore
+
+resources:
+  - ../dev
+
+images:
+  - name: ghcr.io/onixus/shapoclyack-aio
+    newTag: kind-dev
+
+patches:
+  - target:
+      kind: Namespace
+      name: network-scan
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: shapoclyack-restore
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: shapoclyack-nats
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: shapoclyack-nats
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: shapoclyack-nats-client
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: shapoclyack-nats-config
+      $patch: delete
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: shapoclyack-clickhouse
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: shapoclyack-clickhouse
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: shapoclyack-clickhouse-client
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: shapoclyack-clickhouse-config
+      $patch: delete
+  - patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: network-scan
+      $patch: delete
+  - patch: |-
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: network-scan-scheduled
+      $patch: delete
+  - patch: |-
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: shapoclyack-postgres-backup
+      $patch: delete

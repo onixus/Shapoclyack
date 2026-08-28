@@ -1,9 +1,14 @@
 name: CI
 
+# ОТКЛЮЧЕНО: заменено локальным Jenkins (Jenkinsfile, джоба shapoclyack).
+# Причина — лимиты минут GitHub Actions. Автоматические триггеры сняты, чтобы
+# не жечь минуты; ручной запуск оставлен на случай, если понадобится сверка.
+# Вернуть: раскомментировать push/pull_request ниже.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
 
 permissions:
   contents: read

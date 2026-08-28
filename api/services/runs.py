@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.services import pagination
 from api.services import tenants as tenants_service
-from api.services.risk_scoring import get_scorer
+from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
+from scanner.pipeline.asset_identity import registrable_domain
 from api.settings import Settings
+
+LOG = logging.getLogger("shapoclyack.runs")
 
 # Marker file written into a run directory naming the tenant the run belongs to
 # (ROADMAP P0). Runs produced before this shipped have no marker and are read as
@@ -217,6 +221,9 @@ def list_runs(
                 potential_vulnerabilities=(
                     summary.get("potential_vulnerabilities") if isinstance(summary, dict) else None
                 ),
+                unconfirmed_findings=(
+                    summary.get("unconfirmed_findings") if isinstance(summary, dict) else None
+                ),
                 vulnerable_hosts=summary.get("vulnerable_hosts") if isinstance(summary, dict) else None,
                 has_diff=(run_dir / "diff.json").exists(),
                 has_summary=(run_dir / "summary.json").exists(),
@@ -255,7 +262,10 @@ def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = N
     artifacts = sorted(
         str(path.relative_to(run_dir))
         for path in run_dir.rglob("*")
-        if path.is_file() and path.stat().st_size < 50_000_000
+        if path.is_file()
+        and path.stat().st_size < 50_000_000
+        and not is_screenshot_path(str(path.relative_to(run_dir)))
+        and not is_restricted_artifact(str(path.relative_to(run_dir)))
     )
     return RunDetail(
         run_id=run_id,
@@ -303,6 +313,12 @@ def get_vulnerabilities(
     # at ingest do carry it, so their contextual_score can be the stricter of
     # the two — the explanation says which criticality it used.
     scorer = get_scorer()
+    cdn_waf = index_cdn_waf(_load_json(run_dir / "fingerprint.json"))
+    foothold_hosts = {
+        str(entry.get("host") or "")
+        for entry in raw
+        if isinstance(entry, dict) and path_role(entry) == FOOTHOLD
+    }
     items: list[VulnerabilityItem] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -315,7 +331,11 @@ def get_vulnerabilities(
             continue
         host_key = str(entry_host or "")
         geo_hit = geo.get(host_key, {})
-        scored = scorer.score_vulnerability(entry)
+        scored = scorer.score_vulnerability(
+            entry,
+            cdn_waf_index=cdn_waf,
+            same_asset_foothold=path_role(entry) == LOCAL and host_key in foothold_hosts,
+        )
         confidence = entry.get("confidence")
         items.append(
             VulnerabilityItem(
@@ -345,6 +365,10 @@ def get_vulnerabilities(
                 exploit_maturity=scored.get("exploit_maturity"),
                 exploit_evidence=list(scored.get("exploit_evidence") or []),
                 exploit_verified_on_host=bool(scored.get("exploit_verified_on_host")),
+                network_exposure=scored.get("network_exposure"),
+                network_exposure_source=scored.get("network_exposure_source"),
+                cdn_waf=list(scored.get("cdn_waf") or []),
+                compensating_control_source=scored.get("compensating_control_source"),
             )
         )
     # Contextual score leads: it already folds in severity, EPSS, KEV, and the
@@ -422,7 +446,50 @@ def get_hosts(
                 )
             )
     rows.sort(key=lambda item: (-item.vulnerability_count, item.host))
-    return rows[:limit]
+    trimmed = rows[:limit]
+    _apply_host_ownership(settings, tenant_id, trimmed)
+    return trimmed
+
+
+def _apply_host_ownership(
+    settings: Settings, tenant_id: str | None, rows: list[AliveHostItem]
+) -> None:
+    """Fill P4.3 owner fields. Domain clustering works without Postgres."""
+    for row in rows:
+        names = [n for n in [row.hostname, *row.names] if n]
+        domain = ""
+        for name in names:
+            domain = registrable_domain(name)
+            if domain:
+                break
+        row.registrable_domain = domain or None
+        row.ownership_source = "domain" if domain else "none"
+    if not tenant_id or not settings.postgres_url.strip():
+        return
+    try:
+        from api.services import assets as assets_service
+
+        ips = [row.host for row in rows]
+        names = [n for row in rows for n in [row.hostname, *row.names] if n]
+        by_ip, by_name = assets_service.ownership_for_hosts(
+            settings, tenant_id, ips=ips, names=names
+        )
+    except Exception:  # noqa: BLE001
+        LOG.warning("host ownership attach failed tenant=%s", tenant_id, exc_info=True)
+        return
+    for row in rows:
+        hit = by_ip.get(row.host)
+        if hit is None:
+            for name in [row.hostname, *row.names]:
+                if name:
+                    hit = by_name.get(name.lower())
+                    if hit is not None:
+                        break
+        if hit and (hit.get("owner_email") or hit.get("business_unit")):
+            row.owner_email = hit.get("owner_email")
+            row.business_unit = hit.get("business_unit")
+            row.asset_id = hit.get("asset_id")
+            row.ownership_source = "operator"
 
 
 def get_ports(
@@ -498,8 +565,45 @@ def get_ports(
     return items[:limit]
 
 
+def is_screenshot_path(relative: str) -> bool:
+    """PNG pixels under screenshots/ — operator-only (P4.4)."""
+    parts = Path(relative).parts
+    return len(parts) >= 2 and parts[0] == "screenshots" and parts[-1].lower().endswith(".png")
+
+
+# Run artifacts that carry owner or subject identifiers rather than scan
+# results: an RDAP abuse address (org_profile M1, #182) is a contactable human
+# at the target organization, which is not the same class of data as an open
+# port. Listed by exact run-relative name so a new stage has to opt in
+# deliberately; org_profile M5 adds credential_leaks.* here.
+_RESTRICTED_ARTIFACTS = frozenset(
+    {
+        "ownership.json",
+        "ownership_findings.txt",
+    }
+)
+
+
+def is_restricted_artifact(relative: str) -> bool:
+    """Artifacts an operator may read but a viewer may not (org_profile #182).
+
+    Same treatment as screenshot PNGs: hidden from the artifact listing,
+    ``404`` for a viewer on both the preview and the download endpoint. Unlike
+    screenshots these are readable text, so an operator gets them through the
+    preview endpoint too.
+    """
+    parts = Path(relative).parts
+    return len(parts) == 1 and parts[0].lower() in _RESTRICTED_ARTIFACTS
+
+
 def resolve_artifact(
-    settings: Settings, run_id: str, relative: str, *, tenant_id: str | None = None
+    settings: Settings,
+    run_id: str,
+    relative: str,
+    *,
+    tenant_id: str | None = None,
+    allow_screenshots: bool = False,
+    allow_restricted: bool = False,
 ) -> Path | None:
     """Resolve a run-relative artifact path to a real file, or ``None`` if the
     run/file doesn't exist or the path escapes the run directory. Rejects
@@ -507,12 +611,22 @@ def resolve_artifact(
     and confirms the resolved target stays under ``run_dir``. Shared by the
     text-preview and binary-download endpoints. ``tenant_id`` additionally
     scopes the run itself, so artifacts of another tenant's run read as
-    missing."""
+    missing.
+
+    Restricted artifacts (:func:`is_restricted_artifact`) are refused here as
+    well as in the routes, the same belt-and-braces as ``allow_screenshots``.
+    The route check alone would mean the next endpoint that reaches for an
+    artifact inherits no protection at all -- and org_profile M5 is already
+    scheduled to put credential-leak identifiers behind this predicate."""
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
     rel = Path(relative)
     if rel.is_absolute() or ".." in rel.parts:
+        return None
+    if is_screenshot_path(relative) and not allow_screenshots:
+        return None
+    if is_restricted_artifact(relative) and not allow_restricted:
         return None
     target = (run_dir / rel).resolve()
     try:
@@ -531,9 +645,66 @@ def read_artifact_text(
     *,
     max_bytes: int = 1_000_000,
     tenant_id: str | None = None,
+    allow_restricted: bool = False,
 ) -> str | None:
-    target = resolve_artifact(settings, run_id, relative, tenant_id=tenant_id)
+    target = resolve_artifact(
+        settings, run_id, relative, tenant_id=tenant_id, allow_restricted=allow_restricted
+    )
     if target is None:
         return None
     data = target.read_bytes()[:max_bytes]
     return data.decode("utf-8", errors="replace")
+
+
+def list_screenshots(
+    settings: Settings, run_id: str, *, tenant_id: str | None = None
+) -> dict[str, Any] | None:
+    """Operator-facing manifest of captured (already-redacted) screenshots.
+
+    Pixels that the retention reaper already deleted stay in the list with
+    ``available: false`` so the operator can tell "never captured" from
+    "captured, then expired". Failed captures are omitted.
+    """
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+    raw = _load_json(run_dir / "screenshots.json")
+    empty: dict[str, Any] = {
+        "skipped_reason": None,
+        "captured_count": 0,
+        "redacted_fields": 0,
+        "truncated": False,
+        "retention_days": settings.screenshot_retention_days,
+        "items": [],
+    }
+    if not isinstance(raw, dict):
+        return empty
+    items: list[dict[str, Any]] = []
+    findings = raw.get("findings")
+    if isinstance(findings, list):
+        for finding in findings:
+            if not isinstance(finding, dict) or finding.get("error"):
+                continue
+            rel = str(finding.get("file") or "")
+            target = resolve_artifact(
+                settings, run_id, rel, tenant_id=tenant_id, allow_screenshots=True
+            )
+            items.append(
+                {
+                    "host": finding.get("host"),
+                    "port": finding.get("port"),
+                    "scheme": finding.get("scheme"),
+                    "url": finding.get("url"),
+                    "file": rel,
+                    "redacted_fields": int(finding.get("redacted_fields") or 0),
+                    "available": target is not None,
+                }
+            )
+    return {
+        "skipped_reason": raw.get("skipped_reason"),
+        "captured_count": int(raw.get("captured_count") or 0),
+        "redacted_fields": int(raw.get("redacted_fields") or 0),
+        "truncated": bool(raw.get("truncated")),
+        "retention_days": settings.screenshot_retention_days,
+        "items": items,
+    }

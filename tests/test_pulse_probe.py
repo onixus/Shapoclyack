@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from scanner.pipeline.pulse_probe import (
@@ -135,6 +136,113 @@ SAMPLE_FINDINGS = {
 }
 
 
+# Pulse v1.1.0 JSON (probe-DB product/version, port state, JARM on tls[],
+# and Stage 12.6 tls-class findings that tls_posture already classifies).
+SAMPLE_V110 = {
+    "meta": {"scanner": "pulse", "schema": "pulse.scan.v2", "version": "1.1.0"},
+    "open": [
+        {
+            "host": "10.0.0.5",
+            "ip": "10.0.0.5",
+            "port": 443,
+            "protocol": "tcp",
+            "open": True,
+            "state": "open",
+            "service": "https",
+            "product": "nginx",
+            "version": "1.24.0",
+            "banner": "Server: nginx/1.24.0",
+            "detection_method": "probe",
+            "jarm": "21d19d00021d21d21c21d19d21d21d1a9c3e8e8e8e8e8e8e8e8e8e8e8e8e8e",
+        }
+    ],
+    "tls": [
+        {
+            "ip": "10.0.0.5",
+            "host": "10.0.0.5",
+            "port": 443,
+            "subject_cn": "app.local",
+            "issuer_cn": "R3",
+            "expired": False,
+            "expires_in_days": 10,
+            "self_signed": False,
+            "negotiated_protocol": "TLSv1_3",
+            "accepts_weak_protocols": ["TLSv1.0"],
+            "jarm": "21d19d00021d21d21c21d19d21d21d1a9c3e8e8e8e8e8e8e8e8e8e8e8e8e8e",
+            "source": "pulse-tls",
+        }
+    ],
+    "findings": [
+        {
+            "cve_id": "CVE-2023-44487",
+            "ip": "10.0.0.5",
+            "port": 443,
+            "service": "https",
+            "cvss": 7.5,
+            "severity": "HIGH",
+            "title": "HTTP/2 Rapid Reset",
+            "finding_class": "version_cve",
+            "confidence": 80,
+            "requires_confirmation": False,
+            "epss": 0.55,
+            "in_kev": True,
+        },
+        {
+            "cve_id": "",
+            "ip": "10.0.0.5",
+            "port": 443,
+            "service": "https",
+            "severity": "medium",
+            "title": "TLS certificate expiring soon",
+            "finding_class": "tls",
+            "confidence": 80,
+            "requires_confirmation": False,
+            "evidence": "expires_in_days=10",
+            "source": "pulse-tls",
+        },
+        {
+            "cve_id": "",
+            "ip": "10.0.0.5",
+            "port": 443,
+            "service": "https",
+            "severity": "high",
+            "title": "Server accepts weak TLS protocol",
+            "finding_class": "tls",
+            "confidence": 82,
+            "requires_confirmation": True,
+            "evidence": "accepts=TLSv1.0",
+            "source": "pulse-tls",
+        },
+    ],
+    "stats": {},
+}
+
+
+def test_v110_json_parses_and_keeps_tls_findings(tmp_path: Path):
+    """v1.1.0 extra keys (state, product/version, jarm) must not break the
+    adapter. tls-class findings stay extra vulnerabilities because
+    tls_posture is opt-in and a separate artifact."""
+    services, _, cves = parse_pulse_json(SAMPLE_V110)
+    assert len(services) == 1
+    assert services[0].product == "nginx"
+    assert services[0].version == "1.24.0"
+    assert services[0].state == "open"
+    assert [c.finding_class for c in cves] == ["version_cve", "tls", "tls"]
+    assert cves[0].cve_id == "CVE-2023-44487"
+
+    write_pulse_artifacts(tmp_path, services, [], cves, raw=SAMPLE_V110)
+    tls_artifact = json.loads((tmp_path / "pulse" / "tls.json").read_text(encoding="utf-8"))
+    assert tls_artifact["tls"][0]["jarm"].startswith("21d19d")
+    assert len(tls_artifact["findings"]) == 2
+
+    loaded = load_service_artifacts(tmp_path)
+    assert loaded is not None
+    _, _, vulns = loaded
+    classes = [v["finding_class"] for v in vulns]
+    assert classes.count("tls") == 2
+    assert "CVE-2023-44487" in [v["cve"] for v in vulns]
+
+
 def test_exposure_findings_survive_parsing():
     """CVE-less classes used to be dropped outright, losing every
     reachable-service observation Pulse makes."""
@@ -245,6 +353,14 @@ def test_build_pulse_command_flags():
     assert "--cve" in cmd
     assert "--checkpoint" in cmd
     assert "-f" in cmd and "json" in cmd
+    # Product features that duplicate Shapoclyack stay off the adapter CLI.
+    joined = " ".join(cmd)
+    assert "--jarm" not in cmd
+    assert "--scripts" not in cmd
+    assert "--inventory" not in cmd
+    assert "--server" not in cmd
+    assert "--alert-" not in joined
+    assert "monitor" not in cmd
 
 
 def test_service_record_roundtrip():
@@ -253,3 +369,107 @@ def test_service_record_roundtrip():
     assert d["schema_version"] == "octo.service.v1"
     again = ServiceRecord.model_validate(d)
     assert again.port == 443
+
+
+class _FakeCompleted:
+    """Stand-in for subprocess.CompletedProcess."""
+
+    def __init__(self, stdout: str, returncode: int = 0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+_ONE_SERVICE = '{"open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}]}'
+_ALL_CLOSED = '{"open": [], "os": [], "cves": []}'
+
+
+def _run_probe(tmp_path, monkeypatch, stdouts, **kwargs):
+    """Drive run_pulse_probe with a scripted sequence of pulse outputs."""
+    from scanner.pipeline import pulse_probe as pp
+
+    calls: list[list[str]] = []
+    ckpt_alive_at_call: list[bool] = []
+    ckpt = tmp_path / "pulse" / "chunk_0000.ckpt"
+
+    def fake_run_command(command, **_):
+        calls.append(command)
+        ckpt_alive_at_call.append(ckpt.exists())
+        # pulse writes its checkpoint as it goes; mimic that so the test can
+        # tell whether the retry cleared it first.
+        ckpt.parent.mkdir(parents=True, exist_ok=True)
+        ckpt.write_text('{"status": "done"}', encoding="utf-8")
+        return _FakeCompleted(stdouts[min(len(calls) - 1, len(stdouts) - 1)])
+
+    monkeypatch.setattr(pp, "run_command", fake_run_command)
+    monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "pulse")
+    monkeypatch.setattr(pp.time, "sleep", lambda _: None)
+
+    pp.run_pulse_probe(["10.0.0.1:22/tcp"], output_dir=tmp_path, **kwargs)
+    return calls, ckpt, ckpt_alive_at_call
+
+
+def test_all_closed_chunk_is_reprobed(tmp_path, monkeypatch):
+    """naabu proved the port open, so all-closed is a contradiction, not a result."""
+    calls, _, _ = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED, _ONE_SERVICE])
+    assert len(calls) == 2, "expected one re-probe after the empty chunk"
+
+
+def test_reprobe_clears_checkpoint_first(tmp_path, monkeypatch):
+    """pulse honours its own 'status: done' and would replay the zero offline."""
+    _, _, ckpt_alive = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED, _ONE_SERVICE])
+    assert ckpt_alive[1] is False, "retry ran against a stale done-checkpoint"
+
+
+def test_successful_chunk_is_not_reprobed(tmp_path, monkeypatch):
+    calls, ckpt, _ = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
+    assert len(calls) == 1
+    assert ckpt.exists(), "a chunk that found services must keep its checkpoint"
+
+
+def test_persistently_empty_chunk_leaves_no_checkpoint(tmp_path, monkeypatch):
+    """Otherwise --resume trusts the zero and never re-probes these hosts."""
+    calls, ckpt, _ = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED])
+    assert len(calls) == 2
+    assert not ckpt.exists()
+
+
+def test_retry_can_be_disabled(tmp_path, monkeypatch):
+    calls, _, _ = _run_probe(tmp_path, monkeypatch, [_ALL_CLOSED], retry_settle_seconds=0)
+    assert len(calls) == 1
+
+
+def test_persistently_empty_chunk_leaves_hosts_unmarked(tmp_path, monkeypatch):
+    """Deleting pulse's checkpoint is not enough on its own.
+
+    The hosts would still be marked done and the caller would still mark the
+    whole stage done, so --resume would skip the stage and keep the zero. The
+    chunk has to stay visibly unfinished at every level.
+    """
+    done: list[str] = []
+    unresolved: list[str] = []
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_ALL_CLOSED],
+        on_host_done=done.append,
+        on_unresolved=unresolved.extend,
+    )
+
+    assert done == [], "an unresolved chunk must not mark its hosts done"
+    assert unresolved == ["10.0.0.1"], "the caller must learn the chunk is unresolved"
+
+
+def test_resolved_chunk_marks_hosts_done(tmp_path, monkeypatch):
+    done: list[str] = []
+    unresolved: list[str] = []
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_ONE_SERVICE],
+        on_host_done=done.append,
+        on_unresolved=unresolved.extend,
+    )
+
+    assert done == ["10.0.0.1"]
+    assert unresolved == []

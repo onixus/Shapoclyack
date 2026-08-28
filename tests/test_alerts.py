@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from scanner.pipeline import alerts, safe_http
 from scanner.pipeline.alerts import (
+    check_dkim_record,
     format_alert_message,
     send_alerts,
     send_smtp_alert,
@@ -169,3 +171,48 @@ def test_send_alerts_includes_smtp(monkeypatch):
     )
     result = send_alerts(cfg, run_id="r1", summary={"alive_hosts": 1}, diff=None)
     assert result["smtp"] == "ok"
+
+
+def test_txt_lookup_is_capped_and_does_not_follow_redirects(monkeypatch):
+    """The DNS-over-HTTPS self-check reads a bounded body and ignores 3xx.
+
+    ``lookup_txt_records`` used ``urllib.request.urlopen`` with an uncapped
+    ``response.read()``, which also follows redirects silently.
+    """
+    calls: list[str] = []
+    queue = [
+        (302, {"location": "https://elsewhere.example/dns-query"}, b"", False),
+        (200, {}, b'{"Answer": [{"data": "v=DKIM1"}]}', False),
+    ]
+
+    def fake_get(url, *, timeout_seconds, max_bytes, headers, max_redirects):
+        calls.append(url)
+        assert max_redirects == 0
+        assert max_bytes == alerts._DOH_MAX_RESPONSE_BYTES
+        status, response_headers, body, truncated = queue.pop(0)
+        if status in (301, 302, 303, 307, 308):
+            raise safe_http.SafeHttpError(f"too many redirects (>{max_redirects}) starting at {url}")
+        return safe_http.SafeResponse(
+            url=url, status=status, headers=response_headers, body=body, truncated=truncated
+        )
+
+    monkeypatch.setattr(safe_http, "get", fake_get)
+
+    result = check_dkim_record("example.com", "mail")
+
+    assert len(calls) == 1
+    assert result["ok"] is False
+    assert result["reason"].startswith("lookup_error")
+
+
+def test_txt_lookup_rejects_a_body_over_the_cap(monkeypatch):
+    def fake_get(url, *, timeout_seconds, max_bytes, headers, max_redirects):
+        return safe_http.SafeResponse(
+            url=url, status=200, headers={}, body=b"{" * 16, truncated=True
+        )
+
+    monkeypatch.setattr(safe_http, "get", fake_get)
+
+    result = check_dkim_record("example.com", "mail")
+    assert result["ok"] is False
+    assert "size cap" in result["reason"]

@@ -61,3 +61,30 @@ def test_serves_vite_assets_mount(tmp_path: Path, monkeypatch) -> None:
     client = _client(web, monkeypatch)
     assert client.get("/").text == "<html>vite</html>"
     assert client.get("/assets/app.js").text == "vite-bundle"
+
+
+def test_percent_encoded_traversal_does_not_escape_web_dist(tmp_path: Path, monkeypatch) -> None:
+    """GHSA-cpcx-h7mr-24pc: the SPA fallback is unauthenticated, so a path that
+    resolves outside the web root read any file the API process could.
+
+    Percent-encoded on purpose: a literal ``/../`` is collapsed before routing,
+    so it never reproduced the defect. ``%2e%2e%2f`` reaches the handler as a
+    real ``..`` segment. All three lookups are covered — the file, the
+    ``.html`` sibling, and the directory ``index.html`` — because a check on
+    only the first leaves the other two serving the same files.
+    """
+    web = tmp_path / "web-dist"
+    web.mkdir()
+    (web / "index.html").write_text("<html>home</html>", encoding="utf-8")
+    (tmp_path / "secret.env").write_text("OCTO_JWT_SECRET=leaked", encoding="utf-8")
+    (tmp_path / "secret.html").write_text("<html>leaked</html>", encoding="utf-8")
+    (tmp_path / "secretdir").mkdir()
+    (tmp_path / "secretdir" / "index.html").write_text("<html>leaked-dir</html>", encoding="utf-8")
+
+    client = _client(web, monkeypatch)
+    for path in ("/%2e%2e%2fsecret.env", "/%2e%2e%2fsecret", "/%2e%2e%2fsecretdir"):
+        response = client.get(path)
+        assert response.status_code == 200
+        # Falls through to the SPA shell like any other unknown route.
+        assert response.text == "<html>home</html>", path
+        assert "leaked" not in response.text

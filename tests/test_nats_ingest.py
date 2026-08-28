@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from api.services import nats_bus, results_ingest
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import POSTGRES_URL, approve_scan_scope, requires_postgres
 
 
 def _archive(name: str = "findings.json", data: bytes = b'{"ok":true}\n') -> bytes:
@@ -30,6 +30,41 @@ def test_validate_archive_rejects_traversal():
         tf.addfile(info, io.BytesIO(data))
     with pytest.raises(results_ingest.IngestError):
         results_ingest.validate_archive(buf.getvalue())
+
+
+def test_validate_archive_rejects_oversized_expansion():
+    """#222: the transport cap bounds the compressed upload, not what it becomes.
+
+    Sizes come from the tar headers, so the refusal happens before extraction
+    writes anything into the shared output_dir.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = b"\0" * 4096
+        for index in range(4):
+            info = tarfile.TarInfo(name=f"pad-{index}.bin")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    archive = buf.getvalue()
+
+    with pytest.raises(results_ingest.IngestError, match="expands to more than"):
+        results_ingest.validate_archive(archive, max_uncompressed_bytes=8192)
+    # One byte of headroom over the same archive is accepted.
+    results_ingest.validate_archive(archive, max_uncompressed_bytes=4096 * 4)
+
+
+def test_extract_run_archive_refuses_before_writing(tmp_path):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = b"\0" * 4096
+        info = tarfile.TarInfo(name="pad.bin")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "runs" / "run-1"
+
+    with pytest.raises(results_ingest.IngestError, match="expands to more than"):
+        results_ingest.extract_run_archive(buf.getvalue(), dest, max_uncompressed_bytes=1024)
+    assert not dest.exists()
 
 
 def test_ingest_msg_id_stable():
@@ -120,6 +155,8 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     client = TestClient(create_app())
+    # create_app() seeded the default tenant; scans need its scope (#226).
+    approve_scan_scope(settings)
 
     reg = client.post(
         "/api/agent/register",

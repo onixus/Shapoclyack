@@ -1,9 +1,37 @@
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 
+from .config_schema import NaabuScanType
 from .protocol import ScanProtocol, format_endpoint, naabu_udp_port_spec, parse_endpoint, top_udp_port_list
 from .utils import read_lines, run_command, write_lines
+
+# Whether naabu's SYN mode actually works here, decided once per run:
+# "untested" until a batch has shown one way or the other, then "ok" or
+# "unavailable". Batches run concurrently (runtime.ports_concurrency), so the
+# state is guarded and the deciding batch holds _decision_lock while it settles
+# the question -- otherwise every batch in flight launches its own probe.
+_state_lock = threading.Lock()
+_decision_lock = threading.Lock()
+_syn_state = "untested"
+
+
+def _get_syn_state() -> str:
+    with _state_lock:
+        return _syn_state
+
+
+def _set_syn_state(value: str) -> None:
+    global _syn_state
+    with _state_lock:
+        _syn_state = value
+
+
+def _reset_syn_state() -> None:
+    """Test seam: forget what this process learned about SYN."""
+    _set_syn_state("untested")
 
 
 def _flatten_custom_ports(custom_file: Path) -> list[str] | None:
@@ -36,6 +64,85 @@ def _naabu_entries(stdout: str, protocol: ScanProtocol) -> list[str]:
     return sorted(set(entries))
 
 
+def _exec(command: list[str], *, technique: str | None, protocol: ScanProtocol, timeout: int, retries: int) -> list[str]:
+    attempt = command if technique is None else [*command, "-s", technique]
+    result = run_command(attempt, timeout=timeout, retries=retries)
+    return _naabu_entries(result.stdout or "", protocol)
+
+
+def _decide_syn(command: list[str], *, protocol: ScanProtocol, timeout: int, retries: int, tag: str) -> list[str]:
+    """Run one batch as SYN and settle whether SYN works here.
+
+    A SYN scan fails two ways. It exits non-zero when naabu cannot raise
+    CAP_NET_RAW, which is loud. It also exits 0 having seen nothing -- the CI
+    image does exactly this -- which is silent and reads identically to a batch
+    of genuinely closed ports. So an empty SYN batch is cross-checked against
+    CONNECT: if CONNECT finds ports, SYN is broken here and the rest of the run
+    uses CONNECT; if CONNECT agrees, the ports really are closed and SYN is
+    trusted from then on. Only the first batch pays for this.
+    """
+    try:
+        entries = _exec(command, technique="s", protocol=protocol, timeout=timeout, retries=retries)
+    except Exception:  # noqa: BLE001 -- no CAP_NET_RAW; CONNECT is the answer
+        _set_syn_state("unavailable")
+        logging.warning("naabu SYN scan failed for batch %s; using CONNECT for the rest of the run", tag)
+        return _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+
+    if entries:
+        _set_syn_state("ok")
+        return entries
+
+    cross = _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+    if cross:
+        _set_syn_state("unavailable")
+        logging.warning(
+            "naabu SYN scan returned nothing for batch %s while CONNECT found %s open port(s); "
+            "using CONNECT for the rest of the run",
+            tag,
+            len(cross),
+        )
+        return cross
+
+    _set_syn_state("ok")
+    return entries
+
+
+def _scan_batch(
+    command: list[str],
+    *,
+    protocol: ScanProtocol,
+    scan_type: NaabuScanType,
+    timeout: int,
+    retries: int,
+    tag: str,
+) -> list[str]:
+    # -s picks the TCP technique; UDP batches have no use for it.
+    if protocol != "tcp":
+        return _exec(command, technique=None, protocol=protocol, timeout=timeout, retries=retries)
+    if scan_type in ("syn", "connect"):
+        return _exec(
+            command, technique=scan_type[0], protocol=protocol, timeout=timeout, retries=retries
+        )
+
+    while True:
+        state = _get_syn_state()
+        if state == "unavailable":
+            return _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+        if state == "ok":
+            try:
+                return _exec(command, technique="s", protocol=protocol, timeout=timeout, retries=retries)
+            except Exception:  # noqa: BLE001 -- capability lost mid-run; keep scanning
+                _set_syn_state("unavailable")
+                logging.warning("naabu SYN scan failed for batch %s; using CONNECT for the rest of the run", tag)
+                return _exec(command, technique="c", protocol=protocol, timeout=timeout, retries=retries)
+        # Untested: exactly one batch settles it while the others wait for the
+        # answer, rather than each launching the same probe concurrently.
+        with _decision_lock:
+            if _get_syn_state() != "untested":
+                continue
+            return _decide_syn(command, protocol=protocol, timeout=timeout, retries=retries, tag=tag)
+
+
 def _run_naabu(
     *,
     alive_hosts: list[str],
@@ -47,6 +154,7 @@ def _run_naabu(
     port_args: list[str],
     protocol: ScanProtocol,
     udp_probes: bool,
+    scan_type: NaabuScanType = "auto",
 ) -> list[str]:
     input_file = batch_dir / f"{tag}.hosts.txt"
     output_file = batch_dir / f"{tag}.open.txt"
@@ -77,8 +185,9 @@ def _run_naabu(
     if protocol == "udp" and udp_probes:
         command.append("-uP")
 
-    result = run_command(command, timeout=timeout, retries=retries)
-    entries = _naabu_entries(result.stdout or "", protocol)
+    entries = _scan_batch(
+        command, protocol=protocol, scan_type=scan_type, timeout=timeout, retries=retries, tag=tag
+    )
     write_lines(output_file, entries)
     return entries
 
@@ -96,6 +205,7 @@ def fast_port_scan(
     custom_udp_ports_file: Path,
     udp_probes: bool,
     tag: str = "all",
+    scan_type: NaabuScanType = "auto",
 ) -> list[str]:
     """Run naabu port scan(s) for a batch of alive hosts.
 
@@ -124,6 +234,7 @@ def fast_port_scan(
                 port_args=port_args,
                 protocol="tcp",
                 udp_probes=False,
+                scan_type=scan_type,
             )
         )
 
@@ -145,6 +256,7 @@ def fast_port_scan(
                 port_args=["-p", port_spec],
                 protocol="udp",
                 udp_probes=udp_probes,
+                scan_type=scan_type,
             )
         )
 

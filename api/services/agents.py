@@ -25,7 +25,7 @@ from sqlalchemy import case, func, or_, select
 
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
-from api.schemas import AgentInfo
+from api.schemas import AgentFleetSummary, AgentInfo
 from api.services import pagination
 from api.services import tenants as tenants_service
 from api.settings import Settings
@@ -145,20 +145,71 @@ def _is_online(last_seen: datetime | None) -> bool:
     return age <= _require_settings().agent_stale_seconds
 
 
+LATEST_AGENT_VERSION = "0.42.0"
+
+
+def _extract_detail(
+    raw: str | None,
+) -> tuple[str | None, dict[str, Any], list[str], bool]:
+    """Extract (human_detail, metrics_dict, capabilities_list, upgrade_requested)
+    from the row's detail string, which may be plain text or JSON."""
+    if not raw:
+        return None, {}, [], False
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            human_detail = data.get("detail") or data.get("raw_detail")
+            metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+            capabilities = data.get("capabilities") if isinstance(data.get("capabilities"), list) else []
+            upgrade_requested = bool(data.get("upgrade_requested"))
+            return human_detail, metrics, capabilities, upgrade_requested
+    except Exception:
+        pass
+    return raw, {}, [], False
+
+
+def _pack_detail(
+    detail: str | None = None,
+    metrics: dict[str, Any] | None = None,
+    capabilities: list[str] | None = None,
+    upgrade_requested: bool | None = None,
+) -> str | None:
+    if not detail and not metrics and not capabilities and not upgrade_requested:
+        return None
+    payload: dict[str, Any] = {}
+    if detail:
+        payload["detail"] = detail
+    if metrics:
+        payload["metrics"] = metrics
+    if capabilities:
+        payload["capabilities"] = capabilities
+    if upgrade_requested is not None:
+        payload["upgrade_requested"] = upgrade_requested
+    return json.dumps(payload)
+
+
 def _to_info(row: models.Agent) -> AgentInfo:
     online = _is_online(row.last_seen_at)
+    human_detail, metrics, capabilities, upgrade_requested = _extract_detail(row.detail)
+    version = row.version or ""
+    is_outdated = bool(version and version != LATEST_AGENT_VERSION)
     return AgentInfo(
         agent_id=row.agent_id,
         hostname=row.hostname or "",
-        version=row.version or "",
+        version=version,
         labels=dict(row.labels or {}),
         status=(row.status or "idle") if online else "stale",  # type: ignore[arg-type]
         current_job_id=row.current_job_id,
-        detail=row.detail,
+        detail=human_detail,
         registered_at=_iso(row.registered_at),
         last_seen_at=_iso(row.last_seen_at),
         online=online,
         tenant_id=row.tenant_id or "default",
+        metrics=metrics,
+        capabilities=capabilities,
+        is_outdated=is_outdated,
+        latest_version=LATEST_AGENT_VERSION,
+        upgrade_requested=upgrade_requested,
     )
 
 
@@ -175,6 +226,8 @@ def register_agent(
     version: str = "",
     labels: dict[str, str] | None = None,
     tenant_id: str = "default",
+    metrics: dict[str, Any] | None = None,
+    capabilities: list[str] | None = None,
 ) -> AgentInfo:
     settings = _require_settings()
     now = _now()
@@ -183,12 +236,25 @@ def register_agent(
         if row is not None:
             if row.tenant_id and row.tenant_id != tenant_id:
                 raise PermissionError("agent_id belongs to a different tenant")
+            previous_version = row.version or ""
             row.hostname = hostname or row.hostname or ""
             row.version = version or row.version or ""
             row.tenant_id = tenant_id
             if labels is not None:
                 row.labels = dict(labels)
             row.last_seen_at = now
+            # ``upgrade_requested`` is an operator marker, so re-registration must
+            # neither drop it (a plain restart is not an upgrade) nor keep it
+            # forever. A changed reported version is the only evidence the host
+            # acted on it, so that is what clears it.
+            _, prev_metrics, prev_caps, prev_upgrade = _extract_detail(row.detail)
+            if prev_upgrade and row.version != previous_version:
+                prev_upgrade = False
+            row.detail = _pack_detail(
+                metrics=metrics if metrics is not None else prev_metrics,
+                capabilities=capabilities if capabilities is not None else prev_caps,
+                upgrade_requested=prev_upgrade or None,
+            )
             if row.status == "stale":
                 row.status = "idle"
             session.flush()
@@ -202,7 +268,7 @@ def register_agent(
             labels=dict(labels or {}),
             status="idle",
             current_job_id=None,
-            detail=None,
+            detail=_pack_detail(metrics=metrics, capabilities=capabilities),
             registered_at=now,
             last_seen_at=now,
         )
@@ -217,6 +283,8 @@ def heartbeat(
     status: str = "idle",
     current_job_id: str | None = None,
     detail: str | None = None,
+    metrics: dict[str, Any] | None = None,
+    capabilities: list[str] | None = None,
 ) -> AgentInfo | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
@@ -226,7 +294,16 @@ def heartbeat(
         row.last_seen_at = _now()
         row.status = status
         row.current_job_id = current_job_id
-        row.detail = detail
+        # Preserve upgrade_requested if previously set
+        _, prev_metrics, prev_caps, prev_upgrade = _extract_detail(row.detail)
+        final_metrics = metrics if metrics is not None else prev_metrics
+        final_caps = capabilities if capabilities is not None else prev_caps
+        row.detail = _pack_detail(
+            detail=detail,
+            metrics=final_metrics,
+            capabilities=final_caps,
+            upgrade_requested=prev_upgrade,
+        )
         session.flush()
         return _to_info(row)
 
@@ -310,11 +387,23 @@ def list_agents(
         return [_to_info(row) for row in rows], total
 
 
-def get_agent(agent_id: str) -> AgentInfo | None:
+def get_agent(agent_id: str, tenant_id: str | None = None) -> AgentInfo | None:
+    """One agent, or ``None`` — including when it belongs to another tenant.
+
+    "Exists elsewhere" and "does not exist" are deliberately the same answer
+    (#223). Distinguishing them turned this into an existence oracle: a caller
+    walking agent ids learned which ones are real in some other tenant, which
+    is the only thing the id itself is worth. docs/api-and-rbac.md has promised
+    ``404`` for both since the tenancy work landed.
+    """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id)
-        return _to_info(row) if row else None
+        if not row:
+            return None
+        if tenant_id and row.tenant_id != tenant_id:
+            return None
+        return _to_info(row)
 
 
 def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> None:
@@ -326,3 +415,200 @@ def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> Non
         row.last_seen_at = _now()
         row.current_job_id = job_id
         row.status = status if job_id else "idle"
+
+
+def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
+    settings = _require_settings()
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        query = select(models.Agent)
+        if tenant_id:
+            query = query.where(models.Agent.tenant_id == tenant_id)
+        rows = session.execute(query).scalars().all()
+
+    total = len(rows)
+    online = 0
+    busy = 0
+    stale = 0
+    error = 0
+    outdated = 0
+    by_tenant: dict[str, int] = {}
+
+    for r in rows:
+        t = r.tenant_id or "default"
+        by_tenant[t] = by_tenant.get(t, 0) + 1
+        is_on = r.last_seen_at and (now - r.last_seen_at).total_seconds() <= settings.agent_stale_seconds
+        if not is_on:
+            stale += 1
+        else:
+            online += 1
+            if r.status == "busy":
+                busy += 1
+            elif r.status == "error":
+                error += 1
+        if r.version and r.version != LATEST_AGENT_VERSION:
+            outdated += 1
+
+    return AgentFleetSummary(
+        total_agents=total,
+        online_agents=online,
+        busy_agents=busy,
+        stale_agents=stale,
+        error_agents=error,
+        outdated_agents=outdated,
+        latest_version=LATEST_AGENT_VERSION,
+        by_tenant=by_tenant,
+    )
+
+
+def delete_agent(agent_id: str, tenant_id: str | None = None) -> bool:
+    """Delete and report whether anything was deleted.
+
+    An agent in another tenant is reported as absent, for the reason in
+    :func:`get_agent`.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id)
+        if row is None:
+            return False
+        if tenant_id and row.tenant_id != tenant_id:
+            return False
+        session.delete(row)
+        session.flush()
+        return True
+
+
+def request_upgrade(agent_id: str, tenant_id: str | None = None) -> dict[str, Any]:
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id)
+        if row is None or (tenant_id and row.tenant_id != tenant_id):
+            # Same LookupError either way — see get_agent on the id oracle.
+            raise LookupError("Agent not found")
+        human_detail, metrics, capabilities, _ = _extract_detail(row.detail)
+        row.detail = _pack_detail(
+            detail=human_detail,
+            metrics=metrics,
+            capabilities=capabilities,
+            upgrade_requested=True,
+        )
+        session.flush()
+        return {
+            "status": "upgrade_queued",
+            "agent_id": agent_id,
+            "target_version": LATEST_AGENT_VERSION,
+        }
+
+
+DEPLOYMENT_KEY_LABEL = "Web UI Deployment Key"
+# Shown in place of a real key when the caller only asked to *see* the
+# snippets. Minting a tenant provisioning key is a privileged, stateful act,
+# so it happens on POST, never as a side effect of a GET.
+DEPLOYMENT_KEY_PLACEHOLDER = "<PROVISIONING_KEY>"
+
+
+def get_deployment_snippets(
+    tenant_id: str,
+    server_url: str,
+    *,
+    provisioning_key: str | None = None,
+) -> dict[str, Any]:
+    """Render the install snippets. Never mints a key.
+
+    Without ``provisioning_key`` the snippets carry a placeholder the operator
+    is expected to replace with a key minted through
+    :func:`mint_deployment_snippets` (or an existing tenant key).
+
+    The container and Kubernetes forms pass the key in the environment and
+    invoke ``python -m agent`` with no arguments, so it does not end up in the
+    long-lived argv of the agent process, which every local user on that host
+    can read. The variable names are the ones ``agent/worker.py`` reads.
+    """
+    key_minted = bool(provisioning_key)
+    if not provisioning_key:
+        provisioning_key = DEPLOYMENT_KEY_PLACEHOLDER
+    clean_server = server_url.rstrip("/")
+    install_url = f"{clean_server}/api/agent/install.sh"
+
+    systemd_oneliner = (
+        f"curl -sSL {install_url} | sudo bash -s -- "
+        f"--server {clean_server} --key {provisioning_key} --tenant {tenant_id}"
+    )
+    docker_run = (
+        f"docker run -d --name shapoclyack-agent --restart always "
+        f"-e OCTO_API_URL={clean_server} -e OCTO_AGENT_PROVISIONING_KEY={provisioning_key} "
+        f"-e OCTO_TENANT_ID={tenant_id} "
+        f"ghcr.io/onixus/shapoclyack:latest python -m agent"
+    )
+    docker_compose = f"""version: '3.8'
+services:
+  shapoclyack-agent:
+    image: ghcr.io/onixus/shapoclyack:latest
+    container_name: shapoclyack-agent
+    restart: always
+    environment:
+      - OCTO_API_URL={clean_server}
+      - OCTO_AGENT_PROVISIONING_KEY={provisioning_key}
+      - OCTO_TENANT_ID={tenant_id}
+    command: python -m agent
+"""
+    kubernetes_yaml = f"""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-agent
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shapoclyack-agent
+  template:
+    metadata:
+      labels:
+        app: shapoclyack-agent
+    spec:
+      containers:
+      - name: agent
+        image: ghcr.io/onixus/shapoclyack:latest
+        env:
+        - name: OCTO_API_URL
+          value: "{clean_server}"
+        - name: OCTO_AGENT_PROVISIONING_KEY
+          value: "{provisioning_key}"
+        - name: OCTO_TENANT_ID
+          value: "{tenant_id}"
+        command: ["python", "-m", "agent"]
+"""
+    return {
+        "tenant_id": tenant_id,
+        "provisioning_key": provisioning_key if key_minted else None,
+        "key_minted": key_minted,
+        "server_url": clean_server,
+        "systemd_oneliner": systemd_oneliner,
+        "docker_run": docker_run,
+        "docker_compose": docker_compose.strip(),
+        "kubernetes_yaml": kubernetes_yaml.strip(),
+    }
+
+
+def mint_deployment_snippets(
+    tenant_id: str,
+    server_url: str,
+    *,
+    label: str = "",
+) -> dict[str, Any]:
+    """Mint one tenant provisioning key and render the snippets around it.
+
+    The plaintext key is returned here only; it is hashed at rest and cannot
+    be read back, so a fresh key is the only way to fill in the snippets.
+    """
+    key_res = tenants_service.create_provisioning_key(
+        tenant_id=tenant_id,
+        label=label.strip() or DEPLOYMENT_KEY_LABEL,
+    )
+    return get_deployment_snippets(
+        tenant_id=tenant_id,
+        server_url=server_url,
+        provisioning_key=key_res["key"],
+    )

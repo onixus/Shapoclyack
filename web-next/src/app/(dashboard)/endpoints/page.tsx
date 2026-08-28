@@ -6,6 +6,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, History, Laptop } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import {
   Select,
   SelectContent,
@@ -33,6 +34,7 @@ function assetHref(assetId: string, tenantId: string): string {
  * (issue #98 Phase 3) — the per-device equivalent lives on the asset's
  * Endpoint/Software tab. */
 function RecentChangesFeed({ tenantId }: { tenantId: string }) {
+  const t = useT();
   const changesQuery = useRecentSoftwareChanges(tenantId, 30);
   const changes = changesQuery.data || [];
 
@@ -40,18 +42,18 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
     <div className="rounded-xl border border-slate-800/80 bg-slate-950/40">
       <div className="flex items-center gap-2 border-b border-slate-800/80 px-4 py-3">
         <History className="h-4 w-4 text-slate-500" />
-        <h2 className="text-sm font-bold text-slate-200">Recent software changes</h2>
+        <h2 className="text-sm font-bold text-slate-200">{t("page.endpoints.recent")}</h2>
       </div>
       <div className="max-h-72 overflow-y-auto">
         {changesQuery.isLoading ? (
-          <p className="px-4 py-4 text-xs text-slate-500">Loading…</p>
+          <p className="px-4 py-4 text-xs text-slate-500">{t("common.loading")}</p>
         ) : changesQuery.error ? (
           <p className="px-4 py-4 text-xs text-rose-400">
             {(changesQuery.error as Error).message}
           </p>
         ) : changes.length === 0 ? (
           <p className="px-4 py-4 text-xs text-slate-500">
-            No installs, removals, or updates observed yet.
+            {t("page.endpoints.noChanges")}
           </p>
         ) : (
           <ul className="divide-y divide-slate-800/60">
@@ -92,6 +94,7 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
 }
 
 export default function EndpointsPage() {
+  const t = useT();
   const [reconFilter, setReconFilter] = useState<string>(FILTER_ALL);
   const [staleOnly, setStaleOnly] = useState(false);
 
@@ -119,7 +122,7 @@ export default function EndpointsPage() {
       {
         id: "host",
         accessorFn: (row) => `${row.hostname} ${row.device_id}`,
-        header: "Hostname",
+        header: t("col.hostname"),
         cell: ({ row }) => (
           <div className="space-y-0.5">
             <p className="font-mono font-bold text-slate-100">{row.original.hostname || "—"}</p>
@@ -130,7 +133,7 @@ export default function EndpointsPage() {
       {
         id: "os",
         accessorFn: (row) => [row.os_name, row.os_version, row.os_arch].filter(Boolean).join(" "),
-        header: "OS",
+        header: t("col.os"),
         cell: ({ row }) => {
           const d = row.original;
           const label = [d.os_name, d.os_version].filter(Boolean).join(" ") || "—";
@@ -146,7 +149,7 @@ export default function EndpointsPage() {
       },
       {
         accessorKey: "reconciliation_status",
-        header: "Correlation",
+        header: t("col.correlation"),
         cell: ({ row }) => (
           <StatusBadge
             value={row.original.reconciliation_status}
@@ -157,11 +160,11 @@ export default function EndpointsPage() {
       {
         id: "asset",
         accessorFn: (row) => row.asset_id || "",
-        header: "Network asset",
+        header: t("col.networkAsset"),
         cell: ({ row }) => {
           const id = row.original.asset_id;
           if (!id) {
-            return <span className="text-xs text-slate-500">not linked</span>;
+            return <span className="text-xs text-slate-500">{t("common.notLinked")}</span>;
           }
           return (
             <Link
@@ -176,7 +179,7 @@ export default function EndpointsPage() {
       },
       {
         accessorKey: "agent_version",
-        header: "Lariska",
+        header: t("col.lariska"),
         cell: ({ getValue }) => (
           <code className="rounded border border-slate-800 bg-slate-950 px-1.5 py-0.5 font-mono text-[11px] text-sky-400">
             {String(getValue() || "—")}
@@ -185,11 +188,11 @@ export default function EndpointsPage() {
       },
       {
         accessorKey: "last_inventory_at",
-        header: "Last inventory",
+        header: t("col.lastInventory"),
         sortingFn: "datetime",
         cell: ({ getValue }) => {
           const v = getValue();
-          if (!v) return <span className="text-slate-500">never</span>;
+          if (!v) return <span className="text-slate-500">{t("common.never")}</span>;
           return (
             <span className="text-xs text-slate-300">
               {formatDistanceToNow(new Date(String(v)), { addSuffix: true })}
@@ -211,13 +214,13 @@ export default function EndpointsPage() {
               size="sm"
               className="h-7 border-slate-800 bg-slate-900 text-xs text-sky-400 hover:bg-slate-800 hover:text-white"
             >
-              <Link href={assetHref(id, tenantId)}>Open asset</Link>
+              <Link href={assetHref(id, tenantId)}>{t("common.openAsset")}</Link>
             </Button>
           );
         },
       },
     ],
-    [tenantId],
+    [t, tenantId],
   );
 
   const linked = raw.filter((d) => d.asset_id).length;
@@ -232,18 +235,18 @@ export default function EndpointsPage() {
             <Laptop className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-xl font-extrabold tracking-tight text-slate-100">Endpoints</h1>
+            <h1 className="text-xl font-extrabold tracking-tight text-slate-100">{t("page.endpoints.title")}</h1>
             <p className="text-xs text-slate-400">
-              Lariska agents · software inventory correlated to network assets
+              {t("page.endpoints.lariskaHint")}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
           <span>
-            <span className="font-semibold text-slate-200">{raw.length}</span> devices
+            {t("common.devices", { count: raw.length })}
           </span>
           <span>
-            <span className="font-semibold text-emerald-400">{linked}</span> linked
+            <span className="font-semibold text-emerald-400">{t("common.linked", { count: linked })}</span>
           </span>
           {conflicts > 0 ? (
             <span>
@@ -301,7 +304,7 @@ export default function EndpointsPage() {
             ? "No endpoints match the current filters."
             : "No Lariska endpoints yet. Install the agent with a tenant provisioning key."
         }
-        searchPlaceholder="Filter hostname, OS, agent…"
+        searchPlaceholder={t("search.endpoints")}
         meta={
           devicesQuery.isFetching && !devicesQuery.isLoading ? "Refreshing…" : undefined
         }

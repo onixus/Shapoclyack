@@ -3,105 +3,138 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { AreaChart, BarChart, Card, DonutChart, Title } from "@tremor/react";
-import { ShieldAlert, Play, RefreshCw, ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Camera, Play, RefreshCw, ShieldAlert, TrendingUp } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
-import { useAssets } from "@/hooks/use-assets";
-import { useRunPorts, useRuns, useRunVulns } from "@/hooks/use-runs";
-import { POLL_INTERVALS } from "@/lib/config/constants";
-import { ASSET_CRITICALITY, ASSET_STATUS, SEVERITY_STATUS } from "@/lib/config/statuses";
+import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
+import { useAssetSummary } from "@/hooks/use-assets";
+import { useRuns } from "@/hooks/use-runs";
 import {
-  countSeverities,
-  pickLatestRun,
-  recentRunTrend,
-  runDetailHref,
-  SEVERITIES,
-  topCriticalFindings,
-  topVulnerablePorts,
-} from "@/lib/run-data";
+  useRiskHistory,
+  useTrackedVulnerabilities,
+  useTriggerRiskSnapshot,
+  useVulnerabilitySummary,
+} from "@/hooks/use-vulnerabilities";
+import { POLL_INTERVALS } from "@/lib/config/constants";
+import {
+  ASSET_CRITICALITY,
+  ASSET_STATUS,
+  RISK_LEVEL_STATUS,
+  SEVERITY_STATUS,
+} from "@/lib/config/statuses";
+import { pickLatestRun, recentRunTrend, runDetailHref, SEVERITIES } from "@/lib/run-data";
+import { useT } from "@/lib/i18n";
+import { estateRiskColor, estateRiskLabel } from "@/lib/risk-overview";
+import {
+  assetDetailHref,
+  findingLabel,
+  NIST_RISK_LEVELS,
+  vulnDetailHref,
+  vulnListHref,
+} from "@/lib/vuln-lifecycle";
 
+const RISK_DONUT_COLORS = ["slate", "sky", "amber", "orange", "rose"];
 const SEVERITY_DONUT_COLORS = ["rose", "orange", "amber", "sky", "slate"];
-/** Matches the API's MAX_LIMIT — the posture chart samples at most this many assets. */
-const ASSET_SAMPLE_LIMIT = 5000;
 
 export default function DashboardPage() {
-  // The dashboard aggregates rather than paginates: ask for one large page
-  // (the API caps `limit` at 5000) and surface `total` separately, so the
-  // headline count stays exact even when the posture chart samples the cap.
+  const t = useT();
+  const summaryQuery = useVulnerabilitySummary();
+  const assetsQuery = useAssetSummary();
+  const topRisksQuery = useTrackedVulnerabilities(
+    { open_only: true },
+    { limit: 10, sort: "contextual_score", order: "desc" },
+  );
   const runsQuery = useRuns(POLL_INTERVALS.dashboard, { limit: 50 });
-  const assetsQuery = useAssets({ status: "" }, { limit: ASSET_SAMPLE_LIMIT });
+  const riskHistoryQuery = useRiskHistory({ limit: 30 });
+  const triggerSnapshot = useTriggerRiskSnapshot();
 
+  const summary = summaryQuery.data;
+  const assets = assetsQuery.data;
+  const topRisks = topRisksQuery.data?.items ?? [];
   const runs = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data]);
   const latest = useMemo(() => pickLatestRun(runs), [runs]);
-  const runId = latest?.run_id ?? "";
-
-  const vulnsQuery = useRunVulns(runId);
-  const portsQuery = useRunPorts(runId);
-
-  const vulns = useMemo(() => vulnsQuery.data || [], [vulnsQuery.data]);
-  const severityCounts = useMemo(() => countSeverities(vulns), [vulns]);
   const trend = useMemo(() => recentRunTrend(runs, 15), [runs]);
-  const topPorts = useMemo(() => topVulnerablePorts(portsQuery.data || [], 5), [portsQuery.data]);
-  const topRisks = useMemo(() => topCriticalFindings(vulns, 10), [vulns]);
+  const riskHistory = useMemo(() => riskHistoryQuery.data ?? [], [riskHistoryQuery.data]);
 
-  const severityData = useMemo(
-    () => SEVERITIES.map((sev) => ({ name: sev, value: severityCounts[sev] })),
-    [severityCounts],
+  const riskHistoryTrend = useMemo(() => {
+    return riskHistory.map((snap) => {
+      const date = snap.recorded_at
+        ? new Date(snap.recorded_at).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "—";
+      const criticalHigh =
+        (snap.by_severity_open?.critical ?? 0) + (snap.by_severity_open?.high ?? 0);
+      return {
+        date,
+        "Open Vulns": snap.open_total,
+        "Critical & High": criticalHigh,
+        "SLA Breached": snap.breached,
+      };
+    });
+  }, [riskHistory]);
+
+  const riskData = useMemo(
+    () =>
+      NIST_RISK_LEVELS.map((level) => ({
+        name: t.label(RISK_LEVEL_STATUS[level].label),
+        value: summary?.by_risk_level_open[level] ?? 0,
+        level,
+      })),
+    [summary, t],
   );
-
-  const assets = useMemo(() => assetsQuery.data?.items ?? [], [assetsQuery.data]);
-  const assetTotal = assetsQuery.data?.total ?? 0;
-  const assetsSampled = assetTotal > assets.length;
+  const severityData = useMemo(
+    () =>
+      SEVERITIES.map((sev) => ({
+        name: t.label(sev),
+        sev,
+        value: summary?.by_severity_open[sev] ?? 0,
+      })),
+    [summary, t],
+  );
   const criticalityData = useMemo(() => {
-    const buckets = new Map<string, number>();
-    for (const asset of assets) {
-      const key =
-        asset.asset_criticality == null
-          ? "unset"
-          : `L${asset.asset_criticality} · ${ASSET_CRITICALITY[asset.asset_criticality]?.label ?? ""}`.trim();
-      buckets.set(key, (buckets.get(key) ?? 0) + 1);
-    }
-    return Array.from(buckets.entries()).map(([name, Assets]) => ({ name, Assets }));
-  }, [assets]);
+    if (!assets) return [];
+    const order = ["4", "3", "2", "1", "0", "unset"];
+    return order
+      .filter((key) => (assets.by_criticality[key] ?? 0) > 0)
+      .map((key) => ({
+        name:
+          key === "unset"
+            ? t.label("unset")
+            : `L${key} · ${t.label(ASSET_CRITICALITY[Number(key)]?.label ?? key)}`,
+        Assets: assets.by_criticality[key] ?? 0,
+      }));
+  }, [assets, t]);
 
-  const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { active: 0, stale: 0, decommissioned: 0 };
-    for (const asset of assets) counts[asset.status] = (counts[asset.status] ?? 0) + 1;
-    return counts;
-  }, [assets]);
-
-  const isLoading =
-    runsQuery.isLoading || (Boolean(runId) && (vulnsQuery.isLoading || portsQuery.isLoading));
+  const isLoading = summaryQuery.isLoading || assetsQuery.isLoading;
   const error =
-    runsQuery.error || vulnsQuery.error || portsQuery.error
-      ? ((runsQuery.error || vulnsQuery.error || portsQuery.error) as Error)
+    summaryQuery.error || assetsQuery.error || topRisksQuery.error
+      ? ((summaryQuery.error || assetsQuery.error || topRisksQuery.error) as Error)
       : null;
+
+  const criticalOpen = (summary?.by_severity_open.critical ?? 0) + (summary?.by_severity_open.high ?? 0);
+  const estateLabel = isLoading ? "…" : t.label(estateRiskLabel(summary));
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Security Exposure Dashboard</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.risk.title")}</h1>
             <span className="rounded-full bg-sky-500/10 px-2.5 py-0.5 text-xs font-semibold text-sky-400 border border-sky-500/20">
-              SOC Command
+              {t("page.risk.badge")}
             </span>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Fleet risk posture from active scan run:{" "}
-            {latest ? (
-              <Link
-                href={runDetailHref(latest.run_id)}
-                className="inline-flex items-center gap-1 font-mono font-semibold text-sky-400 hover:text-sky-300 underline underline-offset-2"
-              >
-                <span>{latest.run_id}</span>
-                <ArrowUpRight className="h-3 w-3" />
-              </Link>
-            ) : (
-              <span className="text-slate-500">No active runs</span>
-            )}
+            {t("page.risk.subtitle")}{" "}
+            <Link href="/vulnerabilities" className="text-sky-400 hover:underline">
+              {t("page.risk.centerLink")}
+            </Link>
           </p>
         </div>
 
@@ -109,16 +142,23 @@ export default function DashboardPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => runsQuery.refetch()}
+            onClick={() => {
+              void summaryQuery.refetch();
+              void assetsQuery.refetch();
+              void topRisksQuery.refetch();
+              void runsQuery.refetch();
+            }}
             className="gap-2 border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${runsQuery.isFetching ? "animate-spin text-sky-400" : ""}`} />
-            Refresh Data
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${summaryQuery.isFetching || assetsQuery.isFetching ? "animate-spin text-sky-400" : ""}`}
+            />
+            {t("common.refresh")}
           </Button>
           <Link href="/jobs">
             <Button size="sm" className="gap-2 bg-sky-600 text-white hover:bg-sky-500 shadow-lg shadow-sky-950">
               <Play className="h-3.5 w-3.5 fill-current" />
-              Launch Scan
+              {t("page.risk.launch")}
             </Button>
           </Link>
         </div>
@@ -130,62 +170,119 @@ export default function DashboardPage() {
         </Alert>
       ) : null}
 
-      {!isLoading && !latest ? (
+      {!isLoading && (summary?.total ?? 0) === 0 ? (
         <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-8 text-center backdrop-blur">
           <ShieldAlert className="mx-auto h-10 w-10 text-slate-500" />
-          <h3 className="mt-3 text-sm font-semibold text-slate-200">No scan runs recorded yet</h3>
-          <p className="mt-1 text-xs text-slate-400">Launch a new discovery or vulnerability scan from the Jobs section to populate telemetry.</p>
+          <h3 className="mt-3 text-sm font-semibold text-slate-200">{t("page.risk.emptyTitle")}</h3>
+          <p className="mt-1 text-xs text-slate-400">{t("page.risk.emptyBody")}</p>
           <Link href="/jobs" className="mt-4 inline-block">
-            <Button size="sm" className="bg-sky-600 hover:bg-sky-500">Start First Scan Job</Button>
+            <Button size="sm" className="bg-sky-600 hover:bg-sky-500">
+              {t("page.risk.emptyCta")}
+            </Button>
           </Link>
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard
-          label="Alive Hosts (Latest)"
-          value={isLoading ? "…" : (latest?.alive_hosts ?? 0)}
-          decorationColor="sky"
+          label={t("page.risk.kpiEstate")}
+          value={estateLabel}
+          hint={t("page.risk.kpiEstateHint")}
+          href={vulnListHref()}
+          decorationColor={estateRiskColor(summary?.estate_risk)}
         />
         <KpiCard
-          label="Vulnerable Hosts"
-          value={isLoading ? "…" : (latest?.vulnerable_hosts ?? 0)}
-          decorationColor="amber"
-        />
-        <KpiCard
-          label="Critical Vulnerabilities"
-          value={isLoading ? "…" : severityCounts.critical}
+          label={t("page.risk.kpiCritHigh")}
+          value={isLoading ? "…" : criticalOpen}
+          hint={t("page.risk.kpiCritHighHint", {
+            critical: summary?.by_severity_open.critical ?? 0,
+            high: summary?.by_severity_open.high ?? 0,
+          })}
+          href={vulnListHref({ severity: "critical" })}
           decorationColor="rose"
         />
         <KpiCard
-          label="High Vulnerabilities"
-          value={isLoading ? "…" : severityCounts.high}
-          decorationColor="orange"
+          label={t("page.risk.kpiSla")}
+          value={isLoading ? "…" : (summary?.breached ?? 0)}
+          hint={
+            summary?.worst_breached_severity
+              ? t("page.risk.kpiSlaWorst", { severity: summary.worst_breached_severity })
+              : t("page.risk.kpiSlaNone")
+          }
+          href={vulnListHref({ sla: "breached" })}
+          decorationColor="rose"
         />
+        <KpiCard
+          label={t("page.risk.kpiUnassigned")}
+          value={isLoading ? "…" : (summary?.unassigned ?? 0)}
+          hint={t("page.risk.kpiUnassignedHint", { count: summary?.untriaged ?? 0 })}
+          href={vulnListHref({ unassigned: true })}
+          decorationColor="amber"
+        />
+        <KpiCard
+          label={t("page.risk.kpiUnowned")}
+          value={isLoading ? "…" : (assets?.unowned ?? 0)}
+          hint={t("page.risk.kpiUnownedHint", { count: assets?.total ?? 0 })}
+          href="/assets?unowned=1"
+          decorationColor="amber"
+        />
+      </div>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
+        <Link href={vulnListHref()} className="text-sky-400 hover:underline">
+          {t("page.risk.allOpen")}
+        </Link>
+        <Link href={vulnListHref({ sla: "breached" })} className="text-sky-400 hover:underline">
+          {t("page.risk.slaBreaches")}
+        </Link>
+        <Link href={vulnListHref({ unassigned: true })} className="text-sky-400 hover:underline">
+          {t("page.risk.unassignedLink")}
+        </Link>
+        <Link href="/assets?unowned=1" className="text-sky-400 hover:underline">
+          {t("page.risk.unownedLink")}
+        </Link>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
         <Card className="xl:col-span-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">Exposure Trend (Historical Runs)</Title>
-          {trend.length === 0 ? (
-            <p className="mt-6 text-xs text-slate-400">No run history telemetry to render graph.</p>
+          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+            {t("page.risk.byNist")}
+          </Title>
+          {riskData.every((row) => row.value === 0) ? (
+            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noRiskLevels")}</p>
           ) : (
-            <AreaChart
-              className="mt-4 h-72"
-              data={trend}
-              index="date"
-              categories={["Hosts", "Vulns"]}
-              colors={["cyan", "rose"]}
-              showLegend
-              showAnimation={false}
-            />
+            <>
+              <DonutChart
+                className="mt-4 h-52"
+                data={riskData}
+                category="value"
+                index="name"
+                colors={RISK_DONUT_COLORS}
+                showAnimation={false}
+              />
+              <ul className="mt-4 space-y-1.5 text-xs text-slate-300">
+                {[...riskData].reverse().map((row) => (
+                  <li
+                    key={row.level}
+                    className="flex items-center justify-between border-b border-slate-800/60 py-1.5"
+                  >
+                    <StatusBadge value={row.level} map={RISK_LEVEL_STATUS} />
+                    <span className="font-semibold tabular-nums text-slate-100">
+                      {row.value.toLocaleString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </Card>
 
         <Card className="xl:col-span-2 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">Findings by Severity</Title>
-          {vulns.length === 0 ? (
-            <p className="mt-6 text-xs text-slate-400">No findings detected in the latest run.</p>
+          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+            {t("page.risk.bySeverity")}
+          </Title>
+          {severityData.every((row) => row.value === 0) ? (
+            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noFindings")}</p>
           ) : (
             <>
               <DonutChart
@@ -199,11 +296,13 @@ export default function DashboardPage() {
               <ul className="mt-4 space-y-1.5 text-xs text-slate-300">
                 {severityData.map((row) => (
                   <li
-                    key={row.name}
+                    key={row.sev}
                     className="flex items-center justify-between border-b border-slate-800/60 py-1.5"
                   >
-                    <StatusBadge value={row.name} map={SEVERITY_STATUS} />
-                    <span className="font-semibold tabular-nums text-slate-100">{row.value.toLocaleString()}</span>
+                    <StatusBadge value={row.sev} map={SEVERITY_STATUS} />
+                    <span className="font-semibold tabular-nums text-slate-100">
+                      {row.value.toLocaleString()}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -215,39 +314,62 @@ export default function DashboardPage() {
       <div className="grid gap-4 xl:grid-cols-5">
         <Card className="xl:col-span-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
           <div className="flex items-center justify-between">
-            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">Top Critical & High Findings</Title>
-            <span className="text-xs text-slate-400">Sorted by CVSS Score</span>
+            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+              {t("page.risk.topRisksTitle")}
+            </Title>
+            <span className="text-xs text-slate-400">Open, worst NIST score first</span>
           </div>
-          {topRisks.length === 0 ? (
-            <p className="mt-6 text-xs text-slate-400">No critical or high severity vulnerabilities found in latest run.</p>
+          {topRisksQuery.isLoading ? (
+            <p className="mt-6 text-xs text-slate-400">Loading tracked findings…</p>
+          ) : topRisks.length === 0 ? (
+            <p className="mt-6 text-xs text-slate-400">No open tracked findings.</p>
           ) : (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-bold uppercase tracking-wider">
                   <tr>
-                    <th className="py-2.5 px-2">CVE / Script</th>
-                    <th className="py-2.5 px-2">Host</th>
-                    <th className="py-2.5 px-2">Port</th>
-                    <th className="py-2.5 px-2">CVSS</th>
-                    <th className="py-2.5 px-2">Severity</th>
+                    <th className="py-2.5 px-2">Finding</th>
+                    <th className="py-2.5 px-2">Asset</th>
+                    <th className="py-2.5 px-2">Risk</th>
+                    <th className="py-2.5 px-2">SLA</th>
+                    <th className="py-2.5 px-2">Owner</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {topRisks.map((risk, idx) => (
-                    <tr
-                      key={`${risk.cve || risk.script_id}-${risk.host}-${risk.port}-${idx}`}
-                      className="hover:bg-slate-800/40 transition-colors"
-                    >
-                      <td className="py-2.5 px-2 font-mono font-semibold text-sky-400">{risk.cve || risk.script_id || "—"}</td>
-                      <td className="py-2.5 px-2 font-mono text-slate-200">{risk.host || "—"}</td>
-                      <td className="py-2.5 px-2 tabular-nums text-slate-300">{risk.port || "—"}</td>
+                  {topRisks.map((row) => (
+                    <tr key={row.vuln_id} className="hover:bg-slate-800/40 transition-colors">
                       <td className="py-2.5 px-2">
-                        <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold tabular-nums text-rose-300 border border-rose-500/30">
-                          {risk.score ?? "—"}
-                        </span>
+                        <Link
+                          href={vulnDetailHref(row.vuln_id, row.tenant_id)}
+                          className="inline-flex items-center gap-1 font-mono font-semibold text-sky-400 hover:underline"
+                        >
+                          {findingLabel(row)}
+                          <ArrowUpRight className="h-3 w-3" />
+                        </Link>
                       </td>
                       <td className="py-2.5 px-2">
-                        <StatusBadge value={risk.severity} map={SEVERITY_STATUS} />
+                        <Link
+                          href={assetDetailHref(row.asset_id, row.tenant_id)}
+                          className="font-mono text-slate-300 hover:text-sky-300 hover:underline"
+                        >
+                          {row.asset_id}
+                        </Link>
+                      </td>
+                      <td className="py-2.5 px-2">
+                        {row.risk_level ? (
+                          <StatusBadge value={row.risk_level} map={RISK_LEVEL_STATUS} />
+                        ) : (
+                          <StatusBadge
+                            value={row.severity}
+                            map={SEVERITY_STATUS}
+                          />
+                        )}
+                      </td>
+                      <td className="py-2.5 px-2">
+                        <SlaIndicator slaState={row.sla_state} dueAt={row.due_at} showDue={false} />
+                      </td>
+                      <td className="py-2.5 px-2 text-slate-300">
+                        {row.assignee || <span className="text-slate-500">{t("page.risk.unassignedCell")}</span>}
                       </td>
                     </tr>
                   ))}
@@ -259,73 +381,134 @@ export default function DashboardPage() {
 
         <Card className="xl:col-span-2 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
           <div className="flex items-center justify-between">
-            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">Asset Criticality Posture</Title>
-            <Link href="/assets" className="text-xs text-sky-400 hover:underline">View All Assets</Link>
+            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+              {t("page.risk.assetPosture")}
+            </Title>
+            <Link href="/assets" className="text-xs text-sky-400 hover:underline">
+              {t("page.risk.viewAssets")}
+            </Link>
           </div>
-          {assets.length === 0 ? (
-            <p className="mt-6 text-xs text-slate-400">No assets registered in global inventory.</p>
+          {!assets || assets.total === 0 ? (
+            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noAssets")}</p>
           ) : (
             <>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 <span className="font-semibold text-slate-300">
-                  {assetTotal.toLocaleString()} assets total
+                  {t("page.risk.assetsCount", { count: assets.total.toLocaleString() })}
                 </span>
-                {assetsSampled ? (
-                  <span className="text-slate-500">
-                    (chart covers the {assets.length.toLocaleString()} most recent)
-                  </span>
-                ) : null}
-                <span className="text-slate-600">·</span>
                 {(["active", "stale", "decommissioned"] as const).map((s) =>
-                  statusCounts[s] ? (
+                  assets.by_status[s] ? (
                     <span key={s} className="flex items-center gap-1">
                       <StatusBadge value={s} map={ASSET_STATUS} />
-                      <span className="tabular-nums font-semibold text-slate-200">{statusCounts[s]}</span>
+                      <span className="tabular-nums font-semibold text-slate-200">
+                        {assets.by_status[s]}
+                      </span>
                     </span>
                   ) : null,
                 )}
               </div>
-              <BarChart
-                className="mt-4 h-56"
-                data={criticalityData}
-                index="name"
-                categories={["Assets"]}
-                colors={["cyan"]}
-                showLegend={false}
-                showAnimation={false}
-                yAxisWidth={40}
-              />
+              <p className="mt-3 text-xs text-slate-400">
+                Internet-facing exposure is not counted yet — that input is{" "}
+                <span className="text-slate-300">#171 / #146</span>, not a zero.
+              </p>
+              {criticalityData.length > 0 ? (
+                <BarChart
+                  className="mt-4 h-56"
+                  data={criticalityData}
+                  index="name"
+                  categories={["Assets"]}
+                  colors={["cyan"]}
+                  showLegend={false}
+                  showAnimation={false}
+                  yAxisWidth={40}
+                />
+              ) : null}
             </>
           )}
         </Card>
       </div>
 
       <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-        <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">Top Vulnerable Service Ports</Title>
-        {topPorts.length === 0 ? (
-          <p className="mt-6 text-xs text-slate-400">No open ports detected in the latest run.</p>
-        ) : (
-          <div className="mt-4 grid gap-6 md:grid-cols-2 items-center">
-            <DonutChart
-              className="h-52"
-              data={topPorts}
-              category="value"
-              index="name"
-              colors={["cyan", "sky", "indigo", "violet", "slate"]}
-              showAnimation={false}
-            />
-            <ul className="space-y-2 text-xs text-slate-300">
-              {topPorts.map((port) => (
-                <li key={port.name} className="flex justify-between border-b border-slate-800/60 py-2">
-                  <span className="font-mono text-sky-400 font-semibold">{port.name}</span>
-                  <span className="font-bold tabular-nums text-slate-100">{port.value.toLocaleString()} hosts</span>
-                </li>
-              ))}
-            </ul>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-sky-400" />
+            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+              Estate Risk & Vulnerability Trend (#144)
+            </Title>
           </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs gap-1.5"
+            onClick={() => triggerSnapshot.mutate()}
+            disabled={triggerSnapshot.isPending}
+          >
+            <Camera className="h-3.5 w-3.5" />
+            {triggerSnapshot.isPending ? "Recording…" : "Capture Snapshot"}
+          </Button>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          Historical timeline of active vulnerabilities, high/critical items, and SLA breaches.
+        </p>
+        {riskHistoryTrend.length === 0 ? (
+          <div className="mt-6 flex flex-col items-center justify-center p-6 border border-dashed border-slate-800 rounded-lg text-center">
+            <p className="text-xs text-slate-400">No historical risk snapshots recorded yet.</p>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="mt-3 text-xs gap-1"
+              onClick={() => triggerSnapshot.mutate()}
+              disabled={triggerSnapshot.isPending}
+            >
+              <Camera className="h-3.5 w-3.5" />
+              Capture Initial Snapshot
+            </Button>
+          </div>
+        ) : (
+          <AreaChart
+            className="mt-4 h-64"
+            data={riskHistoryTrend}
+            index="date"
+            categories={["Open Vulns", "Critical & High", "SLA Breached"]}
+            colors={["sky", "rose", "amber"]}
+            showLegend
+            showAnimation={false}
+          />
+        )}
+      </Card>
+
+      <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+            {t("page.risk.scanActivity")}
+          </Title>
+          {latest ? (
+            <Link
+              href={runDetailHref(latest.run_id)}
+              className="inline-flex items-center gap-1 font-mono text-xs text-sky-400 hover:underline"
+            >
+              latest {latest.run_id}
+              <ArrowUpRight className="h-3 w-3" />
+            </Link>
+          ) : null}
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          {t("page.risk.scanActivityHint")}
+        </p>
+        {trend.length === 0 ? (
+          <p className="mt-6 text-xs text-slate-400">{t("page.risk.noRuns")}</p>
+        ) : (
+          <AreaChart
+            className="mt-4 h-64"
+            data={trend}
+            index="date"
+            categories={["Hosts", "Vulns"]}
+            colors={["cyan", "rose"]}
+            showLegend
+            showAnimation={false}
+          />
         )}
       </Card>
     </div>
   );
 }
-

@@ -2,7 +2,7 @@
 # Install Pulse CLI for Shapoclyack service_probe backend.
 #
 # Preferred: GitHub Release from GenDec (no cargo required).
-#   PULSE_VERSION=v0.8.3 scripts/install-pulse.sh
+#   PULSE_VERSION=v1.1.0 scripts/install-pulse.sh
 #   GITHUB_TOKEN=... scripts/install-pulse.sh   # private GenDec
 #
 # Fallback: build from local clone or git URL.
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 DEST="${PULSE_DEST:-/usr/local/bin/pulse}"
-VERSION="${PULSE_VERSION:-v0.8.3}"
+VERSION="${PULSE_VERSION:-v1.1.0}"
 REPO="${PULSE_GITHUB_REPO:-onixus/GenDec}"
 FROM_SOURCE="${PULSE_FROM_SOURCE:-0}"
 LOCAL_REPO="${PULSE_REPO:-}"

@@ -18,7 +18,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlsplit
+
+from api.services import outbound_targets
 
 LOG = logging.getLogger("shapoclyack.webhooks")
 
@@ -43,8 +44,11 @@ _ERROR_EXCERPT_CHARS = 500
 _MAX_ERROR_BODY_BYTES = 4096
 
 
-class WebhookTargetError(ValueError):
-    """The URL is not a legal webhook target (bad scheme, or blocked address)."""
+#: The URL is not a legal webhook target (bad scheme, or blocked address).
+#: An alias rather than a subclass: the parsing lives in
+#: ``api/services/outbound_targets.py`` since #240, and it raises the shared
+#: type — a subclass here would simply stop catching it.
+WebhookTargetError = outbound_targets.OutboundTargetError
 
 
 @dataclass(frozen=True)
@@ -63,25 +67,16 @@ class DeliveryResult:
     error: str | None
     retryable: bool
     duration_seconds: float = 0.0
+    #: Response body when the caller asked for it (ticket create needs the
+    #: issue key). Webhook deliveries leave this None — the receiver's 200
+    #: body is not audit material.
+    body: str | None = None
+    ticket_key: str | None = None
+    ticket_url: str | None = None
 
 
-@dataclass(frozen=True)
-class _ResolvedTarget:
-    """A webhook URL plus the exact addresses approved for this delivery.
-
-    The hostname is kept separately because HTTPS must verify the receiver's
-    certificate and send SNI for the original DNS name even though the TCP
-    socket is opened directly to one of the already-validated IP addresses.
-    That separation is the SSRF boundary: no library resolver gets a second
-    chance to turn the hostname into a different address after validation.
-    """
-
-    scheme: str
-    hostname: str
-    port: int
-    request_target: str
-    host_header: str
-    addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
+#: A webhook URL plus the exact addresses approved for this delivery.
+_ResolvedTarget = outbound_targets.HttpTarget
 
 
 def canonical_body(payload: dict[str, Any]) -> bytes:
@@ -127,44 +122,14 @@ def sanitize_headers(headers: dict[str, Any] | None) -> dict[str, str]:
 
 
 def _parse_target(url: str, *, allow_private: bool) -> _ResolvedTarget:
-    url = (url or "").strip()
-    if not url:
-        raise WebhookTargetError("webhook url required")
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        raise WebhookTargetError("webhook url must be http or https")
-    if not parts.hostname:
-        raise WebhookTargetError("webhook url must include a host")
-    if parts.username is not None or parts.password is not None:
-        raise WebhookTargetError("webhook url must not contain userinfo")
-    try:
-        port = parts.port
-    except ValueError as exc:
-        raise WebhookTargetError("webhook url contains an invalid port") from exc
-    port = port or (443 if parts.scheme == "https" else 80)
+    """Parse and validate one webhook URL under the #151 boundary.
 
-    addresses = tuple(_resolve(parts.hostname))
-    if not allow_private:
-        for address in addresses:
-            if not address.is_global or address.is_multicast:
-                raise WebhookTargetError(
-                    f"webhook host {parts.hostname} resolves to non-public address {address}; "
-                    "set OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true to allow it"
-                )
-
-    path = parts.path or "/"
-    request_target = f"{path}?{parts.query}" if parts.query else path
-    host = parts.hostname
-    host_for_header = f"[{host}]" if ":" in host else host
-    default_port = 443 if parts.scheme == "https" else 80
-    host_header = host_for_header if port == default_port else f"{host_for_header}:{port}"
-    return _ResolvedTarget(
-        scheme=parts.scheme,
-        hostname=host,
-        port=port,
-        request_target=request_target,
-        host_header=host_header,
-        addresses=addresses,
+    A thin call into the shared boundary so the deployer's probe (#240) and
+    this path cannot drift apart on what "a target" is — only on the policy,
+    which is the part that legitimately differs.
+    """
+    return outbound_targets.parse_url(
+        url, policy=outbound_targets.webhook_policy(allow_private=allow_private)
     )
 
 
@@ -179,29 +144,6 @@ def validate_url(url: str, *, allow_private: bool = False) -> str:
     """
     _parse_target(url, allow_private=allow_private)
     return (url or "").strip()
-
-
-def _resolve(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
-    """Every address ``hostname`` resolves to. Unresolvable → empty list."""
-    try:
-        literal = ipaddress.ip_address(hostname.strip("[]"))
-    except ValueError:
-        pass
-    else:
-        return [literal]
-    try:
-        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        return []
-    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
-    for info in infos:
-        try:
-            address = ipaddress.ip_address(info[4][0])
-        except ValueError:  # pragma: no cover - getaddrinfo returned a non-address
-            continue
-        if address not in addresses:
-            addresses.append(address)
-    return addresses
 
 
 def build_request(
@@ -291,6 +233,7 @@ def _post_to_address(
     headers: dict[str, str],
     *,
     deadline: float,
+    capture_body: bool = False,
 ) -> tuple[int, str]:
     """Send to one already-approved IP without performing DNS resolution."""
     remaining = deadline - time.perf_counter()
@@ -318,8 +261,11 @@ def _post_to_address(
             connection.sock.settimeout(remaining)
         response = connection.getresponse()
         code = response.status
-        # Successful webhook bodies are irrelevant; do not read them at all.
-        excerpt = "" if 200 <= code < 300 else _read_error_excerpt(response, deadline=deadline)
+        if 200 <= code < 300 and not capture_body:
+            # Successful webhook bodies are irrelevant; do not read them at all.
+            excerpt = ""
+        else:
+            excerpt = _read_error_excerpt(response, deadline=deadline)
         return code, excerpt
     finally:
         connection.close()
@@ -332,6 +278,7 @@ def post(
     *,
     timeout_seconds: int = 10,
     allow_private: bool = False,
+    capture_body: bool = False,
 ) -> DeliveryResult:
     """POST one delivery, pinned to the addresses that passed SSRF validation.
 
@@ -371,6 +318,7 @@ def post(
                 body,
                 headers,
                 deadline=deadline,
+                capture_body=capture_body,
             )
         except Exception as exc:  # noqa: BLE001 - socket/ssl/http.client family
             last_error = exc
@@ -386,6 +334,7 @@ def post(
                 error=None,
                 retryable=False,
                 duration_seconds=duration,
+                body=excerpt or None,
             )
         retryable = code >= 500 or code in (408, 429)
         return DeliveryResult(

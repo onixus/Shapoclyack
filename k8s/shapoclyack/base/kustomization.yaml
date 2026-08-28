@@ -24,10 +24,13 @@ resources:
   # Postgres (PRIMARY_DB — tenants + asset inventory, Phase 7)
   - postgres/statefulset.yaml
   - postgres/service.yaml
+  - backup
   - job.yaml
   - cronjob.yaml
   - api-deployment.yaml
   - api-service.yaml
+  - api-pdb.yaml
+  - networkpolicy-datastores.yaml
 
 configMapGenerator:
   - name: scanner-config
@@ -46,6 +49,18 @@ secretGenerator:
   - name: shapoclyack-postgres
     literals:
       - password=shapoclyack-dev-postgres-change-me
+  # ClickHouse and NATS used to need no credentials at all, which meant any pod
+  # in the cluster could read every tenant's scan results. Same placeholder
+  # mechanism as Postgres above: the literal keeps secretKeyRef resolvable so a
+  # fresh apply comes up, and docs/operations.md § Data-plane credentials is
+  # where the rotation procedure lives.
+  - name: shapoclyack-clickhouse
+    literals:
+      - password=shapoclyack-dev-clickhouse-change-me
+  - name: shapoclyack-nats
+    literals:
+      - api_password=shapoclyack-dev-nats-api-change-me
+      - agent_password=shapoclyack-dev-nats-agent-change-me
 
 generatorOptions:
   disableNameSuffixHash: true

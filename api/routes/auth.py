@@ -30,7 +30,10 @@ from api.schemas import (
     MembershipInfo,
     Page,
     ProvisioningKeyInfo,
+    ReplaceScanScopeRequest,
+    ScanScopeEntryInfo,
     TenantInfo,
+    TenantPosture,
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
@@ -38,6 +41,8 @@ from api.routes._pagination import PageParams, build_page
 from api.services import auth as auth_service
 from api.services import auth_audit
 from api.services import memberships as memberships_service
+from api.services import scan_scopes
+from api.services import tenant_posture
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -98,10 +103,19 @@ def list_auth_events(
     params: PageParams,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
     outcome: Annotated[
-        str | None, Query(pattern="^(success|failure|locked)$", description="Filter by outcome")
+        str | None,
+        Query(
+            pattern="^(success|failure|locked|denied|trust_change)$",
+            description="Filter by outcome",
+        ),
     ] = None,
 ) -> Page[AuthEventInfo]:
-    """Recent login attempts, newest first (#157). Platform admin only.
+    """Recent access decisions, newest first (#157). Platform admin only.
+
+    Logins; since #226 the scans and (since #240) the deployment targets
+    refused by a tenant's approved scanning scope (``outcome=denied``); and
+    since #241 the SSH host-key pins an admin set or removed
+    (``outcome=trust_change``) — one trail, because they are one question.
 
     ``q`` matches username or client IP. Always newest-first: this is a log,
     and the ``sort``/``order`` parameters the other lists take would only offer
@@ -183,6 +197,21 @@ def list_tenants(
         TenantInfo.model_validate(t)
         for t in tenants_service.list_tenants()
         if t["tenant_id"] in allowed
+    ]
+
+
+@router.get("/tenants/posture", response_model=list[TenantPosture])
+def list_tenant_posture(
+    user: Annotated[TokenUser, Depends(require_role(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[TenantPosture]:
+    """Per-tenant risk comparison for an MSSP (#139). Same tenant set as ``GET /tenants``."""
+    allowed = memberships_service.tenants_for_user(
+        user.username, is_platform_admin=user.role == Role.admin
+    )
+    return [
+        TenantPosture.model_validate(row)
+        for row in tenant_posture.list_posture(settings, tenant_ids=allowed)
     ]
 
 
@@ -289,3 +318,50 @@ def revoke_provisioning_key(
     if revoked is None or revoked.get("tenant_id") != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="key not found")
     return ProvisioningKeyInfo.model_validate(revoked)
+
+
+@router.get("/tenants/{tenant_id}/scan-scope", response_model=list[ScanScopeEntryInfo])
+def list_scan_scope(
+    tenant_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[ScanScopeEntryInfo]:
+    """What this tenant is allowed to scan (#226). Platform admin only.
+
+    An empty list is a meaningful answer, not a missing one: the tenant scans
+    nothing until a scope is approved.
+    """
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    return [
+        ScanScopeEntryInfo.model_validate(entry)
+        for entry in scan_scopes.list_entries(settings, tenant_id)
+    ]
+
+
+@router.put("/tenants/{tenant_id}/scan-scope", response_model=list[ScanScopeEntryInfo])
+def replace_scan_scope(
+    tenant_id: str,
+    body: ReplaceScanScopeRequest,
+    user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[ScanScopeEntryInfo]:
+    """Approve the scope this tenant may scan, replacing whatever it had.
+
+    Platform admin, like provisioning-key creation (#231): deciding that a
+    tenant may point the platform at a network is an administrative act, and
+    an operator who could widen their own scope would be the control removing
+    itself. The caller's username is stamped on every resulting row.
+    """
+    try:
+        entries = scan_scopes.replace_scope(
+            settings,
+            tenant_id=tenant_id,
+            entries=[entry.model_dump() for entry in body.entries],
+            approved_by=user.username,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return [ScanScopeEntryInfo.model_validate(entry) for entry in entries]

@@ -8,6 +8,7 @@ import ipaddress
 
 import pytest
 
+from api.services import outbound_targets
 from api.services.integrations import delivery
 
 
@@ -139,9 +140,9 @@ def test_post_pins_connection_to_the_validated_address(monkeypatch):
     approved = ipaddress.ip_address("93.184.216.34")
     seen = {}
 
-    monkeypatch.setattr(delivery, "_resolve", lambda host: [approved])
+    monkeypatch.setattr(outbound_targets, "resolve", lambda host: [approved])
 
-    def _capture(target, address, body, headers, *, deadline):
+    def _capture(target, address, body, headers, *, deadline, capture_body=False):
         seen["target"] = target
         seen["address"] = address
         seen["body"] = body
@@ -170,11 +171,11 @@ def test_post_does_not_reresolve_after_validation(monkeypatch):
             return [ipaddress.ip_address("127.0.0.1")]
         return [approved]
 
-    monkeypatch.setattr(delivery, "_resolve", _resolve)
+    monkeypatch.setattr(outbound_targets, "resolve", _resolve)
     monkeypatch.setattr(
         delivery,
         "_post_to_address",
-        lambda target, address, body, headers, *, deadline: (200, ""),
+        lambda target, address, body, headers, *, deadline, capture_body=False: (200, ""),
     )
 
     result = delivery.post("https://receiver.example/hook", b"{}", {})
@@ -198,14 +199,17 @@ def test_post_does_not_reresolve_after_validation(monkeypatch):
 )
 def test_post_classifies_response_codes(monkeypatch, status_code, ok, retryable):
     monkeypatch.setattr(
-        delivery,
-        "_resolve",
+        outbound_targets,
+        "resolve",
         lambda host: [ipaddress.ip_address("93.184.216.34")],
     )
     monkeypatch.setattr(
         delivery,
         "_post_to_address",
-        lambda target, address, body, headers, *, deadline: (status_code, "body"),
+        lambda target, address, body, headers, *, deadline, capture_body=False: (
+            status_code,
+            "body",
+        ),
     )
     result = delivery.post("https://receiver.example/hook", b"{}", {})
     assert (result.ok, result.retryable) == (ok, retryable)
@@ -214,8 +218,8 @@ def test_post_classifies_response_codes(monkeypatch, status_code, ok, retryable)
 
 def test_post_treats_transport_errors_as_retryable(monkeypatch):
     monkeypatch.setattr(
-        delivery,
-        "_resolve",
+        outbound_targets,
+        "resolve",
         lambda host: [ipaddress.ip_address("93.184.216.34")],
     )
 
@@ -231,14 +235,17 @@ def test_post_treats_transport_errors_as_retryable(monkeypatch):
 
 def test_post_does_not_follow_redirects(monkeypatch):
     monkeypatch.setattr(
-        delivery,
-        "_resolve",
+        outbound_targets,
+        "resolve",
         lambda host: [ipaddress.ip_address("93.184.216.34")],
     )
     monkeypatch.setattr(
         delivery,
         "_post_to_address",
-        lambda target, address, body, headers, *, deadline: (302, "moved"),
+        lambda target, address, body, headers, *, deadline, capture_body=False: (
+            302,
+            "moved",
+        ),
     )
     result = delivery.post("https://receiver.example/hook", b"{}", {})
     assert result.ok is False

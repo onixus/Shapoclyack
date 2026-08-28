@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Globe2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { useT } from "@/lib/i18n";
 import {
   Select,
   SelectContent,
@@ -22,6 +23,7 @@ import { cn } from "@/lib/utils";
 const RUN_PICKER_LIMIT = 50;
 
 export default function GeoPage() {
+  const t = useT();
   const runsQuery = useRuns(undefined, { limit: RUN_PICKER_LIMIT });
   const [selectedRun, setSelectedRun] = useState<string>("");
   const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
@@ -56,9 +58,9 @@ export default function GeoPage() {
             <Globe2 className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Geo Map</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.geo.title")}</h1>
             <p className="text-xs text-slate-400">
-              External hosts by GeoIP position, coloured by their worst finding in this run.
+              {t("page.geo.subtitle")}
             </p>
           </div>
         </div>
@@ -71,7 +73,7 @@ export default function GeoPage() {
           }}
         >
           <SelectTrigger className="w-72 border-slate-800 bg-slate-900 text-slate-200">
-            <SelectValue placeholder="Select a scan run" />
+            <SelectValue placeholder={t("page.geo.selectRun")} />
           </SelectTrigger>
           <SelectContent className="border-slate-800 bg-slate-900 text-slate-200">
             {runs.map((run) => (
@@ -91,35 +93,35 @@ export default function GeoPage() {
 
       {!runId && !isLoading ? (
         <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-8 text-center backdrop-blur">
-          <p className="text-sm font-semibold text-slate-300">No scan runs available</p>
+          <p className="text-sm font-semibold text-slate-300">{t("page.geo.noRuns")}</p>
           <p className="mt-1 text-xs text-slate-400">
-            Start a scan job to place its hosts on the map.
+            {t("page.geo.noRunsBody")}
           </p>
         </div>
       ) : isLoading ? (
         <div className="flex items-center justify-center gap-2 py-16 text-slate-400">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
-          <span className="text-sm">Resolving host locations…</span>
+          <span className="text-sm">{t("loading.geo")}</span>
         </div>
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiCard label="Countries" value={geo.countryCount} decorationColor="sky" />
+            <KpiCard label={t("page.geo.countries")} value={geo.countryCount} decorationColor="sky" />
             <KpiCard
-              label="Located hosts"
+              label={t("page.geo.locatedHosts")}
               value={geo.locatedHostCount}
-              hint={`of ${geo.hostCount} alive`}
+              hint={t("page.geo.ofAlive", { count: geo.hostCount })}
               decorationColor="emerald"
             />
             <KpiCard
-              label="Hosts with findings"
+              label={t("page.geo.hostsWithFindings")}
               value={geo.vulnerableHostCount}
               decorationColor="rose"
             />
             <KpiCard
-              label="Unlocated"
+              label={t("page.geo.unlocated")}
               value={geo.unlocated.length}
-              hint="no GeoIP position"
+              hint={t("page.geo.noPosition")}
               decorationColor="slate"
             />
           </div>
@@ -161,13 +163,13 @@ export default function GeoPage() {
             <div className="space-y-3">
               <div className="rounded-xl border border-slate-800/80 bg-slate-900/60">
                 <div className="border-b border-slate-800/80 px-4 py-3">
-                  <h2 className="text-sm font-semibold text-slate-200">Locations</h2>
-                  <p className="text-xs text-slate-500">Worst state first. Select one to list its hosts.</p>
+                  <h2 className="text-sm font-semibold text-slate-200">{t("page.geo.locations")}</h2>
+                  <p className="text-xs text-slate-500">{t("page.geo.locationsHint")}</p>
                 </div>
                 <ul className="max-h-72 overflow-y-auto">
                   {geo.locations.length === 0 ? (
                     <li className="px-4 py-6 text-center text-xs text-slate-500">
-                      No host in this run carries a GeoIP position.
+                      {t("page.geo.noGeo")}
                     </li>
                   ) : (
                     geo.locations.map((location) => (
@@ -209,12 +211,12 @@ export default function GeoPage() {
               <div className="rounded-xl border border-slate-800/80 bg-slate-900/60">
                 <div className="border-b border-slate-800/80 px-4 py-3">
                   <h2 className="text-sm font-semibold text-slate-200">
-                    {selected ? selected.label : "Hosts"}
+                    {selected ? selected.label : t("geo.hostsTitle")}
                   </h2>
                   <p className="text-xs text-slate-500">
                     {selected
-                      ? `${selected.hostCount} host${selected.hostCount === 1 ? "" : "s"} · ${selected.findingCount} finding${selected.findingCount === 1 ? "" : "s"}`
-                      : "Select a location on the map."}
+                      ? `${selected.hostCount === 1 ? t("geo.hostOne", { count: selected.hostCount }) : t("geo.hosts", { count: selected.hostCount })} · ${selected.findingCount === 1 ? t("geo.findingOne", { count: selected.findingCount }) : t("geo.findings", { count: selected.findingCount })}`
+                      : t("page.geo.selectLocation")}
                   </p>
                 </div>
                 <ul className="max-h-72 overflow-y-auto">
@@ -233,13 +235,13 @@ export default function GeoPage() {
                         variant="outline"
                         className="shrink-0 border-slate-700 text-[10px] text-slate-300"
                       >
-                        {STATE_LABEL[host.state]}
+                        {t.label(STATE_LABEL[host.state])}
                         {host.findingCount > 0 ? ` · ${host.findingCount}` : ""}
                       </Badge>
                     </li>
                   ))}
                   {selected && selected.hosts.length === 0 ? (
-                    <li className="px-4 py-6 text-center text-xs text-slate-500">No hosts.</li>
+                    <li className="px-4 py-6 text-center text-xs text-slate-500">{t("geo.noHosts")}</li>
                   ) : null}
                 </ul>
               </div>
@@ -250,12 +252,10 @@ export default function GeoPage() {
             <div className="rounded-xl border border-slate-800/80 bg-slate-900/60">
               <div className="border-b border-slate-800/80 px-4 py-3">
                 <h2 className="text-sm font-semibold text-slate-200">
-                  Unlocated hosts ({geo.unlocated.length})
+                  {t("page.geo.unlocatedTitle", { count: geo.unlocated.length })}
                 </h2>
                 <p className="text-xs text-slate-500">
-                  No GeoIP record and no country to fall back on — private addresses, or an
-                  installation with no GeoIP database configured. Listed rather than dropped, so
-                  the map never reads as the whole estate.
+                  {t("page.geo.unlocatedHint")}
                 </p>
               </div>
               <ul className="flex max-h-40 flex-wrap gap-2 overflow-y-auto p-4">

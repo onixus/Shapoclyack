@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+#: One DNS label. Guards config values that are interpolated into a query name
+#: and handed to an external tool (currently mail_posture.dkim_selectors).
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9-]{1,63}$")
 
 
 class RuntimeConfig(BaseModel):
@@ -53,6 +58,7 @@ class ProfilePulseConfig(BaseModel):
     syn: bool | None = None
     max_hosts: int | None = Field(default=None, ge=1, le=1_000_000)
     chunk_hosts: int | None = Field(default=None, ge=1, le=4096)
+    retry_settle_seconds: int | None = Field(default=None, ge=0, le=600)
 
 
 class ProfileNucleiConfig(BaseModel):
@@ -66,7 +72,9 @@ class ProfileNucleiConfig(BaseModel):
     """
 
     severities: list[str] | None = None
+    tags: list[str] | None = None
     exclude_tags: list[str] | None = None
+    custom_templates_dir: str | None = None
     max_targets: int | None = Field(default=None, ge=1, le=50_000)
     concurrency: int | None = Field(default=None, ge=1, le=100)
     rate_limit: int | None = Field(default=None, ge=1, le=10_000)
@@ -150,6 +158,7 @@ class TcpProbeDiscoveryConfig(BaseModel):
 
 ProbeMethod = Literal["icmp", "tcp", "naabu"]
 DiscoveryProfileSetting = Literal["auto", "fast", "balanced", "thorough", "custom"]
+NaabuScanType = Literal["auto", "syn", "connect"]
 _DEFAULT_PROBE_ORDER: list[ProbeMethod] = ["icmp", "tcp", "naabu"]
 
 
@@ -347,6 +356,12 @@ class PortsConfig(BaseModel):
     custom_udp_ports_file: str = "scanner/inputs/ports_udp.txt"
     top_udp_ports: int = Field(default=100, ge=1, le=65535)
     udp_probes: bool = True
+    # naabu's own -s default is "c" (CONNECT) -- it never probes for privileges,
+    # so leaving the flag off means the CAP_NET_RAW the images grant naabu
+    # (setcap in the Dockerfiles, capabilities.add in the manifests) is paid for
+    # and never used. "auto" tries SYN and falls back to CONNECT once, per run,
+    # if naabu cannot raise the capability.
+    scan_type: NaabuScanType = "auto"
 
 
 class NseProfileConfig(BaseModel):
@@ -372,6 +387,12 @@ class PulseProbeConfig(BaseModel):
     syn: bool = False
     max_hosts: int = Field(default=65536, ge=1, le=1_000_000)
     chunk_hosts: int = Field(default=64, ge=1, le=4096)
+    # The ports stage hands over the instant its last naabu batch returns, so the
+    # probe can land while the path is still saturated by that burst: every
+    # connect fails, the chunk reads as all-closed, and pulse writes that zero to
+    # its checkpoint as "status: done". Pause and re-probe once when a chunk
+    # contradicts the open ports naabu just proved. 0 disables the retry.
+    retry_settle_seconds: int = Field(default=15, ge=0, le=600)
 
 
 class ServiceProbeConfig(BaseModel):
@@ -484,6 +505,7 @@ class ReportingConfig(BaseModel):
     html_summary: bool = True
     csv_export: bool = True
     json_export: bool = True
+    sarif_export: bool = True
     # Business PDF (summary.pdf) for leadership / ticket attachments.
     pdf_summary: bool = True
     pdf_title: str = "Shapoclyack Security Scan Report"
@@ -563,6 +585,32 @@ class FingerprintConfig(BaseModel):
         return ports
 
 
+class ScreenshotConfig(BaseModel):
+    """Web screenshots (P4.4 / Phase 9.3). Opt-in.
+
+    Same already-open web ports as ``fingerprint.py`` — no new scan. Disabled
+    by default. Capture needs Playwright; without it the stage skips. Images
+    are redacted in-DOM (obvious credential/PII form fields only) before
+    they hit disk. Retention and operator-only access live in the API.
+    """
+
+    enabled: bool = False
+    concurrency: int = Field(default=4, ge=1, le=20)
+    max_targets: int = Field(default=50, ge=1, le=500)
+    timeout_seconds: int = Field(default=15, ge=1, le=60)
+    http_ports: list[int] = Field(default_factory=lambda: [80, 8080, 8000, 8008, 8888])
+    https_ports: list[int] = Field(default_factory=lambda: [443, 8443])
+    verify_tls: bool = False
+
+    @field_validator("http_ports", "https_ports")
+    @classmethod
+    def validate_ports(cls, ports: list[int]) -> list[int]:
+        for port in ports:
+            if port < 1 or port > 65535:
+                raise ValueError(f"invalid screenshot port: {port}")
+        return ports
+
+
 class NucleiConfig(BaseModel):
     """Nuclei template-based vulnerability/misconfig scanning.
 
@@ -589,7 +637,9 @@ class NucleiConfig(BaseModel):
 
     enabled: bool = True
     templates_dir: str = "/usr/share/nuclei-templates"
+    custom_templates_dir: str = ""
     severities: list[str] = Field(default_factory=lambda: ["critical", "high", "medium"])
+    tags: list[str] = Field(default_factory=list)
     exclude_tags: list[str] = Field(default_factory=lambda: ["intrusive", "fuzz", "dos"])
     max_targets: int = Field(default=1000, ge=1, le=50_000)
     concurrency: int = Field(default=10, ge=1, le=100)
@@ -650,6 +700,126 @@ class TlsPostureConfig(BaseModel):
     probe_tls_ports: list[int] = Field(
         default_factory=lambda: [443, 8443, 9443, 4443, 10443, 6443]
     )
+
+
+class OwnershipConfig(BaseModel):
+    """Domain ownership via RDAP (org_profile M1, EPIC #182). Opt-in.
+
+    One HTTPS GET per seed domain against the registry RDAP server named by the
+    IANA bootstrap file, plus ``rdap.org`` as fallback. Passive and keyless --
+    same risk class as ``discovery.asn``'s RIPEstat calls, and the same
+    fail-soft posture.
+
+    SAFETY: the next hop is chosen by a remote party (bootstrap entry, or a
+    302 from rdap.org), so requests go through ``scanner/pipeline/safe_http.py``
+    -- https only, address validated and pinned, redirects re-validated. None
+    of that is configurable; there is no switch here to turn off verification
+    or pinning.
+
+    ``max_domains`` caps how many domains the stage will query. The default
+    seed set is every base domain in scope, which on a large estate is
+    unbounded; past the cap the remaining domains are skipped and the run is
+    flagged ``truncated`` rather than quietly issuing thousands of registry
+    queries. ``deadline_seconds`` is the same cap in the time dimension.
+
+    PII: only org/registrar/abuse-email/dates/statuses/DNSSEC/NS are written;
+    the raw RDAP contact block never reaches disk, and ``ownership.json`` is a
+    restricted artifact (operator+) in the API.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    deadline_seconds: int = Field(default=300, ge=10, le=3_600)
+
+
+class DnsHygieneConfig(BaseModel):
+    """Zone hygiene for the org's own domains (org_profile M2, EPIC #182). Opt-in.
+
+    NS/SOA/CAA/DNSSEC/wildcard are ordinary DNS queries through dnsx -- the
+    same risk class as ``discovery.domain_monitor``.
+
+    ``axfr_probe`` is the one active check in the whole module and is off by
+    default: a zone transfer attempt is a request the target's nameserver logs
+    as such. It is deliberately reachable **only** from the config file. It is
+    not in ``EDITABLE_PATHS`` (``api/services/config_override.py``) because
+    those overrides are installation-wide rather than per-tenant, so a platform
+    admin would enable AXFR for every tenant's scans at once; and it is not a
+    field of ``StartScanRequest`` because that would move the decision onto the
+    ``operator`` who starts a scan rather than the party that authorizes the
+    target. Two further gates live in the stage: only this run's own seed
+    domains are probed, and every nameserver address must pass
+    ``safe_http.is_public_address``.
+
+    ``max_domains``/``deadline_seconds`` bound the stage the same way they
+    bound ``ownership``; past either the run is flagged ``truncated``.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    retries: int = Field(default=1, ge=0, le=5)
+    deadline_seconds: int = Field(default=300, ge=10, le=3_600)
+    # The only active check in org_profile. See the class docstring before
+    # moving this anywhere an API caller can reach.
+    axfr_probe: bool = False
+    axfr_timeout_seconds: int = Field(default=10, ge=1, le=60)
+
+
+class MailPostureConfig(BaseModel):
+    """Mail authentication posture (org_profile M2, EPIC #182). Opt-in.
+
+    MX/SPF/DMARC/DKIM/TLS-RPT are DNS-only. ``mta_sts_http`` adds the single
+    HTTP request in the module -- the MTA-STS policy document -- which goes
+    through ``scanner/pipeline/safe_http.py`` with zero redirects (RFC 8461
+    section 3.3) and a 64 KiB body cap, because ``mta-sts.<domain>`` is an A
+    record the scanned party controls.
+
+    ``dkim_selectors`` is capped at 20 entries and each one must be a DNS label
+    (``[a-z0-9-]{1,63}``): it is interpolated into ``{selector}._domainkey.
+    {domain}`` and passed to dnsx. The stage additionally enforces an absolute
+    ceiling of ``mail_posture.MAX_DKIM_QUERIES`` lookups regardless of how many
+    domains and selectors are configured.
+    """
+
+    enabled: bool = False
+    # Empty domains = use validated FQDN inputs (base domains / registered names).
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=5_000)
+    timeout_seconds: int = Field(default=15, ge=5, le=120)
+    retries: int = Field(default=1, ge=0, le=5)
+    deadline_seconds: int = Field(default=300, ge=10, le=3_600)
+    dkim_selectors: list[str] = Field(
+        default_factory=lambda: ["default", "google", "selector1", "selector2", "k1", "mail"],
+        max_length=20,
+    )
+    mta_sts_http: bool = True
+    mta_sts_timeout_seconds: int = Field(default=10, ge=1, le=60)
+
+    @field_validator("dkim_selectors")
+    @classmethod
+    def validate_dkim_selectors(cls, selectors: list[str]) -> list[str]:
+        for selector in selectors:
+            if not _DNS_LABEL_RE.match(selector):
+                raise ValueError(
+                    f"mail_posture.dkim_selectors entry {selector!r} is not a DNS label "
+                    "([a-z0-9-], 1-63 characters)"
+                )
+        return selectors
+
+
+class OrgProfileConfig(BaseModel):
+    """Organization profile module (EPIC #182). M1 ships ``ownership``, M2 adds
+    ``dns_hygiene`` and ``mail_posture``; the remaining stages
+    (related_domains, controls, credential_leaks) attach here as they land."""
+
+    ownership: OwnershipConfig = Field(default_factory=OwnershipConfig)
+    dns_hygiene: DnsHygieneConfig = Field(default_factory=DnsHygieneConfig)
+    mail_posture: MailPostureConfig = Field(default_factory=MailPostureConfig)
 
 
 class SlackAlertConfig(BaseModel):
@@ -755,8 +925,10 @@ class AppConfig(BaseModel):
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
+    screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
+    org_profile: OrgProfileConfig = Field(default_factory=OrgProfileConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     defectdojo: DefectDojoConfig = Field(default_factory=DefectDojoConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)

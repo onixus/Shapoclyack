@@ -3,14 +3,29 @@
 This guide deploys Shapoclyack with Kustomize. For architecture, configuration,
 and operational context, start at [../docs/README.md](../docs/README.md).
 
-Primary cluster runtime for **shapoclyack-0.41-0812+**. Default control plane is the **all-in-one**
+Primary cluster runtime for **shapoclyack-0.42-0822+**. Default control plane is the **all-in-one**
 image with Web UI scan start enabled.
 
-| Image | Tag | Role |
-|-------|-----|------|
-| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.41-0812` | API + UI + scanner (**default** Deployment / Job / CronJob) |
-| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.41-0812` | Scanner-only (lighter Job/CronJob alternative) |
-| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.41-0812` | Thin API + UI (results-only overlay) |
+| Image | Tag | Digest | Role |
+|-------|-----|--------|------|
+| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.42-0822` | `sha256:4847c4ac…4dbd9a` | API + UI + scanner (**default** Deployment / Job / CronJob) |
+| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.42-0822` | `sha256:809b9282…3b9a652` | Scanner-only (lighter Job/CronJob alternative) |
+| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.42-0822` | `sha256:d463ad4c…164829` | Thin API + UI (results-only overlay) |
+
+Manifests reference these as `name:tag@sha256:…`. A GHCR tag is mutable — the
+publish job can move `shapoclyack-0.42-0822` onto a different build, and every
+pod that restarts afterwards would silently run something other than what was
+reviewed. The tag stays in the reference so the manifests remain readable; the
+digest is what is actually pulled. When bumping a release, replace both halves
+together: `docker manifest inspect ghcr.io/onixus/shapoclyack-aio:<tag>` or
+
+```bash
+crane digest ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.42-0822
+```
+
+Never hand-edit one half. The `kind-dev` / `kind-restore` overlays override the
+whole reference with a locally built tag, so a digest in base does not get in
+the way of `scripts/dev-up.sh`.
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -20,6 +35,13 @@ and applies `overlays/kind-dev`. Set `OVERLAY=kind-enrichment` for real
 enrichment data; with `OVERLAY` unset the script keeps whatever the cluster
 already runs, so a rebuild cannot silently strip enrichment from the API.
 Tear down with `scripts/dev-down.sh`.
+
+A PostgreSQL restore drill uses a second namespace, not the source lab:
+`kubectl apply -k k8s/shapoclyack/overlays/kind-restore` then
+`scripts/restore-postgres.sh --namespace shapoclyack-restore --backup …`
+(see [docs/operations.md](../docs/operations.md) § Backup and disaster recovery).
+The overlay is Postgres + API only (no NodePort, so it does not steal
+`http://127.0.0.1:8080`).
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
@@ -73,6 +95,7 @@ k8s/shapoclyack/
 ├── base/nats/            # JetStream StatefulSet + Services + ConfigMap
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
 ├── base/config/k8s.yaml  # scanner ConfigMap source
+├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup, +agents) only
 ├── base/agents/          # optional agent Deployment + VPA (not in default base)
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
 ├── overlays/dev/         # smaller resources, --mode safe
@@ -90,10 +113,17 @@ Base includes `shapoclyack-nats` under `base/nats/` (ConfigMap + StatefulSet + h
 API/agent stay HTTP-only until you set:
 
 ```bash
-OCTO_NATS_URL=nats://shapoclyack-nats-client:4222
+# API:    user `api`   — full subject tree
+OCTO_NATS_URL=nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+# Agent:  user `agent` — pull + ack jobs.scan, nothing else
+OCTO_NATS_URL=nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
 ```
 
-Example patches: `examples/nats-api-patch.yaml`, `examples/nats-agent-patch.yaml`.
+The broker requires authentication (`authorization` in `base/nats/configmap.yaml`);
+`$(NATS_PASSWORD)` is a kubelet env expansion against a `secretKeyRef` on
+`shapoclyack-nats`, which must be declared **before** `OCTO_NATS_URL` in the same
+container. Example patches: `examples/nats-api-patch.yaml`,
+`examples/nats-agent-patch.yaml` — both show the ordering.
 
 Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream
 `INGEST`), `events.asset.{tenant_id}.{kind}` (stream `EVENTS`).
@@ -110,10 +140,13 @@ stay in the run's `diff.json`. Turn it off with `OCTO_ASSET_EVENTS_ENABLED=false
 without disabling job dispatch or result ingest on the same broker.
 
 **Webhook fan-out (Phase 10.3):** the API's own consumer of that stream is the
-durable pull consumer `octo-webhook-fanout` on `events.asset.>`, which turns
-matching events into `webhook_deliveries` rows; a dispatcher thread in every
-replica then delivers them (claims via `FOR UPDATE SKIP LOCKED`, so replicas
-divide the queue). Only queueing is on the broker path — the HTTP call is not —
+durable pull consumer `octo-webhook-fanout` on `events.asset.>`, created with
+`DeliverPolicy.NEW` before bind (so retained stream history is not replayed
+into a new webhook), which turns matching events into `webhook_deliveries`
+rows; a dispatcher thread in every replica then delivers them (claims via
+`FOR UPDATE SKIP LOCKED` with a visibility timeout that covers the serial
+batch, so replicas divide the queue without duplicate POSTs). `POST
+/api/webhooks/deliveries/{id}/retry` replays only dead-lettered rows. Only queueing is on the broker path — the HTTP call is not —
 so a slow receiver shows up as pending rows, not as JetStream lag. With
 `OCTO_WEBHOOK_DISPATCH_ENABLED=false` a replica keeps the API surface but sends
 nothing, which is how you confine outbound traffic to pods that have egress.
@@ -156,12 +189,15 @@ First-boot schema via `/docker-entrypoint-initdb.d/init.sql` (ConfigMap):
 Enable API ingest worker:
 
 ```bash
-OCTO_NATS_URL=nats://shapoclyack-nats-client:4222
-OCTO_CLICKHOUSE_URL=http://shapoclyack-clickhouse-client:8123
+OCTO_NATS_URL=nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+OCTO_CLICKHOUSE_URL=http://default:$(CLICKHOUSE_PASSWORD)@shapoclyack-clickhouse-client:8123
 OCTO_CH_INGEST_ENABLED=true
 ```
 
-Example patch: `examples/clickhouse-ingest-api-patch.yaml`.
+The `default` ClickHouse user has a password (Secret `shapoclyack-clickhouse`),
+is reachable only from private ranges, and no longer has `access_management`.
+Example patch: `examples/clickhouse-ingest-api-patch.yaml` — it declares both
+`secretKeyRef` variables ahead of the URLs, which is what makes `$(…)` expand.
 
 ### Postgres (PRIMARY_DB — Phase 7)
 
@@ -171,12 +207,31 @@ opt-in** — the tenant store (`api/services/tenants.py`) and the cross-run
 asset inventory (`api/services/assets.py`) both live here, so the API fails
 fast on startup if `OCTO_POSTGRES_URL` is empty.
 
-An `initContainer` on the API Deployment runs `alembic upgrade head` before
-any replica starts (migrations aren't safely idempotent across N concurrently
-starting replicas the way ClickHouse's `CREATE TABLE IF NOT EXISTS` init-SQL
-is). Dev-only password `shapoclyack-dev-postgres-change-me` is generated by the
+An `initContainer` on the API Deployment runs `python -m api.db.migrate` before
+any replica starts. That is `alembic upgrade head` wrapped in a **Postgres
+advisory lock** (#159): migrations aren't safely idempotent across N
+concurrently starting replicas the way ClickHouse's `CREATE TABLE IF NOT
+EXISTS` init-SQL is, and since P1.6 removed the `replicas: 1` requirement, N
+replicas is a supported configuration. Replicas queue on the lock; each still
+runs the upgrade after acquiring it, which is a no-op when the first one
+already brought the schema to head. `OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS`
+(default 600) bounds the wait, so a stuck migration fails the pod with a named
+cause rather than leaving it at `Init:0/1`.
+
+`alembic upgrade head` remains the right command by hand (CI uses it, and it is
+what a one-off `kubectl exec` should run) — the lock only matters where several
+processes may start at once.
+
+**One supported path to `head`.** `models.Base.metadata.create_all` is now
+restricted to SQLite (dev and the test suite). On Postgres the schema comes
+from Alembic and nowhere else, so an API replica started against an unmigrated
+database reports that instead of quietly building tables that carry no
+`alembic_version`.
+
+Dev-only password `shapoclyack-dev-postgres-change-me` is generated by the
 base `secretGenerator` — replace it before any real deployment, same as the
-API JWT secret.
+API JWT secret and the ClickHouse / NATS passwords
+([operations.md § Data-plane credentials](../docs/operations.md#data-plane-credentials)).
 
 `GET /api/assets`, `GET /api/assets/{asset_id}` expose the cross-run
 registry; run-scoped endpoints under `/api/runs/*` are unaffected.
@@ -217,8 +272,27 @@ restrict at the network layer, not app auth). `examples/ingress.example.yaml`
 does not expose it; keep it that way, and reach it in a lab with
 `kubectl -n network-scan port-forward svc/shapoclyack-api 8080:8080`.
 
-Series reference and alert thresholds: [docs/slo.md](../docs/slo.md) and the
-observability section of [docs/operations.md](../docs/operations.md).
+Alert rules live next to the scrape wiring, also in `examples/` so base still
+applies on a cluster without Prometheus Operator (#186):
+
+| You run | Rules | Action |
+|---|---|---|
+| Prometheus Operator | `examples/prometheusrule-slo.example.yaml` | `kubectl -n network-scan apply -f …`, and set a label your Prometheus `ruleSelector` matches |
+| Prometheus with `rule_files` | `examples/prometheus-slo.rules.yaml` | add `- /etc/prometheus/shapoclyack-slo.rules.yaml` under `rule_files` and mount the file |
+
+`prometheus-slo.rules.yaml` is the source of truth. The Operator wrapper is
+generated from it (`k8s/scripts/render-prometheusrule-slo.py`). `promtool check
+rules` runs in CI (`k8s/scripts/validate-prometheus-rules.sh`). Backup-freshness
+rules stay in `examples/prometheusrule-backup.example.yaml`.
+
+Scheduler leadership (`octo_scheduler_is_leader`) is alerted in both
+directions: `sum > 1` for 5 m (split brain, longer than a rolling-update
+overlap) and `sum == 0` for 10 m (no dispatch). Both require the series to
+exist so a missing scrape does not look like a missing leader.
+
+Series reference: [docs/slo.md](../docs/slo.md) (expressions live in the
+manifest, not duplicated as thresholds here) and the observability section of
+[docs/operations.md](../docs/operations.md).
 
 ### Upgrading a cluster deployed before the `octo-man` → `shapoclyack` rename
 
@@ -301,6 +375,21 @@ Only the **dev** overlay is exempt — it sets `OCTO_ENV=dev`
 `base` and the `prod` overlay deliberately do not, so an install that skipped
 this step cannot come up quietly. See
 [configuration.md](../docs/configuration.md#startup-safety-octo_env).
+
+Unlike the JWT secret, nothing refuses to start on the **data-plane**
+placeholders — `shapoclyack-clickhouse` and `shapoclyack-nats` come up happily
+on `shapoclyack-dev-clickhouse-change-me` and friends, because those services
+have no equivalent of the API's startup check. That makes replacing them a
+manual step you have to remember, so the same
+`examples/api-secrets.example.yaml` above carries both Secrets. They guard
+every tenant's raw scan results; the full rationale, the two NATS users, and
+the upgrade path for an existing cluster are in
+[operations.md § Data-plane credentials](../docs/operations.md#data-plane-credentials).
+
+Ingress to Postgres, ClickHouse and NATS is additionally restricted by
+`base/networkpolicy-datastores.yaml` (base, not an example — see
+[operations.md § NetworkPolicy decision](../docs/operations.md#networkpolicy-decision)).
+Egress policy remains an overlay concern.
 
 ### 3. Apply overlay
 

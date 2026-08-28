@@ -18,7 +18,13 @@ from api.services import agents as agents_service
 from api.services import jobs as jobs_service
 from api.services import tenants as tenants_service
 from api.services.jobs import get_job
-from tests.conftest import configured_client, login, make_settings, requires_postgres
+from tests.conftest import (
+    approve_scan_scope,
+    configured_client,
+    login,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -36,6 +42,8 @@ def settings(tmp_path: Path):
     tenants_service.configure(base)
     tenants_service.reset_for_tests()
     tenants_service.load_tenants(base)
+    # Scans need an approved scan scope since #226; see tests/conftest.py.
+    approve_scan_scope(base)
     agents_service.configure(base)
     agents_service.register_agent(agent_id="agent-1", tenant_id="default")
     return base
@@ -71,6 +79,7 @@ def test_the_same_key_in_another_tenant_is_a_different_request(settings):
     """Keys are the client's names for its own requests; two tenants must be
     able to use "nightly" without colliding."""
     tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    approve_scan_scope(settings, "ten_a")
     mine = jobs_service.start_scan(
         settings, StartScanRequest(mode="balanced"), username="admin", idempotency_key="nightly"
     )

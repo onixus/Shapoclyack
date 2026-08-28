@@ -11,8 +11,15 @@ import urllib.request
 from email.message import EmailMessage
 from typing import Any
 
+from . import safe_http
 from .config_schema import AlertsConfig, SmtpAlertConfig
+from .safe_http import SAFE_HTTP_ERRORS
 from .report import SEVERITY_ORDER
+
+
+#: A DNS-over-HTTPS answer is a few hundred bytes; 64 KiB is a bound with
+#: room to spare rather than a guess at the real size.
+_DOH_MAX_RESPONSE_BYTES = 64 * 1024
 
 
 def _env_or(value: str, env_name: str) -> str:
@@ -95,16 +102,28 @@ def _smtp_to_addrs(config: SmtpAlertConfig) -> list[str]:
 
 
 def lookup_txt_records(name: str, timeout: int = 10) -> list[str]:
-    """Resolve TXT via Cloudflare DNS-over-HTTPS (no dig dependency)."""
+    """Resolve TXT via Cloudflare DNS-over-HTTPS (no dig dependency).
+
+    Goes through ``safe_http`` rather than ``urllib.request.urlopen``: the
+    latter read the whole response with an uncapped ``response.read()`` and
+    followed redirects silently. One resolver answer is a few hundred bytes, so
+    the cap costs nothing, and a DNS answer is not something worth chasing a
+    3xx for.
+    """
     query = urllib.parse.urlencode({"name": name, "type": "TXT"})
     url = f"https://cloudflare-dns.com/dns-query?{query}"
-    request = urllib.request.Request(
+    response = safe_http.get(
         url,
+        timeout_seconds=timeout,
+        max_bytes=_DOH_MAX_RESPONSE_BYTES,
         headers={"Accept": "application/dns-json"},
-        method="GET",
+        max_redirects=0,
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    if response.status >= 400:
+        raise safe_http.SafeHttpError(f"HTTP {response.status} from {url}")
+    payload = safe_http.json_body(response)
+    if not isinstance(payload, dict):
+        raise safe_http.SafeHttpError(f"unexpected DNS-over-HTTPS document from {url}")
     answers = payload.get("Answer") or []
     texts: list[str] = []
     for answer in answers:
@@ -120,7 +139,7 @@ def check_dkim_record(domain: str, selector: str, timeout: int = 10) -> dict[str
     name = f"{selector}._domainkey.{domain}".lower()
     try:
         records = lookup_txt_records(name, timeout=timeout)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (*SAFE_HTTP_ERRORS, ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "reason": f"lookup_error: {exc}", "name": name, "records": []}
     has_v = any("v=DKIM1" in rec.upper() or "DKIM1" in rec.upper() for rec in records)
     return {"ok": bool(records) and has_v, "name": name, "records": records, "reason": None if records else "empty"}

@@ -28,8 +28,13 @@ when it is created.
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
 `0014`) and counted in `octo_auth_attempts_total{outcome}`. `outcome` is
-`success`, `failure` (credentials checked and rejected) or `locked` (refused by
-the limiter before they were checked).
+`success`, `failure` (credentials checked and rejected), `locked` (refused by
+the limiter before they were checked) or `denied` — an already-authenticated
+principal refused an action, currently a scan outside the tenant's approved
+scanning scope (#226). A `denied` row names what was refused in `detail` and
+carries no client IP: that decision is taken in the service layer, which has
+no request to read one from. The limiter counts `failure` rows only, so these
+refusals cannot lock anyone out.
 
 Those same rows *are* the limiter. Two counters run over the same window
 (`OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS`, default 15 minutes):
@@ -70,7 +75,12 @@ GET /api/auth/events?limit=100&outcome=failure&q=10.1.2.3
 ```
 
 Newest first, `Page` envelope like the other lists. `q` matches username or
-client IP; `outcome` filters to one of the three values. Rows older than
+client IP; `outcome` is one of `success`, `failure`, `locked`, `denied` (an
+authenticated principal refused an action — a scan or a deployment target
+outside the tenant's approved scope) or `trust_change` (an admin set or removed
+an SSH host-key pin, #241 — neither an attempt nor a refusal, and kept out of
+`success` so the login counter in `/metrics` keeps answering one question).
+Rows older than
 `OCTO_AUTH_EVENT_RETENTION_DAYS` (default 90) are pruned — but never while they
 are still inside the limiter's window, since the two settings are chosen
 independently and a short retention must not quietly weaken the lockout.
@@ -83,8 +93,8 @@ written per window and the rest are counted only in `/metrics`.
 
 | Role | Intended capability |
 |---|---|
-| `viewer` | Read assets, runs, findings, diffs, artifacts, and status |
-| `operator` | Viewer plus start jobs and update permitted asset metadata |
+| `viewer` | Read assets, runs, findings, diffs, artifacts (except screenshot PNGs and restricted artifacts), and status |
+| `operator` | Viewer plus start jobs, screenshot PNGs, restricted artifacts, and update permitted asset metadata |
 | `admin` | Operator plus tenant provisioning, destructive administration, and config overrides |
 
 The route implementation is authoritative. Client-side hiding is usability,
@@ -97,12 +107,15 @@ not an authorization control.
 | `/api/auth` | Login, current principal, and the authentication audit trail (`/api/auth/events`, admin) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
-| `/api/agents` | Agent registration, heartbeat, claim, and fleet status |
-| `/api/assets` | Persistent asset inventory and metadata |
+| `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |
+| `/api/agent/deploy` | Operator-driven SSH push installation of an agent onto a Linux host |
+| `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
+| `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory |
-| `/api/tenants` | Tenant lifecycle and provisioning keys. A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
+| `/api/tenants` | Tenant lifecycle, provisioning keys, and the approved scanning scope (`/api/tenants/{id}/scan-scope`, admin). A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
-| `/api/webhooks` | Outbound webhook subscriptions, their delivery trail, and the dead-letter queue |
+| `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
+| `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
 
@@ -147,6 +160,129 @@ routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
 filter.
 
+### Vulnerabilities
+
+Reading takes `viewer`; moving a finding through its lifecycle or reassigning it
+takes `operator`; **accepting risk and editing SLA policy take tenant `admin`**,
+because each commits the tenant to something rather than progressing one
+person's work. `POST /{id}/transition` answers `409` on an illegal move (the
+request is well-formed; the refusal is about the finding's current state) and
+`422` on a state that is not in the model. A finding in another tenant answers
+`404`. The states, the SLA resolution order and the exception rules are in
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md).
+
+**Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
+tenant's persisted risk snapshots — `recorded_at`, estate risk level, open and
+total counts, the NIST level breakdown and SLA breaches — filtered by
+`since` / `until` and capped by `limit` (default 90, maximum 500). `limit`
+takes the **most recent** rows and the series is returned oldest-first, so a
+chart asking for 30 points gets the last 30 ([#228](https://github.com/onixus/Shapoclyack/issues/228)).
+It is a **read of what was recorded**, not a recomputation: a period with no
+snapshots is a gap in the series, not zero risk.
+
+Unlike `/summary`, this route is always scoped to a single tenant, including
+for a platform admin who named none: summing several tenants is a number,
+interleaving their histories is a sawtooth. A platform admin selects the tenant
+with the `tenant_id` query parameter every route accepts; without one they read
+their own tenant.
+`POST /api/vulnerabilities/risk-history/snapshot` (operator) records one
+immediately and answers `201` with it. Snapshots are per tenant and are the
+only source the Risk Overview trend chart reads
+([#144](https://github.com/onixus/Shapoclyack/issues/144), Track C).
+
+### Agent fleet, deployment and upgrade
+
+| Route | Role | Notes |
+|---|---|---|
+| `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin, as for `/jobs` |
+| `GET /api/agents/summary` | viewer | Fleet rollup: total / online / busy / stale / error / outdated, `latest_version`, and a per-tenant count |
+| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities and `upgrade_requested`; `404` outside the tenant |
+| `DELETE /api/agents/{id}` | operator | Forgets the registration. It does **not** stop the remote process — an agent that is still running re-registers on its next heartbeat |
+| `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
+| `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
+| `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
+| `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `403` for a host or port outside the deployment target policy (see below), `502` when the target cannot be read |
+| `DELETE /api/agent/deploy/ssh/host-key?host=…&port=22` | **admin** | Removes this tenant's pin for that target and answers with what was removed, so the fingerprint being dropped is in front of the operator. `404` when nothing was pinned. The next deployment needs `expected_host_key` again — a rebuilt machine is re-verified, never silently re-trusted. Both the removal and the next pin are in `GET /api/auth/events?outcome=trust_change` ([#241](https://github.com/onixus/Shapoclyack/issues/241)) |
+| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side. The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
+| `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id`. Scoped to the caller's tenant; a run in another tenant answers `404` |
+| `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential |
+
+An agent id belonging to another tenant answers `404`, exactly as an id that
+exists nowhere does, on `GET`, `DELETE` and `upgrade` alike
+([#223](https://github.com/onixus/Shapoclyack/issues/223)). Answering `403`
+for the former and `404` for the latter told a caller which ids are real
+elsewhere in the installation, which is the only thing an opaque id is worth. A
+platform admin without a requested tenant sees the whole fleet, the same rule
+as `/api/jobs`.
+
+**Who may mint a provisioning key** ([#231](https://github.com/onixus/Shapoclyack/issues/231)).
+A provisioning key registers agents into the tenant, which makes handing one
+out an authorization decision rather than a read. `POST` on
+`/api/agent/deployment-command` and `/api/agent/deploy/ssh` therefore take
+tenant **`admin`** — the same bar as
+`POST /api/tenants/{tenant_id}/provisioning-keys`, which mints the identical
+credential, and the SSH push additionally installs software as root on another
+machine.
+
+This replaces the earlier rule, which set both at `operator` on the grounds
+that the SSH push already minted a key at `operator`. That reasoned from the
+weaker of the two routes: the argument justified `operator` on the
+key-minting POST by pointing at a route that should not have been `operator`
+either. The alternative considered was a separate `agent_provisioner`
+capability; it was rejected because roles here are a three-step ladder
+(`viewer` < `operator` < `admin`) that every route and the console's role
+gating read, so one capability would mean a second authorization model for one
+pair of endpoints. If per-capability grants arrive for other reasons, this is
+the first pair worth revisiting.
+
+Reading the snippets stays `operator`: `GET` mints nothing and returns a
+`<PROVISIONING_KEY>` placeholder. Tenant-wide key administration (listing,
+revoking, minting against an arbitrary tenant under
+`/api/tenants/{tenant_id}/provisioning-keys`) is `admin`, as before.
+
+The split between GET and POST is deliberate: rendering the snippets is
+idempotent, minting is not. Keys are hashed at rest and the plaintext is
+returned exactly once, so an existing key cannot be re-embedded in a snippet —
+a fresh mint is the only way to fill the placeholder in, and the operator asks
+for it explicitly rather than getting one per dialog open. Revoke unused keys
+via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
+
+Three further properties of this group are worth knowing before it is used:
+
+- **Deployment runs are rows** in `agent_deployments`, keyed by tenant, so the
+  status poll answers on any replica and survives a restart. The last 100 runs
+  per tenant are kept and each run keeps its last 500 log lines.
+- **The target's host key must be known before a deployment runs.** The first
+  deployment to a host needs `expected_host_key`; read it with
+  `POST /api/agent/deploy/ssh/host-key`, **confirm it on the target itself**
+  (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) rather than trusting the
+  probe, and send it back. It is then pinned for that tenant and target, and
+  later runs need nothing. A key that no longer matches the pin is a `409` that
+  reports both fingerprints; if the host really was rebuilt, remove the pin with
+  `DELETE /api/agent/deploy/ssh/host-key` and pin the new key deliberately on
+  the next run.
+- **Where a deployment may point is a policy, not the request's choice**
+  ([#240](https://github.com/onixus/Shapoclyack/issues/240)). Both the probe and
+  the run open a TCP connection to a host and port from the request body, so
+  both are checked first. The check is deliberately *not* the webhook boundary:
+  an agent belongs inside a private network, so RFC1918 is the ordinary answer
+  here and refusing it would refuse the product. What is refused is this
+  platform's own reflection — loopback, link-local (`169.254.169.254` is a
+  metadata service, not a Linux box), multicast, the unspecified address — a
+  port outside `OCTO_AGENT_DEPLOY_SSH_PORTS`, and any host the tenant's
+  approved scan scope **denies**
+  ([#226](https://github.com/onixus/Shapoclyack/issues/226)): a prohibition that
+  stopped a scan but not an SSH connection from the same API would not be
+  recording anything. Containment in the *allowed* scope is opt-in
+  (`OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE`), because where an agent lives is not
+  the same question as what it is approved to scan. Every refusal is a `403`
+  and a row in `GET /api/auth/events?outcome=denied`.
+- **SSH credentials are request data.** The password or private key in
+  `POST /api/agent/deploy/ssh` is used for the run and never stored, but it does
+  cross the API. Prefer a key with a purpose-built account. The minted
+  provisioning key reaches the installer on stdin and lives on the target only
+  in `/etc/shapoclyack/agent.env` (`0600`); revoke it if the host is shared.
+
 ### Webhooks
 
 Reading webhooks and their deliveries takes the tenant `operator` role;
@@ -158,25 +294,34 @@ closer to granting access than to scheduling a scan.
 | Route | Role | Notes |
 |---|---|---|
 | `GET /api/webhooks` | operator | Page of subscriptions; the signing secret is never included |
-| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, or the per-tenant limit. The generated `secret` is in this response only |
+| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, a missing ticket `transport_config`, or the per-tenant limit. The generated `secret` is in this response only (webhook transport). Ticket transports take `secret` as the tracker token and do not HMAC |
 | `PATCH`/`DELETE /api/webhooks/{id}` | admin | Deleting takes that subscription's delivery history with it |
-| `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new secret once |
+| `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new HMAC secret once. `422` on a ticket transport — PATCH `secret` with the tracker token instead |
 | `POST /api/webhooks/{id}/test` | admin | **202** — a signed `test` delivery is *queued*, not confirmed. Poll the deliveries list for the outcome |
 | `GET /api/webhooks/{id}/deliveries` | operator | Audit trail for one subscription |
 | `GET /api/webhooks/deliveries?status=dead` | operator | The dead-letter queue (`status` is `pending`, `delivered` or `dead`; anything else is `422`) |
 | `POST /api/webhooks/deliveries/{id}/retry` | admin | Requeues a dead delivery with a fresh attempt budget; needs no broker |
 
 A webhook in another tenant answers `404`, not `403` — as for jobs, schedules
-and runs, the id's existence is not the caller's business. Receivers verify
+and runs, the id's existence is not the caller's business. HMAC receivers verify
 `X-Shapoclyack-Signature` (`sha256=` HMAC over `{timestamp}.{body}`, the
 timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
 `X-Shapoclyack-Event-Id` as the deduplication key.
 
+`transport` selects the wire: `webhook` (default HMAC POST) or `jira` /
+`servicenow` / `defectdojo`. Ticket transports POST the native create-issue
+body to the instance URL, then link `ticket_key` on the matching tracked
+finding. An operator-set link is not overwritten. `transport_config` holds
+non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`).
+Credentials stay in `secret` or `Authorization`. Needs NATS, like any other
+asset-event consumer.
+
 ## Pagination
 
-`GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`, `/api/schedules`,
-and `/api/webhooks` (plus the delivery lists) return a page envelope rather
-than a bare array:
+`GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`,
+`/api/assets/{id}/events`, `/api/schedules`, `/api/webhooks` and
+`/api/vulnerabilities` (plus the delivery and event lists)
+return a page envelope rather than a bare array:
 
 ```json
 { "items": [], "total": 0, "offset": 0, "limit": 100, "has_more": false }
@@ -191,7 +336,7 @@ than a bare array:
 | `order` | `asc` or `desc` (default `desc`) |
 
 Sortable fields per resource: assets — `last_seen`, `first_seen`, `status`,
-`asset_criticality`, `asset_id`; jobs — `started_at`, `finished_at`, `status`,
+`asset_criticality`, `asset_id`, `owner_email`, `business_service`; jobs — `started_at`, `finished_at`, `status`,
 `job_id`, `mode`, `tenant_id`; agents — `hostname`, `agent_id`, `status`,
 `last_seen_at`, `registered_at`, `tenant_id`; schedules — `created_at`, `name`,
 `next_run_at`, `last_run_at`, `enabled`, `tenant_id`. Runs are always ordered by
@@ -258,6 +403,35 @@ accounts are never imported, and exist only under `OCTO_ENV=dev`; a `prod`
 install with neither an account nor that variable refuses to start. See
 [configuration.md](configuration.md#startup-safety-octo_env).
 
+## Approved scanning scope
+
+What a tenant may point the platform at is a stored, approved list rather than
+a syntax check (#226). Both endpoints are platform admin, for the same reason
+provisioning-key creation is (#231): deciding that a tenant may scan a network
+is an administrative act, and an operator who could widen their own scope
+would be the control removing itself.
+
+```http
+GET /api/tenants/{tenant_id}/scan-scope
+PUT /api/tenants/{tenant_id}/scan-scope   {"entries": [{"effect": "allow", "kind": "cidr", "value": "203.0.113.0/24"}]}
+```
+
+`PUT` replaces the whole scope in one transaction and stamps the caller as
+`approved_by` on every resulting row; `entries: []` is accepted and means the
+tenant scans nothing. A malformed entry is `422`, an unknown tenant `404`.
+
+An out-of-scope scan is refused with **`403`, not `422`** — the target is
+well-formed, the tenant is simply not entitled to it — and the refusal is
+recorded in the access-decision journal above. Since #244 the same `403` comes
+from `POST /api/schedules` and `PATCH /api/schedules/{id}`, checked against the
+targets that would be stored: a schedule is a scan asked for in advance, and
+until then the only refusal happened at dispatch, so an operator learned their
+schedule was out of scope by noticing hours later that no scan had run. The
+dispatch-time check stays — a scope narrowed after the schedule was written
+still has to stop it. The model, the third barrier inside the run, and the
+grandfathering migration `0025` applies on upgrade are described in
+[operations.md](operations.md#approved-scan-scope-per-tenant).
+
 ## Tenant memberships
 
 Which tenants a user may act in comes from the `user_tenants` table, managed by
@@ -313,6 +487,44 @@ Text artifacts can be previewed through the run artifact endpoint. Binary
 downloads use a dedicated path so PDFs and other files are transferred without
 text decoding. Artifact paths must be treated as untrusted input and resolved
 only inside the selected run directory.
+
+### Restricted artifacts
+
+Two artifact classes are not covered by the viewer's blanket artifact access,
+because they carry data about people rather than about open ports.
+
+**Screenshot PNGs** under `screenshots/` (ROADMAP P4.4).
+They can still hold personal data after DOM redaction, so:
+
+- `GET /api/runs/{id}` omits those paths from `artifacts`;
+- the text-preview endpoint answers `404` for them (they are not source);
+- `GET /api/runs/{id}/download/screenshots/…png` is operator-or-higher;
+  a viewer gets `404`, same as a missing file;
+- `GET /api/runs/{id}/screenshots` (operator) returns the manifest, including
+  items whose pixels the retention reaper already deleted (`available: false`).
+
+`screenshots.json` stays a normal text artifact.
+
+**Owner-identity artifacts** — `ownership.json` and `ownership_findings.txt`
+(org profile M1, [#182](https://github.com/onixus/Shapoclyack/issues/182)).
+They carry the RDAP registrant organization and the abuse contact address, i.e.
+a contactable human at the target organization. The predicate is
+`api/services/runs.py::is_restricted_artifact`, an explicit list of run-relative
+names — a new stage has to opt in deliberately:
+
+- `GET /api/runs/{id}` omits them from `artifacts` (as with PNGs, unconditionally
+  — an operator fetches them by name, they are not discovered through the list);
+- the text-preview endpoint answers `404` for a viewer and serves the JSON to an
+  operator (unlike PNGs these are readable text);
+- `GET /api/runs/{id}/download/ownership.json` is operator-or-higher; a viewer
+  gets `404`, same as a missing file.
+
+`resolve_artifact` refuses a restricted name too, not just the two routes:
+callers pass `allow_restricted=True` once the role check has passed, the same
+belt-and-braces as `allow_screenshots`. Without it the next endpoint that
+reaches for an artifact would inherit no protection at all.
+
+The same predicate will cover `credential_leaks.*` when org profile M5 lands.
 
 ## Automation clients
 

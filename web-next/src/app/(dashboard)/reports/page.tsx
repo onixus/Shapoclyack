@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { Download, FileText } from "lucide-react";
@@ -13,30 +13,43 @@ import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
 import { downloadArtifact, type RunSummary } from "@/lib/api";
 import { runDetailHref } from "@/lib/run-data";
+import { useT } from "@/lib/i18n";
 
 export default function ReportsPage() {
+  const t = useT();
   // Same server-paged run list as /runs (P3.3); ordering is by run_id.
   const pagination = usePagination({ sort: "run_id", order: "desc" });
   const { data, isLoading, error, isFetching } = useRuns(undefined, pagination.params);
   const runs = data?.items ?? [];
   const [busyRun, setBusyRun] = useState<string | null>(null);
 
-  async function downloadPdf(runId: string) {
+  const downloadPdf = useCallback(async (runId: string) => {
     setBusyRun(runId);
     try {
       await downloadArtifact(runId, "summary.pdf");
     } catch {
-      toast.error("No PDF report available for this run.");
+      toast.error(t("page.reports.noPdf"));
     } finally {
       setBusyRun(null);
     }
-  }
+  }, [t]);
+
+  const downloadSarif = useCallback(async (runId: string) => {
+    setBusyRun(`sarif-${runId}`);
+    try {
+      await downloadArtifact(runId, "sarif.json");
+    } catch {
+      toast.error("SARIF report not available for this run");
+    } finally {
+      setBusyRun(null);
+    }
+  }, []);
 
   const columns = useMemo<ColumnDef<RunSummary>[]>(
     () => [
       {
         accessorKey: "run_id",
-        header: "Run ID",
+        header: t("col.runId"),
         cell: ({ row }) => (
           <Link
             href={`${runDetailHref(row.original.run_id)}&tab=reports`}
@@ -48,12 +61,12 @@ export default function ReportsPage() {
       },
       {
         accessorKey: "profile",
-        header: "Profile",
+        header: t("col.profile"),
         cell: ({ getValue }) => <Badge variant="secondary" className="bg-slate-800 text-sky-300 font-mono text-[11px]">{String(getValue() || "—")}</Badge>,
       },
       {
         accessorKey: "started_at",
-        header: "Execution Date",
+        header: t("col.executionDate"),
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at ? (
@@ -66,12 +79,22 @@ export default function ReportsPage() {
       },
       {
         accessorKey: "potential_vulnerabilities",
-        header: "Vulnerabilities",
-        cell: ({ getValue }) => {
+        header: t("col.vulnerabilities"),
+        cell: ({ getValue, row }) => {
           const val = Number(getValue() ?? 0);
+          // Same reasoning as the Runs catalog: the total includes findings the
+          // scanner could not confirm, so name that share here.
+          const unconfirmed = row.original.unconfirmed_findings ?? 0;
           return (
-            <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-400" : "text-slate-400"}`}>
-              {val.toLocaleString()}
+            <span className="flex items-baseline gap-1.5">
+              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-400" : "text-slate-400"}`}>
+                {val.toLocaleString()}
+              </span>
+              {unconfirmed > 0 ? (
+                <span className="font-mono text-[10px] text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
+                  {unconfirmed.toLocaleString()} unconf.
+                </span>
+              ) : null}
             </span>
           );
         },
@@ -91,19 +114,29 @@ export default function ReportsPage() {
                 disabled={busyRun === row.original.run_id}
               >
                 <Download className="h-3.5 w-3.5" />
-                {busyRun === row.original.run_id ? "Downloading…" : "Download PDF"}
+                {busyRun === row.original.run_id ? t("common.downloading") : t("common.downloadPdf")}
               </Button>
             ) : (
-              <Badge variant="outline" className="border-slate-800 text-slate-500 font-normal">no summary</Badge>
+              <Badge variant="outline" className="border-slate-800 text-slate-500 font-normal">{t("common.noSummary")}</Badge>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+              onClick={() => downloadSarif(row.original.run_id)}
+              disabled={busyRun === `sarif-${row.original.run_id}`}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {busyRun === `sarif-${row.original.run_id}` ? "Downloading…" : "SARIF"}
+            </Button>
             <Button asChild variant="ghost" size="sm" className="text-slate-400 hover:text-slate-100 hover:bg-slate-800 text-xs">
-              <Link href={`${runDetailHref(row.original.run_id)}&tab=reports`}>Artifacts</Link>
+              <Link href={`${runDetailHref(row.original.run_id)}&tab=reports`}>{t("common.artifacts")}</Link>
             </Button>
           </div>
         ),
       },
     ],
-    [busyRun],
+    [busyRun, downloadPdf, downloadSarif, t],
   );
 
   return (
@@ -114,10 +147,10 @@ export default function ReportsPage() {
             <FileText className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">Executive Security Reports</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.reports.title")}</h1>
             <p className="text-xs text-slate-400">
-              Download business PDF reports or inspect raw scan artifact bundles.
-              {isFetching ? " · Refreshing reports…" : ""}
+              {t("page.reports.subtitle")}
+              {isFetching ? t("common.refreshing") : ""}
             </p>
           </div>
         </div>
@@ -128,9 +161,9 @@ export default function ReportsPage() {
         data={runs}
         isLoading={isLoading}
         error={error}
-        searchPlaceholder="Filter run IDs…"
-        loadingMessage="Retrieving report catalog…"
-        emptyMessage="No scan runs recorded yet."
+        searchPlaceholder={t("search.reports")}
+        loadingMessage={t("loading.reports")}
+        emptyMessage={t("empty.reports")}
         meta={`${data?.total ?? 0} runs`}
         serverPagination={{
           offset: pagination.offset,
