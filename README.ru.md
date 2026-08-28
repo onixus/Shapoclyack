@@ -45,11 +45,18 @@ scripts/dev-up.sh
 его в кластер и применяет `k8s/shapoclyack/overlays/kind-dev` (API, PostgreSQL,
 NATS, ClickHouse, Job/CronJob сканера).
 
-Откройте <http://localhost:8080>:
+Откройте <http://127.0.0.1:8080>:
 
 ```text
 operator / operator-change-me
 ```
+
+Используйте `127.0.0.1`, а не `localhost`: kind публикует NodePort только по
+IPv4, а на macOS `localhost` сначала резолвится в `::1`, и соединение
+отвергается.
+
+Свежая установка не сканирует ничего, пока администратор не утвердит область
+сканирования для тенанта — см. [шаг 6 в Getting started](docs/getting-started.md#6-approve-a-scanning-scope).
 
 Перед публикацией сервиса за пределами тестового контура замените demo-пароли и
 JWT secret (`k8s/shapoclyack/examples/api-secrets.example.yaml`).

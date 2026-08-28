@@ -25,6 +25,38 @@ explicitly before hunting a port collision: kind publishes the NodePort on
 - verify system time, JWT secret consistency, and ingress headers;
 - do not debug authorization by disabling server-side role checks.
 
+## Starting a scan answers 403
+
+The targets are outside the tenant's **approved scanning scope**
+([#226](https://github.com/onixus/Shapoclyack/issues/226)). The check is
+fail-closed, so the common case is not a wrong range but an *empty* scope: a
+tenant created after the `0025` migration — including the `default` tenant of a
+fresh install, which the API creates at first start — is allowed nothing until
+an admin approves something.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8080/api/tenants/default/scan-scope
+```
+
+An empty list is the answer, not a missing one. The refusal itself is in the
+access-decision journal with the offending targets in `detail`:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:8080/api/auth/events?outcome=denied'
+```
+
+Both routes are platform admin. Approve or widen the scope with
+`PUT /api/tenants/{id}/scan-scope` — it replaces the whole scope, so send the
+entries to keep, not only the ones being added. Rules and procedure:
+[operations.md](operations.md#approved-scan-scope-per-tenant).
+
+A scan that is refused *at start* rather than at submission is the second
+barrier: a schedule replays targets stored days earlier against a scope that has
+since been narrowed. A domain accepted by suffix but refused anyway resolved
+into a denied range — `OCTO_SCAN_SCOPE_RESOLVE_CHECK`.
+
 ## Jobs remain queued
 
 - check `OCTO_JOB_EXECUTION_MODE`;

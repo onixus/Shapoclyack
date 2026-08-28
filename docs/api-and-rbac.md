@@ -29,10 +29,12 @@ when it is created.
 Every login attempt is recorded in the Postgres `auth_events` table (migration
 `0014`) and counted in `octo_auth_attempts_total{outcome}`. `outcome` is
 `success`, `failure` (credentials checked and rejected), `locked` (refused by
-the limiter before they were checked) or `denied` — an already-authenticated
+the limiter before they were checked), `denied` — an already-authenticated
 principal refused an action, currently a scan outside the tenant's approved
-scanning scope (#226). A `denied` row names what was refused in `detail` and
-carries no client IP: that decision is taken in the service layer, which has
+scanning scope (#226) — or `trust_change`, an admin setting or removing an SSH
+host-key pin ([#241](https://github.com/onixus/Shapoclyack/issues/241)).
+A `denied` or `trust_change` row names what it was about in `detail` and
+carries no client IP: those decisions are taken in the service layer, which has
 no request to read one from. The limiter counts `failure` rows only, so these
 refusals cannot lock anyone out.
 
@@ -116,6 +118,7 @@ not an authorization control.
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
 | `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
+| `/api/wordlists` | Tenant-uploaded subdomain wordlists: list, upload, fetch and delete. Reads are `viewer`, writes `operator` — the same bar as starting a scan, since a wordlist is scan input. Selected per scan via `wordlist_id`; caps and normalization are in [configuration.md](configuration.md#tenant-uploaded-wordlists) |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
 

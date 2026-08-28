@@ -127,8 +127,10 @@ class AuthEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(index=True)
     username: Mapped[str] = mapped_column(default="")
     client_ip: Mapped[str] = mapped_column(default="")
-    # success | failure | locked. "locked" is a refusal the credentials were
-    # never checked against, so it is neither of the other two.
+    # success | failure | locked | denied | trust_change. "locked" is a refusal
+    # the credentials were never checked against, so it is none of the others;
+    # "denied" and "trust_change" are decisions about an already-authenticated
+    # principal (a scan out of scope, an SSH host-key pin set or removed).
     outcome: Mapped[str] = mapped_column(default="failure")
     # Machine-readable cause; NULL on success. See AUTH_REASONS in
     # api/services/auth_audit.py.

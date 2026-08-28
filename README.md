@@ -46,11 +46,17 @@ This creates a local `kind` cluster, builds the all-in-one image, loads it into
 the cluster, and applies `k8s/shapoclyack/overlays/kind-dev` (API, PostgreSQL,
 NATS, ClickHouse, and the scan Job/CronJob).
 
-Open <http://localhost:8080> and sign in as:
+Open <http://127.0.0.1:8080> and sign in as:
 
 ```text
 operator / operator-change-me
 ```
+
+Use `127.0.0.1` rather than `localhost`: kind publishes the NodePort on IPv4
+only, and on macOS `localhost` resolves to `::1` first, which is refused.
+
+A fresh install scans nothing until an admin approves a scanning scope for the
+tenant — see [step 6 of Getting started](docs/getting-started.md#6-approve-a-scanning-scope).
 
 Change the development JWT secret and demo passwords before exposing the
 service outside a trusted lab (see `examples/api-secrets.example.yaml` under
