@@ -95,6 +95,26 @@ def _sweep_job_inputs(settings: Settings, cutoff: float) -> dict[str, int]:
     return {"deleted": deleted, "errors": errors, "kept": kept}
 
 
+def _stats(
+    runs: tuple[int, int, int] = (0, 0, 0),
+    inputs: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Build :func:`sweep`'s result. One place, so the early returns and the
+    normal path cannot report different shapes (a caller reading a key that
+    only some paths carry would fail on a fresh install, where the runs
+    directory does not exist yet)."""
+    deleted, errors, kept = runs
+    inputs = inputs or {"deleted": 0, "errors": 0, "kept": 0}
+    return {
+        "deleted": deleted,
+        "errors": errors,
+        "kept": kept,
+        "job_inputs_deleted": inputs["deleted"],
+        "job_inputs_errors": inputs["errors"],
+        "job_inputs_kept": inputs["kept"],
+    }
+
+
 def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     """Delete expired run directories and orphaned job inputs.
 
@@ -106,29 +126,14 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     now = now or _now()
     days = settings.run_retention_days
     if days <= 0:
-        return {
-            "deleted": 0,
-            "errors": 0,
-            "kept": 0,
-            "job_inputs_deleted": 0,
-            "job_inputs_errors": 0,
-            "job_inputs_kept": 0,
-        }
+        return _stats()
 
     cutoff = now.timestamp() - days * 86400.0
     deleted = errors = kept = 0
     runs_root = settings.output_dir / "runs"
 
     if not runs_root.is_dir():
-        inputs = _sweep_job_inputs(settings, cutoff)
-        return {
-            "deleted": 0,
-            "errors": 0,
-            "kept": 0,
-            "job_inputs_deleted": inputs["deleted"],
-            "job_inputs_errors": inputs["errors"],
-            "job_inputs_kept": inputs["kept"],
-        }
+        return _stats(inputs=_sweep_job_inputs(settings, cutoff))
 
     for run_dir in runs_root.iterdir():
         if not run_dir.is_dir():
@@ -159,15 +164,7 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
             errors += 1
             LOG.exception("Run retention: unexpected error removing %s", run_dir)
 
-    inputs = _sweep_job_inputs(settings, cutoff)
-    return {
-        "deleted": deleted,
-        "errors": errors,
-        "kept": kept,
-        "job_inputs_deleted": inputs["deleted"],
-        "job_inputs_errors": inputs["errors"],
-        "job_inputs_kept": inputs["kept"],
-    }
+    return _stats((deleted, errors, kept), _sweep_job_inputs(settings, cutoff))
 
 
 class RunRetentionWorker:

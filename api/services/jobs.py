@@ -1446,6 +1446,7 @@ def complete_job(
     restarted worker keeps its ``agent_id``, that is the only way to tell the
     two apart. Omitted by pre-P1.5 agents, which are then unfenced.
     """
+    replay_result: JobInfo | None = None
     with get_session(settings.postgres_url) as session:
         # Locked for the whole check: concurrent uploads for the same job must
         # be decided one at a time, or both would read a non-terminal row and
@@ -1468,13 +1469,11 @@ def complete_job(
         if row.status in job_states.TERMINAL:
             replay = _classify_replay(row, exit_code=exit_code, idempotency_key=idempotency_key)
             if replay is not None:
-                # Reached only for a job that is already terminal, so the agent
-                # is not still reading these -- a replay arrives after the run
-                # has finished, not while it is executing. A first upload whose
-                # response was lost may already have swept the directory, which
-                # is why the removal is idempotent (#258).
-                _discard_job_inputs(settings, job_id)
-                return replay
+                # Answered below, once the row lock is released: the cleanup
+                # this replay triggers is filesystem work, and holding the lock
+                # across it would make a second agent's retry wait on the disk
+                # rather than on the decision.
+                replay_result = replay
         elif idempotency_key:
             if row.results_idempotency_key == idempotency_key:
                 # Same key, job not finished: the first request holding this key
@@ -1491,8 +1490,18 @@ def complete_job(
         # for a job that already finished — or one an operator cancelled while
         # the agent was still working — must not overwrite the run directory
         # and re-publish to NATS before being rejected.
-        job_states.check_transition(job_id, row.status, status)
+        if replay_result is None:
+            job_states.check_transition(job_id, row.status, status)
         resolved_run_id = run_id or row.run_id
+
+    if replay_result is not None:
+        # Reached only for a job that is already terminal, so the agent is not
+        # still reading these -- a replay arrives after the run has finished,
+        # not while it is executing. A first upload whose response was lost may
+        # already have swept the directory, which is why this is idempotent
+        # (#258).
+        _discard_job_inputs(settings, job_id)
+        return replay_result
 
     try:
         if archive_bytes:
