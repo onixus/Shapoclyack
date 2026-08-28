@@ -83,6 +83,17 @@ class NatsConfig:
     connect_timeout: float = 5.0
 
 
+# Attempts and backoff for creating a JetStream stream at connect time. The
+# ceiling matters more than the count: a cold JetStream is unavailable for
+# seconds, and a replica that gives up early comes back with no stream.
+_STREAM_ATTEMPTS = 8
+_STREAM_MAX_DELAY_SECONDS = 3.0
+# What those attempts add up to in sleeps (0.2, 0.4, 0.8, 1.6, then the cap).
+# start() waits on _connect as a whole, so its timeout has to cover this or a
+# flat TimeoutError replaces the message that says which stream failed and why.
+_STREAM_BUDGET_SECONDS = 12.0
+
+
 class NatsBus:
     """Background asyncio loop + JetStream helpers usable from sync FastAPI code."""
 
@@ -110,7 +121,7 @@ class NatsBus:
         self._thread.start()
         fut = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
         try:
-            fut.result(timeout=self._config.connect_timeout + 10)
+            fut.result(timeout=self._config.connect_timeout + _STREAM_BUDGET_SECONDS + 5)
             self._started = True
             self._ready.set()
             atexit.register(self.close)
@@ -212,14 +223,35 @@ class NatsBus:
             pass
 
     async def _ensure_stream(self, config: Any) -> None:
+        """Create or reconcile one stream, or refuse to report a working bus.
+
+        Raising is the point. ``start()`` already treats a failed ``_connect``
+        as "NATS is unavailable, disable the bus for this process and say so";
+        returning quietly here defeated that, because the bus then came up
+        ``_started`` with no stream behind it and every later publish failed
+        one message at a time with ``NoStreamResponseError``. A replica that
+        starts while JetStream is still initialising must look unavailable,
+        not healthy.
+
+        The budget is sized for that case rather than for a warm server: a
+        JetStream that is enabled but has not finished opening a cold
+        ``store_dir`` answers "no responders" for seconds, not milliseconds,
+        and the previous five tries spanned two of them.
+        """
         assert self._js is not None
+        delay = 0.2
+        add_exc: BaseException | None = None
         last_exc: BaseException | None = None
-        for attempt in range(1, 6):
+        for attempt in range(1, _STREAM_ATTEMPTS + 1):
             try:
                 await self._js.add_stream(config=config)
                 return
-            except Exception as add_exc:  # noqa: BLE001
-                last_exc = add_exc
+            except Exception as exc:  # noqa: BLE001
+                # Kept separately from last_exc: this is the one that says why
+                # creation failed ("no responders" when JetStream is not up
+                # yet), and the stream_info error below used to overwrite it
+                # with a flat "stream not found" that explains nothing.
+                add_exc = exc
                 # Already present (or raced with another API replica). Push our
                 # retention/replica config onto it so limit changes (e.g. a new
                 # OCTO_NATS_*_MAX_AGE_SECONDS) take effect on redeploy, not only
@@ -234,8 +266,15 @@ class NatsBus:
                     return
                 except Exception as info_exc:  # noqa: BLE001
                     last_exc = info_exc
-                    await asyncio.sleep(0.2 * attempt)
-        LOG.warning("stream %s not ready after retries: %s", config.name, last_exc)
+                    if attempt == _STREAM_ATTEMPTS:
+                        break
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, _STREAM_MAX_DELAY_SECONDS)
+        raise RuntimeError(
+            f"JetStream stream {config.name} could not be created or read after "
+            f"{_STREAM_ATTEMPTS} attempts: add_stream failed with {add_exc!r}; "
+            f"stream_info failed with {last_exc!r}"
+        )
 
     def _call(self, coro: Any, *, timeout: float = 15.0) -> Any:
         if not self._started or self._js is None:
