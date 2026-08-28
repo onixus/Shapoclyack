@@ -470,6 +470,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **A finished job now takes its input directory with it**
+  ([#258](https://github.com/onixus/Shapoclyack/issues/258)).
+  `_prepare_target_inputs` created `state_dir/job_inputs/<job_id>/` and nothing
+  removed it. Before #244 that directory existed only for a job carrying target
+  overrides; #244 writes `scan_scope.json` for every scan, so it was created
+  once per run and the growth went from occasional to linear — a few kilobytes
+  per scan, on a persistent volume, in one flat tree, for a product that
+  advertises 50k assets and continuous schedules. It is now removed on all
+  three completion paths (the local worker, the agent's upload, and the
+  idempotent-replay branch whose `job_id` never became a row), best-effort and
+  idempotent, in the shape `_discard_job_wordlist` already used. Removal happens
+  only once the job is terminal: the scanner reads these files while it runs and
+  an agent re-reads them on every claim. Whatever never completed — and whatever
+  an installation accumulated before this existed — is swept by the existing
+  `run_retention` reaper on the same cutoff, so there is no second mechanism and
+  no start-up migration. `sweep()` reports three more counters
+  (`job_inputs_deleted`/`_errors`/`_kept`); the run-artifact keys are unchanged.
+
 - **A webhook claim expired mid-batch, so a peer re-sent a delivery still in
   flight** ([#255](https://github.com/onixus/Shapoclyack/issues/255)) — the
   visibility window was computed twice with two different answers. The live
