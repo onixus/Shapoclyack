@@ -175,6 +175,9 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+# The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
+# The attribution has to travel with the bytes, not stay in the repository.
+COPY LICENSE NOTICE /app/
 COPY scanner /app/scanner
 # Pristine copy of the committed enrichment seed. scripts/fetch-enrichment.sh
 # uses this as its floor: the runtime target is /app/scanner/data itself, so

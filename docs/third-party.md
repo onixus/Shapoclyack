@@ -3,6 +3,20 @@
 This page is an operational inventory, not legal advice. Verify the exact image
 contents and license texts for the release you distribute.
 
+## This project's own licence
+
+Shapoclyack is licensed under the **Apache License 2.0** ([LICENSE](../LICENSE)).
+Attributions that must travel with the source and with every image built from it
+live in [NOTICE](../NOTICE) — keep that file with any redistribution, and add to
+it rather than replacing it if you build derivative images.
+
+Apache-2.0 covers the code in this repository. It says nothing about the
+third-party components below, which keep their own terms: an image is an
+aggregate, and the most restrictive component in it governs what you may do with
+that image. The practical consequence is the `-nmap` tag, which is the only
+artifact here carrying terms that restrict redistribution — see the next
+section.
+
 ## Scanner tools
 
 **Nmap is not part of the default distribution.** The default
