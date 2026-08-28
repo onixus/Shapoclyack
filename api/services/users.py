@@ -27,7 +27,7 @@ from sqlalchemy import select
 
 from api.auth import hash_password, verify_password
 from api.db import models
-from api.db.engine import get_session
+from api.db.engine import get_session, insert_if_absent
 from api.settings import ENV_PROD, InsecureConfigurationError, Settings
 
 logger = logging.getLogger(__name__)
@@ -382,9 +382,14 @@ def _seed_dev_users(settings: Settings) -> None:
     with get_session(settings.postgres_url) as session:
         for entry in DEFAULT_USERS:
             username = str(entry["username"])
-            if session.get(models.User, username) is not None:
-                continue
-            session.add(
+            # Not check-then-insert: nothing separates the lookup from the
+            # insert, and this runs at startup in every replica at once (and,
+            # in the suite, against a database a leftover worker thread is
+            # still writing to). The row a racing writer inserted is the same
+            # row, so losing the race is a no-op -- but only if the failure is
+            # scoped to it, which is what insert_if_absent's SAVEPOINT buys.
+            insert_if_absent(
+                session,
                 models.User(
                     username=username,
                     password_hash=hash_password(str(entry["password"])),
@@ -393,7 +398,8 @@ def _seed_dev_users(settings: Settings) -> None:
                     updated_at=now,
                     password_changed_at=now,
                     created_by="seed:dev",
-                )
+                ),
+                username,
             )
     logger.warning(
         "OCTO_ENV=%s: seeded the built-in demo accounts, whose passwords are "
