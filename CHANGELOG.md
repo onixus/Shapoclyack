@@ -470,6 +470,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The dev-account seeder no longer races itself** ([#257](https://github.com/onixus/Shapoclyack/issues/257)).
+  `_seed_dev_users` checked for each built-in account and then inserted it,
+  with nothing in between. Every API replica runs the startup bootstrap, so two
+  starting at once both read "absent" and both insert; the loser took a
+  `UniqueViolation` that aborted its whole transaction and its start. It now
+  goes through `insert_if_absent`, the SAVEPOINT-scoped helper the P1.2 startup
+  imports already use, so losing the race is the no-op it should be — the row
+  the winner wrote is the same row. In the test suite the second writer was an
+  agent-deployment worker left over from an earlier test, which is why this
+  surfaced as `tests/test_agent_lifecycle_management.py` failing roughly one run
+  in five. Those daemon threads are now registered and joined
+  (`agent_deployer.join_workers`) before the next test truncates the database,
+  so a worker that outlives its test fails that test instead of a later one.
+
 - **A finished job now takes its input directory with it**
   ([#258](https://github.com/onixus/Shapoclyack/issues/258)).
   `_prepare_target_inputs` created `state_dir/job_inputs/<job_id>/` and nothing

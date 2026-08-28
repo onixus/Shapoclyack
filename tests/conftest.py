@@ -113,6 +113,12 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services.integrations import webhooks as webhooks_service
 
     agents_service.configure(settings)
+    # Before anything is truncated: a deployment worker left running by the
+    # previous test writes stage rows and re-seeds nothing, so it races both
+    # the truncation below and create_app()'s user bootstrap after it (#257).
+    # Daemon threads made that invisible -- the test that started one passed,
+    # and a later, unrelated test failed.
+    assert agent_deployer.join_workers(), "a deployment worker outlived its test"
     agent_deployer.configure(settings)
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
