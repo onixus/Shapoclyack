@@ -35,26 +35,36 @@ map and each source stays authoritative for its own scope.
 
 ## Current baseline (done)
 
-Shipped through **[shapoclyack-0.42-0822](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.42-0822)**.
+Shipped through **[shapoclyack-0.43-0828](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.43-0828)**.
 Includes all capabilities of Phases 1–11 and P0–P4, full EASM lifecycle & NIST risk scoring,
-Track B Wave 0 and Wave 1 GA hardening (#151–#159, #185–#188), ClickHouse TTL and run retention (#187),
-and multi-replica load validation (#188).
+Track B Wave 0, Wave 1 and Wave 2 GA hardening (#151–#159, #185–#188, #222–#231),
+ClickHouse TTL and run retention (#187), and multi-replica load validation (#188).
 GHCR images are published by the **local Jenkins** job `shapoclyack-publish` (`Jenkinsfile.publish`)
-with tag `shapoclyack-0.42-0822`.
+with tag `shapoclyack-0.43-0828`; the k8s manifests pin `tag@sha256:` to that tag ([#267](https://github.com/onixus/Shapoclyack/pull/267)).
 
-**On `main`, merged but not yet tagged** (see [CHANGELOG.md](CHANGELOG.md) `## Unreleased`):
-historical risk score snapshots — the last leftover of [#144](https://github.com/onixus/Shapoclyack/issues/144);
-a SARIF v2.1.0 exporter with an in-UI viewer; endpoint-inventory NATS events and the
-end-to-end lifecycle suite that complete **Track D** (S8/S10); agent fleet monitoring
-and UI-driven SSH deployment (`scripts/install-agent.sh`, `scripts/update-agent.sh`);
-**auto-update was claimed here in error and does not exist** — the bundle route the scripts
-fetched was never implemented and `upgrade_requested` is a flag nothing on the host reads
-(~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~, corrected in
-[#233](https://github.com/onixus/Shapoclyack/pull/233));
-a UX/UI refactor with a redesigned remediation kanban; and JWT-algorithm / request-body
-hardening. Local CI `shapoclyack` **#27** (2026-08-24, revision `08b0bd0`) is SUCCESS:
-1033 pytest on 3.11 and 3.12, coverage 80.02% against a 74% gate, 142 vitest in 26 files,
-load run 16/16 hosts.
+Everything this section listed on 2026-08-26 as merged-but-untagged shipped in
+`shapoclyack-0.43-0828`, together with all of Wave 2: historical risk score snapshots
+([#144](https://github.com/onixus/Shapoclyack/issues/144)), a SARIF v2.1.0 exporter with an
+in-UI viewer, endpoint-inventory NATS events and the end-to-end lifecycle suite completing
+**Track D** (S8/S10), agent fleet monitoring and UI-driven SSH deployment, a UX/UI refactor
+with a redesigned remediation kanban, and JWT-algorithm / request-body hardening.
+Auto-update was claimed in that list in error and does not exist — the bundle route the
+scripts fetched was never implemented and `upgrade_requested` is a flag nothing on the host
+reads (~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~, corrected in
+[#233](https://github.com/onixus/Shapoclyack/pull/233)).
+`CHANGELOG.md` has no open `## Unreleased` section at the cut; `main` is that tag plus the
+publish-parameter validation ([#268](https://github.com/onixus/Shapoclyack/pull/268)), the
+k8s digest pins and documentation.
+
+Local CI is the multibranch job `shapoclyack-branches`, branch `main` — the single-branch
+`shapoclyack` job is disabled and its last builds are stale, so it is not evidence of
+anything. Build **#8** (2026-08-28, revision `645bdc5`) is SUCCESS: 1291 pytest on 3.11 and
+3.12, coverage 83.36% against a 74% gate, 142 vitest in 26 files, load run 16/16 hosts.
+Build **#9** (revision `d644f20`, the current tip) is **FAILURE** on
+`tests/test_nats_live.py::test_live_ingest_publish`, which is not a test problem:
+`NatsBus._ensure_stream` returned quietly when the stream could not be created, so the bus
+came up reporting itself healthy with nothing behind it
+([#270](https://github.com/onixus/Shapoclyack/issues/270)).
 
 
 | Area | Status |
@@ -203,7 +213,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 
 **Goal:** evolve Shapoclyack from a run-centric VM scanner into a full External Attack Surface Management platform — continuous outside-in discovery, a persistent asset inventory with identity/lifecycle, exposure fingerprinting, and change-based alerting, on top of the MSSP foundation from Phases 1–6.
 
-**Status:** Phase 7 **done** (MVP); Phase 8 **done** (8.1–8.5); Phase 9 partially done (9.1, 9.2, 9.4) — remainder **Planned**.
+**Status:** Phase 7 **done** (MVP); Phase 8 **done** (8.1–8.5); Phase 9 **done** (9.1–9.4 — 9.3 was delivered as [P4.4](#p4-breakdown--differentiating-features), which is why this line used to read as partial).
 
 ### Phase 7 — Asset Inventory & Identity Graph
 
@@ -406,7 +416,7 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 | ~~[#158](https://github.com/onixus/Shapoclyack/issues/158)~~ | Automated backup + **rehearsed** restore | **Done** | Infra was already merged. Drill 2026-08-20 on kind `shapoclyack-dev`: dump of the live lab restored into namespace `shapoclyack-restore` (`overlays/kind-restore`); 5 assets matched source; `db_restore_seconds<1`, `recovery_seconds=31`. Measured RPO 3 min for that backup; CronJob still bounds worst-case at 24 h. ClickHouse / artifact PVC snapshots stay install-specific (no in-repo `VolumeSnapshotClass`) |
 | ~~[#159](https://github.com/onixus/Shapoclyack/issues/159)~~ | Safe upgrade — one path to the schema, rollback runbook | **Done** | Advisory lock around `python -m api.db.migrate` in the initContainer ([#192](https://github.com/onixus/Shapoclyack/pull/192)); `create_all` is SQLite-only. Expand/contract and the upgrade/rollback runbook live in [docs/operations.md](docs/operations.md). PDB landed with #158. Postgres restore drill (#158) is done separately; rolling-update rollback remains the runbook in docs/operations.md |
 | ~~[#174](https://github.com/onixus/Shapoclyack/issues/174)~~ | `OCTO_POSTGRES_URL` falls back to SQLite | **Done** | [#191](https://github.com/onixus/Shapoclyack/pull/191): `OCTO_ENV=prod` refuses an unset URL and any `sqlite://`. Dev/tests keep the fallback |
-| ~~[#160](https://github.com/onixus/Shapoclyack/issues/160)~~ | Cut the release, empty `## Unreleased` | **Done** | 0.41-0817 was cut. `Unreleased` is non-empty again because work landed after the tag; the next cut is a new tag, not a rerun of #160 |
+| ~~[#160](https://github.com/onixus/Shapoclyack/issues/160)~~ | Cut the release, empty `## Unreleased` | **Done** | 0.41-0817 was cut, then 0.43-0828. A cut empties `Unreleased`; work landing afterwards opens it again, so a non-empty section is the normal state between releases, not a regression of #160 |
 | ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ | Webhook delivery state machine | **Done** | Durable `octo-webhook-fanout` created with `DeliverPolicy.NEW` before bind; DLQ replay refuses `delivered`; claim visibility covers the serial batch so concurrent dispatchers cannot double-POST |
 | ~~[#185](https://github.com/onixus/Shapoclyack/issues/185)~~ | End-to-end API latency under concurrency | **Done** | `tests/fixtures/api_latency.py`; kind-dev 2026-08-20 at 1k/10k/50k × conc 32: list GET p95 < 500 ms, `/api/system` tight; SLO 4/5 not re-derived |
 | ~~[#186](https://github.com/onixus/Shapoclyack/issues/186)~~ | PrometheusRule from SLO + scheduler leadership | **Done** | `examples/prometheus-slo.rules.yaml` + Operator wrapper; `promtool check rules` in CI; `octo_scheduler_is_leader` `> 1` (5 m) and `== 0` (10 m) |
@@ -415,8 +425,11 @@ configured one. "Forgot to configure" and "configured" must not look alike.
 
 Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 is done:
 ~~#152~~ → ~~#185/#186~~ → ~~#187~~ → ~~#188~~. **Wave 2** ([below](#wave-2--what-was-never-filed))
-is **closed**. What the GA gate now waits on is the release cut itself: none of this has shipped
-in a tag, and cutting one is also what lets the three security advisories be published.
+is **closed** and shipped in `shapoclyack-0.43-0828` (published 2026-08-28). The advisories
+that cut unblocked have been resolved: one published, two closed as never released — see
+[below](#wave-2--what-was-never-filed). EPIC [#154](https://github.com/onixus/Shapoclyack/issues/154)
+stays open on its last unchecked criterion, which is now the release *procedure* rather than
+the content: a prod install taken from the tag, with `Unreleased` empty after the cut.
 
 **Wave 1** is now filed rather than described here:
 ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
@@ -449,14 +462,20 @@ release carrying an unauthenticated bypass of the whole access model is worse th
 
 **The three P0 items are filed as private GitHub Security Advisories, not as issues.** The
 repository is public and `shapoclyack-0.42-0822` images are published to GHCR; describing them
-in the open tracker would disclose a 0-day to everyone already running the product. They are
-published once the fix ships — **all three are now fixed on `main` and none has shipped in a
-tag**, so the advisories stay drafts until the next release. Without exploitation detail:
+in the open tracker would have disclosed a 0-day to everyone already running the product. All
+three fixes shipped in `shapoclyack-0.43-0828`, and the three drafts were resolved on
+2026-08-28 — but not all the same way, because only one of them had ever reached a user:
 
-1. **Unvalidated path in the SPA fallback** (`api/app.py`), unauthenticated. It reaches the
-   process environment, and from there the JWT secret — which makes RBAC, tenant isolation,
-   login rate limiting and audit irrelevant. It voids Waves 0 and 1 as a whole, so it is fixed
-   first, before anything else in this table.
+1. **Unvalidated path in the SPA fallback** (`api/app.py`), unauthenticated —
+   **[GHSA-cpcx-h7mr-24pc](https://github.com/onixus/Shapoclyack/security/advisories/GHSA-cpcx-h7mr-24pc),
+   published**, CVSS 7.5, affected `>= v0.3.0` through `shapoclyack-0.42-0822`.
+   The impact recorded here was overstated and is corrected in the published advisory: the
+   route read any regular file the API process could, including every tenant's run artifacts
+   and the pod's mounted service-account token — but **not** the process environment, and so
+   not the JWT secret. Secrets arrive via `secretKeyRef` and live only in the environment;
+   `/proc/self/environ` reports `st_size == 0`, and `FileResponse` takes `Content-Length`
+   from that `stat`, so the body is empty. Measured, not assumed. It is a serious disclosure,
+   not the collapse of the access model this file previously described.
 2. **Agent SSH deployment accepts any host key** (`api/services/agent_deployer.py`) — the
    operator credential for the target host and a tenant provisioning key travel over it.
 3. **Agent install URL derived from a request header** (`api/routes/agents.py`), which decides
@@ -471,31 +490,47 @@ tag**, so the advisories stay drafts until the next release. Without exploitatio
 | ~~[#226](https://github.com/onixus/Shapoclyack/issues/226)~~ | No scan-scope authorization — a tenant may scan any network | **Done** ([#243](https://github.com/onixus/Shapoclyack/pull/243)) — `tenant_scan_scopes` (migration `0025`), deny wins by *overlap* so a wider target cannot reach a denied range, allow by containment, empty scope scans nothing. Two barriers: `parse_target_payload` takes the scope as a keyword argument with no default, so no call site can omit it, and `start_scan` re-reads and re-parses rather than trusting the first. Refusals go to `auth_events`. Checked **before** resolution, and the scanner resolves again — that gap is [#244](https://github.com/onixus/Shapoclyack/issues/244) |
 | ~~[#231](https://github.com/onixus/Shapoclyack/issues/231)~~ | Role for minting provisioning keys and SSH deployment | **Done** ([#239](https://github.com/onixus/Shapoclyack/pull/239)) — raised to `admin` rather than adding an `agent_provisioner` capability: a second authorization model for one pair of endpoints costs more than it returns. `docs/api-and-rbac.md` records the new reasoning |
 
-**Where Wave 2 stands (2026-08-26).** **Closed** — all three P0 items and all six P1 items are
-merged to `main`, along with the four "claimed Done" defects below. Nothing here has shipped in
-a tag, so the three security advisories stay drafts and the GA gate stays closed until the cut:
-what blocks the release now is the procedure, not the content.
+**Where Wave 2 stands (2026-08-28).** **Closed and shipped** — all three P0 items, all six P1
+items and the four "claimed Done" defects below are in `shapoclyack-0.43-0828`. The two
+never-released advisories are closed rather than published: filing an affected range for them
+would have marked `shapoclyack-0.42-0822` vulnerable to a feature it does not contain, which
+is a false alarm aimed at exactly the operators the advisory exists to protect.
 
 Four issues were opened *because of* this work rather than found by the original review, and
-they are the honest residue of it:
-[#238](https://github.com/onixus/Shapoclyack/issues/238) — a webhook concurrency test that fails
-roughly every other full run and passes in isolation; it is the test that is supposed to prove
-[#152](https://github.com/onixus/Shapoclyack/issues/152), and a flaky proof is not one;
-[#240](https://github.com/onixus/Shapoclyack/issues/240) — the SSH host-key probe added by
-[#239](https://github.com/onixus/Shapoclyack/pull/239) is a new outbound-connection primitive
-with no SSRF guard, admin-only and tenant-scoped but unreviewed against the hardened path used
-for webhooks; and [#241](https://github.com/onixus/Shapoclyack/issues/241) — a pinned host key
-can only be removed with SQL, and a legitimate operation that has to bypass the product is one
-people will route around instead; and
-[#244](https://github.com/onixus/Shapoclyack/issues/244) — scan scope is authorized before name
-resolution while the scanner resolves again, so a record that changes in between is not covered.
-For a schedule that window is hours, and the record belongs to whoever owns the name, not to us.
+they were the honest residue of it. **All four are closed and shipped in `0.43-0828`:**
+~~[#238](https://github.com/onixus/Shapoclyack/issues/238)~~ — the webhook concurrency flake
+was a defect, not a test problem: the claim query's `FOR UPDATE SKIP LOCKED` covered the joined
+subscription row, so one dispatcher's claim starved its peers;
+~~[#240](https://github.com/onixus/Shapoclyack/issues/240)~~ — the host-key probe now goes
+through `outbound_targets.ssh_deploy_policy`, which admits private space (where agents live)
+but refuses the API pod's own reflection and the link-local range;
+~~[#241](https://github.com/onixus/Shapoclyack/issues/241)~~ — a pin is removed with
+`DELETE /api/agent/deploy/ssh/host-key` instead of SQL, journalled under a new `trust_change`
+outcome; and ~~[#244](https://github.com/onixus/Shapoclyack/issues/244)~~ — the approved scope
+travels into the run and the scanner filters again after resolution.
+
+**A second review on 2026-08-28, over the range the first one stopped at, found two more.**
+Both are open, and both are the same shape as Wave 2 itself — a control that is present and a
+path that goes around it:
+[#270](https://github.com/onixus/Shapoclyack/issues/270) — `NatsBus._ensure_stream` logged a
+warning and returned when the stream could not be created, so the bus came up `_started` with
+nothing behind it and published silently into nothing for the life of the replica, while
+`start()` was written to disable the bus precisely so that could not happen
+([#271](https://github.com/onixus/Shapoclyack/pull/271));
+and an argument injection in the SSH deployer
+([#272](https://github.com/onixus/Shapoclyack/pull/272)) — the destination was built as
+`f"{username}@{host}"` with neither field validated, and `ssh` reads a leading `-` as an
+option, so `-oProxyCommand=…` ran under `/bin/sh` in the API process **before** the host key
+was compared. The pin (#232) and the outbound policy (#240) both sat behind that point. Not
+reachable in the published images, which ship neither `paramiko` nor `openssh-client` — but
+that is an absent dependency, not a control, and the feature does not work without it.
 
 Three limits of what was verified, stated rather than implied: NetworkPolicy **enforcement** was
-never exercised on a live cluster; the SSH path was never run end to end against a real sshd;
-and migration `0025`'s grandfather path — the one that decides whether existing installs keep
-scanning after the upgrade — has no automated test and was checked by hand against a database
-built at `0024`. All three are noted where they apply.
+never exercised on a live cluster; the SSH path was never run end to end against a real sshd —
+and #272 is a reminder of what that gap costs, since a live run is where an unusable argv would
+have surfaced; and migration `0025`'s grandfather path — the one that decides whether existing
+installs keep scanning after the upgrade — has no automated test and was checked by hand against
+a database built at `0024`. All three are noted where they apply.
 
 ### Claimed Done, broken in code
 
@@ -566,7 +601,7 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 | Asset context filled by hand | `business_service`/`environment`/`owner_email` only via PATCH. At 50k assets the dashboard's "unowned assets" will read ~45k and the whole owner/SLA workflow never starts |
 | The loop is not closed | Ticket status is one-way by design, and `VERIFYING → CLOSED` is manual: there is no targeted re-scan. The product still cannot answer "was it actually fixed?" mechanically |
 | No MSSP operations | No quotas, no per-tenant consumption metering, no onboarding wizard, no white-label, no customer read-only portal |
-| Enrichment overlays are stubs | `epss-overlay.json` ships 3 CVEs, `kev-overlay.json` 2. There is an update CronJob but no air-gapped bundle and no product-level "your data is N days stale, so your priorities are wrong" |
+| Enrichment data has no air-gapped bundle | The overlays are no longer stubs — the image ships EPSS 365,017, KEV 1,676, exploit maturity 25,943 and CVSS4 31,715 entries, and `GET /api/system` reports each dataset's source, feed date, entry count and whether the build fetched it or fell back. What is still missing is an offline bundle, and a product-level judgement that turns overlay age into "your priorities are wrong" rather than a date on a status page |
 
 ### Order
 
@@ -632,7 +667,7 @@ go up?** If it did not, the new functionality produced data rather than outcomes
 
 | Status | Meaning |
 |--------|---------|
-| **Done** | Merged to `main` (may be ahead of the last tagged release — see [CHANGELOG.md](CHANGELOG.md) `## Unreleased` for what hasn't shipped in a tag yet) |
+| **Done** | Merged to `main` (may be ahead of the last tagged release — see the newest section of [CHANGELOG.md](CHANGELOG.md), and `## Unreleased` when one is open) |
 | **Planned** | Documented here; not started |
 | **In progress** | Active branch / PR (update when work starts) |
 | **Partial** | Some sub-items merged, named remainder still open |
