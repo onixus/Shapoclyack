@@ -1407,6 +1407,7 @@ All notable changes to Shapoclyack are documented in this file.
   `defectdojo.py` is an opt-in escape hatch gated on `verify_ssl`, default
   `True`. SAST gate: 5 ERROR findings → 0.
 
+### Fixed
 
 - **`profiles.<mode>.top_ports` now rejects values naabu cannot parse.** The
   field validated as any integer in 1–65535, but naabu's `-top-ports` is a
