@@ -89,9 +89,9 @@ def join_workers(timeout: float = 10.0) -> bool:
     """Wait for the in-flight deployment threads. Returns False on timeout.
 
     Test-suite scaffolding rather than a production path: nothing in the API
-    blocks on a deployment finishing. Threads that already finished are dropped
-    from the registry either way, so a long-lived process does not accumulate
-    dead handles.
+    blocks on a deployment finishing. Finished threads are dropped here and, so
+    that a process which never calls this does not accumulate dead handles, at
+    each :func:`start_ssh_deployment`.
     """
     with _workers_lock:
         pending = list(_workers)
@@ -1073,6 +1073,11 @@ def start_ssh_deployment(req: AgentDeploySSHRequest, server_url: str, *, actor: 
         name=f"agent-deploy-{deploy_id}",
     )
     with _workers_lock:
+        # Pruned on the way in, not only in join_workers(): nothing in the API
+        # calls that, so without this the set would keep one dead Thread -- and
+        # the request and host key it closes over -- per deployment, for the
+        # life of the process.
+        _workers.difference_update({t for t in _workers if not t.is_alive()})
         _workers.add(thread)
     thread.start()
     return deploy_id
