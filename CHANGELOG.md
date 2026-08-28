@@ -2,6 +2,45 @@
 
 All notable changes to Shapoclyack are documented in this file.
 
+## Unreleased
+
+### Security
+
+- **An SSH destination can no longer be read as an `ssh` option** —
+  `_execute_openssh_command` built its destination as `f"{username}@{host}"`
+  and appended it to argv, where neither field was validated beyond a length.
+  A `username` or `host` beginning with `-` is parsed by `ssh` as an option
+  rather than a destination, and `-oProxyCommand=…` is then run by `/bin/sh`
+  **in the API process** — before the host key is compared, so the pin (#232)
+  and the outbound-target policy (#240) both sit behind it and neither is
+  reached. `ssh-keyscan` took `host` the same way in `_probe_with_keyscan`.
+  Two barriers now, because the schema is the kind of thing a later field
+  addition quietly loosens: `AgentDeploySSHRequest` and
+  `AgentSSHHostKeyProbeRequest` constrain both fields to what a destination
+  can legitimately be made of, and both argv builders pass `--` before the
+  destination so option parsing has already ended. Not reachable in the
+  published images, which ship neither `paramiko` nor `openssh-client` — the
+  deployment path fails earlier with `HostKeyUnavailable` — but that is a
+  missing dependency, not a control, and it goes away the moment the feature
+  is made to work.
+
+### Fixed
+
+- `Settings.agent_jwt_expire_minutes` defaulted to 60 in the dataclass and 120
+  in `load_settings()`; `docs/configuration.md` documents 120. Anything
+  constructing `Settings()` directly — tests, scripts — minted agent tokens
+  with half the documented lifetime. Both are 120 now.
+
+- The first-scan walkthrough approved a scope that did not cover its own
+  example targets: step 2 of [docs/getting-started.md](docs/getting-started.md)
+  uses `203.0.113.10`, and step 6 allowed only `198.51.100.0/28`. Scope refusal
+  fails the whole job, so a reader who followed every step without a typo still
+  met the `403` that step 6 exists to prevent.
+
+- `docs/README.md` claimed the guides described `main` after
+  `shapoclyack-0.40-0806`, three releases behind, and pointed at a
+  `## Unreleased` section that the 0.43 cut had emptied.
+
 ## [0.43-0828] — 2026-08-28
 
 ### Added

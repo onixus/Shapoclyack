@@ -333,6 +333,9 @@ def _probe_with_keyscan(host: str, port: int, timeout: int) -> HostKey:
             "-T", str(timeout),
             "-p", str(port),
             "-t", _KEYSCAN_TYPES,
+            # As in _execute_openssh_command: ssh-keyscan reads a leading "-"
+            # as an option too, and it runs before any key is known.
+            "--",
             host,
         ],
         stdout=subprocess.PIPE,
@@ -755,6 +758,11 @@ def _execute_openssh_command(
                 env.setdefault("DISPLAY", ":0")
                 env["SHAPOCLYACK_SSH_PASSWORD"] = req.password
 
+            # "--" ends option parsing: a destination is a destination even
+            # if it looks like a flag. The schema already refuses such values
+            # (api/schemas.py), and this is the second barrier rather than the
+            # first, because -oProxyCommand= would run in this process.
+            cmd.append("--")
             cmd.append(f"{req.username}@{req.host}")
             cmd.append(command)
 

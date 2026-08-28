@@ -132,7 +132,7 @@ class Settings:
     # operator decides the two scopes are the same set.
     agent_deploy_enforce_scan_scope: bool = False
     # Short-lived agent JWT lifetime after provisioning-key exchange (Phase 2).
-    agent_jwt_expire_minutes: int = 60
+    agent_jwt_expire_minutes: int = 120
     # Hard request-body cap on POST /api/agent/jobs/{job_id}/results, read from
     # Content-Length before the multipart body is buffered (#222). A run archive
     # is a tar.gz of one scan directory — single-digit MiB in practice, more with
