@@ -105,6 +105,14 @@ pipeline {
                       withEnv([
                         'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
                         'OCTO_NATS_URL=nats://nats:4222',
+                        // Стримы этого брокера живут минуты и на слое
+                        // контейнера, без тома. Продовые дефолты (10 ГБ для
+                        // INGEST, 1 ГБ для EVENTS) JetStream резервирует
+                        // заранее и отвечает 'insufficient storage resources
+                        // available', когда на хосте столько не осталось, —
+                        // отчего падал не тот тест, который что-то проверяет.
+                        'OCTO_NATS_INGEST_MAX_BYTES=268435456',
+                        'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
                       ]) {
                         sh '''
                           set -eu

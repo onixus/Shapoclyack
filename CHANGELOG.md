@@ -20,7 +20,13 @@ All notable changes to Shapoclyack are documented in this file.
   JetStream lasts seconds, and `start()`'s own timeout now covers that budget
   so the error naming the stream is not replaced by a flat timeout. The
   `add_stream` exception is kept separately from the `stream_info` one, which
-  used to overwrite it with a `stream not found` that explained nothing.
+  used to overwrite it with a `stream not found` that explained nothing, and it
+  is rendered with `str()` rather than `repr()` — `nats`' `ServerError` carries
+  the server's description in its message and reprs as a bare `ServerError()`.
+  What that surfaced immediately: CI asked a throwaway broker for the
+  production stream sizes (10 GB for `INGEST`), which JetStream reserves up
+  front and refuses with `insufficient storage resources available` once the
+  host is full. The test broker is now sized for a broker that lives minutes.
 
 ## [0.43-0828] — 2026-08-28
 

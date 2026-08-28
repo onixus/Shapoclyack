@@ -270,10 +270,15 @@ class NatsBus:
                         break
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, _STREAM_MAX_DELAY_SECONDS)
+        # str() as well as repr(): nats' ServerError carries the description
+        # ("insufficient storage resources available") in its message and its
+        # repr is a bare ServerError(), which names the class and nothing that
+        # would let anyone act on it.
         raise RuntimeError(
             f"JetStream stream {config.name} could not be created or read after "
-            f"{_STREAM_ATTEMPTS} attempts: add_stream failed with {add_exc!r}; "
-            f"stream_info failed with {last_exc!r}"
+            f"{_STREAM_ATTEMPTS} attempts: add_stream failed with "
+            f"{type(add_exc).__name__}: {add_exc}; stream_info failed with "
+            f"{type(last_exc).__name__}: {last_exc}"
         )
 
     def _call(self, coro: Any, *, timeout: float = 15.0) -> Any:
