@@ -2,7 +2,7 @@
 
 All notable changes to Shapoclyack are documented in this file.
 
-## Unreleased
+## [0.43-0828] — 2026-08-28
 
 ### Added
 

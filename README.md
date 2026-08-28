@@ -159,7 +159,7 @@ The supported Web UI development runtime is Node.js 24 or newer. See
 ## Releases
 
 The current documented release is
-[`shapoclyack-0.41-0817`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.41-0817).
+[`shapoclyack-0.43-0828`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.43-0828).
 Published images:
 
 | Image | Role |

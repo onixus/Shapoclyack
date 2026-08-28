@@ -103,7 +103,7 @@ export function Sidebar() {
                 </span>
                 {t("sidebar.engineActive")}
               </span>
-              <span className="font-mono text-[10px] text-muted-foreground font-semibold">v0.42-0824</span>
+              <span className="font-mono text-[10px] text-muted-foreground font-semibold">v0.43-0828</span>
             </div>
           </div>
         </div>
