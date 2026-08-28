@@ -134,7 +134,42 @@ and ingest. A service shown as disabled is not an error when its `OCTO_NATS_URL`
 
 Open <http://127.0.0.1:8080> and use the operator account for the first scan.
 
-## 6. Start a scan
+## 6. Approve a scanning scope
+
+A fresh installation scans nothing until an admin says what it may scan. Since
+[#226](https://github.com/onixus/Shapoclyack/issues/226) every target is checked
+against the tenant's **approved scanning scope**, and the check is fail-closed:
+a tenant with no entries starts no scan at all, not even one that would have
+used the input files from step 2. Migration `0025` grandfathers tenants that
+already existed at upgrade time, but the `default` tenant of a brand-new
+install is created at first API start — after the migration — so it has an
+empty scope and the first job would be refused with `403`.
+
+Approve the addresses from step 2, as `admin`:
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin-change-me"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+
+curl -s -X PUT http://127.0.0.1:8080/api/tenants/default/scan-scope \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"entries": [
+        {"effect": "allow", "kind": "cidr",   "value": "198.51.100.0/28", "note": "lab"},
+        {"effect": "allow", "kind": "domain", "value": "example.test"},
+        {"effect": "deny",  "kind": "cidr",   "value": "169.254.0.0/16",  "note": "cloud metadata"}
+      ]}'
+```
+
+`PUT` replaces the whole scope, allow is containment (a range half-inside an
+approved one is not half-approved) and deny wins by overlap. Read it back with
+`GET /api/tenants/default/scan-scope`. The rules, the upgrade path for an
+existing installation and the recommended per-tenant order are in
+[operations.md](operations.md#approved-scan-scope-per-tenant).
+
+## 7. Start a scan
 
 From the UI:
 
@@ -160,7 +195,7 @@ docker run --rm \
   --config scanner/config/default.yaml
 ```
 
-## 7. Verify results
+## 8. Verify results
 
 Check:
 
