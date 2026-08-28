@@ -73,6 +73,35 @@ LOG = logging.getLogger("shapoclyack.agent-deployer")
 
 _settings: Settings | None = None
 
+# Every deployment runs on its own daemon thread, and the route answers before
+# the install finishes -- that is the point of the route. Daemon threads are
+# right for a process that must not be held open by an install nobody is
+# waiting for, but they leave no handle to wait on, and the test suite needs
+# one: a worker still writing its stage rows into a database the next test is
+# about to truncate is the flake #257 was filed for. Holding the handles here
+# costs one set entry per deployment and gives :func:`join_workers` something
+# to join.
+_workers: set[threading.Thread] = set()
+_workers_lock = threading.Lock()
+
+
+def join_workers(timeout: float = 10.0) -> bool:
+    """Wait for the in-flight deployment threads. Returns False on timeout.
+
+    Test-suite scaffolding rather than a production path: nothing in the API
+    blocks on a deployment finishing. Threads that already finished are dropped
+    from the registry either way, so a long-lived process does not accumulate
+    dead handles.
+    """
+    with _workers_lock:
+        pending = list(_workers)
+    deadline = time.monotonic() + timeout
+    for thread in pending:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    with _workers_lock:
+        _workers.difference_update({t for t in pending if not t.is_alive()})
+        return not any(t.is_alive() for t in pending)
+
 # Deployment rows kept per tenant. The journal is an operator surface, not an
 # audit trail: it exists so a poll started ten minutes ago still resolves.
 _MAX_HISTORY = 100
@@ -1043,5 +1072,7 @@ def start_ssh_deployment(req: AgentDeploySSHRequest, server_url: str, *, actor: 
         daemon=True,
         name=f"agent-deploy-{deploy_id}",
     )
+    with _workers_lock:
+        _workers.add(thread)
     thread.start()
     return deploy_id

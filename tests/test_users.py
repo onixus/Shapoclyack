@@ -459,3 +459,43 @@ def test_bootstrap_is_a_no_op_once_an_account_exists(tmp_path, monkeypatch) -> N
     users_service.bootstrap(settings)
 
     assert users_service.get_user("viewer") is None
+
+
+def test_concurrent_seeding_does_not_raise(tmp_path, monkeypatch) -> None:
+    """Two writers seeding at once is a no-op for the loser, not a crash (#257).
+
+    ``_seed_dev_users`` checked for the row and then inserted it, with nothing
+    in between. Replicas run the startup bootstrap simultaneously, so the
+    second writer's insert hit the ``username`` primary key and took the whole
+    transaction — and the API start — down with it. In the suite the second
+    writer was a deployment worker left over from an earlier test, which is why
+    this surfaced as an unrelated file failing roughly one run in five.
+    """
+    import threading
+
+    from api.services import users as users_service
+
+    settings = make_settings(tmp_path, env="dev")
+    reset_service_state(settings)
+
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+
+    def seed() -> None:
+        barrier.wait()
+        try:
+            users_service._seed_dev_users(settings)
+        except BaseException as exc:  # noqa: BLE001 - the assertion is "nothing raised"
+            errors.append(exc)
+
+    threads = [threading.Thread(target=seed) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, f"seeding raced with itself: {errors!r}"
+    # Seeded once, not four times: the losers must not have written duplicates
+    # under different casing or a second row per account.
+    assert users_service.authenticate("admin", TEST_USERS["admin"]) is not None
+    assert len(users_service.list_users()) == len(TEST_USERS)
