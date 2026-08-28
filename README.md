@@ -1,16 +1,26 @@
 # Shapoclyack
 
-Shapoclyack is a self-hosted external attack-surface discovery and vulnerability
-management platform. It combines a staged network scanner, a FastAPI control
-plane, distributed workers, persistent asset inventory, analytics, and a
-Next.js operations console.
+**Self-hosted external attack surface discovery and vulnerability management.**
 
-[Русская версия](README.ru.md) · [Documentation](docs/README.md) ·
-[Kubernetes](k8s/README.md) · [Changelog](CHANGELOG.md) ·
-[Roadmap](ROADMAP.md) · [Security policy](.github/SECURITY.md)
+[![Release](https://img.shields.io/github/v/release/onixus/Shapoclyack?label=release&color=2b7489)](https://github.com/onixus/Shapoclyack/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://github.com/onixus/Shapoclyack/blob/main/requirements.txt)
+[![Deploy](https://img.shields.io/badge/deploy-Kubernetes%20%2F%20Kustomize-326ce5)](k8s/README.md)
+[![Images](https://img.shields.io/badge/images-ghcr.io-181717)](https://github.com/onixus?tab=packages&repo_name=Shapoclyack)
 
-> Use Shapoclyack only against systems you own or are explicitly authorized to
-> test.
+A staged network scanner, a FastAPI control plane, distributed agents, a
+persistent asset inventory that survives across runs, enrichment and analytics,
+and a Next.js operations console — deployed as one Kubernetes application or a
+single all-in-one container.
+
+**[Русская версия](README.ru.md)** · [Getting started](docs/getting-started.md) ·
+[Documentation](docs/README.md) · [Kubernetes](k8s/README.md) ·
+[Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) ·
+[Security policy](.github/SECURITY.md)
+
+> [!WARNING]
+> Scanning reaches other people's machines. Use Shapoclyack only against systems
+> you own or are explicitly authorized to test. A fresh install deliberately
+> scans nothing until an admin approves a scanning scope for the tenant.
 
 ## What you get
 
