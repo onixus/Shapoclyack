@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import threading
@@ -427,7 +428,7 @@ def _prepare_target_inputs(
         ports_udp_text=request.ports_udp,
     )
 
-    inputs_dir = settings.state_dir / "job_inputs" / job_id
+    inputs_dir = job_inputs_dir(settings, job_id)
     inputs_dir.mkdir(parents=True, exist_ok=True)
     scope_path = inputs_dir / SCAN_SCOPE_INPUT
     scope_path.write_text(
@@ -483,6 +484,38 @@ def _discard_job_wordlist(settings: Settings, job_id: str) -> None:
         wordlist_file_for_job(settings, job_id).unlink(missing_ok=True)
     except OSError:
         _log.warning("Could not remove wordlist scratch file for job %s", job_id, exc_info=True)
+
+
+def job_inputs_dir(settings: Settings, job_id: str) -> Path:
+    """Where a job's input files live. One place, so the writer, the reader and
+    the cleanup cannot drift apart."""
+    return settings.state_dir / "job_inputs" / job_id
+
+
+def _discard_job_inputs(settings: Settings, job_id: str) -> None:
+    """Drop a finished job's input directory (#258).
+
+    Before #244 the directory existed only for a job carrying target
+    overrides. #244 writes ``scan_scope.json`` for every job, so it is now
+    created once per scan and growth went from occasional to linear in runs --
+    on a persistent volume, in one flat tree, with a product that advertises
+    50k assets and continuous schedules. That is the same class of unbounded
+    growth #187 closed for ClickHouse rows and run artifacts, which job_inputs
+    was simply not part of.
+
+    Called only where the job is terminal or was never started: the scanner
+    reads these files while it runs, and an agent job is read again on every
+    claim, so removing them earlier would break the run rather than tidy after
+    it. Best-effort, like :func:`_discard_job_wordlist` -- a scan that finished
+    must not be reported as failed because its scratch directory would not
+    unlink -- and idempotent, since the reaper may have swept it already.
+    """
+    try:
+        shutil.rmtree(job_inputs_dir(settings, job_id), ignore_errors=False)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        _log.warning("Could not remove input files for job %s", job_id, exc_info=True)
 
 
 def _wordlist_overrides(
@@ -861,8 +894,10 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
     except job_states.InvalidJobTransition as exc:
         _log.info("Not starting job %s: %s", job_id, exc)
         # Cancelled between the insert and this thread getting scheduled: the
-        # scan never launches, so nothing will ever read the wordlist copy.
+        # scan never launches, so nothing will ever read the wordlist copy or
+        # the input files.
         _discard_job_wordlist(settings, job_id)
+        _discard_job_inputs(settings, job_id)
         return
     try:
         with _renewing_lease(settings, job_id):
@@ -928,9 +963,10 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             # without rewriting the outcome the scan actually had.
             _update_job(settings, job_id, error=str(exc)[:2000])
     finally:
-        # The scanner has exited either way, so its copy of the wordlist has
-        # been read for the last time.
+        # The scanner has exited either way, so its copy of the wordlist and
+        # its input files have been read for the last time.
         _discard_job_wordlist(settings, job_id)
+        _discard_job_inputs(settings, job_id)
 
 
 class IdempotentReplay(Exception):
@@ -1107,8 +1143,9 @@ def start_scan(
             raise
         _log.info("Idempotent scan start: key already created job %s", existing.job_id)
         # This job_id never became a row, so its materialized wordlist (and the
-        # merged config beside it) would be read by nobody.
+        # merged config beside it) and its input files would be read by nobody.
         _discard_job_wordlist(settings, job_id)
+        _discard_job_inputs(settings, job_id)
         # Raised rather than returned so the caller can answer 200 here too:
         # this request accepted nothing, exactly like the sequential replay the
         # route detects before calling in.
@@ -1158,7 +1195,7 @@ def _publish_job_offer(settings: Settings, job_id: str) -> None:
 
 
 def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
-    inputs_dir = settings.state_dir / "job_inputs" / job_id
+    inputs_dir = job_inputs_dir(settings, job_id)
     if not inputs_dir.is_dir():
         return {}
     out: dict[str, str] = {}
@@ -1409,6 +1446,7 @@ def complete_job(
     restarted worker keeps its ``agent_id``, that is the only way to tell the
     two apart. Omitted by pre-P1.5 agents, which are then unfenced.
     """
+    replay_result: JobInfo | None = None
     with get_session(settings.postgres_url) as session:
         # Locked for the whole check: concurrent uploads for the same job must
         # be decided one at a time, or both would read a non-terminal row and
@@ -1431,7 +1469,11 @@ def complete_job(
         if row.status in job_states.TERMINAL:
             replay = _classify_replay(row, exit_code=exit_code, idempotency_key=idempotency_key)
             if replay is not None:
-                return replay
+                # Answered below, once the row lock is released: the cleanup
+                # this replay triggers is filesystem work, and holding the lock
+                # across it would make a second agent's retry wait on the disk
+                # rather than on the decision.
+                replay_result = replay
         elif idempotency_key:
             if row.results_idempotency_key == idempotency_key:
                 # Same key, job not finished: the first request holding this key
@@ -1448,8 +1490,18 @@ def complete_job(
         # for a job that already finished — or one an operator cancelled while
         # the agent was still working — must not overwrite the run directory
         # and re-publish to NATS before being rejected.
-        job_states.check_transition(job_id, row.status, status)
+        if replay_result is None:
+            job_states.check_transition(job_id, row.status, status)
         resolved_run_id = run_id or row.run_id
+
+    if replay_result is not None:
+        # Reached only for a job that is already terminal, so the agent is not
+        # still reading these -- a replay arrives after the run has finished,
+        # not while it is executing. A first upload whose response was lost may
+        # already have swept the directory, which is why this is idempotent
+        # (#258).
+        _discard_job_inputs(settings, job_id)
+        return replay_result
 
     try:
         if archive_bytes:
@@ -1523,6 +1575,10 @@ def complete_job(
             _release_results_reservation(settings, job_id, idempotency_key)
         raise
     agents_service.touch_job(agent_id, None, status="idle")
+    # The job is terminal now: no further claim will serve these files (#258).
+    # After the _update_job above, so a raise in ingestion leaves them for the
+    # agent's retry rather than deleting what the retry needs.
+    _discard_job_inputs(settings, job_id)
     result = get_job(settings, job_id)
     assert result is not None
     return result

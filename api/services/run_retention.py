@@ -1,9 +1,14 @@
-"""Delete aged scan run artifact directories (ROADMAP #187).
+"""Delete aged scan run artifact directories and job inputs (ROADMAP #187, #258).
 
 Scan outputs written to ``output_dir/runs/<run_id>/`` accumulate over time and
 can consume significant disk space on persistent volumes. This worker walks
 ``output_dir/runs/*`` and deletes any run directory older than
 ``run_retention_days``.
+
+It also sweeps ``state_dir/job_inputs/<job_id>/`` on the same cutoff (#258).
+Those are removed by the job completion paths; what reaches the reaper is what
+never completed, plus whatever an installation accumulated before that cleanup
+existed.
 
 0 days disables the reaper. Deletes are fail-soft per run directory. Multiple
 API replicas may sweep the same tree; removing an already-deleted directory is
@@ -51,19 +56,84 @@ def _parse_timestamp(meta_path: Path) -> float | None:
     return None
 
 
+def _sweep_job_inputs(settings: Settings, cutoff: float) -> dict[str, int]:
+    """Delete aged ``state_dir/job_inputs/<job_id>/`` directories (#258).
+
+    The completion paths in ``api.services.jobs`` remove these when a job
+    finishes, so what is left here is what never finished cleanly: a job
+    abandoned by an agent that never uploaded, an API killed mid-scan, or
+    anything an installation accumulated before that cleanup existed. Swept on
+    age alone, by the same clock as the run artifacts above rather than by a
+    second mechanism -- a scan still running after ``run_retention_days`` is
+    not a scan anyone is waiting for, and the reaper never runs at all when
+    retention is disabled.
+    """
+    deleted = errors = kept = 0
+    root = settings.state_dir / "job_inputs"
+    if not root.is_dir():
+        return {"deleted": 0, "errors": 0, "kept": 0}
+
+    for job_dir in root.iterdir():
+        if not job_dir.is_dir():
+            continue
+        try:
+            if job_dir.stat().st_mtime > cutoff:
+                kept += 1
+                continue
+            shutil.rmtree(job_dir, ignore_errors=False)
+            deleted += 1
+            LOG.info("Run retention: deleted orphaned job input directory %s", job_dir.name)
+        except FileNotFoundError:
+            # Another replica swept it, or the job finished between the walk
+            # and the remove. Either way it is gone, which is the goal.
+            deleted += 1
+        except OSError:
+            errors += 1
+            LOG.warning(
+                "Run retention: could not remove job input directory %s", job_dir, exc_info=True
+            )
+    return {"deleted": deleted, "errors": errors, "kept": kept}
+
+
+def _stats(
+    runs: tuple[int, int, int] = (0, 0, 0),
+    inputs: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Build :func:`sweep`'s result. One place, so the early returns and the
+    normal path cannot report different shapes (a caller reading a key that
+    only some paths carry would fail on a fresh install, where the runs
+    directory does not exist yet)."""
+    deleted, errors, kept = runs
+    inputs = inputs or {"deleted": 0, "errors": 0, "kept": 0}
+    return {
+        "deleted": deleted,
+        "errors": errors,
+        "kept": kept,
+        "job_inputs_deleted": inputs["deleted"],
+        "job_inputs_errors": inputs["errors"],
+        "job_inputs_kept": inputs["kept"],
+    }
+
+
 def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
-    """Delete expired run directories. Returns counts (deleted, errors, kept)."""
+    """Delete expired run directories and orphaned job inputs.
+
+    Returns counts (deleted, errors, kept) for the run artifacts, plus the same
+    three under ``job_inputs_*`` (#258). The run-artifact keys keep their names
+    and meaning so existing callers and the ``/api/system`` payload are
+    unaffected.
+    """
     now = now or _now()
     days = settings.run_retention_days
     if days <= 0:
-        return {"deleted": 0, "errors": 0, "kept": 0}
+        return _stats()
 
     cutoff = now.timestamp() - days * 86400.0
     deleted = errors = kept = 0
     runs_root = settings.output_dir / "runs"
 
     if not runs_root.is_dir():
-        return {"deleted": 0, "errors": 0, "kept": 0}
+        return _stats(inputs=_sweep_job_inputs(settings, cutoff))
 
     for run_dir in runs_root.iterdir():
         if not run_dir.is_dir():
@@ -94,7 +164,7 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
             errors += 1
             LOG.exception("Run retention: unexpected error removing %s", run_dir)
 
-    return {"deleted": deleted, "errors": errors, "kept": kept}
+    return _stats((deleted, errors, kept), _sweep_job_inputs(settings, cutoff))
 
 
 class RunRetentionWorker:

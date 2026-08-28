@@ -60,7 +60,16 @@ def test_sweep_disabled_when_zero_days(tmp_path: Path):
     _age(old_run / "run_meta.json", days=100)
 
     stats = sweep(settings, now=datetime.now(UTC))
-    assert stats == {"deleted": 0, "errors": 0, "kept": 0}
+    # Six keys since #258: the reaper also sweeps job_inputs, and 0 days
+    # disables that half too.
+    assert stats == {
+        "deleted": 0,
+        "errors": 0,
+        "kept": 0,
+        "job_inputs_deleted": 0,
+        "job_inputs_errors": 0,
+        "job_inputs_kept": 0,
+    }
     assert old_run.exists()
 
 
@@ -89,3 +98,42 @@ def test_worker_lifecycle(tmp_path: Path):
     assert stats is not None
     stop_worker()
     assert worker_stats() is None
+
+
+def _write_job_inputs(settings, job_id: str) -> Path:
+    inputs_dir = settings.state_dir / "job_inputs" / job_id
+    inputs_dir.mkdir(parents=True)
+    (inputs_dir / "scan_scope.json").write_text('{"entries": []}', encoding="utf-8")
+    return inputs_dir
+
+
+def test_sweep_deletes_orphaned_job_inputs(tmp_path: Path):
+    """A job that never completed leaves its inputs behind; the reaper takes them (#258).
+
+    The completion paths remove these, so anything the reaper meets is a job
+    nobody finished — or a directory from before that cleanup existed.
+    """
+    settings = make_settings(tmp_path, run_retention_days=30)
+    stale = _write_job_inputs(settings, "job-abandoned")
+    fresh = _write_job_inputs(settings, "job-running")
+    _age(stale, days=45)
+
+    stats = sweep(settings, now=datetime.now(UTC))
+
+    assert not stale.exists()
+    assert fresh.exists(), "a job younger than the cutoff may still be running"
+    assert stats["job_inputs_deleted"] == 1
+    assert stats["job_inputs_kept"] == 1
+    # The run-artifact counts stay about run artifacts: /api/system reads them.
+    assert stats["deleted"] == 0
+
+
+def test_sweep_leaves_job_inputs_alone_when_retention_is_disabled(tmp_path: Path):
+    settings = make_settings(tmp_path, run_retention_days=0)
+    stale = _write_job_inputs(settings, "job-abandoned")
+    _age(stale, days=999)
+
+    stats = sweep(settings, now=datetime.now(UTC))
+
+    assert stale.exists()
+    assert stats["job_inputs_deleted"] == 0
