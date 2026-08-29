@@ -334,10 +334,26 @@ class AgentFleetSummary(BaseModel):
     by_tenant: dict[str, int] = Field(default_factory=dict)
 
 
+# A hostname, an IPv4 literal, or a bracketed IPv6 literal — never a value
+# that starts with ``-``, which ``ssh`` would take for an option.
+_SSH_HOST_PATTERN = r"^[A-Za-z0-9\[][A-Za-z0-9._:\[\]-]*$"
+# POSIX-portable account names, again never leading with ``-``.
+_SSH_USERNAME_PATTERN = r"^[A-Za-z0-9_][A-Za-z0-9._-]*$"
+
+
 class AgentDeploySSHRequest(BaseModel):
-    host: str = Field(min_length=1, max_length=255)
+    # ``host`` and ``username`` are concatenated into the ``user@host``
+    # argument of ``ssh``/``ssh-keyscan``. A value beginning with ``-`` is read
+    # by both as an option rather than a destination, and ``-oProxyCommand=…``
+    # is then executed by ``/bin/sh`` inside the API process — before the host
+    # key is ever compared, so a refused target is no obstacle. The character
+    # sets below are what a destination can legitimately be made of; the argv
+    # builders additionally pass ``--`` so neither barrier is the only one.
+    host: str = Field(min_length=1, max_length=255, pattern=_SSH_HOST_PATTERN)
     port: int = Field(default=22, ge=1, le=65535)
-    username: str = Field(min_length=1, max_length=64, default="root")
+    username: str = Field(
+        min_length=1, max_length=64, default="root", pattern=_SSH_USERNAME_PATTERN
+    )
     password: str | None = None
     private_key: str | None = None
     tenant_id: str = "default"
@@ -353,7 +369,7 @@ class AgentDeploySSHRequest(BaseModel):
 
 
 class AgentSSHHostKeyProbeRequest(BaseModel):
-    host: str = Field(min_length=1, max_length=255)
+    host: str = Field(min_length=1, max_length=255, pattern=_SSH_HOST_PATTERN)
     port: int = Field(default=22, ge=1, le=65535)
 
 
