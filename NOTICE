@@ -1,0 +1,61 @@
+Shapoclyack
+Copyright 2026 onixus
+
+This product is licensed under the Apache License, Version 2.0. See the LICENSE
+file for the full text.
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+The full inventory of bundled tools, datasets and their terms is maintained in
+docs/third-party.md. That page is authoritative for what a given image actually
+contains; this file records the attributions that must travel with the source
+and with every image built from it.
+
+EPSS data
+---------
+
+This product includes Exploit Prediction Scoring System (EPSS) data provided by
+FIRST.org, used under the Creative Commons Attribution 4.0 International licence
+(CC BY 4.0): https://creativecommons.org/licenses/by/4.0/
+
+Source: https://www.first.org/epss/
+Bundled at: scanner/data/epss/epss-overlay.json
+
+The data is redistributed as part of this repository and is baked into the
+published images as the seed set, so this attribution applies to both. No
+endorsement by FIRST.org is implied.
+
+CISA Known Exploited Vulnerabilities and NVD CVSS v4 data
+---------------------------------------------------------
+
+Works of the United States government, in the public domain. Bundled at
+scanner/data/kev/ and scanner/data/cvss4/. No attribution is required; the
+sources are named in docs/third-party.md for provenance.
+
+Exploit maturity data
+---------------------
+
+Derived from Exploit-DB (GPL-2.0) and the Metasploit Framework (BSD-3-Clause).
+Only CVE identifiers and a maturity rung are extracted — no exploit code,
+titles or descriptions are copied. See docs/third-party.md for the reasoning.
+
+LGPL components
+---------------
+
+The published images include fpdf2 and psycopg, both LGPL-3.0-only, used as
+unmodified libraries through their public Python interfaces. Their source is
+available from the Python Package Index at the versions pinned in
+requirements.txt and requirements-api.txt, and either may be replaced with a
+compatible version by reinstalling it in the image.
+
+Optional Nmap components
+------------------------
+
+The default images contain no Nmap. The opt-in "-nmap" image tag additionally
+contains Nmap (Nmap Public Source License), nmap-vulners (GPL-3.0) and Vulscan
+(GPL-3.0), each invoked as a separate program rather than linked. Anyone
+redistributing that tag is responsible for the obligations those licences carry,
+including the NPSL's restrictions on commercial and OEM redistribution. See
+docs/third-party.md and k8s/README.md before redistributing it.

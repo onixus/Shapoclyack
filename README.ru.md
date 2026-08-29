@@ -6,6 +6,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://github.com/onixus/Shapoclyack/blob/main/requirements.txt)
 [![Deploy](https://img.shields.io/badge/deploy-Kubernetes%20%2F%20Kustomize-326ce5)](k8s/README.md)
 [![Images](https://img.shields.io/badge/images-ghcr.io-181717)](https://github.com/onixus?tab=packages&repo_name=Shapoclyack)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 Сетевой сканер со стадийным конвейером, FastAPI control plane, распределённые
 агенты, инвентарь активов, переживающий отдельные прогоны, обогащение и

@@ -4,6 +4,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Shapoclyack is licensed under Apache-2.0** — until now the repository
+  carried no licence at all, which meant the default position of "all rights
+  reserved" applied while the images were published to a public registry and
+  `SECURITY.md` promised version support to people running them. `LICENSE` is
+  the verbatim Apache-2.0 text; `NOTICE` carries the attributions that have to
+  travel with a redistribution, and both are now copied into all three images
+  rather than living only in the repository — the EPSS overlay is CC BY 4.0 and
+  is baked into every image as seed data, so the attribution has to travel with
+  the bytes. Apache-2.0 rather than MIT for the explicit patent grant, which is
+  not a formality for a scanner; and rather than a copyleft licence, which
+  would have made the aggregation in the opt-in `-nmap` tag harder to reason
+  about for no gain. Nothing in the dependency set required this choice: the
+  GPL-3.0 components (nmap-vulners, Vulscan) are opt-in and invoked as separate
+  programs, and the LGPL-3.0 libraries (fpdf2, psycopg) are used unmodified
+  through their public interfaces. `docs/third-party.md` now states the
+  project's own terms alongside everyone else's, and says plainly that an image
+  is an aggregate governed by its most restrictive component.
+
 ### Security
 
 - **An SSH destination can no longer be read as an `ssh` option** —
