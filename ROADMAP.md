@@ -60,11 +60,14 @@ Local CI is the multibranch job `shapoclyack-branches`, branch `main` — the si
 `shapoclyack` job is disabled and its last builds are stale, so it is not evidence of
 anything. Build **#8** (2026-08-28, revision `645bdc5`) is SUCCESS: 1291 pytest on 3.11 and
 3.12, coverage 83.36% against a 74% gate, 142 vitest in 26 files, load run 16/16 hosts.
-Build **#9** (revision `d644f20`, the current tip) is **FAILURE** on
-`tests/test_nats_live.py::test_live_ingest_publish`, which is not a test problem:
+Build #9 (revision `d644f20`) was **FAILURE** on
+`tests/test_nats_live.py::test_live_ingest_publish`, and that was not a test problem:
 `NatsBus._ensure_stream` returned quietly when the stream could not be created, so the bus
 came up reporting itself healthy with nothing behind it
-([#270](https://github.com/onixus/Shapoclyack/issues/270)).
+(~~[#270](https://github.com/onixus/Shapoclyack/issues/270)~~, fixed in
+[#271](https://github.com/onixus/Shapoclyack/pull/271)). The failing run had also reached the
+end of the host's disk, which is what made the stream unallocatable in the first place — so
+that build says nothing about the code it was testing.
 
 
 | Area | Status |
@@ -510,12 +513,12 @@ outcome; and ~~[#244](https://github.com/onixus/Shapoclyack/issues/244)~~ — th
 travels into the run and the scanner filters again after resolution.
 
 **A second review on 2026-08-28, over the range the first one stopped at, found two more.**
-Both are open, and both are the same shape as Wave 2 itself — a control that is present and a
+Both are the same shape as Wave 2 itself — a control that is present and a
 path that goes around it:
-[#270](https://github.com/onixus/Shapoclyack/issues/270) — `NatsBus._ensure_stream` logged a
+~~[#270](https://github.com/onixus/Shapoclyack/issues/270)~~ — `NatsBus._ensure_stream` logged a
 warning and returned when the stream could not be created, so the bus came up `_started` with
 nothing behind it and published silently into nothing for the life of the replica, while
-`start()` was written to disable the bus precisely so that could not happen
+`start()` was written to disable the bus precisely so that could not happen. **Fixed**
 ([#271](https://github.com/onixus/Shapoclyack/pull/271));
 and an argument injection in the SSH deployer
 ([#272](https://github.com/onixus/Shapoclyack/pull/272)) — the destination was built as
