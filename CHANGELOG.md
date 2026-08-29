@@ -26,6 +26,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **A JetStream stream that cannot be created is a startup failure, not a
+  warning** — `NatsBus._ensure_stream` logged `stream INGEST not ready after
+  retries` and returned normally, so `_connect` succeeded, the bus came up
+  `_started`, and every later publish failed on its own with
+  `NoStreamResponseError`. `start()` was already written to disable the bus
+  for the process when `_connect` raises, which is the right outcome for an
+  unreachable broker; the quiet return is what defeated it. The failure mode
+  in production is a replica that starts while JetStream is still opening a
+  cold store and then silently publishes nothing for its whole lifetime, on a
+  bus reporting itself healthy. The retry budget also grew from five attempts
+  over two seconds to eight over twelve, because "no responders" from a cold
+  JetStream lasts seconds, and `start()`'s own timeout now covers that budget
+  so the error naming the stream is not replaced by a flat timeout. The
+  `add_stream` exception is kept separately from the `stream_info` one, which
+  used to overwrite it with a `stream not found` that explained nothing, and it
+  is rendered with `str()` rather than `repr()` — `nats`' `ServerError` carries
+  the server's description in its message and reprs as a bare `ServerError()`.
+  What that surfaced immediately: CI asked a throwaway broker for the
+  production stream sizes (10 GB for `INGEST`), which JetStream reserves up
+  front and refuses with `insufficient storage resources available` once the
+  host is full. The test broker is now sized for a broker that lives minutes.
+
 - `Settings.agent_jwt_expire_minutes` defaulted to 60 in the dataclass and 120
   in `load_settings()`; `docs/configuration.md` documents 120. Anything
   constructing `Settings()` directly — tests, scripts — minted agent tokens
