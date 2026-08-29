@@ -109,4 +109,4 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 ## Version scope
 
-These guides describe `main` after release `shapoclyack-0.40-0806`. Release tags are immutable deployment references; `main` may contain additional behavior listed under `Unreleased` in [CHANGELOG.md](../CHANGELOG.md).
+These guides describe `main` after release `shapoclyack-0.43-0828`. Release tags are immutable deployment references; `main` may contain additional behavior listed under `Unreleased` in [CHANGELOG.md](../CHANGELOG.md).

@@ -157,6 +157,7 @@ curl -s -X PUT http://127.0.0.1:8080/api/tenants/default/scan-scope \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"entries": [
+        {"effect": "allow", "kind": "cidr",   "value": "203.0.113.10/32", "note": "lab"},
         {"effect": "allow", "kind": "cidr",   "value": "198.51.100.0/28", "note": "lab"},
         {"effect": "allow", "kind": "domain", "value": "example.test"},
         {"effect": "deny",  "kind": "cidr",   "value": "169.254.0.0/16",  "note": "cloud metadata"}
