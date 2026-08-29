@@ -1,16 +1,27 @@
 # Shapoclyack
 
-Shapoclyack — self-hosted платформа для обнаружения внешней поверхности атаки,
-инвентаризации активов и управления уязвимостями. В одном проекте объединены
-сетевой сканер, FastAPI control plane, распределённые агенты, аналитика и
-операторский Web UI на Next.js.
+**Self-hosted платформа обнаружения внешней поверхности атаки и управления уязвимостями.**
 
-[English](README.md) · [Карта документации](docs/README.md) ·
-[Kubernetes](k8s/README.md) · [Changelog](CHANGELOG.md) ·
-[Roadmap](ROADMAP.md) · [Security](.github/SECURITY.md)
+[![Release](https://img.shields.io/github/v/release/onixus/Shapoclyack?label=release&color=2b7489)](https://github.com/onixus/Shapoclyack/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://github.com/onixus/Shapoclyack/blob/main/requirements.txt)
+[![Deploy](https://img.shields.io/badge/deploy-Kubernetes%20%2F%20Kustomize-326ce5)](k8s/README.md)
+[![Images](https://img.shields.io/badge/images-ghcr.io-181717)](https://github.com/onixus?tab=packages&repo_name=Shapoclyack)
 
-> Используйте платформу только для систем, владельцем которых вы являетесь или
-> на тестирование которых у вас есть явное разрешение.
+Сетевой сканер со стадийным конвейером, FastAPI control plane, распределённые
+агенты, инвентарь активов, переживающий отдельные прогоны, обогащение и
+аналитика, операторская консоль на Next.js — разворачивается как одно
+Kubernetes-приложение или как единый all-in-one контейнер.
+
+**[English](README.md)** · [Быстрый старт](docs/getting-started.md) ·
+[Карта документации](docs/README.md) · [Kubernetes](k8s/README.md) ·
+[Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) ·
+[Security](.github/SECURITY.md)
+
+> [!WARNING]
+> Сканирование затрагивает чужие машины. Используйте платформу только для
+> систем, владельцем которых вы являетесь или на тестирование которых у вас
+> есть явное разрешение. Свежая установка намеренно не сканирует ничего, пока
+> админ не одобрит область сканирования для тенанта.
 
 ## Возможности
 
