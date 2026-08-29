@@ -195,3 +195,70 @@ def test_claim_specific_job_id(tmp_path, monkeypatch):
     )
     assert other.status_code == 200
     assert other.json()["job_id"] == j1["job_id"]
+
+
+class _FlakyJetStream:
+    """A JetStream that is unavailable for the first ``unready`` attempts.
+
+    Imitates the state a cold broker is in: enabled, reachable, and answering
+    "no responders" until it has finished opening its store.
+    """
+
+    def __init__(self, unready: int) -> None:
+        self.unready = unready
+        self.add_calls = 0
+
+    async def add_stream(self, config=None):
+        self.add_calls += 1
+        if self.add_calls <= self.unready:
+            raise RuntimeError("nats: no responders available for request")
+        return None
+
+    async def update_stream(self, config=None):
+        raise RuntimeError("nats: no responders available for request")
+
+    async def stream_info(self, name):
+        raise RuntimeError("NotFoundError: description='stream not found'")
+
+
+def _ensure(js, monkeypatch, name: str = "INGEST"):
+    import asyncio
+    import types
+
+    monkeypatch.setattr(nats_bus.asyncio, "sleep", _no_sleep)
+    bus = nats_bus.NatsBus.__new__(nats_bus.NatsBus)
+    bus._js = js
+    return asyncio.run(bus._ensure_stream(types.SimpleNamespace(name=name)))
+
+
+async def _no_sleep(_seconds):
+    return None
+
+
+def test_a_stream_that_never_appears_is_an_error_not_a_warning(monkeypatch):
+    """The bus must not come up ``_started`` with no stream behind it.
+
+    ``start()`` disables the bus for the process when ``_connect`` raises, and
+    that is the correct outcome for an unreachable broker. Returning quietly
+    here turned one loud startup failure into an unbounded number of quiet
+    publish failures — every event dropped, one ``NoStreamResponseError`` at a
+    time, on a bus reporting itself healthy.
+    """
+    js = _FlakyJetStream(unready=nats_bus._STREAM_ATTEMPTS + 1)
+    with pytest.raises(RuntimeError) as excinfo:
+        _ensure(js, monkeypatch)
+
+    assert js.add_calls == nats_bus._STREAM_ATTEMPTS
+    message = str(excinfo.value)
+    assert "INGEST" in message
+    # The reason creation failed, not only the flat "stream not found" that
+    # stream_info answers with afterwards — that overwrite is what made the
+    # original CI failure unreadable.
+    assert "no responders" in message
+
+
+def test_a_stream_that_appears_late_still_comes_up(monkeypatch):
+    """A cold JetStream is slow, not broken; the retry budget is for it."""
+    js = _FlakyJetStream(unready=3)
+    _ensure(js, monkeypatch)
+    assert js.add_calls == 4
