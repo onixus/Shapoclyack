@@ -219,7 +219,86 @@ export type PortAggregate = {
   services: string[];
 };
 
-export type ScanIntent = "inventory" | "vuln" | "full" | "delta";
+export type ScanIntent = "inventory" | "vuln" | "full" | "delta" | "org_profile";
+
+export type ControlFinding = {
+  id: string;
+  domain?: string | null;
+  severity: "critical" | "high" | "medium" | "low" | string;
+  detail?: string | null;
+};
+
+export type ControlCoverage = {
+  checked: number;
+  total: number;
+};
+
+export type ControlStatus = "ok" | "weak" | "fail" | "not_checked" | "error";
+
+export type ControlItem = {
+  control: string;
+  title: string;
+  status: ControlStatus;
+  impact: "critical" | "high" | "medium" | "low" | string;
+  coverage: ControlCoverage;
+  findings_by_severity: Record<string, number>;
+  top_findings: ControlFinding[];
+  evidence: string[];
+  why: string;
+  risk_level: string;
+};
+
+export type OrgProfileControlsSummary = {
+  overall_verdict: ControlStatus;
+  overall_risk: string;
+  controls: ControlItem[];
+  evaluated_at?: string | null;
+};
+
+export type RelatedDomainEvidence = {
+  source: string;
+  indicator?: string | null;
+  detail?: string | null;
+};
+
+export type RelatedDomainCandidate = {
+  domain: string;
+  status: "confirmed" | "candidate";
+  confidence: number;
+  sources: string[];
+  evidence: RelatedDomainEvidence[];
+};
+
+export type RelatedDomainsSummary = {
+  status: string;
+  seed_domains: string[];
+  confirmed_count: number;
+  candidate_count: number;
+  total_candidates: number;
+  truncated: boolean;
+  auto_merged: boolean;
+  merged_domains: string[];
+  disclaimer: string;
+  candidates: RelatedDomainCandidate[];
+  evaluated_at?: string | null;
+};
+
+export type OrgProfileDetail = {
+  run_id: string;
+  seed_domains: string[];
+  ownership?: Record<string, unknown> | null;
+  related_domains?: RelatedDomainsSummary | null;
+  controls?: OrgProfileControlsSummary | null;
+  promoted_domains: string[];
+  generated_at?: string | null;
+};
+
+export type PromoteDomainResponse = {
+  domain: string;
+  promoted: boolean;
+  message: string;
+  promoted_at?: string | null;
+};
 
 export type JobInfo = {
   job_id: string;
@@ -726,6 +805,39 @@ export async function fetchPorts(runId: string, limit = 10000) {
   try {
     const { data } = await api.get<PortAggregate[]>(
       `/runs/${encodeURIComponent(runId)}/ports?limit=${limit}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchRunControls(runId: string) {
+  try {
+    const { data } = await api.get<OrgProfileControlsSummary>(
+      `/runs/${encodeURIComponent(runId)}/controls`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchOrgProfile(runId: string) {
+  try {
+    const { data } = await api.get<OrgProfileDetail>(
+      `/runs/${encodeURIComponent(runId)}/org-profile`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function promoteRelatedDomain(runId: string, domain: string) {
+  try {
+    const { data } = await api.post<PromoteDomainResponse>(
+      `/runs/${encodeURIComponent(runId)}/related-domains/${encodeURIComponent(domain)}/promote`,
     );
     return data;
   } catch (error) {

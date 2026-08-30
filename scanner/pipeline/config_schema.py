@@ -812,14 +812,61 @@ class MailPostureConfig(BaseModel):
         return selectors
 
 
+class ControlsConfig(BaseModel):
+    enabled: bool = True
+
+
+class RelatedDomainsConfig(BaseModel):
+    enabled: bool = False
+    sources: list[str] = Field(
+        default_factory=lambda: ["cert_san", "ct_org", "reverse_ns", "reverse_mx"]
+    )
+    excluded_ns_providers: list[str] = Field(
+        default_factory=lambda: [
+            "cloudflare.com", "awsdns", "googledomains", "azure-dns",
+            "dnsmadeeasy", "dnssimple", "nsone", "akamaitech", "digitalocean",
+            "he.net", "dynect", "ovh.net", "nic.ru", "reg.ru", "selectel.ru",
+            "yandex.net", "yandex.ru", "ns1.com", "ns2.com", "ultradns",
+        ]
+    )
+    excluded_mx_providers: list[str] = Field(
+        default_factory=lambda: [
+            "google.com", "googlemail.com", "outlook.com", "protection.outlook.com",
+            "pphosted.com", "mimecast.com", "yandex.ru", "yandex.net", "mail.ru",
+            "zoho.com", "protonmail.ch", "mxroute.com",
+        ]
+    )
+    max_candidates: int = Field(default=500, ge=1, le=5000)
+    min_confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+    merge_into_scope: bool = False
+    auto_merge: bool = False
+    max_merged_domains: int = Field(default=25, ge=1, le=500)
+    timeout_seconds: int = Field(default=15, ge=1, le=120)
+
+
+class CredentialLeaksConfig(BaseModel):
+    enabled: bool = False
+    provider: str = "hibp"
+    # Prefer env OCTO_HIBP_API_KEY / HIBP_API_KEY over committing secrets to YAML
+    api_key: str = ""
+    domains: list[str] = Field(default_factory=list)
+    max_domains: int = Field(default=50, ge=1, le=500)
+    timeout_seconds: int = Field(default=15, ge=1, le=120)
+    deadline_seconds: int = Field(default=300, ge=5, le=3600)
+    reveal_identifiers: bool = False
+
+
 class OrgProfileConfig(BaseModel):
     """Organization profile module (EPIC #182). M1 ships ``ownership``, M2 adds
-    ``dns_hygiene`` and ``mail_posture``; the remaining stages
-    (related_domains, controls, credential_leaks) attach here as they land."""
+    ``dns_hygiene`` and ``mail_posture``; M3 adds ``controls``; M4 adds ``related_domains``;
+    M5 adds ``credential_leaks``."""
 
     ownership: OwnershipConfig = Field(default_factory=OwnershipConfig)
+    related_domains: RelatedDomainsConfig = Field(default_factory=RelatedDomainsConfig)
     dns_hygiene: DnsHygieneConfig = Field(default_factory=DnsHygieneConfig)
     mail_posture: MailPostureConfig = Field(default_factory=MailPostureConfig)
+    credential_leaks: CredentialLeaksConfig = Field(default_factory=CredentialLeaksConfig)
+    controls: ControlsConfig = Field(default_factory=ControlsConfig)
 
 
 class SlackAlertConfig(BaseModel):

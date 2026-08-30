@@ -13,6 +13,8 @@ import { FindingsList } from "@/components/run/findings-list";
 import { RunDiffPanel } from "@/components/run/run-diff-panel";
 import { RunMetrics } from "@/components/run/run-metrics";
 import { ScreenshotsPanel } from "@/components/run/screenshots-panel";
+import { ControlsMatrix } from "@/components/run/controls-matrix";
+import { RelatedDomainsPanel } from "@/components/run/related-domains";
 import { SeverityFilter } from "@/components/run/severity-filter";
 import { useRunReport } from "@/hooks/use-run-report";
 import { useAuthStore } from "@/lib/auth-store";
@@ -128,6 +130,8 @@ function RunDetailInner() {
           <TabsTrigger value="vulns" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Findings ({report.vulns.length})</TabsTrigger>
           <TabsTrigger value="hosts" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Hosts ({report.hosts.length})</TabsTrigger>
           <TabsTrigger value="ports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Ports ({report.ports.length})</TabsTrigger>
+          <TabsTrigger value="controls" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Controls</TabsTrigger>
+          <TabsTrigger value="org-profile" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Org Profile</TabsTrigger>
           <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
           {canOperate ? (
             <TabsTrigger value="screenshots" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">
@@ -138,6 +142,14 @@ function RunDetailInner() {
 
         <TabsContent value="vulns" className="space-y-4">
           <FindingsList grouped={report.grouped} truncation={report.truncation} />
+        </TabsContent>
+
+        <TabsContent value="controls" className="space-y-4">
+          <ControlsMatrix runId={report.detail.run_id} />
+        </TabsContent>
+
+        <TabsContent value="org-profile" className="space-y-4">
+          <RelatedDomainsPanel runId={report.detail.run_id} />
         </TabsContent>
 
         <TabsContent value="hosts" className="space-y-2">

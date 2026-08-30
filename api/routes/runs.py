@@ -9,8 +9,12 @@ from api.auth import ROLE_RANK, Role, TenantPrincipal, get_settings, require_ten
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AliveHostItem,
+    LeakIdentifiersResponse,
+    OrgProfileControlsSummary,
+    OrgProfileDetail,
     Page,
     PortAggregateItem,
+    PromoteDomainResponse,
     RunDetail,
     RunSummary,
     VulnerabilityItem,
@@ -222,3 +226,70 @@ def list_screenshots(
     if manifest is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return manifest
+
+
+@router.get("/{run_id}/controls", response_model=OrgProfileControlsSummary)
+def get_controls(
+    run_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> OrgProfileControlsSummary:
+    """Security controls matrix & NIST risk evaluation for this run (org_profile M3)."""
+    raw = runs_service.get_controls(
+        settings, run_id, tenant_id=_run_tenant_filter(principal)
+    )
+    if raw is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Controls summary not found for this run")
+    return OrgProfileControlsSummary(**raw)
+
+
+@router.get("/{run_id}/org-profile", response_model=OrgProfileDetail)
+def get_org_profile(
+    run_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> OrgProfileDetail:
+    """Combined organization profile (ownership, related domains, controls) for this run (org_profile M4)."""
+    data = runs_service.get_org_profile(
+        settings, run_id, tenant_id=_run_tenant_filter(principal)
+    )
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org profile data not found for this run")
+    return OrgProfileDetail(**data)
+
+
+@router.post("/{run_id}/related-domains/{domain}/promote", response_model=PromoteDomainResponse)
+def promote_related_domain(
+    run_id: str,
+    domain: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PromoteDomainResponse:
+    """Promote a discovered related domain into future scope (operator-only action, org_profile M4)."""
+    res = runs_service.promote_related_domain(
+        settings, run_id, domain, tenant_id=_run_tenant_filter(principal)
+    )
+    if res is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return PromoteDomainResponse(**res)
+
+
+@router.get("/{run_id}/leaks/identifiers", response_model=LeakIdentifiersResponse)
+def get_leak_identifiers(
+    run_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LeakIdentifiersResponse:
+    """Full unmasked compromised account identifiers for this run (operator-only, org_profile M5)."""
+    data = runs_service.get_leak_identifiers(
+        settings, run_id, tenant_id=_run_tenant_filter(principal)
+    )
+    if data is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Leak identifiers not found for this run",
+        )
+    return LeakIdentifiersResponse(**data)
+
+
+

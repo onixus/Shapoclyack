@@ -1178,3 +1178,126 @@ class AssetInventorySummary(BaseModel):
     by_status: dict[str, int] = Field(default_factory=dict)
     by_criticality: dict[str, int] = Field(default_factory=dict)
     generated_at: str | None = None
+
+
+class ControlFinding(BaseModel):
+    id: str
+    domain: str | None = None
+    severity: str = "medium"
+    detail: str | None = None
+
+
+class ControlCoverage(BaseModel):
+    checked: int = 0
+    total: int = 0
+
+
+class ControlItem(BaseModel):
+    control: str
+    title: str
+    status: Literal["ok", "weak", "fail", "not_checked", "error"]
+    impact: str
+    coverage: ControlCoverage = Field(default_factory=ControlCoverage)
+    findings_by_severity: dict[str, int] = Field(default_factory=dict)
+    top_findings: list[ControlFinding] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    why: str = ""
+    risk_level: str = "unassessed"
+
+
+class OrgProfileControlsSummary(BaseModel):
+    overall_verdict: Literal["ok", "weak", "fail", "not_checked", "error"]
+    overall_risk: str = "unassessed"
+    controls: list[ControlItem] = Field(default_factory=list)
+    evaluated_at: str | None = None
+
+
+class RelatedDomainEvidence(BaseModel):
+    source: str
+    indicator: str | None = None
+    detail: str | None = None
+
+
+class RelatedDomainCandidate(BaseModel):
+    domain: str
+    status: Literal["confirmed", "candidate"]
+    confidence: float
+    sources: list[str] = Field(default_factory=list)
+    evidence: list[RelatedDomainEvidence] = Field(default_factory=list)
+
+
+class RelatedDomainsSummary(BaseModel):
+    status: str = "ok"
+    seed_domains: list[str] = Field(default_factory=list)
+    confirmed_count: int = 0
+    candidate_count: int = 0
+    total_candidates: int = 0
+    truncated: bool = False
+    auto_merged: bool = False
+    merged_domains: list[str] = Field(default_factory=list)
+    disclaimer: str = ""
+    candidates: list[RelatedDomainCandidate] = Field(default_factory=list)
+    evaluated_at: str | None = None
+
+
+class OrgProfileDetail(BaseModel):
+    run_id: str
+    seed_domains: list[str] = Field(default_factory=list)
+    ownership: dict[str, Any] | None = None
+    related_domains: RelatedDomainsSummary | None = None
+    controls: OrgProfileControlsSummary | None = None
+    promoted_domains: list[str] = Field(default_factory=list)
+    generated_at: str | None = None
+
+
+class PromoteDomainResponse(BaseModel):
+    domain: str
+    promoted: bool = True
+    message: str
+    promoted_at: str | None = None
+
+
+class BreachSummary(BaseModel):
+    name: str
+    title: str | None = None
+    domain: str | None = None
+    breach_date: str | None = None
+    pwn_count: int = 0
+    description: str | None = None
+    data_classes: list[str] = Field(default_factory=list)
+    has_passwords: bool = False
+    is_verified: bool = True
+    is_sensitive: bool = False
+    masked_identifiers: list[str] = Field(default_factory=list)
+
+
+class DomainBreachDetail(BaseModel):
+    status: str
+    reason: str | None = None
+    breaches_count: int = 0
+    accounts_count: int = 0
+    breaches: list[BreachSummary] = Field(default_factory=list)
+
+
+class CredentialLeaksSummary(BaseModel):
+    status: str
+    skipped_reason: str | None = None
+    provider: str = "hibp"
+    checked_domains: int = 0
+    total_domains: int = 0
+    breaches_count: int = 0
+    accounts_count: int = 0
+    seed_domains: list[str] = Field(default_factory=list)
+    domains: dict[str, DomainBreachDetail] = Field(default_factory=dict)
+    truncated: bool = False
+    evaluated_at: str | None = None
+
+
+class LeakIdentifiersResponse(BaseModel):
+    run_id: str
+    total_identifiers: int = 0
+    domains: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    generated_at: str | None = None
+
+
+

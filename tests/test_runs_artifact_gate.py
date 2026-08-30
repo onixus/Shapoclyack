@@ -20,6 +20,8 @@ def _seed(tmp_path: Path) -> Settings:
     run_dir.mkdir(parents=True)
     (run_dir / "ownership.json").write_text(json.dumps({"seed_domains": []}), encoding="utf-8")
     (run_dir / "ownership_findings.txt").write_text("example.com:ok\n", encoding="utf-8")
+    (run_dir / "credential_leaks.json").write_text("{}", encoding="utf-8")
+    (run_dir / "credential_leaks_identifiers.json").write_text("{}", encoding="utf-8")
     (run_dir / "summary.json").write_text("{}", encoding="utf-8")
     return Settings(output_dir=tmp_path)
 
@@ -29,7 +31,10 @@ def test_resolve_artifact_refuses_a_restricted_name_by_default(tmp_path: Path):
 
     assert runs_service.resolve_artifact(settings, "run-1", "ownership.json") is None
     assert runs_service.resolve_artifact(settings, "run-1", "ownership_findings.txt") is None
+    assert runs_service.resolve_artifact(settings, "run-1", "credential_leaks.json") is None
+    assert runs_service.resolve_artifact(settings, "run-1", "credential_leaks_identifiers.json") is None
     assert runs_service.read_artifact_text(settings, "run-1", "ownership.json") is None
+    assert runs_service.read_artifact_text(settings, "run-1", "credential_leaks_identifiers.json") is None
 
 
 def test_resolve_artifact_hands_it_over_when_the_caller_opts_in(tmp_path: Path):

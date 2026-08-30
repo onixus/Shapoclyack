@@ -580,6 +580,10 @@ _RESTRICTED_ARTIFACTS = frozenset(
     {
         "ownership.json",
         "ownership_findings.txt",
+        "credential_leaks.json",
+        "credential_leaks_findings.txt",
+        "credential_leaks_identifiers.json",
+        "credential_leaks_identifiers.txt",
     }
 )
 
@@ -708,3 +712,98 @@ def list_screenshots(
         "retention_days": settings.screenshot_retention_days,
         "items": items,
     }
+
+
+def get_controls(
+    settings: Settings, run_id: str, *, tenant_id: str | None = None
+) -> Any | None:
+    """Read controls matrix summary for this run."""
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+    raw = _load_json(run_dir / "controls.json")
+    if not isinstance(raw, dict):
+        return None
+    return raw
+
+
+def get_org_profile(
+    settings: Settings, run_id: str, *, tenant_id: str | None = None
+) -> dict[str, Any] | None:
+    """Read combined organization profile (ownership + related domains + controls) for this run."""
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+
+    ownership_data = _load_json(run_dir / "ownership.json")
+    related_data = _load_json(run_dir / "related_domains.json")
+    controls_data = _load_json(run_dir / "controls.json")
+    promoted_lines = _read_lines(run_dir / "promoted_domains.txt")
+
+    if not ownership_data and not related_data and not controls_data:
+        return None
+
+    seed_domains: list[str] = []
+    if isinstance(related_data, dict):
+        seed_domains = related_data.get("seed_domains") or []
+    elif isinstance(ownership_data, dict):
+        seed_domains = list((ownership_data.get("domains") or {}).keys())
+
+    return {
+        "run_id": run_id,
+        "seed_domains": seed_domains,
+        "ownership": ownership_data if isinstance(ownership_data, dict) else None,
+        "related_domains": related_data if isinstance(related_data, dict) else None,
+        "controls": controls_data if isinstance(controls_data, dict) else None,
+        "promoted_domains": promoted_lines,
+        "generated_at": (
+            (related_data.get("evaluated_at") if isinstance(related_data, dict) else None)
+            or (controls_data.get("evaluated_at") if isinstance(controls_data, dict) else None)
+        ),
+    }
+
+
+def promote_related_domain(
+    settings: Settings, run_id: str, domain: str, *, tenant_id: str | None = None
+) -> dict[str, Any] | None:
+    """Record operator decision to promote a discovered related domain into future scope."""
+    from datetime import datetime, timezone
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+
+    domain_clean = domain.strip().lower()
+    promoted_file = run_dir / "promoted_domains.txt"
+    current = set(_read_lines(promoted_file))
+    current.add(domain_clean)
+
+    sorted_list = sorted(list(current))
+    promoted_file.write_text("\n".join(sorted_list) + "\n", encoding="utf-8")
+
+    return {
+        "domain": domain_clean,
+        "promoted": True,
+        "message": f"Domain '{domain_clean}' promoted to scope for run {run_id}",
+        "promoted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_leak_identifiers(
+    settings: Settings, run_id: str, *, tenant_id: str | None = None
+) -> dict[str, Any] | None:
+    """Read full unmasked corporate leak identifiers for this run (operator-only, org_profile M5)."""
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+    raw = _load_json(run_dir / "credential_leaks_identifiers.json")
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "run_id": run_id,
+        "total_identifiers": int(raw.get("total_identifiers") or 0),
+        "domains": raw.get("domains") if isinstance(raw.get("domains"), dict) else {},
+        "generated_at": raw.get("generated_at"),
+    }
+
+
+
