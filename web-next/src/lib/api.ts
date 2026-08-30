@@ -625,6 +625,49 @@ export type EndpointSoftwareChangeFeedItem = EndpointSoftwareChangeInfo & {
   asset_id: string | null;
 };
 
+/** Four-valued on purpose: "unknown" is a first-class answer, so an endpoint
+ * the matcher could not assess never renders as clean
+ * (docs/software-cve-matching.md). */
+export type SoftwareCveMatchStatus = "vulnerable" | "fixed" | "not_applicable" | "unknown";
+
+export type SoftwareCveMatchInfo = {
+  device_id: string;
+  hostname: string | null;
+  snapshot_id: string | null;
+  /** Empty on an ``unknown`` row, which is about a package set, not a CVE. */
+  cve_id: string;
+  status: SoftwareCveMatchStatus;
+  /** The distribution's own word, never a CVSS score re-derived client-side. */
+  severity: string;
+  source_package: string;
+  installed_package: string;
+  installed_version: string | null;
+  fixed_version: string | null;
+  advisory_id: string | null;
+  advisory_url: string | null;
+  provider: string;
+  distro: string | null;
+  distro_release: string | null;
+  purl: string | null;
+  cpe23: string | null;
+  unknown_reason: string | null;
+  feed_date: string | null;
+  evidence: Record<string, unknown>;
+  matched_at: string | null;
+};
+
+export type SoftwareCveMatchRunSummary = {
+  device_id: string;
+  snapshot_id: string | null;
+  distro: string | null;
+  distro_release: string | null;
+  packages_total: number;
+  packages_assessed: number;
+  packages_unassessed: number;
+  matches: number;
+  by_status: Record<string, number>;
+};
+
 export type ProvisioningKeyInfo = {
   key_id: string;
   tenant_id: string;
@@ -1251,6 +1294,33 @@ export async function fetchRecentSoftwareChanges(opts?: {
     params.set("limit", String(opts?.limit ?? 50));
     const { data } = await api.get<EndpointSoftwareChangeFeedItem[]>(
       `/endpoint/changes?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Vendor-advisory CVE matches for one endpoint (ROADMAP Track E M1). */
+export async function fetchEndpointCveMatches(deviceId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams(tenantParam(tenantId));
+    const { data } = await api.get<SoftwareCveMatchInfo[]>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/cve-matches?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Re-run the matcher for one endpoint against the advisory data on disk.
+ * Requires operator; the rows are derived and replaced wholesale. */
+export async function refreshEndpointCveMatches(deviceId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams(tenantParam(tenantId));
+    const { data } = await api.post<SoftwareCveMatchRunSummary>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/cve-matches/refresh?${params}`,
     );
     return data;
   } catch (error) {

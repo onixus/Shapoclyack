@@ -9,6 +9,7 @@ import type {
   JobInfo,
   NistRiskLevel,
   SlaState,
+  SoftwareCveMatchStatus,
   TenantInfo,
   VulnLifecycleState,
 } from "@/lib/api";
@@ -124,6 +125,19 @@ export const SOFTWARE_CHANGE_STATUS: Record<"installed" | "removed" | "updated",
   installed: { label: "installed", className: SUCCESS },
   removed: { label: "removed", variant: "destructive", className: `${DANGER} font-semibold` },
   updated: { label: "updated", className: IN_PROGRESS },
+};
+
+/** Software→CVE match statuses (ROADMAP Track E M1).
+ *
+ * ``unknown`` is styled as a warning rather than as muted on purpose: it means
+ * the matcher could not assess the package at all, and an operator who reads it
+ * as "nothing found" has drawn exactly the wrong conclusion. ``not_applicable``
+ * is the muted one — the vendor answered, and the answer was "no". */
+export const SOFTWARE_CVE_MATCH_STATUS: Record<SoftwareCveMatchStatus, StatusStyle> = {
+  vulnerable: { label: "vulnerable", variant: "destructive", className: DANGER },
+  fixed: { label: "fixed", className: SUCCESS },
+  not_applicable: { label: "not applicable", variant: "secondary", className: MUTED },
+  unknown: { label: "unknown", variant: "outline", className: IN_PROGRESS },
 };
 
 export const SEVERITY_STATUS: Record<Severity, StatusStyle & { tremorColor: string }> = {
