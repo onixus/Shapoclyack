@@ -6,6 +6,46 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Endpoint software is matched against vendor advisories** (ROADMAP Track E,
+  milestone 1) — Lariska has collected installed software since Agent_plan.md
+  S1-S7 and nothing had ever asked whether any of it was vulnerable, which was
+  the biggest functional gap on the roadmap and the cheapest to close, because
+  the data was already in Postgres. `GET /api/endpoint/devices/{id}/cve-matches`
+  and `GET /api/endpoint/cve-matches` now answer that, per endpoint and per
+  CVE, and an operator can re-run the matcher with the paired `…/refresh`
+  routes. The asset page's Software tab renders the result above the inventory
+  it came from. Migration `0027` adds `software_cve_matches`.
+
+  Matching goes through **Debian's Security Tracker and Ubuntu's USN database**
+  rather than NVD's CPE version ranges, and that is the whole design rather
+  than a detail. Ubuntu 20.04 has shipped OpenSSL `1.1.1f` since 2020 and will
+  until it dies; the fixes arrive in the revision (`-1ubuntu2.16`). A matcher
+  comparing upstream versions calls every such host vulnerable to every OpenSSL
+  CVE forever — thousands of findings per host that never clear — and the
+  operator stops reading the output, which is worse than shipping nothing. The
+  vendors publish the statement that actually answers the question ("fixed in
+  `1.1.1f-1ubuntu2.8` on focal"), so that is what the matcher compares against,
+  with pure-Python transcriptions of dpkg's `verrevcmp` and rpm's `rpmvercmp`
+  doing the comparison — epochs, `~` and `^` included, tested against the
+  tables the package managers themselves ship. No new dependency.
+
+  A match is `vulnerable`, `fixed`, `not_applicable` or **`unknown`**, and the
+  last one is not a placeholder. An endpoint whose distribution could not be
+  resolved, or software that came from outside a distribution package manager,
+  produces an explicit `unknown` row naming the reason — never a silent
+  omission, because an unassessable host rendering as clean is the one failure
+  mode worse than a false positive. `docs/software-cve-matching.md` states what
+  is not covered: language ecosystems, Windows, non-distribution software, and
+  every distribution other than these two.
+
+  The advisory datasets are offline-first, exactly like the EPSS/KEV/CVSS4
+  overlays: JSON under `scanner/data/advisories/` with the same envelope, the
+  same `OCTO_*_DATABASE` overrides, the same build-time manifest, and the same
+  provenance row on the System page. The image ships a small seed of real
+  advisories, not a feed dump; refreshing from the vendors is opt-in
+  (`OCTO_ADVISORY_FETCH_ENABLED`), bounded, and off by default, and nothing on
+  a request path ever opens a socket.
+
 - **Shapoclyack is licensed under Apache-2.0** — until now the repository
   carried no licence at all, which meant the default position of "all rights
   reserved" applied while the images were published to a public registry and

@@ -113,7 +113,7 @@ not an authorization control.
 | `/api/agent/deploy` | Operator-driven SSH push installation of an agent onto a Linux host |
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
-| `/api/endpoint` | Endpoint device and software inventory |
+| `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
 | `/api/tenants` | Tenant lifecycle, provisioning keys, and the approved scanning scope (`/api/tenants/{id}/scan-scope`, admin). A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
