@@ -29,7 +29,6 @@ from typing import Any
 
 from .asset_identity import registrable_domain
 from .config_schema import RelatedDomainsConfig
-from .hostnames import base_domains_from_fqdns, query_crtsh
 from .utils import load_json, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.related_domains")
@@ -50,12 +49,33 @@ DISCLAIMER = (
 
 
 def _is_excluded(value: str, excluded_list: list[str]) -> bool:
-    """Return True if ``value`` contains or matches any string in ``excluded_list``."""
+    """Return True if ``value`` is served by one of the providers in ``excluded_list``.
+
+    Matching is anchored to DNS label boundaries rather than done as a bare
+    substring test. A dotted pattern ("cloudflare.com") matches the host itself
+    or any subdomain of it; a bare token ("awsdns") matches a whole label or a
+    label prefixed by it and followed by a separator, so "ns-1.awsdns-07.org"
+    is excluded while "ns1.company.org" is not caught by the "ns1.com" entry.
+    """
     val = value.lower().strip().rstrip(".")
+    if not val:
+        return False
+    labels = val.split(".")
     for pattern in excluded_list:
         p = pattern.lower().strip().rstrip(".")
-        if p and (val == p or val.endswith(f".{p}") or p in val):
+        if not p:
+            continue
+        if val == p or val.endswith(f".{p}"):
             return True
+        if "." in p:
+            # A dotted provider domain only matches as a domain suffix, handled
+            # above; substring hits inside a longer label are false positives.
+            continue
+        for label in labels:
+            if label == p:
+                return True
+            if label.startswith(p) and not label[len(p):][:1].isalnum():
+                return True
     return False
 
 
@@ -71,14 +91,20 @@ def _extract_cert_san_candidates(
     if not isinstance(tls_data, dict):
         return candidates
 
-    findings = tls_data.get("findings") or []
-    endpoints = tls_data.get("endpoints") or []
-    entries = findings + endpoints
-
-    for entry in entries:
+    # tls_posture.json exposes one record per endpoint under ``findings``; the
+    # certificate (and with it the SAN string parsed out of nmap's ssl-cert
+    # output) is nested at ``finding["cert"]["san"]``. There is no top-level
+    # ``endpoints`` array. The flat lookups are kept as a fallback so a
+    # hand-written or future artifact shape still resolves.
+    for entry in tls_data.get("findings") or []:
         if not isinstance(entry, dict):
             continue
-        san_val = entry.get("san") or entry.get("subject_alternative_names")
+        cert = entry.get("cert")
+        san_val = None
+        if isinstance(cert, dict):
+            san_val = cert.get("san") or cert.get("subject_alternative_names")
+        if not san_val:
+            san_val = entry.get("san") or entry.get("subject_alternative_names")
         host_port = entry.get("endpoint") or f"{entry.get('host', '')}:{entry.get('port', '')}"
 
         san_names: list[str] = []
@@ -170,31 +196,72 @@ def _extract_reverse_ns_candidates(
     if not isinstance(dns_data, dict):
         return candidates
 
+    # dns_hygiene.json records the authoritative nameservers under
+    # ``nameservers``; there is no ``ns`` key on a domain record.
     domains_map = dns_data.get("domains") or {}
     custom_ns_map: dict[str, set[str]] = {}
 
     for dom, dom_info in domains_map.items():
         if not isinstance(dom_info, dict):
             continue
-        ns_list = dom_info.get("ns") or []
+        ns_list = dom_info.get("nameservers") or dom_info.get("ns") or []
         for ns_server in ns_list:
             ns_str = str(ns_server).strip().lower().rstrip(".")
             if ns_str and not _is_excluded(ns_str, excluded_ns):
                 custom_ns_map.setdefault(ns_str, set()).add(dom)
 
-    # Correlate domains that share dedicated / private NS servers
+    # Correlate only across a nameserver that a non-seed domain genuinely
+    # *shares* with a verified (seed) domain. Without that check a domain
+    # merely observed on its own private NS was reported as "shares NS with
+    # verified domain(s)" on the strength of no shared domain at all.
     for ns_server, shared_doms in custom_ns_map.items():
-        for d in shared_doms:
-            reg_dom = registrable_domain(d)
-            if reg_dom and reg_dom not in seed_domains:
-                evidence_item = {
-                    "source": "reverse_ns",
-                    "indicator": "shared_custom_ns",
-                    "detail": f"Shares authoritative nameserver '{ns_server}' with verified domain(s)",
-                }
-                candidates.setdefault(reg_dom, []).append(evidence_item)
+        by_reg = {d: registrable_domain(d) for d in shared_doms}
+        verified = sorted({d for d, reg in by_reg.items() if reg and reg in seed_domains})
+        if not verified:
+            continue
+        for d, reg_dom in by_reg.items():
+            if not reg_dom or reg_dom in seed_domains:
+                continue
+            evidence_item = {
+                "source": "reverse_ns",
+                "indicator": "shared_custom_ns",
+                "detail": (
+                    f"Shares authoritative nameserver '{ns_server}' with verified "
+                    f"domain(s): {', '.join(verified)}"
+                ),
+            }
+            candidates.setdefault(reg_dom, []).append(evidence_item)
 
     return candidates
+
+
+def _mx_hosts(mx_value: Any) -> list[str]:
+    """Normalize a mail_posture ``mx`` value to a list of exchanger hostnames.
+
+    mail_posture.json stores ``mx`` as a dict
+    (``{"entries": [...], "has_mx": bool, "null_mx": bool, "truncated": bool}``),
+    so iterating the value directly yields its *keys* and treats "entries" and
+    "has_mx" as mail exchangers. Entries themselves may be plain hostnames or
+    ``{"host"/"exchange": ..., "preference": ...}`` records.
+    """
+    if isinstance(mx_value, dict):
+        entries = mx_value.get("entries") or []
+    elif isinstance(mx_value, list):
+        entries = mx_value
+    else:
+        return []
+
+    hosts: list[str] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            raw = entry.get("host") or entry.get("exchange") or entry.get("name") or ""
+        else:
+            raw = entry
+        host = str(raw).strip().lower().rstrip(".")
+        # A null MX ("." / empty) is an explicit "this domain sends no mail".
+        if host and host != ".":
+            hosts.append(host)
+    return hosts
 
 
 def _extract_reverse_mx_candidates(
@@ -216,22 +283,28 @@ def _extract_reverse_mx_candidates(
     for dom, dom_info in domains_map.items():
         if not isinstance(dom_info, dict):
             continue
-        mx_list = dom_info.get("mx") or []
-        for mx_server in mx_list:
-            mx_str = str(mx_server).strip().lower().rstrip(".")
-            if mx_str and not _is_excluded(mx_str, excluded_mx):
+        for mx_str in _mx_hosts(dom_info.get("mx")):
+            if not _is_excluded(mx_str, excluded_mx):
                 custom_mx_map.setdefault(mx_str, set()).add(dom)
 
+    # Same shared-with-a-seed requirement as reverse_ns.
     for mx_server, shared_doms in custom_mx_map.items():
-        for d in shared_doms:
-            reg_dom = registrable_domain(d)
-            if reg_dom and reg_dom not in seed_domains:
-                evidence_item = {
-                    "source": "reverse_mx",
-                    "indicator": "shared_custom_mx",
-                    "detail": f"Shares dedicated mail exchanger '{mx_server}' with verified domain(s)",
-                }
-                candidates.setdefault(reg_dom, []).append(evidence_item)
+        by_reg = {d: registrable_domain(d) for d in shared_doms}
+        verified = sorted({d for d, reg in by_reg.items() if reg and reg in seed_domains})
+        if not verified:
+            continue
+        for d, reg_dom in by_reg.items():
+            if not reg_dom or reg_dom in seed_domains:
+                continue
+            evidence_item = {
+                "source": "reverse_mx",
+                "indicator": "shared_custom_mx",
+                "detail": (
+                    f"Shares dedicated mail exchanger '{mx_server}' with verified "
+                    f"domain(s): {', '.join(verified)}"
+                ),
+            }
+            candidates.setdefault(reg_dom, []).append(evidence_item)
 
     return candidates
 
@@ -335,9 +408,18 @@ def discover_related_domains(
     confirmed_count = sum(1 for x in items if x["status"] == "confirmed")
     candidate_count = sum(1 for x in items if x["status"] == "candidate")
 
-    # Auto merge if configured
+    # Auto merge if configured. ``merge_into_scope`` is the documented safety
+    # boundary for this stage ("finding-only by default"), so it has to gate the
+    # merge -- ``auto_merge`` alone must not widen scope, which is what the
+    # module docstring and default.yaml promise.
     merged_domains: list[str] = []
-    if config.auto_merge:
+    merge_enabled = config.auto_merge and config.merge_into_scope
+    if config.auto_merge and not config.merge_into_scope:
+        LOG.warning(
+            "related_domains: auto_merge is set but merge_into_scope is false; "
+            "candidates stay finding-only and no domains are merged into scope"
+        )
+    if merge_enabled:
         confirmed_domains = [x["domain"] for x in items if x["status"] == "confirmed"]
         merged_domains = confirmed_domains[: config.max_merged_domains]
         if merged_domains:
@@ -351,7 +433,8 @@ def discover_related_domains(
         "candidate_count": candidate_count,
         "total_candidates": total_candidates,
         "truncated": truncated,
-        "auto_merged": config.auto_merge,
+        "auto_merged": merge_enabled,
+        "merge_into_scope": config.merge_into_scope,
         "merged_domains": merged_domains,
         "disclaimer": DISCLAIMER,
         "candidates": items,

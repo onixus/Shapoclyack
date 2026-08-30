@@ -96,6 +96,17 @@ describe("ControlsMatrix Component", () => {
     expect(screen.getByText("mail_posture.json")).toBeInTheDocument();
   });
 
+  it("labels a very_low risk control as Very Low Risk, not Low Risk", async () => {
+    // "very_low" contains "low", so the substring branches have to be ordered
+    // most-specific-first or the very-low badge is unreachable.
+    vi.spyOn(apiModule, "fetchRunControls").mockResolvedValue(mockSummary);
+
+    renderWithQuery(<ControlsMatrix runId="run-test-123" />);
+
+    expect(await screen.findByText("Very Low Risk")).toBeInTheDocument();
+    expect(screen.queryByText("Low Risk")).not.toBeInTheDocument();
+  });
+
   it("renders empty/fallback state when controls are unavailable", async () => {
     vi.spyOn(apiModule, "fetchRunControls").mockRejectedValue(new Error("Not found"));
 

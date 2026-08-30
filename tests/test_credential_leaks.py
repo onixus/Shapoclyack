@@ -73,7 +73,7 @@ def test_breach_detection_and_masked_artifacts(tmp_path: Path):
         )
     })
 
-    config = CredentialLeaksConfig(enabled=True, provider="mock")
+    config = CredentialLeaksConfig(enabled=True, provider="mock", reveal_identifiers=True)
     result = check_credential_leaks(["example.com"], config, tmp_path, provider=provider)
 
     assert result["status"] == "fail"
@@ -101,3 +101,79 @@ def test_breach_detection_and_masked_artifacts(tmp_path: Path):
     c_map = {c["control"]: c for c in controls_summary["controls"]}
     assert c_map["credential_leaks"]["status"] == "fail"
     assert c_map["credential_leaks"]["risk_level"] in ("very_high", "high")
+
+
+def _single_domain_provider(status: str, domain: str = "example.com") -> MockLeakProvider:
+    return MockLeakProvider(
+        {domain: LeakReport(domain=domain, status=status, breaches=[], total_accounts=0)}
+    )
+
+
+def test_identifiers_are_withheld_unless_reveal_identifiers_is_set(tmp_path: Path):
+    """``reveal_identifiers`` is the documented privacy boundary: unmasked
+    account identifiers only reach disk when the operator opts in."""
+    breach = BreachDetail(
+        name="CorpLeak2023",
+        title="Corporate Leak 2023",
+        domain="example.com",
+        breach_date="2023-05-10",
+        added_date="2023-06-01",
+        pwn_count=1000,
+        description="Compromised credentials from employee portal.",
+        data_classes=["Email addresses", "Passwords"],
+        has_passwords=True,
+        accounts=["ceo@example.com", "admin@example.com"],
+    )
+    provider = MockLeakProvider({
+        "example.com": LeakReport(
+            domain="example.com", status="fail", breaches=[breach], total_accounts=2
+        )
+    })
+
+    config = CredentialLeaksConfig(enabled=True, provider="mock")  # reveal_identifiers=False
+    check_credential_leaks(["example.com"], config, tmp_path, provider=provider)
+
+    restricted_file = tmp_path / "credential_leaks_identifiers.json"
+    raw = restricted_file.read_text(encoding="utf-8")
+    data = json.loads(raw)
+
+    assert data["revealed"] is False
+    assert data["domains"] == {}
+    assert data["total_identifiers"] == 0
+    assert data["withheld_identifiers"] == 2
+    assert "ceo@example.com" not in raw
+
+
+def test_unanswered_domain_prevents_an_ok_verdict(tmp_path: Path):
+    """One clean domain must not outrank domains the provider could not answer
+    for and claim full coverage."""
+    provider = MockLeakProvider({
+        "example.com": LeakReport(
+            domain="example.com", status="ok", breaches=[], total_accounts=0
+        ),
+        "example.org": LeakReport(
+            domain="example.org",
+            status="not_checked",
+            reason="unauthorized",
+            breaches=[],
+            total_accounts=0,
+        ),
+    })
+
+    config = CredentialLeaksConfig(enabled=True, provider="mock")
+    result = check_credential_leaks(
+        ["example.com", "example.org"], config, tmp_path, provider=provider
+    )
+
+    assert result["status"] == "partial"
+    assert result["checked_domains"] == 1
+    assert result["attempted_domains"] == 2
+
+
+def test_all_domains_answered_still_yields_ok(tmp_path: Path):
+    provider = _single_domain_provider("ok")
+    config = CredentialLeaksConfig(enabled=True, provider="mock")
+    result = check_credential_leaks(["example.com"], config, tmp_path, provider=provider)
+
+    assert result["status"] == "ok"
+    assert result["checked_domains"] == 1

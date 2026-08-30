@@ -235,7 +235,11 @@ RDAP-сервер реестра не подхватился бы никогда
   превышение → `truncated: true`, а не тихое расширение;
 - продвижение домена в scope вручную — отдельное действие оператора в UI/API
   (`POST /runs/{id}/related-domains/{domain}/promote`, роль operator+), которое
-  добавляет цель, но **не запускает** скан само;
+  добавляет цель, но **не запускает** скан само; продвинуть можно только
+  синтаксически валидный домен, который этот run действительно нашёл как
+  кандидата (`related_domains.json`), иначе `400` — `promoted_domains.txt`
+  построчно задаёт scope будущего скана, и произвольное значение из URL туда
+  попасть не должно;
 - в артефакт и в UI пишется дисклеймер: атрибуция вероятностная, ответственность
   за авторизацию скана — на операторе (перекликается с предупреждением в
   `README.md`).
@@ -536,6 +540,8 @@ org_profile:
     enabled: false
     provider: hibp
     api_key: ""
+    # false: на диск пишутся только маскированные идентификаторы; полные
+    # адреса в credential_leaks_identifiers.json не сохраняются вовсе
     reveal_identifiers: false
   controls:
     enabled: true
@@ -548,10 +554,15 @@ org_profile:
 - `ControlItem`, `OrgProfileSummary` в схемах;
 - `GET /runs/{id}/controls` → матрица;
 - `GET /runs/{id}/org-profile` → владелец + связанные домены (пагинация через
-  `_pagination.py`);
+  `_pagination.py`); блок `ownership` отдаётся только operator+, как и сам
+  `ownership.json` в `_RESTRICTED_ARTIFACTS` — для viewer он `null`, а
+  `ownership_restricted: true` объясняет, что это ограничение доступа, а не
+  отсутствие данных;
 - `POST /runs/{id}/related-domains/{domain}/promote` → добавить в цели
   (operator+, без автозапуска скана);
-- `GET /runs/{id}/leaks/identifiers` → полные адреса, отдельное право;
+- `GET /runs/{id}/leaks/identifiers` → полные адреса, отдельное право; при
+  `reveal_identifiers: false` возвращает `revealed: false` и `withheld_reason`
+  вместо адресов — они не пишутся на диск;
 - новый интент `org_profile` в `api/services/scan_intents.py` — включает
   стадии модуля поверх обычного пайплайна (по образцу `inventory`/`vuln`);
 - ClickHouse: таблица `controls` в `ch_transform.py` — тренд контроля во
