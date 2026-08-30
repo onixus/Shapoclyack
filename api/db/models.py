@@ -1045,3 +1045,69 @@ class TenantScanScope(Base):
             "tenant_id", "effect", "kind", "value", name="uq_tenant_scan_scopes_entry"
         ),
     )
+
+
+class SoftwareCveMatch(Base):
+    """One statement about one CVE on one endpoint (ROADMAP Track E, M1).
+
+    Produced by ``api/services/software_cve_match.py`` from the endpoint's
+    latest accepted inventory snapshot and a vendor advisory dataset. Rows are
+    replaced wholesale per device on every run, so the table always describes
+    the current snapshot rather than accumulating history — the snapshot the
+    statement came from is recorded in ``snapshot_id``.
+
+    Two columns exist because a match must be able to say "I do not know".
+    ``status`` carries ``unknown`` alongside vulnerable/fixed/not_applicable,
+    and ``unknown_reason`` names what was missing (an unresolved distribution, a
+    package from a non-distribution source). An ``unknown`` row has no CVE, so
+    ``cve_id`` is the empty string rather than NULL and ``match_key`` — a
+    sha256 over ``(cve_id, source_package, unknown_reason)`` — carries the row's
+    identity, because a unique constraint over a nullable column constrains
+    nothing in Postgres.
+    """
+
+    __tablename__ = "software_cve_matches"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_devices.device_id", ondelete="CASCADE"), index=True
+    )
+    snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    match_key: Mapped[str]
+    # "" for an unknown row — see the class docstring.
+    cve_id: Mapped[str] = mapped_column(default="")
+    # vulnerable | fixed | not_applicable | unknown
+    status: Mapped[str] = mapped_column(default="unknown")
+    # The vendor's own word, never a CVSS score re-derived here.
+    severity: Mapped[str] = mapped_column(default="unknown")
+    source_package: Mapped[str] = mapped_column(default="")
+    installed_package: Mapped[str] = mapped_column(default="")
+    installed_version: Mapped[str | None] = mapped_column(default=None)
+    fixed_version: Mapped[str | None] = mapped_column(default=None)
+    advisory_id: Mapped[str | None] = mapped_column(default=None)
+    advisory_url: Mapped[str | None] = mapped_column(default=None)
+    provider: Mapped[str] = mapped_column(default="")
+    distro: Mapped[str | None] = mapped_column(default=None)
+    distro_release: Mapped[str | None] = mapped_column(default=None)
+    purl: Mapped[str | None] = mapped_column(default=None)
+    cpe23: Mapped[str | None] = mapped_column(default=None)
+    unknown_reason: Mapped[str | None] = mapped_column(default=None)
+    # The date the advisory feed stamped on itself, not the file's mtime.
+    feed_date: Mapped[str | None] = mapped_column(default=None)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    matched_at: Mapped[datetime]
+
+    __table_args__ = (
+        Index(
+            "ix_software_cve_matches_tenant_device_cve",
+            "tenant_id",
+            "device_id",
+            "cve_id",
+        ),
+        UniqueConstraint(
+            "tenant_id", "device_id", "match_key", name="uq_software_cve_match_row"
+        ),
+    )
