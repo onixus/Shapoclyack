@@ -66,3 +66,16 @@ def test_merge_config_extras() -> None:
         "discovery": {"ct": {"enabled": True}},
     }
     assert merge_config_extras(None, {}) is None
+
+
+def test_org_profile_intent() -> None:
+    r = resolve_scan_options(intent="org_profile", mode="balanced", delta=False, skip_nse=True)
+    assert r.intent == "org_profile"
+    assert r.skip_nse is False
+    assert r.config_extra["org_profile"]["ownership"]["enabled"] is True
+    assert r.config_extra["org_profile"]["dns_hygiene"]["enabled"] is True
+    assert r.config_extra["org_profile"]["mail_posture"]["enabled"] is True
+    assert r.config_extra["org_profile"]["controls"]["enabled"] is True
+    assert r.config_extra["fingerprint"]["enabled"] is True
+    assert r.config_extra["tls_posture"]["enabled"] is True
+

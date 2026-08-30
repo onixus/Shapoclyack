@@ -422,6 +422,28 @@ org_profile:
     max_domains: 50
     timeout_seconds: 15
     deadline_seconds: 300
+  # org_profile M4 — related domains discovery via passive multi-source correlation
+  # (cert_san, ct_org, reverse_ns, reverse_mx). merge_into_scope: false by default.
+  related_domains:
+    enabled: false
+    sources: [cert_san, ct_org, reverse_ns, reverse_mx]
+    excluded_ns_providers: [
+      cloudflare.com, awsdns, googledomains, azure-dns,
+      dnsmadeeasy, dnssimple, nsone, akamaitech, digitalocean,
+      he.net, dynect, ovh.net, nic.ru, reg.ru, selectel.ru,
+      yandex.net, yandex.ru, ns1.com, ns2.com, ultradns
+    ]
+    excluded_mx_providers: [
+      google.com, googlemail.com, outlook.com, protection.outlook.com,
+      pphosted.com, mimecast.com, yandex.ru, yandex.net, mail.ru,
+      zoho.com, protonmail.ch, mxroute.com
+    ]
+    max_candidates: 500
+    min_confidence: 0.6
+    merge_into_scope: false
+    auto_merge: false
+    max_merged_domains: 25
+    timeout_seconds: 15
   # org_profile M2 — zone hygiene (NS/SOA/CAA/DNSSEC/wildcard/AXFR). Everything
   # except axfr_probe is an ordinary dnsx query, the same risk class as
   # discovery.domain_monitor. DNSSEC is read from the RDAP secureDNS flag that
@@ -460,6 +482,21 @@ org_profile:
     dkim_selectors: [default, google, selector1, selector2, k1, mail]
     mta_sts_http: true
     mta_sts_timeout_seconds: 10
+  # org_profile M5 — corporate credential leaks via pluggable provider (HIBP, etc.).
+  # Off by default. Requires API key (OCTO_HIBP_API_KEY) and verified domain ownership.
+  # Passwords/hashes are NEVER saved. Local parts of emails are masked in artifacts.
+  credential_leaks:
+    enabled: false
+    provider: hibp
+    api_key: ""             # prefer env OCTO_HIBP_API_KEY
+    domains: []             # empty = base domains from input FQDNs
+    max_domains: 50
+    timeout_seconds: 15
+    deadline_seconds: 300
+    reveal_identifiers: false
+  # org_profile M3 — security controls matrix & NIST SP 800-30 evaluation
+  controls:
+    enabled: true
 
 # Slack / Telegram / SMTP notifications after reports. Prefer env credentials:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID

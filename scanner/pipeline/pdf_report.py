@@ -304,6 +304,34 @@ def write_business_pdf(
                 _reset(pdf)
                 pdf.multi_cell(width, 5, _safe(f"- [{sev_name}] {location} {label}"))
 
+    controls_data = _load_json(output_dir / "controls.json", None)
+    if isinstance(controls_data, dict) and controls_data.get("controls"):
+        _section_title(pdf, "Security Controls Matrix")
+        _kv_row(pdf, "Overall Verdict", str(controls_data.get("overall_verdict", "not_checked")).upper())
+        _kv_row(pdf, "NIST Risk Level", str(controls_data.get("overall_risk", "unassessed")).replace("_", " ").title())
+        pdf.ln(1)
+        c_widths = [45.0, 28.0, 28.0, width - 45.0 - 28.0 - 28.0]
+        c_headers = ["Control", "Status", "Risk Level", "Assessment"]
+        _reset(pdf)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_fill_color(241, 245, 249)
+        pdf.set_text_color(15, 23, 42)
+        for w, header in zip(c_widths, c_headers, strict=True):
+            pdf.cell(w, 7, header, border=1, fill=True)
+        pdf.ln()
+        pdf.set_font("Helvetica", "", 8)
+        for c in controls_data.get("controls") or []:
+            c_cells = [
+                str(c.get("title") or c.get("control") or "")[:26],
+                str(c.get("status") or "not_checked").upper()[:14],
+                str(c.get("risk_level") or "unassessed").replace("_", " ").title()[:14],
+                str(c.get("why") or "")[:55],
+            ]
+            _reset(pdf)
+            for w, cell in zip(c_widths, c_cells, strict=True):
+                pdf.cell(w, 6, _safe(cell), border=1)
+            pdf.ln()
+
     _section_title(pdf, "Notes")
     _reset(pdf)
     pdf.set_font("Helvetica", "", 9)

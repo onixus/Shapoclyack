@@ -23,9 +23,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ScanIntent = Literal["inventory", "vuln", "full", "delta"]
+ScanIntent = Literal["inventory", "vuln", "full", "delta", "org_profile"]
 
-INTENTS: tuple[ScanIntent, ...] = ("inventory", "vuln", "full", "delta")
+INTENTS: tuple[ScanIntent, ...] = ("inventory", "vuln", "full", "delta", "org_profile")
 
 # Scanner CLI --mode only accepts these (not "test").
 _CLI_MODES = frozenset({"safe", "balanced", "fast"})
@@ -119,6 +119,31 @@ def resolve_scan_options(
                 },
             },
             summary="delta: full pipeline with incremental discovery",
+        )
+
+    if intent == "org_profile":
+        return ResolvedIntent(
+            intent="org_profile",
+            mode=cli_mode,
+            delta=bool(delta),
+            skip_nse=False,
+            config_extra={
+                "nuclei": {
+                    "enabled": True,
+                    "severities": ["critical", "high", "medium"],
+                },
+                "org_profile": {
+                    "ownership": {"enabled": True},
+                    "related_domains": {"enabled": True},
+                    "dns_hygiene": {"enabled": True},
+                    "mail_posture": {"enabled": True},
+                    "credential_leaks": {"enabled": True},
+                    "controls": {"enabled": True},
+                },
+                "fingerprint": {"enabled": True},
+                "tls_posture": {"enabled": True},
+            },
+            summary="org_profile: full assessment with complete org_profile & security controls evaluation",
         )
 
     # full

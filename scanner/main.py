@@ -34,6 +34,8 @@ from scanner.pipeline.discovery_delta import (
 from scanner.pipeline.errors import StageFailureError
 from scanner.pipeline.asn_discovery import discover_asn_ranges
 from scanner.pipeline.cloud_discovery import discover_cloud_buckets_sync
+from scanner.pipeline.controls import evaluate_controls
+from scanner.pipeline.credential_leaks import check_credential_leaks
 from scanner.pipeline.discover import import_cloudflare_dns_targets
 from scanner.pipeline.dns_hygiene import check_dns_hygiene
 from scanner.pipeline.domain_monitor import monitor_domains
@@ -56,6 +58,7 @@ from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
 from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.defectdojo import export_to_defectdojo
 from scanner.pipeline.pdf_report import write_business_pdf
+from scanner.pipeline.related_domains import discover_related_domains
 from scanner.pipeline.report import build_reports
 from scanner.pipeline.report_diff import resolve_previous_run_dir, write_report_diff
 from scanner.pipeline.resolve import resolve_fqdns
@@ -926,6 +929,50 @@ def _run_pipeline_body(
         ),
     )
     checkpoint.mark_done("report")
+
+    # EPIC #182 (org_profile M4): Related domains passive discovery & correlation.
+    if config.org_profile.related_domains.enabled:
+        if args.resume and checkpoint.is_done("related_domains"):
+            timer.skip("related_domains")
+        else:
+            rel_domains = config.org_profile.ownership.domains or base_domains_from_fqdns(scope_fqdns)
+            _run_stage(
+                "related_domains",
+                lambda: discover_related_domains(
+                    paths.output_dir,
+                    config.org_profile.related_domains,
+                    seed_domains=rel_domains,
+                ),
+            )
+            checkpoint.mark_done("related_domains")
+
+    # EPIC #182 (org_profile M5): Corporate credential leaks via pluggable provider.
+    if config.org_profile.credential_leaks.enabled:
+        if args.resume and checkpoint.is_done("credential_leaks"):
+            timer.skip("credential_leaks")
+        else:
+            leak_domains = config.org_profile.credential_leaks.domains or base_domains_from_fqdns(scope_fqdns)
+            _run_stage(
+                "credential_leaks",
+                lambda: check_credential_leaks(
+                    leak_domains,
+                    config.org_profile.credential_leaks,
+                    paths.output_dir,
+                ),
+            )
+            checkpoint.mark_done("credential_leaks")
+
+    # EPIC #182 (org_profile M3): Security controls matrix & NIST risk evaluation.
+    # Reads findings and posture from stage artifacts and builds controls.json.
+    if config.org_profile.controls.enabled:
+        if args.resume and checkpoint.is_done("controls"):
+            timer.skip("controls")
+        else:
+            _run_stage(
+                "controls",
+                lambda: evaluate_controls(paths.output_dir, config.org_profile.controls),
+            )
+            checkpoint.mark_done("controls")
 
     diff_result = None
     if previous_run_dir is not None:
