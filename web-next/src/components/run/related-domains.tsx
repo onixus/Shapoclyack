@@ -5,7 +5,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
   Globe,
-  ShieldCheck,
   CheckCircle2,
   HelpCircle,
   ChevronDown,
@@ -13,7 +12,6 @@ import {
   PlusCircle,
   AlertCircle,
   FileCheck,
-  ExternalLink,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +23,14 @@ import {
   type RelatedDomainCandidate,
 } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+
+type DomainOwnership = {
+  org_name?: string | null;
+  registrant_organization?: string | null;
+  registrar?: string | null;
+  dnssec?: boolean | null;
+  nameservers?: string[] | null;
+};
 
 function CandidateRow({
   candidate,
@@ -191,7 +197,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
     );
   }
 
-  const ownership = (data.ownership?.domains || {}) as Record<string, any>;
+  const ownership = (data.ownership?.domains || {}) as Record<string, DomainOwnership>;
   const firstDomain = Object.keys(ownership)[0];
   const primaryOwner = firstDomain ? ownership[firstDomain] : null;
 
