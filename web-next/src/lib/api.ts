@@ -1687,3 +1687,82 @@ export async function triggerRiskSnapshot() {
   }
 }
 
+
+/** Whether this installation offers single sign-on (ROADMAP Track E).
+ * Deliberately unauthenticated and deliberately not the issuer: the login form
+ * renders before anyone is signed in, and the provider URL names the
+ * customer's identity vendor. */
+export type SsoStatus = {
+  enabled: boolean;
+  login_url: string;
+};
+
+/** An API that predates SSO answers 404, and an unreachable one answers
+ * nothing; both read as "no SSO" rather than an error worth showing on a login
+ * form. The button is an enhancement — password login has to keep working when
+ * this call fails. */
+export async function fetchSsoStatus(): Promise<SsoStatus> {
+  const fallback: SsoStatus = { enabled: false, login_url: "/api/auth/oidc/login" };
+  try {
+    const { data } = await api.get<SsoStatus>("/auth/sso");
+    return data ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** A non-interactive API credential (ROADMAP Track E). `token` is present only
+ * in the create response — only a hash is stored, so it can never be read
+ * back. */
+export type ServiceTokenInfo = {
+  token_id: string;
+  tenant_id: string;
+  name: string;
+  token_prefix: string;
+  scopes: string[];
+  role: Role;
+  status: "active" | "expired" | "revoked";
+  created_by: string | null;
+  created_at: string | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  token?: string | null;
+};
+
+export async function fetchServiceTokens(tenantId: string) {
+  try {
+    const { data } = await api.get<ServiceTokenInfo[]>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createServiceToken(
+  tenantId: string,
+  body: { name: string; scopes: string[]; role: Role; expires_in_days?: number },
+) {
+  try {
+    const { data } = await api.post<ServiceTokenInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function revokeServiceToken(tenantId: string, tokenId: string) {
+  try {
+    const { data } = await api.post<ServiceTokenInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens/${encodeURIComponent(tokenId)}/revoke`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
