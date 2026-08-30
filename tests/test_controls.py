@@ -7,7 +7,6 @@ from pathlib import Path
 
 from scanner.pipeline.config_schema import ControlsConfig
 from scanner.pipeline.controls import (
-    CONTROL_DEFINITIONS,
     evaluate_controls,
     format_controls_markdown,
     nist_risk_level,

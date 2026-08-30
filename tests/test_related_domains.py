@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 from scanner.pipeline.config_schema import RelatedDomainsConfig
 from scanner.pipeline.related_domains import (
     _compute_confidence,
     _extract_cert_san_candidates,
-    _extract_reverse_mx_candidates,
     _extract_reverse_ns_candidates,
     _is_excluded,
     discover_related_domains,

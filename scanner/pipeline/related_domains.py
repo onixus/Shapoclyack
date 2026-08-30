@@ -29,7 +29,6 @@ from typing import Any
 
 from .asset_identity import registrable_domain
 from .config_schema import RelatedDomainsConfig
-from .hostnames import base_domains_from_fqdns, query_crtsh
 from .utils import load_json, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.related_domains")
