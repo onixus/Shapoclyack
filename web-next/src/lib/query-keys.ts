@@ -38,6 +38,7 @@ export const queryKeys = {
   agentSnippets: ["agents", "snippets"] as const,
   deployStatus: (deployId: string) => ["agents", "deploy", deployId] as const,
   tenants: ["tenants"] as const,
+  serviceTokens: (tenantId: string) => ["tenants", tenantId, "service-tokens"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,
   assetsPage: (
     filters: { status?: string; unowned?: boolean; exposure?: string },

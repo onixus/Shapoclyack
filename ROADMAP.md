@@ -608,8 +608,10 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 
 ### Order
 
-**Now** — remove the reasons a buyer stops: enterprise IAM (OIDC/SAML, service tokens, scopes;
-2–3 sprints); software→CVE matching over the endpoint inventory (5–7 sprints, starting with
+**Now** — remove the reasons a buyer stops: enterprise IAM — **OIDC single sign-on
+(authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with
+scopes have landed**; SAML and LDAP have not, and are the remainder of this item —
+software→CVE matching over the endpoint inventory (5–7 sprints, starting with
 vendor advisories for two distributions, because naive version matching on backports produces a
 false-positive storm); `org_profile` M1–M3 (2–3 sprints, already designed in
 [docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of

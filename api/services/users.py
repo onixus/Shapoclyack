@@ -70,6 +70,13 @@ def _to_dict(row: models.User) -> dict[str, Any]:
         # never set. Surfaced so an admin can tell "disabled by someone" from
         # "never had a password" without exposing the hash itself.
         "has_password": bool(row.password_hash),
+        "email": row.email,
+        "email_verified": bool(row.email_verified),
+        # Whether this account signs in through the identity provider. The
+        # issuer and subject themselves stay out of the response: they identify
+        # the customer's IdP and the user inside it, and no console screen has
+        # a use for either.
+        "sso_linked": bool(row.oidc_subject),
     }
 
 
@@ -224,6 +231,188 @@ def set_disabled(username: str, disabled: bool) -> dict[str, Any] | None:
         if row is None:
             return None
         row.disabled_at = _now() if disabled else None
+        row.updated_at = _now()
+        session.flush()
+        return _to_dict(row)
+
+
+class SsoLinkError(PermissionError):
+    """An SSO login that resolved to no account this platform will sign in.
+
+    A ``PermissionError`` because that is what the auth routes already turn
+    into a refusal, and because every case it covers is a decision not to
+    authenticate rather than a fault: no matching account with JIT off, an
+    unverified email, a disabled account, or a local account whose address the
+    provider will not vouch for.
+    """
+
+
+def _normalise_email(email: str | None) -> str | None:
+    cleaned = (email or "").strip().lower()
+    return cleaned[:320] or None
+
+
+def link_or_provision_sso_user(
+    settings: Settings,
+    *,
+    issuer: str,
+    subject: str,
+    username: str,
+    email: str | None,
+    email_verified: bool,
+    role: str,
+    tenant_id: str,
+    jit_enabled: bool,
+) -> tuple[dict[str, Any], str]:
+    """Resolve an OIDC identity to a console account.
+
+    Returns ``(user, action)`` where ``action`` is ``signin``, ``link`` or
+    ``provision`` — the caller records which one happened in the auth trail.
+
+    Resolution order, and why it is this order:
+
+    1. **The stored ``(issuer, subject)``.** Once linked, that pair is the
+       identity. It survives a renamed account and a changed email address,
+       neither of which should log a different person in.
+    2. **A verified email match.** The provider must assert ``email_verified``
+       *and* the local account must already carry the same address marked
+       verified. An unverified address on either side is a string somebody
+       typed, and linking on it hands the account to whoever can register that
+       address at the identity provider. Refused, never silently provisioned
+       under a new name.
+    3. **Just-in-time provisioning**, only when enabled. The account is created
+       with an empty password hash — it can never be used to log in with a
+       password, only through the provider — and with the role the claim
+       mapping produced, which defaults to the lowest privileged role.
+
+    A disabled account is refused at every step: SSO is a way to prove who you
+    are, not a way around a revocation.
+    """
+    settings_local = settings
+    email = _normalise_email(email)
+    now = _now()
+
+    with get_session(settings_local.postgres_url) as session:
+        linked = session.execute(
+            select(models.User).where(
+                models.User.oidc_issuer == issuer,
+                models.User.oidc_subject == subject,
+            )
+        ).scalar_one_or_none()
+        if linked is not None:
+            if linked.disabled_at is not None:
+                raise SsoLinkError("account is disabled")
+            # Keep the address current: it is what the console displays, and a
+            # stale one would misidentify the person behind the account.
+            if email and email_verified:
+                linked.email = email
+                linked.email_verified = True
+            linked.updated_at = now
+            session.flush()
+            return _to_dict(linked), "signin"
+
+        if email and email_verified:
+            candidate = session.execute(
+                select(models.User).where(
+                    models.User.email == email,
+                    models.User.email_verified.is_(True),
+                    models.User.oidc_subject.is_(None),
+                )
+            ).scalars().first()
+            if candidate is not None:
+                if candidate.disabled_at is not None:
+                    raise SsoLinkError("account is disabled")
+                candidate.oidc_issuer = issuer
+                candidate.oidc_subject = subject
+                candidate.updated_at = now
+                session.flush()
+                return _to_dict(candidate), "link"
+
+        if not jit_enabled:
+            raise SsoLinkError(
+                "no console account is linked to this identity and just-in-time "
+                "provisioning is disabled"
+            )
+
+        role = _validate_role(role)
+        name = _validate_username(username)
+        existing = session.get(models.User, name)
+        if existing is not None:
+            # The name is taken by a *local* account we were not allowed to
+            # link to (unverified address, or a different address entirely).
+            # Provisioning over it would be an account takeover by whoever
+            # controls that name at the identity provider.
+            raise SsoLinkError(
+                "a local account already uses this username and cannot be linked "
+                "to this identity"
+            )
+        row = models.User(
+            username=name,
+            # No password, ever: this account authenticates through the
+            # provider only, and authenticate() refuses an empty hash.
+            password_hash="",
+            role=role,
+            created_at=now,
+            updated_at=now,
+            password_changed_at=None,
+            created_by=f"oidc:{issuer}",
+            email=email,
+            email_verified=bool(email and email_verified),
+            oidc_issuer=issuer,
+            oidc_subject=subject,
+        )
+        session.add(row)
+        session.flush()
+        provisioned = _to_dict(row)
+
+    # Outside the transaction above: the membership lives in another service
+    # with its own session, and a failure to grant it must not roll back the
+    # account it belongs to (the next login re-grants it).
+    if tenant_id:
+        from api.services import memberships as memberships_service
+
+        try:
+            memberships_service.grant(
+                username=provisioned["username"],
+                tenant_id=tenant_id,
+                role=role,
+                created_by=f"oidc:{issuer}",
+            )
+        except ValueError:
+            # An unknown tenant in the claim is a mapping mistake, not a reason
+            # to refuse the login: the account exists with no membership, which
+            # confines it to the default tenant exactly like any other.
+            logger.warning(
+                "OIDC tenant claim named an unknown tenant for a provisioned user; "
+                "no membership was granted."
+            )
+    return provisioned, "provision"
+
+
+def set_email(username: str, email: str | None, *, verified: bool = False) -> dict[str, Any] | None:
+    """Set an account's address and whether this platform treats it as verified.
+
+    Admin-driven, and the only way an existing local account becomes eligible
+    for SSO linking by email — which is the point: somebody with the authority
+    to grant access decides that this address is this user's, rather than the
+    identity provider asserting it into an account that never had one.
+    """
+    settings = _require_settings()
+    cleaned = _normalise_email(email)
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.User, username)
+        if row is None:
+            return None
+        if cleaned is not None:
+            clash = session.execute(
+                select(models.User).where(
+                    models.User.email == cleaned, models.User.username != username
+                )
+            ).scalars().first()
+            if clash is not None:
+                raise ValueError("email is already used by another account")
+        row.email = cleaned
+        row.email_verified = bool(cleaned) and verified
         row.updated_at = _now()
         session.flush()
         return _to_dict(row)

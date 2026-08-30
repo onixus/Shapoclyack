@@ -18,6 +18,7 @@ export const en = {
   "nav.geo": "Geo Map",
   "nav.reports": "Reports",
   "nav.system": "System",
+  "nav.serviceTokens": "Service tokens",
 
   "brand.tagline": "Cyber Recon & Exposure",
   "brand.webUi": "Web UI v2",
@@ -51,6 +52,8 @@ export const en = {
   "login.submit": "Enter dashboard",
   "login.submitting": "Signing in…",
   "login.failed": "Login failed",
+  "login.or": "or",
+  "login.sso": "Sign in with SSO",
 
   "auth.loading": "Loading session…",
   "auth.redirecting": "Redirecting to login…",
@@ -342,6 +345,7 @@ export const ru: Record<MsgKey, string> = {
   "nav.geo": "Геокарта",
   "nav.reports": "Отчёты",
   "nav.system": "Система",
+  "nav.serviceTokens": "Сервисные токены",
 
   "brand.tagline": "Разведка и экспозиция",
   "brand.webUi": "Web UI v2",
@@ -375,6 +379,8 @@ export const ru: Record<MsgKey, string> = {
   "login.submit": "Войти в консоль",
   "login.submitting": "Вход…",
   "login.failed": "Не удалось войти",
+  "login.or": "или",
+  "login.sso": "Войти через SSO",
 
   "auth.loading": "Загрузка сессии…",
   "auth.redirecting": "Переход на страницу входа…",
