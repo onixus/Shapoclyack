@@ -6,6 +6,55 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Enterprise IAM: OIDC single sign-on and service tokens** (ROADMAP Track E,
+  "No SSO"). The platform had exactly two ways to authenticate — a human's
+  password and an agent's provisioning key — so a pilot could not be run
+  against a corporate identity provider, and every integration ran under
+  somebody's console account.
+
+  *SSO* is authorization code with PKCE against a generic OIDC provider
+  (`api/services/oidc.py`, migration `0026`). Endpoints and signing algorithms
+  come from the provider's `.well-known/openid-configuration`; only the issuer
+  and the client credentials are configured here, and SSO stays off until all
+  three are set. The ID token is verified rather than read — signature against
+  the published JWKS with an **asymmetric-only** algorithm allowlist (so
+  neither `none` nor an HMAC keyed on the client secret is selectable), then
+  `iss`, `aud`/`azp`, `exp` and the nonce. An unknown `kid` refetches the key
+  set exactly once, which is key rotation; more would be a request amplifier.
+  State is signed *and* single-use, and the nonce and PKCE verifier stay
+  server-side, so a callback cannot be replayed and a stolen state discloses
+  nothing. `GET /api/auth/oidc/callback` issues the platform's ordinary session
+  token — same JWT as password login, because nothing downstream should care
+  how the user proved who they are.
+
+  Account linking is deliberately conservative: a stored `(issuer, subject)`
+  first, then a **verified** email that both the provider and an admin vouch
+  for, and only then just-in-time provisioning — which is **off by default**,
+  never provisions over an existing local username, and defaults to `viewer`.
+  Linking on an unverified address would hand a console account to whoever can
+  register that address at the identity provider. Every outcome, refusals
+  included, lands in the existing `auth_events` trail.
+
+  *Service tokens* (`api/services/service_tokens.py`, routes under
+  `/api/tenants/{id}/service-tokens`, admin-only) are `octo_st_…` credentials
+  scoped to one tenant. Only a bcrypt hash is stored — the plaintext exists
+  once, in the create response — and the public prefix makes verification one
+  indexed lookup rather than a bcrypt check per issued token. A token passes
+  two independent limits: the role it was issued with inside its own tenant (no
+  membership row raises it, and an `admin`-role token is never a *platform*
+  admin), and `resource:action` scopes derived from the request path and
+  method. `auth`, `users` and `tenants` are closed to every token whatever its
+  scopes, because a credential that can mint users or further tokens outlives
+  its own revocation. Every token expires, and `last_used_at` is rate-limited
+  so a busy integration does not rewrite the same row on every call.
+
+  The console gains a service-token screen and a "Sign in with SSO" button that
+  appears only when the API reports a provider is configured (`GET
+  /api/auth/sso`, also embedded in `/api/health` because the login form renders
+  before anyone is signed in). See
+  [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc) and
+  [docs/configuration.md](docs/configuration.md#environment-variables).
+
 - **Shapoclyack is licensed under Apache-2.0** — until now the repository
   carried no licence at all, which meant the default position of "all rights
   reserved" applied while the images were published to a public registry and

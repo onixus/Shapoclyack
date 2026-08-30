@@ -91,6 +91,110 @@ A locked-out client keeps retrying, and recording each retry would make the
 audit trail an amplifier for unauthenticated writes — so one `locked` row is
 written per window and the rest are counted only in `/metrics`.
 
+## Single sign-on (OIDC)
+
+Authorization code with PKCE against a generic OpenID Connect provider
+(ROADMAP Track E). SSO is **off** unless `OCTO_OIDC_ISSUER`,
+`OCTO_OIDC_CLIENT_ID` and `OCTO_OIDC_CLIENT_SECRET` are all set — a
+half-configured provider is a misconfiguration, not a partly enabled feature,
+so it is reported as off rather than failing at the first redirect.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/auth/sso` | none | `{"enabled": …, "login_url": …}`. The login form has to render before anyone is signed in. Also embedded in `GET /api/health` as `sso` |
+| `GET /api/auth/oidc/login` | none | 307 to the provider's authorize URL. `?redirect=false` returns the URL as JSON; `?next=/path` is carried through the flow and is dropped unless it is a path on this console |
+| `GET /api/auth/oidc/callback` | none | Exchanges the code and issues **the platform's ordinary session token** — same JWT, same claims, same expiry as password login |
+
+Everything about the provider except the issuer and the client credentials
+comes from its `.well-known/openid-configuration`, cached for
+`OCTO_OIDC_CACHE_TTL_SECONDS`. The ID token is verified, never merely read:
+
+- signature against the published JWKS, with the algorithm intersected against
+  an **asymmetric allowlist** (`RS*`, `ES*`, `PS*`). Neither `none` nor an HMAC
+  algorithm keyed on the client secret can ever be selected;
+- `iss`, `aud` (and `azp` when present), `exp`/`iat` with 10s of leeway;
+- the `nonce`, compared against the one this installation generated.
+
+An unknown `kid` refetches the JWKS **once** — that is key rotation — and then
+refuses. Retrying without a bound would turn an invented key into a request
+amplifier against the provider.
+
+State is signed *and* single-use: the signed half (an HS256 JWT over the
+platform's own secret) proves this installation issued the request and bounds
+its lifetime; a server-side record proves it has not been answered yet. The
+nonce and the PKCE verifier live only in that record, so the browser carries
+neither. **The record is process-local.** With more than one API replica,
+enable session affinity for `/api/auth/oidc/*` so a callback reaches the
+replica that issued it.
+
+### Which account a login resolves to
+
+In order, and stopping at the first match:
+
+1. the stored `(issuer, subject)` pair. Once linked, that is the identity — it
+   survives a renamed account and a changed address;
+2. a **verified** email match: the provider must assert `email_verified` *and*
+   the local account must already carry the same address marked verified by an
+   admin (`PUT /api/users/{username}/email`, `{"email": …, "verified": true}`).
+   An unverified address on either side is a string somebody typed, and linking
+   on it would hand the console account to whoever can register that address at
+   the identity provider;
+3. just-in-time provisioning, **only** when `OCTO_OIDC_JIT_PROVISIONING=true`.
+   The account is created with no password hash — it can only ever sign in
+   through the provider — at the role `OCTO_OIDC_ROLE_MAP` produces for its
+   claims, defaulting to `OCTO_OIDC_DEFAULT_ROLE` (`viewer`). It is never
+   created over an existing local username.
+
+A disabled account is refused at every step: SSO proves who you are, it is not
+a way around a revocation.
+
+Every outcome lands in the auth trail (`GET /api/auth/events`): `success` with
+reason `sso_signin` / `sso_linked` / `sso_provisioned`, and `denied` with
+`sso_denied` (a refused callback) or `sso_not_provisioned` (an identity this
+installation has no account for).
+
+## Service tokens
+
+Non-interactive API credentials, admin-issued per tenant, so an integration
+stops running under a person's password (ROADMAP Track E). Format:
+`octo_st_<16 hex>_<secret>`. The first two segments are the **prefix** — public,
+unique, indexed, and what the console shows; the secret is stored only as a
+bcrypt hash, so the plaintext exists once, in the create response, and cannot
+be read back.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/tenants/{tenant_id}/service-tokens` | admin | Issue. Returns `token` — the only time it exists |
+| `GET /api/tenants/{tenant_id}/service-tokens` | admin | List, without secrets. Revoked and expired ones stay listed |
+| `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke` | admin | Kill immediately. Idempotent |
+
+A token is presented on the ordinary `Authorization: Bearer` header; which
+credential it is, is decided by its own shape, never by anything the caller
+asserts. Authorization is **two independent limits and a request must pass
+both**:
+
+- the **role** it was issued with, inside its own tenant, which is the ceiling.
+  No membership row raises it, and an `admin`-role token is never a *platform*
+  admin — it administers its tenant, not the fleet, and naming another tenant
+  in `tenant_id` is a 403 rather than an ignored parameter;
+- its **scopes**: `resource:action`, where `resource` is the first path segment
+  under `/api` (`runs`, `assets`, `vulnerabilities`, `jobs`…) and `action` is
+  `read` for `GET`/`HEAD`/`OPTIONS` and `write` for everything else. `*` matches
+  either half, so `runs:*`, `*:read` and a bare `*` are all expressible. At
+  least one scope is required — a token created with none by accident would
+  otherwise be the most powerful credential in the installation.
+
+Three resources are closed to every service token whatever its role or scopes:
+`auth`, `users` and `tenants`. A credential that can create users, rotate
+passwords, grant memberships, widen a scan scope or mint further tokens is one
+that outlives its own revocation.
+
+`expires_at` is always set (`OCTO_SERVICE_TOKEN_DEFAULT_TTL_DAYS`, capped by
+`OCTO_SERVICE_TOKEN_MAX_TTL_DAYS`) — a credential with no expiry is one nobody
+rotates. `last_used_at` is written at most once per
+`OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS` so a busy integration does not
+turn every request into a write.
+
 ## Roles
 
 | Role | Intended capability |
@@ -106,7 +210,7 @@ not an authorization control.
 
 | Prefix | Purpose |
 |---|---|
-| `/api/auth` | Login, current principal, and the authentication audit trail (`/api/auth/events`, admin) |
+| `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |
@@ -537,6 +641,8 @@ For scripts:
 - use idempotency or external coordination before retrying job creation;
 - respect API pagination/limits;
 - record `job_id`, `run_id`, and tenant together;
-- never log bearer tokens or provisioning keys;
+- prefer a **service token** over a human account: it is scoped, it expires,
+  and revoking it locks nobody out (see [Service tokens](#service-tokens));
+- never log bearer tokens, service tokens or provisioning keys;
 - treat `429` and dependency `503` responses as retryable only with bounded
   backoff.
