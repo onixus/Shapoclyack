@@ -125,6 +125,7 @@ def reset_for_tests() -> None:
         session.query(models.WebhookSubscription).delete()
         session.query(models.Wordlist).delete()
         session.query(models.ProvisioningKey).delete()
+        session.query(models.ServiceToken).delete()
         session.query(models.Tenant).delete()
 
 

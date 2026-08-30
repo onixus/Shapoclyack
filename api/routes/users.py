@@ -21,6 +21,7 @@ from api.schemas import (
     ChangeOwnPasswordRequest,
     CreateUserRequest,
     SetUserDisabledRequest,
+    SetUserEmailRequest,
     SetUserPasswordRequest,
     SetUserRoleRequest,
     UserInfo,
@@ -95,6 +96,31 @@ def set_user_role(
         )
     try:
         updated = users_service.set_role(username, body.role)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    if updated is None:
+        raise _not_found(username)
+    return UserInfo.model_validate(updated)
+
+
+@router.put("/users/{username}/email", response_model=UserInfo)
+def set_user_email(
+    username: str,
+    body: SetUserEmailRequest,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+) -> UserInfo:
+    """Set an account's address, and whether this platform treats it as verified.
+
+    ``verified`` is the only thing that makes an existing local account
+    eligible to be linked to an SSO identity by email (Track E), which is why
+    it is an admin decision rather than something the identity provider can
+    assert on its own: whoever can register an address at the IdP would
+    otherwise be able to take over the console account that claims it.
+    """
+    try:
+        updated = users_service.set_email(username, body.email, verified=body.verified)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

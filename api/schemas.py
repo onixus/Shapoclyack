@@ -23,6 +23,17 @@ class Page(BaseModel, Generic[T]):
     has_more: bool
 
 
+class SsoStatus(BaseModel):
+    """Whether this installation offers single sign-on. Unauthenticated.
+
+    Deliberately not the issuer: the login form is reachable by anyone, and the
+    provider's URL names the customer's identity vendor.
+    """
+
+    enabled: bool = False
+    login_url: str = "/api/auth/oidc/login"
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
@@ -30,6 +41,10 @@ class HealthResponse(BaseModel):
     nats: bool | None = None
     clickhouse: bool | None = None
     ch_ingest: dict[str, int] | None = None
+    # Whether single sign-on is configured (Track E). Here rather than on
+    # /api/system because the login form has to know before anyone is signed
+    # in, and this is the endpoint that is already public.
+    sso: SsoStatus | None = None
 
 
 class RunSummary(BaseModel):
@@ -629,6 +644,68 @@ class UserInfo(BaseModel):
     disabled_at: str | None = None
     password_changed_at: str | None = None
     created_by: str | None = None
+    # Federated identity (Track E). The issuer and subject themselves are never
+    # returned: they name the customer's IdP and the person inside it, and no
+    # console screen has a use for either.
+    email: str | None = None
+    email_verified: bool = False
+    sso_linked: bool = False
+
+
+class SetUserEmailRequest(BaseModel):
+    """Set an account's address, and whether this platform treats it as verified.
+
+    ``verified`` is an administrative assertion, which is the point: it is what
+    makes the account eligible to be linked to an SSO identity by address, so
+    the decision belongs to someone with the authority to grant access rather
+    than to the identity provider alone.
+    """
+
+    email: str | None = Field(default=None, max_length=320)
+    verified: bool = False
+
+
+class OidcLoginResponse(BaseModel):
+    """The provider URL to send the browser to, for a client that redirects itself."""
+
+    authorization_url: str
+    state: str
+    expires_in: int
+
+
+class ServiceTokenInfo(BaseModel):
+    """An issued service token. ``token`` is present only in the create response."""
+
+    token_id: str
+    tenant_id: str
+    name: str
+    token_prefix: str
+    scopes: list[str] = Field(default_factory=list)
+    role: Literal["viewer", "operator", "admin"] = "viewer"
+    status: Literal["active", "expired", "revoked"] = "active"
+    created_by: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    last_used_at: str | None = None
+    revoked_at: str | None = None
+    # One-time plaintext, exactly like ProvisioningKeyInfo.key: set on create
+    # and never again, because only a hash is stored.
+    token: str | None = None
+
+
+class CreateServiceTokenRequest(BaseModel):
+    """Issue a service token for one tenant.
+
+    ``scopes`` is required and has no default: a token created with none by
+    accident would otherwise be the most powerful credential in the
+    installation. ``role`` is the ceiling the scopes narrow, and defaults to
+    the lowest one.
+    """
+
+    name: str = Field(min_length=1, max_length=128)
+    scopes: list[str] = Field(min_length=1, max_length=64)
+    role: Literal["viewer", "operator", "admin"] = "viewer"
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 # 12 characters is a floor rather than a policy, and 72 bytes is bcrypt's own

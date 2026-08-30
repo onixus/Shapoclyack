@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
@@ -190,13 +190,66 @@ def get_settings() -> Settings:
     return load_settings()
 
 
+SERVICE_TOKEN_STATE_ATTR = "service_token"
+
+
+def _authenticate_service_token(request: Request, settings: Settings, token: str) -> TokenUser:
+    """Resolve a presented service token to a principal and enforce its scopes.
+
+    The principal is stashed on ``request.state`` so :func:`require_tenant` can
+    pin the request to the token's own tenant. It never becomes a platform
+    admin and never consults a membership row: a service token's authority is
+    exactly the role and the scopes it was issued with (ROADMAP Track E).
+    """
+    from api.services import service_tokens
+
+    principal = service_tokens.verify_token(settings, token)
+    if principal is None:
+        # One message for unknown, revoked and expired alike — the presenter of
+        # a guessed token learns nothing about which half was wrong.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid, expired or revoked service token",
+        )
+
+    resource = service_tokens.resource_for_path(request.url.path)
+    action = service_tokens.action_for_method(request.method)
+    if not principal.allows(resource=resource, action=action):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Service token is not scoped for '{resource}:{action}'",
+        )
+
+    try:
+        role = Role(principal.role)
+    except ValueError as exc:  # pragma: no cover - defended at issue time
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid role"
+        ) from exc
+    setattr(request.state, SERVICE_TOKEN_STATE_ATTR, principal)
+    return TokenUser(username=principal.username, role=role)
+
+
 def get_current_user(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TokenUser:
+    """Authenticate a console JWT **or** a service token on the same header.
+
+    Which one is decided by the credential's own shape (``octo_st_…``), never
+    by anything the caller asserts: a value that is not a service token falls
+    through to the JWT path and is verified there exactly as before, so nothing
+    here weakens the existing check.
+    """
+    from api.services import service_tokens
+
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return decode_token(settings, credentials.credentials)
+    token = credentials.credentials
+    if service_tokens.looks_like_service_token(token):
+        return _authenticate_service_token(request, settings, token)
+    return decode_token(settings, token)
 
 
 def require_role(minimum: Role):
@@ -220,10 +273,41 @@ def require_tenant(minimum: Role):
     """
 
     def _checker(
+        request: Request,
         user: Annotated[TokenUser, Depends(get_current_user)],
         tenant_id: Annotated[str | None, Query(description="Tenant to act in")] = None,
     ) -> TenantPrincipal:
         from api.services import memberships as memberships_service
+
+        service_principal = getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None)
+        if service_principal is not None:
+            # A service token is issued *for* a tenant, so there is nothing to
+            # resolve: naming another one is refused rather than ignored, and
+            # no membership row can raise the role it was issued with.
+            requested = (tenant_id or "").strip()
+            if requested and requested != service_principal.tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"No access to tenant {requested}",
+                )
+            role = Role(service_principal.role)
+            if ROLE_RANK[role] < ROLE_RANK[minimum]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"Role '{minimum.value}' or higher required in tenant "
+                        f"'{service_principal.tenant_id}'"
+                    ),
+                )
+            return TenantPrincipal(
+                username=user.username,
+                tenant_id=service_principal.tenant_id,
+                role=role,
+                # Never: an admin-role token administers its own tenant, not
+                # the fleet, so the cross-tenant listings stay closed to it.
+                is_platform_admin=False,
+                tenant_requested=True,
+            )
 
         try:
             resolved, role_value = memberships_service.resolve_tenant(

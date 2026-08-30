@@ -67,6 +67,65 @@ class User(Base):
     disabled_at: Mapped[datetime | None] = mapped_column(default=None)
     password_changed_at: Mapped[datetime | None] = mapped_column(default=None)
     created_by: Mapped[str | None] = mapped_column(default=None)
+    # Federated identity (migration 0026, ROADMAP Track E). ``email`` is the
+    # only thing an existing local account can be auto-linked by, and only when
+    # ``email_verified`` is true *and* the provider asserts the same address as
+    # verified: an unverified address is a claim the user typed, so linking on
+    # it would let anyone who can register that address at the IdP take over a
+    # console account. ``oidc_issuer``/``oidc_subject`` are the durable
+    # identifier once linked — an email can be reassigned, ``sub`` cannot.
+    email: Mapped[str | None] = mapped_column(default=None, index=True)
+    email_verified: Mapped[bool] = mapped_column(default=False)
+    oidc_issuer: Mapped[str | None] = mapped_column(default=None)
+    oidc_subject: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
+    )
+
+
+class ServiceToken(Base):
+    """A non-interactive API credential, scoped to one tenant (Track E).
+
+    Issued by a platform admin for automation — a CI job pulling findings, a
+    SIEM forwarder — so that integrations stop being run under a human's
+    password. Three properties carry the security value:
+
+    * **Only a hash is stored.** ``token_hash`` uses the same passlib context
+      as :class:`User` and :class:`ProvisioningKey`; the plaintext exists once,
+      in the creation response, and is never recoverable afterwards.
+    * **``role`` is a ceiling, not a grant.** A token authenticates as a
+      principal whose role inside ``tenant_id`` is exactly this value, and
+      ``scopes`` narrows it further. Neither can exceed what the role allows,
+      and no membership row can raise it.
+    * **It expires.** ``expires_at`` is required — a credential that lives
+      forever is one nobody rotates — and ``revoked_at`` is the immediate kill
+      switch that does not wait for it.
+
+    ``token_prefix`` is the non-secret, indexed public half of the credential
+    (``octo_st_<16 hex>``): it identifies which row to bcrypt-verify against
+    without turning authentication into a scan of every token, and it is what
+    the UI shows so an admin can recognise a token they cannot read.
+    """
+
+    __tablename__ = "service_tokens"
+
+    token_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(default="")
+    token_prefix: Mapped[str] = mapped_column(unique=True, index=True)
+    token_hash: Mapped[str]
+    # Space-separated ``resource:action`` grants; see api/services/service_tokens.py.
+    scopes: Mapped[str] = mapped_column(default="")
+    # viewer | operator | admin — the role this token acts with in its tenant.
+    role: Mapped[str] = mapped_column(default="viewer")
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class UserTenant(Base):
