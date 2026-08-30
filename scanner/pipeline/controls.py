@@ -24,6 +24,7 @@ qualitative likelihood x fixed impact -> risk verdict.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,10 @@ from .config_schema import ControlsConfig
 from .utils import load_json, save_json
 
 LOG = logging.getLogger("shapoclyack.controls")
+
+# A banner discloses a version when it carries a digit-dotted token
+# ("nginx/1.24.0", "PHP/8.1.2"), as opposed to a bare product name ("nginx").
+_BANNER_VERSION_RE = re.compile(r"\d+\.\d+")
 
 STAGE = "controls"
 
@@ -149,16 +154,28 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
             if isinstance(ddata, dict) and ddata.get("status") in ("ok", "findings"):
                 checked_domains.add(dom)
 
-    if isinstance(dm_data, dict):
+    # domain_monitor.json nests its findings under the two sub-checks it runs
+    # (``typosquat`` / ``dangling_cname``); there is no top-level ``findings``
+    # array and no ``monitored_domains`` list -- see domain_monitor.run().
+    if isinstance(dm_data, dict) and not dm_data.get("skipped_reason"):
         evidence.append("domain_monitor.json")
-        for f in dm_data.get("findings") or []:
-            findings.append({
-                "id": f.get("kind", "domain_monitor_finding"),
-                "domain": f.get("domain") or f.get("fqdn", ""),
-                "severity": f.get("severity", "medium"),
-                "detail": f.get("detail") or f.get("kind", ""),
-            })
-        for dom in dm_data.get("monitored_domains") or []:
+        for section, default_kind in (
+            ("typosquat", "typosquat_candidate"),
+            ("dangling_cname", "dangling_cname"),
+        ):
+            block = dm_data.get(section)
+            if not isinstance(block, dict):
+                continue
+            for f in block.get("findings") or []:
+                if not isinstance(f, dict):
+                    continue
+                findings.append({
+                    "id": f.get("kind", default_kind),
+                    "domain": f.get("domain") or f.get("fqdn") or f.get("candidate", ""),
+                    "severity": f.get("severity", "medium"),
+                    "detail": f.get("detail") or f.get("kind", default_kind),
+                })
+        for dom in dm_data.get("seed_domains") or []:
             total_domains.add(dom)
             checked_domains.add(dom)
 
@@ -211,24 +228,45 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
             "why": "TLS posture evaluation was not run",
         }
 
+    if tls_data.get("skipped_reason"):
+        return {
+            "status": "not_checked",
+            "coverage": {"checked": 0, "total": int(tls_data.get("targets_considered") or 0)},
+            "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "top_findings": [],
+            "evidence": ["tls_posture.json"],
+            "why": f"TLS posture stage skipped: {tls_data['skipped_reason']}",
+        }
+
+    # tls_posture.json findings are per-endpoint records
+    # ({host, port, cert, cipher_versions, issues[]}); the severity of an
+    # individual problem lives on each entry of ``issues``, not on the
+    # endpoint itself. Coverage comes from checked_count/targets_considered.
     findings_raw = tls_data.get("findings") or []
-    targets_raw = tls_data.get("targets") or []
-    total_targets = tls_data.get("total_targets") or len(targets_raw)
-    checked_targets = len(targets_raw)
+    checked_targets = int(tls_data.get("checked_count") or len(findings_raw))
+    total_targets = int(tls_data.get("targets_considered") or checked_targets)
 
     findings: list[dict[str, Any]] = []
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
 
     for f in findings_raw:
-        sev = (f.get("severity") or "medium").lower()
-        if sev in sev_counts:
-            sev_counts[sev] += 1
-        findings.append({
-            "id": f.get("kind", "tls_finding"),
-            "domain": f.get("host", "") or f.get("target", ""),
-            "severity": sev,
-            "detail": f.get("detail") or f.get("kind", ""),
-        })
+        if not isinstance(f, dict):
+            continue
+        endpoint = f.get("host", "")
+        if f.get("port"):
+            endpoint = f"{endpoint}:{f['port']}"
+        for issue in f.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            sev = (issue.get("severity") or "medium").lower()
+            if sev in sev_counts:
+                sev_counts[sev] += 1
+            findings.append({
+                "id": issue.get("kind", "tls_finding"),
+                "domain": endpoint,
+                "severity": sev,
+                "detail": issue.get("detail") or issue.get("kind", ""),
+            })
 
     if sev_counts["critical"] > 0 or sev_counts["high"] > 0:
         status = "fail"
@@ -236,7 +274,7 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
         why = f"{sev_counts['medium'] + sev_counts['low']} medium/low TLS posture findings"
-    elif checked_targets > 0 or tls_data.get("checked", False):
+    elif checked_targets > 0:
         status = "ok"
         why = f"All {checked_targets} inspected TLS endpoints passed validation"
     else:
@@ -265,6 +303,16 @@ def _extract_mail_protection_control(output_dir: Path) -> dict[str, Any]:
             "top_findings": [],
             "evidence": [],
             "why": "Mail authentication posture was not run",
+        }
+
+    if mail_data.get("skipped_reason"):
+        return {
+            "status": "not_checked",
+            "coverage": {"checked": 0, "total": 0},
+            "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "top_findings": [],
+            "evidence": ["mail_posture.json"],
+            "why": f"Mail authentication posture skipped: {mail_data['skipped_reason']}",
         }
 
     findings_raw = mail_data.get("findings") or []
@@ -325,33 +373,60 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
             "why": "Web technology fingerprinting was not run",
         }
 
-    targets = fp_data.get("targets") or []
-    checked_count = len(targets)
-    total_count = fp_data.get("total_targets") or checked_count
+    if fp_data.get("skipped_reason"):
+        return {
+            "status": "not_checked",
+            "coverage": {"checked": 0, "total": int(fp_data.get("targets_considered") or 0)},
+            "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "top_findings": [],
+            "evidence": ["fingerprint.json"],
+            "why": f"Web technology fingerprinting skipped: {fp_data['skipped_reason']}",
+        }
+
+    # fingerprint.json findings are per-endpoint observations
+    # ({host, port, scheme, server, x_powered_by, cdn_waf, cms_framework}) with
+    # no severity of their own -- an endpoint that simply answered is not a
+    # finding. What is worth reporting is version disclosure in the ``Server``
+    # / ``X-Powered-By`` banners: a bare product name is low, a product plus a
+    # version string is medium (it hands an attacker a CVE lookup).
+    endpoints = fp_data.get("findings") or []
+    checked_count = int(fp_data.get("checked_count") or len(endpoints))
+    total_count = int(fp_data.get("targets_considered") or checked_count)
 
     findings: list[dict[str, Any]] = []
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
 
-    for f in fp_data.get("findings") or []:
-        sev = (f.get("severity") or "medium").lower()
-        if sev in sev_counts:
+    for f in endpoints:
+        if not isinstance(f, dict) or f.get("error"):
+            continue
+        endpoint = f.get("host", "")
+        if f.get("port"):
+            endpoint = f"{endpoint}:{f['port']}"
+        for header_name, banner in (
+            ("Server", str(f.get("server") or "")),
+            ("X-Powered-By", str(f.get("x_powered_by") or "")),
+        ):
+            if not banner.strip():
+                continue
+            versioned = _BANNER_VERSION_RE.search(banner) is not None
+            sev = "medium" if versioned else "low"
             sev_counts[sev] += 1
-        findings.append({
-            "id": f.get("kind", "fingerprint_finding"),
-            "domain": f.get("host", "") or f.get("target", ""),
-            "severity": sev,
-            "detail": f.get("detail") or f.get("kind", ""),
-        })
+            findings.append({
+                "id": "tech_version_disclosure" if versioned else "tech_banner_disclosure",
+                "domain": endpoint,
+                "severity": sev,
+                "detail": f"{header_name}: {banner.strip()}",
+            })
 
     if sev_counts["critical"] > 0 or sev_counts["high"] > 0:
         status = "fail"
         why = f"{sev_counts['critical'] + sev_counts['high']} high/critical tech stack exposures"
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
-        why = f"{sev_counts['medium'] + sev_counts['low']} medium/low tech stack warnings"
+        why = f"{sev_counts['medium'] + sev_counts['low']} endpoint banner(s) disclose product/version information"
     elif checked_count > 0:
         status = "ok"
-        why = f"Identified {checked_count} web endpoints without severe technology misconfigurations"
+        why = f"{checked_count} web endpoint(s) fingerprinted with no product/version banner disclosure"
     else:
         status = "not_checked"
         why = "No web targets fingerprinted"
@@ -375,7 +450,24 @@ def _extract_open_services_control(output_dir: Path) -> dict[str, Any]:
     summary_data = load_json(summary_file, fallback=None)
     has_ports_file = ports_file.exists()
 
-    if vulns_data is None and summary_data is None and not has_ports_file:
+    # summary.json is written by the report stage on every run, so its mere
+    # presence says nothing about whether services were ever scanned. Only the
+    # port stage's own artifact, the vulnerability artifact, or a non-zero
+    # open-port/service count in the summary is evidence that this control was
+    # actually exercised -- otherwise the absence invariant applies.
+    open_pairs = 0
+    parsed_services = 0
+    if isinstance(summary_data, dict):
+        open_pairs = int(summary_data.get("open_host_port_pairs") or 0)
+        parsed_services = int(summary_data.get("nmap_open_services") or 0)
+    scan_performed = (
+        has_ports_file
+        or vulns_data is not None
+        or open_pairs > 0
+        or parsed_services > 0
+    )
+
+    if not scan_performed:
         return {
             "status": "not_checked",
             "coverage": {"checked": 0, "total": 0},
@@ -416,9 +508,12 @@ def _extract_open_services_control(output_dir: Path) -> dict[str, Any]:
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
         why = f"{sev_counts['medium'] + sev_counts['low']} medium/low findings across open services"
-    elif has_ports_file or checked_hosts > 0 or vulns_data is not None:
+    elif scan_performed:
         status = "ok"
-        why = f"Scanned open services across {checked_hosts} host(s) with 0 detected vulnerabilities"
+        why = (
+            f"Scanned {open_pairs} open host:port pair(s) across {checked_hosts} host(s) "
+            "with 0 detected vulnerabilities"
+        )
     else:
         status = "not_checked"
         why = "Open services scan not performed"
@@ -428,7 +523,15 @@ def _extract_open_services_control(output_dir: Path) -> dict[str, Any]:
         "coverage": {"checked": checked_hosts, "total": total_hosts},
         "findings_by_severity": sev_counts,
         "top_findings": findings[:10],
-        "evidence": evidence or (["vulnerabilities.json"] if vulns_file.exists() else ["open_ports.txt"]),
+        "evidence": evidence or [
+            name
+            for name, present in (
+                ("vulnerabilities.json", vulns_file.exists()),
+                ("open_ports.txt", has_ports_file),
+                ("summary.json", isinstance(summary_data, dict)),
+            )
+            if present
+        ],
         "why": why,
     }
 
@@ -447,10 +550,42 @@ def _extract_credential_leaks_control(output_dir: Path) -> dict[str, Any]:
             "why": "Credential leaks check was not configured or run",
         }
 
+    if leaks_data.get("skipped_reason") or leaks_data.get("status") == "not_checked":
+        return {
+            "status": "not_checked",
+            "coverage": {"checked": 0, "total": int(leaks_data.get("total_domains") or 0)},
+            "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "top_findings": [],
+            "evidence": ["credential_leaks.json"],
+            "why": (
+                f"Credential leaks check skipped: {leaks_data.get('skipped_reason')}"
+                if leaks_data.get("skipped_reason")
+                else "Credential leaks provider returned no usable result"
+            ),
+        }
+
     findings_raw = leaks_data.get("findings") or []
     breaches_count = leaks_data.get("breaches_count") or len(findings_raw)
-    checked_domains = leaks_data.get("checked_domains") or 0
-    total_domains = leaks_data.get("total_domains") or checked_domains
+    total_domains = int(leaks_data.get("total_domains") or 0)
+
+    # ``checked_domains`` in the artifact counts every domain the stage looped
+    # over, including the ones whose provider call came back not_checked (no
+    # API key, 401) or error. Coverage for a critical-impact control must count
+    # only domains that genuinely got an answer, otherwise an unauthorized key
+    # grades the control "ok - 0 breaches".
+    domains_map = leaks_data.get("domains") or {}
+    if isinstance(domains_map, dict) and domains_map:
+        checked_domains = sum(
+            1
+            for d in domains_map.values()
+            if isinstance(d, dict) and d.get("status") in ("ok", "weak", "fail")
+        )
+        unanswered = len(domains_map) - checked_domains
+        total_domains = total_domains or len(domains_map)
+    else:
+        checked_domains = 0
+        unanswered = 0
+    total_domains = total_domains or checked_domains
 
     findings: list[dict[str, Any]] = []
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -475,9 +610,11 @@ def _extract_credential_leaks_control(output_dir: Path) -> dict[str, Any]:
     elif checked_domains > 0:
         status = "ok"
         why = f"0 breaches found across {checked_domains} checked domain(s)"
+        if unanswered:
+            why += f"; {unanswered} domain(s) returned no result and are not covered"
     else:
         status = "not_checked"
-        why = "No domains evaluated for credential leaks"
+        why = "No domains returned a usable credential-leak result"
 
     return {
         "status": status,
