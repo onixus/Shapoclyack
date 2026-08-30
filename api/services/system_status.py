@@ -189,6 +189,16 @@ def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
         "geoip": os.environ.get("OCTO_GEOIP_DATABASE") or geoip_default,
         "cvss4": os.environ.get("OCTO_CVSS4_DATABASE") or cvss4_default,
         "asn": os.environ.get("OCTO_ASN_DATABASE") or asn_default,
+        # Vendor advisory datasets behind software→CVE matching (Track E M1).
+        # Reported here rather than in a panel of their own because the operator
+        # question is identical to the one this panel already answers — how old
+        # is this data and where did it come from — and because a matcher
+        # running on a six-month-old feed is exactly as wrong as a scorer
+        # running on a six-month-old EPSS overlay.
+        "advisories_debian": os.environ.get("OCTO_DEBIAN_ADVISORY_DATABASE")
+        or "scanner/data/advisories/debian-advisories.json",
+        "advisories_ubuntu": os.environ.get("OCTO_UBUNTU_ADVISORY_DATABASE")
+        or "scanner/data/advisories/ubuntu-advisories.json",
     }
     manifest = enrichment_manifest()
     return [_stat_db(name, path, manifest) for name, path in paths.items()]

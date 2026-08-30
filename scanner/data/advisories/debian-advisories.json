@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "source": "debian-security-tracker-seed",
+  "origin_url": "https://security-tracker.debian.org/tracker/data/json",
+  "updated": "2026-08-28",
+  "note": "Committed seed, not a feed dump. A handful of real tracker statements so an offline installation can exercise software->CVE matching and so GET /api/system reports a dataset rather than a hole. Refresh with api/services/advisories/fetch.py (opt-in, off by default); see docs/software-cve-matching.md.",
+  "entries": [
+    {
+      "advisory_id": "CVE-2023-0286",
+      "cve_ids": ["CVE-2023-0286"],
+      "release": "bullseye",
+      "source_package": "openssl",
+      "fixed_version": "1.1.1n-0+deb11u4",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2023-0286"
+    },
+    {
+      "advisory_id": "CVE-2023-0286",
+      "cve_ids": ["CVE-2023-0286"],
+      "release": "bookworm",
+      "source_package": "openssl",
+      "fixed_version": "3.0.8-1",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2023-0286"
+    },
+    {
+      "advisory_id": "CVE-2023-38545",
+      "cve_ids": ["CVE-2023-38545"],
+      "release": "bookworm",
+      "source_package": "curl",
+      "fixed_version": "7.88.1-10+deb12u5",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2023-38545"
+    },
+    {
+      "advisory_id": "CVE-2023-38545",
+      "cve_ids": ["CVE-2023-38545"],
+      "release": "bullseye",
+      "source_package": "curl",
+      "fixed_version": null,
+      "severity": "high",
+      "state": "not_affected",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2023-38545"
+    },
+    {
+      "advisory_id": "CVE-2023-48795",
+      "cve_ids": ["CVE-2023-48795"],
+      "release": "bookworm",
+      "source_package": "openssh",
+      "fixed_version": "1:9.2p1-2+deb12u2",
+      "severity": "medium",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2023-48795"
+    },
+    {
+      "advisory_id": "CVE-2024-6387",
+      "cve_ids": ["CVE-2024-6387"],
+      "release": "bookworm",
+      "source_package": "openssh",
+      "fixed_version": "1:9.2p1-2+deb12u3",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2024-6387"
+    },
+    {
+      "advisory_id": "CVE-2024-2961",
+      "cve_ids": ["CVE-2024-2961"],
+      "release": "bookworm",
+      "source_package": "glibc",
+      "fixed_version": "2.36-9+deb12u7",
+      "severity": "medium",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2024-2961"
+    },
+    {
+      "advisory_id": "CVE-2005-2541",
+      "cve_ids": ["CVE-2005-2541"],
+      "release": "bookworm",
+      "source_package": "tar",
+      "fixed_version": null,
+      "severity": "negligible",
+      "state": "open",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2005-2541"
+    }
+  ]
+}

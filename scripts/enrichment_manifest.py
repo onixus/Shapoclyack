@@ -47,6 +47,18 @@ _JSON_DATASETS: dict[str, tuple[str, int]] = {
     "exploit": ("exploit/exploit-overlay.json", 1000),
 }
 
+# Vendor advisory datasets for software→CVE matching (ROADMAP Track E M1).
+# Same JSON envelope and the same provenance question as the overlays above, but
+# **not required**: the image ships a committed seed of a few dozen real
+# advisories, not a feed dump, so a floor in the thousands would fail every
+# build. An installation that wants real coverage refreshes them with the
+# opt-in fetcher (api/services/advisories/fetch.py) — see
+# docs/software-cve-matching.md.
+_OPTIONAL_JSON_DATASETS: dict[str, tuple[str, int]] = {
+    "advisories_debian": ("advisories/debian-advisories.json", 1),
+    "advisories_ubuntu": ("advisories/ubuntu-advisories.json", 1),
+}
+
 # GeoIP/ASN are MaxMind-format .mmdb blobs, not JSON overlays: there is no
 # redistributable seed for them (see fetch-enrichment.sh's header), so they are
 # reported but never required — an image without them behaves exactly like one
@@ -153,6 +165,11 @@ def build_manifest(
         record["required"] = True
         record["path"] = str(data_dir / relative)
         datasets[name] = record
+    for name, (relative, min_entries) in _OPTIONAL_JSON_DATASETS.items():
+        record = inspect_json_dataset(data_dir / relative, min_entries)
+        record["required"] = False
+        record["path"] = str(data_dir / relative)
+        datasets[name] = record
     for name, relative in _BINARY_DATASETS.items():
         record = inspect_binary_dataset(data_dir / relative, sources.get(name))
         record["required"] = False
@@ -172,6 +189,15 @@ def build_manifest(
         else:
             record["origin"] = "seed" if record["present"] else "missing"
 
+    # An absent advisory dataset is a supported configuration, not a degraded
+    # build: the matcher answers "unknown" without one, which is the honest
+    # result, and no seed for it existed before Track E. A *failed refresh* of
+    # one still degrades, because that is the case #246 exists to make visible.
+    for name in _OPTIONAL_JSON_DATASETS:
+        record = datasets.get(name) or {}
+        if record.get("origin") == "missing":
+            record["degrades"] = False
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "datasets": datasets,
@@ -188,7 +214,10 @@ def verdict(manifest: dict) -> int:
     datasets = manifest.get("datasets") or {}
     if any(rec.get("required") and not rec.get("usable") for rec in datasets.values()):
         return EXIT_NO_DATA
-    if any(rec.get("origin") in ("stale", "missing") for rec in datasets.values()):
+    if any(
+        rec.get("origin") in ("stale", "missing") and rec.get("degrades", True)
+        for rec in datasets.values()
+    ):
         return EXIT_DEGRADED
     return EXIT_OK
 

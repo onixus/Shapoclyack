@@ -33,7 +33,19 @@ def test_system_status_shape():
             assert tool.get("optional") is False
 
     enrichment_names = {db["name"] for db in body["enrichment"]}
-    assert enrichment_names == {"epss", "kev", "exploit", "geoip", "cvss4", "asn"}
+    # The vendor advisory datasets behind software→CVE matching (Track E M1)
+    # are reported here too: same envelope, same "how old and where from"
+    # question this panel already answers.
+    assert enrichment_names == {
+        "epss",
+        "kev",
+        "exploit",
+        "geoip",
+        "cvss4",
+        "asn",
+        "advisories_debian",
+        "advisories_ubuntu",
+    }
     for db in body["enrichment"]:
         assert "stale" in db
         # Provenance is always present as keys, even with no manifest to read
