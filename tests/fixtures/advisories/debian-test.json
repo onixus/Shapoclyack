@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "source": "debian-security-tracker-fixture",
+  "origin_url": "https://security-tracker.debian.org/tracker/data/json",
+  "updated": "2026-08-02",
+  "entries": [
+    {
+      "advisory_id": "CVE-2023-0286",
+      "cve_ids": ["CVE-2023-0286"],
+      "release": "bullseye",
+      "source_package": "openssl",
+      "fixed_version": "1.1.1n-0+deb11u4",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2023-0286"
+    },
+    {
+      "advisory_id": "CVE-2023-38545",
+      "cve_ids": ["CVE-2023-38545"],
+      "release": "bullseye",
+      "source_package": "curl",
+      "fixed_version": null,
+      "severity": "high",
+      "state": "not_affected",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2023-38545"
+    },
+    {
+      "advisory_id": "CVE-2005-2541",
+      "cve_ids": ["CVE-2005-2541"],
+      "release": "bullseye",
+      "source_package": "tar",
+      "fixed_version": null,
+      "severity": "negligible",
+      "state": "open",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2005-2541"
+    },
+    {
+      "advisory_id": "CVE-2024-0000",
+      "cve_ids": ["CVE-2024-0000"],
+      "release": "bullseye",
+      "source_package": "coerced-to-open",
+      "fixed_version": null,
+      "severity": "low",
+      "state": "resolved",
+      "url": "https://security-tracker.debian.org/tracker/CVE-2024-0000"
+    }
+  ]
+}

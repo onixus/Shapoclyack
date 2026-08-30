@@ -597,7 +597,7 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 
 | Gap | Why it blocks |
 |-----|---------------|
-| No authenticated assessment | Lariska collects installed software, but nothing maps it to CVEs — no CPE or purl anywhere in the tree. Enterprise VM teams live on patch level; the product currently sees only what faces the network. Biggest functional gap and the cheapest to close, because the data is already in Postgres |
+| No authenticated assessment | **Partly closed (M1).** Endpoint software is now matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). What is still missing is the rest of the estate: language ecosystems, Windows, non-distribution software, and every distribution other than those two |
 | No SSO | No OIDC, SAML or LDAP; three roles; no service tokens. This is a procurement checklist item — without it there is no pilot |
 | No report factory | A per-run PDF and a SARIF export exist. Templates, scheduled delivery, per-tenant branding and "a quarterly report about the organization" do not. An MSSP sells the report, not the scans |
 | No compliance mapping | Nothing for PCI/ISO/CIS, which is half of an enterprise VM budget |
@@ -613,7 +613,11 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 scopes have landed**; SAML and LDAP have not, and are the remainder of this item —
 software→CVE matching over the endpoint inventory (5–7 sprints, starting with
 vendor advisories for two distributions, because naive version matching on backports produces a
-false-positive storm); `org_profile` M1–M3 (2–3 sprints, already designed in
+false-positive storm — **M1 landed**: Debian + Ubuntu providers, offline-first advisory datasets
+reported on the System page, dpkg/rpm EVR comparison, per-endpoint matches with a first-class
+`unknown`, and an endpoint panel in the console; remaining milestones are more distributions,
+language ecosystems and Windows, and folding matches into the tracked-finding lifecycle);
+`org_profile` M1–M3 (2–3 sprints, already designed in
 [docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of
 effort on this list, and it gives sales a demo artifact while the matcher is still being built).
 

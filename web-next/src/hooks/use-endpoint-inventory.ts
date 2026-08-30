@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchAssetSoftware,
+  fetchEndpointCveMatches,
   fetchEndpointDeviceChanges,
   fetchEndpointDevices,
   fetchEndpointDevicesForAsset,
@@ -48,5 +49,14 @@ export function useRecentSoftwareChanges(tenantId = "default", limit = 50) {
   return useQuery({
     queryKey: queryKeys.recentSoftwareChanges(tenantId, limit),
     queryFn: () => fetchRecentSoftwareChanges({ tenantId, limit }),
+  });
+}
+
+/** Vendor-advisory CVE matches for one endpoint (ROADMAP Track E M1). */
+export function useEndpointCveMatches(deviceId: string | null, tenantId = "default") {
+  return useQuery({
+    queryKey: queryKeys.endpointCveMatches(deviceId ?? "", tenantId),
+    queryFn: () => fetchEndpointCveMatches(deviceId!, tenantId),
+    enabled: Boolean(deviceId),
   });
 }

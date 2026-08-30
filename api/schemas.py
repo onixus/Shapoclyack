@@ -1045,6 +1045,94 @@ class EndpointSoftwareItemInfo(BaseModel):
     install_location: str | None = None
 
 
+SoftwareCveMatchStatus = Literal["vulnerable", "fixed", "not_applicable", "unknown"]
+
+
+class SoftwareCveMatchInfo(BaseModel):
+    """One vendor-advisory statement about one CVE on one endpoint (Track E M1).
+
+    ``status`` is four-valued on purpose. ``unknown`` is a first-class answer —
+    an endpoint whose distribution could not be resolved carries an ``unknown``
+    row with ``unknown_reason`` set and an empty ``cve_id``, rather than
+    silently reading as clean. See docs/software-cve-matching.md.
+    """
+
+    device_id: str
+    hostname: str | None = None
+    snapshot_id: str | None = None
+    # "" on an ``unknown`` row, which is about a package set rather than a CVE.
+    cve_id: str = ""
+    status: SoftwareCveMatchStatus = "unknown"
+    # The distribution's own word (critical/high/medium/low/negligible/unknown),
+    # never a CVSS score re-derived here.
+    severity: str = "unknown"
+    source_package: str = ""
+    installed_package: str = ""
+    installed_version: str | None = None
+    fixed_version: str | None = None
+    advisory_id: str | None = None
+    advisory_url: str | None = None
+    provider: str = ""
+    distro: str | None = None
+    distro_release: str | None = None
+    purl: str | None = None
+    cpe23: str | None = None
+    unknown_reason: str | None = None
+    feed_date: str | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    matched_at: str | None = None
+
+
+class SoftwareCveMatchRunSummary(BaseModel):
+    """Result of a matcher run over one device."""
+
+    device_id: str
+    snapshot_id: str | None = None
+    distro: str | None = None
+    distro_release: str | None = None
+    packages_total: int = 0
+    packages_assessed: int = 0
+    # Packages the matcher could not put the question for at all — a non-distro
+    # source, an unparsable version, an unresolved release.
+    packages_unassessed: int = 0
+    matches: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+
+
+class SoftwareCveMatchTenantRunSummary(BaseModel):
+    """Result of a matcher run over every device in a tenant."""
+
+    tenant_id: str
+    devices: int = 0
+    matches: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+    results: list[SoftwareCveMatchRunSummary] = Field(default_factory=list)
+
+
+class AdvisoryProviderStatus(BaseModel):
+    """Provenance of one vendor-advisory dataset, mirroring ``EnrichmentDb``."""
+
+    name: str
+    distro: str
+    path: str
+    present: bool = False
+    source: str | None = None
+    updated: str | None = None
+    entries: int = 0
+    releases: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class SoftwareCveMatchSummary(BaseModel):
+    """Tenant-wide tallies, plus which advisory data produced them."""
+
+    total: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+    vulnerable_by_severity: dict[str, int] = Field(default_factory=dict)
+    last_matched_at: str | None = None
+    providers: list[AdvisoryProviderStatus] = Field(default_factory=list)
+
+
 class VulnerabilityInfo(BaseModel):
     """One tracked finding with its lifecycle and SLA state (#145).
 

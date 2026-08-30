@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "source": "ubuntu-usn-seed",
+  "origin_url": "https://usn.ubuntu.com/usn-db/database.json",
+  "updated": "2026-08-28",
+  "note": "Committed seed, not a feed dump. A handful of real USNs so an offline installation can exercise software->CVE matching and so GET /api/system reports a dataset rather than a hole. Refresh with api/services/advisories/fetch.py (opt-in, off by default); see docs/software-cve-matching.md.",
+  "entries": [
+    {
+      "advisory_id": "USN-5051-2",
+      "cve_ids": ["CVE-2021-3711", "CVE-2021-3712"],
+      "release": "focal",
+      "source_package": "openssl",
+      "fixed_version": "1.1.1f-1ubuntu2.8",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-5051-2"
+    },
+    {
+      "advisory_id": "USN-5051-2",
+      "cve_ids": ["CVE-2021-3711", "CVE-2021-3712"],
+      "release": "focal",
+      "source_package": "libssl1.1",
+      "fixed_version": "1.1.1f-1ubuntu2.8",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-5051-2"
+    },
+    {
+      "advisory_id": "USN-6408-1",
+      "cve_ids": ["CVE-2023-38545"],
+      "release": "focal",
+      "source_package": "curl",
+      "fixed_version": "7.68.0-1ubuntu2.20",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6408-1"
+    },
+    {
+      "advisory_id": "USN-6408-1",
+      "cve_ids": ["CVE-2023-38545"],
+      "release": "jammy",
+      "source_package": "curl",
+      "fixed_version": "7.81.0-1ubuntu1.14",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6408-1"
+    },
+    {
+      "advisory_id": "USN-6588-1",
+      "cve_ids": ["CVE-2023-6246", "CVE-2023-6779", "CVE-2023-6780"],
+      "release": "jammy",
+      "source_package": "glibc",
+      "fixed_version": "2.35-0ubuntu3.6",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6588-1"
+    },
+    {
+      "advisory_id": "USN-6560-1",
+      "cve_ids": ["CVE-2023-48795"],
+      "release": "jammy",
+      "source_package": "openssh",
+      "fixed_version": "1:8.9p1-3ubuntu0.6",
+      "severity": "medium",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6560-1"
+    },
+    {
+      "advisory_id": "USN-6560-1",
+      "cve_ids": ["CVE-2023-48795"],
+      "release": "noble",
+      "source_package": "openssh",
+      "fixed_version": "1:9.6p1-3ubuntu13",
+      "severity": "medium",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6560-1"
+    },
+    {
+      "advisory_id": "USN-6222-1",
+      "cve_ids": ["CVE-2023-2650"],
+      "release": "jammy",
+      "source_package": "openssl",
+      "fixed_version": "3.0.2-0ubuntu1.10",
+      "severity": "medium",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6222-1"
+    },
+    {
+      "advisory_id": "USN-6297-1",
+      "cve_ids": ["CVE-2023-4039"],
+      "release": "jammy",
+      "source_package": "gcc-12",
+      "fixed_version": "12.3.0-1ubuntu1~22.04",
+      "severity": "medium",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6297-1"
+    },
+    {
+      "advisory_id": "USN-6989-1",
+      "cve_ids": ["CVE-2024-6387"],
+      "release": "noble",
+      "source_package": "openssh",
+      "fixed_version": "1:9.6p1-3ubuntu13.3",
+      "severity": "critical",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6989-1"
+    }
+  ]
+}
