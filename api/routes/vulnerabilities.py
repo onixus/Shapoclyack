@@ -289,10 +289,13 @@ def transition(
                 to_state=body.state,
                 actor=principal.username,
                 note=body.note,
+                closure_reason=body.closure_reason,
+                machine_verified=body.machine_verified,
             )
         )
     except vuln_states.InvalidVulnTransition as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
 
 
 @router.post("/{vuln_id}/assign", response_model=VulnerabilityInfo)
@@ -426,3 +429,50 @@ def clear_ticket(
             actor=principal.username,
         )
     )
+
+
+@router.post("/{vuln_id}/verify", response_model=VulnerabilityInfo)
+def verify_vulnerability(
+    vuln_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Trigger a targeted verification re-scan for this vulnerability."""
+    try:
+        return _found(
+            vulns_service.trigger_verification(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/{vuln_id}/ticket/sync", response_model=VulnerabilityInfo)
+def sync_vulnerability_ticket(
+    vuln_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Poll external ticket status and reconcile local vulnerability lifecycle state."""
+    try:
+        return _found(
+            vulns_service.sync_ticket_status(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+

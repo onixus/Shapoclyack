@@ -37,6 +37,8 @@ ROLE_RANK = {
 class TokenUser(BaseModel):
     username: str
     role: Role
+    scopes: list[str] = Field(default_factory=lambda: ["*"])
+    tenant_id: str | None = None
 
 
 class TenantPrincipal(BaseModel):
@@ -55,6 +57,9 @@ class TenantPrincipal(BaseModel):
     # lists (jobs, agents) keep showing a platform admin everything by default
     # while still honouring an explicit tenant filter.
     tenant_requested: bool = False
+    scopes: list[str] = Field(default_factory=list)
+    token_id: str | None = None
+
 
 
 class AgentPrincipal(BaseModel):
@@ -196,7 +201,27 @@ def get_current_user(
 ) -> TokenUser:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return decode_token(settings, credentials.credentials)
+    token = credentials.credentials
+    if token.startswith("shk_"):
+        from api.services import service_tokens as st_service
+
+        principal = st_service.authenticate_token(token, settings=settings)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired service token",
+            )
+        try:
+            role = Role(principal["role"])
+        except ValueError:
+            role = Role.viewer
+        return TokenUser(
+            username=f"token:{principal['token_id']}",
+            role=role,
+            scopes=principal.get("scopes", []),
+            tenant_id=principal["tenant_id"],
+        )
+    return decode_token(settings, token)
 
 
 def require_role(minimum: Role):
@@ -216,13 +241,37 @@ def require_tenant(minimum: Role):
 
     Routes keep accepting a ``tenant_id`` query parameter, but it can now only
     select among the tenants the caller is entitled to; anything else is a 403
-    rather than a silent cross-tenant read.
+    rather than a silent cross-tenant read. Supports both user JWTs and scoped
+    service tokens (``shk_...``).
     """
 
     def _checker(
         user: Annotated[TokenUser, Depends(get_current_user)],
         tenant_id: Annotated[str | None, Query(description="Tenant to act in")] = None,
     ) -> TenantPrincipal:
+        if user.tenant_id:
+            # Service token
+            if tenant_id and tenant_id.strip() and tenant_id.strip() != user.tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Service token is bound to tenant '{user.tenant_id}', cannot act in '{tenant_id}'",
+                )
+            if ROLE_RANK[user.role] < ROLE_RANK[minimum]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Role '{minimum.value}' or higher required in tenant '{user.tenant_id}'",
+                )
+            token_id = user.username.split(":", 1)[1] if user.username.startswith("token:") else None
+            return TenantPrincipal(
+                username=user.username,
+                tenant_id=user.tenant_id,
+                role=user.role,
+                is_platform_admin=False,
+                tenant_requested=bool((tenant_id or "").strip()),
+                scopes=user.scopes,
+                token_id=token_id,
+            )
+
         from api.services import memberships as memberships_service
 
         try:
@@ -246,9 +295,35 @@ def require_tenant(minimum: Role):
             role=role,
             is_platform_admin=user.role == Role.admin,
             tenant_requested=bool((tenant_id or "").strip()),
+            scopes=["*"],
+            token_id=None,
         )
 
     return _checker
+
+
+def require_scope(scope: str, minimum: Role = Role.viewer):
+    """Enforce a fine-grained capability scope on service tokens (user JWTs pass by default)."""
+    tenant_checker = require_tenant(minimum)
+
+    def _checker(
+        user: Annotated[TokenUser, Depends(get_current_user)],
+        tenant_id: Annotated[str | None, Query(description="Tenant to act in")] = None,
+    ) -> TenantPrincipal:
+        principal = tenant_checker(user=user, tenant_id=tenant_id)
+        if principal.token_id:
+            # Service token: must have specific scope or wildcard '*'
+            if "*" not in principal.scopes and scope not in principal.scopes:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Service token missing required scope '{scope}'",
+                )
+        return principal
+
+    return _checker
+
+
+
 
 
 def require_agent(

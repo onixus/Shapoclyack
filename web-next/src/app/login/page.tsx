@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppearanceControls } from "@/components/appearance-controls";
+import { fetchOIDCConfig, initiateOIDCLogin, OIDCConfig } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 
@@ -16,9 +17,16 @@ export default function LoginPage() {
   const [password, setPassword] = useState("viewer-change-me");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [oidcConfig, setOidcConfig] = useState<OIDCConfig | null>(null);
+  const [ssoLoading, setSsoLoading] = useState(false);
 
   useEffect(() => {
     void hydrate();
+    fetchOIDCConfig()
+      .then((cfg) => setOidcConfig(cfg))
+      .catch(() => {
+        // OIDC disabled or unreachable
+      });
   }, [hydrate]);
 
   useEffect(() => {
@@ -41,6 +49,20 @@ export default function LoginPage() {
     }
   }
 
+  async function handleSSOLogin() {
+    setSsoLoading(true);
+    setError(null);
+    try {
+      const res = await initiateOIDCLogin("/");
+      if (res.authorization_url) {
+        window.location.href = res.authorization_url;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to initiate SSO");
+      setSsoLoading(false);
+    }
+  }
+
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 px-4">
       <div className="login-wash pointer-events-none absolute inset-0" aria-hidden />
@@ -55,6 +77,29 @@ export default function LoginPage() {
           <h1 className="text-2xl font-semibold tracking-tight">{t("login.title")}</h1>
           <p className="text-sm text-slate-400">{t("login.subtitle")}</p>
         </div>
+
+        {oidcConfig?.enabled ? (
+          <div className="space-y-4">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full border-sky-600 bg-sky-950/40 text-sky-200 hover:bg-sky-900/60 hover:text-white"
+              disabled={ssoLoading}
+              onClick={handleSSOLogin}
+            >
+              {ssoLoading ? t("login.ssoConnecting") : t("login.sso")}
+            </Button>
+            <div className="relative flex items-center justify-center">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t border-slate-800" />
+              </div>
+              <span className="relative bg-slate-900 px-3 text-xs uppercase text-slate-400">
+                {t("login.orDivider")}
+              </span>
+            </div>
+          </div>
+        ) : null}
+
         <form className="space-y-4" onSubmit={onSubmit}>
           <label className="grid gap-2 text-sm">
             {t("login.username")}
@@ -86,3 +131,4 @@ export default function LoginPage() {
     </div>
   );
 }
+

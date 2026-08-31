@@ -16,11 +16,13 @@ from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
+from api.routes import config as config_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
-from api.routes import config as config_routes
+from api.routes import oidc as oidc_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
+from api.routes import service_tokens as service_tokens_routes
 from api.routes import system as system_routes
 from api.routes import users as users_routes
 from api.routes import vulnerabilities as vulnerabilities_routes
@@ -181,6 +183,8 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(auth_routes.router, prefix="/api")
+    app.include_router(oidc_routes.router, prefix="/api")
+    app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(runs_routes.router, prefix="/api")
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(agents_routes.router, prefix="/api")

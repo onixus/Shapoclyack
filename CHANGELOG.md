@@ -6,6 +6,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Closed-Loop Remediation & Mechanical Verification (Sprint 2)**:
+  - **Automated Targeted Verification Scans**: Automated single-asset re-scans triggered on transition to `VERIFYING` or on-demand via `POST /api/vulnerabilities/{id}/verify`.
+  - **Mechanical Closure Verification**: Run findings ingestion (`register_findings_from_run`) evaluates pending verification scans — absent findings are automatically confirmed and closed (`VERIFYING → CLOSED`) with `machine_verified=True` and `closure_reason="verified_remediated"`; still-detected findings are automatically bounced back (`VERIFYING → FIXING`) with an audit record.
+  - **Two-Way Ticket Synchronization (Jira, ServiceNow, DefectDojo)**: Inbound ticket status reconciliation via `POST /api/vulnerabilities/{id}/ticket/sync` and outbound status reflection on lifecycle transitions (`api/services/integrations/ticket_sync.py`).
+  - **Machine Verification Metrics**: Backend computation of `machine_verified_closed`, `manual_closed`, and `machine_verification_rate` in `/api/vulnerabilities/summary`; KPI strip and verified badges in Web UI remediation kanban and vulnerability view.
+
+- **Enterprise IAM: OIDC/SSO & Scoped Service Tokens (Sprint 1)**:
+  - **OpenID Connect (OIDC / SSO)**: Full PKCE (S256) and signed state verification, discovery metadata caching, claims-to-role resolution, JIT (Just-In-Time) user & default tenant provisioning (`api/services/oidc.py`, `/api/auth/oidc/*`).
+  - **Scoped Service Tokens**: Bcrypt-hashed programmatic credentials with prefix indexing (`shk_<prefix>_<secret>`), tenant isolation, fine-grained capability scopes (`scans:read`, `scans:write`, `assets:*`, `vulns:*`, `tokens:manage`), expiry, and revocation (`api/services/service_tokens.py`, `/api/service-tokens`).
+  - **Fine-Grained Capability Scoping**: `require_scope(scope, minimum)` dependency in `api/auth.py` for fine-grained capability enforcement on automation tokens.
+  - **Web UI Tokens & SSO**: Corporate SSO button on login page, dedicated Service Tokens Manager (`/settings/tokens`), token generation modal with scope selection, and secret copy dialog.
+
 - **Org Profile Module (M1–M5)** — Comprehensive organization perimeter assessment from a single seed domain:
   - **M1 (Ownership)**: RDAP and ASN-based organization attribution with confidence scoring (`ownership.py`).
   - **M2 (DNS Hygiene & Mail Posture)**: Zone hygiene evaluation (NS/SOA/CAA/DNSSEC/wildcard/AXFR) and email security assessment (MX/SPF/DMARC/DKIM/MTA-STS/TLS-RPT).

@@ -1418,6 +1418,10 @@ export type TrackedVulnerability = {
   ticket_system: string | null;
   ticket_key: string | null;
   ticket_url: string | null;
+  machine_verified?: boolean;
+  verification_job_id?: string | null;
+  last_verified_at?: string | null;
+  closure_reason?: string | null;
 };
 
 export type TicketSystem = "jira" | "servicenow" | "smax" | "defectdojo" | "other";
@@ -1451,6 +1455,10 @@ export type VulnerabilitySummary = {
   unassigned: number;
   estate_risk: NistRiskLevel | null;
   by_state: Record<string, number>;
+  closed_total?: number;
+  machine_verified_closed?: number;
+  manual_closed?: number;
+  machine_verification_rate?: number;
   by_severity_open: Record<string, number>;
   by_risk_level_open: Record<string, number>;
   by_sla: Record<string, number>;
@@ -1482,6 +1490,8 @@ export type VulnerabilityListFilters = {
 export type VulnerabilityTransitionBody = {
   state: VulnLifecycleState;
   note?: string | null;
+  closure_reason?: string | null;
+  machine_verified?: boolean;
 };
 
 export type VulnerabilityAssignBody = {
@@ -1641,6 +1651,29 @@ export async function clearVulnerabilityTicket(vulnId: string) {
   }
 }
 
+export async function triggerVulnVerification(vulnId: string) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/verify`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function syncVulnTicket(vulnId: string) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket/sync`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+
 export type RiskScoreSnapshot = {
   snapshot_id: string;
   tenant_id: string;
@@ -1689,4 +1722,99 @@ export async function triggerRiskSnapshot() {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 1 IAM: OIDC & Service Tokens
+// ---------------------------------------------------------------------------
+
+export type OIDCConfig = {
+  enabled: boolean;
+  issuer_url: string;
+  client_id: string;
+  auto_provision: boolean;
+  default_role: string;
+};
+
+export type ServiceTokenMetadata = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  tenant_id: string;
+  role: "viewer" | "operator" | "admin";
+  scopes: string[];
+  created_at: string | null;
+  created_by: string | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  is_active: boolean;
+};
+
+export type CreateServiceTokenResponse = ServiceTokenMetadata & {
+  token: string;
+};
+
+export type CreateServiceTokenBody = {
+  name: string;
+  role?: "viewer" | "operator" | "admin";
+  scopes?: string[];
+  expires_days?: number | null;
+};
+
+export async function fetchOIDCConfig(): Promise<OIDCConfig> {
+  try {
+    const { data } = await api.get<OIDCConfig>("/auth/oidc/config");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function initiateOIDCLogin(redirectTo: string = "/"): Promise<{ authorization_url: string; state: string }> {
+  try {
+    const { data } = await api.get<{ authorization_url: string; state: string }>(
+      `/auth/oidc/login?redirect_to=${encodeURIComponent(redirectTo)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchServiceTokens(): Promise<ServiceTokenMetadata[]> {
+  try {
+    const { data } = await api.get<ServiceTokenMetadata[]>("/service-tokens");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createServiceToken(body: CreateServiceTokenBody): Promise<CreateServiceTokenResponse> {
+  try {
+    const { data } = await api.post<CreateServiceTokenResponse>("/service-tokens", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function revokeServiceToken(tokenId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const { data } = await api.delete<{ ok: boolean; message: string }>(`/service-tokens/${tokenId}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAvailableScopes(): Promise<string[]> {
+  try {
+    const { data } = await api.get<{ scopes: string[] }>("/service-tokens/scopes");
+    return data.scopes;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 

@@ -1018,6 +1018,10 @@ class VulnerabilityInfo(BaseModel):
     ticket_system: str | None = None
     ticket_key: str | None = None
     ticket_url: str | None = None
+    machine_verified: bool = False
+    verification_job_id: str | None = None
+    last_verified_at: str | None = None
+    closure_reason: str | None = None
 
 
 class VulnerabilityEventInfo(BaseModel):
@@ -1045,6 +1049,8 @@ class VulnerabilityTransitionRequest(BaseModel):
 
     state: Literal["OPEN", "ACKNOWLEDGED", "PLANNED", "FIXING", "VERIFYING", "CLOSED"]
     note: str | None = Field(default=None, max_length=2000)
+    closure_reason: str | None = Field(default=None, max_length=64)
+    machine_verified: bool = False
 
 
 class VulnerabilityAssignRequest(BaseModel):
@@ -1116,6 +1122,10 @@ class VulnerabilitySummary(BaseModel):
     unassigned: int = 0
     estate_risk: str | None = None
     by_state: dict[str, int] = Field(default_factory=dict)
+    closed_total: int = 0
+    machine_verified_closed: int = 0
+    manual_closed: int = 0
+    machine_verification_rate: float = 0.0
     by_severity_open: dict[str, int] = Field(default_factory=dict)
     by_risk_level_open: dict[str, int] = Field(default_factory=dict)
     by_sla: dict[str, int] = Field(default_factory=dict)

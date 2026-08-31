@@ -311,6 +311,25 @@ class Settings:
     # 0 keeps events forever.
     auth_event_retention_days: int = 90
 
+    # Enterprise IAM / OIDC (Sprint 1)
+    oidc_enabled: bool = False
+    oidc_issuer_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""
+    oidc_scopes: str = "openid profile email"
+    oidc_default_role: str = "viewer"
+    oidc_role_claim: str = "roles"
+    oidc_tenant_claim: str = "tenants"
+    oidc_auto_provision: bool = True
+    oidc_jwks_cache_ttl_seconds: int = 3600
+
+    # Service Tokens / Scoped API Keys (Sprint 1)
+    service_tokens_enabled: bool = True
+    service_token_max_per_tenant: int = 50
+    service_token_default_expiry_days: int = 90
+
+
 
 # Legacy sqlite filename from when the product was called "octo-man". Kept as a
 # fallback so an existing self-host keeps its data after the rename instead of
@@ -689,6 +708,29 @@ def load_settings() -> Settings:
         ],
         auth_event_retention_days=max(
             0, int(os.environ.get("OCTO_AUTH_EVENT_RETENTION_DAYS", "90"))
+        ),
+        oidc_enabled=os.environ.get("OCTO_OIDC_ENABLED", "false").lower()
+        in ("1", "true", "yes", "on"),
+        oidc_issuer_url=os.environ.get("OCTO_OIDC_ISSUER_URL", "").strip(),
+        oidc_client_id=os.environ.get("OCTO_OIDC_CLIENT_ID", "").strip(),
+        oidc_client_secret=os.environ.get("OCTO_OIDC_CLIENT_SECRET", "").strip(),
+        oidc_redirect_uri=os.environ.get("OCTO_OIDC_REDIRECT_URI", "").strip(),
+        oidc_scopes=os.environ.get("OCTO_OIDC_SCOPES", "openid profile email").strip(),
+        oidc_default_role=os.environ.get("OCTO_OIDC_DEFAULT_ROLE", "viewer").strip(),
+        oidc_role_claim=os.environ.get("OCTO_OIDC_ROLE_CLAIM", "roles").strip(),
+        oidc_tenant_claim=os.environ.get("OCTO_OIDC_TENANT_CLAIM", "tenants").strip(),
+        oidc_auto_provision=os.environ.get("OCTO_OIDC_AUTO_PROVISION", "true").lower()
+        in ("1", "true", "yes", "on"),
+        oidc_jwks_cache_ttl_seconds=max(
+            60, int(os.environ.get("OCTO_OIDC_JWKS_CACHE_TTL_SECONDS", "3600"))
+        ),
+        service_tokens_enabled=os.environ.get("OCTO_SERVICE_TOKENS_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+        service_token_max_per_tenant=max(
+            1, int(os.environ.get("OCTO_SERVICE_TOKEN_MAX_PER_TENANT", "50"))
+        ),
+        service_token_default_expiry_days=max(
+            1, int(os.environ.get("OCTO_SERVICE_TOKEN_DEFAULT_EXPIRY_DAYS", "90"))
         ),
     )
 

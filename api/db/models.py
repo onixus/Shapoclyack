@@ -681,6 +681,11 @@ class Vulnerability(Base):
     ticket_system: Mapped[str | None] = mapped_column(default=None)
     ticket_key: Mapped[str | None] = mapped_column(default=None)
     ticket_url: Mapped[str | None] = mapped_column(default=None)
+    # Verification & Closure reason (Sprint 2 Remediation Loop)
+    machine_verified: Mapped[bool] = mapped_column(default=False, server_default="false")
+    verification_job_id: Mapped[str | None] = mapped_column(default=None)
+    last_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+    closure_reason: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -1045,3 +1050,46 @@ class TenantScanScope(Base):
             "tenant_id", "effect", "kind", "value", name="uq_tenant_scan_scopes_entry"
         ),
     )
+
+
+class ServiceToken(Base):
+    """Scoped API keys for non-interactive integrations and CI/CD (Sprint 1 IAM)."""
+
+    __tablename__ = "service_tokens"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    key_prefix: Mapped[str] = mapped_column(index=True)
+    key_hash: Mapped[str]
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(default="viewer")
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    expires_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class OIDCIdentity(Base):
+    """External OpenID Connect identity linked to a local console user (Sprint 1 IAM)."""
+
+    __tablename__ = "oidc_identities"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    issuer: Mapped[str]
+    subject: Mapped[str]
+    email: Mapped[str | None] = mapped_column(default=None)
+    claims: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime]
+    last_login_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("issuer", "subject", name="uq_oidc_issuer_subject"),
+    )
+

@@ -165,28 +165,28 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
   const user = useAuthStore((s) => s.user);
   const canOperate = user?.role === "operator" || user?.role === "admin";
   const queryClient = useQueryClient();
-
   const [filter, setFilter] = useState<"all" | "confirmed" | "candidates">("all");
 
   const { data, isLoading, error } = useQuery<OrgProfileDetail>({
-    queryKey: ["run-org-profile", runId],
+    queryKey: ["org-profile", runId],
     queryFn: () => fetchOrgProfile(runId),
-    enabled: Boolean(runId),
   });
 
   const promoteMutation = useMutation({
     mutationFn: (domain: string) => promoteRelatedDomain(runId, domain),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["run-org-profile", runId] });
+      queryClient.invalidateQueries({ queryKey: ["org-profile", runId] });
+      queryClient.invalidateQueries({ queryKey: ["run", runId] });
     },
   });
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-12 text-slate-400 gap-2 font-mono text-xs">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-        Loading organization profile and related domains…
-      </div>
+      <Card className="border-slate-800 bg-slate-900/60">
+        <CardContent className="py-8 text-center text-slate-400 text-xs">
+          Loading organization profile and related domains…
+        </CardContent>
+      </Card>
     );
   }
 

@@ -608,16 +608,17 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 
 ### Order
 
-**Done** — `org_profile` M1–M5 (ownership, dns_hygiene, mail_posture, controls matrix with NIST SP 800-30 risk, related_domains with promote-flow, credential_leaks, API and Web UI — fully tested and merged).
+**Done** —
+- `org_profile` M1–M5 (ownership, dns_hygiene, mail_posture, controls matrix with NIST SP 800-30 risk, related_domains with promote-flow, credential_leaks, API and Web UI — fully tested and merged).
+- **Sprint 1 (Enterprise IAM / SSO & Service Tokens)**: OpenID Connect with PKCE & JIT provisioning, Scoped Service Tokens (`shk_...`), capability scopes (`require_scope`), Web UI tokens manager (`/settings/tokens`), and login SSO integration.
+- **Sprint 2 (Closing the Remediation Loop & Mechanical Verification)**: Targeted verification re-scans on `VERIFYING`, mechanical `VERIFYING → CLOSED` closure with `machine_verified=True`, regression bounce-back `VERIFYING → FIXING`, 2-way ticket status sync (Jira, ServiceNow, DefectDojo), machine verification rate metrics on remediation kanban & vulnerability view.
 
-**Now (Sprints 1–3)** — remove the reasons an enterprise buyer stops:
-1. **Enterprise IAM / SSO** (OIDC/SAML, service tokens / scoped API keys, fine-grained RBAC; 2–3 sprints).
-2. **Closing the Remediation Loop** (targeted verification re-scans on `VERIFYING → CLOSED`, 2-way Jira/ServiceNow/DefectDojo status sync, machine-verified closure metrics; 2–3 sprints).
+**Now (Sprint 3)** —
+1. **Software→CVE Matcher over Endpoint Inventory** (maps Lariska package inventory to OSV & vendor advisories for Debian/Ubuntu/RHEL/Alpine, CPE/PURL enrichment, patch gap analysis; 3–4 sprints).
 
-**Next (Sprints 4–6)** — unlock enterprise vulnerability management & revenue:
-3. **Software→CVE Matcher over Endpoint Inventory** (maps Lariska package inventory to OSV & vendor advisories for Debian/Ubuntu/RHEL/Alpine, CPE/PURL enrichment, patch gap analysis; 3–4 sprints).
-4. **Report Factory & Compliance Mapping** (executive PDF reports, scheduled delivery, per-tenant white-label branding, PCI-DSS / CIS Controls / ISO 27001 mapping; 3–4 sprints).
-5. **MSSP Operations & Tenant Metering** (usage metering, asset & scan quotas, customer read-only portal, onboarding wizard; 2–3 sprints).
+**Next (Sprints 4–5)** — unlock enterprise vulnerability management & revenue:
+2. **Report Factory & Compliance Mapping** (executive PDF reports, scheduled delivery, per-tenant white-label branding, PCI-DSS / CIS Controls / ISO 27001 mapping; 3–4 sprints).
+3. **MSSP Operations & Tenant Metering** (usage metering, asset & scan quotas, customer read-only portal, onboarding wizard; 2–3 sprints).
 
 **Later (Sprints 7+)** — scale and ecosystem connectors:
 6. **Asset-context connectors** (AWS/GCP/Azure cloud inventory & Active Directory sync; 4–5 sprints).

@@ -606,6 +606,60 @@ def register_findings_from_run(
                     detail={"run_id": run_id, "severity": severity},
                 )
 
+        # Evaluate pending verification scans for this tenant's assets
+        scanned_asset_ids = {asset.asset_id for _, asset in resolved}
+        if scanned_asset_ids:
+            verifying_rows = session.scalars(
+                select(models.Vulnerability).where(
+                    models.Vulnerability.tenant_id == tenant_id,
+                    models.Vulnerability.state == vuln_states.VERIFYING,
+                    models.Vulnerability.asset_id.in_(scanned_asset_ids),
+                )
+            ).all()
+
+            for v_row in verifying_rows:
+                if v_row.last_seen_run_id == run_id:
+                    # Vulnerability was STILL observed in this run -> Verification failed!
+                    v_row.state = vuln_states.FIXING
+                    v_row.state_changed_at = now
+                    v_row.state_changed_by = "system:verification"
+                    v_row.last_verified_at = now
+                    v_row.updated_at = now
+                    _record_event(
+                        session,
+                        vuln_id=v_row.vuln_id,
+                        tenant_id=tenant_id,
+                        kind="verification_failed",
+                        occurred_at=now,
+                        from_state=vuln_states.VERIFYING,
+                        to_state=vuln_states.FIXING,
+                        actor="system:verification",
+                        note=f"Vulnerability still detected in verification run {run_id}",
+                        detail={"run_id": run_id},
+                    )
+                else:
+                    # Vulnerability was NOT observed in this run -> Verification passed!
+                    v_row.state = vuln_states.CLOSED
+                    v_row.state_changed_at = now
+                    v_row.state_changed_by = "system:verification"
+                    v_row.closed_at = now
+                    v_row.last_verified_at = now
+                    v_row.machine_verified = True
+                    v_row.closure_reason = "verified_remediated"
+                    v_row.updated_at = now
+                    _record_event(
+                        session,
+                        vuln_id=v_row.vuln_id,
+                        tenant_id=tenant_id,
+                        kind="verification_passed",
+                        occurred_at=now,
+                        from_state=vuln_states.VERIFYING,
+                        to_state=vuln_states.CLOSED,
+                        actor="system:verification",
+                        note=f"Vulnerability remediated (verified by run {run_id})",
+                        detail={"run_id": run_id, "machine_verified": True, "closure_reason": "verified_remediated"},
+                    )
+
     stats = RegisterStats(
         findings_seen=len(entries),
         created=created,
@@ -688,6 +742,10 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "ticket_system": row.ticket_system,
         "ticket_key": row.ticket_key,
         "ticket_url": row.ticket_url,
+        "machine_verified": bool(row.machine_verified),
+        "verification_job_id": row.verification_job_id,
+        "last_verified_at": _iso(row.last_verified_at),
+        "closure_reason": row.closure_reason,
     }
 
 
@@ -729,6 +787,8 @@ def transition(
     to_state: str,
     actor: str | None = None,
     note: str | None = None,
+    closure_reason: str | None = None,
+    machine_verified: bool = False,
 ) -> dict[str, Any] | None:
     """Move one finding through the lifecycle. Raises on an illegal move.
 
@@ -754,6 +814,10 @@ def transition(
 
         if to_state == vuln_states.CLOSED:
             row.closed_at = now
+            row.machine_verified = bool(machine_verified)
+            row.closure_reason = closure_reason or ("verified_remediated" if machine_verified else "manual")
+            detail["closure_reason"] = row.closure_reason
+            detail["machine_verified"] = row.machine_verified
             if row.exception_until is not None:
                 detail["cleared_exception_until"] = _iso(row.exception_until)
                 row.exception_until = None
@@ -765,11 +829,16 @@ def transition(
             # this come back" is one query.
             kind = "reopened"
             row.closed_at = None
+            row.machine_verified = False
+            row.closure_reason = None
             row.sla_started_at = now
             days = row.sla_days or DEFAULT_SLA_DAYS.get(row.severity, DEFAULT_SLA_DAYS["unknown"])
             row.due_at = now + timedelta(days=days)
             row.reopen_count += 1
             detail["reopen_count"] = row.reopen_count
+        elif to_state == vuln_states.VERIFYING:
+            row.last_verified_at = now
+            detail["verifying_at"] = _iso(now)
 
         _record_event(
             session,
@@ -784,7 +853,174 @@ def transition(
             detail=detail,
         )
         session.flush()
+
+        # Outbound 2-way ticket status reflection (best effort)
+        if row.ticket_system and row.ticket_key and row.ticket_url:
+            try:
+                from api.services.integrations import ticket_sync
+
+                base_url = (row.ticket_url or "").split("/browse/")[0].split("/api/")[0].split("/finding/")[0]
+                if base_url:
+                    ticket_sync.push_status_update(
+                        transport=row.ticket_system,
+                        base_url=base_url,
+                        ticket_key=row.ticket_key,
+                        to_state=to_state,
+                    )
+            except Exception:
+                LOG.warning("Failed outbound ticket status sync for %s", row.vuln_id)
+
         return _to_dict(row, now=now)
+
+
+def trigger_verification(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    """Trigger an isolated verification scan for a finding."""
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            raise ValueError(f"Vulnerability '{vuln_id}' not found")
+
+        asset = session.scalar(
+            select(models.Asset).where(
+                models.Asset.tenant_id == row.tenant_id,
+                models.Asset.asset_id == row.asset_id,
+            )
+        )
+        target = (asset.asset_id if asset else row.asset_id).strip()
+
+        # Determine target type (IP or domain)
+        is_ip = False
+        try:
+            import ipaddress
+            ipaddress.ip_address(target)
+            is_ip = True
+        except ValueError:
+            is_ip = False
+
+        from api.schemas import StartScanRequest
+        from api.services import jobs as jobs_service
+
+        req = StartScanRequest(
+            tenant_id=row.tenant_id,
+            mode="safe",
+            intent="service_probe",
+            ranges=target if is_ip else None,
+            domains=target if not is_ip else None,
+            skip_nse=False,
+        )
+
+        job_id = None
+        if settings.allow_scan_start:
+            try:
+                job_info = jobs_service.start_scan(
+                    settings,
+                    req,
+                    username=actor or "system:verification",
+                )
+                job_id = job_info.job_id
+            except Exception as exc:
+                LOG.warning("Failed to dispatch verification scan for %s: %s", vuln_id, exc)
+
+        row.state = vuln_states.VERIFYING
+        row.state_changed_at = now
+        row.state_changed_by = actor or "system:verification"
+        row.verification_job_id = job_id
+        row.last_verified_at = now
+        row.updated_at = now
+
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="verification_started",
+            occurred_at=now,
+            from_state=row.state,
+            to_state=vuln_states.VERIFYING,
+            actor=actor or "system:verification",
+            note=f"Targeted verification scan started (job: {job_id})" if job_id else "Targeted verification requested",
+            detail={
+                "job_id": job_id,
+                "asset_id": row.asset_id,
+                "port": row.port,
+                "cve": row.cve,
+                "script_id": row.script_id,
+            },
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
+def sync_ticket_status(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    """Poll linked ticket system and synchronize local status."""
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            raise ValueError(f"Vulnerability '{vuln_id}' not found")
+        if not row.ticket_system or not row.ticket_key:
+            raise ValueError(f"Vulnerability '{vuln_id}' has no linked ticket")
+
+        from api.services.integrations import ticket_sync
+
+        base_url = (row.ticket_url or "").split("/browse/")[0].split("/api/")[0].split("/finding/")[0]
+        if not base_url:
+            base_url = "https://tracker.local"
+
+        suggested_state, raw_status, raw_data = ticket_sync.fetch_ticket_status(
+            transport=row.ticket_system,
+            base_url=base_url,
+            ticket_key=row.ticket_key,
+        )
+
+        previous_state = row.state
+        if suggested_state and suggested_state != previous_state:
+            # Reconcile state
+            if suggested_state == vuln_states.CLOSED:
+                row.state = vuln_states.CLOSED
+                row.closed_at = now
+                row.closure_reason = "ticket_resolved"
+            elif suggested_state in vuln_states.ACTIVE:
+                row.state = suggested_state
+                if previous_state == vuln_states.CLOSED:
+                    row.closed_at = None
+                    row.reopen_count += 1
+            row.state_changed_at = now
+            row.state_changed_by = actor or f"ticket_sync:{row.ticket_system}"
+            row.updated_at = now
+
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="ticket_synced",
+            occurred_at=now,
+            from_state=previous_state,
+            to_state=row.state,
+            actor=actor or f"ticket_sync:{row.ticket_system}",
+            note=f"Ticket {row.ticket_key} synced (remote status: {raw_status or 'unknown'})",
+            detail={
+                "ticket_system": row.ticket_system,
+                "ticket_key": row.ticket_key,
+                "remote_status": raw_status,
+                "suggested_state": suggested_state,
+            },
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
 
 
 def assign(
@@ -1274,11 +1510,15 @@ def summary(
                 models.Vulnerability.assignee,
                 models.Vulnerability.due_at,
                 models.Vulnerability.exception_until,
+                models.Vulnerability.machine_verified,
             ).where(*filters)
         ).all()
-    for state, severity, risk_level, assignee, due_at, exception_until in rows:
+    machine_verified_closed = 0
+    for state, severity, risk_level, assignee, due_at, exception_until, machine_verified in rows:
         total += 1
         by_state[str(state)] = by_state.get(str(state), 0) + 1
+        if state == vuln_states.CLOSED and machine_verified:
+            machine_verified_closed += 1
         reading = sla_state(
             {"state": state, "due_at": due_at, "exception_until": exception_until}, now=now
         )
@@ -1298,6 +1538,10 @@ def summary(
             ):
                 overdue_worst = str(severity)
 
+    closed_total = by_state.get(vuln_states.CLOSED, 0)
+    manual_closed = max(0, closed_total - machine_verified_closed)
+    verification_rate = round((machine_verified_closed / closed_total * 100.0), 1) if closed_total > 0 else 0.0
+
     return {
         "total": total,
         "open_total": open_total,
@@ -1305,6 +1549,10 @@ def summary(
         "unassigned": unassigned,
         "estate_risk": estate_risk,
         "by_state": by_state,
+        "closed_total": closed_total,
+        "machine_verified_closed": machine_verified_closed,
+        "manual_closed": manual_closed,
+        "machine_verification_rate": verification_rate,
         # Severity / risk counts cover open findings only: a dashboard tile
         # reading "42 critical" must not be counting ones that were fixed last
         # year.
