@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
+import { PatchGapPanel } from "@/components/endpoint/patch-gap-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { useEndpointDevices, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
 import { useSystemStatus } from "@/hooks/use-system";
@@ -291,6 +292,8 @@ export default function EndpointsPage() {
         inventory is attached to a network-scan asset (by hostname / identifiers). Open the asset to
         see Pulse vulns, ports, and installed software together.
       </p>
+
+      <PatchGapPanel tenantId={tenantId} />
 
       <RecentChangesFeed tenantId={tenantId} />
 

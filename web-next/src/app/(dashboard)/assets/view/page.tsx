@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EntityList } from "@/components/run/entity-list";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
+import { DevicePatchGapSection } from "@/components/endpoint/device-patch-gap-section";
 import { SoftwareCvePanel } from "@/components/endpoint/software-cve-panel";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { useAssetContextEvents, useAssetDetail, useUpdateAsset } from "@/hooks/use-assets";
@@ -305,6 +306,11 @@ function AssetDetailInner() {
                     deviceId={device.device_id}
                     tenantId={tenantId}
                     canOperate={canOperate}
+                  />
+                  {/* And then what to run about it (ROADMAP Track E M2). */}
+                  <DevicePatchGapSection
+                    deviceId={device.device_id}
+                    tenantId={tenantId}
                   />
                   <SoftwareTab
                     device={device}

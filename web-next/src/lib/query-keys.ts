@@ -60,6 +60,10 @@ export const queryKeys = {
     ["endpoint-changes", tenantId, limit] as const,
   endpointCveMatches: (deviceId: string, tenantId = "default") =>
     ["endpoint-device", deviceId, "cve-matches", tenantId] as const,
+  patchGaps: (tenantId = "default", limit = 50) =>
+    ["endpoint-patch-gaps", tenantId, limit] as const,
+  devicePatchGap: (deviceId: string, tenantId = "default") =>
+    ["endpoint-device", deviceId, "patch-gap", tenantId] as const,
   vulnerabilities: ["vulnerabilities"] as const,
   vulnerabilitiesPage: (filters: Record<string, unknown>, page?: PageParams) =>
     ["vulnerabilities", filters, pageKey(page)] as const,

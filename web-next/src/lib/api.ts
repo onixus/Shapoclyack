@@ -659,6 +659,53 @@ export type SoftwareCveMatchInfo = {
   matched_at: string | null;
 };
 
+export type PatchGapItem = {
+  installed_package: string;
+  source_package: string;
+  installed_version: string | null;
+  /** Null when the published fixes could not be ordered — render no command,
+   * because a guessed target may not close every CVE listed. */
+  target_version: string | null;
+  cve_ids: string[];
+  cve_count: number;
+  worst_severity: string;
+  by_severity: Record<string, number>;
+  distro: string | null;
+  distro_release: string | null;
+  upgrade_command: string | null;
+};
+
+export type DevicePatchGap = {
+  device_id: string;
+  hostname: string | null;
+  packages_to_upgrade: number;
+  cves_closed_by_upgrade: number;
+  /** Vulnerable, but the vendor published no fix. Counted, never a command. */
+  unfixed_findings: number;
+  worst_severity: string;
+  combined_upgrade_command: string | null;
+  gaps: PatchGapItem[];
+};
+
+export type TenantPatchGapDevice = {
+  device_id: string;
+  hostname: string | null;
+  packages_to_upgrade: number;
+  cves_closed_by_upgrade: number;
+  unfixed_findings: number;
+  worst_severity: string;
+};
+
+export type TenantPatchGap = {
+  tenant_id: string;
+  devices_with_gaps: number;
+  packages_to_upgrade: number;
+  cves_closed_by_upgrade: number;
+  unfixed_findings: number;
+  devices: TenantPatchGapDevice[];
+  truncated: boolean;
+};
+
 export type SoftwareCveMatchRunSummary = {
   device_id: string;
   snapshot_id: string | null;
@@ -1297,6 +1344,32 @@ export async function fetchRecentSoftwareChanges(opts?: {
     params.set("limit", String(opts?.limit ?? 50));
     const { data } = await api.get<EndpointSoftwareChangeFeedItem[]>(
       `/endpoint/changes?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Estate-wide patch gap: what is outstanding, worst devices first
+ * (ROADMAP Track E M2). Derived from the matcher's rows on read. */
+export async function fetchPatchGaps(tenantId = "default", limit = 50) {
+  try {
+    const params = new URLSearchParams(tenantParam(tenantId));
+    params.set("limit", String(limit));
+    const { data } = await api.get<TenantPatchGap>(`/endpoint/patch-gaps?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** One endpoint's outstanding upgrades and the command that applies them. */
+export async function fetchDevicePatchGap(deviceId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams(tenantParam(tenantId));
+    const { data } = await api.get<DevicePatchGap>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/patch-gap?${params}`,
     );
     return data;
   } catch (error) {

@@ -3,10 +3,12 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchAssetSoftware,
+  fetchDevicePatchGap,
   fetchEndpointCveMatches,
   fetchEndpointDeviceChanges,
   fetchEndpointDevices,
   fetchEndpointDevicesForAsset,
+  fetchPatchGaps,
   fetchRecentSoftwareChanges,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -57,6 +59,23 @@ export function useEndpointCveMatches(deviceId: string | null, tenantId = "defau
   return useQuery({
     queryKey: queryKeys.endpointCveMatches(deviceId ?? "", tenantId),
     queryFn: () => fetchEndpointCveMatches(deviceId!, tenantId),
+    enabled: Boolean(deviceId),
+  });
+}
+
+/** Estate-wide patch gap (ROADMAP Track E M2). */
+export function usePatchGaps(tenantId = "default", limit = 50) {
+  return useQuery({
+    queryKey: queryKeys.patchGaps(tenantId, limit),
+    queryFn: () => fetchPatchGaps(tenantId, limit),
+  });
+}
+
+/** One endpoint's outstanding upgrades. */
+export function useDevicePatchGap(deviceId: string | null, tenantId = "default") {
+  return useQuery({
+    queryKey: queryKeys.devicePatchGap(deviceId ?? "", tenantId),
+    queryFn: () => fetchDevicePatchGap(deviceId!, tenantId),
     enabled: Boolean(deviceId),
   });
 }

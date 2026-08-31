@@ -378,9 +378,12 @@ export default function RemediationPage() {
             <ShieldCheck className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-semibold">Machine Verified</p>
+            <p className="text-[11px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-semibold">
+              {t("vuln.verificationRate")}
+            </p>
             <p className="text-sm font-bold text-emerald-900 dark:text-emerald-200">
-              {verificationRate.toFixed(0)}% · {verifiedClosedCount} verified
+              {verificationRate.toFixed(0)}% ·{" "}
+              {t("vuln.verifiedClosedCount", { count: verifiedClosedCount })}
             </p>
           </div>
         </div>
@@ -665,6 +668,7 @@ function KanbanCard({
   onSelect: () => void;
   onQuickMove: (target: VulnLifecycleState) => void;
 }) {
+  const t = useT();
   const normSev = normalizeSeverity(vuln.severity);
   const possibleTransitions = legalTransitions(vuln.state);
 
@@ -747,7 +751,7 @@ function KanbanCard({
         {vuln.machine_verified ? (
           <span className="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
             <ShieldCheck className="h-3 w-3 text-emerald-500" />
-            Verified
+            {t("vuln.machineVerified")}
           </span>
         ) : null}
       </div>

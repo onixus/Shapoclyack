@@ -1133,6 +1133,66 @@ class SoftwareCveMatchSummary(BaseModel):
     providers: list[AdvisoryProviderStatus] = Field(default_factory=list)
 
 
+class PatchGapItem(BaseModel):
+    """One package to upgrade, and every CVE that upgrade closes (Track E M2)."""
+
+    installed_package: str
+    source_package: str = ""
+    installed_version: str | None = None
+    #: The newest fix among this package's CVEs. ``None`` when the published
+    #: fixes could not be ordered — the client must then show no command, since
+    #: a guessed target may not close every CVE listed.
+    target_version: str | None = None
+    cve_ids: list[str] = Field(default_factory=list)
+    cve_count: int = 0
+    worst_severity: str = "unknown"
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    distro: str | None = None
+    distro_release: str | None = None
+    upgrade_command: str | None = None
+
+
+class DevicePatchGap(BaseModel):
+    """One endpoint's outstanding upgrades, worst first (Track E M2)."""
+
+    device_id: str
+    hostname: str | None = None
+    packages_to_upgrade: int = 0
+    cves_closed_by_upgrade: int = 0
+    #: Vulnerable findings the vendor has published no fix for. Counted, but
+    #: deliberately not part of the gap: there is no command that closes them.
+    unfixed_findings: int = 0
+    worst_severity: str = "unknown"
+    #: One command for every actionable package on the host. ``None`` when the
+    #: host mixes package grammars or nothing is actionable.
+    combined_upgrade_command: str | None = None
+    gaps: list[PatchGapItem] = Field(default_factory=list)
+
+
+class TenantPatchGapDevice(BaseModel):
+    """One device's line in the estate-wide patch gap."""
+
+    device_id: str
+    hostname: str | None = None
+    packages_to_upgrade: int = 0
+    cves_closed_by_upgrade: int = 0
+    unfixed_findings: int = 0
+    worst_severity: str = "unknown"
+
+
+class TenantPatchGap(BaseModel):
+    """Estate-wide patch gap. Totals cover the tenant even when the device
+    list is truncated, so a capped list never understates the estate."""
+
+    tenant_id: str
+    devices_with_gaps: int = 0
+    packages_to_upgrade: int = 0
+    cves_closed_by_upgrade: int = 0
+    unfixed_findings: int = 0
+    devices: list[TenantPatchGapDevice] = Field(default_factory=list)
+    truncated: bool = False
+
+
 class VulnerabilityInfo(BaseModel):
     """One tracked finding with its lifecycle and SLA state (#145).
 
