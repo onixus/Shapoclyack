@@ -28,7 +28,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .asset_identity import registrable_domain
 from .config_schema import CredentialLeaksConfig
-from .utils import load_json, save_json
+from .utils import save_json
 
 LOG = logging.getLogger("shapoclyack.credential_leaks")
 

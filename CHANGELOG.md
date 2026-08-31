@@ -6,6 +6,94 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Enterprise IAM: OIDC single sign-on and service tokens** (ROADMAP Track E,
+  "No SSO"). The platform had exactly two ways to authenticate — a human's
+  password and an agent's provisioning key — so a pilot could not be run
+  against a corporate identity provider, and every integration ran under
+  somebody's console account.
+
+  *SSO* is authorization code with PKCE against a generic OIDC provider
+  (`api/services/oidc.py`, migration `0026`). Endpoints and signing algorithms
+  come from the provider's `.well-known/openid-configuration`; only the issuer
+  and the client credentials are configured here, and SSO stays off until all
+  three are set. The ID token is verified rather than read — signature against
+  the published JWKS with an **asymmetric-only** algorithm allowlist (so
+  neither `none` nor an HMAC keyed on the client secret is selectable), then
+  `iss`, `aud`/`azp`, `exp` and the nonce. An unknown `kid` refetches the key
+  set exactly once, which is key rotation; more would be a request amplifier.
+  State is signed *and* single-use, and the nonce and PKCE verifier stay
+  server-side, so a callback cannot be replayed and a stolen state discloses
+  nothing. `GET /api/auth/oidc/callback` issues the platform's ordinary session
+  token — same JWT as password login, because nothing downstream should care
+  how the user proved who they are.
+
+  Account linking is deliberately conservative: a stored `(issuer, subject)`
+  first, then a **verified** email that both the provider and an admin vouch
+  for, and only then just-in-time provisioning — which is **off by default**,
+  never provisions over an existing local username, and defaults to `viewer`.
+  Linking on an unverified address would hand a console account to whoever can
+  register that address at the identity provider. Every outcome, refusals
+  included, lands in the existing `auth_events` trail.
+
+  *Service tokens* (`api/services/service_tokens.py`, routes under
+  `/api/tenants/{id}/service-tokens`, admin-only) are `octo_st_…` credentials
+  scoped to one tenant. Only a bcrypt hash is stored — the plaintext exists
+  once, in the create response — and the public prefix makes verification one
+  indexed lookup rather than a bcrypt check per issued token. A token passes
+  two independent limits: the role it was issued with inside its own tenant (no
+  membership row raises it, and an `admin`-role token is never a *platform*
+  admin), and `resource:action` scopes derived from the request path and
+  method. `auth`, `users` and `tenants` are closed to every token whatever its
+  scopes, because a credential that can mint users or further tokens outlives
+  its own revocation. Every token expires, and `last_used_at` is rate-limited
+  so a busy integration does not rewrite the same row on every call.
+
+  The console gains a service-token screen and a "Sign in with SSO" button that
+  appears only when the API reports a provider is configured (`GET
+  /api/auth/sso`, also embedded in `/api/health` because the login form renders
+  before anyone is signed in). See
+  [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc) and
+  [docs/configuration.md](docs/configuration.md#environment-variables).
+- **Endpoint software is matched against vendor advisories** (ROADMAP Track E,
+  milestone 1) — Lariska has collected installed software since Agent_plan.md
+  S1-S7 and nothing had ever asked whether any of it was vulnerable, which was
+  the biggest functional gap on the roadmap and the cheapest to close, because
+  the data was already in Postgres. `GET /api/endpoint/devices/{id}/cve-matches`
+  and `GET /api/endpoint/cve-matches` now answer that, per endpoint and per
+  CVE, and an operator can re-run the matcher with the paired `…/refresh`
+  routes. The asset page's Software tab renders the result above the inventory
+  it came from. Migration `0027` adds `software_cve_matches`.
+
+  Matching goes through **Debian's Security Tracker and Ubuntu's USN database**
+  rather than NVD's CPE version ranges, and that is the whole design rather
+  than a detail. Ubuntu 20.04 has shipped OpenSSL `1.1.1f` since 2020 and will
+  until it dies; the fixes arrive in the revision (`-1ubuntu2.16`). A matcher
+  comparing upstream versions calls every such host vulnerable to every OpenSSL
+  CVE forever — thousands of findings per host that never clear — and the
+  operator stops reading the output, which is worse than shipping nothing. The
+  vendors publish the statement that actually answers the question ("fixed in
+  `1.1.1f-1ubuntu2.8` on focal"), so that is what the matcher compares against,
+  with pure-Python transcriptions of dpkg's `verrevcmp` and rpm's `rpmvercmp`
+  doing the comparison — epochs, `~` and `^` included, tested against the
+  tables the package managers themselves ship. No new dependency.
+
+  A match is `vulnerable`, `fixed`, `not_applicable` or **`unknown`**, and the
+  last one is not a placeholder. An endpoint whose distribution could not be
+  resolved, or software that came from outside a distribution package manager,
+  produces an explicit `unknown` row naming the reason — never a silent
+  omission, because an unassessable host rendering as clean is the one failure
+  mode worse than a false positive. `docs/software-cve-matching.md` states what
+  is not covered: language ecosystems, Windows, non-distribution software, and
+  every distribution other than these two.
+
+  The advisory datasets are offline-first, exactly like the EPSS/KEV/CVSS4
+  overlays: JSON under `scanner/data/advisories/` with the same envelope, the
+  same `OCTO_*_DATABASE` overrides, the same build-time manifest, and the same
+  provenance row on the System page. The image ships a small seed of real
+  advisories, not a feed dump; refreshing from the vendors is opt-in
+  (`OCTO_ADVISORY_FETCH_ENABLED`), bounded, and off by default, and nothing on
+  a request path ever opens a socket.
+
 - **Shapoclyack is licensed under Apache-2.0** — until now the repository
   carried no licence at all, which meant the default position of "all rights
   reserved" applied while the images were published to a public registry and

@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppearanceControls } from "@/components/appearance-controls";
+import { SsoSignInButton } from "@/components/sso-sign-in-button";
+import { setAccessToken } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 
@@ -17,7 +19,19 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // An SSO callback lands here with the session in the URL *fragment*, which
+  // browsers never send to a server and access logs never record. Store it and
+  // clear the fragment before hydrating, so a reload or a shared URL does not
+  // carry the token with it.
   useEffect(() => {
+    const fragment = window.location.hash.startsWith("#")
+      ? new URLSearchParams(window.location.hash.slice(1))
+      : null;
+    const token = fragment?.get("access_token");
+    if (token) {
+      setAccessToken(token);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
     void hydrate();
   }, [hydrate]);
 
@@ -82,6 +96,7 @@ export default function LoginPage() {
             {submitting ? t("login.submitting") : t("login.submit")}
           </Button>
         </form>
+        <SsoSignInButton />
       </section>
     </div>
   );

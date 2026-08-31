@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EntityList } from "@/components/run/entity-list";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
+import { SoftwareCvePanel } from "@/components/endpoint/software-cve-panel";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { useAssetContextEvents, useAssetDetail, useUpdateAsset } from "@/hooks/use-assets";
 import { useTrackedVulnerabilities } from "@/hooks/use-vulnerabilities";
@@ -296,12 +297,22 @@ function AssetDetailInner() {
 
             <TabsContent value="software" className="space-y-3 pt-3">
               {device ? (
-                <SoftwareTab
-                  device={device}
-                  software={software}
-                  isLoading={softwareQuery.isLoading}
-                  tenantId={tenantId}
-                />
+                <>
+                  {/* Vendor-advisory CVE matches for this endpoint's packages
+                      (ROADMAP Track E M1) — above the raw inventory, since
+                      "what is wrong here" outranks "what is installed here". */}
+                  <SoftwareCvePanel
+                    deviceId={device.device_id}
+                    tenantId={tenantId}
+                    canOperate={canOperate}
+                  />
+                  <SoftwareTab
+                    device={device}
+                    software={software}
+                    isLoading={softwareQuery.isLoading}
+                    tenantId={tenantId}
+                  />
+                </>
               ) : (
                 <EmptyNote>
                   No Lariska agent is correlated to this asset yet — software inventory appears

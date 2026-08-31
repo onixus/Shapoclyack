@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 
 from api.auth import (
     LoginRequest,
@@ -28,10 +30,12 @@ from api.schemas import (
     CreateTenantRequest,
     GrantMembershipRequest,
     MembershipInfo,
+    OidcLoginResponse,
     Page,
     ProvisioningKeyInfo,
     ReplaceScanScopeRequest,
     ScanScopeEntryInfo,
+    SsoStatus,
     TenantInfo,
     TenantPosture,
 )
@@ -41,9 +45,11 @@ from api.routes._pagination import PageParams, build_page
 from api.services import auth as auth_service
 from api.services import auth_audit
 from api.services import memberships as memberships_service
+from api.services import oidc as oidc_service
 from api.services import scan_scopes
 from api.services import tenant_posture
 from api.services import tenants as tenants_service
+from api.services import users as users_service
 from api.settings import Settings
 
 router = APIRouter(tags=["auth"])
@@ -142,6 +148,166 @@ def me(user: Annotated[TokenUser, Depends(get_current_user)]) -> MeResponse:
         ),
         is_platform_admin=is_platform_admin,
     )
+
+
+@router.get("/auth/sso", response_model=SsoStatus)
+def sso_status(settings: Annotated[Settings, Depends(get_settings)]) -> SsoStatus:
+    """Whether this installation offers SSO. Unauthenticated, by necessity.
+
+    The login form has to render the button before anyone is signed in, so this
+    cannot sit behind ``require_role``. It answers a boolean and a path and
+    nothing else — in particular not the issuer, which would name the
+    customer's identity provider to anyone who can reach the login page. The
+    same object is embedded in ``GET /api/health`` so a client that already
+    polls health needs no second call.
+    """
+    return SsoStatus.model_validate(oidc_service.public_config(settings))
+
+
+@router.get("/auth/oidc/login", response_model=OidcLoginResponse)
+def oidc_login(
+    settings: Annotated[Settings, Depends(get_settings)],
+    redirect: Annotated[bool, Query(description="Send a 307 instead of JSON")] = True,
+    next_url: Annotated[
+        str | None, Query(alias="next", max_length=512, description="Console path to land on")
+    ] = None,
+):
+    """Begin an SSO login: mint state/nonce/PKCE and point the browser at the IdP.
+
+    Answers a redirect by default, because that is what a link on the login
+    form needs; ``?redirect=false`` returns the URL as JSON for a client that
+    navigates itself.
+
+    ``next`` is confined to a path on this console (it must start with a single
+    ``/``). An open redirect on an *authentication* endpoint is the classic way
+    to make a phishing link look legitimate, so anything else is dropped rather
+    than refused — the login still works, it just lands on the dashboard.
+    """
+    try:
+        request = oidc_service.build_authorization_request(
+            settings, next_url=_safe_next(next_url)
+        )
+    except oidc_service.OidcDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except oidc_service.OidcError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    if redirect:
+        return RedirectResponse(request.authorization_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    return OidcLoginResponse(
+        authorization_url=request.authorization_url,
+        state=request.state,
+        expires_in=request.expires_in,
+    )
+
+
+def _safe_next(value: str | None) -> str:
+    """Keep ``next`` only when it is a path on this console.
+
+    ``//evil.example`` and ``/\\evil.example`` are both browser-relative
+    protocol shorthands, so a leading slash alone is not enough.
+    """
+    candidate = (value or "").strip()
+    if not candidate.startswith("/") or candidate.startswith(("//", "/\\")):
+        return ""
+    return candidate[:512]
+
+
+@router.get("/auth/oidc/callback", response_model=TokenResponse)
+def oidc_callback(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    code: Annotated[str | None, Query(max_length=4096)] = None,
+    state: Annotated[str | None, Query(max_length=4096)] = None,
+    error: Annotated[str | None, Query(max_length=256)] = None,
+):
+    """Finish an SSO login and issue the platform's ordinary session token.
+
+    The session is exactly what password login issues — same JWT, same claims,
+    same expiry — because everything downstream of authentication should not
+    care how the user proved who they are.
+
+    Every failure is one 401 with a short message: which check failed (state,
+    signature, audience, nonce, provisioning policy) is information only the
+    presenter of a bad callback wants. All of them are recorded in the auth
+    trail, which is where an operator reads the difference.
+    """
+    client_ip = _client_ip(request, settings)
+    if error:
+        auth_audit.record_denied(
+            username="", reason=auth_audit.REASON_SSO_DENIED, detail="provider returned an error"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on was refused"
+        )
+    if not code or not state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Missing authorization code or state"
+        )
+
+    try:
+        completed = oidc_service.complete_callback(settings, code=code, state=state)
+    except oidc_service.OidcDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except oidc_service.OidcError as exc:
+        auth_audit.record_denied(
+            username="", reason=auth_audit.REASON_SSO_DENIED, detail=str(exc)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed"
+        ) from exc
+
+    claims = completed["claims"]
+    username = oidc_service.username_from_claims(settings, claims)
+    try:
+        user_record, action = users_service.link_or_provision_sso_user(
+            settings,
+            issuer=settings.oidc_issuer.strip().rstrip("/"),
+            subject=str(claims["sub"]),
+            username=username,
+            email=claims.get("email"),
+            email_verified=oidc_service.email_verified_from_claims(claims),
+            role=oidc_service.role_from_claims(settings, claims),
+            tenant_id=oidc_service.tenant_from_claims(settings, claims),
+            jit_enabled=settings.oidc_jit_provisioning,
+        )
+    except PermissionError as exc:
+        auth_audit.record_denied(
+            username=username, reason=auth_audit.REASON_SSO_NOT_PROVISIONED, detail=str(exc)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This identity has no console account on this installation",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    token_user = TokenUser(
+        username=str(user_record["username"]), role=Role(str(user_record["role"]))
+    )
+    auth_audit.record_sso_login(
+        username=token_user.username, client_ip=client_ip, action=action
+    )
+    token = create_access_token(settings, token_user)
+
+    destination = settings.oidc_post_login_redirect.strip()
+    if destination:
+        # The token rides in the URL *fragment*, which browsers never send to a
+        # server and which is not written to access logs the way a query string
+        # is. The console reads it, stores it, and clears the fragment.
+        separator = "&" if "#" in destination else "#"
+        landing = f"{destination}{separator}access_token={token}&token_type=bearer"
+        next_url = str(completed.get("next_url") or "")
+        if next_url:
+            # Percent-encoded: the fragment already carries the session token as
+            # ``&``-separated parameters, so an unescaped path could append
+            # parameters of its own to the URL the console is about to parse.
+            landing = f"{landing}&next={urllib.parse.quote(next_url, safe='/')}"
+        return RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
+    return TokenResponse(access_token=token, role=token_user.role, username=token_user.username)
 
 
 @router.post("/auth/agent/token", response_model=AgentTokenResponse)

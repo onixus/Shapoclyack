@@ -311,6 +311,67 @@ class Settings:
     # 0 keeps events forever.
     auth_event_retention_days: int = 90
 
+    # --- Enterprise IAM: OIDC single sign-on (ROADMAP Track E) ----------------
+    # SSO is off unless issuer, client id *and* client secret are all set; see
+    # api/services/oidc.py:is_enabled. A half-configured provider is a
+    # misconfiguration, not a partially-enabled feature, so it stays off rather
+    # than failing at the first redirect.
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    # Where the provider sends the browser back. Empty derives
+    # ``{public_base_url}/api/auth/oidc/callback``, which is why prod requires
+    # OCTO_PUBLIC_BASE_URL: the redirect URI must never come from the request's
+    # own Host header (same reasoning as the agent install one-liner).
+    oidc_redirect_uri: str = ""
+    oidc_scopes: str = "openid email profile"
+    # Claim carrying the console username. Falls back to ``email`` and then
+    # ``sub`` when the configured claim is absent.
+    oidc_username_claim: str = "preferred_username"
+    # Just-in-time provisioning. **Off by default**: with it on, anyone the
+    # identity provider will authenticate gets a console account.
+    oidc_jit_provisioning: bool = False
+    # Role given to a JIT-provisioned account when no claim maps to one. The
+    # lowest privileged role on purpose — a default that grants more is a
+    # default that grants it to everyone the IdP knows.
+    oidc_default_role: str = "viewer"
+    # Optional claim holding the caller's group/role values, and the map from
+    # those values to console roles (JSON object, e.g.
+    # {"vm-admins": "admin", "vm-ops": "operator"}). The *highest* matching
+    # role wins; an unmapped value contributes nothing.
+    oidc_role_claim: str = ""
+    oidc_role_map: dict[str, str] = field(default_factory=dict)
+    # Optional claim naming the tenant a provisioned user is granted membership
+    # in, and the fallback when the claim is missing or unknown.
+    oidc_tenant_claim: str = ""
+    oidc_default_tenant: str = "default"
+    # Discovery/JWKS cache lifetime. Rotation is also handled out of band: an
+    # unknown ``kid`` forces one refresh before the token is refused.
+    oidc_cache_ttl_seconds: int = 3600
+    # How long an authorization request stays valid. Short: it only has to
+    # cover a human typing a password at the provider.
+    oidc_state_ttl_seconds: int = 600
+    oidc_http_timeout_seconds: int = 10
+    # Where the callback sends the browser once the session exists. Empty makes
+    # the callback answer with the token as JSON (same body as password login),
+    # which is what an API-only install wants; a console install points this at
+    # the UI, which reads the token out of the URL fragment.
+    oidc_post_login_redirect: str = ""
+
+    # --- Enterprise IAM: service tokens (ROADMAP Track E) --------------------
+    # Non-interactive API credentials, admin-issued per tenant with a scope
+    # list (api/services/service_tokens.py). The flag gates the routes only:
+    # an already-issued token keeps authenticating until it is revoked, which
+    # is what the revoke endpoint is for.
+    service_tokens_enabled: bool = True
+    # Default lifetime for a token whose creator named none. Bounded on
+    # purpose — a credential with no expiry is one nobody ever rotates.
+    service_token_default_ttl_days: int = 90
+    service_token_max_ttl_days: int = 365
+    # ``last_used_at`` is written at most this often per token, so a token
+    # driving a busy integration does not turn every request into a write.
+    service_token_last_used_interval_seconds: int = 300
+
 
 # Legacy sqlite filename from when the product was called "octo-man". Kept as a
 # fallback so an existing self-host keeps its data after the rename instead of
@@ -339,6 +400,64 @@ def _resolve_env() -> str:
             f"OCTO_ENV must be one of {', '.join(VALID_ENVS)} (got an unrecognised value)."
         )
     return raw
+
+
+VALID_CONSOLE_ROLES = ("viewer", "operator", "admin")
+
+
+def _oidc_default_role() -> str:
+    """Role for a JIT-provisioned SSO account. Anything unrecognised is a viewer.
+
+    Not a startup refusal: a typo here must not take the whole API down, and
+    falling *down* to the lowest role is the only safe reading of an
+    unrecognised value — guessing upward would hand every SSO user whatever the
+    operator meant to type.
+    """
+    raw = os.environ.get("OCTO_OIDC_DEFAULT_ROLE", "viewer").strip().lower() or "viewer"
+    if raw not in VALID_CONSOLE_ROLES:
+        logger.warning(
+            "OCTO_OIDC_DEFAULT_ROLE is not one of %s; using 'viewer'.",
+            ", ".join(VALID_CONSOLE_ROLES),
+        )
+        return "viewer"
+    return raw
+
+
+def _oidc_role_map() -> dict[str, str]:
+    """``{claim value: console role}`` from ``OCTO_OIDC_ROLE_MAP`` (JSON object).
+
+    Entries naming an unknown role are dropped rather than downgraded: a
+    mapping that silently becomes "viewer" reads, in the admin's head, as a
+    grant that worked.
+
+    Malformed JSON is a warning and an empty mapping, not an exception, for the
+    same reason :func:`_oidc_default_role` refuses to raise: this is parsed on
+    every startup whether or not SSO is configured, so letting it propagate
+    would let one stray environment variable take the entire API down —
+    including for the tenants that never enabled SSO. Dropping the mapping only
+    ever costs role *elevation*, so failing this way cannot over-grant.
+    """
+    raw = os.environ.get("OCTO_OIDC_ROLE_MAP", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        logger.warning("OCTO_OIDC_ROLE_MAP is not valid JSON (%s); ignoring it.", exc)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "OCTO_OIDC_ROLE_MAP must be a JSON object of {claim value: role}; ignoring it."
+        )
+        return {}
+    mapping: dict[str, str] = {}
+    for key, value in parsed.items():
+        role = str(value).strip().lower()
+        if role not in VALID_CONSOLE_ROLES:
+            logger.warning("OCTO_OIDC_ROLE_MAP entry %r names an unknown role; ignoring it.", key)
+            continue
+        mapping[str(key)] = role
+    return mapping
 
 
 def _is_sqlite_url(url: str) -> bool:
@@ -689,6 +808,37 @@ def load_settings() -> Settings:
         ],
         auth_event_retention_days=max(
             0, int(os.environ.get("OCTO_AUTH_EVENT_RETENTION_DAYS", "90"))
+        ),
+        oidc_issuer=os.environ.get("OCTO_OIDC_ISSUER", "").strip().rstrip("/"),
+        oidc_client_id=os.environ.get("OCTO_OIDC_CLIENT_ID", "").strip(),
+        oidc_client_secret=os.environ.get("OCTO_OIDC_CLIENT_SECRET", "").strip(),
+        oidc_redirect_uri=os.environ.get("OCTO_OIDC_REDIRECT_URI", "").strip(),
+        oidc_scopes=os.environ.get("OCTO_OIDC_SCOPES", "openid email profile").strip()
+        or "openid email profile",
+        oidc_username_claim=os.environ.get("OCTO_OIDC_USERNAME_CLAIM", "preferred_username").strip()
+        or "preferred_username",
+        oidc_jit_provisioning=os.environ.get("OCTO_OIDC_JIT_PROVISIONING", "false").lower()
+        in {"1", "true", "yes", "on"},
+        oidc_default_role=_oidc_default_role(),
+        oidc_role_claim=os.environ.get("OCTO_OIDC_ROLE_CLAIM", "").strip(),
+        oidc_role_map=_oidc_role_map(),
+        oidc_tenant_claim=os.environ.get("OCTO_OIDC_TENANT_CLAIM", "").strip(),
+        oidc_default_tenant=os.environ.get("OCTO_OIDC_DEFAULT_TENANT", "default").strip()
+        or "default",
+        oidc_cache_ttl_seconds=max(60, int(os.environ.get("OCTO_OIDC_CACHE_TTL_SECONDS", "3600"))),
+        oidc_state_ttl_seconds=max(30, int(os.environ.get("OCTO_OIDC_STATE_TTL_SECONDS", "600"))),
+        oidc_http_timeout_seconds=max(1, int(os.environ.get("OCTO_OIDC_HTTP_TIMEOUT_SECONDS", "10"))),
+        oidc_post_login_redirect=os.environ.get("OCTO_OIDC_POST_LOGIN_REDIRECT", "").strip(),
+        service_tokens_enabled=os.environ.get("OCTO_SERVICE_TOKENS_ENABLED", "true").lower()
+        in {"1", "true", "yes", "on"},
+        service_token_default_ttl_days=max(
+            1, int(os.environ.get("OCTO_SERVICE_TOKEN_DEFAULT_TTL_DAYS", "90"))
+        ),
+        service_token_max_ttl_days=max(
+            1, int(os.environ.get("OCTO_SERVICE_TOKEN_MAX_TTL_DAYS", "365"))
+        ),
+        service_token_last_used_interval_seconds=max(
+            0, int(os.environ.get("OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS", "300"))
         ),
     )
 
