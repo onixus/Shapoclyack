@@ -6,6 +6,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Org Profile Module (M1–M5)** — Comprehensive organization perimeter assessment from a single seed domain:
+  - **M1 (Ownership)**: RDAP and ASN-based organization attribution with confidence scoring (`ownership.py`).
+  - **M2 (DNS Hygiene & Mail Posture)**: Zone hygiene evaluation (NS/SOA/CAA/DNSSEC/wildcard/AXFR) and email security assessment (MX/SPF/DMARC/DKIM/MTA-STS/TLS-RPT).
+  - **M3 (Controls Matrix & NIST Risk)**: 6-control perimeter security posture matrix with qualitative NIST SP 800-30 Rev. 1 Table I-2 risk calculation, PDF/markdown executive summaries, scan intent `org_profile`, and interactive Controls tab in Web UI (`controls-matrix.tsx`).
+  - **M4 (Related Domains)**: Multi-source passive correlation (SAN, CT org, NS, MX, ASN) with confidence scoring, safety caps, and promote-flow API/UI for adding discovered domains to scan scope.
+  - **M5 (Credential Leaks)**: Pluggable LeakProvider protocol (HIBP, Mock), local-part email masking, zero password storage, and RBAC-gated unmasked identifiers endpoint (`GET /api/runs/{id}/leaks/identifiers`).
+
 - **Shapoclyack is licensed under Apache-2.0** — until now the repository
   carried no licence at all, which meant the default position of "all rights
   reserved" applied while the images were published to a public registry and
