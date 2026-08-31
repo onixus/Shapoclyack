@@ -64,6 +64,7 @@ import {
   useTransitionVulnerability,
   useVulnerabilityActivity,
   useVulnerabilityEvents,
+  useVulnerabilitySummary,
 } from "@/hooks/use-vulnerabilities";
 import {
   transitionVulnerability,
@@ -251,12 +252,17 @@ export default function RemediationPage() {
   const grouped = useMemo(() => groupByState(filteredItems), [filteredItems]);
   const selected = rawItems.find((row) => row.vuln_id === selectedVulnId) ?? null;
 
+  const summaryQuery = useVulnerabilitySummary();
+
   // Aggregate stats
   const totalFindings = rawItems.length;
   const criticalCount = rawItems.filter((i) => normalizeSeverity(i.severity) === "critical").length;
   const highCount = rawItems.filter((i) => normalizeSeverity(i.severity) === "high").length;
   const breachedCount = rawItems.filter((i) => i.sla_state === "breached").length;
   const dueSoonCount = rawItems.filter((i) => i.sla_state === "due_soon").length;
+  const verifiedClosedCount = summaryQuery.data?.machine_verified_closed ?? rawItems.filter((i) => i.state === "CLOSED" && i.machine_verified).length;
+  const totalClosed = summaryQuery.data?.closed_total ?? rawItems.filter((i) => i.state === "CLOSED").length;
+  const verificationRate = summaryQuery.data?.machine_verification_rate ?? (totalClosed > 0 ? (verifiedClosedCount / totalClosed) * 100 : 0);
 
   function handleDrop(vulnId: string, from: VulnLifecycleState, to: VulnLifecycleState) {
     const row = byId.get(vulnId);
@@ -316,7 +322,7 @@ export default function RemediationPage() {
       </div>
 
       {/* KPI / Risk Strip */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/10 text-sky-500 font-bold text-xs">
             {totalFindings}
@@ -357,13 +363,25 @@ export default function RemediationPage() {
           </div>
         </div>
 
-        <div className="hidden lg:flex items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 shadow-sm">
+        <div className="flex items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 shadow-sm">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold text-xs">
             {dueSoonCount}
           </div>
           <div>
             <p className="text-[11px] uppercase tracking-wider text-amber-700 dark:text-amber-300 font-semibold">SLA Due Soon</p>
             <p className="text-sm font-bold text-amber-900 dark:text-amber-200">{dueSoonCount} approaching</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 shadow-sm">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold text-xs">
+            <ShieldCheck className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-semibold">Machine Verified</p>
+            <p className="text-sm font-bold text-emerald-900 dark:text-emerald-200">
+              {verificationRate.toFixed(0)}% · {verifiedClosedCount} verified
+            </p>
           </div>
         </div>
       </div>
@@ -722,10 +740,16 @@ function KanbanCard({
         ) : null}
       </div>
 
-      {/* Badges Row: Severity + SLA */}
+      {/* Badges Row: Severity + SLA + Verified */}
       <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
         <StatusBadge value={normSev} map={SEVERITY_STATUS} />
         <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} showDue={false} />
+        {vuln.machine_verified ? (
+          <span className="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+            <ShieldCheck className="h-3 w-3 text-emerald-500" />
+            Verified
+          </span>
+        ) : null}
       </div>
 
       {/* Card Footer: Assignee + Ticket + Quick Move */}

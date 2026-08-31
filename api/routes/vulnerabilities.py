@@ -426,3 +426,58 @@ def clear_ticket(
             actor=principal.username,
         )
     )
+
+
+@router.post("/{vuln_id}/verify", response_model=VulnerabilityInfo)
+def verify(
+    vuln_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Dispatch a targeted re-scan and move the finding to ``VERIFYING``.
+
+    409 when the move is not legal from the finding's current state, and also
+    when the scan could not be dispatched: a finding parked in ``VERIFYING``
+    with no scan behind it would later be closed as machine-verified by a run
+    that never looked at it, so the request fails instead.
+    """
+    try:
+        return _found(
+            vulns_service.trigger_verification(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+            )
+        )
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except vulns_service.VerificationDispatchError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/{vuln_id}/ticket/sync", response_model=VulnerabilityInfo)
+def sync_ticket(
+    vuln_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Read the linked ticket's status and reconcile the finding's state.
+
+    A tracker can report that the work is done; it cannot report that the
+    finding is verified gone, so a closure from here is recorded as
+    ``ticket_resolved`` and is never counted as machine-verified.
+    """
+    try:
+        return _found(
+            vulns_service.sync_ticket_status(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc

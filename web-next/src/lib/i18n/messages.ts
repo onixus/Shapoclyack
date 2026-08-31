@@ -323,6 +323,17 @@ export const en = {
   "geo.markerArea": "marker area ∝ hosts",
   "geo.noHosts": "No hosts.",
   "geo.hostsTitle": "Hosts",
+  // Closed-loop remediation (#183).
+  "vuln.machineVerified": "Machine verified",
+  "vuln.verifyBtn": "Verify remediation",
+  "vuln.verifyingInProgress": "Targeted re-scan running…",
+  "vuln.syncTicketBtn": "Sync ticket",
+  "vuln.closureReason": "Closure reason",
+  "vuln.reason.verifiedRemediated": "Verified remediated",
+  "vuln.reason.manual": "Closed by hand",
+  "vuln.reason.ticketResolved": "Resolved in tracker",
+  "vuln.verificationRate": "Machine verification rate",
+  "vuln.verifiedClosedCount": "{count} verified closures",
 } as const;
 
 export type MsgKey = keyof typeof en;
@@ -650,6 +661,16 @@ export const ru: Record<MsgKey, string> = {
   "geo.markerArea": "площадь маркера ∝ хосты",
   "geo.noHosts": "Нет хостов.",
   "geo.hostsTitle": "Хосты",
+  "vuln.machineVerified": "Подтверждено сканом",
+  "vuln.verifyBtn": "Проверить исправление",
+  "vuln.verifyingInProgress": "Идёт точечный перескан…",
+  "vuln.syncTicketBtn": "Синхронизировать тикет",
+  "vuln.closureReason": "Причина закрытия",
+  "vuln.reason.verifiedRemediated": "Подтверждено сканом",
+  "vuln.reason.manual": "Закрыто вручную",
+  "vuln.reason.ticketResolved": "Решено в трекере",
+  "vuln.verificationRate": "Доля закрытий, подтверждённых сканом",
+  "vuln.verifiedClosedCount": "{count} подтверждено сканом",
 };
 
 export const STATUS_EN: Record<string, string> = {

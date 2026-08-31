@@ -15,8 +15,10 @@ import {
   fetchVulnerabilitySummary,
   setVulnerabilityException,
   setVulnerabilityTicket,
+  syncVulnTicket,
   transitionVulnerability,
   triggerRiskSnapshot,
+  triggerVulnVerification,
   type PageParams,
   type TrackedVulnerability,
   type VulnerabilityAssignBody,
@@ -224,6 +226,33 @@ export function useClearVulnerabilityException(vulnId: string) {
     onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Acceptance withdrawn"),
     onError: (err) => {
       toast.error("Could not withdraw acceptance", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useTriggerVulnVerification(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => triggerVulnVerification(vulnId),
+    onSuccess: (updated) =>
+      onVulnWriteSuccess(queryClient, updated, "Verification re-scan dispatched"),
+    onError: (err) => {
+      toast.error("Could not start verification", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useSyncVulnTicket(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => syncVulnTicket(vulnId),
+    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Ticket synchronised"),
+    onError: (err) => {
+      toast.error("Could not sync ticket", {
         description: err instanceof Error ? err.message : undefined,
       });
     },
