@@ -14,6 +14,7 @@ import { useRuns } from "@/hooks/use-runs";
 import { downloadArtifact, type RunSummary } from "@/lib/api";
 import { runDetailHref } from "@/lib/run-data";
 import { useT } from "@/lib/i18n";
+import { ReportFactoryPanel } from "@/components/reports/report-factory-panel";
 
 export default function ReportsPage() {
   const t = useT();
@@ -155,6 +156,15 @@ export default function ReportsPage() {
           </div>
         </div>
       </div>
+
+      {/* The report factory (Sprint 4) sits above the per-run artifacts: a
+          customer-facing report is the deliverable, and the run list below is
+          the raw material it is built from. */}
+      <ReportFactoryPanel />
+
+      <h2 className="border-b border-slate-800/80 pb-2 text-sm font-bold text-slate-200">
+        {t("page.reports.runArtifacts")}
+      </h2>
 
       <DataTable
         columns={columns}

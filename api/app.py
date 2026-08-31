@@ -18,7 +18,9 @@ from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
+from api.routes import compliance as compliance_routes
 from api.routes import config as config_routes
+from api.routes import reports as reports_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import service_tokens as service_tokens_routes
@@ -46,6 +48,7 @@ from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import oidc as oidc_service
 from api.services import scan_schedules
+from api.services.reports import dispatcher as report_dispatcher
 from api.services import service_tokens as service_tokens_service
 from api.services import schedule_dispatcher
 from api.services import tracing as tracing_service
@@ -72,6 +75,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     screenshot_retention.start_worker(settings)
     run_retention.start_worker(settings)
     risk_snapshots.start_worker(settings)
+    # Leader-locked like the scan dispatcher above, and for a stronger
+    # reason: a duplicate scan is wasted work, a duplicate report is a
+    # second PDF in a customer's inbox.
+    report_dispatcher.start_worker(settings)
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
@@ -84,6 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
+        report_dispatcher.stop_worker()
         risk_snapshots.stop_worker()
         run_retention.stop_worker()
         screenshot_retention.stop_worker()
@@ -200,6 +208,9 @@ def create_app() -> FastAPI:
     if settings.service_tokens_enabled:
         app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(vulnerabilities_routes.router, prefix="/api")
+    app.include_router(compliance_routes.router, prefix="/api")
+    if settings.reports_enabled:
+        app.include_router(reports_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:

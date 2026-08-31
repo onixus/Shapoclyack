@@ -36,6 +36,7 @@ The roadmap is **planned product behavior**, not documentation of already-delive
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
 | [Software → CVE matching](software-cve-matching.md) | Endpoint inventory matched against vendor advisories; statuses, offline datasets, and what it does not cover |
+| [Reports and compliance](reports-and-compliance.md) | Branded report factory (templates, schedules, delivery) and PCI DSS / CIS / ISO 27001 control mapping, with what it deliberately does not claim |
 | [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD-ready audit trail |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |

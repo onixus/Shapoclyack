@@ -75,6 +75,12 @@ export const queryKeys = {
     ["vulnerabilities", "events", pageKey(page)] as const,
   riskHistory: (params?: { since?: string; until?: string; limit?: number }) =>
     ["vulnerabilities", "risk-history", params] as const,
+  complianceFrameworks: ["compliance", "frameworks"] as const,
+  compliancePosture: (frameworkId: string) => ["compliance", frameworkId] as const,
+  reportBranding: ["reports", "branding"] as const,
+  reportTemplates: ["reports", "templates"] as const,
+  reportSchedules: ["reports", "schedules"] as const,
+  generatedReports: (limit = 50) => ["reports", "generated", limit] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

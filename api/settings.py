@@ -212,6 +212,30 @@ class Settings:
     # default since postgres_url always resolves — Postgres in prod, the SQLite
     # fallback in dev — unlike the opt-in NATS/ClickHouse sidecars.
     scheduler_dispatch_enabled: bool = True
+    # Report factory (Sprint 4). ``reports_enabled`` gates the API surface;
+    # ``report_dispatch_enabled`` gates whether *this* replica renders and
+    # sends scheduled reports, the same split webhooks use — an installation
+    # can keep the console's report pages while confining outbound mail to one
+    # replica, and the test suite can exercise the endpoints without a thread
+    # emailing customers in the background.
+    reports_enabled: bool = True
+    report_dispatch_enabled: bool = True
+    report_dispatch_interval_seconds: int = 60
+    # Generated reports are files on disk. 0 disables pruning; the default
+    # keeps a year, because "the quarterly report we sent in March" is a thing
+    # customers ask for and a scan-retention window would not cover.
+    report_retention_days: int = 365
+    # SMTP for report delivery. Separate from the scanner's alert SMTP
+    # (scanner/pipeline/alerts.py): an alert goes to the operations channel and
+    # a report goes to a customer, and one installation routinely needs
+    # different relays or senders for the two.
+    report_smtp_host: str = ""
+    report_smtp_port: int = 25
+    report_smtp_from: str = ""
+    report_smtp_username: str = ""
+    report_smtp_password: str = ""
+    report_smtp_starttls: bool = True
+    report_smtp_timeout_seconds: int = 20
     # Lariska endpoint-inventory ingestion (Agent_plan.md S1-S7). Router is
     # only registered when this is true.
     endpoint_inventory_enabled: bool = True
@@ -702,6 +726,26 @@ def load_settings() -> Settings:
         ),
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
+        reports_enabled=os.environ.get("OCTO_REPORTS_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        report_dispatch_enabled=os.environ.get("OCTO_REPORT_DISPATCH_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        # Floored for the same reason as the webhook dispatcher's: a mistyped 0
+        # turns the thread's Event.wait() into a busy loop against the database.
+        report_dispatch_interval_seconds=max(
+            5, int(os.environ.get("OCTO_REPORT_DISPATCH_INTERVAL_SECONDS", "60"))
+        ),
+        report_retention_days=max(0, int(os.environ.get("OCTO_REPORT_RETENTION_DAYS", "365"))),
+        report_smtp_host=os.environ.get("OCTO_REPORT_SMTP_HOST", "").strip(),
+        report_smtp_port=max(1, int(os.environ.get("OCTO_REPORT_SMTP_PORT", "25"))),
+        report_smtp_from=os.environ.get("OCTO_REPORT_SMTP_FROM", "").strip(),
+        report_smtp_username=os.environ.get("OCTO_REPORT_SMTP_USERNAME", "").strip(),
+        report_smtp_password=os.environ.get("OCTO_REPORT_SMTP_PASSWORD", ""),
+        report_smtp_starttls=os.environ.get("OCTO_REPORT_SMTP_STARTTLS", "true").lower()
+        in {"1", "true", "yes"},
+        report_smtp_timeout_seconds=max(
+            1, int(os.environ.get("OCTO_REPORT_SMTP_TIMEOUT_SECONDS", "20"))
+        ),
         endpoint_inventory_enabled=os.environ.get("OCTO_ENDPOINT_INVENTORY_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         endpoint_inventory_max_software_items=int(

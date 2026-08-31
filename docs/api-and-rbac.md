@@ -230,6 +230,8 @@ not an authorization control.
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
 | `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
 | `/api/wordlists` | Tenant-uploaded subdomain wordlists: list, upload, fetch and delete. Reads are `viewer`, writes `operator` — the same bar as starting a scan, since a wordlist is scan input. Selected per scan via `wordlist_id`; caps and normalization are in [configuration.md](configuration.md#tenant-uploaded-wordlists) |
+| `/api/compliance` | PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory. Read-only, `viewer`. A platform admin gets no cross-tenant view here: a control status is a statement about one organisation — see [reports-and-compliance.md](reports-and-compliance.md) |
+| `/api/reports` | Report factory: branding (`admin`), templates (`operator`), scheduled delivery (`admin` — it sends this tenant's findings outside the installation), on-demand generation (`operator`) and downloads (`viewer`) |
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides |
 
