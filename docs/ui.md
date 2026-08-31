@@ -34,12 +34,15 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/tenants` | MSSP customer posture comparison and provisioning | Operator; admin to create |
 | `/attack-surface` | One scan's hostname → IP → port → service graph (not an attack path) | Viewer |
 | `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
-| `/endpoints` | Endpoint device/software inventory and recent changes | Viewer |
+| `/endpoints` | Endpoint device/software inventory, CVE matches and the patch-gap panel | Viewer |
 | `/jobs` | Start and monitor scan jobs | Operator |
 | `/runs` | Tenant-scoped run history | Viewer |
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
-| `/reports` | Report and artifact discovery | Viewer |
+| `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
+| `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
+| `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
+| `/service-tokens` | Non-interactive API credentials for the selected tenant | Admin |
 | `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog and on-request provisioning keys | Operator |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
 
@@ -86,9 +89,18 @@ lifecycle model.
 A comment is an audit event (`kind=comment`) and does not change state.
 A ticket link (`ticket_system` / `ticket_key` / `ticket_url`) records where
 the work lives in Jira, ServiceNow, SMAX or DefectDojo. The platform does
-**not** create that ticket from this form. Native Jira/ServiceNow/DefectDojo
-create is a `transport` on the same webhook subscription (ROADMAP P2): the
-queue opens the ticket and then writes this link.
+**not** create that ticket from this form: native create is a `transport` on a
+webhook subscription (migration `0022`) — the queue opens the ticket over the
+same validated wire as the event webhooks and then writes this link back.
+Status flows the other way too: syncing a linked ticket reconciles the finding,
+and a closure that came from the tracker is recorded as `ticket_resolved`
+rather than as verified.
+
+Verification is not a drag: the finding detail page has a **Verify** action that
+dispatches a targeted re-scan and parks the card in `VERIFYING`. The card leaves
+that column when the run comes back — closed and marked machine-verified if the
+finding was not observed, back to `FIXING` if it was. See
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#verification-who-is-allowed-to-say-it-is-fixed).
 
 Evidence on the board is the last observing run. File attachments are out of
 scope. The closed column is a recent page, not the full history — the
@@ -279,6 +291,64 @@ keys, not from this dialog.
 
 Removing an agent from this page forgets its registration. A process still
 running on the host re-registers on its next heartbeat; stop it there first.
+
+## Compliance posture
+
+`/compliance` reads `GET /api/compliance/frameworks` and
+`GET /api/compliance/{framework_id}`, and shows one framework's control table
+for the selected tenant. Each row carries its status, the failing and accepted
+counts, and expands to the evidence behind it.
+
+Three things on the page are deliberate rather than decorative, and should stay
+that way if it is restyled:
+
+- a control with no evidence in this tenant is **`not_assessed`**, shown with
+  its reason, and excluded from the score — an empty estate scores nothing, not
+  100%;
+- accepted risk is counted and shown per control, but does not fail it;
+- the score is the share of *assessed* controls passing, and is rendered under
+  the catalogue's own scope note, so it cannot be read as compliance with the
+  standard.
+
+There is no cross-tenant view here even for a platform admin: a control status
+is a statement about one organisation. See
+[reports-and-compliance.md](reports-and-compliance.md).
+
+## Report factory
+
+The `/reports` page keeps per-run artifact discovery and adds the report factory
+above it: per-tenant branding (`admin`), templates (`operator`), scheduled
+delivery (`admin`) and on-demand generation (`operator`). A generated report is
+one body rendered as PDF, HTML or JSON, so the JSON an MSSP pipes into its own
+portal is the same report as the PDF its customer opens. Delivery is recorded
+per recipient rather than per report.
+
+## Endpoint inventory and patch gaps
+
+`/endpoints` lists endpoint devices, their installed software and recent
+changes, and — when the software→CVE matcher has vulnerable rows with a
+published fix — a **patch-gap panel** that regroups those findings by the
+package that actually gets upgraded and names the command. The panel stays
+hidden when nothing is outstanding. The asset page's Software tab carries the
+same per-device card with a copyable command.
+
+A vulnerable package with no published fix is counted separately and carries no
+command. See [software-cve-matching.md](software-cve-matching.md).
+
+## Wordlists and service tokens
+
+`/wordlists` uploads tenant-scoped subdomain and bucket dictionaries
+(operator-only; a viewer gets a refusal panel, not an empty table) for selection
+per scan — see
+[configuration.md](configuration.md#tenant-uploaded-wordlists). Re-uploading
+under an existing name replaces it; deleting one does not affect a scan already
+running.
+
+`/service-tokens` issues and revokes non-interactive API credentials for the
+selected tenant. It is admin-only, and a platform admin has to have a tenant
+selected: the token is confined to that tenant, a role, and its scopes. The
+secret is shown once, at creation. See
+[api-and-rbac.md](api-and-rbac.md#service-tokens).
 
 ## Finding presentation
 

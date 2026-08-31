@@ -19,7 +19,7 @@ UI guide and screenshots: [../docs/ui.md](../docs/ui.md).
 
 ## Requirements
 
-Node.js 24 or newer and a running Shapoclyack API.
+Node.js 26 or newer (`engines.node`) and a running Shapoclyack API.
 
 ## Development
 

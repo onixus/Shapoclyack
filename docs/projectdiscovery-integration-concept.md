@@ -1,5 +1,7 @@
 # Концепция расширения интеграции с инструментами ProjectDiscovery
 
+> Документ на русском языке. Russian-language design document.
+
 Проектный документ / Архитектурная концепция. Описывает возможности, сценарии и архитектурный дизайн интеграции инструментов экосистемы **ProjectDiscovery** в сканирующий конвейер и платформу управления поверхностью атаки (EASM) **Shapoclyack**.
 
 ---
@@ -10,11 +12,11 @@
 
 | Инструмент | Версия | Лицензия | Назначение в Shapoclyack | Файлы реализации |
 |---|---|---|---|---|
-| **Naabu** | `2.6.1` | MIT | Быстрый SYN/CONNECT скан портов, probe ladder (alive detection) | [`scanner/pipeline/ports.py`](file:///Users/onixus/Git/Shapoclyack/scanner/pipeline/ports.py), [`scanner/pipeline/probe_ladder.py`](file:///Users/onixus/Git/Shapoclyack/scanner/pipeline/probe_ladder.py) |
-| **Nuclei** | `3.11.1` | MIT | Шаблонное сканирование уязвимостей и мисконфигураций веб-сервисов | [`scanner/pipeline/nuclei_scan.py`](file:///Users/onixus/Git/Shapoclyack/scanner/pipeline/nuclei_scan.py), [`Dockerfile`](file:///Users/onixus/Git/Shapoclyack/Dockerfile#L133-L146) |
-| **DNSx** | `1.2.3` | MIT | Резолвинг DNS, PTR lookup, поиск dangling CNAME / takeover | [`scanner/pipeline/domain_monitor.py`](file:///Users/onixus/Git/Shapoclyack/scanner/pipeline/domain_monitor.py), [`scanner/pipeline/resolve.py`](file:///Users/onixus/Git/Shapoclyack/scanner/pipeline/resolve.py) |
+| **Naabu** | `2.6.1` | MIT | Быстрый SYN/CONNECT скан портов, probe ladder (alive detection) | [`scanner/pipeline/ports.py`](../scanner/pipeline/ports.py), [`scanner/pipeline/probe_ladder.py`](../scanner/pipeline/probe_ladder.py) |
+| **Nuclei** | `3.11.1` | MIT | Шаблонное сканирование уязвимостей и мисконфигураций веб-сервисов | [`scanner/pipeline/nuclei_scan.py`](../scanner/pipeline/nuclei_scan.py), [`Dockerfile`](../Dockerfile#L133-L146) |
+| **DNSx** | `1.2.3` | MIT | Резолвинг DNS, PTR lookup, поиск dangling CNAME / takeover | [`scanner/pipeline/domain_monitor.py`](../scanner/pipeline/domain_monitor.py), [`scanner/pipeline/resolve.py`](../scanner/pipeline/resolve.py) |
 
-Все инструменты собираются из исходников или верифицируются по SHA-256 в [`Dockerfile`](file:///Users/onixus/Git/Shapoclyack/Dockerfile) и [`Dockerfile.allinone`](file:///Users/onixus/Git/Shapoclyack/Dockerfile.allinone), запускаются в непривилегированном режиме с минимально необходимыми Linux Capabilities (`cap_net_raw,cap_net_admin` для Naabu).
+Все инструменты собираются из исходников или верифицируются по SHA-256 в [`Dockerfile`](../Dockerfile) и [`Dockerfile.allinone`](../Dockerfile.allinone), запускаются в непривилегированном режиме с минимально необходимыми Linux Capabilities (`cap_net_raw,cap_net_admin` для Naabu).
 
 ---
 
@@ -148,6 +150,6 @@
 ## 6. Рекомендуемые этапы реализации
 
 1. **Этап 1: Интеграция `httpx`** — дополнение / ускорение модуля `scanner/pipeline/fingerprint.py`, сбор favicon hash и точное определение веб-стека.
-2. **Этап 2: Интеграция `subfinder` и `asnmap`** — расширение скоупинга в модуле организации [`docs/org-profile-module.ru.md`](file:///Users/onixus/Git/Shapoclyack/docs/org-profile-module.ru.md).
+2. **Этап 2: Интеграция `subfinder` и `asnmap`** — расширение скоупинга в модуле организации [`docs/org-profile-module.ru.md`](org-profile-module.ru.md).
 3. **Этап 3: Подключение `interactsh` к `nuclei`** — включение безопасного OOB-тестирования в `scanner/pipeline/nuclei_scan.py`.
 4. **Этап 4: Интеграция `katana`** — опциональный режим глубокого DAST-сканирования веб-ресурсов.

@@ -75,6 +75,14 @@ _STAGE_TIMER: ContextVar[StageTimer | None] = ContextVar("stage_timer", default=
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Containerized network scan pipeline")
     parser.add_argument("--config", default="scanner/config/default.yaml", help="Path to YAML config")
+    parser.add_argument(
+        "--validate-config",
+        action="store_true",
+        help=(
+            "Parse and validate the config file, then exit without starting any "
+            "external tool. Exit code 0 when it is valid, 2 when it is not."
+        ),
+    )
     parser.add_argument("--ranges", default="scanner/inputs/ranges.txt", help="Path to CIDR/IP inputs")
     parser.add_argument("--domains", default="scanner/inputs/domains.txt", help="Path to FQDN inputs")
     parser.add_argument(
@@ -1027,8 +1035,31 @@ def _run_pipeline_body(
     return exit_codes.SUCCESS
 
 
+def _validate_config_only(config_path: Path) -> int:
+    """Parse the config file and report the first failure. No stage is started."""
+    import yaml
+
+    try:
+        raw = load_yaml(config_path)
+    except FileNotFoundError:
+        print(f"configuration file not found: {config_path}", file=sys.stderr)
+        return exit_codes.CONFIG_ERROR
+    except yaml.YAMLError as exc:
+        print(f"configuration is not valid YAML: {exc}", file=sys.stderr)
+        return exit_codes.CONFIG_ERROR
+    try:
+        load_config(raw)
+    except ValidationError as exc:
+        print(format_validation_error(exc), file=sys.stderr)
+        return exit_codes.CONFIG_ERROR
+    print(f"configuration OK: {config_path}")
+    return exit_codes.SUCCESS
+
+
 def main() -> int:
     args = parse_args()
+    if args.validate_config:
+        return _validate_config_only(Path(args.config))
     try:
         return _run_pipeline(args)
     except StageFailureError as exc:

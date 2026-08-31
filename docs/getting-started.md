@@ -41,7 +41,7 @@ Anywhere else the API refuses to start until the JWT secret, the CORS origins
 and a real account are supplied — see
 [Startup safety](configuration.md#startup-safety-octo_env). Change a password
 with `POST /api/auth/password`; add accounts through `/api/users`
-([api-and-rbac.md](../docs/api-and-rbac.md#console-accounts)).
+([api-and-rbac.md](api-and-rbac.md#console-accounts)).
 
 ## 2. Prepare targets
 

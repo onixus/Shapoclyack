@@ -22,7 +22,7 @@ yet production-ready.
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
 | **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged |
-| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M2 merged |
+| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M2, enterprise IAM (OIDC + service tokens), closed-loop remediation (#183) and the Sprint 4 report factory / compliance mapping merged |
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
@@ -402,13 +402,12 @@ Everything else in Phases 1–11 and P0–P3 is merged.
 Summarized here because Track A's phase tables give no signal about it.
 
 **Why it is a track and not a checklist:** the first four items below share one failure
-mode — the installation is **fail-open**. A deployment brought up from the README without
-overriding anything starts with a published JWT secret ([api/settings.py:31](api/settings.py:31)),
-`CORS=["*"]` ([api/settings.py:38](api/settings.py:38)) and the built-in `admin`/`operator`
-accounts ([api/settings.py:10](api/settings.py:10)), and `authenticate_user` accepts a
-**plaintext** password whenever the stored string is not a bcrypt hash
-([api/auth.py:100](api/auth.py:100)). Nothing about that start is distinguishable from a
-configured one. "Forgot to configure" and "configured" must not look alike.
+mode. As the track opened, a deployment brought up from the README without overriding
+anything started with a published JWT secret, `CORS=["*"]` and the built-in
+`admin`/`operator` accounts (all in `api/settings.py`), and `authenticate_user` accepted a
+**plaintext** password whenever the stored string was not a bcrypt hash (`api/auth.py`).
+Nothing about that start was distinguishable from a configured one. "Forgot to configure"
+and "configured" must not look alike — which is what #155, #156 and #157 below closed.
 
 | Issue | Theme | Est. | Note |
 |-------|-------|------|------|
@@ -598,11 +597,11 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 | Gap | Why it blocks |
 |-----|---------------|
 | No authenticated assessment | **Partly closed (M1).** Endpoint software is now matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). What is still missing is the rest of the estate: language ecosystems, Windows, non-distribution software, and every distribution other than those two |
-| No SSO | No OIDC, SAML or LDAP; three roles; no service tokens. This is a procurement checklist item — without it there is no pilot |
+| No SSO | **Partly closed.** OIDC single sign-on (authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with scopes have landed — see [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc). SAML, LDAP and a role model finer than the three built-in roles have not |
 | No report factory | **Closed (Sprint 4).** Executive / technical / compliance templates, per-tenant branding, cron-scheduled delivery over SMTP and webhook with a per-recipient delivery trail, and PDF / HTML / JSON off one report body — see [docs/reports-and-compliance.md](docs/reports-and-compliance.md). What is still missing is signed point-in-time evidence packages and per-control ownership |
 | No compliance mapping | **Closed (Sprint 4).** PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory, with `not_assessed` for anything the platform cannot observe and a score that is explicitly the share of *assessed* controls rather than compliance with the standard. Custom frameworks and archivable evidence packages are not in scope |
 | Asset context filled by hand | `business_service`/`environment`/`owner_email` only via PATCH. At 50k assets the dashboard's "unowned assets" will read ~45k and the whole owner/SLA workflow never starts |
-| The loop is not closed | Ticket status is one-way by design, and `VERIFYING → CLOSED` is manual: there is no targeted re-scan. The product still cannot answer "was it actually fixed?" mechanically |
+| The loop is not closed | **Partly closed (#183).** A finding can be sent for **mechanical verification** — a targeted re-scan whose result, not an operator's assertion, moves it out of `VERIFYING` — and ticket status is now synchronized both ways. What is still missing is verification for finding classes a re-scan cannot observe, and remediation SLAs measured against the verified close rather than the state change |
 | No MSSP operations | No quotas, no per-tenant consumption metering, no onboarding wizard, no white-label, no customer read-only portal |
 | Enrichment data has no air-gapped bundle | The overlays are no longer stubs — the image ships EPSS 365,017, KEV 1,676, exploit maturity 25,943 and CVSS4 31,715 entries, and `GET /api/system` reports each dataset's source, feed date, entry count and whether the build fetched it or fell back. What is still missing is an offline bundle, and a product-level judgement that turns overlay age into "your priorities are wrong" rather than a date on a status page |
 

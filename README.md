@@ -31,8 +31,12 @@ single all-in-one container.
 | Scanning | TCP/UDP discovery, service and OS detection, NSE and Nuclei checks |
 | Enrichment | CVSS v4, EPSS, CISA KEV, GeoIP, ASN, TLS posture, and fingerprints |
 | Inventory | Cross-run assets, identifiers, ownership, criticality, lifecycle, endpoint software |
+| Vulnerability management | Tracked findings with states, SLA and exceptions; NIST SP 800-30 risk scoring; remediation board with mechanical verification and 2-way ticket sync |
+| Endpoint patching | Installed software matched against vendor advisories, regrouped into per-package patch gaps with the upgrade command |
+| Reporting | Branded per-tenant report factory (executive, technical, compliance) rendered as PDF, HTML or JSON, with scheduled delivery |
+| Compliance | PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status from this tenant's own evidence |
 | Operations | Jobs, schedules, diffs, alerts, reports, remote agents, and resume |
-| Platform | JWT RBAC, multi-tenancy, PostgreSQL, ClickHouse, and NATS JetStream |
+| Platform | JWT RBAC, OIDC single sign-on, service tokens, multi-tenancy, PostgreSQL, ClickHouse, and NATS JetStream |
 | Deployment | Kubernetes with Kustomize (kind for local dev) |
 
 The scanner pipeline is:
@@ -86,12 +90,16 @@ and first-scan verification.
 
 The Web UI provides these primary surfaces:
 
-- exposure dashboard and historical trend;
+- risk overview, exposure dashboard, and historical trend;
+- vulnerability center and remediation board;
 - persistent asset inventory and asset detail;
-- attack-surface graph;
-- scan jobs, runs, findings, and reports;
+- endpoint inventory, software CVE matches, and patch gaps;
+- attack-surface graph and geo map;
+- scan jobs, runs, findings, reports, and the report factory;
+- compliance posture per framework;
 - tenants and remote agent fleet;
-- system status and editable safe configuration overrides.
+- wordlists, service tokens, system status, and editable safe configuration
+  overrides.
 
 Current interface screenshots and the capture procedure live in
 [docs/ui.md](docs/ui.md).
@@ -170,7 +178,9 @@ npm run test
 npm run build
 ```
 
-The supported Web UI development runtime is Node.js 24 or newer. See
+The supported Web UI development runtime is Node.js 26 or newer
+(`web-next/package.json` declares `engines.node: ">=26"`, and CI and the image
+builders use 26). See
 [Development](docs/development.md) for local API/UI setup and validation.
 
 ## Releases

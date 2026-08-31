@@ -316,3 +316,32 @@ def test_dkim_selectors_must_be_dns_labels():
 def test_dkim_selector_list_is_capped():
     with pytest.raises(ValidationError):
         MailPostureConfig(dkim_selectors=[f"s{index}" for index in range(21)])
+
+
+def test_validate_config_flag_accepts_the_shipped_default(capsys):
+    """`--validate-config` is documented in getting-started.md; it has to work."""
+    from scanner import exit_codes
+    from scanner.main import _validate_config_only
+
+    assert _validate_config_only(Path("scanner/config/default.yaml")) == exit_codes.SUCCESS
+    assert "configuration OK" in capsys.readouterr().out
+
+
+def test_validate_config_flag_reports_a_bad_file(tmp_path: Path, capsys):
+    """A rejected config exits 2 and names the failing key. No stage is started."""
+    from scanner import exit_codes
+    from scanner.main import _validate_config_only
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("runtime:\n  mode: nope\nprofiles: {}\nnse_profiles: {}\n", encoding="utf-8")
+    assert _validate_config_only(bad) == exit_codes.CONFIG_ERROR
+    assert "runtime.mode" in capsys.readouterr().err
+
+    missing = tmp_path / "absent.yaml"
+    assert _validate_config_only(missing) == exit_codes.CONFIG_ERROR
+    assert "not found" in capsys.readouterr().err
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("runtime: [\n", encoding="utf-8")
+    assert _validate_config_only(broken) == exit_codes.CONFIG_ERROR
+    assert "not valid YAML" in capsys.readouterr().err
