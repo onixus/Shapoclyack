@@ -140,7 +140,15 @@ def delete_template(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: SettingsDep,
 ) -> None:
-    if not store.delete_template(settings, template_id, tenant_id=principal.tenant_id):
+    """409 while a schedule still uses the template: deleting it would cascade
+    onto an admin-created recurring delivery, and an operator does not get to
+    undo that by side effect."""
+
+    try:
+        deleted = store.delete_template(settings, template_id, tenant_id=principal.tenant_id)
+    except store.ReportError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
 
 

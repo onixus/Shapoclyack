@@ -333,7 +333,7 @@ goes to an operations channel and a report goes to a customer.
 | `OCTO_REPORT_SMTP_FROM` | *(empty)* | Envelope sender; required alongside the host |
 | `OCTO_REPORT_SMTP_USERNAME` | *(empty)* | Relay username; login is attempted only when set |
 | `OCTO_REPORT_SMTP_PASSWORD` | *(empty)* | Relay password |
-| `OCTO_REPORT_SMTP_STARTTLS` | `true` | Upgrade the connection; a relay that refuses is logged and the report still goes |
+| `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than sending the report and the relay password in cleartext; set `false` only for a relay that genuinely cannot do TLS |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
 
 OpenTelemetry (ROADMAP P3). Empty endpoint means no TracerProvider — the

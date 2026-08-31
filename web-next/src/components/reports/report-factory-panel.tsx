@@ -28,6 +28,7 @@ import {
   useReportTemplates,
   useUpdateBranding,
 } from "@/hooks/use-report-factory";
+import { toast } from "sonner";
 import { downloadGeneratedReport, type GeneratedReportInfo } from "@/lib/api";
 
 type Kind = "executive" | "technical" | "compliance";
@@ -422,7 +423,16 @@ export function ReportFactoryPanel() {
                     variant="ghost"
                     size="icon"
                     aria-label={`Download ${report.report_id}`}
-                    onClick={() => downloadGeneratedReport(report)}
+                    onClick={() => {
+                      // Every other action on this page reports its failure;
+                      // an un-awaited download rejects into nothing, so a 404
+                      // on a pruned report looks like a dead button.
+                      downloadGeneratedReport(report).catch((error: unknown) => {
+                        toast.error("Download failed", {
+                          description: error instanceof Error ? error.message : undefined,
+                        });
+                      });
+                    }}
                   >
                     <Download className="h-3.5 w-3.5" />
                   </Button>

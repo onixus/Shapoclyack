@@ -58,6 +58,14 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat().replace("+00:00", "Z") if value else None
 
 
+def _naive(value: datetime) -> datetime:
+    """One timestamp as naive UTC. ``next_run_at`` comes back from the driver
+    without a timezone while ``_now()`` carries one, and comparing the two
+    directly is a TypeError on exactly the path that re-enables a schedule."""
+
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+
+
 # ------------------------------------------------------------------ templates
 
 
@@ -157,15 +165,37 @@ def update_template(
         row = session.execute(select(models.ReportTemplate).where(*filters)).scalar_one_or_none()
         if row is None:
             return None
-        kind = fields.get("kind", row.kind)
-        framework_id = fields.get("framework_id", row.framework_id)
-        sections = dict(fields.get("sections", row.sections) or {})
+        # ``exclude_unset`` distinguishes "absent" from "explicitly null", but
+        # only for the field itself: a null ``kind`` or ``sections`` still
+        # arrives here as None and must mean "leave it alone" rather than
+        # "erase it". ``framework_id`` is the exception — clearing it is how a
+        # compliance template becomes an executive one, so a null is honoured.
+        kind = fields.get("kind") or row.kind
+        framework_id = (
+            fields["framework_id"] if "framework_id" in fields else row.framework_id
+        )
+        sections = dict(
+            (fields.get("sections") if fields.get("sections") is not None else row.sections)
+            or {}
+        )
         _validate_template(kind, framework_id, sections)
+        name = fields.get("name") or row.name
+        if name != row.name:
+            clash = session.execute(
+                select(models.ReportTemplate).where(
+                    models.ReportTemplate.tenant_id == row.tenant_id,
+                    models.ReportTemplate.name == name,
+                )
+            ).scalar_one_or_none()
+            # Checked rather than left to the unique constraint: an
+            # IntegrityError surfaces as a 500, where the create path answers
+            # the same mistake with a 400 that names it.
+            if clash is not None:
+                raise ReportError(f"a template named {name!r} already exists")
         row.kind = kind
         row.framework_id = framework_id
         row.sections = sections
-        if fields.get("name"):
-            row.name = fields["name"]
+        row.name = name
         row.updated_at = _now()
         session.commit()
         session.refresh(row)
@@ -175,6 +205,14 @@ def update_template(
 def delete_template(
     settings: Settings, template_id: str, *, tenant_id: str | None = None
 ) -> bool:
+    """Refused while a schedule still points at the template.
+
+    The row deletes with ``ON DELETE CASCADE`` (migration 0029), so without this
+    check an *operator* deleting a template would silently take out the
+    recurring customer deliveries an *admin* created — a lower role undoing a
+    higher one's decision, by side effect. Deleting the schedule first is an
+    admin action, and then this is only the definition."""
+
     filters = [models.ReportTemplate.template_id == template_id]
     if tenant_id:
         filters.append(models.ReportTemplate.tenant_id == tenant_id)
@@ -182,6 +220,17 @@ def delete_template(
         row = session.execute(select(models.ReportTemplate).where(*filters)).scalar_one_or_none()
         if row is None:
             return False
+        schedules = session.execute(
+            select(models.ReportSchedule.name).where(
+                models.ReportSchedule.template_id == row.template_id
+            )
+        ).scalars().all()
+        if schedules:
+            raise ReportError(
+                "template is used by "
+                + ", ".join(repr(name) for name in sorted(schedules))
+                + "; delete the schedule first (admin)"
+            )
         session.delete(row)
         session.commit()
         return True
@@ -322,7 +371,11 @@ def update_schedule(
         row = session.execute(select(models.ReportSchedule).where(*filters)).scalar_one_or_none()
         if row is None:
             return None
-        if "cron" in fields and fields["cron"] != row.cron:
+        # A null in the body is "leave it alone" throughout. Anything else makes
+        # ``{"cron": null}`` a 500 out of ``parse_cron(None)``, and
+        # ``{"recipients": null}`` a silent way to leave a schedule delivering
+        # to nobody — clearing recipients is ``[]``, which says so.
+        if fields.get("cron") is not None and fields["cron"] != row.cron:
             try:
                 parse_cron(fields["cron"])
             except ValueError as exc:
@@ -332,17 +385,21 @@ def update_schedule(
             # ``next_run_at`` would send the next report on the old schedule
             # and only then adopt the new one.
             row.next_run_at = next_cron_time(row.cron, after=_now())
-        if "format" in fields:
+        if fields.get("format") is not None:
             if fields["format"] not in _EXTENSIONS:
                 raise ReportError(f"unknown format {fields['format']!r}")
             row.fmt = fields["format"]
-        if "recipients" in fields:
+        if fields.get("recipients") is not None:
             row.recipients = _validate_recipients(fields["recipients"])
-        if "name" in fields and fields["name"]:
+        if fields.get("name"):
             row.name = fields["name"]
-        if "enabled" in fields and fields["enabled"] is not None:
+        if fields.get("enabled") is not None:
             row.enabled = bool(fields["enabled"])
-            if row.enabled and row.next_run_at is None:
+            # Re-anchored whenever the stored occurrence is missing *or already
+            # past*: a schedule paused across its fire time would otherwise be
+            # due the moment it is switched back on, and the customer gets a
+            # report nobody scheduled for today.
+            if row.enabled and (row.next_run_at is None or _naive(row.next_run_at) <= _naive(_now())):
                 row.next_run_at = next_cron_time(row.cron, after=_now())
         session.commit()
         session.refresh(row)

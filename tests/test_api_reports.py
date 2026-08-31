@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import smtplib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,7 +20,9 @@ import pytest
 from api.services import vulnerabilities as vulns
 from api.services.reports import branding as branding_service
 from api.services.reports import delivery as report_delivery
+from api.services.reports import content as content_builder
 from api.services.reports import dispatcher as report_dispatcher
+from api.services.reports import render as renderer
 from api.services.reports import store
 from tests.conftest import (
     auth_headers,
@@ -419,6 +422,168 @@ def test_a_failed_render_is_recorded_and_does_not_retry_every_tick(tmp_path, mon
     assert "advisory dataset missing" in reports[0]["error"]
 
 
+def test_null_fields_in_a_patch_change_nothing(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch)
+    operator = auth_headers(client, "operator")
+    admin = auth_headers(client, "admin")
+    template_id = client.post(
+        "/api/reports/templates",
+        headers=operator,
+        json={"name": "Monthly exec", "sections": {"trend": False}},
+    ).json()["template_id"]
+    schedule = client.post(
+        "/api/reports/schedules",
+        headers=admin,
+        json={
+            "template_id": template_id,
+            "name": "Monthly",
+            "cron": "0 6 1 * *",
+            "recipients": [{"transport": "email", "target": "ciso@example.com"}],
+        },
+    ).json()
+
+    # A null cron used to reach parse_cron(None) and 500; a null recipients list
+    # used to leave the schedule delivering to nobody, silently.
+    patched = client.patch(
+        f"/api/reports/schedules/{schedule['schedule_id']}",
+        headers=admin,
+        json={"cron": None, "recipients": None, "format": None, "name": None},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["cron"] == "0 6 1 * *"
+    assert patched.json()["recipients"] == schedule["recipients"]
+
+    # Clearing is still possible, and says so.
+    cleared = client.patch(
+        f"/api/reports/schedules/{schedule['schedule_id']}",
+        headers=admin,
+        json={"recipients": []},
+    )
+    assert cleared.json()["recipients"] == []
+
+    template = client.patch(
+        f"/api/reports/templates/{template_id}",
+        headers=operator,
+        json={"sections": None, "kind": None},
+    )
+    assert template.status_code == 200
+    assert template.json()["sections"] == {"trend": False}
+
+
+def test_renaming_onto_an_existing_name_is_a_400_not_a_500(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch)
+    operator = auth_headers(client, "operator")
+    first = client.post(
+        "/api/reports/templates", headers=operator, json={"name": "Monthly exec"}
+    ).json()
+    client.post("/api/reports/templates", headers=operator, json={"name": "Quarterly exec"})
+
+    clash = client.patch(
+        f"/api/reports/templates/{first['template_id']}",
+        headers=operator,
+        json={"name": "Quarterly exec"},
+    )
+    assert clash.status_code == 400
+    assert "already exists" in clash.json()["detail"]
+
+
+def test_an_operator_cannot_delete_an_admins_schedule_through_its_template(
+    tmp_path, monkeypatch
+):
+    client = configured_client(tmp_path, monkeypatch)
+    operator = auth_headers(client, "operator")
+    admin = auth_headers(client, "admin")
+    template_id = client.post(
+        "/api/reports/templates", headers=operator, json={"name": "Monthly exec"}
+    ).json()["template_id"]
+    schedule = client.post(
+        "/api/reports/schedules",
+        headers=admin,
+        json={"template_id": template_id, "name": "Monthly", "cron": "0 6 1 * *"},
+    ).json()
+
+    # The row cascades (migration 0029), so an unguarded delete would take the
+    # admin's customer delivery with it.
+    refused = client.delete(f"/api/reports/templates/{template_id}", headers=operator)
+    assert refused.status_code == 409
+    assert "Monthly" in refused.json()["detail"]
+    assert client.get("/api/reports/schedules", headers=operator).json()
+
+    client.delete(f"/api/reports/schedules/{schedule['schedule_id']}", headers=admin)
+    assert client.delete(f"/api/reports/templates/{template_id}", headers=operator).status_code == 204
+
+
+def test_re_enabling_a_schedule_paused_past_its_fire_time_does_not_fire_at_once(
+    tmp_path, monkeypatch
+):
+    configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    template = store.create_template(settings, tenant_id=tenant_id, name="Monthly exec")
+    schedule = store.create_schedule(
+        settings,
+        tenant_id=tenant_id,
+        template_id=template["template_id"],
+        name="Monthly",
+        cron="0 6 1 * *",
+        fmt="json",
+    )
+    store.update_schedule(settings, schedule["schedule_id"], tenant_id=tenant_id, enabled=False)
+
+    # Time passes over the stored occurrence while the schedule is off.
+    from sqlalchemy import select
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(settings.postgres_url) as session:
+        row = session.execute(
+            select(models.ReportSchedule).where(
+                models.ReportSchedule.schedule_id == schedule["schedule_id"]
+            )
+        ).scalar_one()
+        row.next_run_at = datetime(2020, 1, 1, tzinfo=UTC)
+        session.commit()
+
+    resumed = store.update_schedule(
+        settings, schedule["schedule_id"], tenant_id=tenant_id, enabled=True
+    )
+    assert resumed["next_run_at"] > datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    assert store.due_schedules(settings, datetime.now(UTC)) == []
+
+
+def test_a_relay_that_refuses_starttls_does_not_get_the_report(tmp_path, monkeypatch):
+    settings = make_settings(
+        tmp_path,
+        report_smtp_host="relay.example.com",
+        report_smtp_from="reports@example.com",
+    )
+    path = tmp_path / "report.json"
+    path.write_text("{}", encoding="utf-8")
+
+    class _Relay:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self):
+            raise smtplib.SMTPException("STARTTLS not supported")
+
+        def send_message(self, message):  # pragma: no cover - must not be reached
+            raise AssertionError("the report was sent over an unencrypted connection")
+
+    monkeypatch.setattr(smtplib, "SMTP", lambda *args, **kwargs: _Relay())
+    entries = report_delivery.deliver(
+        settings,
+        report={"report_id": "rpt_1", "title": "t", "format": "json", "generated_at": "now"},
+        path=path,
+        recipients=[{"transport": "email", "target": "ciso@example.com"}],
+    )
+    assert entries[0]["status"] == "failed"
+    assert "STARTTLS" in entries[0]["error"]
+
+
 def test_delivery_records_one_entry_per_recipient(tmp_path, monkeypatch):
     settings = make_settings(tmp_path)
     path = tmp_path / "report.json"
@@ -438,6 +603,71 @@ def test_delivery_records_one_entry_per_recipient(tmp_path, monkeypatch):
     # No SMTP relay configured is "skipped, and here is what to configure",
     # not a silent success.
     assert "OCTO_REPORT_SMTP_HOST" in entries[0]["error"]
+
+
+def test_top_findings_use_the_lifecycles_own_definition_of_open(tmp_path, monkeypatch):
+    configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    rows, _total = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)
+    # ACKNOWLEDGED is open, and a hand-written state list is how it stops being
+    # counted in the table while the KPI block still counts it.
+    vulns.transition(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=rows[0]["vuln_id"],
+        to_state="ACKNOWLEDGED",
+        actor="operator",
+    )
+
+    body = content_builder.build(settings, tenant_id=tenant_id, kind="technical")
+    assert len(body["top_findings"]) == body["kpis"]["open_total"]
+    assert "ACKNOWLEDGED" in {item["state"] for item in body["top_findings"]}
+
+
+def test_a_section_switched_on_is_rendered(tmp_path, monkeypatch):
+    configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    # top_findings is not an executive default; asking for it must not be
+    # accepted at write time and dropped at render time.
+    body = content_builder.build(
+        settings, tenant_id=tenant_id, kind="executive", sections={"top_findings": True}
+    )
+    assert "top_findings" in body["sections"]
+    assert "top_findings" in body
+
+
+def test_renderers_agree_on_a_zero_score_and_never_print_none(tmp_path):
+    body = {
+        "title": "t",
+        "generated_at": "2026-08-31T10:00:00Z",
+        "tenant_id": "default",
+        "period_days": 90,
+        "branding": {"org_name": "Acme"},
+        "sections": ["top_findings", "assets"],
+        "top_findings": [
+            {
+                "cve": "CVE-2024-0001",
+                "asset_id": "a1",
+                "severity": "low",
+                # A real assessment of zero, not missing data.
+                "contextual_score": 0.0,
+                "state": "OPEN",
+            }
+        ],
+        # An empty registry has no owner coverage to report.
+        "assets": {"total": 0, "active": 0, "with_owner": 0, "without_owner": 0,
+                   "with_business_service": 0, "owner_coverage_pct": None},
+    }
+    html_out = renderer.render_html(body)
+    assert ">0.0<" in html_out
+    assert "None%" not in html_out
+    # The PDF is bytes; the assertion that matters is that it renders the same
+    # body without raising, and the shared formatter is what keeps the two in
+    # step.
+    assert renderer.render_pdf(body)[:4] == b"%PDF"
+    assert renderer._fmt_number(0.0) == "0.0"
+    assert renderer._fmt_number(None) == "-"
+    assert renderer._fmt_percent(None) == "n/a"
 
 
 def test_retention_prunes_old_reports_and_their_files(tmp_path, monkeypatch):

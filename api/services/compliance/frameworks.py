@@ -40,10 +40,17 @@ SOURCE_ENDPOINT_INVENTORY = "endpoint_inventory"
 class Control:
     control_id: str
     title: str
-    # Any of these signals, on evidence at or above ``severity_floor``, fails
-    # the control. An empty tuple would be a control nothing can fail, which is
-    # a documentation entry rather than an assessment; the catalogue has none.
-    signals: tuple[str, ...]
+    # Any *one* of these signals, on evidence at or above ``severity_floor``,
+    # fails the control.
+    signals: tuple[str, ...] = ()
+    # Conjunctions: every signal in a group must be present **on the same piece
+    # of evidence**. Several controls are written about a combination rather
+    # than a symptom — "an administrative service *reachable from an untrusted
+    # network*" is not "an administrative service" — and folding those into
+    # ``signals`` would fail PCI 1.2.1, CIS 4.6 and ISO A.8.20 in every estate
+    # that runs SSH on an internal host, which is every estate. It would also
+    # make PCI 11.3.2 (external scans) an exact duplicate of 11.3.1 (internal).
+    combinations: tuple[tuple[str, ...], ...] = ()
     requires: tuple[str, ...] = (SOURCE_FINDINGS,)
     severity_floor: str = "low"
     # Why this platform's evidence is relevant to this control — shown in the
@@ -52,11 +59,32 @@ class Control:
     rationale: str = ""
 
     def __post_init__(self) -> None:
-        unknown = [name for name in self.signals if name not in sig.SIGNALS]
+        unknown = sorted(set(self.all_signals) - set(sig.SIGNALS))
         if unknown:
             raise ValueError(f"{self.control_id}: unknown signals {unknown}")
-        if not self.signals:
+        if not self.signals and not self.combinations:
             raise ValueError(f"{self.control_id}: a control with no signals cannot be assessed")
+        for group in self.combinations:
+            if len(group) < 2:
+                raise ValueError(
+                    f"{self.control_id}: a one-signal combination is a plain signal"
+                )
+
+    @property
+    def all_signals(self) -> tuple[str, ...]:
+        """Every signal this control can be failed by, in any position."""
+
+        seen: list[str] = list(self.signals)
+        for group in self.combinations:
+            seen.extend(name for name in group if name not in seen)
+        return tuple(seen)
+
+    def matched_by(self, raised: set[str]) -> bool:
+        """Whether one piece of evidence's signals fail this control."""
+
+        if raised & set(self.signals):
+            return True
+        return any(set(group) <= raised for group in self.combinations)
 
 
 @dataclass(frozen=True)
@@ -89,7 +117,7 @@ _PCI_DSS_4_0 = Framework(
         Control(
             control_id="1.2.1",
             title="Network security controls restrict traffic to that which is necessary",
-            signals=(sig.EXPOSED_ADMIN_SERVICE, sig.INTERNET_EXPOSED),
+            combinations=((sig.EXPOSED_ADMIN_SERVICE, sig.INTERNET_EXPOSED),),
             rationale=(
                 "An administrative or database service observed on an internet-facing "
                 "asset is traffic the ruleset permits and the requirement does not."
@@ -149,9 +177,13 @@ _PCI_DSS_4_0 = Framework(
         Control(
             control_id="11.3.2",
             title="External vulnerability scans are performed and findings resolved",
-            signals=(sig.INTERNET_EXPOSED, sig.UNPATCHED_CVE),
+            combinations=((sig.INTERNET_EXPOSED, sig.UNPATCHED_CVE),),
             severity_floor="high",
-            rationale="Open critical and high CVEs on internet-facing services.",
+            rationale=(
+                "Open critical and high CVEs on services observed as internet-facing. "
+                "The conjunction is what keeps this from restating 11.3.1: an internal "
+                "CVE is not evidence about external scanning."
+            ),
         ),
         Control(
             control_id="12.5.1",
@@ -208,7 +240,7 @@ _CIS_V8 = Framework(
         Control(
             control_id="4.6",
             title="Securely manage enterprise assets and software",
-            signals=(sig.EXPOSED_ADMIN_SERVICE, sig.INTERNET_EXPOSED),
+            combinations=((sig.EXPOSED_ADMIN_SERVICE, sig.INTERNET_EXPOSED),),
             rationale="Management interfaces reachable from an untrusted network.",
         ),
         Control(
@@ -242,8 +274,13 @@ _CIS_V8 = Framework(
         Control(
             control_id="12.2",
             title="Establish and maintain a secure network architecture",
-            signals=(sig.INSECURE_PROTOCOL, sig.EXPOSED_ADMIN_SERVICE),
-            rationale="Legacy protocols and administrative services observed on the network.",
+            signals=(sig.INSECURE_PROTOCOL,),
+            combinations=((sig.EXPOSED_ADMIN_SERVICE, sig.INTERNET_EXPOSED),),
+            rationale=(
+                "Legacy protocols anywhere on the network, and administrative services "
+                "reachable from an untrusted one. An internal management port on its own "
+                "is architecture, not a defect."
+            ),
         ),
         Control(
             control_id="13.1",
@@ -311,7 +348,7 @@ _ISO_27001_2022 = Framework(
         Control(
             control_id="A.8.20",
             title="Networks security",
-            signals=(sig.EXPOSED_ADMIN_SERVICE, sig.INTERNET_EXPOSED),
+            combinations=((sig.EXPOSED_ADMIN_SERVICE, sig.INTERNET_EXPOSED),),
             rationale="Administrative services reachable from an untrusted network.",
         ),
         Control(

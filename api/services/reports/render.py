@@ -67,6 +67,20 @@ def _hex_to_rgb(value: str | None, fallback: tuple[int, int, int]) -> tuple[int,
         return fallback
 
 
+def _fmt_number(value: object) -> str:
+    """A number, or ``-`` when there is none.
+
+    ``value or "-"`` is the trap this exists to avoid: a contextual score of
+    0.0 is a real assessment, and rendering it as "no data" in the HTML while
+    the PDF prints 0.0 makes two renderings of one report disagree."""
+
+    return "-" if value is None else str(value)
+
+
+def _fmt_percent(value: object) -> str:
+    return "n/a" if value is None else f"{value}%"
+
+
 def _fmt_date(value: str | None) -> str:
     if not value:
         return "-"
@@ -275,7 +289,7 @@ def render_pdf(body: dict[str, Any]) -> bytes:
                         str(item.get("cve") or item.get("title") or ""),
                         str(item.get("asset_id") or ""),
                         str(item.get("severity") or ""),
-                        str(item.get("contextual_score") if item.get("contextual_score") is not None else "-"),
+                        _fmt_number(item.get("contextual_score")),
                         str(item.get("state") or ""),
                     ]
                     for item in findings
@@ -290,7 +304,11 @@ def render_pdf(body: dict[str, Any]) -> bytes:
         _title(pdf, "Asset coverage")
         _kv(pdf, "Assets", assets.get("total", 0))
         _kv(pdf, "Active", assets.get("active", 0))
-        _kv(pdf, "With an owner", f"{assets.get('with_owner', 0)} ({assets.get('owner_coverage_pct')}%)")
+        _kv(
+            pdf,
+            "With an owner",
+            f"{assets.get('with_owner', 0)} ({_fmt_percent(assets.get('owner_coverage_pct'))})",
+        )
         _kv(pdf, "Without an owner", assets.get("without_owner", 0))
         _kv(pdf, "With a business service", assets.get("with_business_service", 0))
 
@@ -411,7 +429,7 @@ def render_html(body: dict[str, Any]) -> str:
                 title=html.escape(str(item.get("cve") or item.get("title") or "")),
                 asset=html.escape(str(item.get("asset_id") or "")),
                 sev=html.escape(str(item.get("severity") or "")),
-                score=html.escape(str(item.get("contextual_score") or "-")),
+                score=html.escape(_fmt_number(item.get("contextual_score"))),
                 state=html.escape(str(item.get("state") or "")),
             )
             for item in body.get("top_findings") or []
@@ -432,7 +450,7 @@ def render_html(body: dict[str, Any]) -> str:
                     ("Active", assets.get("active", 0)),
                     ("With an owner", assets.get("with_owner", 0)),
                     ("Without an owner", assets.get("without_owner", 0)),
-                    ("Owner coverage", f"{assets.get('owner_coverage_pct')}%"),
+                    ("Owner coverage", _fmt_percent(assets.get("owner_coverage_pct"))),
                 ]
             )
             + "</table>"

@@ -102,6 +102,10 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
 
     evidence: list[_Evidence] = []
     with get_session(settings.postgres_url) as session:
+        # Only open findings are loaded, and the filter is in SQL rather than in
+        # the loop below: at 50,000 assets a compliance page that pulled every
+        # closed finding of every year into Python would be the slowest read in
+        # the product, and it is re-read on every framework switch.
         rows = session.execute(
             select(
                 models.Vulnerability.vuln_id,
@@ -116,8 +120,18 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
                 models.Vulnerability.due_at,
                 models.Vulnerability.exception_until,
                 models.Vulnerability.asset_id,
-            ).where(*vuln_filters)
+            ).where(*vuln_filters, models.Vulnerability.state.in_(sorted(vuln_states.ACTIVE)))
         ).all()
+        # Source availability is about the tenant having findings at all, not
+        # about having open ones — an estate whose findings were all closed has
+        # been assessed, and reporting every finding-based control as
+        # "not assessed" there would read as "we never looked".
+        findings_exist = (
+            session.execute(
+                select(func.count()).select_from(models.Vulnerability).where(*vuln_filters)
+            ).scalar()
+            or 0
+        )
 
         assets = session.execute(
             select(
@@ -138,7 +152,7 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
             .group_by(models.SoftwareCveMatch.status)
         ).all()
 
-    open_findings = 0
+    open_findings = len(rows)
     for row in rows:
         (
             vuln_id,
@@ -154,9 +168,6 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
             exception_until,
             asset_id,
         ) = row
-        if state not in vuln_states.ACTIVE:
-            continue
-        open_findings += 1
         finding = {
             "title": title,
             "cve": cve,
@@ -224,7 +235,7 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
             )
         )
 
-    available = {catalog.SOURCE_FINDINGS} if rows else set()
+    available = {catalog.SOURCE_FINDINGS} if findings_exist else set()
     if assets:
         available.add(catalog.SOURCE_ASSETS)
     if endpoint_counts:
@@ -247,6 +258,7 @@ def _assess_control(control: catalog.Control, collected: dict[str, Any]) -> dict
             "status": NOT_ASSESSED,
             "rationale": control.rationale,
             "signals": list(control.signals),
+            "combinations": [list(group) for group in control.combinations],
             "severity_floor": control.severity_floor,
             "failing_count": 0,
             "accepted_count": 0,
@@ -258,11 +270,10 @@ def _assess_control(control: catalog.Control, collected: dict[str, Any]) -> dict
             ),
         }
 
-    wanted = set(control.signals)
     failing: list[_Evidence] = []
     accepted = 0
     for item in collected["evidence"]:
-        if not (item.signals & wanted):
+        if not control.matched_by(item.signals):
             continue
         if not _meets_floor(item.severity, control.severity_floor):
             continue
@@ -278,6 +289,7 @@ def _assess_control(control: catalog.Control, collected: dict[str, Any]) -> dict
         "status": FAILED if failing else PASSED,
         "rationale": control.rationale,
         "signals": list(control.signals),
+        "combinations": [list(group) for group in control.combinations],
         "severity_floor": control.severity_floor,
         "failing_count": len(failing),
         "accepted_count": accepted,
@@ -347,11 +359,11 @@ def control_evidence(
         return None
     collected = _collect_evidence(settings, tenant_id)
     assessed = _assess_control(control, collected)
-    wanted = set(control.signals)
     items = [
         item
         for item in collected["evidence"]
-        if (item.signals & wanted) and _meets_floor(item.severity, control.severity_floor)
+        if control.matched_by(item.signals)
+        and _meets_floor(item.severity, control.severity_floor)
     ]
     items.sort(key=lambda item: SEVERITY_ORDER.get(item.severity, 0), reverse=True)
     assessed["evidence"] = [item.as_dict() for item in items]

@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import risk_snapshots
+from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services.compliance import service as compliance_service
 from api.services.reports import branding as branding_service
@@ -52,6 +53,10 @@ _DEFAULT_SECTIONS: dict[str, tuple[str, ...]] = {
 
 _TOP_FINDINGS = {"executive": 10, "technical": 50, "compliance": 10}
 _TREND_DAYS = 90
+# Snapshots are taken per run, not per day, so a limit equal to ``_TREND_DAYS``
+# would silently shorten the window to the last 90 *snapshots* — a few days on a
+# busy tenant, while the report still says "90 days".
+_TREND_MAX_POINTS = 1000
 
 
 def _now() -> datetime:
@@ -59,9 +64,17 @@ def _now() -> datetime:
 
 
 def enabled_sections(kind: str, sections: dict[str, Any] | None) -> list[str]:
+    """The kind's defaults, with the template's switches applied *in both
+    directions*.
+
+    An override that could only turn a section off would accept
+    ``{"top_findings": true}`` on an executive template and then silently not
+    render it — a setting the console offers, the API stores, and the report
+    ignores."""
+
     defaults = _DEFAULT_SECTIONS.get(kind, _DEFAULT_SECTIONS["executive"])
     overrides = sections or {}
-    return [key for key in SECTIONS if key in defaults and overrides.get(key, True)]
+    return [key for key in SECTIONS if bool(overrides.get(key, key in defaults))]
 
 
 def _asset_context(settings: Settings, tenant_id: str) -> dict[str, Any]:
@@ -127,7 +140,7 @@ def _trend(settings: Settings, tenant_id: str, now: datetime) -> list[dict[str, 
         settings,
         tenant_id=tenant_id,
         since=now - timedelta(days=_TREND_DAYS),
-        limit=_TREND_DAYS,
+        limit=_TREND_MAX_POINTS,
     )
     return [
         {
@@ -200,7 +213,11 @@ def build(
         rows, _total = vulns_service.list_vulnerabilities(
             settings,
             tenant_id=tenant_id,
-            states=["OPEN", "TRIAGED", "FIXING", "VERIFYING"],
+            # The lifecycle's own definition of open. A hand-written list drifts
+            # from it — the first one here contained "TRIAGED", which is not a
+            # state, and dropped ACKNOWLEDGED and PLANNED findings from the
+            # table while the KPI block above still counted them.
+            states=sorted(vuln_states.ACTIVE),
             limit=_TOP_FINDINGS.get(kind, 10),
             sort="contextual_score",
             order="desc",

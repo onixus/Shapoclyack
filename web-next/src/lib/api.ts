@@ -1908,6 +1908,8 @@ export type ComplianceControlStatus = {
   status: "passed" | "failed" | "not_assessed";
   rationale: string;
   signals: string[];
+  /** Signal groups that fail the control only together, on the same evidence. */
+  combinations: string[][];
   severity_floor: string;
   failing_count: number;
   accepted_count: number;

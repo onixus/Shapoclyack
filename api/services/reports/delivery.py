@@ -95,12 +95,23 @@ def _send_email(
             if settings.report_smtp_starttls:
                 try:
                     smtp.starttls()
-                except smtplib.SMTPException:
-                    # A relay that cannot do STARTTLS is a configuration
-                    # decision, not a delivery failure — but it is recorded,
-                    # because "the customer report went out in cleartext" is
-                    # something an operator has to be able to discover.
+                except (smtplib.SMTPException, OSError) as exc:
+                    # Refused: the message is *not* sent. Continuing would put
+                    # the relay password and the customer's whole vulnerability
+                    # report on the wire in cleartext, and record it as
+                    # delivered — the operator asked for TLS, so a failure to
+                    # get it is a delivery failure, not a downgrade to make
+                    # quietly on their behalf. An installation with a relay
+                    # that genuinely cannot do TLS sets
+                    # OCTO_REPORT_SMTP_STARTTLS=false and owns that choice.
                     LOG.warning("SMTP relay %s refused STARTTLS", settings.report_smtp_host)
+                    return _entry(
+                        recipient,
+                        "failed",
+                        f"relay refused STARTTLS ({type(exc).__name__}); refusing to send "
+                        "the report in cleartext. Set OCTO_REPORT_SMTP_STARTTLS=false to "
+                        "accept an unencrypted relay.",
+                    )
             if settings.report_smtp_username:
                 smtp.login(settings.report_smtp_username, settings.report_smtp_password)
             smtp.send_message(message)

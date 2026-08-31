@@ -1521,6 +1521,10 @@ class ComplianceControlStatus(BaseModel):
     status: str
     rationale: str = ""
     signals: list[str] = Field(default_factory=list)
+    #: Signal groups that fail the control only together, on the same piece of
+    #: evidence — "an admin service *on an internet-facing asset*". Shown next
+    #: to ``signals`` so a reader can tell which of the two a control uses.
+    combinations: list[list[str]] = Field(default_factory=list)
     severity_floor: str = "low"
     failing_count: int = 0
     accepted_count: int = 0

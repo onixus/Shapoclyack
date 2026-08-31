@@ -38,18 +38,30 @@ finding is recognised fixes it for every framework at once.
 | `stale_asset` | An asset the registry still carries but scans no longer see |
 | `unassessable_software` | Installed packages the advisory matcher returned `unknown` for |
 
-A control names the signals that fail it and a `severity_floor` below which a
-finding is evidence but not a failure — PCI DSS 6.3.3 is written about critical
+A control names the signals that fail it — either **any-of** (`signals`) or a
+**conjunction** (`combinations`, every signal in the group on the *same* piece of
+evidence) — and a `severity_floor` below which a finding is evidence but not a
+failure — PCI DSS 6.3.3 is written about critical
 and high vulnerabilities, and a control that went red on an informational
 banner would be red in every tenant forever and therefore read by nobody.
+
+The conjunctions are not a refinement, they are what keeps the page usable.
+PCI DSS 1.2.1, CIS 4.6 and ISO A.8.20 are written about an administrative
+service *reachable from an untrusted network*; failing them on any open SSH port
+would make them red in every estate that exists. PCI 11.3.2 is about external
+scanning, and without the conjunction it is an exact duplicate of 11.3.1. Note
+that a public IP address is **not** an exposure observation (see #171): the
+pairing needs `network_exposure=external`, which comes from the finding or from
+an operator's `exposure_level` decision.
 
 Three statuses:
 
 * **failed** — at least one piece of evidence at or above the floor;
 * **passed** — the control's data source exists and nothing failed it;
 * **not assessed** — the data source does not exist in this tenant (no assets,
-  no endpoint inventory). Excluded from the score, so an empty estate scores
-  nothing rather than 100%.
+  no endpoint inventory, no findings *at all*). Excluded from the score, so an
+  empty estate scores nothing rather than 100%. A tenant whose findings have all
+  been closed is assessed and passing, not unassessed: it was looked at.
 
 Only **open** findings count. A closed finding is evidence that the control
 worked. **Accepted risk** (a live `exception_until`) is reported per control as
@@ -122,7 +134,11 @@ month.
 ### Templates, schedules and delivery
 
 * **Templates** (`/api/reports/templates`, read `viewer`, write `operator`) —
-  kind, framework, and per-section switches.
+  kind, framework, and per-section switches. A switch works in both directions:
+  turning `top_findings` on in an executive template renders it. Deleting a
+  template a schedule still points at is refused with `409` — the row cascades,
+  so an operator would otherwise silently destroy an admin's recurring customer
+  delivery; delete the schedule first.
 * **Schedules** (`/api/reports/schedules`, **admin**) — a cron expression in
   UTC, an output format, and recipients. Admin because a schedule sends this
   tenant's findings to an address outside the installation on a recurring
@@ -131,7 +147,16 @@ month.
   attached, or `webhook` through the same SSRF-validated, DNS-pinned,
   no-redirect wire the event webhooks use. The target is re-validated on every
   send: a hostname that resolved publicly when the schedule was written can
-  resolve to link-local by the time it fires.
+  resolve to link-local by the time it fires. When `OCTO_REPORT_SMTP_STARTTLS`
+  is on and the relay refuses it, the message is **not sent** and the recipient's
+  entry says why: continuing would put the relay password and the customer's
+  whole vulnerability report on the wire in cleartext. An installation whose
+  relay genuinely cannot do TLS sets the flag to `false` and owns that.
+
+In a `PATCH`, a `null` field means "leave it alone". Clearing recipients is
+`[]`, which is a thing an operator can mean; `null` is what a form sends for a
+field it did not touch, and treating it as "deliver to nobody" would silently
+mute a customer's report.
 
 Each generated report records **one delivery entry per recipient** — transport,
 target, status, error. "Sent" is not true when three of four bounced, and the
@@ -193,7 +218,7 @@ not cover it.
 | `OCTO_REPORT_SMTP_PORT` | `25` | Relay port |
 | `OCTO_REPORT_SMTP_FROM` | *(empty)* | Envelope sender; required alongside the host |
 | `OCTO_REPORT_SMTP_USERNAME` / `OCTO_REPORT_SMTP_PASSWORD` | *(empty)* | Relay credentials; login is attempted only when a username is set |
-| `OCTO_REPORT_SMTP_STARTTLS` | `true` | Upgrade the connection. A relay that refuses is logged, and the report still goes |
+| `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than downgrading to cleartext |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
 
 The report relay is deliberately separate from the scanner's alert SMTP
