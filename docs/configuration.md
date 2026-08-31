@@ -16,20 +16,86 @@ Effective scanner settings are built from:
 API overrides are validated against the full scanner schema before persistence.
 Secrets are not exposed or editable from the Web UI.
 
+Validate a file before using it — the parse runs the same schema the pipeline
+does and starts no external tool:
+
+```bash
+python -m scanner.main --config scanner/config/default.yaml --validate-config
+```
+
+Exit code `0` means the file is accepted; `2` names the failing key.
+
+## Configuration file sections
+
+Every top-level key of the YAML, what it controls, and where it is described in
+full. The schema itself is `scanner/pipeline/config_schema.py` (`AppConfig`) —
+a wrongly typed or out-of-range value is refused at load, not at the stage that
+would have used it. An **unrecognized** key is ignored rather than refused, so a
+misspelled key silently keeps the default: validate, then check the effective
+value on the System page rather than assuming the file was applied.
+
+| Section | Controls | Detail |
+|---|---|---|
+| `runtime` | Speed profile, output/state/log directories, timeouts, retries, per-stage concurrency, `skip_nse` | [Profiles](#profiles), [Operations](operations.md) |
+| `profiles` | The named speed profiles `runtime.mode` selects | [Profiles](#profiles) |
+| `batching` | Splitting a large scope into IPv4-prefix batches | [Scan performance](scan-performance.md), [Architecture](architecture.md) |
+| `discovery` | Alive-host discovery: source, discovery profile, CT logs, brute force, Cloudflare, ASN, cloud resources, domain monitoring, delta | [Discovery modules](#discovery-modules), [Scan performance](scan-performance.md) |
+| `ports` | Port stage: protocol, port lists, UDP top-N, naabu scan type | [Protocol selection](#protocol-selection) |
+| `nse_profiles` | Named NSE script sets a speed profile can reference | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
+| `service_probe` | Service/version detection backend: `pulse` (default), `nmap`, `hybrid`, and shadow comparison | [Pulse backend](pulse-backend.md) |
+| `reporting` | Which report formats a run writes (Markdown, HTML, CSV, JSON, PDF) and the PDF's title/org | [Operations](operations.md), [Reports and compliance](reports-and-compliance.md) |
+| `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
+| `fingerprint` | HTTP fingerprinting of already-open web ports | [Scan performance](scan-performance.md) |
+| `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
+| `nuclei` | Nuclei stage: template directory, severities, caps, rate limit | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
+| `tls_posture` | Certificate expiry, hostname mismatch and TLS findings | [Pulse backend](pulse-backend.md) |
+| `org_profile` | Organization profile: ownership, related domains, DNS hygiene, mail posture, credential leaks, controls | [Модуль «Профиль организации»](org-profile-module.ru.md) (RU) |
+| `alerts` | Slack, Telegram and SMTP run summaries (`--notify`) | [Operations](operations.md) |
+| `defectdojo` | Export of findings to DefectDojo (`--export-defectdojo`) | [Operations](operations.md) |
+| `scheduler` | The scanner container's own cron loop, for single-tenant deployments | [Operations](operations.md) |
+
+Tenant-scoped scheduling in the API (`/api/schedules`) is a different mechanism
+from `scheduler:` and is the one to use in a multi-tenant install.
+
 ## Profiles
 
-Use a conservative profile for a new target set and increase concurrency only
-after observing coverage, target stability, and network impact.
+There are **two** profile settings, and they are not the same list. Mixing them
+up is the usual reason a run behaves unlike the one that was intended.
 
-| Profile | Discovery behavior | Recommended use |
+### Speed profile (`runtime.mode`, `--mode`)
+
+Picks one entry of the YAML's `profiles:` map: probe rates, top-ports count,
+timing and the NSE profile to run. Accepted values are `safe`, `balanced`
+(default) and `fast`; the shipped `default.yaml` also defines a `test` profile
+for the test suite, which `runtime.mode` does not accept.
+
+| `runtime.mode` | Behavior | Recommended use |
 |---|---|---|
-| `safe` | Lower rates and conservative external-tool settings | First scan, fragile or remote links |
+| `safe` | Lower rates, conservative external-tool settings, baseline NSE | First scan, fragile or remote links |
 | `balanced` | Normal rates and staged gap handling | Routine authorized scanning |
-| `fast` | Higher rate and reduced secondary work | Controlled, high-capacity environments |
-| `thorough` | Verification, ICMP, and fuller hostname work | Deep assessment with a larger window |
+| `fast` | Higher rates and reduced secondary work | Controlled, high-capacity environments |
 
-Profile names and exact values are defined in the active YAML. Do not treat the
-table as a fixed performance guarantee.
+### Discovery profile (`discovery.profile`)
+
+Picks how hard the discovery stage works within the chosen speed profile:
+a rate multiplier over it, plus verification, ICMP and reverse-hostname work.
+Accepted values are `auto` (default), `fast`, `balanced`, `thorough` and
+`custom`.
+
+| `discovery.profile` | Rate vs. speed profile | Verify | ICMP | Reverse DNS |
+|---|---|---|---|---|
+| `fast` | ×1.5 | no | no | no |
+| `balanced` | ×1.0 | no | no | no |
+| `thorough` | ×0.75 | yes | yes | yes |
+| `custom` | preset not applied — the `discovery.*` keys are used as written | — | — | — |
+
+`auto` derives the preset from `runtime.mode`: `fast` → `fast`,
+`balanced` → `balanced`, `safe` → `thorough`. So `safe` is the slower *and*
+the more exhaustive setting, which is why it is the right first run.
+
+Exact values are defined in the active YAML
+(`scanner/config/default.yaml`) and in `scanner/pipeline/discovery_profiles.py`.
+Do not treat the tables as a fixed performance guarantee.
 
 ## Input contract
 
@@ -49,11 +115,13 @@ list focused. Combined scans preserve protocol in intermediate and aggregate
 results.
 
 ```yaml
-scan:
-  protocol: tcp
+ports:
+  protocol: tcp        # tcp | udp | tcp_udp
+  top_udp_ports: 100
 ```
 
-Supported deployment/job options can select `tcp`, `udp`, or `both`.
+`tcp_udp` runs both and keeps the protocol on every port record, in the
+intermediate artifacts and in the aggregate.
 
 ## NSE and vulnerability checks
 
@@ -388,7 +456,7 @@ Service tokens (see [api-and-rbac.md](api-and-rbac.md#service-tokens)):
 | `OCTO_SERVICE_TOKEN_MAX_TTL_DAYS` | `365` | Ceiling on a requested lifetime. A credential with no expiry is one nobody rotates |
 | `OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS` | `300` | How often `last_used_at` may be rewritten. Without it a busy integration turns every request into a write to the hottest row in the table |
 
-Job leases and the reaper (see [architecture.md](architecture.md#leases)):
+Job leases and the reaper (see [architecture.md](architecture.md#leases-and-orphan-recovery)):
 
 | Variable | Default | Purpose |
 |---|---|---|

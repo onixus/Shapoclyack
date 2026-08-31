@@ -32,8 +32,12 @@ Kubernetes-приложение или как единый all-in-one конте
 | Сканирование | TCP/UDP, сервисы и ОС, NSE, Nuclei |
 | Обогащение | CVSS v4, EPSS, CISA KEV, GeoIP, ASN, TLS posture, fingerprinting |
 | Инвентарь | Активы между прогонами, идентификаторы, владелец, критичность, lifecycle, ПО endpoints |
+| Управление уязвимостями | Отслеживаемые находки со статусами, SLA и исключениями; риск по NIST SP 800-30; доска ремедиации с механической верификацией и двусторонней синхронизацией тикетов |
+| Патчинг endpoints | Установленное ПО сопоставляется с advisories вендоров и группируется в patch gap по пакету — с командой обновления |
+| Отчётность | Брендированная фабрика отчётов на тенант (executive, technical, compliance) в PDF, HTML или JSON, с доставкой по расписанию |
+| Compliance | Статус контролей PCI DSS 4.0, CIS Controls v8 и ISO/IEC 27001:2022 по данным самого тенанта |
 | Эксплуатация | Jobs, schedules, diff, alerts, reports, remote agents, resume |
-| Платформа | JWT RBAC, multi-tenancy, PostgreSQL, ClickHouse, NATS JetStream |
+| Платформа | JWT RBAC, OIDC SSO, service tokens, multi-tenancy, PostgreSQL, ClickHouse, NATS JetStream |
 | Развёртывание | Kubernetes/Kustomize (kind для локальной разработки) |
 
 Конвейер сканирования:
@@ -86,12 +90,16 @@ scripts/dev-down.sh
 
 Web UI включает:
 
-- дашборд текущей экспозиции и исторический trend;
+- обзор риска, дашборд экспозиции и исторический trend;
+- центр уязвимостей и доску ремедиации;
 - постоянный инвентарь и карточку актива;
-- граф поверхности атаки;
-- jobs, runs, findings и отчёты;
+- инвентарь endpoints, сопоставление ПО с CVE и patch gaps;
+- граф поверхности атаки и карту гео;
+- jobs, runs, findings, отчёты и фабрику отчётов;
+- статус compliance по выбранному фреймворку;
 - tenants и парк удалённых агентов;
-- статус компонентов и безопасные overrides конфигурации.
+- wordlists, service tokens, статус компонентов и безопасные overrides
+  конфигурации.
 
 Актуальные снимки и воспроизводимая процедура их обновления находятся в
 [docs/ui.md](docs/ui.md).
@@ -105,6 +113,8 @@ Web UI включает:
 | Профили и параметры | [Configuration](docs/configuration.md) |
 | API, JWT и роли | [API and RBAC](docs/api-and-rbac.md) |
 | Эксплуатация, resume, артефакты | [Operations](docs/operations.md) |
+| Отчёты и compliance | [Reports and compliance](docs/reports-and-compliance.md) |
+| Жизненный цикл уязвимости | [Vulnerability lifecycle](docs/vulnerability-lifecycle.md) |
 | Kubernetes | [k8s/README.md](k8s/README.md) |
 | Разработка и тесты | [Development](docs/development.md) |
 | Диагностика | [Troubleshooting](docs/troubleshooting.md) |

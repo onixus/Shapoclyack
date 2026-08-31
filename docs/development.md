@@ -6,7 +6,8 @@ review expectations for Shapoclyack changes.
 ## Toolchains
 
 - Python 3.12 for local development; CI also validates the supported matrix.
-- Node.js 24 or newer for `web-next/`.
+- Node.js 26 or newer for `web-next/` (`engines.node: ">=26"`; CI and the
+  image builders use `node:26-bookworm-slim`).
 - Go version declared in `recon/go.mod`.
 - Docker for image, smoke, load, and end-to-end validation.
 - `kubectl kustomize` or standalone Kustomize for manifest validation.

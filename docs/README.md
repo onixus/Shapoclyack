@@ -38,6 +38,7 @@ The roadmap is **planned product behavior**, not documentation of already-delive
 | [Software → CVE matching](software-cve-matching.md) | Endpoint inventory matched against vendor advisories; statuses, offline datasets, and what it does not cover |
 | [Reports and compliance](reports-and-compliance.md) | Branded report factory (templates, schedules, delivery) and PCI DSS / CIS / ISO 27001 control mapping, with what it deliberately does not claim |
 | [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD-ready audit trail |
+| [Asset identity](asset-identity.md) | When an IP observation and an FQDN observation are treated as one asset, and when they deliberately are not |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
 
@@ -60,8 +61,12 @@ The roadmap is **planned product behavior**, not documentation of already-delive
 | [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md) | Planned VM/Exposure Management UI and backend dependencies |
 | [Endpoint inventory design record](../Agent_plan.md) | Lariska integration history and design decisions; not the general product roadmap |
 | [Roadmap](../ROADMAP.md) | Product delivery phases and remaining work |
-| [ProjectDiscovery integration concept](projectdiscovery-integration-concept.md) | Architecture concept and scenarios for expanding ProjectDiscovery tools |
+| [ProjectDiscovery integration concept](projectdiscovery-integration-concept.md) 🇷🇺 | Architecture concept and scenarios for expanding ProjectDiscovery tools |
+| [Организационный профиль (org_profile)](org-profile-module.ru.md) 🇷🇺 | Design record for the organization-profile module: ownership, related domains, DNS hygiene, mail posture, credential leaks, controls |
 | [Changelog](../CHANGELOG.md) | Released and unreleased behavior changes |
+
+Guides marked 🇷🇺 are written in Russian; everything else is English. The two
+READMEs are the only pair kept in both languages.
 
 ## Source-of-truth rules
 

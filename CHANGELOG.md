@@ -265,6 +265,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **`python -m scanner.main --validate-config` exists.** Two guides told the
+  operator to run it before a first scan; the flag had never been implemented,
+  so the documented pre-flight check failed with an argparse error. It now
+  parses the file through the same schema the pipeline uses, starts no external
+  tool, prints the offending key on failure and exits `2` — which is what
+  `docs/getting-started.md` and `docs/configuration.md` already claimed.
+
+- **Documentation pass over `main`.** Corrections rather than new prose, each
+  against the code:
+  - `docs/configuration.md` conflated the two profile settings into one table
+    that listed a `thorough` speed profile — `runtime.mode` accepts only
+    `safe`/`balanced`/`fast`, and `thorough` is a `discovery.profile` preset.
+    Both are now documented separately, with the `auto` mapping between them.
+  - the protocol example named a `scan:` section that does not exist and a
+    `both` value that no code accepts; the key is `ports.protocol`, and the
+    combined value is `tcp_udp`.
+  - a map of every top-level config section and where it is documented, plus
+    the fact that an unrecognized key is *ignored* rather than refused.
+  - `docs/ui.md` was missing `/compliance`, `/wordlists` and `/service-tokens`
+    entirely, and the report factory, patch-gap panel and the Verify action.
+  - `docs/vulnerability-lifecycle.md` still said there was no ticket-status
+    sync and that `VERIFYING → CLOSED` was manual; it now documents mechanical
+    verification, `machine_verified`, the closure reasons and the new event
+    kinds.
+  - the Track E gap table still listed SSO and the closed loop as missing after
+    both had landed.
+  - Node.js is 26, not 24 (`engines.node`, CI, and both builder images).
+  - `docs/projectdiscovery-integration-concept.md` linked its own repository
+    through `file:///Users/…` absolute paths, and neither Russian-language
+    guide was labelled as such in the documentation index.
+
 - **Controls matrix reads versions, not banners.** A banner counts as
   disclosing a version only when it carries a digit-dotted token
   (`nginx/1.24.0`), not a bare product name (`nginx`). The matrix previously
