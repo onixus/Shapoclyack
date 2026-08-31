@@ -67,6 +67,65 @@ class User(Base):
     disabled_at: Mapped[datetime | None] = mapped_column(default=None)
     password_changed_at: Mapped[datetime | None] = mapped_column(default=None)
     created_by: Mapped[str | None] = mapped_column(default=None)
+    # Federated identity (migration 0026, ROADMAP Track E). ``email`` is the
+    # only thing an existing local account can be auto-linked by, and only when
+    # ``email_verified`` is true *and* the provider asserts the same address as
+    # verified: an unverified address is a claim the user typed, so linking on
+    # it would let anyone who can register that address at the IdP take over a
+    # console account. ``oidc_issuer``/``oidc_subject`` are the durable
+    # identifier once linked — an email can be reassigned, ``sub`` cannot.
+    email: Mapped[str | None] = mapped_column(default=None, index=True)
+    email_verified: Mapped[bool] = mapped_column(default=False)
+    oidc_issuer: Mapped[str | None] = mapped_column(default=None)
+    oidc_subject: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
+    )
+
+
+class ServiceToken(Base):
+    """A non-interactive API credential, scoped to one tenant (Track E).
+
+    Issued by a platform admin for automation — a CI job pulling findings, a
+    SIEM forwarder — so that integrations stop being run under a human's
+    password. Three properties carry the security value:
+
+    * **Only a hash is stored.** ``token_hash`` uses the same passlib context
+      as :class:`User` and :class:`ProvisioningKey`; the plaintext exists once,
+      in the creation response, and is never recoverable afterwards.
+    * **``role`` is a ceiling, not a grant.** A token authenticates as a
+      principal whose role inside ``tenant_id`` is exactly this value, and
+      ``scopes`` narrows it further. Neither can exceed what the role allows,
+      and no membership row can raise it.
+    * **It expires.** ``expires_at`` is required — a credential that lives
+      forever is one nobody rotates — and ``revoked_at`` is the immediate kill
+      switch that does not wait for it.
+
+    ``token_prefix`` is the non-secret, indexed public half of the credential
+    (``octo_st_<16 hex>``): it identifies which row to bcrypt-verify against
+    without turning authentication into a scan of every token, and it is what
+    the UI shows so an admin can recognise a token they cannot read.
+    """
+
+    __tablename__ = "service_tokens"
+
+    token_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(default="")
+    token_prefix: Mapped[str] = mapped_column(unique=True, index=True)
+    token_hash: Mapped[str]
+    # Space-separated ``resource:action`` grants; see api/services/service_tokens.py.
+    scopes: Mapped[str] = mapped_column(default="")
+    # viewer | operator | admin — the role this token acts with in its tenant.
+    role: Mapped[str] = mapped_column(default="viewer")
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class UserTenant(Base):
@@ -432,39 +491,6 @@ class EndpointSoftwareChange(Base):
     )
 
 
-class EndpointSoftwareAdvisory(Base):
-    """CVE / OSV security advisory matching an installed endpoint software item (Sprint 3)."""
-
-    __tablename__ = "endpoint_software_advisories"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(index=True)
-    device_id: Mapped[str] = mapped_column(
-        ForeignKey("endpoint_devices.device_id", ondelete="CASCADE"), index=True
-    )
-    asset_id: Mapped[str | None] = mapped_column(
-        ForeignKey("assets.asset_id", ondelete="SET NULL"), index=True, default=None
-    )
-    software_name: Mapped[str]
-    installed_version: Mapped[str | None] = mapped_column(default=None)
-    fixed_version: Mapped[str | None] = mapped_column(default=None)
-    purl: Mapped[str | None] = mapped_column(default=None)
-    cpe: Mapped[str | None] = mapped_column(default=None)
-    cve: Mapped[str] = mapped_column(index=True)
-    advisory_id: Mapped[str | None] = mapped_column(default=None)
-    severity: Mapped[str] = mapped_column(default="medium")  # low | medium | high | critical
-    cvss: Mapped[float | None] = mapped_column(default=None)
-    title: Mapped[str | None] = mapped_column(default=None)
-    vuln_id: Mapped[str | None] = mapped_column(default=None)
-    matched_at: Mapped[datetime]
-
-    __table_args__ = (
-        UniqueConstraint(
-            "device_id", "software_name", "cve", name="uq_endpoint_software_advisory"
-        ),
-    )
-
-
 class WebhookSubscription(Base):
     """Outbound webhook for asset events (ROADMAP P2 / Phase 10.3).
 
@@ -714,10 +740,16 @@ class Vulnerability(Base):
     ticket_system: Mapped[str | None] = mapped_column(default=None)
     ticket_key: Mapped[str | None] = mapped_column(default=None)
     ticket_url: Mapped[str | None] = mapped_column(default=None)
-    # Verification & Closure reason (Sprint 2 Remediation Loop)
+    # Closed-loop remediation (#183). ``machine_verified`` is only ever set by
+    # the ingest path in api/services/vulnerabilities.py, never from a request
+    # body: the whole value of the metric is that it cannot be self-attested.
     machine_verified: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # The job dispatched to re-check this finding. The closure is gated on the
+    # run that job produced, so an unrelated scan touching the same asset can
+    # never close a finding as verified.
     verification_job_id: Mapped[str | None] = mapped_column(default=None)
     last_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+    # verified_remediated | manual | ticket_resolved.
     closure_reason: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
@@ -726,6 +758,8 @@ class Vulnerability(Base):
         # Identity: re-observing a finding must find this row, and two API
         # replicas ingesting the same run must not create it twice.
         UniqueConstraint("tenant_id", "finding_key", name="uq_vulnerability_finding"),
+        # Ingest asks "which findings were waiting on this run?".
+        Index("ix_vulnerabilities_verification_job", "verification_job_id"),
         # The SLA queries: one tenant's still-open findings by deadline.
         Index("ix_vulnerabilities_due", "tenant_id", "state", "due_at"),
         # The Vulnerability Center's default view: worst first within a tenant.
@@ -1085,44 +1119,67 @@ class TenantScanScope(Base):
     )
 
 
-class ServiceToken(Base):
-    """Scoped API keys for non-interactive integrations and CI/CD (Sprint 1 IAM)."""
+class SoftwareCveMatch(Base):
+    """One statement about one CVE on one endpoint (ROADMAP Track E, M1).
 
-    __tablename__ = "service_tokens"
+    Produced by ``api/services/software_cve_match.py`` from the endpoint's
+    latest accepted inventory snapshot and a vendor advisory dataset. Rows are
+    replaced wholesale per device on every run, so the table always describes
+    the current snapshot rather than accumulating history — the snapshot the
+    statement came from is recorded in ``snapshot_id``.
 
-    id: Mapped[str] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    key_prefix: Mapped[str] = mapped_column(index=True)
-    key_hash: Mapped[str]
+    Two columns exist because a match must be able to say "I do not know".
+    ``status`` carries ``unknown`` alongside vulnerable/fixed/not_applicable,
+    and ``unknown_reason`` names what was missing (an unresolved distribution, a
+    package from a non-distribution source). An ``unknown`` row has no CVE, so
+    ``cve_id`` is the empty string rather than NULL and ``match_key`` — a
+    sha256 over ``(cve_id, source_package, unknown_reason)`` — carries the row's
+    identity, because a unique constraint over a nullable column constrains
+    nothing in Postgres.
+    """
+
+    __tablename__ = "software_cve_matches"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[str] = mapped_column(
         ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
     )
-    role: Mapped[str] = mapped_column(default="viewer")
-    scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
-    created_at: Mapped[datetime]
-    created_by: Mapped[str | None] = mapped_column(default=None)
-    expires_at: Mapped[datetime | None] = mapped_column(default=None)
-    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
-    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
-
-
-class OIDCIdentity(Base):
-    """External OpenID Connect identity linked to a local console user (Sprint 1 IAM)."""
-
-    __tablename__ = "oidc_identities"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_devices.device_id", ondelete="CASCADE"), index=True
     )
-    issuer: Mapped[str]
-    subject: Mapped[str]
-    email: Mapped[str | None] = mapped_column(default=None)
-    claims: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime]
-    last_login_at: Mapped[datetime | None] = mapped_column(default=None)
+    snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    match_key: Mapped[str]
+    # "" for an unknown row — see the class docstring.
+    cve_id: Mapped[str] = mapped_column(default="")
+    # vulnerable | fixed | not_applicable | unknown
+    status: Mapped[str] = mapped_column(default="unknown")
+    # The vendor's own word, never a CVSS score re-derived here.
+    severity: Mapped[str] = mapped_column(default="unknown")
+    source_package: Mapped[str] = mapped_column(default="")
+    installed_package: Mapped[str] = mapped_column(default="")
+    installed_version: Mapped[str | None] = mapped_column(default=None)
+    fixed_version: Mapped[str | None] = mapped_column(default=None)
+    advisory_id: Mapped[str | None] = mapped_column(default=None)
+    advisory_url: Mapped[str | None] = mapped_column(default=None)
+    provider: Mapped[str] = mapped_column(default="")
+    distro: Mapped[str | None] = mapped_column(default=None)
+    distro_release: Mapped[str | None] = mapped_column(default=None)
+    purl: Mapped[str | None] = mapped_column(default=None)
+    cpe23: Mapped[str | None] = mapped_column(default=None)
+    unknown_reason: Mapped[str | None] = mapped_column(default=None)
+    # The date the advisory feed stamped on itself, not the file's mtime.
+    feed_date: Mapped[str | None] = mapped_column(default=None)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    matched_at: Mapped[datetime]
 
     __table_args__ = (
-        UniqueConstraint("issuer", "subject", name="uq_oidc_issuer_subject"),
+        Index(
+            "ix_software_cve_matches_tenant_device_cve",
+            "tenant_id",
+            "device_id",
+            "cve_id",
+        ),
+        UniqueConstraint(
+            "tenant_id", "device_id", "match_key", name="uq_software_cve_match_row"
+        ),
     )
-

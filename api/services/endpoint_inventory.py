@@ -410,20 +410,6 @@ def ingest_snapshot(
         if count:
             metrics_service.ENDPOINT_SOFTWARE_CHANGES_TOTAL.labels(event_type).inc(count)
 
-    # Sprint 3: Match installed software against CVE/OSV advisories
-    try:
-        from api.services import software_matcher
-
-        software_matcher.match_device_software(
-            settings, tenant_id=tenant_id, device_id=response["device_id"]
-        )
-    except Exception:  # noqa: BLE001
-        _log.warning(
-            "Failed to match software advisories for device %s",
-            response["device_id"],
-            exc_info=True,
-        )
-
     # Phase S8: publish accepted endpoint inventory summary to NATS (fail-soft)
     if settings.endpoint_nats_events_enabled and settings.nats_url:
         try:

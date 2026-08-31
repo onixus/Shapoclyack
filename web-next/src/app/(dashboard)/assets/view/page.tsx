@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, RefreshCw, ShieldAlert } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -31,15 +31,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EntityList } from "@/components/run/entity-list";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
+import { SoftwareCvePanel } from "@/components/endpoint/software-cve-panel";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { useAssetContextEvents, useAssetDetail, useUpdateAsset } from "@/hooks/use-assets";
 import { useTrackedVulnerabilities } from "@/hooks/use-vulnerabilities";
 import {
   useAssetSoftware,
-  useDeviceAdvisories,
   useEndpointDeviceChanges,
   useEndpointDevicesForAsset,
-  useTriggerDeviceMatch,
 } from "@/hooks/use-endpoint-inventory";
 import { useRunHosts, useRunPorts, useRuns, useRunVulns } from "@/hooks/use-runs";
 import { useAuthStore } from "@/lib/auth-store";
@@ -298,12 +297,22 @@ function AssetDetailInner() {
 
             <TabsContent value="software" className="space-y-3 pt-3">
               {device ? (
-                <SoftwareTab
-                  device={device}
-                  software={software}
-                  isLoading={softwareQuery.isLoading}
-                  tenantId={tenantId}
-                />
+                <>
+                  {/* Vendor-advisory CVE matches for this endpoint's packages
+                      (ROADMAP Track E M1) — above the raw inventory, since
+                      "what is wrong here" outranks "what is installed here". */}
+                  <SoftwareCvePanel
+                    deviceId={device.device_id}
+                    tenantId={tenantId}
+                    canOperate={canOperate}
+                  />
+                  <SoftwareTab
+                    device={device}
+                    software={software}
+                    isLoading={softwareQuery.isLoading}
+                    tenantId={tenantId}
+                  />
+                </>
               ) : (
                 <EmptyNote>
                   No Lariska agent is correlated to this asset yet — software inventory appears
@@ -670,22 +679,7 @@ function SoftwareTab({
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<"name" | "version" | "publisher" | "source">("name");
   const changesQuery = useEndpointDeviceChanges(device.device_id, tenantId);
-  const advisoriesQuery = useDeviceAdvisories(device.device_id);
-  const matchMutation = useTriggerDeviceMatch(device.device_id);
-
   const recentChanges = (changesQuery.data || []).filter((c) => c.snapshot_id === device.latest_snapshot_id);
-  const advisories = useMemo(() => advisoriesQuery.data || [], [advisoriesQuery.data]);
-
-  const advisoryBySoftware = useMemo(() => {
-    const map = new Map<string, typeof advisories>();
-    for (const adv of advisories) {
-      const key = adv.software_name.toLowerCase();
-      const existing = map.get(key) || [];
-      existing.push(adv);
-      map.set(key, existing);
-    }
-    return map;
-  }, [advisories]);
 
   const filtered = software
     .filter((item) => !query.trim() || item.name.toLowerCase().includes(query.trim().toLowerCase()))
@@ -693,44 +687,7 @@ function SoftwareTab({
     .sort((a, b) => (a[sortKey] || "").localeCompare(b[sortKey] || ""));
 
   return (
-    <div className="space-y-4">
-      {/* Advisories Banner */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-3.5 shadow-sm">
-        <div className="flex items-center gap-2.5">
-          <ShieldAlert className={`h-5 w-5 ${advisories.length > 0 ? "text-rose-400" : "text-emerald-400"}`} />
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-slate-100">Security Advisories (OSV / CVE)</span>
-              <Badge
-                className={
-                  advisories.length > 0
-                    ? "bg-rose-500/20 text-rose-300 border-rose-500/40 text-[10px]"
-                    : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40 text-[10px]"
-                }
-              >
-                {advisories.length} {advisories.length === 1 ? "advisory" : "advisories"}
-              </Badge>
-            </div>
-            <p className="text-[11px] text-slate-400">
-              {advisories.length > 0
-                ? `${advisoryBySoftware.size} installed packages have known security vulnerabilities.`
-                : "No known package vulnerabilities detected in current inventory."}
-            </p>
-          </div>
-        </div>
-
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={matchMutation.isPending}
-          onClick={() => matchMutation.mutate()}
-          className="border-slate-700 bg-slate-950 text-xs text-sky-300 hover:bg-slate-800 gap-1.5 h-7"
-        >
-          <RefreshCw className={`h-3 w-3 ${matchMutation.isPending ? "animate-spin" : ""}`} />
-          {matchMutation.isPending ? "Matching…" : "Re-scan Advisories"}
-        </Button>
-      </div>
-
+    <div className="space-y-3">
       {recentChanges.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold text-slate-400">Since previous snapshot:</span>
@@ -768,46 +725,19 @@ function SoftwareTab({
                     {col}
                   </th>
                 ))}
-                <th className="px-3.5 py-3">Security & Patch Gap</th>
                 <th className="px-3.5 py-3">Architecture</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {filtered.map((item, idx) => {
-                const itemAdvisories = advisoryBySoftware.get(item.name.toLowerCase()) || [];
-                return (
-                  <tr key={`${item.name}-${item.version}-${idx}`} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="px-3.5 py-3 font-semibold text-slate-200">{item.name}</td>
-                    <td className="px-3.5 py-3 font-mono text-slate-300">{item.version || "—"}</td>
-                    <td className="px-3.5 py-3 text-slate-300">{item.publisher || "—"}</td>
-                    <td className="px-3.5 py-3 text-slate-300">{item.source}</td>
-                    <td className="px-3.5 py-3">
-                      {itemAdvisories.length > 0 ? (
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {itemAdvisories.map((adv) => (
-                            <span
-                              key={adv.cve}
-                              title={`${adv.cve} (${adv.severity.toUpperCase()}${adv.cvss ? ` - CVSS ${adv.cvss}` : ""})${adv.fixed_version ? ` · Fixed in: ${adv.fixed_version}` : ""}`}
-                              className="inline-flex items-center gap-1 rounded bg-rose-500/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-rose-300 border border-rose-500/40"
-                            >
-                              <ShieldAlert className="h-2.5 w-2.5" />
-                              {adv.cve}
-                              {adv.fixed_version && (
-                                <span className="rounded bg-emerald-500/20 text-emerald-300 px-1 text-[9px]">
-                                  fix: {adv.fixed_version}
-                                </span>
-                              )}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-slate-500 text-[11px]">Clean</span>
-                      )}
-                    </td>
-                    <td className="px-3.5 py-3 text-slate-300">{item.architecture || "—"}</td>
-                  </tr>
-                );
-              })}
+              {filtered.map((item, idx) => (
+                <tr key={`${item.name}-${item.version}-${idx}`} className="hover:bg-slate-800/40 transition-colors">
+                  <td className="px-3.5 py-3 font-semibold text-slate-200">{item.name}</td>
+                  <td className="px-3.5 py-3 font-mono text-slate-300">{item.version || "—"}</td>
+                  <td className="px-3.5 py-3 text-slate-300">{item.publisher || "—"}</td>
+                  <td className="px-3.5 py-3 text-slate-300">{item.source}</td>
+                  <td className="px-3.5 py-3 text-slate-300">{item.architecture || "—"}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

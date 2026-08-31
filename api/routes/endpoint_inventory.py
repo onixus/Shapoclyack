@@ -7,7 +7,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
+from api.auth import (
+    AgentPrincipal,
+    Role,
+    TenantPrincipal,
+    get_settings,
+    require_agent,
+    require_tenant,
+)
 from api.schemas import (
     EndpointDeviceInfo,
     EndpointInventoryResponse,
@@ -15,15 +22,19 @@ from api.schemas import (
     EndpointSnapshotSummary,
     EndpointSoftwareChangeFeedItem,
     EndpointSoftwareChangeInfo,
-    PatchGapSummary,
-    SoftwareAdvisoryInfo,
+    SoftwareCveMatchInfo,
+    SoftwareCveMatchRunSummary,
+    SoftwareCveMatchSummary,
+    SoftwareCveMatchTenantRunSummary,
 )
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import metrics as metrics_service
-from api.services import software_matcher
+from api.services import software_cve_match as cve_match_service
 from api.settings import Settings
 
 router = APIRouter(prefix="/endpoint", tags=["endpoint-inventory"])
+
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 @router.post("/inventory", response_model=EndpointInventoryResponse)
@@ -118,41 +129,93 @@ def list_recent_changes(
     )
 
 
-@router.get("/devices/{device_id}/advisories", response_model=list[SoftwareAdvisoryInfo])
-def list_device_advisories(
+# ---------------------------------------------------------------------------
+# Software→CVE matching (ROADMAP Track E, M1)
+#
+# Reads need ``viewer`` like every other endpoint-inventory read. Re-running the
+# matcher needs ``operator``: it is not a mutation an operator can regret — the
+# rows are derived and get replaced wholesale — but it walks every package on
+# every device in the tenant, so it is a workload rather than a query, and the
+# neighbouring "do work now" routes (``POST /vulnerabilities/risk-history/
+# snapshot``) draw the line in the same place.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cve-matches/summary", response_model=SoftwareCveMatchSummary)
+def cve_match_summary(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+) -> dict:
+    """Tenant tallies, plus the provenance of the advisory data behind them."""
+    return cve_match_service.summary(settings, tenant_id=principal.tenant_id)
+
+
+@router.get("/cve-matches", response_model=list[SoftwareCveMatchInfo])
+def list_cve_matches(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+    match_status: Annotated[
+        str | None, Query(pattern="^(vulnerable|fixed|not_applicable|unknown)$")
+    ] = None,
+    severity: Annotated[str | None, Query(max_length=32)] = None,
+    cve: Annotated[str | None, Query(max_length=32)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[dict]:
+    """Every match in the tenant, worst status first."""
+    return cve_match_service.list_for_tenant(
+        settings,
+        tenant_id=principal.tenant_id,
+        status=match_status,
+        severity=severity,
+        cve_id=cve,
+        limit=limit,
+    )
+
+
+@router.post("/cve-matches/refresh", response_model=SoftwareCveMatchTenantRunSummary)
+def refresh_tenant_cve_matches(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict:
+    """Re-run the matcher over every device in the tenant."""
+    return cve_match_service.run_for_tenant(settings, tenant_id=principal.tenant_id)
+
+
+@router.get(
+    "/devices/{device_id}/cve-matches", response_model=list[SoftwareCveMatchInfo]
+)
+def list_device_cve_matches(
     device_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
-    settings: Annotated[Settings, Depends(get_settings)],
+    settings: SettingsDep,
+    match_status: Annotated[
+        str | None, Query(pattern="^(vulnerable|fixed|not_applicable|unknown)$")
+    ] = None,
+    severity: Annotated[str | None, Query(max_length=32)] = None,
 ) -> list[dict]:
-    """List CVE/OSV security advisories detected on a device."""
-    return software_matcher.get_device_advisories(settings, principal.tenant_id, device_id)
+    if endpoint_inventory_service.get_device(principal.tenant_id, device_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+    return cve_match_service.list_for_device(
+        settings,
+        tenant_id=principal.tenant_id,
+        device_id=device_id,
+        status=match_status,
+        severity=severity,
+    )
 
 
-@router.post("/devices/{device_id}/match", response_model=list[SoftwareAdvisoryInfo])
-def match_device_advisories(
+@router.post(
+    "/devices/{device_id}/cve-matches/refresh", response_model=SoftwareCveMatchRunSummary
+)
+def refresh_device_cve_matches(
     device_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> list[dict]:
-    """Force re-evaluation of installed software on a device against security advisories."""
-    return software_matcher.match_device_software(settings, principal.tenant_id, device_id)
-
-
-@router.get("/patch-gaps", response_model=PatchGapSummary)
-def get_tenant_patch_gaps(
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
-    settings: Annotated[Settings, Depends(get_settings)],
+    settings: SettingsDep,
 ) -> dict:
-    """Tenant-wide patch gap summary and upgrade actionable items."""
-    return software_matcher.compute_patch_gaps(settings, principal.tenant_id)
-
-
-@router.get("/devices/{device_id}/patch-gap", response_model=PatchGapSummary)
-def get_device_patch_gap(
-    device_id: str,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> dict:
-    """Device-specific patch gap metrics and remediation commands."""
-    return software_matcher.compute_patch_gaps(settings, principal.tenant_id, device_id=device_id)
-
+    """Re-run the matcher for one device against the advisory data on disk."""
+    result = cve_match_service.run_for_device(
+        settings, tenant_id=principal.tenant_id, device_id=device_id
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+    return result

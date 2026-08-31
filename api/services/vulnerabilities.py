@@ -58,6 +58,10 @@ from scanner.pipeline.report import SEVERITY_ORDER
 
 LOG = logging.getLogger("shapoclyack.vulnerabilities")
 
+
+class VerificationDispatchError(RuntimeError):
+    """A verification scan could not be started, so the finding stays put."""
+
 #: Fallback remediation windows, in days, when the tenant has no matching
 #: ``sla_policies`` row. Roughly the shape most published remediation standards
 #: settle on (CISA BOD 22-01's 15 days for KEV criticals being the strictest
@@ -87,6 +91,11 @@ VULN_EVENT_KINDS = (
     "comment",
     "ticket_set",
     "ticket_cleared",
+    # Closed-loop remediation (#183).
+    "verification_started",
+    "verification_passed",
+    "verification_failed",
+    "ticket_synced",
 )
 
 TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
@@ -103,6 +112,10 @@ class RegisterStats:
     reobserved: int
     reopened: int
     skipped_unknown_asset: int
+    # Findings this run was dispatched to re-check, and how it went. Zero for
+    # any run that was not a verification run.
+    verification_passed: int = 0
+    verification_failed: int = 0
 
 
 def _now() -> datetime:
@@ -422,6 +435,28 @@ def _asset_for_finding(session: Any, *, tenant_id: str, host: str) -> models.Ass
     return None
 
 
+def _run_verifies_anything(settings: Settings, *, run_id: str, tenant_id: str) -> bool:
+    """Is any finding waiting on the job that produced this run?
+
+    Asked only when a run carried no findings at all, which for a verification
+    run is the outcome that closes the loop.
+    """
+    with get_session(settings.postgres_url) as session:
+        return (
+            session.scalar(
+                select(func.count())
+                .select_from(models.Vulnerability)
+                .join(models.Job, models.Job.job_id == models.Vulnerability.verification_job_id)
+                .where(
+                    models.Vulnerability.tenant_id == tenant_id,
+                    models.Vulnerability.state == vuln_states.VERIFYING,
+                    models.Job.run_id == run_id,
+                )
+            )
+            or 0
+        ) > 0
+
+
 def register_findings_from_run(
     settings: Settings, *, tenant_id: str, run_id: str
 ) -> RegisterStats:
@@ -433,8 +468,12 @@ def register_findings_from_run(
     paths (local scan, agent upload) can be retried.
     """
     entries = _run_findings(settings, run_id)
-    if not entries:
+    if not entries and not _run_verifies_anything(settings, run_id=run_id, tenant_id=tenant_id):
         return RegisterStats(0, 0, 0, 0, 0)
+
+    # A verification run that finds nothing is the *success* case — it is the
+    # scan reporting the finding is gone — so an empty run still has to reach
+    # the verification block below.
 
     scorer = get_scorer()
     run_dir = runs_service.get_run_dir(settings, run_id)
@@ -443,6 +482,7 @@ def register_findings_from_run(
     )
     now = _now()
     created = reobserved = reopened = skipped = 0
+    verification_passed = verification_failed = 0
 
     with get_session(settings.postgres_url) as session:
         resolved: list[tuple[dict[str, Any], Any]] = []
@@ -606,20 +646,30 @@ def register_findings_from_run(
                     detail={"run_id": run_id, "severity": severity},
                 )
 
-        # Evaluate pending verification scans for this tenant's assets
-        scanned_asset_ids = {asset.asset_id for _, asset in resolved}
-        if scanned_asset_ids:
-            verifying_rows = session.scalars(
+        # Close the loop, but only for the findings this run was dispatched to
+        # re-check. Gating on ``verification_job_id`` rather than on "some scan
+        # touched the asset" is the whole safety property: a routine recon run
+        # that never probed the affected port must not be allowed to assert
+        # that the finding is gone.
+        verification_jobs = {
+            job_id
+            for (job_id,) in session.execute(
+                select(models.Job.job_id).where(models.Job.run_id == run_id)
+            )
+        }
+        if verification_jobs:
+            awaiting = session.scalars(
                 select(models.Vulnerability).where(
                     models.Vulnerability.tenant_id == tenant_id,
                     models.Vulnerability.state == vuln_states.VERIFYING,
-                    models.Vulnerability.asset_id.in_(scanned_asset_ids),
+                    models.Vulnerability.verification_job_id.in_(verification_jobs),
                 )
             ).all()
 
-            for v_row in verifying_rows:
+            for v_row in awaiting:
                 if v_row.last_seen_run_id == run_id:
-                    # Vulnerability was STILL observed in this run -> Verification failed!
+                    # Still there: the fix did not take. Back to FIXING, and the
+                    # bounce is on the record.
                     v_row.state = vuln_states.FIXING
                     v_row.state_changed_at = now
                     v_row.state_changed_by = "system:verification"
@@ -634,11 +684,12 @@ def register_findings_from_run(
                         from_state=vuln_states.VERIFYING,
                         to_state=vuln_states.FIXING,
                         actor="system:verification",
-                        note=f"Vulnerability still detected in verification run {run_id}",
-                        detail={"run_id": run_id},
+                        note=f"Still observed by verification run {run_id}",
+                        detail={"run_id": run_id, "job_id": v_row.verification_job_id},
                     )
+                    verification_failed += 1
                 else:
-                    # Vulnerability was NOT observed in this run -> Verification passed!
+                    # The run that was sent to look for it did not find it.
                     v_row.state = vuln_states.CLOSED
                     v_row.state_changed_at = now
                     v_row.state_changed_by = "system:verification"
@@ -656,9 +707,15 @@ def register_findings_from_run(
                         from_state=vuln_states.VERIFYING,
                         to_state=vuln_states.CLOSED,
                         actor="system:verification",
-                        note=f"Vulnerability remediated (verified by run {run_id})",
-                        detail={"run_id": run_id, "machine_verified": True, "closure_reason": "verified_remediated"},
+                        note=f"Not observed by verification run {run_id}",
+                        detail={
+                            "run_id": run_id,
+                            "job_id": v_row.verification_job_id,
+                            "machine_verified": True,
+                            "closure_reason": "verified_remediated",
+                        },
                     )
+                    verification_passed += 1
 
     stats = RegisterStats(
         findings_seen=len(entries),
@@ -666,6 +723,8 @@ def register_findings_from_run(
         reobserved=reobserved,
         reopened=reopened,
         skipped_unknown_asset=skipped,
+        verification_passed=verification_passed,
+        verification_failed=verification_failed,
     )
     LOG.info(
         "Vulnerability tracker: run=%s tenant=%s seen=%s created=%s reobserved=%s "
@@ -787,8 +846,6 @@ def transition(
     to_state: str,
     actor: str | None = None,
     note: str | None = None,
-    closure_reason: str | None = None,
-    machine_verified: bool = False,
 ) -> dict[str, Any] | None:
     """Move one finding through the lifecycle. Raises on an illegal move.
 
@@ -814,10 +871,13 @@ def transition(
 
         if to_state == vuln_states.CLOSED:
             row.closed_at = now
-            row.machine_verified = bool(machine_verified)
-            row.closure_reason = closure_reason or ("verified_remediated" if machine_verified else "manual")
+            # ``machine_verified`` is never taken from the caller. A closure
+            # made by hand is a manual closure however it is described, and a
+            # metric an operator can assert about their own work measures
+            # nothing.
+            row.machine_verified = False
+            row.closure_reason = "manual"
             detail["closure_reason"] = row.closure_reason
-            detail["machine_verified"] = row.machine_verified
             if row.exception_until is not None:
                 detail["cleared_exception_until"] = _iso(row.exception_until)
                 row.exception_until = None
@@ -836,9 +896,6 @@ def transition(
             row.due_at = now + timedelta(days=days)
             row.reopen_count += 1
             detail["reopen_count"] = row.reopen_count
-        elif to_state == vuln_states.VERIFYING:
-            row.last_verified_at = now
-            detail["verifying_at"] = _iso(now)
 
         _record_event(
             session,
@@ -853,24 +910,108 @@ def transition(
             detail=detail,
         )
         session.flush()
+        result = _to_dict(row, now=now)
+        ticket = (row.ticket_system, row.ticket_key)
 
-        # Outbound 2-way ticket status reflection (best effort)
-        if row.ticket_system and row.ticket_key and row.ticket_url:
-            try:
-                from api.services.integrations import ticket_sync
+    # Outbound reflection runs *after* the transaction closes: the tracker is a
+    # foreign service with a ten-second budget, and holding a row lock open for
+    # that long is how one slow Jira stalls the vulnerability table.
+    if ticket[0] and ticket[1]:
+        push_ticket_state(
+            settings,
+            tenant_id=tenant_id,
+            ticket_system=ticket[0],
+            ticket_key=ticket[1],
+            to_state=to_state,
+        )
+    return result
 
-                base_url = (row.ticket_url or "").split("/browse/")[0].split("/api/")[0].split("/finding/")[0]
-                if base_url:
-                    ticket_sync.push_status_update(
-                        transport=row.ticket_system,
-                        base_url=base_url,
-                        ticket_key=row.ticket_key,
-                        to_state=to_state,
-                    )
-            except Exception:
-                LOG.warning("Failed outbound ticket status sync for %s", row.vuln_id)
 
-        return _to_dict(row, now=now)
+def _ticket_endpoint(
+    session: Any, *, tenant_id: str, ticket_system: str
+) -> tuple[str, str | None, dict[str, str]] | None:
+    """``(base_url, secret, headers)`` for the tenant's tracker, or ``None``.
+
+    The tracker is addressed through the subscription that configured it, not
+    by string-splitting the stored ``ticket_url``: that is where the credential
+    lives, and a URL we did not configure is a URL we should not be calling.
+    """
+    row = session.scalar(
+        select(models.WebhookSubscription)
+        .where(
+            models.WebhookSubscription.tenant_id == tenant_id,
+            models.WebhookSubscription.transport == ticket_system,
+            models.WebhookSubscription.enabled.is_(True),
+        )
+        .order_by(models.WebhookSubscription.created_at.desc())
+    )
+    if row is None:
+        return None
+    return str(row.url), row.secret, {str(k): str(v) for k, v in (row.headers or {}).items()}
+
+
+def _verification_target(session: Any, row: models.Vulnerability) -> tuple[str | None, bool]:
+    """The address to re-scan for one finding, and whether it is an IP.
+
+    Assets carry no address column of their own — the addresses are the
+    ``asset_identifiers`` rows the ingest resolved the finding's host through —
+    so the target is read back from there. An IP is preferred over an FQDN
+    because it is what the original observation was made against.
+    """
+    identifiers = session.scalars(
+        select(models.AssetIdentifier).where(
+            models.AssetIdentifier.tenant_id == row.tenant_id,
+            models.AssetIdentifier.asset_id == row.asset_id,
+        )
+    ).all()
+    for wanted in ("ip", "fqdn"):
+        for identifier in identifiers:
+            value = str(identifier.identifier_value or "").strip()
+            if identifier.identifier_type == wanted and value:
+                return value, wanted == "ip"
+    return None, False
+
+
+def push_ticket_state(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    ticket_system: str,
+    ticket_key: str,
+    to_state: str,
+) -> bool:
+    """Reflect a lifecycle change onto the linked ticket. Never raises."""
+    if tenant_id is None:
+        return False
+    try:
+        from api.services.integrations import ticket_sync
+
+        with get_session(settings.postgres_url) as session:
+            endpoint = _ticket_endpoint(
+                session, tenant_id=tenant_id, ticket_system=ticket_system
+            )
+        if endpoint is None:
+            LOG.info(
+                "No enabled %s subscription for tenant %s; ticket %s not updated",
+                ticket_system,
+                tenant_id,
+                ticket_key,
+            )
+            return False
+        base_url, secret, headers = endpoint
+        return ticket_sync.push_status_update(
+            transport=ticket_system,
+            base_url=base_url,
+            ticket_key=ticket_key,
+            to_state=to_state,
+            secret=secret,
+            extra_headers=headers,
+        )
+    except Exception:  # noqa: BLE001 - a foreign tracker must not fail the move
+        LOG.warning(
+            "Outbound ticket sync failed for %s/%s", ticket_system, ticket_key, exc_info=True
+        )
+        return False
 
 
 def trigger_verification(
@@ -879,76 +1020,90 @@ def trigger_verification(
     tenant_id: str | None,
     vuln_id: str,
     actor: str | None = None,
-) -> dict[str, Any]:
-    """Trigger an isolated verification scan for a finding."""
+) -> dict[str, Any] | None:
+    """Dispatch a targeted re-scan and park the finding in ``VERIFYING``.
+
+    The move is refused if the scan could not be dispatched. A finding sitting
+    in ``VERIFYING`` with nothing actually looking at it is the state that
+    produces a false "machine verified" closure later, so it is never created.
+    """
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
-            raise ValueError(f"Vulnerability '{vuln_id}' not found")
+            return None
+        previous = row.state
+        # Goes through the same state machine as an operator's move: a closed
+        # finding is not re-verified, it is reopened first.
+        vuln_states.check_transition(vuln_id, previous, vuln_states.VERIFYING)
 
-        asset = session.scalar(
-            select(models.Asset).where(
-                models.Asset.tenant_id == row.tenant_id,
-                models.Asset.asset_id == row.asset_id,
+        target, is_ip = _verification_target(session, row)
+        if not target:
+            raise VerificationDispatchError(
+                f"Vulnerability '{vuln_id}' has no scannable address on record"
             )
-        )
-        target = (asset.asset_id if asset else row.asset_id).strip()
 
-        # Determine target type (IP or domain)
-        is_ip = False
-        try:
-            import ipaddress
-            ipaddress.ip_address(target)
-            is_ip = True
-        except ValueError:
-            is_ip = False
+        owning_tenant = row.tenant_id
+        port = str(row.port).strip() if row.port is not None else None
 
-        from api.schemas import StartScanRequest
-        from api.services import jobs as jobs_service
-
-        req = StartScanRequest(
-            tenant_id=row.tenant_id,
-            mode="safe",
-            intent="service_probe",
-            ranges=target if is_ip else None,
-            domains=target if not is_ip else None,
-            skip_nse=False,
+    if not settings.allow_scan_start:
+        raise VerificationDispatchError(
+            "Scan dispatch is disabled on this server (OCTO_ALLOW_SCAN_START), "
+            "so this finding cannot be machine-verified"
         )
 
-        job_id = None
-        if settings.allow_scan_start:
-            try:
-                job_info = jobs_service.start_scan(
-                    settings,
-                    req,
-                    username=actor or "system:verification",
-                )
-                job_id = job_info.job_id
-            except Exception as exc:
-                LOG.warning("Failed to dispatch verification scan for %s: %s", vuln_id, exc)
+    from api.schemas import StartScanRequest
+    from api.services import jobs as jobs_service
 
+    scan_request = StartScanRequest(
+        tenant_id=owning_tenant,
+        mode="safe",
+        # The narrowest intent that still runs the vulnerability checks: the
+        # verification has to be able to re-detect what it is confirming gone.
+        intent="vuln",
+        ranges=target if is_ip else None,
+        domains=target if not is_ip else None,
+        # Re-check the port the finding is on. Verifying a finding on 8443 with
+        # a default port sweep is how "not observed" stops meaning "fixed".
+        ports=port or None,
+        skip_nse=False,
+    )
+    try:
+        job = jobs_service.start_scan(
+            settings, scan_request, username=actor or "system:verification"
+        )
+    except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 409
+        LOG.warning("Verification dispatch failed for %s: %s", vuln_id, exc, exc_info=True)
+        raise VerificationDispatchError(
+            f"Could not dispatch a verification scan: {exc}"
+        ) from exc
+
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        previous = row.state
         row.state = vuln_states.VERIFYING
         row.state_changed_at = now
         row.state_changed_by = actor or "system:verification"
-        row.verification_job_id = job_id
+        row.verification_job_id = job.job_id
         row.last_verified_at = now
         row.updated_at = now
-
         _record_event(
             session,
             vuln_id=row.vuln_id,
             tenant_id=row.tenant_id,
             kind="verification_started",
             occurred_at=now,
-            from_state=row.state,
+            from_state=previous,
             to_state=vuln_states.VERIFYING,
             actor=actor or "system:verification",
-            note=f"Targeted verification scan started (job: {job_id})" if job_id else "Targeted verification requested",
+            note=f"Targeted verification scan dispatched (job {job.job_id})",
             detail={
-                "job_id": job_id,
+                "job_id": job.job_id,
                 "asset_id": row.asset_id,
-                "port": row.port,
+                "target": target,
+                "port": port,
                 "cve": row.cve,
                 "script_id": row.script_id,
             },
@@ -963,43 +1118,73 @@ def sync_ticket_status(
     tenant_id: str | None,
     vuln_id: str,
     actor: str | None = None,
-) -> dict[str, Any]:
-    """Poll linked ticket system and synchronize local status."""
+) -> dict[str, Any] | None:
+    """Poll the linked ticket and reconcile the finding's state.
+
+    A tracker can say the work is done or that it is under way. It cannot say
+    the finding is *verified* gone — only a scan says that — so a closure from
+    here is recorded as ``ticket_resolved`` and never as machine-verified.
+    """
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
-            raise ValueError(f"Vulnerability '{vuln_id}' not found")
+            return None
         if not row.ticket_system or not row.ticket_key:
             raise ValueError(f"Vulnerability '{vuln_id}' has no linked ticket")
-
-        from api.services.integrations import ticket_sync
-
-        base_url = (row.ticket_url or "").split("/browse/")[0].split("/api/")[0].split("/finding/")[0]
-        if not base_url:
-            base_url = "https://tracker.local"
-
-        suggested_state, raw_status, raw_data = ticket_sync.fetch_ticket_status(
-            transport=row.ticket_system,
-            base_url=base_url,
-            ticket_key=row.ticket_key,
+        endpoint = _ticket_endpoint(
+            session, tenant_id=row.tenant_id, ticket_system=row.ticket_system
         )
+        if endpoint is None:
+            raise ValueError(
+                f"No enabled '{row.ticket_system}' subscription is configured for this tenant"
+            )
+        ticket_system, ticket_key = row.ticket_system, row.ticket_key
 
-        previous_state = row.state
-        if suggested_state and suggested_state != previous_state:
-            # Reconcile state
-            if suggested_state == vuln_states.CLOSED:
-                row.state = vuln_states.CLOSED
-                row.closed_at = now
-                row.closure_reason = "ticket_resolved"
-            elif suggested_state in vuln_states.ACTIVE:
-                row.state = suggested_state
-                if previous_state == vuln_states.CLOSED:
-                    row.closed_at = None
-                    row.reopen_count += 1
+    from api.services.integrations import ticket_sync
+
+    base_url, secret, headers = endpoint
+    suggested_state, raw_status, _ = ticket_sync.fetch_ticket_status(
+        transport=ticket_system,
+        base_url=base_url,
+        ticket_key=ticket_key,
+        secret=secret,
+        extra_headers=headers,
+    )
+
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        previous = row.state
+        applied = False
+        # Only a legal move is applied. An unreachable tracker returns no
+        # suggestion at all, and that is recorded as a sync that changed
+        # nothing rather than as progress.
+        if suggested_state and suggested_state != previous and vuln_states.can_transition(
+            previous, suggested_state
+        ):
+            row.state = suggested_state
             row.state_changed_at = now
-            row.state_changed_by = actor or f"ticket_sync:{row.ticket_system}"
+            row.state_changed_by = actor or f"ticket_sync:{ticket_system}"
             row.updated_at = now
+            applied = True
+            if suggested_state == vuln_states.CLOSED:
+                row.closed_at = now
+                row.machine_verified = False
+                row.closure_reason = "ticket_resolved"
+            elif previous == vuln_states.CLOSED:
+                # Same reopen bookkeeping the operator path does, so a
+                # ticket-driven regression is not an SLA-free finding.
+                row.closed_at = None
+                row.machine_verified = False
+                row.closure_reason = None
+                row.sla_started_at = now
+                days = row.sla_days or DEFAULT_SLA_DAYS.get(
+                    row.severity, DEFAULT_SLA_DAYS["unknown"]
+                )
+                row.due_at = now + timedelta(days=days)
+                row.reopen_count += 1
 
         _record_event(
             session,
@@ -1007,20 +1192,20 @@ def sync_ticket_status(
             tenant_id=row.tenant_id,
             kind="ticket_synced",
             occurred_at=now,
-            from_state=previous_state,
+            from_state=previous,
             to_state=row.state,
-            actor=actor or f"ticket_sync:{row.ticket_system}",
-            note=f"Ticket {row.ticket_key} synced (remote status: {raw_status or 'unknown'})",
+            actor=actor or f"ticket_sync:{ticket_system}",
+            note=f"Ticket {ticket_key} reports '{raw_status or 'unknown'}'",
             detail={
-                "ticket_system": row.ticket_system,
-                "ticket_key": row.ticket_key,
+                "ticket_system": ticket_system,
+                "ticket_key": ticket_key,
                 "remote_status": raw_status,
                 "suggested_state": suggested_state,
+                "applied": applied,
             },
         )
         session.flush()
         return _to_dict(row, now=now)
-
 
 
 def assign(
@@ -1514,7 +1699,15 @@ def summary(
             ).where(*filters)
         ).all()
     machine_verified_closed = 0
-    for state, severity, risk_level, assignee, due_at, exception_until, machine_verified in rows:
+    for (
+        state,
+        severity,
+        risk_level,
+        assignee,
+        due_at,
+        exception_until,
+        machine_verified,
+    ) in rows:
         total += 1
         by_state[str(state)] = by_state.get(str(state), 0) + 1
         if state == vuln_states.CLOSED and machine_verified:
@@ -1539,9 +1732,6 @@ def summary(
                 overdue_worst = str(severity)
 
     closed_total = by_state.get(vuln_states.CLOSED, 0)
-    manual_closed = max(0, closed_total - machine_verified_closed)
-    verification_rate = round((machine_verified_closed / closed_total * 100.0), 1) if closed_total > 0 else 0.0
-
     return {
         "total": total,
         "open_total": open_total,
@@ -1549,10 +1739,6 @@ def summary(
         "unassigned": unassigned,
         "estate_risk": estate_risk,
         "by_state": by_state,
-        "closed_total": closed_total,
-        "machine_verified_closed": machine_verified_closed,
-        "manual_closed": manual_closed,
-        "machine_verification_rate": verification_rate,
         # Severity / risk counts cover open findings only: a dashboard tile
         # reading "42 critical" must not be counting ones that were fixed last
         # year.
@@ -1561,5 +1747,14 @@ def summary(
         "by_sla": by_sla,
         "breached": by_sla.get("breached", 0),
         "worst_breached_severity": overdue_worst,
+        # Closed-loop remediation (#183). The rate answers "how much of what we
+        # call fixed did a scan actually confirm", so its denominator is every
+        # closure, not only the ones that went through verification.
+        "closed_total": closed_total,
+        "machine_verified_closed": machine_verified_closed,
+        "manual_closed": max(0, closed_total - machine_verified_closed),
+        "machine_verification_rate": (
+            round(machine_verified_closed / closed_total * 100.0, 1) if closed_total else 0.0
+        ),
         "generated_at": _iso(now),
     }

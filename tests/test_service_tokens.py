@@ -1,122 +1,150 @@
-"""Unit tests for service_tokens service (Sprint 1 IAM)."""
+"""Service-token scope algebra and token format (Track E).
+
+The storage half is exercised in tests/test_api_service_tokens.py, which needs
+Postgres. Everything here is pure and always runs, because the scope check is
+the part that decides what a machine credential may reach.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 import pytest
 
-from api.db.engine import get_session
-from api.db.models import ServiceToken, Tenant
-from api.services import service_tokens as st_service
-from api.settings import load_settings
+from api.services import service_tokens
 
 
-@pytest.fixture(autouse=True)
-def _setup_test_tenant():
-    settings = load_settings()
-    now = datetime.now(UTC)
-    with get_session(settings.postgres_url) as session:
-        tenant = session.get(Tenant, "test-tenant")
-        if not tenant:
-            session.add(Tenant(tenant_id="test-tenant", name="Test Tenant", status="active", created_at=now))
-
-
-
-def test_create_and_authenticate_service_token():
-    metadata, raw_token = st_service.create_token(
-        tenant_id="test-tenant",
-        name="CI Deployment Key",
-        role="operator",
-        scopes=["scans:read", "scans:write"],
-        expires_days=30,
-        created_by="admin",
+def principal(*scopes: str, role: str = "operator") -> service_tokens.ServiceTokenPrincipal:
+    return service_tokens.ServiceTokenPrincipal(
+        token_id="st_1", tenant_id="acme", name="ci", role=role, scopes=tuple(scopes)
     )
 
-    assert raw_token.startswith("shk_")
-    assert metadata["name"] == "CI Deployment Key"
-    assert metadata["tenant_id"] == "test-tenant"
-    assert metadata["role"] == "operator"
-    assert "scans:write" in metadata["scopes"]
-    assert metadata["is_active"] is True
 
-    # Authenticate with valid token
-    principal = st_service.authenticate_token(raw_token)
-    assert principal is not None
-    assert principal["token_id"] == metadata["id"]
-    assert principal["tenant_id"] == "test-tenant"
-    assert principal["role"] == "operator"
-    assert principal["scopes"] == ["scans:read", "scans:write"]
+# --------------------------------------------------------------------------- #
+# Scope parsing
+# --------------------------------------------------------------------------- #
 
 
-def test_authenticate_invalid_token():
-    assert st_service.authenticate_token("") is None
-    assert st_service.authenticate_token("invalid_token") is None
-    assert st_service.authenticate_token("shk_nonexistent_secrettokenvaluehere12345") is None
-
-
-def test_revoke_service_token():
-    metadata, raw_token = st_service.create_token(
-        tenant_id="test-tenant",
-        name="To Revoke",
-        role="viewer",
-        scopes=["assets:read"],
+def test_scopes_are_sorted_and_deduplicated():
+    assert service_tokens.normalise_scopes(["runs:read", "assets:read", "runs:read"]) == (
+        "assets:read runs:read"
     )
 
-    token_id = metadata["id"]
-    assert st_service.authenticate_token(raw_token) is not None
 
-    # Revoke
-    revoked = st_service.revoke_token("test-tenant", token_id)
-    assert revoked is True
-
-    # Subsequent auth must fail
-    assert st_service.authenticate_token(raw_token) is None
-
-    # Second revoke returns False
-    assert st_service.revoke_token("test-tenant", token_id) is False
+def test_an_empty_scope_list_is_refused_rather_than_read_as_everything():
+    for value in ([], None, ["   "]):
+        with pytest.raises(ValueError, match="at least one scope"):
+            service_tokens.normalise_scopes(value)
 
 
-def test_expired_service_token():
-    from uuid import uuid4
-
-    settings = load_settings()
-    now = datetime.now(UTC)
-    expired_time = now - timedelta(days=1)
-
-    full_token, prefix, _ = st_service.generate_raw_token()
-    token_hash = st_service.pwd_context.hash(full_token)
-
-    with get_session(settings.postgres_url) as session:
-        token_obj = ServiceToken(
-            id=f"tok_exp_{uuid4().hex[:12]}",
-            name="Expired Key",
-            key_prefix=prefix,
-            key_hash=token_hash,
-            tenant_id="test-tenant",
-            role="viewer",
-            scopes=["assets:read"],
-            created_at=now - timedelta(days=10),
-            expires_at=expired_time,
-        )
-        session.add(token_obj)
-        session.commit()
-
-    # Expired token cannot authenticate
-    assert st_service.authenticate_token(full_token) is None
+def test_malformed_scopes_are_refused():
+    for bad in ["runs", "runs:delete", ":read", "runs:read extra", "RUNS:*:read"]:
+        with pytest.raises(ValueError):
+            service_tokens.normalise_scopes([bad])
 
 
-def test_list_service_tokens():
-    t_list = st_service.list_tokens("test-tenant")
-    initial_count = len(t_list)
+def test_wildcards_are_accepted_in_either_half():
+    assert service_tokens.normalise_scopes(["*"]) == "*"
+    assert service_tokens.normalise_scopes(["runs:*", "*:read"]) == "*:read runs:*"
 
-    st_service.create_token(
-        tenant_id="test-tenant",
-        name="List Test Token",
-        role="viewer",
-        scopes=["reports:read"],
+
+# --------------------------------------------------------------------------- #
+# Request -> (resource, action)
+# --------------------------------------------------------------------------- #
+
+
+def test_resource_is_the_first_segment_under_api():
+    assert service_tokens.resource_for_path("/api/runs/abc/hosts") == "runs"
+    assert service_tokens.resource_for_path("/api/vulnerabilities") == "vulnerabilities"
+    assert service_tokens.resource_for_path("/api") == ""
+
+
+def test_only_the_safe_methods_count_as_reads():
+    assert service_tokens.action_for_method("GET") == "read"
+    assert service_tokens.action_for_method("head") == "read"
+    for method in ("POST", "PUT", "PATCH", "DELETE"):
+        assert service_tokens.action_for_method(method) == "write"
+
+
+# --------------------------------------------------------------------------- #
+# Matching
+# --------------------------------------------------------------------------- #
+
+
+def test_a_read_scope_does_not_admit_a_write():
+    token = principal("runs:read")
+    assert token.allows(resource="runs", action="read")
+    assert not token.allows(resource="runs", action="write")
+
+
+def test_a_scope_admits_nothing_outside_its_resource():
+    token = principal("runs:*")
+    assert token.allows(resource="runs", action="write")
+    assert not token.allows(resource="assets", action="read")
+
+
+def test_resource_wildcard_admits_only_the_named_action():
+    token = principal("*:read")
+    assert token.allows(resource="assets", action="read")
+    assert not token.allows(resource="assets", action="write")
+
+
+def test_full_wildcard_admits_everything_the_role_allows():
+    token = principal("*")
+    assert token.allows(resource="jobs", action="write")
+
+
+def test_identity_administration_is_closed_to_every_token():
+    """Not even ``*``: a token that can mint users or further tokens is a token
+    that outlives its own revocation."""
+    token = principal("*", role="admin")
+    for resource in sorted(service_tokens.FORBIDDEN_RESOURCES):
+        assert not token.allows(resource=resource, action="read")
+        assert not token.allows(resource=resource, action="write")
+
+
+def test_installation_wide_config_is_read_only_for_every_token():
+    """``PUT /api/config`` replaces the *installation-wide* scanner overrides.
+
+    It hangs off ``require_role``, not ``require_tenant``, so the tenant a token
+    is pinned to buys nothing there: without this, an admin-role token issued
+    for one tenant rewrote how every other tenant scans.
+    """
+    token = principal("*", role="admin")
+    assert token.allows(resource="config", action="read")
+    assert not token.allows(resource="config", action="write")
+
+
+def test_an_explicit_config_write_scope_does_not_reopen_it():
+    assert not principal("config:write", role="admin").allows(
+        resource="config", action="write"
     )
 
-    updated_list = st_service.list_tokens("test-tenant")
-    assert len(updated_list) == initial_count + 1
-    assert any(t["name"] == "List Test Token" for t in updated_list)
+
+def test_an_unknown_resource_matches_nothing():
+    assert not principal("runs:read").allows(resource="", action="read")
+
+
+# --------------------------------------------------------------------------- #
+# Token format
+# --------------------------------------------------------------------------- #
+
+
+def test_issued_tokens_carry_an_identifiable_prefix():
+    plaintext, prefix = service_tokens._new_token()  # noqa: SLF001 - format is the contract
+    assert plaintext.startswith(f"{service_tokens.TOKEN_SCHEME}_")
+    assert plaintext.startswith(prefix + "_")
+    assert service_tokens.looks_like_service_token(plaintext)
+
+
+def test_a_console_jwt_is_never_mistaken_for_a_service_token():
+    for candidate in [
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.sig",
+        "octo-pk-something",
+        "octo_st_short_x",
+        "",
+    ]:
+        assert not service_tokens.looks_like_service_token(candidate)
+
+
+def test_two_issued_tokens_never_share_a_prefix():
+    prefixes = {service_tokens._new_token()[1] for _ in range(50)}  # noqa: SLF001
+    assert len(prefixes) == 50

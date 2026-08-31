@@ -597,7 +597,7 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 
 | Gap | Why it blocks |
 |-----|---------------|
-| No authenticated assessment | Lariska collects installed software, but nothing maps it to CVEs — no CPE or purl anywhere in the tree. Enterprise VM teams live on patch level; the product currently sees only what faces the network. Biggest functional gap and the cheapest to close, because the data is already in Postgres |
+| No authenticated assessment | **Partly closed (M1).** Endpoint software is now matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). What is still missing is the rest of the estate: language ecosystems, Windows, non-distribution software, and every distribution other than those two |
 | No SSO | No OIDC, SAML or LDAP; three roles; no service tokens. This is a procurement checklist item — without it there is no pilot |
 | No report factory | A per-run PDF and a SARIF export exist. Templates, scheduled delivery, per-tenant branding and "a quarterly report about the organization" do not. An MSSP sells the report, not the scans |
 | No compliance mapping | Nothing for PCI/ISO/CIS, which is half of an enterprise VM budget |
@@ -608,11 +608,18 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 
 ### Order
 
-**Done** —
-- `org_profile` M1–M5 (ownership, dns_hygiene, mail_posture, controls matrix with NIST SP 800-30 risk, related_domains with promote-flow, credential_leaks, API and Web UI — fully tested and merged).
-- **Sprint 1 (Enterprise IAM / SSO & Service Tokens)**: OpenID Connect with PKCE & JIT provisioning, Scoped Service Tokens (`shk_...`), capability scopes (`require_scope`), Web UI tokens manager (`/settings/tokens`), and login SSO integration.
-- **Sprint 2 (Closing the Remediation Loop & Mechanical Verification)**: Targeted verification re-scans on `VERIFYING`, mechanical `VERIFYING → CLOSED` closure with `machine_verified=True`, regression bounce-back `VERIFYING → FIXING`, 2-way ticket status sync (Jira, ServiceNow, DefectDojo), machine verification rate metrics on remediation kanban & vulnerability view.
-- **Sprint 3 (Software→CVE Matcher & Patch Gap Engine)**: PURL & CPE 2.3 derivation, OSV & vendor advisory matching (`software_matcher.py`), unified Vulnerability Center bridging, tenant & device patch gap analysis, REST APIs, and Web UI security advisories & patch gap view.
+**Now** — remove the reasons a buyer stops: enterprise IAM — **OIDC single sign-on
+(authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with
+scopes have landed**; SAML and LDAP have not, and are the remainder of this item —
+software→CVE matching over the endpoint inventory (5–7 sprints, starting with
+vendor advisories for two distributions, because naive version matching on backports produces a
+false-positive storm — **M1 landed**: Debian + Ubuntu providers, offline-first advisory datasets
+reported on the System page, dpkg/rpm EVR comparison, per-endpoint matches with a first-class
+`unknown`, and an endpoint panel in the console; remaining milestones are more distributions,
+language ecosystems and Windows, and folding matches into the tracked-finding lifecycle);
+`org_profile` M1–M3 (2–3 sprints, already designed in
+[docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of
+effort on this list, and it gives sales a demo artifact while the matcher is still being built).
 
 **Now (Sprint 4)** — unlock enterprise vulnerability management & compliance:
 1. **Report Factory & Compliance Mapping** (executive PDF reports, scheduled delivery, per-tenant white-label branding, PCI-DSS / CIS Controls / ISO 27001 mapping).

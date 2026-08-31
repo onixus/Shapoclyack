@@ -1,115 +1,101 @@
-"""Service tokens REST API endpoints (Sprint 1 IAM)."""
+"""Service-token administration (ROADMAP Track E).
+
+Platform admin only, and tenant-scoped in the path — the same shape as the
+provisioning-key routes next door, and for the same reason (#231): deciding
+that a non-human may act inside a tenant is an administrative act, and an
+operator who could mint their own credential would be the control removing
+itself.
+
+The plaintext is in the create response and nowhere else. ``GET`` never
+returns it, no log line carries it, and no error message quotes it — only a
+bcrypt hash is stored, so there is nothing to return afterwards even by
+mistake.
+"""
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.auth import Role, TenantPrincipal, require_tenant
-from api.services import service_tokens as st_service
+from api.auth import Role, TokenUser, get_settings, require_role
+from api.schemas import CreateServiceTokenRequest, ServiceTokenInfo
+from api.services import service_tokens as service_tokens_service
+from api.services import tenants as tenants_service
+from api.settings import Settings
 
-router = APIRouter(prefix="/service-tokens", tags=["service-tokens"])
-
-
-class CreateServiceTokenRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=128, description="Human-readable token description")
-    role: str = Field(default="viewer", description="Role granted to the token ('viewer' | 'operator' | 'admin')")
-    scopes: list[str] = Field(default_factory=list, description="Capability scopes granted to token")
-    expires_days: int | None = Field(default=90, ge=1, le=3650, description="Token validity in days (None for non-expiring)")
+router = APIRouter(tags=["service-tokens"])
 
 
-class CreateServiceTokenResponse(BaseModel):
-    id: str
-    name: str
-    key_prefix: str
-    tenant_id: str
-    role: str
-    scopes: list[str]
-    created_at: str
-    created_by: str | None = None
-    expires_at: str | None = None
-    token: str = Field(description="Plaintext token. Displayed only once upon creation.")
+def _require_tenant(tenant_id: str) -> None:
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
 
 
-class ServiceTokenItem(BaseModel):
-    id: str
-    name: str
-    key_prefix: str
-    tenant_id: str
-    role: str
-    scopes: list[str]
-    created_at: str | None = None
-    created_by: str | None = None
-    expires_at: str | None = None
-    last_used_at: str | None = None
-    revoked_at: str | None = None
-    is_active: bool
-
-
-class AvailableScopesResponse(BaseModel):
-    scopes: list[str]
-
-
-@router.get("/scopes", response_model=AvailableScopesResponse)
-def get_available_scopes(
-    _principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
-) -> AvailableScopesResponse:
-    """Return available capability scopes for service tokens."""
-    return AvailableScopesResponse(scopes=st_service.CANONICAL_SCOPES)
-
-
-@router.get("", response_model=list[ServiceTokenItem])
-def list_service_tokens(
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
-) -> list[dict[str, Any]]:
-    """List service tokens for the current tenant."""
-    return st_service.list_tokens(principal.tenant_id)
-
-
-@router.post("", response_model=CreateServiceTokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tenants/{tenant_id}/service-tokens",
+    response_model=ServiceTokenInfo,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_service_token(
-    payload: CreateServiceTokenRequest,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
-) -> dict[str, Any]:
-    """Create a new scoped service token for the current tenant.
-
-    The plaintext token string is returned in the response and will not be
-    viewable again.
-    """
-    # Prevent an operator from minting an admin token unless they are admin
-    if payload.role == "admin" and principal.role != Role.admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admin users can create admin service tokens",
-        )
-
+    tenant_id: str,
+    body: CreateServiceTokenRequest,
+    admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ServiceTokenInfo:
+    """Issue one token. The response is the only place its plaintext ever exists."""
     try:
-        metadata, raw_token = st_service.create_token(
-            tenant_id=principal.tenant_id,
-            name=payload.name,
-            role=payload.role,
-            scopes=payload.scopes,
-            expires_days=payload.expires_days,
-            created_by=principal.username,
+        created = service_tokens_service.create_token(
+            settings,
+            tenant_id=tenant_id,
+            name=body.name,
+            scopes=body.scopes,
+            role=body.role,
+            created_by=admin.username,
+            expires_in_days=body.expires_in_days,
         )
-        metadata["token"] = raw_token
-        return metadata
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-
-
-@router.delete("/{token_id}", status_code=status.HTTP_200_OK)
-def revoke_service_token(
-    token_id: str,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
-) -> dict[str, Any]:
-    """Revoke an existing service token."""
-    revoked = st_service.revoke_token(principal.tenant_id, token_id)
-    if not revoked:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Token not found or already revoked",
-        )
-    return {"status": "revoked", "id": token_id}
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return ServiceTokenInfo.model_validate(created)
+
+
+@router.get("/tenants/{tenant_id}/service-tokens", response_model=list[ServiceTokenInfo])
+def list_service_tokens(
+    tenant_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[ServiceTokenInfo]:
+    """Every token issued for this tenant, newest first, without their secrets.
+
+    Revoked and expired ones stay listed: "which credential was this, and when
+    did it stop working" is the question an incident asks, and deleting the row
+    would delete the answer.
+    """
+    _require_tenant(tenant_id)
+    return [
+        ServiceTokenInfo.model_validate(token)
+        for token in service_tokens_service.list_tokens(settings, tenant_id=tenant_id)
+    ]
+
+
+@router.post(
+    "/tenants/{tenant_id}/service-tokens/{token_id}/revoke",
+    response_model=ServiceTokenInfo,
+)
+def revoke_service_token(
+    tenant_id: str,
+    token_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ServiceTokenInfo:
+    """Kill a token immediately, without waiting for its expiry. Idempotent."""
+    revoked = service_tokens_service.revoke_token(
+        settings, token_id=token_id, tenant_id=tenant_id
+    )
+    if revoked is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="token not found")
+    return ServiceTokenInfo.model_validate(revoked)

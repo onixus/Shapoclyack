@@ -24,6 +24,14 @@ import {
 } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
+type DomainOwnership = {
+  org_name?: string | null;
+  registrant_organization?: string | null;
+  registrar?: string | null;
+  dnssec?: boolean | null;
+  nameservers?: string[] | null;
+};
+
 function CandidateRow({
   candidate,
   isPromoted,
@@ -149,18 +157,6 @@ function CandidateRow({
   );
 }
 
-type OwnershipDomain = {
-  org_name?: string | null;
-  registrant_organization?: string | null;
-  registrar?: string | null;
-  registrant_status?: string | null;
-  created_date?: string | null;
-  expiry_date?: string | null;
-  abuse_email?: string | null;
-  dnssec?: boolean | null;
-  nameservers?: string[] | null;
-};
-
 export function RelatedDomainsPanel({ runId }: { runId: string }) {
   const user = useAuthStore((s) => s.user);
   const canOperate = user?.role === "operator" || user?.role === "admin";
@@ -201,7 +197,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
     );
   }
 
-  const ownership = (data.ownership?.domains || {}) as Record<string, OwnershipDomain>;
+  const ownership = (data.ownership?.domains || {}) as Record<string, DomainOwnership>;
   const firstDomain = Object.keys(ownership)[0];
   const primaryOwner = firstDomain ? ownership[firstDomain] : null;
 

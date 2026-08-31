@@ -36,7 +36,6 @@ export const NAV = [
   { href: "/attack-surface", labelKey: "nav.attackSurface", icon: Share2 },
   { href: "/geo", labelKey: "nav.geo", icon: Globe2 },
   { href: "/reports", labelKey: "nav.reports", icon: FileText },
-  { href: "/settings/tokens", labelKey: "nav.serviceTokens", icon: KeyRound },
+  { href: "/service-tokens", labelKey: "nav.serviceTokens", icon: KeyRound },
   { href: "/system", labelKey: "nav.system", icon: SlidersHorizontal },
 ] as const;
-

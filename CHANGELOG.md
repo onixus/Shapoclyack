@@ -6,32 +6,134 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
-- **Software to CVE Matcher & Patch Gap Engine (Sprint 3)**:
-  - **Standardized PURL & CPE 2.3 Identifiers**: Automated derivation of Package URLs (PURL) and CPE 2.3 URIs from Lariska endpoint inventory software items across Debian, Ubuntu, RHEL, Alpine, PyPI, npm, and generic ecosystems.
-  - **OSV & Vendor Security Advisory Matching**: High-performance semantic version comparison and security advisory matching engine (`api/services/software_matcher.py`) evaluating installed packages against known CVEs and OSV advisories.
-  - **Vulnerability Center Integration**: Automatically creates and links unified `Vulnerability` records (`finding_key=sha256(asset_id|package_name|cve)`) for matched software advisories, bringing endpoint software vulnerabilities directly into Shapoclyack's lifecycle, SLA, owner assignment, and closed-loop verification pipelines.
-  - **Patch Gap Analysis**: Computes tenant-wide and device-specific patch gaps, quantifying vulnerable package counts, severity breakdowns (Critical, High, Medium, Low), and actionable copy-paste remediation commands (`apt-get --only-upgrade install`, `dnf update`, `apk add --upgrade`, `pip install --upgrade`, `npm update`).
-  - **REST API Endpoints**: `GET /api/endpoint/devices/{id}/advisories`, `POST /api/endpoint/devices/{id}/match`, `GET /api/endpoint/patch-gaps`, `GET /api/endpoint/devices/{id}/patch-gap`, and `GET /api/assets/{id}/advisories`.
-  - **Web UI Security Advisories & Patch Gaps**: Dedicated Patch Gap Analysis KPI card & remediation overview on `/endpoints`, interactive CVE badges, CVSS scores, and upgrade commands in the Asset View Software tab (`/assets/view?tab=software`).
+- **Closed-loop remediation: mechanical verification** (#183). "Fixed" was an
+  assertion an operator made about their own work. A finding can now be sent
+  for a targeted re-scan (`POST /vulnerabilities/{id}/verify`), and the run
+  that comes back decides: not observed closes it with
+  `closure_reason=verified_remediated` and `machine_verified=true`, still
+  observed bounces it `VERIFYING → FIXING` with the reason on the audit trail.
 
-- **Closed-Loop Remediation & Mechanical Verification (Sprint 2)**:
-  - **Automated Targeted Verification Scans**: Automated single-asset re-scans triggered on transition to `VERIFYING` or on-demand via `POST /api/vulnerabilities/{id}/verify`.
-  - **Mechanical Closure Verification**: Run findings ingestion (`register_findings_from_run`) evaluates pending verification scans — absent findings are automatically confirmed and closed (`VERIFYING → CLOSED`) with `machine_verified=True` and `closure_reason="verified_remediated"`; still-detected findings are automatically bounced back (`VERIFYING → FIXING`) with an audit record.
-  - **Two-Way Ticket Synchronization (Jira, ServiceNow, DefectDojo)**: Inbound ticket status reconciliation via `POST /api/vulnerabilities/{id}/ticket/sync` and outbound status reflection on lifecycle transitions (`api/services/integrations/ticket_sync.py`).
-  - **Machine Verification Metrics**: Backend computation of `machine_verified_closed`, `manual_closed`, and `machine_verification_rate` in `/api/vulnerabilities/summary`; KPI strip and verified badges in Web UI remediation kanban and vulnerability view.
+  The closure is gated on `verification_job_id` — the job that was dispatched
+  to look for *that* finding — and not on "some scan touched the asset". Any
+  weaker gate silently converts a routine recon run into a clean bill of
+  health for a finding it never probed. For the same reason the move into
+  `VERIFYING` is refused outright when the scan cannot be dispatched
+  (`OCTO_ALLOW_SCAN_START` off, dispatcher error): a finding parked there with
+  nothing looking at it is exactly what produces a false verified closure
+  later. A verification run that finds *nothing at all* still reaches the
+  evaluation, because for this feature an empty run is the success case.
 
-- **Enterprise IAM: OIDC/SSO & Scoped Service Tokens (Sprint 1)**:
-  - **OpenID Connect (OIDC / SSO)**: Full PKCE (S256) and signed state verification, discovery metadata caching, claims-to-role resolution, JIT (Just-In-Time) user & default tenant provisioning (`api/services/oidc.py`, `/api/auth/oidc/*`).
-  - **Scoped Service Tokens**: Bcrypt-hashed programmatic credentials with prefix indexing (`shk_<prefix>_<secret>`), tenant isolation, fine-grained capability scopes (`scans:read`, `scans:write`, `assets:*`, `vulns:*`, `tokens:manage`), expiry, and revocation (`api/services/service_tokens.py`, `/api/service-tokens`).
-  - **Fine-Grained Capability Scoping**: `require_scope(scope, minimum)` dependency in `api/auth.py` for fine-grained capability enforcement on automation tokens.
-  - **Web UI Tokens & SSO**: Corporate SSO button on login page, dedicated Service Tokens Manager (`/settings/tokens`), token generation modal with scope selection, and secret copy dialog.
+  `machine_verified` is never accepted from a request body. Closing by hand
+  records `closure_reason=manual` whatever the caller says, and a metric an
+  operator can assert about their own work measures nothing. Summary gains
+  `closed_total`, `machine_verified_closed`, `manual_closed` and
+  `machine_verification_rate`; the Remediation board gains the KPI and a
+  Verified badge, and the finding page gains Verify / Sync buttons.
 
-- **Org Profile Module (M1–M5)** — Comprehensive organization perimeter assessment from a single seed domain:
-  - **M1 (Ownership)**: RDAP and ASN-based organization attribution with confidence scoring (`ownership.py`).
-  - **M2 (DNS Hygiene & Mail Posture)**: Zone hygiene evaluation (NS/SOA/CAA/DNSSEC/wildcard/AXFR) and email security assessment (MX/SPF/DMARC/DKIM/MTA-STS/TLS-RPT).
-  - **M3 (Controls Matrix & NIST Risk)**: 6-control perimeter security posture matrix with qualitative NIST SP 800-30 Rev. 1 Table I-2 risk calculation, PDF/markdown executive summaries, scan intent `org_profile`, and interactive Controls tab in Web UI (`controls-matrix.tsx`).
-  - **M4 (Related Domains)**: Multi-source passive correlation (SAN, CT org, NS, MX, ASN) with confidence scoring, safety caps, and promote-flow API/UI for adding discovered domains to scan scope.
-  - **M5 (Credential Leaks)**: Pluggable LeakProvider protocol (HIBP, Mock), local-part email masking, zero password storage, and RBAC-gated unmasked identifiers endpoint (`GET /api/runs/{id}/leaks/identifiers`).
+- **Two-way ticket status sync** for Jira, ServiceNow and DefectDojo
+  (`api/services/integrations/ticket_sync.py`,
+  `POST /vulnerabilities/{id}/ticket/sync`). Inbound polling reconciles the
+  tracker's status onto the lifecycle; a state change reflects outbound.
+
+  The tracker is addressed through the tenant's subscription for that
+  transport, not by string-splitting the stored `ticket_url`: that is where
+  the credential lives, so the requests actually authenticate, and a URL we
+  did not configure is one we do not call. The wire is `delivery.request`,
+  which is `delivery.post`'s SSRF validation, pinned DNS and no-redirects
+  generalised to GET and PATCH. Inbound only applies a *legal* transition, and
+  a closure from a tracker is `ticket_resolved` — never machine-verified,
+  because a tracker cannot observe a host. A ServiceNow update resolves the
+  incident's `sys_id` first; the Table API ignores a PATCH to the collection
+  URL. Outbound reflection runs after the transaction commits, so a slow
+  tracker cannot hold a row lock for its ten-second budget.
+
+- **Enterprise IAM: OIDC single sign-on and service tokens** (ROADMAP Track E,
+  "No SSO"). The platform had exactly two ways to authenticate — a human's
+  password and an agent's provisioning key — so a pilot could not be run
+  against a corporate identity provider, and every integration ran under
+  somebody's console account.
+
+  *SSO* is authorization code with PKCE against a generic OIDC provider
+  (`api/services/oidc.py`, migration `0026`). Endpoints and signing algorithms
+  come from the provider's `.well-known/openid-configuration`; only the issuer
+  and the client credentials are configured here, and SSO stays off until all
+  three are set. The ID token is verified rather than read — signature against
+  the published JWKS with an **asymmetric-only** algorithm allowlist (so
+  neither `none` nor an HMAC keyed on the client secret is selectable), then
+  `iss`, `aud`/`azp`, `exp` and the nonce. An unknown `kid` refetches the key
+  set exactly once, which is key rotation; more would be a request amplifier.
+  State is signed *and* single-use, and the nonce and PKCE verifier stay
+  server-side, so a callback cannot be replayed and a stolen state discloses
+  nothing. `GET /api/auth/oidc/callback` issues the platform's ordinary session
+  token — same JWT as password login, because nothing downstream should care
+  how the user proved who they are.
+
+  Account linking is deliberately conservative: a stored `(issuer, subject)`
+  first, then a **verified** email that both the provider and an admin vouch
+  for, and only then just-in-time provisioning — which is **off by default**,
+  never provisions over an existing local username, and defaults to `viewer`.
+  Linking on an unverified address would hand a console account to whoever can
+  register that address at the identity provider. Every outcome, refusals
+  included, lands in the existing `auth_events` trail.
+
+  *Service tokens* (`api/services/service_tokens.py`, routes under
+  `/api/tenants/{id}/service-tokens`, admin-only) are `octo_st_…` credentials
+  scoped to one tenant. Only a bcrypt hash is stored — the plaintext exists
+  once, in the create response — and the public prefix makes verification one
+  indexed lookup rather than a bcrypt check per issued token. A token passes
+  two independent limits: the role it was issued with inside its own tenant (no
+  membership row raises it, and an `admin`-role token is never a *platform*
+  admin), and `resource:action` scopes derived from the request path and
+  method. `auth`, `users` and `tenants` are closed to every token whatever its
+  scopes, because a credential that can mint users or further tokens outlives
+  its own revocation. Every token expires, and `last_used_at` is rate-limited
+  so a busy integration does not rewrite the same row on every call.
+
+  The console gains a service-token screen and a "Sign in with SSO" button that
+  appears only when the API reports a provider is configured (`GET
+  /api/auth/sso`, also embedded in `/api/health` because the login form renders
+  before anyone is signed in). See
+  [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc) and
+  [docs/configuration.md](docs/configuration.md#environment-variables).
+- **Endpoint software is matched against vendor advisories** (ROADMAP Track E,
+  milestone 1) — Lariska has collected installed software since Agent_plan.md
+  S1-S7 and nothing had ever asked whether any of it was vulnerable, which was
+  the biggest functional gap on the roadmap and the cheapest to close, because
+  the data was already in Postgres. `GET /api/endpoint/devices/{id}/cve-matches`
+  and `GET /api/endpoint/cve-matches` now answer that, per endpoint and per
+  CVE, and an operator can re-run the matcher with the paired `…/refresh`
+  routes. The asset page's Software tab renders the result above the inventory
+  it came from. Migration `0027` adds `software_cve_matches`.
+
+  Matching goes through **Debian's Security Tracker and Ubuntu's USN database**
+  rather than NVD's CPE version ranges, and that is the whole design rather
+  than a detail. Ubuntu 20.04 has shipped OpenSSL `1.1.1f` since 2020 and will
+  until it dies; the fixes arrive in the revision (`-1ubuntu2.16`). A matcher
+  comparing upstream versions calls every such host vulnerable to every OpenSSL
+  CVE forever — thousands of findings per host that never clear — and the
+  operator stops reading the output, which is worse than shipping nothing. The
+  vendors publish the statement that actually answers the question ("fixed in
+  `1.1.1f-1ubuntu2.8` on focal"), so that is what the matcher compares against,
+  with pure-Python transcriptions of dpkg's `verrevcmp` and rpm's `rpmvercmp`
+  doing the comparison — epochs, `~` and `^` included, tested against the
+  tables the package managers themselves ship. No new dependency.
+
+  A match is `vulnerable`, `fixed`, `not_applicable` or **`unknown`**, and the
+  last one is not a placeholder. An endpoint whose distribution could not be
+  resolved, or software that came from outside a distribution package manager,
+  produces an explicit `unknown` row naming the reason — never a silent
+  omission, because an unassessable host rendering as clean is the one failure
+  mode worse than a false positive. `docs/software-cve-matching.md` states what
+  is not covered: language ecosystems, Windows, non-distribution software, and
+  every distribution other than these two.
+
+  The advisory datasets are offline-first, exactly like the EPSS/KEV/CVSS4
+  overlays: JSON under `scanner/data/advisories/` with the same envelope, the
+  same `OCTO_*_DATABASE` overrides, the same build-time manifest, and the same
+  provenance row on the System page. The image ships a small seed of real
+  advisories, not a feed dump; refreshing from the vendors is opt-in
+  (`OCTO_ADVISORY_FETCH_ENABLED`), bounded, and off by default, and nothing on
+  a request path ever opens a socket.
 
 - **Shapoclyack is licensed under Apache-2.0** — until now the repository
   carried no licence at all, which meant the default position of "all rights

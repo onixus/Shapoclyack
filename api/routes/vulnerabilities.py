@@ -289,13 +289,10 @@ def transition(
                 to_state=body.state,
                 actor=principal.username,
                 note=body.note,
-                closure_reason=body.closure_reason,
-                machine_verified=body.machine_verified,
             )
         )
     except vuln_states.InvalidVulnTransition as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
 
 
 @router.post("/{vuln_id}/assign", response_model=VulnerabilityInfo)
@@ -432,12 +429,18 @@ def clear_ticket(
 
 
 @router.post("/{vuln_id}/verify", response_model=VulnerabilityInfo)
-def verify_vulnerability(
+def verify(
     vuln_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: SettingsDep,
 ) -> dict[str, Any]:
-    """Trigger a targeted verification re-scan for this vulnerability."""
+    """Dispatch a targeted re-scan and move the finding to ``VERIFYING``.
+
+    409 when the move is not legal from the finding's current state, and also
+    when the scan could not be dispatched: a finding parked in ``VERIFYING``
+    with no scan behind it would later be closed as machine-verified by a run
+    that never looked at it, so the request fails instead.
+    """
     try:
         return _found(
             vulns_service.trigger_verification(
@@ -447,20 +450,24 @@ def verify_vulnerability(
                 actor=principal.username,
             )
         )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except vulns_service.VerificationDispatchError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/{vuln_id}/ticket/sync", response_model=VulnerabilityInfo)
-def sync_vulnerability_ticket(
+def sync_ticket(
     vuln_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: SettingsDep,
 ) -> dict[str, Any]:
-    """Poll external ticket status and reconcile local vulnerability lifecycle state."""
+    """Read the linked ticket's status and reconcile the finding's state.
+
+    A tracker can report that the work is done; it cannot report that the
+    finding is verified gone, so a closure from here is recorded as
+    ``ticket_resolved`` and is never counted as machine-verified.
+    """
     try:
         return _found(
             vulns_service.sync_ticket_status(
@@ -472,7 +479,5 @@ def sync_vulnerability_ticket(
         )
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-

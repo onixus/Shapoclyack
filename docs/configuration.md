@@ -338,6 +338,37 @@ Login rate limiting and the auth audit trail (see
 | `OCTO_TRUSTED_PROXIES` | *(empty)* | Comma-separated proxy IPs/CIDRs. `X-Forwarded-For` is read **only** when the immediate peer is one of these. Leave empty and every attempt is attributed to the socket peer — set it when the API sits behind an ingress, or the whole installation shares one limiter key |
 | `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever. Rows inside the limiter window are kept regardless, so a short retention cannot weaken the lockout |
 
+Single sign-on (see [api-and-rbac.md](api-and-rbac.md#single-sign-on-oidc)).
+SSO stays **off** until the first three are all set:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_OIDC_ISSUER` | *(empty)* | Provider issuer URL. Its `.well-known/openid-configuration` supplies every endpoint and signing algorithm, so nothing about the provider is configured twice. Must be `https` (plain `http` only for a loopback dev provider) |
+| `OCTO_OIDC_CLIENT_ID` | *(empty)* | This installation's client id at the provider |
+| `OCTO_OIDC_CLIENT_SECRET` | *(empty)* | Its client secret. Never logged, never returned by any endpoint |
+| `OCTO_OIDC_REDIRECT_URI` | *(derived)* | Where the provider sends the browser back. Empty derives `{OCTO_PUBLIC_BASE_URL}/api/auth/oidc/callback` — never the request's own `Host` header, which the client writes |
+| `OCTO_OIDC_SCOPES` | `openid email profile` | Scopes requested from the provider |
+| `OCTO_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim holding the console username; falls back to `email`, then `sub` |
+| `OCTO_OIDC_JIT_PROVISIONING` | `false` | Create a console account for an identity that has none. **Off by default**: with it on, anyone the identity provider will authenticate gets an account |
+| `OCTO_OIDC_DEFAULT_ROLE` | `viewer` | Role for a provisioned account when no claim maps to one. The lowest privileged role on purpose — a higher default grants it to everyone the IdP knows. An unrecognised value falls back to `viewer` with a warning |
+| `OCTO_OIDC_ROLE_CLAIM` | *(empty)* | Claim holding the caller's groups, e.g. `groups` |
+| `OCTO_OIDC_ROLE_MAP` | *(empty)* | JSON object mapping those values to console roles, e.g. `{"vm-admins":"admin","vm-ops":"operator"}`. The **highest** match wins; an unmapped group grants nothing, and an entry naming an unknown role is dropped rather than downgraded. Malformed JSON is logged and ignored rather than refused at startup: this is parsed on every boot whether or not SSO is configured, so a typo here must not stop the whole API |
+| `OCTO_OIDC_TENANT_CLAIM` | *(empty)* | Claim naming the tenant a provisioned account is granted membership in |
+| `OCTO_OIDC_DEFAULT_TENANT` | `default` | Tenant used when that claim is missing |
+| `OCTO_OIDC_CACHE_TTL_SECONDS` | `3600` | Discovery/JWKS cache lifetime. Rotation is also handled out of band: an unknown `kid` forces one refresh before the token is refused |
+| `OCTO_OIDC_STATE_TTL_SECONDS` | `600` | How long one authorization request stays valid — it only has to cover a human typing a password at the provider. The record is process-local, so behind more than one replica enable session affinity for `/api/auth/oidc/*`. Pending requests are capped at 10,000 per replica — the login route is unauthenticated, and the oldest are dropped first (an evicted login fails closed and can be retried) |
+| `OCTO_OIDC_HTTP_TIMEOUT_SECONDS` | `10` | Per-request timeout for discovery, JWKS and the token exchange |
+| `OCTO_OIDC_POST_LOGIN_REDIRECT` | *(empty)* | Where the callback sends the browser once the session exists, with the token in the URL **fragment** (never a query string, which lands in access logs). Empty makes the callback answer with the same JSON body as password login, which is what an API-only install wants; a console install points this at its `/login` page |
+
+Service tokens (see [api-and-rbac.md](api-and-rbac.md#service-tokens)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SERVICE_TOKENS_ENABLED` | `true` | Register the admin routes. Gates the routes only — an already-issued token keeps authenticating until it is revoked, which is what the revoke endpoint is for |
+| `OCTO_SERVICE_TOKEN_DEFAULT_TTL_DAYS` | `90` | Lifetime for a token whose creator named none |
+| `OCTO_SERVICE_TOKEN_MAX_TTL_DAYS` | `365` | Ceiling on a requested lifetime. A credential with no expiry is one nobody rotates |
+| `OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS` | `300` | How often `last_used_at` may be rewritten. Without it a busy integration turns every request into a write to the hottest row in the table |
+
 Job leases and the reaper (see [architecture.md](architecture.md#leases)):
 
 | Variable | Default | Purpose |

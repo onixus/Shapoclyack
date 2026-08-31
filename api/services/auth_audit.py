@@ -77,6 +77,25 @@ REASON_DEPLOY_TARGET = "deploy_target_denied"
 # events that distinguishes a planned rebuild from a substitution.
 REASON_HOST_KEY_PINNED = "ssh_host_key_pinned"
 REASON_HOST_KEY_UNPINNED = "ssh_host_key_unpinned"
+# Single sign-on (ROADMAP Track E). A refused callback -- bad state, bad
+# signature, wrong audience, replayed nonce -- and an identity the provider
+# authenticated but this installation has no account for. Two reasons rather
+# than one because they are two different operator actions: the first is a
+# broken or hostile flow, the second is a provisioning decision.
+REASON_SSO_DENIED = "sso_denied"
+REASON_SSO_NOT_PROVISIONED = "sso_not_provisioned"
+# Successful SSO sign-ins, distinguished by what the identity resolved to: an
+# already-linked account, a local account linked on this login, or one created
+# by just-in-time provisioning. The last two are the rows an admin reviews.
+REASON_SSO_SIGNIN = "sso_signin"
+REASON_SSO_LINKED = "sso_linked"
+REASON_SSO_PROVISIONED = "sso_provisioned"
+
+_SSO_ACTION_REASONS = {
+    "signin": REASON_SSO_SIGNIN,
+    "link": REASON_SSO_LINKED,
+    "provision": REASON_SSO_PROVISIONED,
+}
 
 _settings: Settings | None = None
 _prune_lock = threading.Lock()
@@ -251,6 +270,29 @@ def record_trust_change(*, username: str, reason: str, detail: str | None = None
             outcome=OUTCOME_TRUST_CHANGE,
             reason=reason,
             detail=detail,
+        )
+
+
+def record_sso_login(*, username: str, client_ip: str, action: str) -> None:
+    """Record one successful single sign-on (ROADMAP Track E).
+
+    Counted as a ``success`` like a password login -- it is one, and the
+    ``octo_auth_attempts_total`` series would otherwise under-report every
+    sign-in on an SSO installation. ``reason`` carries how the identity
+    resolved, so "a new console account appeared" is a row an admin can filter
+    for rather than something to infer from the users list.
+
+    Written in its own transaction: the provider already authenticated the
+    user, so there is no local rate limiter whose lock this belongs under.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        _record(
+            session,
+            username=username,
+            client_ip=client_ip,
+            outcome=OUTCOME_SUCCESS,
+            reason=_SSO_ACTION_REASONS.get(action, REASON_SSO_SIGNIN),
         )
 
 

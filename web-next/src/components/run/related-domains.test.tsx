@@ -80,13 +80,7 @@ function renderWithQuery(ui: React.ReactElement) {
 describe("RelatedDomainsPanel Component", () => {
   it("renders organization ownership and related domains candidates", async () => {
     useAuthStore.setState({
-      user: {
-        username: "operator1",
-        role: "operator",
-        tenants: ["default"],
-        default_tenant: "default",
-        is_platform_admin: false,
-      },
+      user: { username: "operator1", role: "operator", tenants: ["default"], default_tenant: "default", is_platform_admin: false },
     });
     vi.spyOn(apiModule, "fetchOrgProfile").mockResolvedValue(mockOrgProfile);
 
@@ -123,13 +117,7 @@ describe("RelatedDomainsPanel Component", () => {
 
   it("promotes domain to scope when Promote button is clicked", async () => {
     useAuthStore.setState({
-      user: {
-        username: "operator1",
-        role: "operator",
-        tenants: ["default"],
-        default_tenant: "default",
-        is_platform_admin: false,
-      },
+      user: { username: "operator1", role: "operator", tenants: ["default"], default_tenant: "default", is_platform_admin: false },
     });
     vi.spyOn(apiModule, "fetchOrgProfile").mockResolvedValue(mockOrgProfile);
     const promoteSpy = vi.spyOn(apiModule, "promoteRelatedDomain").mockResolvedValue({

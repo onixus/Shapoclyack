@@ -38,6 +38,7 @@ export const queryKeys = {
   agentSnippets: ["agents", "snippets"] as const,
   deployStatus: (deployId: string) => ["agents", "deploy", deployId] as const,
   tenants: ["tenants"] as const,
+  serviceTokens: (tenantId: string) => ["tenants", tenantId, "service-tokens"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,
   assetsPage: (
     filters: { status?: string; unowned?: boolean; exposure?: string },
@@ -57,6 +58,8 @@ export const queryKeys = {
     ["endpoint-device", deviceId, "changes", tenantId] as const,
   recentSoftwareChanges: (tenantId = "default", limit = 50) =>
     ["endpoint-changes", tenantId, limit] as const,
+  endpointCveMatches: (deviceId: string, tenantId = "default") =>
+    ["endpoint-device", deviceId, "cve-matches", tenantId] as const,
   vulnerabilities: ["vulnerabilities"] as const,
   vulnerabilitiesPage: (filters: Record<string, unknown>, page?: PageParams) =>
     ["vulnerabilities", filters, pageKey(page)] as const,

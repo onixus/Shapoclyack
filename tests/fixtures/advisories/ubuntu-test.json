@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "source": "ubuntu-usn-fixture",
+  "origin_url": "https://usn.ubuntu.com/usn-db/database.json",
+  "updated": "2026-08-01",
+  "entries": [
+    {
+      "advisory_id": "USN-5051-2",
+      "cve_ids": ["CVE-2021-3711", "CVE-2021-3712"],
+      "release": "focal",
+      "source_package": "openssl",
+      "fixed_version": "1.1.1f-1ubuntu2.8",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-5051-2"
+    },
+    {
+      "advisory_id": "USN-5051-2",
+      "cve_ids": ["CVE-2021-3711", "CVE-2021-3712"],
+      "release": "focal",
+      "source_package": "libssl1.1",
+      "fixed_version": "1.1.1f-1ubuntu2.8",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-5051-2"
+    },
+    {
+      "advisory_id": "USN-6408-1",
+      "cve_ids": ["CVE-2023-38545"],
+      "release": "focal",
+      "source_package": "curl",
+      "fixed_version": "7.68.0-1ubuntu2.20",
+      "severity": "critical",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6408-1"
+    },
+    {
+      "advisory_id": "USN-6560-1",
+      "cve_ids": ["CVE-2023-48795"],
+      "release": "focal",
+      "source_package": "openssh",
+      "fixed_version": "1:8.2p1-4ubuntu0.10",
+      "severity": "medium",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6560-1"
+    },
+    {
+      "advisory_id": "USN-9999-1",
+      "cve_ids": ["CVE-2021-3711"],
+      "release": "jammy",
+      "source_package": "openssl",
+      "fixed_version": "3.0.2-0ubuntu1.1",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-9999-1"
+    },
+    {
+      "advisory_id": "USN-BAD-1",
+      "cve_ids": [],
+      "release": "focal",
+      "source_package": "dropped-because-no-cve",
+      "fixed_version": "1.0",
+      "severity": "low",
+      "state": "resolved"
+    },
+    {
+      "advisory_id": "USN-BAD-2",
+      "cve_ids": ["CVE-2020-0001"],
+      "release": "",
+      "source_package": "dropped-because-no-release",
+      "fixed_version": "1.0",
+      "severity": "low",
+      "state": "resolved"
+    }
+  ]
+}

@@ -16,10 +16,9 @@ from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
-from api.routes import config as config_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
-from api.routes import oidc as oidc_routes
+from api.routes import config as config_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import service_tokens as service_tokens_routes
@@ -28,7 +27,7 @@ from api.routes import users as users_routes
 from api.routes import vulnerabilities as vulnerabilities_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
-from api.schemas import HealthResponse
+from api.schemas import HealthResponse, SsoStatus
 from api.services import agent_deployer
 from api.services import agents as agents_service
 from api.services import auth_audit
@@ -45,7 +44,9 @@ from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
 from api.services import nats_bus
+from api.services import oidc as oidc_service
 from api.services import scan_schedules
+from api.services import service_tokens as service_tokens_service
 from api.services import schedule_dispatcher
 from api.services import tracing as tracing_service
 from api.services import tenants as tenants_service
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
     auth_audit.configure(settings)
+    service_tokens_service.configure(settings)
     endpoint_inventory_service.configure(settings)
     webhooks_service.configure(settings)
     wordlists_service.configure(settings)
@@ -180,11 +182,12 @@ def create_app() -> FastAPI:
             nats=nats_ok,
             clickhouse=ch_ok,
             ch_ingest=ch_ingest_worker.worker_stats(),
+            # The login form has to know whether to offer an SSO button before
+            # anyone is authenticated, and this endpoint is already public.
+            sso=SsoStatus.model_validate(oidc_service.public_config(settings)),
         )
 
     app.include_router(auth_routes.router, prefix="/api")
-    app.include_router(oidc_routes.router, prefix="/api")
-    app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(runs_routes.router, prefix="/api")
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(agents_routes.router, prefix="/api")
@@ -194,6 +197,8 @@ def create_app() -> FastAPI:
     app.include_router(schedules_routes.router, prefix="/api")
     app.include_router(wordlists_routes.router, prefix="/api")
     app.include_router(users_routes.router, prefix="/api")
+    if settings.service_tokens_enabled:
+        app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(vulnerabilities_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")

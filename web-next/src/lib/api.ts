@@ -628,6 +628,49 @@ export type EndpointSoftwareChangeFeedItem = EndpointSoftwareChangeInfo & {
   asset_id: string | null;
 };
 
+/** Four-valued on purpose: "unknown" is a first-class answer, so an endpoint
+ * the matcher could not assess never renders as clean
+ * (docs/software-cve-matching.md). */
+export type SoftwareCveMatchStatus = "vulnerable" | "fixed" | "not_applicable" | "unknown";
+
+export type SoftwareCveMatchInfo = {
+  device_id: string;
+  hostname: string | null;
+  snapshot_id: string | null;
+  /** Empty on an ``unknown`` row, which is about a package set, not a CVE. */
+  cve_id: string;
+  status: SoftwareCveMatchStatus;
+  /** The distribution's own word, never a CVSS score re-derived client-side. */
+  severity: string;
+  source_package: string;
+  installed_package: string;
+  installed_version: string | null;
+  fixed_version: string | null;
+  advisory_id: string | null;
+  advisory_url: string | null;
+  provider: string;
+  distro: string | null;
+  distro_release: string | null;
+  purl: string | null;
+  cpe23: string | null;
+  unknown_reason: string | null;
+  feed_date: string | null;
+  evidence: Record<string, unknown>;
+  matched_at: string | null;
+};
+
+export type SoftwareCveMatchRunSummary = {
+  device_id: string;
+  snapshot_id: string | null;
+  distro: string | null;
+  distro_release: string | null;
+  packages_total: number;
+  packages_assessed: number;
+  packages_unassessed: number;
+  matches: number;
+  by_status: Record<string, number>;
+};
+
 export type ProvisioningKeyInfo = {
   key_id: string;
   tenant_id: string;
@@ -1261,6 +1304,33 @@ export async function fetchRecentSoftwareChanges(opts?: {
   }
 }
 
+/** Vendor-advisory CVE matches for one endpoint (ROADMAP Track E M1). */
+export async function fetchEndpointCveMatches(deviceId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams(tenantParam(tenantId));
+    const { data } = await api.get<SoftwareCveMatchInfo[]>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/cve-matches?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Re-run the matcher for one endpoint against the advisory data on disk.
+ * Requires operator; the rows are derived and replaced wholesale. */
+export async function refreshEndpointCveMatches(deviceId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams(tenantParam(tenantId));
+    const { data } = await api.post<SoftwareCveMatchRunSummary>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/cve-matches/refresh?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchSystemStatus() {
   try {
     const { data } = await api.get<SystemStatus>("/system");
@@ -1418,9 +1488,12 @@ export type TrackedVulnerability = {
   ticket_system: string | null;
   ticket_key: string | null;
   ticket_url: string | null;
+  /** Set by the ingest path when a dispatched verification run did not
+   * re-observe the finding. Never settable through the API. */
   machine_verified?: boolean;
   verification_job_id?: string | null;
   last_verified_at?: string | null;
+  /** verified_remediated | manual | ticket_resolved. */
   closure_reason?: string | null;
 };
 
@@ -1455,15 +1528,16 @@ export type VulnerabilitySummary = {
   unassigned: number;
   estate_risk: NistRiskLevel | null;
   by_state: Record<string, number>;
-  closed_total?: number;
-  machine_verified_closed?: number;
-  manual_closed?: number;
-  machine_verification_rate?: number;
   by_severity_open: Record<string, number>;
   by_risk_level_open: Record<string, number>;
   by_sla: Record<string, number>;
   breached: number;
   worst_breached_severity: string | null;
+  closed_total?: number;
+  machine_verified_closed?: number;
+  manual_closed?: number;
+  /** Share of closures a scan confirmed, 0-100. */
+  machine_verification_rate?: number;
   generated_at: string | null;
 };
 
@@ -1640,17 +1714,6 @@ export async function setVulnerabilityTicket(vulnId: string, body: Vulnerability
   }
 }
 
-export async function clearVulnerabilityTicket(vulnId: string) {
-  try {
-    const { data } = await api.delete<TrackedVulnerability>(
-      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket`,
-    );
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
 export async function triggerVulnVerification(vulnId: string) {
   try {
     const { data } = await api.post<TrackedVulnerability>(
@@ -1672,6 +1735,18 @@ export async function syncVulnTicket(vulnId: string) {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+export async function clearVulnerabilityTicket(vulnId: string) {
+  try {
+    const { data } = await api.delete<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 
 
 export type RiskScoreSnapshot = {
@@ -1723,57 +1798,53 @@ export async function triggerRiskSnapshot() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sprint 1 IAM: OIDC & Service Tokens
-// ---------------------------------------------------------------------------
 
-export type OIDCConfig = {
+/** Whether this installation offers single sign-on (ROADMAP Track E).
+ * Deliberately unauthenticated and deliberately not the issuer: the login form
+ * renders before anyone is signed in, and the provider URL names the
+ * customer's identity vendor. */
+export type SsoStatus = {
   enabled: boolean;
-  issuer_url: string;
-  client_id: string;
-  auto_provision: boolean;
-  default_role: string;
+  login_url: string;
 };
 
-export type ServiceTokenMetadata = {
-  id: string;
-  name: string;
-  key_prefix: string;
+/** An API that predates SSO answers 404, and an unreachable one answers
+ * nothing; both read as "no SSO" rather than an error worth showing on a login
+ * form. The button is an enhancement — password login has to keep working when
+ * this call fails. */
+export async function fetchSsoStatus(): Promise<SsoStatus> {
+  const fallback: SsoStatus = { enabled: false, login_url: "/api/auth/oidc/login" };
+  try {
+    const { data } = await api.get<SsoStatus>("/auth/sso");
+    return data ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** A non-interactive API credential (ROADMAP Track E). `token` is present only
+ * in the create response — only a hash is stored, so it can never be read
+ * back. */
+export type ServiceTokenInfo = {
+  token_id: string;
   tenant_id: string;
-  role: "viewer" | "operator" | "admin";
+  name: string;
+  token_prefix: string;
   scopes: string[];
-  created_at: string | null;
+  role: Role;
+  status: "active" | "expired" | "revoked";
   created_by: string | null;
+  created_at: string | null;
   expires_at: string | null;
   last_used_at: string | null;
   revoked_at: string | null;
-  is_active: boolean;
+  token?: string | null;
 };
 
-export type CreateServiceTokenResponse = ServiceTokenMetadata & {
-  token: string;
-};
-
-export type CreateServiceTokenBody = {
-  name: string;
-  role?: "viewer" | "operator" | "admin";
-  scopes?: string[];
-  expires_days?: number | null;
-};
-
-export async function fetchOIDCConfig(): Promise<OIDCConfig> {
+export async function fetchServiceTokens(tenantId: string) {
   try {
-    const { data } = await api.get<OIDCConfig>("/auth/oidc/config");
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-export async function initiateOIDCLogin(redirectTo: string = "/"): Promise<{ authorization_url: string; state: string }> {
-  try {
-    const { data } = await api.get<{ authorization_url: string; state: string }>(
-      `/auth/oidc/login?redirect_to=${encodeURIComponent(redirectTo)}`,
+    const { data } = await api.get<ServiceTokenInfo[]>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens`,
     );
     return data;
   } catch (error) {
@@ -1781,87 +1852,14 @@ export async function initiateOIDCLogin(redirectTo: string = "/"): Promise<{ aut
   }
 }
 
-export async function fetchServiceTokens(): Promise<ServiceTokenMetadata[]> {
+export async function createServiceToken(
+  tenantId: string,
+  body: { name: string; scopes: string[]; role: Role; expires_in_days?: number },
+) {
   try {
-    const { data } = await api.get<ServiceTokenMetadata[]>("/service-tokens");
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-export async function createServiceToken(body: CreateServiceTokenBody): Promise<CreateServiceTokenResponse> {
-  try {
-    const { data } = await api.post<CreateServiceTokenResponse>("/service-tokens", body);
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-export async function revokeServiceToken(tokenId: string): Promise<{ ok: boolean; message: string }> {
-  try {
-    const { data } = await api.delete<{ ok: boolean; message: string }>(`/service-tokens/${tokenId}`);
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-export async function fetchAvailableScopes(): Promise<string[]> {
-  try {
-    const { data } = await api.get<{ scopes: string[] }>("/service-tokens/scopes");
-    return data.scopes;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-export interface SoftwareAdvisory {
-  id: number;
-  tenant_id: string;
-  device_id: string;
-  asset_id?: string | null;
-  software_name: string;
-  installed_version?: string | null;
-  fixed_version?: string | null;
-  purl?: string | null;
-  cpe?: string | null;
-  cve: string;
-  advisory_id?: string | null;
-  severity: "low" | "medium" | "high" | "critical";
-  cvss?: number | null;
-  title?: string | null;
-  vuln_id?: string | null;
-  matched_at?: string | null;
-}
-
-export interface PatchGapRemediation {
-  software_name: string;
-  installed_version?: string | null;
-  fixed_version?: string | null;
-  cve: string;
-  severity: string;
-  upgrade_command: string;
-}
-
-export interface PatchGapSummary {
-  tenant_id: string;
-  device_id?: string | null;
-  total_advisories: number;
-  vulnerable_package_count: number;
-  affected_device_count: number;
-  critical_count: number;
-  high_count: number;
-  medium_count: number;
-  low_count: number;
-  remediations: PatchGapRemediation[];
-}
-
-export async function fetchDeviceAdvisories(deviceId: string): Promise<SoftwareAdvisory[]> {
-  try {
-    const { data } = await api.get<SoftwareAdvisory[]>(
-      `/endpoint/devices/${encodeURIComponent(deviceId)}/advisories`,
+    const { data } = await api.post<ServiceTokenInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens`,
+      body,
     );
     return data;
   } catch (error) {
@@ -1869,47 +1867,13 @@ export async function fetchDeviceAdvisories(deviceId: string): Promise<SoftwareA
   }
 }
 
-export async function fetchAssetAdvisories(assetId: string): Promise<SoftwareAdvisory[]> {
+export async function revokeServiceToken(tenantId: string, tokenId: string) {
   try {
-    const { data } = await api.get<SoftwareAdvisory[]>(
-      `/assets/${encodeURIComponent(assetId)}/advisories`,
+    const { data } = await api.post<ServiceTokenInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/service-tokens/${encodeURIComponent(tokenId)}/revoke`,
     );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }
 }
-
-export async function fetchPatchGaps(): Promise<PatchGapSummary> {
-  try {
-    const { data } = await api.get<PatchGapSummary>("/endpoint/patch-gaps");
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-export async function fetchDevicePatchGap(deviceId: string): Promise<PatchGapSummary> {
-  try {
-    const { data } = await api.get<PatchGapSummary>(
-      `/endpoint/devices/${encodeURIComponent(deviceId)}/patch-gap`,
-    );
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-export async function triggerDeviceAdvisoryMatch(deviceId: string): Promise<SoftwareAdvisory[]> {
-  try {
-    const { data } = await api.post<SoftwareAdvisory[]>(
-      `/endpoint/devices/${encodeURIComponent(deviceId)}/match`,
-    );
-    return data;
-  } catch (error) {
-    throw new Error(apiErrorMessage(error));
-  }
-}
-
-
-

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 from scanner.pipeline.config_schema import RelatedDomainsConfig
 from scanner.pipeline.related_domains import (
     _compute_confidence,
