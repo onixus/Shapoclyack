@@ -99,6 +99,29 @@ describe("ServiceTokensPanel", () => {
     await waitFor(() => expect(revoke).toHaveBeenCalledWith("acme", "st_1"));
   });
 
+  it("surfaces a rejected creation instead of an unhandled rejection", async () => {
+    vi.spyOn(apiModule, "fetchServiceTokens").mockResolvedValue([]);
+    vi.spyOn(apiModule, "createServiceToken").mockRejectedValue(
+      new Error("422 invalid scope 'runs:delete'"),
+    );
+    const unhandled = vi.fn();
+    window.addEventListener("unhandledrejection", unhandled);
+
+    renderPanel();
+    await userEvent.type(await screen.findByLabelText("Name"), "ci-pipeline");
+    await userEvent.clear(screen.getByLabelText("Scopes"));
+    await userEvent.type(screen.getByLabelText("Scopes"), "runs:delete");
+    await userEvent.click(screen.getByRole("button", { name: /issue token/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "422 invalid scope 'runs:delete'",
+    );
+    // What the operator typed survives, so the scope can be corrected in place.
+    expect(screen.getByLabelText("Name")).toHaveValue("ci-pipeline");
+    expect(unhandled).not.toHaveBeenCalled();
+    window.removeEventListener("unhandledrejection", unhandled);
+  });
+
   it("surfaces a failed load rather than showing an empty list", async () => {
     vi.spyOn(apiModule, "fetchServiceTokens").mockRejectedValue(new Error("403 Forbidden"));
     renderPanel();

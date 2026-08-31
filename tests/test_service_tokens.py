@@ -101,6 +101,24 @@ def test_identity_administration_is_closed_to_every_token():
         assert not token.allows(resource=resource, action="write")
 
 
+def test_installation_wide_config_is_read_only_for_every_token():
+    """``PUT /api/config`` replaces the *installation-wide* scanner overrides.
+
+    It hangs off ``require_role``, not ``require_tenant``, so the tenant a token
+    is pinned to buys nothing there: without this, an admin-role token issued
+    for one tenant rewrote how every other tenant scans.
+    """
+    token = principal("*", role="admin")
+    assert token.allows(resource="config", action="read")
+    assert not token.allows(resource="config", action="write")
+
+
+def test_an_explicit_config_write_scope_does_not_reopen_it():
+    assert not principal("config:write", role="admin").allows(
+        resource="config", action="write"
+    )
+
+
 def test_an_unknown_resource_matches_nothing():
     assert not principal("runs:read").allows(resource="", action="read")
 

@@ -120,7 +120,8 @@ def make_id_token(
         "nonce": nonce,
     }
     payload.update(claims)
-    return jwt.encode(payload, key, algorithm="RS256", headers={"kid": kid})
+    headers = {"kid": kid} if kid is not None else {}
+    return jwt.encode(payload, key, algorithm="RS256", headers=headers)
 
 
 # --------------------------------------------------------------------------- #
@@ -470,3 +471,86 @@ def test_tenant_comes_from_the_claim_when_one_is_configured():
     settings = make_settings(oidc_tenant_claim="tenant", oidc_default_tenant="default")
     assert oidc.tenant_from_claims(settings, {"tenant": "acme"}) == "acme"
     assert oidc.tenant_from_claims(settings, {}) == "default"
+
+
+# --------------------------------------------------------------------------- #
+# Key selection without a ``kid``
+# --------------------------------------------------------------------------- #
+
+
+def test_a_token_without_a_kid_is_accepted_whichever_published_key_signed_it(provider):
+    """A provider may omit ``kid`` and still publish several signing keys.
+
+    Taking only the first candidate rejected a perfectly valid token for as long
+    as the provider signed with any other published key, and no refetch could
+    fix it — the key was in the set all along.
+    """
+    provider.keys = [PUBLIC_JWK, ROTATED_PUBLIC_JWK]
+    settings = make_settings()
+    for signer in (PRIVATE_KEY, ROTATED_PRIVATE_KEY):
+        nonce = _fresh_nonce(settings)
+        token = make_id_token(nonce=nonce, key=signer, kid=None)
+        claims = oidc.validate_id_token(settings, token, nonce=nonce)
+        assert claims["sub"] == "idp-subject-1"
+
+
+def test_a_token_without_a_kid_signed_by_no_published_key_is_still_refused(provider):
+    provider.keys = [PUBLIC_JWK, ROTATED_PUBLIC_JWK]
+    settings = make_settings()
+    nonce = _fresh_nonce(settings)
+    token = make_id_token(nonce=nonce, key=OTHER_PRIVATE_KEY, kid=None)
+    with pytest.raises(oidc.OidcError):
+        oidc.validate_id_token(settings, token, nonce=nonce)
+
+
+def test_an_expired_token_is_not_retried_against_every_key(provider):
+    """Only a signature mismatch is worth another key; the rest would repeat."""
+    provider.keys = [PUBLIC_JWK, ROTATED_PUBLIC_JWK]
+    settings = make_settings()
+    nonce = _fresh_nonce(settings)
+    token = make_id_token(nonce=nonce, kid=None, expires_in=-10)
+    with pytest.raises(oidc.OidcError, match="expired"):
+        oidc.validate_id_token(settings, token, nonce=nonce)
+
+
+# --------------------------------------------------------------------------- #
+# ``email_verified``
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("raw", [True, "true", "True", "1"])
+def test_email_verified_accepts_a_real_affirmative(raw):
+    assert oidc.email_verified_from_claims({"email_verified": raw}) is True
+
+
+@pytest.mark.parametrize("raw", [False, "false", "False", "0", "", "no", None, 0, [], {}])
+def test_email_verified_reads_anything_else_as_unverified(raw):
+    """``bool("false")`` is ``True``, and providers do emit the claim as a string.
+
+    Reading one as verified hands an existing console account to whoever can
+    register that address at the identity provider — the exact takeover the
+    linking rule exists to prevent.
+    """
+    assert oidc.email_verified_from_claims({"email_verified": raw}) is False
+
+
+def test_email_verified_is_false_when_the_claim_is_absent():
+    assert oidc.email_verified_from_claims({}) is False
+
+
+# --------------------------------------------------------------------------- #
+# Pending-state store
+# --------------------------------------------------------------------------- #
+
+
+def test_the_pending_state_store_is_capped(provider, monkeypatch):
+    """``/auth/oidc/login`` is unauthenticated, so the store needs a ceiling."""
+    monkeypatch.setattr(oidc, "MAX_PENDING_STATES", 5)
+    settings = make_settings()
+    states = [oidc.build_authorization_request(settings).state for _ in range(20)]
+    assert len(oidc._states) <= 5
+    # The most recent requests survive and still work; the evicted ones fail
+    # closed rather than being honoured from a stale record.
+    oidc.consume_state(settings, states[-1])
+    with pytest.raises(oidc.OidcError):
+        oidc.consume_state(settings, states[0])

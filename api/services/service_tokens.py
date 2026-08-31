@@ -69,6 +69,14 @@ READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # side of it has nothing to tell one.
 FORBIDDEN_RESOURCES = frozenset({"auth", "users", "tenants"})
 
+# Resources a service token may read but never write. These are the routes that
+# are *not* tenant-scoped — they hang off :func:`api.auth.require_role`, so the
+# tenant a token is pinned to buys nothing there and the scope layer is the only
+# boundary left. ``config`` is the whole of it today: ``PUT /api/config``
+# replaces the installation-wide scanner overrides, so an admin-role token
+# issued for one tenant would otherwise rewrite how every other tenant scans.
+FORBIDDEN_WRITE_RESOURCES = frozenset({"config"})
+
 _settings: Settings | None = None
 
 
@@ -309,6 +317,8 @@ class ServiceTokenPrincipal:
 
     def allows(self, *, resource: str, action: str) -> bool:
         if resource in FORBIDDEN_RESOURCES:
+            return False
+        if action != "read" and resource in FORBIDDEN_WRITE_RESOURCES:
             return False
         return scope_allows(list(self.scopes), resource=resource, action=action)
 

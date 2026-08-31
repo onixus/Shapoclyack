@@ -60,9 +60,15 @@ export function ServiceTokensPanel({
       .map((scope) => scope.trim())
       .filter(Boolean);
     if (!name.trim() || parsed.length === 0) return;
-    const created = await createMutation.mutateAsync({ name: name.trim(), scopes: parsed, role });
-    setIssued(created);
-    setName("");
+    try {
+      const created = await createMutation.mutateAsync({ name: name.trim(), scopes: parsed, role });
+      setIssued(created);
+      setName("");
+    } catch {
+      // The mutation records the failure; awaiting it without a catch would
+      // additionally surface an unhandled rejection. The form keeps what the
+      // operator typed so a rejected scope can be corrected in place.
+    }
   }
 
   return (
@@ -123,6 +129,13 @@ export function ServiceTokensPanel({
         </div>
       ) : null}
 
+      {createMutation.isError ? (
+        <p className="text-sm text-destructive" role="alert">
+          {createMutation.error instanceof Error
+            ? createMutation.error.message
+            : "Failed to create the service token"}
+        </p>
+      ) : null}
       {error ? (
         <p className="text-sm text-rose-500">
           {error instanceof Error ? error.message : "Failed to load service tokens"}

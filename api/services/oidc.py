@@ -118,6 +118,11 @@ _metadata_cache: dict[str, _CacheEntry] = {}
 _jwks_cache: dict[str, _CacheEntry] = {}
 _states: dict[str, _StateRecord] = {}
 
+# Hard ceiling on pending (issued but unanswered) authorization requests. The
+# login route is unauthenticated, so this is what stops it being a memory
+# exhaustion primitive; see :func:`_prune_states`.
+MAX_PENDING_STATES = 10_000
+
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -312,13 +317,19 @@ def _signing_algorithms(document: dict[str, Any]) -> list[str]:
     return allowed
 
 
-def _select_key(settings: Settings, id_token: str) -> Any:
-    """The public key matching the token's ``kid``, refetching once on a miss.
+def _candidate_keys(settings: Settings, id_token: str) -> list[Any]:
+    """Every public key the token could have been signed by, best first.
 
-    A rotated key is the ordinary reason a ``kid`` is unknown, so one forced
-    refresh is the fix. It is bounded to one because an attacker can otherwise
-    turn "sign with a key you invented" into a request amplifier against the
-    provider's JWKS endpoint.
+    A ``kid`` names exactly one key, and a rotated key is the ordinary reason it
+    is unknown, so one forced refresh is the fix. It is bounded to one because
+    an attacker can otherwise turn "sign with a key you invented" into a request
+    amplifier against the provider's JWKS endpoint.
+
+    Without a ``kid`` there is nothing to match on, and a provider is entitled
+    to publish several signing keys — so every one of them is a candidate and
+    the signature decides. Returning only the first would reject a perfectly
+    valid token for as long as the provider signs with any other published key,
+    and no refresh would ever fix it.
     """
     try:
         header = jwt.get_unverified_header(id_token)
@@ -326,6 +337,7 @@ def _select_key(settings: Settings, id_token: str) -> Any:
         raise OidcError("ID token is malformed") from exc
     kid = header.get("kid")
 
+    candidates: list[Any] = []
     for force in (False, True):
         key_set = jwks(settings, force_refresh=force)
         for raw_key in key_set.get("keys", []):
@@ -336,10 +348,12 @@ def _select_key(settings: Settings, id_token: str) -> Any:
             if raw_key.get("use") not in (None, "sig"):
                 continue
             try:
-                return jwt.PyJWK(raw_key).key
+                candidates.append(jwt.PyJWK(raw_key).key)
             except Exception as exc:  # noqa: BLE001 - malformed key in a public document
                 logger.warning("Skipping an unusable OIDC signing key: %s", exc)
                 continue
+        if candidates:
+            return candidates
     raise OidcError("ID token was signed by an unknown key")
 
 
@@ -351,25 +365,36 @@ def validate_id_token(settings: Settings, id_token: str, *, nonce: str) -> dict[
     a forged token does not need.
     """
     document = discovery_document(settings)
-    key = _select_key(settings, id_token)
-    try:
-        claims = jwt.decode(
-            id_token,
-            key,
-            algorithms=_signing_algorithms(document),
-            audience=settings.oidc_client_id,
-            issuer=settings.oidc_issuer.strip().rstrip("/"),
-            leeway=LEEWAY_SECONDS,
-            options={"require": ["exp", "iat", "iss", "aud", "sub"]},
-        )
-    except jwt.ExpiredSignatureError as exc:
-        raise OidcError("ID token has expired") from exc
-    except jwt.InvalidAudienceError as exc:
-        raise OidcError("ID token was issued for a different audience") from exc
-    except jwt.InvalidIssuerError as exc:
-        raise OidcError("ID token was issued by a different issuer") from exc
-    except jwt.PyJWTError as exc:
-        raise OidcError("ID token failed validation") from exc
+    candidates = _candidate_keys(settings, id_token)
+    claims: dict[str, Any] | None = None
+    signature_error: jwt.PyJWTError | None = None
+    for key in candidates:
+        try:
+            claims = jwt.decode(
+                id_token,
+                key,
+                algorithms=_signing_algorithms(document),
+                audience=settings.oidc_client_id,
+                issuer=settings.oidc_issuer.strip().rstrip("/"),
+                leeway=LEEWAY_SECONDS,
+                options={"require": ["exp", "iat", "iss", "aud", "sub"]},
+            )
+            break
+        except jwt.InvalidSignatureError as exc:
+            # Only a signature mismatch is worth trying the next key on: every
+            # other failure is a property of the token itself and would repeat.
+            signature_error = exc
+            continue
+        except jwt.ExpiredSignatureError as exc:
+            raise OidcError("ID token has expired") from exc
+        except jwt.InvalidAudienceError as exc:
+            raise OidcError("ID token was issued for a different audience") from exc
+        except jwt.InvalidIssuerError as exc:
+            raise OidcError("ID token was issued by a different issuer") from exc
+        except jwt.PyJWTError as exc:
+            raise OidcError("ID token failed validation") from exc
+    if claims is None:
+        raise OidcError("ID token failed validation") from signature_error
 
     # ``azp`` is only meaningful when several audiences are present, but when it
     # is present it must be us: a token minted for another client of the same
@@ -394,9 +419,27 @@ def _b64url(raw: bytes) -> str:
 
 
 def _prune_states(now: float) -> None:
-    """Drop expired records. Called under ``_lock`` by both writers."""
+    """Drop expired records, then cap what is left. Called under ``_lock``.
+
+    Expiry alone is not a bound: ``/api/auth/oidc/login`` is unauthenticated, so
+    anyone able to reach it can mint records faster than they age out and grow
+    this dict until the replica dies. The cap makes the store cost a fixed
+    amount of memory; the price of hitting it is that the oldest pending logins
+    are forgotten, and a login whose record is gone fails closed at
+    :func:`consume_state` and can simply be retried.
+    """
     for jti in [jti for jti, record in _states.items() if record.expires_at <= now]:
         _states.pop(jti, None)
+    overflow = len(_states) - MAX_PENDING_STATES
+    if overflow > 0:
+        oldest = sorted(_states.items(), key=lambda item: item[1].expires_at)[:overflow]
+        for jti, _record in oldest:
+            _states.pop(jti, None)
+        logger.warning(
+            "OIDC pending-login store hit its %d-record cap; dropped %d of the oldest.",
+            MAX_PENDING_STATES,
+            overflow,
+        )
 
 
 def build_authorization_request(
@@ -420,7 +463,6 @@ def build_authorization_request(
 
     now = time.monotonic()
     with _lock:
-        _prune_states(now)
         _states[jti] = _StateRecord(
             nonce=nonce,
             code_verifier=code_verifier,
@@ -428,6 +470,9 @@ def build_authorization_request(
             expires_at=now + ttl,
             next_url=next_url,
         )
+        # After the insert, so the cap bounds what the store actually holds
+        # rather than what it held one request ago.
+        _prune_states(now)
 
     state = jwt.encode(
         {
@@ -545,6 +590,24 @@ def username_from_claims(settings: Settings, claims: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()[:128]
     raise OidcError("ID token carries no usable username claim")
+
+
+def email_verified_from_claims(claims: dict[str, Any]) -> bool:
+    """Whether the provider vouches for the address, read strictly.
+
+    ``bool()`` is the wrong test: OpenID Connect defines ``email_verified`` as a
+    boolean, but providers do emit it as the *string* ``"false"``, and every
+    non-empty string is truthy. Reading one as verified is exactly the
+    account-takeover this claim is supposed to prevent, so only a real ``True``
+    and the two unambiguous spellings of it count; anything else — including a
+    value shaped in some way this does not recognise — is unverified.
+    """
+    value = claims.get("email_verified")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1")
+    return False
 
 
 def role_from_claims(settings: Settings, claims: dict[str, Any]) -> str:

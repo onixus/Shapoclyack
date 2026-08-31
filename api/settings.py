@@ -429,13 +429,27 @@ def _oidc_role_map() -> dict[str, str]:
     Entries naming an unknown role are dropped rather than downgraded: a
     mapping that silently becomes "viewer" reads, in the admin's head, as a
     grant that worked.
+
+    Malformed JSON is a warning and an empty mapping, not an exception, for the
+    same reason :func:`_oidc_default_role` refuses to raise: this is parsed on
+    every startup whether or not SSO is configured, so letting it propagate
+    would let one stray environment variable take the entire API down —
+    including for the tenants that never enabled SSO. Dropping the mapping only
+    ever costs role *elevation*, so failing this way cannot over-grant.
     """
     raw = os.environ.get("OCTO_OIDC_ROLE_MAP", "").strip()
     if not raw:
         return {}
-    parsed = json.loads(raw)
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        logger.warning("OCTO_OIDC_ROLE_MAP is not valid JSON (%s); ignoring it.", exc)
+        return {}
     if not isinstance(parsed, dict):
-        raise ValueError("OCTO_OIDC_ROLE_MAP must be a JSON object of {claim value: role}")
+        logger.warning(
+            "OCTO_OIDC_ROLE_MAP must be a JSON object of {claim value: role}; ignoring it."
+        )
+        return {}
     mapping: dict[str, str] = {}
     for key, value in parsed.items():
         role = str(value).strip().lower()

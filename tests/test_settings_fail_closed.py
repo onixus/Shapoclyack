@@ -42,6 +42,7 @@ _DECIDING_VARS = (
     "OCTO_CLICKHOUSE_URL",
     "OCTO_NATS_URL",
     "OCTO_AGENT_TOKEN",
+    "OCTO_OIDC_ROLE_MAP",
 )
 
 
@@ -406,3 +407,39 @@ def test_hsts_defaults_to_the_environment(clean_env: pytest.MonkeyPatch) -> None
 
     clean_env.setenv("OCTO_HSTS_ENABLED", "true")
     assert load_settings().hsts_enabled is True
+
+
+# --------------------------------------------------------------------------- #
+# OIDC role map (parsed on every startup, SSO configured or not)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("raw", ["{not json", "[]", '"viewer"', "null"])
+def test_a_malformed_role_map_does_not_take_the_api_down(
+    clean_env: pytest.MonkeyPatch, raw: str
+) -> None:
+    """One stray environment variable must not stop the whole installation.
+
+    ``OCTO_OIDC_ROLE_MAP`` is read on every startup whether or not SSO is
+    configured, so raising here would refuse to boot for tenants that never
+    enabled it. Dropping the mapping only ever costs role elevation, so the
+    fallback cannot over-grant.
+    """
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_OIDC_ROLE_MAP", raw)
+
+    settings = load_settings()
+
+    assert settings.oidc_role_map == {}
+
+
+def test_a_well_formed_role_map_is_still_read(clean_env: pytest.MonkeyPatch) -> None:
+    _configure_prod(clean_env)
+    clean_env.setenv(
+        "OCTO_OIDC_ROLE_MAP", json.dumps({"platform-admins": "admin", "nobody": "wizard"})
+    )
+
+    settings = load_settings()
+
+    # The unknown role is dropped rather than downgraded to viewer.
+    assert settings.oidc_role_map == {"platform-admins": "admin"}

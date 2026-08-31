@@ -189,6 +189,13 @@ Three resources are closed to every service token whatever its role or scopes:
 passwords, grant memberships, widen a scan scope or mint further tokens is one
 that outlives its own revocation.
 
+`config` is readable but never writable by a service token, for a different
+reason: `PUT /api/config` replaces the **installation-wide** scanner overrides
+and is authorized by role alone, not per tenant. The tenant a token is pinned to
+therefore buys nothing there, so an admin-role token issued for one customer
+would otherwise decide how every other customer scans. `config:write` in a
+token's scopes is accepted at creation and refused at request time.
+
 `expires_at` is always set (`OCTO_SERVICE_TOKEN_DEFAULT_TTL_DAYS`, capped by
 `OCTO_SERVICE_TOKEN_MAX_TTL_DAYS`) — a credential with no expiry is one nobody
 rotates. `last_used_at` is written at most once per

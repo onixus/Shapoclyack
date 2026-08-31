@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -266,7 +267,7 @@ def oidc_callback(
             subject=str(claims["sub"]),
             username=username,
             email=claims.get("email"),
-            email_verified=bool(claims.get("email_verified")),
+            email_verified=oidc_service.email_verified_from_claims(claims),
             role=oidc_service.role_from_claims(settings, claims),
             tenant_id=oidc_service.tenant_from_claims(settings, claims),
             jit_enabled=settings.oidc_jit_provisioning,
@@ -301,7 +302,10 @@ def oidc_callback(
         landing = f"{destination}{separator}access_token={token}&token_type=bearer"
         next_url = str(completed.get("next_url") or "")
         if next_url:
-            landing = f"{landing}&next={next_url}"
+            # Percent-encoded: the fragment already carries the session token as
+            # ``&``-separated parameters, so an unescaped path could append
+            # parameters of its own to the URL the console is about to parse.
+            landing = f"{landing}&next={urllib.parse.quote(next_url, safe='/')}"
         return RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
     return TokenResponse(access_token=token, role=token_user.role, username=token_user.username)
 

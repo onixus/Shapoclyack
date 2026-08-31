@@ -49,9 +49,10 @@ def provider(monkeypatch):
     return fake
 
 
-def start_login(client) -> str:
+def start_login(client, *, next_url: str = "") -> str:
     """Begin a login and return the state the provider would send back."""
-    response = client.get("/api/auth/oidc/login?redirect=false")
+    query = "redirect=false" + (f"&next={next_url}" if next_url else "")
+    response = client.get(f"/api/auth/oidc/login?{query}")
     assert response.status_code == 200, response.text
     return response.json()["state"]
 
@@ -413,3 +414,32 @@ def test_the_console_redirect_carries_the_token_in_the_fragment(
     # A fragment, not a query string: browsers never send it to a server and
     # access logs never record it.
     assert "?access_token=" not in location
+
+
+def test_the_next_path_cannot_inject_extra_fragment_parameters(
+    tmp_path, monkeypatch, provider
+):
+    """``next`` is concatenated into a fragment that already carries the token.
+
+    Unescaped, a path containing ``&``/``=`` appends parameters of its own to
+    the URL the console is about to parse, so the landing page can be handed an
+    ``access_token`` the API never issued.
+    """
+    settings = sso_settings(
+        tmp_path,
+        oidc_jit_provisioning=True,
+        oidc_post_login_redirect="https://console.example/login",
+    )
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    state = start_login(client, next_url="/runs%26access_token%3Dforged")
+    stored = next(iter(oidc._states.values()))  # noqa: SLF001
+    provider.token_response = {"id_token": make_id_token(nonce=stored.nonce)}
+
+    response = client.get(
+        f"/api/auth/oidc/callback?code=c&state={state}", follow_redirects=False
+    )
+
+    location = response.headers["location"]
+    fragment = location.split("#", 1)[1]
+    parameters = [item.split("=", 1)[0] for item in fragment.split("&")]
+    assert parameters == ["access_token", "token_type", "next"]
