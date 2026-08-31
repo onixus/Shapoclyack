@@ -270,6 +270,7 @@ def check_credential_leaks(
     has_weak = False
     has_ok = False
     has_error = False
+    has_not_checked = False
 
     for domain in working_domains:
         if time.monotonic() - start_time > config.deadline_seconds:
@@ -329,15 +330,22 @@ def check_credential_leaks(
             has_ok = True
         elif report.status == "error":
             has_error = True
+        else:
+            has_not_checked = True
 
+    # "ok" must mean full, answered coverage: a domain the provider could not
+    # answer for (no key, 401, transport error) leaves the aggregate partial, so
+    # it may not outrank those domains and claim a clean sweep.
     if has_fail:
         overall_status = "fail"
     elif has_weak:
         overall_status = "weak"
-    elif has_ok and not has_error:
-        overall_status = "ok"
     elif has_error:
         overall_status = "error"
+    elif has_ok and not has_not_checked:
+        overall_status = "ok"
+    elif has_ok:
+        overall_status = "partial"
     else:
         overall_status = "not_checked"
 
@@ -345,7 +353,12 @@ def check_credential_leaks(
         "status": overall_status,
         "skipped_reason": None,
         "provider": config.provider,
-        "checked_domains": len(domains_results),
+        "checked_domains": sum(
+            1
+            for d in domains_results.values()
+            if d.get("status") in ("ok", "weak", "fail")
+        ),
+        "attempted_domains": len(domains_results),
         "total_domains": total_domains_count,
         "breaches_count": total_breaches,
         "accounts_count": total_accounts,
@@ -359,12 +372,20 @@ def check_credential_leaks(
     # Save primary aggregate artifact
     save_json(output_dir / "credential_leaks.json", result)
 
-    # Save restricted identifiers artifact
-    identifiers_payload = {
-        "total_identifiers": total_accounts,
-        "domains": identifiers_by_domain,
+    # Save restricted identifiers artifact. ``reveal_identifiers`` is the
+    # documented privacy boundary for this stage: unmasked account identifiers
+    # are only written to disk when the operator has explicitly opted in.
+    # Otherwise the artifact records the count and why it is empty, so the
+    # operator-only endpoint reports a deliberate opt-out rather than a gap.
+    identifiers_payload: dict[str, Any] = {
+        "total_identifiers": total_accounts if config.reveal_identifiers else 0,
+        "domains": identifiers_by_domain if config.reveal_identifiers else {},
+        "revealed": config.reveal_identifiers,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if not config.reveal_identifiers:
+        identifiers_payload["withheld_reason"] = "credential_leaks.reveal_identifiers is false"
+        identifiers_payload["withheld_identifiers"] = total_accounts
     save_json(output_dir / "credential_leaks_identifiers.json", identifiers_payload)
 
     LOG.info(

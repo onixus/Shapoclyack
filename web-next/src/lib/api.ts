@@ -277,6 +277,7 @@ export type RelatedDomainsSummary = {
   total_candidates: number;
   truncated: boolean;
   auto_merged: boolean;
+  merge_into_scope?: boolean;
   merged_domains: string[];
   disclaimer: string;
   candidates: RelatedDomainCandidate[];
@@ -287,6 +288,8 @@ export type OrgProfileDetail = {
   run_id: string;
   seed_domains: string[];
   ownership?: Record<string, unknown> | null;
+  /** True when `ownership` was withheld because the caller is a viewer. */
+  ownership_restricted?: boolean;
   related_domains?: RelatedDomainsSummary | null;
   controls?: OrgProfileControlsSummary | null;
   promoted_domains: string[];
@@ -1561,6 +1564,8 @@ export type VulnerabilityListFilters = {
 export type VulnerabilityTransitionBody = {
   state: VulnLifecycleState;
   note?: string | null;
+  closure_reason?: string | null;
+  machine_verified?: boolean;
 };
 
 export type VulnerabilityAssignBody = {
@@ -1741,6 +1746,8 @@ export async function clearVulnerabilityTicket(vulnId: string) {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+
 
 export type RiskScoreSnapshot = {
   snapshot_id: string;

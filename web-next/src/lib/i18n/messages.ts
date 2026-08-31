@@ -798,3 +798,4 @@ export const STATUS_RU: Record<string, string> = {
   missing: "нет",
   fresh: "актуально",
 };
+

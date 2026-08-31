@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -728,19 +729,34 @@ def get_controls(
 
 
 def get_org_profile(
-    settings: Settings, run_id: str, *, tenant_id: str | None = None
+    settings: Settings,
+    run_id: str,
+    *,
+    tenant_id: str | None = None,
+    allow_restricted: bool = False,
 ) -> dict[str, Any] | None:
-    """Read combined organization profile (ownership + related domains + controls) for this run."""
+    """Read combined organization profile (ownership + related domains + controls) for this run.
+
+    ``ownership.json`` is a restricted artifact (:func:`is_restricted_artifact`):
+    it carries RDAP registrant and abuse contacts, and a viewer gets a ``404``
+    for it on the artifact endpoints. Returning it inline here regardless of role
+    would route straight around that gate, so the ownership block is only
+    included when the caller is allowed restricted artifacts (operator+).
+    """
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
 
-    ownership_data = _load_json(run_dir / "ownership.json")
+    ownership_data = (
+        _load_json(run_dir / "ownership.json") if allow_restricted else None
+    )
     related_data = _load_json(run_dir / "related_domains.json")
     controls_data = _load_json(run_dir / "controls.json")
     promoted_lines = _read_lines(run_dir / "promoted_domains.txt")
 
     if not ownership_data and not related_data and not controls_data:
+        # A viewer on a run that only produced ownership.json still gets a 404
+        # rather than a hint that the restricted artifact exists.
         return None
 
     seed_domains: list[str] = []
@@ -753,6 +769,7 @@ def get_org_profile(
         "run_id": run_id,
         "seed_domains": seed_domains,
         "ownership": ownership_data if isinstance(ownership_data, dict) else None,
+        "ownership_restricted": not allow_restricted,
         "related_domains": related_data if isinstance(related_data, dict) else None,
         "controls": controls_data if isinstance(controls_data, dict) else None,
         "promoted_domains": promoted_lines,
@@ -763,21 +780,54 @@ def get_org_profile(
     }
 
 
+#: A promoted entry becomes scope for a later run, so the value that lands in
+#: ``promoted_domains.txt`` has to be a single hostname and nothing else. The
+#: path parameter arrives URL-decoded, so ``%0A`` would otherwise write a second
+#: line into the scope file.
+_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"
+)
+
+
+class PromoteDomainError(ValueError):
+    """Raised when a promote request names something that may not be promoted."""
+
+
 def promote_related_domain(
     settings: Settings, run_id: str, domain: str, *, tenant_id: str | None = None
 ) -> dict[str, Any] | None:
-    """Record operator decision to promote a discovered related domain into future scope."""
+    """Record operator decision to promote a discovered related domain into future scope.
+
+    Only a syntactically valid domain that this run actually discovered as a
+    related-domain candidate may be promoted: the file feeds the scope of a
+    later scan, and an operator should not be able to authorize a host the
+    scanner never proposed by typing it into the URL.
+    """
     from datetime import datetime, timezone
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
 
-    domain_clean = domain.strip().lower()
+    domain_clean = domain.strip().lower().rstrip(".")
+    if not _DOMAIN_RE.match(domain_clean):
+        raise PromoteDomainError(f"'{domain}' is not a valid domain name")
+
+    related_data = _load_json(run_dir / "related_domains.json")
+    known: set[str] = set()
+    if isinstance(related_data, dict):
+        for candidate in related_data.get("candidates") or []:
+            if isinstance(candidate, dict) and candidate.get("domain"):
+                known.add(str(candidate["domain"]).strip().lower().rstrip("."))
+    if domain_clean not in known:
+        raise PromoteDomainError(
+            f"'{domain_clean}' is not a related-domain candidate discovered by this run"
+        )
+
     promoted_file = run_dir / "promoted_domains.txt"
     current = set(_read_lines(promoted_file))
     current.add(domain_clean)
 
-    sorted_list = sorted(list(current))
+    sorted_list = sorted(current)
     promoted_file.write_text("\n".join(sorted_list) + "\n", encoding="utf-8")
 
     return {
@@ -802,6 +852,9 @@ def get_leak_identifiers(
         "run_id": run_id,
         "total_identifiers": int(raw.get("total_identifiers") or 0),
         "domains": raw.get("domains") if isinstance(raw.get("domains"), dict) else {},
+        "revealed": bool(raw.get("revealed", True)),
+        "withheld_reason": raw.get("withheld_reason"),
+        "withheld_identifiers": int(raw.get("withheld_identifiers") or 0),
         "generated_at": raw.get("generated_at"),
     }
 

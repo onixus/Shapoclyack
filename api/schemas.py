@@ -1411,6 +1411,7 @@ class RelatedDomainsSummary(BaseModel):
     total_candidates: int = 0
     truncated: bool = False
     auto_merged: bool = False
+    merge_into_scope: bool = False
     merged_domains: list[str] = Field(default_factory=list)
     disclaimer: str = ""
     candidates: list[RelatedDomainCandidate] = Field(default_factory=list)
@@ -1421,6 +1422,8 @@ class OrgProfileDetail(BaseModel):
     run_id: str
     seed_domains: list[str] = Field(default_factory=list)
     ownership: dict[str, Any] | None = None
+    #: True when ``ownership`` was withheld because the caller is a viewer.
+    ownership_restricted: bool = False
     related_domains: RelatedDomainsSummary | None = None
     controls: OrgProfileControlsSummary | None = None
     promoted_domains: list[str] = Field(default_factory=list)
@@ -1461,6 +1464,7 @@ class CredentialLeaksSummary(BaseModel):
     skipped_reason: str | None = None
     provider: str = "hibp"
     checked_domains: int = 0
+    attempted_domains: int = 0
     total_domains: int = 0
     breaches_count: int = 0
     accounts_count: int = 0
@@ -1474,6 +1478,11 @@ class LeakIdentifiersResponse(BaseModel):
     run_id: str
     total_identifiers: int = 0
     domains: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    #: False when ``credential_leaks.reveal_identifiers`` was left off, in which
+    #: case ``domains`` is empty by design rather than for lack of data.
+    revealed: bool = True
+    withheld_reason: str | None = None
+    withheld_identifiers: int = 0
     generated_at: str | None = None
 
 

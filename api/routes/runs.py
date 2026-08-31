@@ -249,9 +249,17 @@ def get_org_profile(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> OrgProfileDetail:
-    """Combined organization profile (ownership, related domains, controls) for this run (org_profile M4)."""
+    """Combined organization profile (ownership, related domains, controls) for this run (org_profile M4).
+
+    The ``ownership`` block holds RDAP registrant/abuse contacts and is a
+    restricted artifact, so it is only populated for operator+ principals --
+    the same boundary the artifact preview and download endpoints enforce.
+    """
     data = runs_service.get_org_profile(
-        settings, run_id, tenant_id=_run_tenant_filter(principal)
+        settings,
+        run_id,
+        tenant_id=_run_tenant_filter(principal),
+        allow_restricted=ROLE_RANK[principal.role] >= ROLE_RANK[Role.operator],
     )
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org profile data not found for this run")
@@ -266,9 +274,14 @@ def promote_related_domain(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> PromoteDomainResponse:
     """Promote a discovered related domain into future scope (operator-only action, org_profile M4)."""
-    res = runs_service.promote_related_domain(
-        settings, run_id, domain, tenant_id=_run_tenant_filter(principal)
-    )
+    try:
+        res = runs_service.promote_related_domain(
+            settings, run_id, domain, tenant_id=_run_tenant_filter(principal)
+        )
+    except runs_service.PromoteDomainError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     if res is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return PromoteDomainResponse(**res)

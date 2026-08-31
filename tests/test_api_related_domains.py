@@ -89,7 +89,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 def test_get_org_profile_success(tmp_path: Path):
     client = _client(tmp_path)
-    headers = auth_headers(client, "viewer")
+    headers = auth_headers(client, "operator")
 
     response = client.get("/api/runs/run-org-profile/org-profile", headers=headers)
     assert response.status_code == 200, response.text
@@ -98,8 +98,55 @@ def test_get_org_profile_success(tmp_path: Path):
     assert data["run_id"] == "run-org-profile"
     assert data["seed_domains"] == ["example.com"]
     assert data["ownership"]["domains"]["example.com"]["org_name"] == "Acme Inc."
+    assert data["ownership_restricted"] is False
     assert data["related_domains"]["confirmed_count"] == 1
     assert data["related_domains"]["candidates"][0]["domain"] == "acme-partner.com"
+
+
+def test_org_profile_withholds_ownership_from_a_viewer(tmp_path: Path):
+    """``ownership.json`` is a restricted artifact and 404s for a viewer on the
+    artifact endpoints; the org-profile view must not hand the same RDAP
+    registrant/abuse contacts back inline."""
+    client = _client(tmp_path)
+    headers = auth_headers(client, "viewer")
+
+    response = client.get("/api/runs/run-org-profile/org-profile", headers=headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+
+    assert data["ownership"] is None
+    assert data["ownership_restricted"] is True
+    # The non-restricted parts of the profile are still served.
+    assert data["related_domains"]["confirmed_count"] == 1
+
+
+def test_promote_rejects_a_newline_injected_domain(tmp_path: Path):
+    """promoted_domains.txt is line-oriented scope for a later run, so an
+    embedded newline must not smuggle a second entry into it."""
+    client = _client(tmp_path)
+    headers = auth_headers(client, "operator")
+
+    response = client.post(
+        "/api/runs/run-org-profile/related-domains/"
+        "acme-partner.com%0Aevil.example.net/promote",
+        headers=headers,
+    )
+    assert response.status_code == 400, response.text
+
+    promoted = (tmp_path / "runs" / "run-org-profile" / "promoted_domains.txt")
+    assert not promoted.exists() or "evil.example.net" not in promoted.read_text()
+
+
+def test_promote_rejects_a_domain_this_run_never_discovered(tmp_path: Path):
+    client = _client(tmp_path)
+    headers = auth_headers(client, "operator")
+
+    response = client.post(
+        "/api/runs/run-org-profile/related-domains/not-a-candidate.example/promote",
+        headers=headers,
+    )
+    assert response.status_code == 400, response.text
+    assert "candidate" in response.json()["detail"]
 
 
 def test_promote_related_domain_operator(tmp_path: Path):

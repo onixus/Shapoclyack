@@ -73,11 +73,13 @@ function RiskBadge({ risk }: { risk: string }) {
   if (normalized.includes("moderate") || normalized.includes("medium")) {
     return <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30">Moderate Risk</Badge>;
   }
-  if (normalized.includes("low")) {
-    return <Badge className="bg-blue-500/20 text-blue-300 border-blue-500/30">Low Risk</Badge>;
-  }
+  // "very_low" has to be tested before "low", otherwise the substring match
+  // below claims it and the very-low branch is unreachable.
   if (normalized.includes("very_low")) {
     return <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30">Very Low Risk</Badge>;
+  }
+  if (normalized.includes("low")) {
+    return <Badge className="bg-blue-500/20 text-blue-300 border-blue-500/30">Low Risk</Badge>;
   }
   return <Badge variant="outline" className="text-slate-500 border-slate-700">Unassessed</Badge>;
 }
