@@ -1183,3 +1183,147 @@ class SoftwareCveMatch(Base):
             "tenant_id", "device_id", "match_key", name="uq_software_cve_match_row"
         ),
     )
+
+
+class TenantBranding(Base):
+    """Per-tenant report identity (Sprint 4, "No report factory").
+
+    An MSSP sells the report, and a report that carries this platform's name to
+    its customer is one the MSSP cannot send. One row per tenant, all columns
+    optional: an unbranded report is the product's own look, not an error.
+
+    ``logo_png`` is a base64 PNG rather than a path or a URL. A path means the
+    file has to exist on whichever replica renders — which is the bug that
+    makes a scheduled report fail once a month and never in testing — and a URL
+    means the renderer fetches from the network at render time, which is an
+    SSRF sink reached by editing a settings field. Bytes in the row render
+    identically everywhere and fetch nothing.
+    """
+
+    __tablename__ = "tenant_branding"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    org_name: Mapped[str | None] = mapped_column(default=None)
+    # "#1e3a8a" style hex. Validated in the service, since a malformed colour
+    # must fail the PATCH rather than the monthly render.
+    primary_color: Mapped[str | None] = mapped_column(default=None)
+    accent_color: Mapped[str | None] = mapped_column(default=None)
+    logo_png: Mapped[str | None] = mapped_column(default=None)
+    footer_text: Mapped[str | None] = mapped_column(default=None)
+    contact_email: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime]
+    updated_by: Mapped[str | None] = mapped_column(default=None)
+
+
+class ReportTemplate(Base):
+    """What a report contains, separate from when it is sent (Sprint 4).
+
+    ``kind`` selects the builder — ``executive``, ``technical`` or
+    ``compliance`` — and ``sections`` turns individual blocks off. Templates are
+    rows rather than files because an MSSP configures them per customer through
+    the console, and a per-tenant file would have to live on a volume every
+    replica mounts.
+    """
+
+    __tablename__ = "report_templates"
+
+    template_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    kind: Mapped[str] = mapped_column(default="executive")
+    # For kind="compliance": which catalogue to assess against.
+    framework_id: Mapped[str | None] = mapped_column(default=None)
+    # {"section_key": bool}. Absent keys default to on, so a template written
+    # before a new section existed keeps rendering the whole report.
+    sections: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_report_template_name"),
+        Index("ix_report_templates_tenant", "tenant_id"),
+    )
+
+
+class ReportSchedule(Base):
+    """When a template is rendered and where the result goes (Sprint 4).
+
+    Deliberately the same shape as ``ScanSchedule`` — cron, ``next_run_at``,
+    ``last_run_at`` — and dispatched by the same kind of leader-locked worker,
+    because a second scheduling model in one product is a second set of
+    timezone and overlap bugs.
+
+    ``recipients`` is a list of ``{"transport": "email"|"webhook", "target": …}``.
+    A webhook target goes through ``integrations.delivery``'s SSRF validation
+    at delivery time, not only at write time: a hostname that resolved publicly
+    when the schedule was created can resolve to link-local a month later.
+    """
+
+    __tablename__ = "report_schedules"
+
+    schedule_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    template_id: Mapped[str] = mapped_column(
+        ForeignKey("report_templates.template_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    enabled: Mapped[bool] = mapped_column(default=True)
+    cron: Mapped[str]
+    fmt: Mapped[str] = mapped_column(default="pdf")
+    recipients: Mapped[list] = mapped_column(JSON, default=list)
+    next_run_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_run_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_report_id: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (Index("ix_report_schedules_tenant_enabled", "tenant_id", "enabled"),)
+
+
+class GeneratedReport(Base):
+    """One rendered report, and what happened to it (Sprint 4).
+
+    The bytes live on disk under ``output_dir/reports/`` and this row carries
+    the pointer, the same split the scan runs already use: a 2 MB PDF in a
+    Postgres row is a backup nobody can restore quickly, and a per-tenant
+    quarterly report is worth keeping long after the run that produced its
+    numbers has been pruned.
+
+    ``delivery`` records one entry per recipient — transport, target, status,
+    error — rather than a single ``delivered`` boolean. "The report was sent"
+    is not true when three of four recipients bounced, and an operator asked to
+    debug that needs to know which one.
+    """
+
+    __tablename__ = "generated_reports"
+
+    report_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    template_id: Mapped[str | None] = mapped_column(default=None)
+    schedule_id: Mapped[str | None] = mapped_column(default=None)
+    kind: Mapped[str] = mapped_column(default="executive")
+    fmt: Mapped[str] = mapped_column(default="pdf")
+    # pending | ready | failed
+    status: Mapped[str] = mapped_column(default="pending")
+    title: Mapped[str] = mapped_column(default="")
+    # Relative to output_dir, never absolute: an absolute path in a row is a
+    # path traversal waiting for a different deployment layout.
+    storage_path: Mapped[str | None] = mapped_column(default=None)
+    size_bytes: Mapped[int] = mapped_column(default=0, server_default="0")
+    error: Mapped[str | None] = mapped_column(default=None)
+    delivery: Mapped[list] = mapped_column(JSON, default=list)
+    generated_at: Mapped[datetime]
+    generated_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index("ix_generated_reports_tenant_time", "tenant_id", "generated_at"),
+    )

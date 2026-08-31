@@ -47,6 +47,7 @@ _log = logging.getLogger(__name__)
 # gets its own object id below.
 LOCK_CLASS_ID = 0x53484150
 SCHEDULE_DISPATCHER_LOCK_ID = 1
+REPORT_DISPATCHER_LOCK_ID = 2
 
 
 class LeaderLock:

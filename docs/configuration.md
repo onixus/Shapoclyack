@@ -317,6 +317,25 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
+Report factory (see
+[reports-and-compliance.md](reports-and-compliance.md#configuration)). The
+report relay is separate from the scanner's alert SMTP on purpose: an alert
+goes to an operations channel and a report goes to a customer.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_REPORTS_ENABLED` | `true` | Register `/api/reports`. Off means no report API at all |
+| `OCTO_REPORT_DISPATCH_ENABLED` | `true` | Run the scheduled-report loop in *this* replica; leader-locked, so only one replica ever sends |
+| `OCTO_REPORT_DISPATCH_INTERVAL_SECONDS` | `60` | Poll interval for due schedules (floored at 5) |
+| `OCTO_REPORT_RETENTION_DAYS` | `365` | Age past which generated reports and their files are pruned; `0` keeps them |
+| `OCTO_REPORT_SMTP_HOST` | *(empty)* | Relay for emailed reports. Empty means email recipients are recorded as `skipped`, with the reason, rather than silently dropped |
+| `OCTO_REPORT_SMTP_PORT` | `25` | Relay port |
+| `OCTO_REPORT_SMTP_FROM` | *(empty)* | Envelope sender; required alongside the host |
+| `OCTO_REPORT_SMTP_USERNAME` | *(empty)* | Relay username; login is attempted only when set |
+| `OCTO_REPORT_SMTP_PASSWORD` | *(empty)* | Relay password |
+| `OCTO_REPORT_SMTP_STARTTLS` | `true` | Upgrade the connection; a relay that refuses is logged and the report still goes |
+| `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
+
 OpenTelemetry (ROADMAP P3). Empty endpoint means no TracerProvider — the
 API does not buffer spans nobody will read. Traces are request timing, not
 scan observations.

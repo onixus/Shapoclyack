@@ -1877,3 +1877,284 @@ export async function revokeServiceToken(tenantId: string, tokenId: string) {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+// --------------------------------------------------------------------------
+// Compliance mapping & report factory (Sprint 4)
+// --------------------------------------------------------------------------
+
+export type ComplianceFrameworkInfo = {
+  framework_id: string;
+  name: string;
+  version: string;
+  /** What the catalogue deliberately leaves out. Rendered next to the score so
+   * "82% of PCI DSS" is never read as "82% compliant". */
+  scope_note: string;
+  control_count: number;
+};
+
+export type ComplianceEvidenceItem = {
+  kind: string;
+  ref_id: string;
+  label: string;
+  severity: string;
+  detail: string;
+  signals: string[];
+  accepted: boolean;
+};
+
+export type ComplianceControlStatus = {
+  control_id: string;
+  title: string;
+  status: "passed" | "failed" | "not_assessed";
+  rationale: string;
+  signals: string[];
+  severity_floor: string;
+  failing_count: number;
+  accepted_count: number;
+  evidence: ComplianceEvidenceItem[];
+  not_assessed_reason: string | null;
+  framework_id?: string | null;
+};
+
+export type CompliancePosture = {
+  framework_id: string;
+  name: string;
+  version: string;
+  scope_note: string;
+  generated_at: string;
+  asset_count: number;
+  open_findings: number;
+  controls_total: number;
+  controls_assessed: number;
+  controls_passed: number;
+  controls_failed: number;
+  controls_not_assessed: number;
+  /** Share of the *assessed* controls that pass; null when nothing could be
+   * assessed, which is not the same as 100%. */
+  coverage_score: number | null;
+  controls: ComplianceControlStatus[];
+};
+
+export async function fetchComplianceFrameworks() {
+  try {
+    const { data } = await api.get<ComplianceFrameworkInfo[]>("/compliance/frameworks");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchCompliancePosture(frameworkId: string) {
+  try {
+    const { data } = await api.get<CompliancePosture>(
+      `/compliance/${encodeURIComponent(frameworkId)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchComplianceControl(frameworkId: string, controlId: string) {
+  try {
+    const { data } = await api.get<ComplianceControlStatus>(
+      `/compliance/${encodeURIComponent(frameworkId)}/controls/${encodeURIComponent(controlId)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type TenantBrandingInfo = {
+  tenant_id: string;
+  org_name: string | null;
+  primary_color: string | null;
+  accent_color: string | null;
+  logo_png: string | null;
+  footer_text: string | null;
+  contact_email: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+};
+
+export type ReportTemplateInfo = {
+  template_id: string;
+  tenant_id: string;
+  name: string;
+  kind: "executive" | "technical" | "compliance";
+  framework_id: string | null;
+  sections: Record<string, boolean>;
+  created_at: string | null;
+  created_by: string | null;
+  updated_at: string | null;
+};
+
+export type ReportRecipient = { transport: "email" | "webhook"; target: string };
+
+export type ReportScheduleInfo = {
+  schedule_id: string;
+  tenant_id: string;
+  template_id: string;
+  name: string;
+  enabled: boolean;
+  cron: string;
+  format: "pdf" | "html" | "json";
+  recipients: ReportRecipient[];
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_report_id: string | null;
+  created_at: string | null;
+  created_by: string | null;
+};
+
+export type GeneratedReportInfo = {
+  report_id: string;
+  tenant_id: string;
+  template_id: string | null;
+  schedule_id: string | null;
+  kind: string;
+  format: "pdf" | "html" | "json";
+  status: "pending" | "ready" | "failed";
+  title: string;
+  size_bytes: number;
+  error: string | null;
+  /** One entry per recipient — "sent" is not true when three of four bounced. */
+  delivery: { transport: string | null; target: string | null; status: string; error: string | null }[];
+  generated_at: string | null;
+  generated_by: string | null;
+};
+
+export async function fetchBranding() {
+  try {
+    const { data } = await api.get<TenantBrandingInfo>("/reports/branding");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function updateBranding(body: Partial<Omit<TenantBrandingInfo, "tenant_id">>) {
+  try {
+    const { data } = await api.put<TenantBrandingInfo>("/reports/branding", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchReportTemplates() {
+  try {
+    const { data } = await api.get<ReportTemplateInfo[]>("/reports/templates");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type CreateReportTemplateBody = {
+  name: string;
+  kind: ReportTemplateInfo["kind"];
+  framework_id?: string | null;
+  sections?: Record<string, boolean>;
+};
+
+export async function createReportTemplate(body: CreateReportTemplateBody) {
+  try {
+    const { data } = await api.post<ReportTemplateInfo>("/reports/templates", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteReportTemplate(templateId: string) {
+  try {
+    await api.delete(`/reports/templates/${encodeURIComponent(templateId)}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchReportSchedules() {
+  try {
+    const { data } = await api.get<ReportScheduleInfo[]>("/reports/schedules");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type CreateReportScheduleBody = {
+  template_id: string;
+  name: string;
+  cron: string;
+  format: ReportScheduleInfo["format"];
+  recipients: ReportRecipient[];
+  enabled?: boolean;
+};
+
+export async function createReportSchedule(body: CreateReportScheduleBody) {
+  try {
+    const { data } = await api.post<ReportScheduleInfo>("/reports/schedules", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteReportSchedule(scheduleId: string) {
+  try {
+    await api.delete(`/reports/schedules/${encodeURIComponent(scheduleId)}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchGeneratedReports(limit = 50) {
+  try {
+    const { data } = await api.get<GeneratedReportInfo[]>("/reports", { params: { limit } });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type GenerateReportBody = {
+  template_id?: string | null;
+  kind?: ReportTemplateInfo["kind"];
+  framework_id?: string | null;
+  format?: GeneratedReportInfo["format"];
+  title?: string | null;
+};
+
+export async function generateReport(body: GenerateReportBody) {
+  try {
+    const { data } = await api.post<GeneratedReportInfo>("/reports/generate", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Fetched as a blob through axios so the bearer token is attached — a plain
+ * <a href> would download an HTML 401 page instead. */
+export async function downloadGeneratedReport(report: GeneratedReportInfo) {
+  try {
+    const { data } = await api.get<Blob>(
+      `/reports/${encodeURIComponent(report.report_id)}/download`,
+      { responseType: "blob" },
+    );
+    triggerBrowserDownload(data, `${report.report_id}.${report.format}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteGeneratedReport(reportId: string) {
+  try {
+    await api.delete(`/reports/${encodeURIComponent(reportId)}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}

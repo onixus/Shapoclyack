@@ -1487,3 +1487,191 @@ class LeakIdentifiersResponse(BaseModel):
 
 
 
+
+
+# --------------------------------------------------------------- compliance
+
+
+class ComplianceFrameworkInfo(BaseModel):
+    """One catalogue in ``api/services/compliance/frameworks.py`` (Sprint 4)."""
+
+    framework_id: str
+    name: str
+    version: str
+    scope_note: str
+    control_count: int
+
+
+class ComplianceEvidenceItem(BaseModel):
+    kind: str  # finding | asset | software
+    ref_id: str
+    label: str
+    severity: str
+    detail: str = ""
+    signals: list[str] = Field(default_factory=list)
+    #: An accepted risk is evidence an auditor should see, but it does not fail
+    #: the control — the framework's own risk-acceptance process covers it.
+    accepted: bool = False
+
+
+class ComplianceControlStatus(BaseModel):
+    control_id: str
+    title: str
+    #: passed | failed | not_assessed
+    status: str
+    rationale: str = ""
+    signals: list[str] = Field(default_factory=list)
+    severity_floor: str = "low"
+    failing_count: int = 0
+    accepted_count: int = 0
+    evidence: list[ComplianceEvidenceItem] = Field(default_factory=list)
+    not_assessed_reason: str | None = None
+    framework_id: str | None = None
+
+
+class CompliancePosture(BaseModel):
+    """Assessed posture for one framework. ``coverage_score`` is the share of
+    *assessed* controls that pass, never a claim about the whole standard."""
+
+    framework_id: str
+    name: str
+    version: str
+    scope_note: str
+    generated_at: str
+    asset_count: int = 0
+    open_findings: int = 0
+    controls_total: int = 0
+    controls_assessed: int = 0
+    controls_passed: int = 0
+    controls_failed: int = 0
+    controls_not_assessed: int = 0
+    coverage_score: float | None = None
+    controls: list[ComplianceControlStatus] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------ report factory
+
+
+class TenantBrandingInfo(BaseModel):
+    tenant_id: str
+    org_name: str | None = None
+    primary_color: str | None = None
+    accent_color: str | None = None
+    #: Base64 PNG; validated on write so a bad logo fails the PATCH, not the
+    #: scheduled render.
+    logo_png: str | None = None
+    footer_text: str | None = None
+    contact_email: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
+
+
+class TenantBrandingRequest(BaseModel):
+    org_name: str | None = Field(default=None, max_length=200)
+    primary_color: str | None = Field(default=None, max_length=16)
+    accent_color: str | None = Field(default=None, max_length=16)
+    logo_png: str | None = Field(default=None, max_length=524_288)
+    footer_text: str | None = Field(default=None, max_length=500)
+    contact_email: str | None = Field(default=None, max_length=320)
+
+
+class ReportTemplateInfo(BaseModel):
+    template_id: str
+    tenant_id: str
+    name: str
+    kind: str
+    framework_id: str | None = None
+    sections: dict[str, bool] = Field(default_factory=dict)
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+
+
+class ReportTemplateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    kind: Literal["executive", "technical", "compliance"] = "executive"
+    framework_id: str | None = Field(default=None, max_length=64)
+    #: Absent keys mean "on", so a template written before a section existed
+    #: keeps rendering the whole report.
+    sections: dict[str, bool] = Field(default_factory=dict)
+
+
+class ReportTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    kind: Literal["executive", "technical", "compliance"] | None = None
+    framework_id: str | None = Field(default=None, max_length=64)
+    sections: dict[str, bool] | None = None
+
+
+class ReportRecipient(BaseModel):
+    transport: Literal["email", "webhook"]
+    target: str = Field(min_length=3, max_length=500)
+
+
+class ReportScheduleInfo(BaseModel):
+    schedule_id: str
+    tenant_id: str
+    template_id: str
+    name: str
+    enabled: bool = True
+    cron: str
+    format: str = "pdf"
+    recipients: list[ReportRecipient] = Field(default_factory=list)
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    last_report_id: str | None = None
+    created_at: str | None = None
+    created_by: str | None = None
+
+
+class ReportScheduleRequest(BaseModel):
+    template_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    cron: str = Field(min_length=5, max_length=120)
+    format: Literal["pdf", "html", "json"] = "pdf"
+    recipients: list[ReportRecipient] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class ReportScheduleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    cron: str | None = Field(default=None, min_length=5, max_length=120)
+    format: Literal["pdf", "html", "json"] | None = None
+    recipients: list[ReportRecipient] | None = None
+    enabled: bool | None = None
+
+
+class ReportDeliveryEntry(BaseModel):
+    transport: str | None = None
+    target: str | None = None
+    #: delivered | failed | skipped — one entry per recipient, because "sent"
+    #: is not true when three of four bounced.
+    status: str
+    error: str | None = None
+
+
+class GeneratedReportInfo(BaseModel):
+    report_id: str
+    tenant_id: str
+    template_id: str | None = None
+    schedule_id: str | None = None
+    kind: str
+    format: str
+    status: str
+    title: str = ""
+    size_bytes: int = 0
+    error: str | None = None
+    delivery: list[ReportDeliveryEntry] = Field(default_factory=list)
+    generated_at: str | None = None
+    generated_by: str | None = None
+
+
+class GenerateReportRequest(BaseModel):
+    """Render now. Either from a stored template, or ad hoc from ``kind``."""
+
+    template_id: str | None = Field(default=None, max_length=64)
+    kind: Literal["executive", "technical", "compliance"] = "executive"
+    framework_id: str | None = Field(default=None, max_length=64)
+    sections: dict[str, bool] | None = None
+    format: Literal["pdf", "html", "json"] = "pdf"
+    title: str | None = Field(default=None, max_length=300)

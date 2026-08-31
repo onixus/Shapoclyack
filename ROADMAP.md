@@ -599,8 +599,8 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 |-----|---------------|
 | No authenticated assessment | **Partly closed (M1).** Endpoint software is now matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). What is still missing is the rest of the estate: language ecosystems, Windows, non-distribution software, and every distribution other than those two |
 | No SSO | No OIDC, SAML or LDAP; three roles; no service tokens. This is a procurement checklist item — without it there is no pilot |
-| No report factory | A per-run PDF and a SARIF export exist. Templates, scheduled delivery, per-tenant branding and "a quarterly report about the organization" do not. An MSSP sells the report, not the scans |
-| No compliance mapping | Nothing for PCI/ISO/CIS, which is half of an enterprise VM budget |
+| No report factory | **Closed (Sprint 4).** Executive / technical / compliance templates, per-tenant branding, cron-scheduled delivery over SMTP and webhook with a per-recipient delivery trail, and PDF / HTML / JSON off one report body — see [docs/reports-and-compliance.md](docs/reports-and-compliance.md). What is still missing is signed point-in-time evidence packages and per-control ownership |
+| No compliance mapping | **Closed (Sprint 4).** PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory, with `not_assessed` for anything the platform cannot observe and a score that is explicitly the share of *assessed* controls rather than compliance with the standard. Custom frameworks and archivable evidence packages are not in scope |
 | Asset context filled by hand | `business_service`/`environment`/`owner_email` only via PATCH. At 50k assets the dashboard's "unowned assets" will read ~45k and the whole owner/SLA workflow never starts |
 | The loop is not closed | Ticket status is one-way by design, and `VERIFYING → CLOSED` is manual: there is no targeted re-scan. The product still cannot answer "was it actually fixed?" mechanically |
 | No MSSP operations | No quotas, no per-tenant consumption metering, no onboarding wizard, no white-label, no customer read-only portal |
@@ -621,10 +621,15 @@ language ecosystems and Windows, and folding matches into the tracked-finding li
 [docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of
 effort on this list, and it gives sales a demo artifact while the matcher is still being built).
 
-**Now (Sprint 4)** — unlock enterprise vulnerability management & compliance:
-1. **Report Factory & Compliance Mapping** (executive PDF reports, scheduled delivery, per-tenant white-label branding, PCI-DSS / CIS Controls / ISO 27001 mapping).
+**Done (Sprint 4)** — enterprise vulnerability management & compliance:
+1. ~~**Report Factory & Compliance Mapping**~~ — **merged**: executive / technical /
+   compliance reports in PDF, HTML and JSON off one report body, per-tenant
+   white-label branding, cron-scheduled delivery over SMTP and webhook with a
+   per-recipient delivery trail, and PCI-DSS 4.0 / CIS Controls v8 / ISO 27001:2022
+   control mapping that reports `not_assessed` rather than inventing a pass
+   ([docs/reports-and-compliance.md](docs/reports-and-compliance.md)).
 
-**Next (Sprint 5)** — enterprise operations & MSSP:
+**Now (Sprint 5)** — enterprise operations & MSSP:
 2. **MSSP Operations & Tenant Metering** (usage metering, asset & scan quotas, customer read-only portal, onboarding wizard).
 
 **Later (Sprints 6+)** — scale and ecosystem connectors:

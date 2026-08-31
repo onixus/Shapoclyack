@@ -6,6 +6,54 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Report factory and compliance mapping** (ROADMAP Track E, Sprint 4). An
+  MSSP sells the report, and the platform had one: a per-run PDF with this
+  project's name on it. There is now a branded, scheduled, per-tenant report
+  factory, and a compliance mapping to put in it.
+
+  *Reports* are built once into a plain body and rendered three ways — PDF,
+  HTML, JSON — so the JSON an MSSP pipes into its own portal is **the same
+  report** as the PDF its customer opens, rather than a second implementation
+  that can disagree with it. Three kinds: executive (KPIs, trend, SLA,
+  compliance scores), technical (top findings, asset coverage) and compliance
+  (one framework's full control table). Every number comes from the tracked
+  findings and the asset registry, never from a run directory, so a report about
+  a quarter still renders after that quarter's runs were pruned.
+
+  *Branding* is a per-tenant row: name, colours, a base64 PNG logo, footer.
+  Bytes rather than a path or a URL — a path stops resolving on whichever
+  replica renders, and a URL would have the renderer fetch from the network at
+  render time, which is an SSRF sink reached by editing a settings field.
+  Colours and the PNG magic number are validated on write, so a mistake fails
+  the operator's request instead of the 03:00 render on the first of the month.
+
+  *Scheduled delivery* (`report_schedules`, cron, admin-only) goes out over SMTP
+  or the event webhooks' SSRF-validated, DNS-pinned, no-redirect wire, with the
+  target re-validated on every send. Each report records **one delivery entry
+  per recipient**: "sent" is not true when three of four bounced. The dispatcher
+  is the scan dispatcher's twin — thread per replica, Postgres advisory lock —
+  with one deliberate difference: `next_run_at` advances *before* the render,
+  because the same PDF cannot be un-sent to a customer. A replica that dies
+  mid-render skips the occurrence rather than repeating it. A failed render is a
+  `failed` row with the error on it and the schedule still advances; leaving it
+  due would retry every tick, to every recipient, for as long as the failure
+  lasts.
+
+  *Compliance* classifies findings and estate facts into a closed vocabulary of
+  signals, and PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 are written
+  against that vocabulary rather than against CVEs — so a fourth framework is a
+  catalogue entry, not a re-classification of the estate. The honest parts are
+  the load-bearing ones: a control this platform cannot observe is **absent from
+  the catalogue**, a control with no evidence in a tenant is `not_assessed` and
+  excluded from the score (an empty estate scores nothing, not 100%), accepted
+  risk is reported per control but does not fail it, and the score is the share
+  of *assessed* controls passing — returned with the catalogue's scope note so
+  it cannot be presented as compliance with the standard. Downloads re-derive
+  the file path from the row's own ids rather than trusting the stored string.
+
+  Console: a Compliance page with per-control evidence, and a report factory
+  panel on Reports. Migration `0029`.
+
 - **Closed-loop remediation: mechanical verification** (#183). "Fixed" was an
   assertion an operator made about their own work. A finding can now be sent
   for a targeted re-scan (`POST /vulnerabilities/{id}/verify`), and the run

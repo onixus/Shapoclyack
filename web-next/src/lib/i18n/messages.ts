@@ -17,6 +17,7 @@ export const en = {
   "nav.attackSurface": "Attack Surface",
   "nav.geo": "Geo Map",
   "nav.reports": "Reports",
+  "nav.compliance": "Compliance",
   "nav.system": "System",
   "nav.serviceTokens": "Service tokens",
 
@@ -297,6 +298,7 @@ export const en = {
   "page.geo.unlocatedTitle": "Unlocated hosts ({count})",
   "page.geo.unlocatedHint": "No GeoIP record and no country to fall back on — private addresses, or an installation with no GeoIP database configured. Listed rather than dropped, so the map never reads as the whole estate.",
   "page.reports.noPdf": "No PDF report available for this run.",
+  "page.reports.runArtifacts": "Per-run artifacts",
   "page.endpoints.recent": "Recent software changes",
   "page.endpoints.noChanges": "No installs, removals, or updates observed yet.",
   "page.endpoints.lariskaHint": "Lariska agents · software inventory correlated to network assets",
@@ -355,6 +357,7 @@ export const ru: Record<MsgKey, string> = {
   "nav.attackSurface": "Поверхность атаки",
   "nav.geo": "Геокарта",
   "nav.reports": "Отчёты",
+  "nav.compliance": "Соответствие",
   "nav.system": "Система",
   "nav.serviceTokens": "Сервисные токены",
 
@@ -635,6 +638,7 @@ export const ru: Record<MsgKey, string> = {
   "page.geo.unlocatedTitle": "Хосты без координат ({count})",
   "page.geo.unlocatedHint": "Нет записи GeoIP и нет страны для запасного варианта — частные адреса или установка без базы GeoIP. Перечислены, а не отброшены, чтобы карта не читалась как весь ландшафт.",
   "page.reports.noPdf": "Для этого прогона нет PDF-отчёта.",
+  "page.reports.runArtifacts": "Артефакты прогонов",
   "page.endpoints.recent": "Недавние изменения ПО",
   "page.endpoints.noChanges": "Установок, удалений и обновлений пока нет.",
   "page.endpoints.lariskaHint": "Агенты Lariska · инвентарь ПО, сопоставленный с сетевыми активами",
