@@ -47,6 +47,7 @@ import type {
 import { TICKET_SYSTEMS } from "@/lib/remediation";
 import { SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
 import { normalizeSeverity, runDetailHref } from "@/lib/run-data";
+import { useT } from "@/lib/i18n";
 import {
   assetDetailHref,
   findingLabel,
@@ -99,7 +100,25 @@ export default function VulnerabilityDetailPage() {
   );
 }
 
+/** Render a stored ``closure_reason`` in the viewer's language.
+ *
+ * Unknown values pass through: the column is a plain string, so a reason a
+ * future release adds should read as itself rather than as a missing key. */
+function closureReasonLabel(t: ReturnType<typeof useT>, reason: string): string {
+  switch (reason) {
+    case "verified_remediated":
+      return t("vuln.reason.verifiedRemediated");
+    case "manual":
+      return t("vuln.reason.manual");
+    case "ticket_resolved":
+      return t("vuln.reason.ticketResolved");
+    default:
+      return reason;
+  }
+}
+
 function VulnerabilityDetailInner() {
+  const t = useT();
   const searchParams = useSearchParams();
   const vulnId = (searchParams.get("vulnId") || "").trim();
   const tenantId = searchParams.get("tenantId") || "default";
@@ -168,12 +187,12 @@ function VulnerabilityDetailInner() {
               <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
               {vuln.machine_verified ? (
                 <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/40 flex items-center gap-1 text-xs">
-                  <ShieldCheck className="h-3 w-3" /> Machine Verified
+                  <ShieldCheck className="h-3 w-3" /> {t("vuln.machineVerified")}
                 </Badge>
               ) : null}
               {vuln.closure_reason ? (
                 <Badge variant="outline" className="border-slate-700 text-slate-300 text-xs">
-                  Closure: {vuln.closure_reason}
+                  {t("vuln.closureReason")}: {closureReasonLabel(t, vuln.closure_reason)}
                 </Badge>
               ) : null}
             </div>
@@ -379,6 +398,7 @@ function Field({
 }
 
 function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
   const mutation = useTransitionVulnerability(vuln.vuln_id);
   const verifyMutation = useTriggerVulnVerification(vuln.vuln_id);
   const options = legalTransitions(vuln.state);
@@ -463,7 +483,9 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             className="w-full border-sky-500/40 bg-sky-950/30 text-sky-300 hover:bg-sky-900/40 gap-1.5"
           >
             <ShieldCheck className="h-4 w-4" />
-            {verifyMutation.isPending ? "Dispatching re-scan…" : "Verify Remediation"}
+            {verifyMutation.isPending
+              ? t("vuln.verifyingInProgress")
+              : t("vuln.verifyBtn")}
           </Button>
         </div>
       )}
@@ -554,6 +576,7 @@ function CommentCard({ vulnId }: { vulnId: string }) {
 }
 
 function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
   const setMutation = useSetVulnerabilityTicket(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityTicket(vuln.vuln_id);
   const syncMutation = useSyncVulnTicket(vuln.vuln_id);
@@ -578,7 +601,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
             className="text-xs text-sky-400 hover:text-sky-300 gap-1 h-7 px-2"
           >
             <RefreshCw className={`h-3 w-3 ${syncMutation.isPending ? "animate-spin" : ""}`} />
-            Sync
+            {t("vuln.syncTicketBtn")}
           </Button>
         ) : null}
       </div>

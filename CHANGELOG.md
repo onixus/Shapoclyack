@@ -6,6 +6,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Related domains: reverse-MX discovery** (org profile). A fourth discovery
+  source alongside cert SAN, reverse-NS and WHOIS: domains that publish the
+  same mail exchangers. Public providers are excluded through
+  `excluded_mx_providers` — "both use Google Workspace" is not evidence of
+  common ownership — and an exchanger only counts when it is shared with a
+  seed domain, the same requirement `reverse_ns` carries. The source is
+  weighted 0.45 against cert SAN's 0.70, because a shared mail host is weaker
+  evidence than a shared certificate.
+
+  `auto_merge` now requires `merge_into_scope` to also be set before anything
+  is added to the scan scope. `auto_merge` alone logs that it was asked to
+  merge and did not: widening what gets scanned is the one action in this
+  module with legal consequences, so it takes a second, explicit switch rather
+  than being a side effect of enabling discovery.
+
+- **Credential leaks: identifier reveal is opt-in.** `reveal_identifiers`
+  gates whether leaked account identifiers are written to the artifact at all.
+  Left off, `domains` is empty and the artifact says so — `revealed: false`
+  with `withheld_reason` and `withheld_identifiers` — so a reader can tell
+  "we found nothing" apart from "we are not showing you what we found". The
+  count survives the withholding because the aggregate is the part that is
+  safe to keep.
+
+  The org-profile summary also reports `attempted_domains`, which makes a
+  partial run legible: three domains checked out of eight is a different
+  statement from three domains clean.
+
+### Changed
+
+- **Controls matrix reads versions, not banners.** A banner counts as
+  disclosing a version only when it carries a digit-dotted token
+  (`nginx/1.24.0`), not a bare product name (`nginx`). The matrix previously
+  scored the second as a disclosure, which made "hide your version" advice
+  fire against servers that were not publishing one.
+
 - **Closed-loop remediation: mechanical verification** (#183). "Fixed" was an
   assertion an operator made about their own work. A finding can now be sent
   for a targeted re-scan (`POST /vulnerabilities/{id}/verify`), and the run
