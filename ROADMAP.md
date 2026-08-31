@@ -22,7 +22,7 @@ yet production-ready.
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
 | **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged |
-| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5 merged |
+| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M2 merged |
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
@@ -621,16 +621,24 @@ language ecosystems and Windows, and folding matches into the tracked-finding li
 [docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of
 effort on this list, and it gives sales a demo artifact while the matcher is still being built).
 
-**Now (Sprint 4)** — unlock enterprise vulnerability management & compliance:
-1. **Report Factory & Compliance Mapping** (executive PDF reports, scheduled delivery, per-tenant white-label branding, PCI-DSS / CIS Controls / ISO 27001 mapping).
+**Now** — the report factory:
 
-**Next (Sprint 5)** — enterprise operations & MSSP:
-2. **MSSP Operations & Tenant Metering** (usage metering, asset & scan quotas, customer read-only portal, onboarding wizard).
+- **Report Factory & compliance mapping** — executive PDF reports, scheduled
+  delivery, per-tenant white-label branding, PCI-DSS / CIS Controls /
+  ISO 27001 mapping.
 
-**Later (Sprints 6+)** — scale and ecosystem connectors:
-6. **Asset-context connectors** (AWS/GCP/Azure cloud inventory & Active Directory sync; 4–5 sprints).
-7. **ProjectDiscovery `httpx`/`tlsx`** (targeted probe enrichment; 2–3 sprints).
-8. **False-positive feedback & coverage analytics** (2 sprints).
+**Next** — enterprise operations & MSSP: usage metering, asset and scan
+quotas, a customer read-only portal, an onboarding wizard. Metering means
+something once there is a report to show the customer, which is why it
+follows the factory rather than leading it.
+
+**Later** — scale and ecosystem connectors: asset-context connectors
+(AWS/GCP/Azure inventory and Active Directory sync, 4–5 sprints — expensive
+and vendor-specific, and CSV import covers the gap until then);
+ProjectDiscovery `httpx`/`tlsx` (2–3 sprints); false-positive feedback and
+coverage analytics (2 sprints). `httpx` is deliberately late: it raises
+finding volume and precision, and more findings before the loop is closed is
+just more noise.
 
 ### Not doing, and why
 

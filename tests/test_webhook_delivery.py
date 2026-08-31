@@ -129,7 +129,7 @@ def test_post_refuses_internal_target_before_wire_call(monkeypatch):
     def _boom(*args, **kwargs):  # pragma: no cover - must never be reached
         raise AssertionError("wire call reached for blocked target")
 
-    monkeypatch.setattr(delivery, "_post_to_address", _boom)
+    monkeypatch.setattr(delivery, "_send_to_address", _boom)
     result = delivery.post("http://127.0.0.1/hook", b"{}", {})
     assert result.ok is False
     assert result.retryable is False
@@ -142,7 +142,8 @@ def test_post_pins_connection_to_the_validated_address(monkeypatch):
 
     monkeypatch.setattr(outbound_targets, "resolve", lambda host: [approved])
 
-    def _capture(target, address, body, headers, *, deadline, capture_body=False):
+    def _capture(target, address, body, headers, *, method="POST", deadline, capture_body=False):
+        seen["method"] = method
         seen["target"] = target
         seen["address"] = address
         seen["body"] = body
@@ -150,10 +151,11 @@ def test_post_pins_connection_to_the_validated_address(monkeypatch):
         assert deadline > 0
         return 204, ""
 
-    monkeypatch.setattr(delivery, "_post_to_address", _capture)
+    monkeypatch.setattr(delivery, "_send_to_address", _capture)
     result = delivery.post("https://receiver.example:8443/hook?q=1", b"{}", {"X-Test": "1"})
 
     assert result.ok is True
+    assert seen["method"] == "POST"
     assert seen["address"] == approved
     assert seen["target"].hostname == "receiver.example"
     assert seen["target"].port == 8443
@@ -174,8 +176,8 @@ def test_post_does_not_reresolve_after_validation(monkeypatch):
     monkeypatch.setattr(outbound_targets, "resolve", _resolve)
     monkeypatch.setattr(
         delivery,
-        "_post_to_address",
-        lambda target, address, body, headers, *, deadline, capture_body=False: (200, ""),
+        "_send_to_address",
+        lambda target, address, body, headers, *, method="POST", deadline, capture_body=False: (200, ""),
     )
 
     result = delivery.post("https://receiver.example/hook", b"{}", {})
@@ -205,8 +207,8 @@ def test_post_classifies_response_codes(monkeypatch, status_code, ok, retryable)
     )
     monkeypatch.setattr(
         delivery,
-        "_post_to_address",
-        lambda target, address, body, headers, *, deadline, capture_body=False: (
+        "_send_to_address",
+        lambda target, address, body, headers, *, method="POST", deadline, capture_body=False: (
             status_code,
             "body",
         ),
@@ -226,7 +228,7 @@ def test_post_treats_transport_errors_as_retryable(monkeypatch):
     def _raise(*args, **kwargs):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(delivery, "_post_to_address", _raise)
+    monkeypatch.setattr(delivery, "_send_to_address", _raise)
     result = delivery.post("https://receiver.example/hook", b"{}", {})
     assert result.ok is False
     assert result.retryable is True
@@ -241,8 +243,8 @@ def test_post_does_not_follow_redirects(monkeypatch):
     )
     monkeypatch.setattr(
         delivery,
-        "_post_to_address",
-        lambda target, address, body, headers, *, deadline, capture_body=False: (
+        "_send_to_address",
+        lambda target, address, body, headers, *, method="POST", deadline, capture_body=False: (
             302,
             "moved",
         ),

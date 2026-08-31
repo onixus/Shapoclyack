@@ -272,27 +272,6 @@ def _send_to_address(
         connection.close()
 
 
-def _post_to_address(
-    target: _ResolvedTarget,
-    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
-    body: bytes,
-    headers: dict[str, str],
-    *,
-    deadline: float,
-    capture_body: bool = False,
-) -> tuple[int, str]:
-    """POST to one already-approved IP. The seam webhook tests patch."""
-    return _send_to_address(
-        target,
-        address,
-        body,
-        headers,
-        method="POST",
-        deadline=deadline,
-        capture_body=capture_body,
-    )
-
-
 def request(
     method: str,
     url: str,
@@ -302,7 +281,6 @@ def request(
     timeout_seconds: int = 10,
     allow_private: bool = False,
     capture_body: bool = False,
-    _send=None,
 ) -> DeliveryResult:
     """One request over the pinned, SSRF-validated wire.
 
@@ -337,7 +315,7 @@ def request(
     last_error: Exception | None = None
     for address in target.addresses:
         try:
-            code, excerpt = (_send or _send_to_address)(
+            code, excerpt = _send_to_address(
                 target,
                 address,
                 body,
@@ -405,15 +383,4 @@ def post(
         timeout_seconds=timeout_seconds,
         allow_private=allow_private,
         capture_body=capture_body,
-        _send=_post_to_address_seam,
     )
-
-
-def _post_to_address_seam(*args, **kwargs):
-    """Route POSTs through the module-level ``_post_to_address`` name.
-
-    Looked up at call time rather than bound at import, so a test that
-    monkeypatches ``_post_to_address`` still intercepts ``post``.
-    """
-    kwargs.pop("method", None)
-    return _post_to_address(*args, **kwargs)
