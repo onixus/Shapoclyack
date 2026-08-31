@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from api.auth import AgentPrincipal, Role, TenantPrincipal, require_agent, require_tenant
+from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
 from api.schemas import (
     EndpointDeviceInfo,
     EndpointInventoryResponse,
@@ -15,9 +15,13 @@ from api.schemas import (
     EndpointSnapshotSummary,
     EndpointSoftwareChangeFeedItem,
     EndpointSoftwareChangeInfo,
+    PatchGapSummary,
+    SoftwareAdvisoryInfo,
 )
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import metrics as metrics_service
+from api.services import software_matcher
+from api.settings import Settings
 
 router = APIRouter(prefix="/endpoint", tags=["endpoint-inventory"])
 
@@ -112,3 +116,43 @@ def list_recent_changes(
     return endpoint_inventory_service.list_recent_changes(
         principal.tenant_id, limit=limit, event_type=event_type
     )
+
+
+@router.get("/devices/{device_id}/advisories", response_model=list[SoftwareAdvisoryInfo])
+def list_device_advisories(
+    device_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict]:
+    """List CVE/OSV security advisories detected on a device."""
+    return software_matcher.get_device_advisories(settings, principal.tenant_id, device_id)
+
+
+@router.post("/devices/{device_id}/match", response_model=list[SoftwareAdvisoryInfo])
+def match_device_advisories(
+    device_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict]:
+    """Force re-evaluation of installed software on a device against security advisories."""
+    return software_matcher.match_device_software(settings, principal.tenant_id, device_id)
+
+
+@router.get("/patch-gaps", response_model=PatchGapSummary)
+def get_tenant_patch_gaps(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    """Tenant-wide patch gap summary and upgrade actionable items."""
+    return software_matcher.compute_patch_gaps(settings, principal.tenant_id)
+
+
+@router.get("/devices/{device_id}/patch-gap", response_model=PatchGapSummary)
+def get_device_patch_gap(
+    device_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    """Device-specific patch gap metrics and remediation commands."""
+    return software_matcher.compute_patch_gaps(settings, principal.tenant_id, device_id=device_id)
+

@@ -612,15 +612,15 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 - `org_profile` M1–M5 (ownership, dns_hygiene, mail_posture, controls matrix with NIST SP 800-30 risk, related_domains with promote-flow, credential_leaks, API and Web UI — fully tested and merged).
 - **Sprint 1 (Enterprise IAM / SSO & Service Tokens)**: OpenID Connect with PKCE & JIT provisioning, Scoped Service Tokens (`shk_...`), capability scopes (`require_scope`), Web UI tokens manager (`/settings/tokens`), and login SSO integration.
 - **Sprint 2 (Closing the Remediation Loop & Mechanical Verification)**: Targeted verification re-scans on `VERIFYING`, mechanical `VERIFYING → CLOSED` closure with `machine_verified=True`, regression bounce-back `VERIFYING → FIXING`, 2-way ticket status sync (Jira, ServiceNow, DefectDojo), machine verification rate metrics on remediation kanban & vulnerability view.
+- **Sprint 3 (Software→CVE Matcher & Patch Gap Engine)**: PURL & CPE 2.3 derivation, OSV & vendor advisory matching (`software_matcher.py`), unified Vulnerability Center bridging, tenant & device patch gap analysis, REST APIs, and Web UI security advisories & patch gap view.
 
-**Now (Sprint 3)** —
-1. **Software→CVE Matcher over Endpoint Inventory** (maps Lariska package inventory to OSV & vendor advisories for Debian/Ubuntu/RHEL/Alpine, CPE/PURL enrichment, patch gap analysis; 3–4 sprints).
+**Now (Sprint 4)** — unlock enterprise vulnerability management & compliance:
+1. **Report Factory & Compliance Mapping** (executive PDF reports, scheduled delivery, per-tenant white-label branding, PCI-DSS / CIS Controls / ISO 27001 mapping).
 
-**Next (Sprints 4–5)** — unlock enterprise vulnerability management & revenue:
-2. **Report Factory & Compliance Mapping** (executive PDF reports, scheduled delivery, per-tenant white-label branding, PCI-DSS / CIS Controls / ISO 27001 mapping; 3–4 sprints).
-3. **MSSP Operations & Tenant Metering** (usage metering, asset & scan quotas, customer read-only portal, onboarding wizard; 2–3 sprints).
+**Next (Sprint 5)** — enterprise operations & MSSP:
+2. **MSSP Operations & Tenant Metering** (usage metering, asset & scan quotas, customer read-only portal, onboarding wizard).
 
-**Later (Sprints 7+)** — scale and ecosystem connectors:
+**Later (Sprints 6+)** — scale and ecosystem connectors:
 6. **Asset-context connectors** (AWS/GCP/Azure cloud inventory & Active Directory sync; 4–5 sprints).
 7. **ProjectDiscovery `httpx`/`tlsx`** (targeted probe enrichment; 2–3 sprints).
 8. **False-positive feedback & coverage analytics** (2 sprints).

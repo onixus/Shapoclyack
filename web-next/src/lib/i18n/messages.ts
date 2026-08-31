@@ -355,6 +355,12 @@ export const en = {
   "vuln.reason.ticket_resolved": "Ticket Resolved",
   "vuln.verification_rate": "Machine Verification Rate",
   "vuln.verified_closed_count": "{count} verified closures",
+
+  "endpoint.advisories_title": "Security Advisories & Patch Gap Analysis",
+  "endpoint.advisories_count": "{count} advisories",
+  "endpoint.remediation_cmds": "Actionable Remediation Commands",
+  "endpoint.rescan_advisories": "Re-scan Advisories",
+  "endpoint.patch_gap": "Patch Gap",
 } as const;
 
 export type MsgKey = keyof typeof en;
@@ -714,6 +720,12 @@ export const ru: Record<MsgKey, string> = {
   "vuln.reason.ticket_resolved": "Решено в тикете",
   "vuln.verification_rate": "Доля машинной проверки",
   "vuln.verified_closed_count": "{count} подтверждено сканером",
+
+  "endpoint.advisories_title": "Бюллетени безопасности и анализ обновлений",
+  "endpoint.advisories_count": "{count} бюллетеней",
+  "endpoint.remediation_cmds": "Команды для устранения",
+  "endpoint.rescan_advisories": "Пересканировать бюллетени",
+  "endpoint.patch_gap": "Дельта обновлений",
 };
 
 export const STATUS_EN: Record<string, string> = {

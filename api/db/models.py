@@ -432,6 +432,39 @@ class EndpointSoftwareChange(Base):
     )
 
 
+class EndpointSoftwareAdvisory(Base):
+    """CVE / OSV security advisory matching an installed endpoint software item (Sprint 3)."""
+
+    __tablename__ = "endpoint_software_advisories"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("endpoint_devices.device_id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.asset_id", ondelete="SET NULL"), index=True, default=None
+    )
+    software_name: Mapped[str]
+    installed_version: Mapped[str | None] = mapped_column(default=None)
+    fixed_version: Mapped[str | None] = mapped_column(default=None)
+    purl: Mapped[str | None] = mapped_column(default=None)
+    cpe: Mapped[str | None] = mapped_column(default=None)
+    cve: Mapped[str] = mapped_column(index=True)
+    advisory_id: Mapped[str | None] = mapped_column(default=None)
+    severity: Mapped[str] = mapped_column(default="medium")  # low | medium | high | critical
+    cvss: Mapped[float | None] = mapped_column(default=None)
+    title: Mapped[str | None] = mapped_column(default=None)
+    vuln_id: Mapped[str | None] = mapped_column(default=None)
+    matched_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint(
+            "device_id", "software_name", "cve", name="uq_endpoint_software_advisory"
+        ),
+    )
+
+
 class WebhookSubscription(Base):
     """Outbound webhook for asset events (ROADMAP P2 / Phase 10.3).
 

@@ -13,10 +13,12 @@ from api.schemas import (
     AssetSummary,
     EndpointSoftwareItemInfo,
     Page,
+    SoftwareAdvisoryInfo,
     UpdateAssetRequest,
 )
 from api.services import assets as assets_service
 from api.services import endpoint_inventory as endpoint_inventory_service
+from api.services import software_matcher
 from api.settings import Settings
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -103,6 +105,18 @@ def get_asset_software(
     if assets_service.get_asset(settings, principal.tenant_id, asset_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
     return endpoint_inventory_service.list_software_for_asset(principal.tenant_id, asset_id)
+
+
+@router.get("/{asset_id}/advisories", response_model=list[SoftwareAdvisoryInfo])
+def get_asset_advisories(
+    asset_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict]:
+    """List CVE/OSV security advisories detected on installed software of this asset."""
+    if assets_service.get_asset(settings, principal.tenant_id, asset_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    return software_matcher.get_asset_advisories(settings, principal.tenant_id, asset_id)
 
 
 @router.patch("/{asset_id}", response_model=AssetDetail)

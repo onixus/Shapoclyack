@@ -968,6 +968,52 @@ class EndpointSoftwareItemInfo(BaseModel):
     install_location: str | None = None
 
 
+class SoftwareAdvisoryInfo(BaseModel):
+    id: int
+    tenant_id: str
+    device_id: str
+    asset_id: str | None = None
+    software_name: str
+    installed_version: str | None = None
+    fixed_version: str | None = None
+    purl: str | None = None
+    cpe: str | None = None
+    cve: str
+    advisory_id: str | None = None
+    severity: str
+    cvss: float | None = None
+    title: str | None = None
+    vuln_id: str | None = None
+    matched_at: str | None = None
+
+
+class SoftwareAdvisoryList(BaseModel):
+    items: list[SoftwareAdvisoryInfo]
+    total: int
+
+
+class PatchGapRemediationItem(BaseModel):
+    software_name: str
+    installed_version: str | None = None
+    fixed_version: str | None = None
+    cve: str
+    severity: str
+    upgrade_command: str
+
+
+class PatchGapSummary(BaseModel):
+    tenant_id: str
+    device_id: str | None = None
+    total_advisories: int
+    vulnerable_package_count: int
+    affected_device_count: int
+    critical_count: int
+    high_count: int
+    medium_count: int
+    low_count: int
+    remediations: list[PatchGapRemediationItem] = Field(default_factory=list)
+
+
 class VulnerabilityInfo(BaseModel):
     """One tracked finding with its lifecycle and SLA state (#145).
 

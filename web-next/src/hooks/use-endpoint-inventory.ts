@@ -1,12 +1,18 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
+  fetchAssetAdvisories,
   fetchAssetSoftware,
+  fetchDeviceAdvisories,
+  fetchDevicePatchGap,
   fetchEndpointDeviceChanges,
   fetchEndpointDevices,
   fetchEndpointDevicesForAsset,
+  fetchPatchGaps,
   fetchRecentSoftwareChanges,
+  triggerDeviceAdvisoryMatch,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -50,3 +56,58 @@ export function useRecentSoftwareChanges(tenantId = "default", limit = 50) {
     queryFn: () => fetchRecentSoftwareChanges({ tenantId, limit }),
   });
 }
+
+/** CVE/OSV security advisories for a specific endpoint device. */
+export function useDeviceAdvisories(deviceId: string | null) {
+  return useQuery({
+    queryKey: ["endpoint", "device", deviceId, "advisories"],
+    queryFn: () => fetchDeviceAdvisories(deviceId!),
+    enabled: Boolean(deviceId),
+  });
+}
+
+/** CVE/OSV security advisories for an asset's software inventory. */
+export function useAssetAdvisories(assetId: string | null) {
+  return useQuery({
+    queryKey: ["assets", assetId, "advisories"],
+    queryFn: () => fetchAssetAdvisories(assetId!),
+    enabled: Boolean(assetId),
+  });
+}
+
+/** Tenant-wide patch gap summary. */
+export function usePatchGaps() {
+  return useQuery({
+    queryKey: ["endpoint", "patch-gaps"],
+    queryFn: fetchPatchGaps,
+  });
+}
+
+/** Device-specific patch gap metrics and remediation advice. */
+export function useDevicePatchGap(deviceId: string | null) {
+  return useQuery({
+    queryKey: ["endpoint", "device", deviceId, "patch-gap"],
+    queryFn: () => fetchDevicePatchGap(deviceId!),
+    enabled: Boolean(deviceId),
+  });
+}
+
+/** Trigger advisory re-match for an endpoint device. */
+export function useTriggerDeviceMatch(deviceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => triggerDeviceAdvisoryMatch(deviceId),
+    onSuccess: (advisories) => {
+      void queryClient.invalidateQueries({ queryKey: ["endpoint", "device", deviceId] });
+      void queryClient.invalidateQueries({ queryKey: ["endpoint", "patch-gaps"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vulnerabilities });
+      toast.success(`Matched ${advisories.length} security advisories`);
+    },
+    onError: (err) => {
+      toast.error("Advisory match failed", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+

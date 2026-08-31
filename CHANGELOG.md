@@ -6,6 +6,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Software to CVE Matcher & Patch Gap Engine (Sprint 3)**:
+  - **Standardized PURL & CPE 2.3 Identifiers**: Automated derivation of Package URLs (PURL) and CPE 2.3 URIs from Lariska endpoint inventory software items across Debian, Ubuntu, RHEL, Alpine, PyPI, npm, and generic ecosystems.
+  - **OSV & Vendor Security Advisory Matching**: High-performance semantic version comparison and security advisory matching engine (`api/services/software_matcher.py`) evaluating installed packages against known CVEs and OSV advisories.
+  - **Vulnerability Center Integration**: Automatically creates and links unified `Vulnerability` records (`finding_key=sha256(asset_id|package_name|cve)`) for matched software advisories, bringing endpoint software vulnerabilities directly into Shapoclyack's lifecycle, SLA, owner assignment, and closed-loop verification pipelines.
+  - **Patch Gap Analysis**: Computes tenant-wide and device-specific patch gaps, quantifying vulnerable package counts, severity breakdowns (Critical, High, Medium, Low), and actionable copy-paste remediation commands (`apt-get --only-upgrade install`, `dnf update`, `apk add --upgrade`, `pip install --upgrade`, `npm update`).
+  - **REST API Endpoints**: `GET /api/endpoint/devices/{id}/advisories`, `POST /api/endpoint/devices/{id}/match`, `GET /api/endpoint/patch-gaps`, `GET /api/endpoint/devices/{id}/patch-gap`, and `GET /api/assets/{id}/advisories`.
+  - **Web UI Security Advisories & Patch Gaps**: Dedicated Patch Gap Analysis KPI card & remediation overview on `/endpoints`, interactive CVE badges, CVSS scores, and upgrade commands in the Asset View Software tab (`/assets/view?tab=software`).
+
 - **Closed-Loop Remediation & Mechanical Verification (Sprint 2)**:
   - **Automated Targeted Verification Scans**: Automated single-asset re-scans triggered on transition to `VERIFYING` or on-demand via `POST /api/vulnerabilities/{id}/verify`.
   - **Mechanical Closure Verification**: Run findings ingestion (`register_findings_from_run`) evaluates pending verification scans — absent findings are automatically confirmed and closed (`VERIFYING → CLOSED`) with `machine_verified=True` and `closure_reason="verified_remediated"`; still-detected findings are automatically bounced back (`VERIFYING → FIXING`) with an audit record.

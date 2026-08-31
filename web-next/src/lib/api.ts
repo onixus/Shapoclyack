@@ -1817,4 +1817,99 @@ export async function fetchAvailableScopes(): Promise<string[]> {
   }
 }
 
+export interface SoftwareAdvisory {
+  id: number;
+  tenant_id: string;
+  device_id: string;
+  asset_id?: string | null;
+  software_name: string;
+  installed_version?: string | null;
+  fixed_version?: string | null;
+  purl?: string | null;
+  cpe?: string | null;
+  cve: string;
+  advisory_id?: string | null;
+  severity: "low" | "medium" | "high" | "critical";
+  cvss?: number | null;
+  title?: string | null;
+  vuln_id?: string | null;
+  matched_at?: string | null;
+}
+
+export interface PatchGapRemediation {
+  software_name: string;
+  installed_version?: string | null;
+  fixed_version?: string | null;
+  cve: string;
+  severity: string;
+  upgrade_command: string;
+}
+
+export interface PatchGapSummary {
+  tenant_id: string;
+  device_id?: string | null;
+  total_advisories: number;
+  vulnerable_package_count: number;
+  affected_device_count: number;
+  critical_count: number;
+  high_count: number;
+  medium_count: number;
+  low_count: number;
+  remediations: PatchGapRemediation[];
+}
+
+export async function fetchDeviceAdvisories(deviceId: string): Promise<SoftwareAdvisory[]> {
+  try {
+    const { data } = await api.get<SoftwareAdvisory[]>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/advisories`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchAssetAdvisories(assetId: string): Promise<SoftwareAdvisory[]> {
+  try {
+    const { data } = await api.get<SoftwareAdvisory[]>(
+      `/assets/${encodeURIComponent(assetId)}/advisories`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchPatchGaps(): Promise<PatchGapSummary> {
+  try {
+    const { data } = await api.get<PatchGapSummary>("/endpoint/patch-gaps");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchDevicePatchGap(deviceId: string): Promise<PatchGapSummary> {
+  try {
+    const { data } = await api.get<PatchGapSummary>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/patch-gap`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function triggerDeviceAdvisoryMatch(deviceId: string): Promise<SoftwareAdvisory[]> {
+  try {
+    const { data } = await api.post<SoftwareAdvisory[]>(
+      `/endpoint/devices/${encodeURIComponent(deviceId)}/match`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+
 

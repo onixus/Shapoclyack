@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowUpRight, History, Laptop } from "lucide-react";
+import { ArrowUpRight, Check, Copy, History, Laptop, ShieldAlert } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 import {
@@ -16,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
-import { useEndpointDevices, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
+import { useEndpointDevices, usePatchGaps, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
 import { useSystemStatus } from "@/hooks/use-system";
 import type { EndpointDeviceInfo, EndpointReconciliationStatus } from "@/lib/api";
 import { ENDPOINT_RECONCILIATION_STATUS, SOFTWARE_CHANGE_STATUS } from "@/lib/config/statuses";
@@ -28,6 +29,115 @@ function assetHref(assetId: string, tenantId: string): string {
   const params = new URLSearchParams({ assetId });
   if (tenantId && tenantId !== "default") params.set("tenantId", tenantId);
   return `/assets/view?${params}`;
+}
+
+function PatchGapsOverview() {
+  const patchGapsQuery = usePatchGaps();
+  const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+  const data = patchGapsQuery.data;
+
+  function copyCommand(cmd: string) {
+    void navigator.clipboard.writeText(cmd);
+    setCopiedCmd(cmd);
+    setTimeout(() => setCopiedCmd(null), 2000);
+  }
+
+  if (patchGapsQuery.isLoading) {
+    return (
+      <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-5 text-center text-xs text-slate-500">
+        Loading patch gap analysis…
+      </div>
+    );
+  }
+
+  if (!data || data.total_advisories === 0) {
+    return (
+      <div className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 shadow-sm">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400 font-bold">
+          ✓
+        </div>
+        <div>
+          <h3 className="text-xs font-bold text-slate-100">No Security Advisories Detected</h3>
+          <p className="text-[11px] text-slate-400">
+            All installed packages across Lariska endpoints are up to date with known OSV advisories.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="h-5 w-5 text-rose-400" />
+          <div>
+            <h2 className="text-sm font-bold text-slate-200">Security Advisories & Patch Gap Analysis</h2>
+            <p className="text-xs text-slate-400">
+              {data.total_advisories} CVE advisories affecting {data.vulnerable_package_count} packages across {data.affected_device_count} endpoints.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          {data.critical_count > 0 && (
+            <Badge className="bg-rose-500/20 text-rose-300 border-rose-500/40 font-mono">
+              {data.critical_count} critical
+            </Badge>
+          )}
+          {data.high_count > 0 && (
+            <Badge className="bg-orange-500/20 text-orange-300 border-orange-500/40 font-mono">
+              {data.high_count} high
+            </Badge>
+          )}
+          {data.medium_count > 0 && (
+            <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/40 font-mono">
+              {data.medium_count} medium
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {data.remediations.length > 0 && (
+        <div className="space-y-2">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Actionable Remediation Commands:</span>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {data.remediations.slice(0, 6).map((rem, idx) => (
+              <div
+                key={`${rem.software_name}-${rem.cve}-${idx}`}
+                className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-2.5 text-xs"
+              >
+                <div className="min-w-0 space-y-0.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-semibold text-slate-200">{rem.software_name}</span>
+                    <span className="rounded bg-rose-500/20 text-rose-300 px-1 text-[10px] font-mono font-bold">
+                      {rem.cve}
+                    </span>
+                  </div>
+                  <p className="font-mono text-[10px] text-slate-400 truncate">
+                    {rem.upgrade_command}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => copyCommand(rem.upgrade_command)}
+                  className="h-7 w-7 p-0 shrink-0 text-slate-400 hover:text-slate-100"
+                  title="Copy command"
+                >
+                  {copiedCmd === rem.upgrade_command ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Lightweight cross-device feed of recent software installs/removals/updates
@@ -291,6 +401,8 @@ export default function EndpointsPage() {
         inventory is attached to a network-scan asset (by hostname / identifiers). Open the asset to
         see Pulse vulns, ports, and installed software together.
       </p>
+
+      <PatchGapsOverview />
 
       <RecentChangesFeed tenantId={tenantId} />
 
