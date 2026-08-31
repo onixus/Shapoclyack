@@ -22,13 +22,16 @@ from api.schemas import (
     EndpointSnapshotSummary,
     EndpointSoftwareChangeFeedItem,
     EndpointSoftwareChangeInfo,
+    DevicePatchGap,
     SoftwareCveMatchInfo,
     SoftwareCveMatchRunSummary,
     SoftwareCveMatchSummary,
     SoftwareCveMatchTenantRunSummary,
+    TenantPatchGap,
 )
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import metrics as metrics_service
+from api.services import patch_gap as patch_gap_service
 from api.services import software_cve_match as cve_match_service
 from api.settings import Settings
 
@@ -214,6 +217,43 @@ def refresh_device_cve_matches(
 ) -> dict:
     """Re-run the matcher for one device against the advisory data on disk."""
     result = cve_match_service.run_for_device(
+        settings, tenant_id=principal.tenant_id, device_id=device_id
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+    return result
+
+
+@router.get("/patch-gaps", response_model=TenantPatchGap)
+def tenant_patch_gap(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> dict:
+    """Estate-wide patch gap: what is outstanding, worst devices first.
+
+    Derived from the matcher's ``vulnerable`` rows on read, so it cannot
+    disagree with the findings it is built from. The totals cover the tenant
+    even when ``devices`` is capped.
+    """
+    return patch_gap_service.for_tenant(
+        settings, tenant_id=principal.tenant_id, limit=limit
+    )
+
+
+@router.get("/devices/{device_id}/patch-gap", response_model=DevicePatchGap)
+def device_patch_gap(
+    device_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+) -> dict:
+    """One endpoint's outstanding upgrades and the command that applies them.
+
+    A device with nothing outstanding answers with an empty gap list; only an
+    unknown device is a 404, because "clean" and "not here" are different
+    answers.
+    """
+    result = patch_gap_service.for_device(
         settings, tenant_id=principal.tenant_id, device_id=device_id
     )
     if result is None:

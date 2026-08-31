@@ -22,7 +22,7 @@ yet production-ready.
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
 | **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged |
-| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5 and software→CVE M1 merged |
+| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M2 merged |
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
@@ -621,13 +621,8 @@ language ecosystems and Windows, and folding matches into the tracked-finding li
 [docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of
 effort on this list, and it gives sales a demo artifact while the matcher is still being built).
 
-**Now** — finish what is half-landed, then the report factory:
+**Now** — the report factory:
 
-- **Patch-gap analysis over the software→CVE matcher.** The matcher answers
-  "is this package vulnerable"; patch gap answers "what do I run to fix it" —
-  a per-device and per-tenant view of outstanding upgrades with the package
-  manager's own command. The matcher (M1) is merged; this is the milestone
-  that turns it into remediation work rather than a list.
 - **Report Factory & compliance mapping** — executive PDF reports, scheduled
   delivery, per-tenant white-label branding, PCI-DSS / CIS Controls /
   ISO 27001 mapping.

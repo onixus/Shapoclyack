@@ -6,6 +6,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Patch-gap analysis** (ROADMAP Track E, M2). The software→CVE matcher
+  answers "is this package vulnerable", one row per CVE. That is the right
+  unit for a finding and the wrong unit for the work: nobody fixes twelve CVEs
+  on a host, they run one upgrade that closes twelve CVEs. Patch gap regroups
+  the matcher's `vulnerable` rows by the thing that actually gets upgraded —
+  the installed package — and names the command.
+  `GET /api/endpoint/patch-gaps` for the estate,
+  `GET /api/endpoint/devices/{id}/patch-gap` for one host.
+
+  **No table of its own.** A gap is a view over `software_cve_matches`,
+  computed on read. The matcher already replaces its rows wholesale per device
+  on each run, so a derived gap cannot outlive the snapshot behind it or
+  disagree with the finding it came from; a stored one would need its own
+  invalidation and would eventually be wrong. No migration.
+
+  **A vulnerable package with no published fix is not a patch gap.** "Affected,
+  no fix yet" is an open risk, and putting it under a heading that says "run
+  these commands" would be advice that cannot work. Those are counted as
+  `unfixed_findings` and carry no command — the same distinction the matcher
+  makes with `unknown`.
+
+  **The target version is the highest fix among the package's CVEs**, ordered
+  by the distribution's own rules, so one command per package is correct rather
+  than convenient: a plain string comparison would rank `2.10` below `2.7` and
+  name a target that closes only some of them. When the fixes cannot be ordered
+  the gap reports no target and no command, rather than guessing one.
+
+  Package names are shell-quoted. They come from a remote endpoint's inventory
+  and the result is rendered for an operator to paste into a root shell, so a
+  package name is data there, never syntax.
+
+  In the console: a patch-gap panel on `/endpoints` that stays hidden when
+  nothing is outstanding, and a per-device card with a copyable command on the
+  asset page's Software tab.
+
 - **Related domains: reverse-MX discovery** (org profile). A fourth discovery
   source alongside cert SAN, reverse-NS and WHOIS: domains that publish the
   same mail exchangers. Public providers are excluded through
