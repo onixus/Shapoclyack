@@ -4,8 +4,9 @@ import Link from "next/link";
 import { FormEvent, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { format, isValid, parseISO } from "date-fns";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, RefreshCw, ShieldCheck } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,8 +31,10 @@ import {
   useCommentOnVulnerability,
   useSetVulnerabilityException,
   useSetVulnerabilityTicket,
+  useSyncVulnTicket,
   useTrackedVulnerability,
   useTransitionVulnerability,
+  useTriggerVulnVerification,
   useVulnerabilityEvents,
 } from "@/hooks/use-vulnerabilities";
 import { useAuthStore } from "@/lib/auth-store";
@@ -163,6 +166,16 @@ function VulnerabilityDetailInner() {
               <StatusBadge value={normalizeSeverity(vuln.severity)} map={SEVERITY_STATUS} />
               <StatusBadge value={vuln.state} map={VULN_LIFECYCLE_STATUS} />
               <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
+              {vuln.machine_verified ? (
+                <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/40 flex items-center gap-1 text-xs">
+                  <ShieldCheck className="h-3 w-3" /> Machine Verified
+                </Badge>
+              ) : null}
+              {vuln.closure_reason ? (
+                <Badge variant="outline" className="border-slate-700 text-slate-300 text-xs">
+                  Closure: {vuln.closure_reason}
+                </Badge>
+              ) : null}
             </div>
             {vuln.title && vuln.title !== findingLabel(vuln) ? (
               <p className="text-sm text-slate-300">{vuln.title}</p>
@@ -254,6 +267,9 @@ function VulnerabilityDetailInner() {
               <Field label="Last seen" value={formatWhen(vuln.last_seen_at)} />
               <Field label="Observations" value={String(vuln.observation_count)} />
               <Field label="Reopens" value={String(vuln.reopen_count)} />
+              <Field label="Machine verified" value={vuln.machine_verified ? "Yes (Re-scan confirmed)" : "No"} />
+              {vuln.closure_reason ? <Field label="Closure reason" value={vuln.closure_reason} /> : null}
+              {vuln.last_verified_at ? <Field label="Last verified" value={formatWhen(vuln.last_verified_at)} /> : null}
               <Field
                 label="SLA"
                 value={`${vuln.sla_days ?? "—"} days${vuln.sla_source ? ` · ${vuln.sla_source}` : ""}`}
@@ -364,6 +380,7 @@ function Field({
 
 function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
   const mutation = useTransitionVulnerability(vuln.vuln_id);
+  const verifyMutation = useTriggerVulnVerification(vuln.vuln_id);
   const options = legalTransitions(vuln.state);
   const primary = VULN_PRIMARY_NEXT[vuln.state];
   const [target, setTarget] = useState<VulnLifecycleState>(
@@ -379,55 +396,77 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
   if (options.length === 0) return null;
 
   return (
-    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-slate-100">Move lifecycle</h2>
-      <form onSubmit={onSubmit} className="mt-3 space-y-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="vuln-next-state" className="text-xs text-slate-400">
-            Next state
-          </Label>
-          <Select value={target} onValueChange={(value) => setTarget(value as VulnLifecycleState)}>
-            <SelectTrigger
-              id="vuln-next-state"
+    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-slate-100">Move lifecycle</h2>
+        <form onSubmit={onSubmit} className="mt-3 space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="vuln-next-state" className="text-xs text-slate-400">
+              Next state
+            </Label>
+            <Select value={target} onValueChange={(value) => setTarget(value as VulnLifecycleState)}>
+              <SelectTrigger
+                id="vuln-next-state"
+                className="bg-slate-950 border-slate-800 text-slate-200"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                {options.map((state) => (
+                  <SelectItem key={state} value={state}>
+                    {VULN_TRANSITION_LABEL[state]} ({state})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="vuln-note" className="text-xs text-slate-400">
+              Note {target === "CLOSED" ? "(recommended)" : "(optional)"}
+            </Label>
+            <Textarea
+              id="vuln-note"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              rows={3}
               className="bg-slate-950 border-slate-800 text-slate-200"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-              {options.map((state) => (
-                <SelectItem key={state} value={state}>
-                  {VULN_TRANSITION_LABEL[state]} ({state})
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              placeholder={
+                target === "CLOSED"
+                  ? "Why this is closed — false positive, fixed, decommissioned…"
+                  : "Optional context for the audit trail"
+              }
+            />
+          </div>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={mutation.isPending}
+            className="bg-sky-600 hover:bg-sky-500"
+          >
+            {mutation.isPending ? "Moving…" : VULN_TRANSITION_LABEL[target]}
+          </Button>
+        </form>
+      </div>
+
+      {(vuln.state === "FIXING" || vuln.state === "VERIFYING") && (
+        <div className="border-t border-slate-800/80 pt-3 space-y-2">
+          <h3 className="text-xs font-semibold text-slate-300">Automated verification</h3>
+          <p className="text-[11px] text-slate-400">
+            Dispatch a targeted re-scan against this asset to verify remediation.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={verifyMutation.isPending}
+            onClick={() => verifyMutation.mutate()}
+            className="w-full border-sky-500/40 bg-sky-950/30 text-sky-300 hover:bg-sky-900/40 gap-1.5"
+          >
+            <ShieldCheck className="h-4 w-4" />
+            {verifyMutation.isPending ? "Dispatching re-scan…" : "Verify Remediation"}
+          </Button>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="vuln-note" className="text-xs text-slate-400">
-            Note {target === "CLOSED" ? "(recommended)" : "(optional)"}
-          </Label>
-          <Textarea
-            id="vuln-note"
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            rows={3}
-            className="bg-slate-950 border-slate-800 text-slate-200"
-            placeholder={
-              target === "CLOSED"
-                ? "Why this is closed — false positive, fixed, decommissioned…"
-                : "Optional context for the audit trail"
-            }
-          />
-        </div>
-        <Button
-          type="submit"
-          size="sm"
-          disabled={mutation.isPending}
-          className="bg-sky-600 hover:bg-sky-500"
-        >
-          {mutation.isPending ? "Moving…" : VULN_TRANSITION_LABEL[target]}
-        </Button>
-      </form>
+      )}
     </section>
   );
 }
@@ -517,6 +556,7 @@ function CommentCard({ vulnId }: { vulnId: string }) {
 function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
   const setMutation = useSetVulnerabilityTicket(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityTicket(vuln.vuln_id);
+  const syncMutation = useSyncVulnTicket(vuln.vuln_id);
   const [system, setSystem] = useState<TicketSystem>((vuln.ticket_system as TicketSystem) || "jira");
   const [key, setKey] = useState(vuln.ticket_key ?? "");
   const [url, setUrl] = useState(vuln.ticket_url ?? "");
@@ -526,10 +566,24 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
   }
   return (
     <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-slate-100">Ticket link</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-100">Ticket link</h2>
+        {vuln.ticket_key ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={syncMutation.isPending}
+            onClick={() => syncMutation.mutate()}
+            className="text-xs text-sky-400 hover:text-sky-300 gap-1 h-7 px-2"
+          >
+            <RefreshCw className={`h-3 w-3 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+            Sync
+          </Button>
+        ) : null}
+      </div>
       <p className="mt-1 text-[11px] text-slate-500">
-        Records where the work lives. Creating the ticket in Jira/ServiceNow/SMAX is the 10.3
-        delivery queue, not this form.
+        Records where the work lives. 2-way sync reflects resolution status automatically.
       </p>
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <Select value={system} onValueChange={(value) => setSystem(value as TicketSystem)}>

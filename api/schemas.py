@@ -1183,6 +1183,13 @@ class VulnerabilityInfo(BaseModel):
     ticket_system: str | None = None
     ticket_key: str | None = None
     ticket_url: str | None = None
+    # Closed-loop remediation (#183). Read-only: ``machine_verified`` is set by
+    # the ingest path when a dispatched verification run failed to re-observe
+    # the finding, never by a request body.
+    machine_verified: bool = False
+    verification_job_id: str | None = None
+    last_verified_at: str | None = None
+    closure_reason: str | None = None
 
 
 class VulnerabilityEventInfo(BaseModel):
@@ -1286,6 +1293,11 @@ class VulnerabilitySummary(BaseModel):
     by_sla: dict[str, int] = Field(default_factory=dict)
     breached: int
     worst_breached_severity: str | None = None
+    closed_total: int = 0
+    machine_verified_closed: int = 0
+    manual_closed: int = 0
+    # Percentage of closures a scan confirmed, 0-100.
+    machine_verification_rate: float = 0.0
     generated_at: str | None = None
 
 

@@ -226,12 +226,13 @@ def _read_error_excerpt(response: http.client.HTTPResponse, *, deadline: float) 
     return b"".join(chunks).decode("utf-8", errors="replace").strip()[:_ERROR_EXCERPT_CHARS]
 
 
-def _post_to_address(
+def _send_to_address(
     target: _ResolvedTarget,
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
     body: bytes,
     headers: dict[str, str],
     *,
+    method: str = "POST",
     deadline: float,
     capture_body: bool = False,
 ) -> tuple[int, str]:
@@ -253,7 +254,7 @@ def _post_to_address(
     request_headers = dict(headers)
     request_headers["Host"] = target.host_header
     try:
-        connection.request("POST", target.request_target, body=body, headers=request_headers)
+        connection.request(method, target.request_target, body=body, headers=request_headers)
         remaining = deadline - time.perf_counter()
         if remaining <= 0:
             raise TimeoutError("webhook delivery deadline exceeded waiting for response")
@@ -271,7 +272,29 @@ def _post_to_address(
         connection.close()
 
 
-def post(
+def _post_to_address(
+    target: _ResolvedTarget,
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    body: bytes,
+    headers: dict[str, str],
+    *,
+    deadline: float,
+    capture_body: bool = False,
+) -> tuple[int, str]:
+    """POST to one already-approved IP. The seam webhook tests patch."""
+    return _send_to_address(
+        target,
+        address,
+        body,
+        headers,
+        method="POST",
+        deadline=deadline,
+        capture_body=capture_body,
+    )
+
+
+def request(
+    method: str,
     url: str,
     body: bytes,
     headers: dict[str, str],
@@ -279,13 +302,15 @@ def post(
     timeout_seconds: int = 10,
     allow_private: bool = False,
     capture_body: bool = False,
+    _send=None,
 ) -> DeliveryResult:
-    """POST one delivery, pinned to the addresses that passed SSRF validation.
+    """One request over the pinned, SSRF-validated wire.
 
-    Redirects are never followed. The timeout is a wall-clock budget shared by
-    connection, request, response headers and the bounded error-body read.
-    Every failure is returned as data so one bad receiver cannot crash the
-    dispatcher thread.
+    ``post`` is this with ``method="POST"``. Status polling and status
+    reflection (:mod:`api.services.integrations.ticket_sync`) need GET and
+    PATCH against the same trackers, and they must not get there over a plain
+    HTTP client: the base URL comes from a stored subscription, so it is
+    exactly the kind of value the SSRF guard exists for.
     """
     started = time.perf_counter()
     deadline = started + max(1.0, float(timeout_seconds))
@@ -312,11 +337,12 @@ def post(
     last_error: Exception | None = None
     for address in target.addresses:
         try:
-            code, excerpt = _post_to_address(
+            code, excerpt = (_send or _send_to_address)(
                 target,
                 address,
                 body,
                 headers,
+                method=method,
                 deadline=deadline,
                 capture_body=capture_body,
             )
@@ -353,3 +379,41 @@ def post(
         retryable=True,
         duration_seconds=time.perf_counter() - started,
     )
+
+
+def post(
+    url: str,
+    body: bytes,
+    headers: dict[str, str],
+    *,
+    timeout_seconds: int = 10,
+    allow_private: bool = False,
+    capture_body: bool = False,
+) -> DeliveryResult:
+    """POST one delivery, pinned to the addresses that passed SSRF validation.
+
+    Redirects are never followed. The timeout is a wall-clock budget shared by
+    connection, request, response headers and the bounded error-body read.
+    Every failure is returned as data so one bad receiver cannot crash the
+    dispatcher thread.
+    """
+    return request(
+        "POST",
+        url,
+        body,
+        headers,
+        timeout_seconds=timeout_seconds,
+        allow_private=allow_private,
+        capture_body=capture_body,
+        _send=_post_to_address_seam,
+    )
+
+
+def _post_to_address_seam(*args, **kwargs):
+    """Route POSTs through the module-level ``_post_to_address`` name.
+
+    Looked up at call time rather than bound at import, so a test that
+    monkeypatches ``_post_to_address`` still intercepts ``post``.
+    """
+    kwargs.pop("method", None)
+    return _post_to_address(*args, **kwargs)

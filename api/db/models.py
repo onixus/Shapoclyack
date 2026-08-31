@@ -740,6 +740,17 @@ class Vulnerability(Base):
     ticket_system: Mapped[str | None] = mapped_column(default=None)
     ticket_key: Mapped[str | None] = mapped_column(default=None)
     ticket_url: Mapped[str | None] = mapped_column(default=None)
+    # Closed-loop remediation (#183). ``machine_verified`` is only ever set by
+    # the ingest path in api/services/vulnerabilities.py, never from a request
+    # body: the whole value of the metric is that it cannot be self-attested.
+    machine_verified: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # The job dispatched to re-check this finding. The closure is gated on the
+    # run that job produced, so an unrelated scan touching the same asset can
+    # never close a finding as verified.
+    verification_job_id: Mapped[str | None] = mapped_column(default=None)
+    last_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+    # verified_remediated | manual | ticket_resolved.
+    closure_reason: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -747,6 +758,8 @@ class Vulnerability(Base):
         # Identity: re-observing a finding must find this row, and two API
         # replicas ingesting the same run must not create it twice.
         UniqueConstraint("tenant_id", "finding_key", name="uq_vulnerability_finding"),
+        # Ingest asks "which findings were waiting on this run?".
+        Index("ix_vulnerabilities_verification_job", "verification_job_id"),
         # The SLA queries: one tenant's still-open findings by deadline.
         Index("ix_vulnerabilities_due", "tenant_id", "state", "due_at"),
         # The Vulnerability Center's default view: worst first within a tenant.

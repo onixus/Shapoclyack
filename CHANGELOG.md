@@ -6,6 +6,47 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Closed-loop remediation: mechanical verification** (#183). "Fixed" was an
+  assertion an operator made about their own work. A finding can now be sent
+  for a targeted re-scan (`POST /vulnerabilities/{id}/verify`), and the run
+  that comes back decides: not observed closes it with
+  `closure_reason=verified_remediated` and `machine_verified=true`, still
+  observed bounces it `VERIFYING → FIXING` with the reason on the audit trail.
+
+  The closure is gated on `verification_job_id` — the job that was dispatched
+  to look for *that* finding — and not on "some scan touched the asset". Any
+  weaker gate silently converts a routine recon run into a clean bill of
+  health for a finding it never probed. For the same reason the move into
+  `VERIFYING` is refused outright when the scan cannot be dispatched
+  (`OCTO_ALLOW_SCAN_START` off, dispatcher error): a finding parked there with
+  nothing looking at it is exactly what produces a false verified closure
+  later. A verification run that finds *nothing at all* still reaches the
+  evaluation, because for this feature an empty run is the success case.
+
+  `machine_verified` is never accepted from a request body. Closing by hand
+  records `closure_reason=manual` whatever the caller says, and a metric an
+  operator can assert about their own work measures nothing. Summary gains
+  `closed_total`, `machine_verified_closed`, `manual_closed` and
+  `machine_verification_rate`; the Remediation board gains the KPI and a
+  Verified badge, and the finding page gains Verify / Sync buttons.
+
+- **Two-way ticket status sync** for Jira, ServiceNow and DefectDojo
+  (`api/services/integrations/ticket_sync.py`,
+  `POST /vulnerabilities/{id}/ticket/sync`). Inbound polling reconciles the
+  tracker's status onto the lifecycle; a state change reflects outbound.
+
+  The tracker is addressed through the tenant's subscription for that
+  transport, not by string-splitting the stored `ticket_url`: that is where
+  the credential lives, so the requests actually authenticate, and a URL we
+  did not configure is one we do not call. The wire is `delivery.request`,
+  which is `delivery.post`'s SSRF validation, pinned DNS and no-redirects
+  generalised to GET and PATCH. Inbound only applies a *legal* transition, and
+  a closure from a tracker is `ticket_resolved` — never machine-verified,
+  because a tracker cannot observe a host. A ServiceNow update resolves the
+  incident's `sys_id` first; the Table API ignores a PATCH to the collection
+  URL. Outbound reflection runs after the transaction commits, so a slow
+  tracker cannot hold a row lock for its ten-second budget.
+
 - **Enterprise IAM: OIDC single sign-on and service tokens** (ROADMAP Track E,
   "No SSO"). The platform had exactly two ways to authenticate — a human's
   password and an agent's provisioning key — so a pilot could not be run

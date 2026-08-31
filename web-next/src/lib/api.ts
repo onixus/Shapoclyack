@@ -1485,6 +1485,13 @@ export type TrackedVulnerability = {
   ticket_system: string | null;
   ticket_key: string | null;
   ticket_url: string | null;
+  /** Set by the ingest path when a dispatched verification run did not
+   * re-observe the finding. Never settable through the API. */
+  machine_verified?: boolean;
+  verification_job_id?: string | null;
+  last_verified_at?: string | null;
+  /** verified_remediated | manual | ticket_resolved. */
+  closure_reason?: string | null;
 };
 
 export type TicketSystem = "jira" | "servicenow" | "smax" | "defectdojo" | "other";
@@ -1523,6 +1530,11 @@ export type VulnerabilitySummary = {
   by_sla: Record<string, number>;
   breached: number;
   worst_breached_severity: string | null;
+  closed_total?: number;
+  machine_verified_closed?: number;
+  manual_closed?: number;
+  /** Share of closures a scan confirmed, 0-100. */
+  machine_verification_rate?: number;
   generated_at: string | null;
 };
 
@@ -1690,6 +1702,28 @@ export async function setVulnerabilityTicket(vulnId: string, body: Vulnerability
     const { data } = await api.post<TrackedVulnerability>(
       `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket`,
       body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function triggerVulnVerification(vulnId: string) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/verify`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function syncVulnTicket(vulnId: string) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/ticket/sync`,
     );
     return data;
   } catch (error) {
