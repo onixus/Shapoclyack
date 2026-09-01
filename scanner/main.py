@@ -240,7 +240,14 @@ def _run_pipeline_body(
     # ports open yet reports no web vulnerabilities, while the same target on the
     # default 80/443 does. Fold the explicitly-scanned custom ports into those
     # lists (both schemes, scheme unknown) so the endpoints are actually probed.
-    custom_web_ports = custom_tcp_ports(Path(config.ports.custom_ports_file))
+    # A full-range sweep file is left alone -- see MAX_CUSTOM_WEB_PORTS.
+    # Only when the TCP scan actually uses that file: a udp-only run never
+    # reads it, so its ports are not open-and-unprobed, they are unscanned.
+    custom_web_ports = (
+        custom_tcp_ports(Path(config.ports.custom_ports_file))
+        if config.ports.protocol in ("tcp", "tcp_udp")
+        else set()
+    )
     if custom_web_ports:
         nuclei_http, nuclei_https = extend_web_ports_with_custom(
             config.nuclei.http_ports, config.nuclei.https_ports, custom_web_ports

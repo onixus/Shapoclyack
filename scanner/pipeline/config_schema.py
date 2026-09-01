@@ -430,6 +430,20 @@ def merge_pulse_config(
     return PulseProbeConfig.model_validate(data)
 
 
+#: How many custom TCP ports may be folded into the web-port lists (see
+#: ``extend_web_ports_with_custom``). The fold exists for a hand-picked port
+#: list -- ``-p 9000,7443``, an app on a nonstandard port the operator knows
+#: about -- where every named port is worth an http+https probe. It must not
+#: fire for a sweep: ``ports.custom_ports_file`` is the documented way to scan
+#: all 65535 ports (see ``NaabuTopPorts``), and folding *that* in would make
+#: every open port of every host two web candidates, so the stages' own
+#: ``max_targets`` caps (nuclei 1000, screenshots 50) get spent on ssh and smb
+#: before the real 80/443 of the later hosts is ever reached -- a scan that
+#: covers less than it does today. Past this many ports the list is a sweep,
+#: not a selection, and the built-in classification stands on its own.
+MAX_CUSTOM_WEB_PORTS = 64
+
+
 def extend_web_ports_with_custom(
     http_ports: list[int],
     https_ports: list[int],
@@ -445,13 +459,19 @@ def extend_web_ports_with_custom(
     target on the default 80/443 does. This closes that gap: every custom port
     not already classified is added to *both* lists so it is probed as http and
     https (its scheme is unknown), while ports already classified keep their
-    single, correct scheme. Returns new lists; inputs are not mutated.
+    single, correct scheme. Returns new sorted lists; inputs are not mutated.
+
+    A custom list longer than ``MAX_CUSTOM_WEB_PORTS`` is a sweep rather than a
+    selection and is left alone -- folding it in would cost more coverage than
+    it buys (see the constant).
     """
+    if len(custom_ports) > MAX_CUSTOM_WEB_PORTS:
+        return list(http_ports), list(https_ports)
     known = set(http_ports) | set(https_ports)
-    extra = sorted(p for p in custom_ports if p not in known)
+    extra = {p for p in custom_ports if p not in known}
     if not extra:
         return list(http_ports), list(https_ports)
-    return http_ports + extra, https_ports + extra
+    return sorted(set(http_ports) | extra), sorted(set(https_ports) | extra)
 
 
 def merge_nuclei_config(

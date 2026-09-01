@@ -61,7 +61,11 @@ def custom_tcp_ports(custom_file: Path) -> set[int]:
     ``9000,7443`` finds the ports open but never runs nuclei against them
     because they are not in the built-in ``http_ports``/``https_ports`` lists.
 
-    ``u:``-prefixed tokens mark UDP and are ignored here. Unparseable or
+    ``u:``-prefixed tokens mark UDP and are ignored here. (``_flatten_custom_ports``
+    strips that prefix unconditionally -- it has to, so the UDP file's tokens
+    reach ``naabu_udp_port_spec`` bare -- which means a ``u:`` token sitting in
+    the *TCP* file does get scanned over TCP; it is still not folded into the
+    web ports, on the grounds that the operator wrote "udp".) Unparseable or
     out-of-range tokens are skipped rather than raising.
     """
     ports: set[int] = set()
