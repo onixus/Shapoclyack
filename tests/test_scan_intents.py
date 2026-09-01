@@ -79,3 +79,37 @@ def test_org_profile_intent() -> None:
     assert r.config_extra["fingerprint"]["enabled"] is True
     assert r.config_extra["tls_posture"]["enabled"] is True
 
+
+
+def test_request_schemas_accept_every_resolver_intent() -> None:
+    """The API vocabulary is the resolver's, not a hand-copied Literal.
+
+    ``org_profile`` was supported by the resolver, the UI and the docs while
+    the request schemas still listed only the original four, so the API
+    rejected it with a literal_error.
+    """
+    from api.schemas import CreateScheduleRequest, StartScanRequest, UpdateScheduleRequest
+    from api.services.scan_intents import INTENTS
+
+    for intent in INTENTS:
+        assert StartScanRequest(intent=intent).intent == intent
+        assert CreateScheduleRequest(name="s", intent=intent).intent == intent
+        assert UpdateScheduleRequest(intent=intent).intent == intent
+        # Every accepted intent must also resolve, or the API takes a job it
+        # cannot dispatch.
+        resolve_scan_options(intent=intent, mode="balanced", delta=False, skip_nse=False)
+
+
+def test_request_schemas_reject_a_config_key_as_an_intent() -> None:
+    """``service_probe`` is a config section (a probe backend), not an intent."""
+    from pydantic import ValidationError
+
+    from api.schemas import StartScanRequest
+
+    with pytest.raises(ValidationError):
+        StartScanRequest(intent="service_probe")
+
+    with pytest.raises(ValueError):
+        resolve_scan_options(
+            intent="service_probe", mode="balanced", delta=False, skip_nse=False
+        )

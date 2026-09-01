@@ -11,6 +11,7 @@ hand-editing YAML (see ``docs/scan-performance.md``).
 | vuln       | Full probe + nuclei critical/high only (no medium)                  |
 | full       | Default pipeline (nuclei critical/high/medium)                      |
 | delta      | Same as full + ``--delta`` discovery refresh                        |
+| org_profile| Full + the organization-profile stages (see docs/configuration.md)   |
 
 When ``intent`` is omitted, legacy ``skip_nse`` / ``delta`` flags apply as
 before. When ``intent`` is set, it owns those flags (and nuclei/top_ports
