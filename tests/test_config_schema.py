@@ -345,3 +345,53 @@ def test_validate_config_flag_reports_a_bad_file(tmp_path: Path, capsys):
     broken.write_text("runtime: [\n", encoding="utf-8")
     assert _validate_config_only(broken) == exit_codes.CONFIG_ERROR
     assert "not valid YAML" in capsys.readouterr().err
+
+
+def test_extend_web_ports_with_custom_adds_unknown_ports_to_both_schemes():
+    from scanner.pipeline.config_schema import extend_web_ports_with_custom
+
+    http, https = extend_web_ports_with_custom(
+        [80, 8080], [443, 8443], {80, 443, 7443, 9000}
+    )
+    # Already-classified ports keep their single scheme; unknown custom ports
+    # (7443, 9000) are added to both so nuclei/fingerprint probe http and https.
+    assert http == [80, 7443, 8080, 9000]
+    assert https == [443, 7443, 8443, 9000]
+
+
+def test_extend_web_ports_with_custom_noop_when_all_known():
+    from scanner.pipeline.config_schema import extend_web_ports_with_custom
+
+    http, https = extend_web_ports_with_custom([80], [443], {80, 443})
+    assert http == [80]
+    assert https == [443]
+    # No custom ports at all is also a no-op (default scan uses top-ports).
+    assert extend_web_ports_with_custom([80], [443], set()) == ([80], [443])
+
+
+def test_extend_web_ports_with_custom_leaves_a_full_range_sweep_alone():
+    """A 1-65535 sweep is not a port selection and must not be folded in.
+
+    ports.custom_ports_file is the documented way to scan every port, so the
+    fold would turn every open port of every host into an http *and* an https
+    candidate -- and the stages truncate at max_targets (screenshots 50), so
+    ssh/smb on the first hosts would crowd out 80/443 on the rest. Folding
+    would then cost coverage rather than add it.
+    """
+    from scanner.pipeline.config_schema import (
+        MAX_CUSTOM_WEB_PORTS,
+        extend_web_ports_with_custom,
+    )
+
+    sweep = set(range(1, 65536))
+    assert extend_web_ports_with_custom([80], [443], sweep) == ([80], [443])
+
+    # The boundary itself still folds; one port past it does not.
+    at_cap = set(range(9000, 9000 + MAX_CUSTOM_WEB_PORTS))
+    http, https = extend_web_ports_with_custom([80], [443], at_cap)
+    assert http == sorted({80} | at_cap)
+    assert https == sorted({443} | at_cap)
+
+    over_cap = at_cap | {9100}
+    assert len(over_cap) == MAX_CUSTOM_WEB_PORTS + 1
+    assert extend_web_ports_with_custom([80], [443], over_cap) == ([80], [443])

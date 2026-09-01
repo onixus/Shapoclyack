@@ -26,6 +26,22 @@ def test_candidate_endpoints_dedupes_and_classifies_scheme():
     assert candidates == [("10.0.0.1", 80, "http"), ("10.0.0.1", 443, "https")]
 
 
+def test_candidate_endpoints_probes_both_schemes_for_ambiguous_custom_port():
+    # A custom port whose scheme is unknown is classified as both http and
+    # https (see extend_web_ports_with_custom) so nuclei must emit a candidate
+    # for each scheme rather than silently dropping one.
+    candidates = _candidate_endpoints(
+        ["10.0.0.1:9000/tcp", "10.0.0.1:443/tcp"],
+        http_ports={80, 9000},
+        https_ports={443, 9000},
+    )
+    assert candidates == [
+        ("10.0.0.1", 443, "https"),
+        ("10.0.0.1", 9000, "http"),
+        ("10.0.0.1", 9000, "https"),
+    ]
+
+
 def test_to_finding_extracts_cve_and_severity():
     raw = {
         "template-id": "cve-2021-44228",

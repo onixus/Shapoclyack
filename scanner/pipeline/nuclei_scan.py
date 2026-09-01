@@ -52,9 +52,18 @@ _SEVERITY_CVSS_FLOOR = {
 def _candidate_endpoints(
     open_ports: list[str], http_ports: set[int], https_ports: set[int]
 ) -> list[tuple[str, int, str]]:
-    """(host, port, scheme) tuples for open TCP endpoints on configured web ports."""
+    """(host, port, scheme) tuples for open TCP endpoints on configured web ports.
+
+    A port listed under *both* ``http_ports`` and ``https_ports`` yields a
+    candidate for each scheme rather than just one. That is how a custom scan
+    port -- one the operator asked for but whose scheme is unknown -- is
+    covered: it is added to both sets (see ``extend_web_ports_with_custom``),
+    so the endpoint is probed as http *and* https and a wrong scheme guess
+    never silently drops it. The default port lists do not overlap, so this is
+    a no-op for the built-in 80/443/... classification.
+    """
     candidates: list[tuple[str, int, str]] = []
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int, str]] = set()
     for entry in open_ports:
         parsed = parse_endpoint(entry)
         if parsed is None or parsed.protocol != "tcp":
@@ -63,17 +72,17 @@ def _candidate_endpoints(
             port = int(parsed.port)
         except ValueError:
             continue
-        key = (parsed.host, port)
-        if key in seen:
-            continue
+        schemes: list[str] = []
         if port in https_ports:
-            scheme = "https"
-        elif port in http_ports:
-            scheme = "http"
-        else:
-            continue
-        seen.add(key)
-        candidates.append((parsed.host, port, scheme))
+            schemes.append("https")
+        if port in http_ports:
+            schemes.append("http")
+        for scheme in schemes:
+            key = (parsed.host, port, scheme)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append((parsed.host, port, scheme))
     candidates.sort()
     return candidates
 
