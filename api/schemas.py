@@ -5,6 +5,12 @@ from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
+# Single source of truth for the intent vocabulary: the resolver in
+# api.services.scan_intents owns which intents exist and what each one does.
+# Re-listing them here as a hand-written Literal is how the API ended up
+# rejecting an intent the resolver, the UI and the docs all supported.
+from api.services.scan_intents import ScanIntent
+
 T = TypeVar("T")
 
 
@@ -254,7 +260,7 @@ class StartScanRequest(BaseModel):
     mode: Literal["safe", "balanced", "fast", "test"] = "balanced"
     # Product-level work selection (see api.services.scan_intents). When set,
     # owns skip_nse / nuclei floor; speed profile stays in ``mode``.
-    intent: Literal["inventory", "vuln", "full", "delta"] | None = None
+    intent: ScanIntent | None = None
     delta: bool = False
     skip_nse: bool = False
     notify: bool = False
@@ -456,7 +462,7 @@ class CreateScheduleRequest(BaseModel):
     cron: str | None = None
     interval_seconds: int | None = None
     mode: Literal["safe", "balanced", "fast", "test"] = "balanced"
-    intent: Literal["inventory", "vuln", "full", "delta"] | None = None
+    intent: ScanIntent | None = None
     delta: bool = True
     skip_nse: bool = False
     notify: bool = False
@@ -473,7 +479,7 @@ class UpdateScheduleRequest(BaseModel):
     cron: str | None = None
     interval_seconds: int | None = None
     mode: Literal["safe", "balanced", "fast", "test"] | None = None
-    intent: Literal["inventory", "vuln", "full", "delta"] | None = None
+    intent: ScanIntent | None = None
     delta: bool | None = None
     skip_nse: bool | None = None
     notify: bool | None = None
