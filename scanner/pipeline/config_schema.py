@@ -430,6 +430,30 @@ def merge_pulse_config(
     return PulseProbeConfig.model_validate(data)
 
 
+def extend_web_ports_with_custom(
+    http_ports: list[int],
+    https_ports: list[int],
+    custom_ports: set[int],
+) -> tuple[list[int], list[int]]:
+    """Fold explicitly-scanned custom TCP ports into the web-port classification.
+
+    The web-scanning stages (nuclei, fingerprint, screenshots) only treat an
+    open port as an HTTP(S) endpoint when it is in ``http_ports``/
+    ``https_ports``. So a scan restricted to custom ports (e.g. ``9000,7443``)
+    finds those ports open but never probes them for web CVEs/misconfig -- the
+    stage reports ``no_web_ports`` and no vulnerability is found, while the same
+    target on the default 80/443 does. This closes that gap: every custom port
+    not already classified is added to *both* lists so it is probed as http and
+    https (its scheme is unknown), while ports already classified keep their
+    single, correct scheme. Returns new lists; inputs are not mutated.
+    """
+    known = set(http_ports) | set(https_ports)
+    extra = sorted(p for p in custom_ports if p not in known)
+    if not extra:
+        return list(http_ports), list(https_ports)
+    return http_ports + extra, https_ports + extra
+
+
 def merge_nuclei_config(
     base: NucleiConfig,
     override: ProfileNucleiConfig | None,

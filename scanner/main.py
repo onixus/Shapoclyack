@@ -17,6 +17,7 @@ from scanner.pipeline.batch_runner import run_batches_parallel
 from scanner.pipeline.checkpoint import CheckpointStore
 from scanner.pipeline.config_schema import (
     AppConfig,
+    extend_web_ports_with_custom,
     format_validation_error,
     load_config,
     merge_nuclei_config,
@@ -52,7 +53,7 @@ from scanner.pipeline.hostnames import (
 )
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ownership import resolve_ownership
-from scanner.pipeline.ports import fast_port_scan
+from scanner.pipeline.ports import custom_tcp_ports, fast_port_scan
 from scanner.pipeline.pulse_probe import run_pulse_probe, sync_report_primary_marker
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
 from scanner.pipeline.alerts import send_alerts
@@ -230,6 +231,38 @@ def _run_pipeline_body(
     if ports_updates:
         config = config.model_copy(
             update={"ports": config.ports.model_copy(update=ports_updates)}
+        )
+
+    # When the run is restricted to custom TCP ports (CLI --ports-file, or the
+    # API writing a job's port list), those ports are scanned but the web stages
+    # (nuclei/fingerprint/screenshots) only probe ports in their built-in
+    # http_ports/https_ports lists -- so a scan of, say, 9000,7443 finds the
+    # ports open yet reports no web vulnerabilities, while the same target on the
+    # default 80/443 does. Fold the explicitly-scanned custom ports into those
+    # lists (both schemes, scheme unknown) so the endpoints are actually probed.
+    custom_web_ports = custom_tcp_ports(Path(config.ports.custom_ports_file))
+    if custom_web_ports:
+        nuclei_http, nuclei_https = extend_web_ports_with_custom(
+            config.nuclei.http_ports, config.nuclei.https_ports, custom_web_ports
+        )
+        fp_http, fp_https = extend_web_ports_with_custom(
+            config.fingerprint.http_ports, config.fingerprint.https_ports, custom_web_ports
+        )
+        ss_http, ss_https = extend_web_ports_with_custom(
+            config.screenshots.http_ports, config.screenshots.https_ports, custom_web_ports
+        )
+        config = config.model_copy(
+            update={
+                "nuclei": config.nuclei.model_copy(
+                    update={"http_ports": nuclei_http, "https_ports": nuclei_https}
+                ),
+                "fingerprint": config.fingerprint.model_copy(
+                    update={"http_ports": fp_http, "https_ports": fp_https}
+                ),
+                "screenshots": config.screenshots.model_copy(
+                    update={"http_ports": ss_http, "https_ports": ss_https}
+                ),
+            }
         )
 
     # pulse (--cve-online) and scripts/fetch-cvss4-db.py both read NVD_API_KEY

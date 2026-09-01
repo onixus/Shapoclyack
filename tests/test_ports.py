@@ -311,3 +311,34 @@ def test_top_ports_reaches_naabu_verbatim(tmp_path, monkeypatch):
     assert captured, "naabu was never invoked"
     command = captured[0]
     assert command[command.index("-top-ports") + 1] == "1000"
+
+
+def test_custom_tcp_ports_parses_lists_ranges_and_skips_udp(tmp_path: Path):
+    from scanner.pipeline.ports import custom_tcp_ports
+
+    ports_file = tmp_path / "ports.txt"
+    ports_file.write_text(
+        "# comment\n"
+        "9000,7443\n"
+        "8100-8102\n"
+        "u:53\n"  # UDP marker -> ignored
+        "not-a-port\n"
+        "80\n",
+        encoding="utf-8",
+    )
+    assert custom_tcp_ports(ports_file) == {80, 7443, 8100, 8101, 8102, 9000}
+
+
+def test_custom_tcp_ports_missing_file_is_empty(tmp_path: Path):
+    from scanner.pipeline.ports import custom_tcp_ports
+
+    assert custom_tcp_ports(tmp_path / "nope.txt") == set()
+
+
+def test_custom_tcp_ports_clamps_out_of_range_and_reversed_ranges(tmp_path: Path):
+    from scanner.pipeline.ports import custom_tcp_ports
+
+    ports_file = tmp_path / "ports.txt"
+    # Reversed range is normalised; 0 and >65535 are dropped/clamped.
+    ports_file.write_text("8002-8000\n0\n70000\n", encoding="utf-8")
+    assert custom_tcp_ports(ports_file) == {8000, 8001, 8002}

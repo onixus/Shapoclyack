@@ -345,3 +345,25 @@ def test_validate_config_flag_reports_a_bad_file(tmp_path: Path, capsys):
     broken.write_text("runtime: [\n", encoding="utf-8")
     assert _validate_config_only(broken) == exit_codes.CONFIG_ERROR
     assert "not valid YAML" in capsys.readouterr().err
+
+
+def test_extend_web_ports_with_custom_adds_unknown_ports_to_both_schemes():
+    from scanner.pipeline.config_schema import extend_web_ports_with_custom
+
+    http, https = extend_web_ports_with_custom(
+        [80, 8080], [443, 8443], {80, 443, 7443, 9000}
+    )
+    # Already-classified ports keep their single scheme; unknown custom ports
+    # (7443, 9000) are added to both so nuclei/fingerprint probe http and https.
+    assert http == [80, 8080, 7443, 9000]
+    assert https == [443, 8443, 7443, 9000]
+
+
+def test_extend_web_ports_with_custom_noop_when_all_known():
+    from scanner.pipeline.config_schema import extend_web_ports_with_custom
+
+    http, https = extend_web_ports_with_custom([80], [443], {80, 443})
+    assert http == [80]
+    assert https == [443]
+    # No custom ports at all is also a no-op (default scan uses top-ports).
+    assert extend_web_ports_with_custom([80], [443], set()) == ([80], [443])

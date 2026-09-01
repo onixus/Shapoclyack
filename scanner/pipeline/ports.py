@@ -51,6 +51,46 @@ def _flatten_custom_ports(custom_file: Path) -> list[str] | None:
     return expanded or None
 
 
+def custom_tcp_ports(custom_file: Path) -> set[int]:
+    """Individual TCP ports named by a custom ports file (ranges expanded).
+
+    The custom TCP ports file feeds naabu's ``-p`` (comma/newline separated,
+    ``N`` or ``N-M`` ranges). The web-scanning stages (nuclei, fingerprint,
+    screenshots) need to know which non-default ports were explicitly scanned
+    so they can be probed as web endpoints too -- otherwise a scan of, say,
+    ``9000,7443`` finds the ports open but never runs nuclei against them
+    because they are not in the built-in ``http_ports``/``https_ports`` lists.
+
+    ``u:``-prefixed tokens mark UDP and are ignored here. Unparseable or
+    out-of-range tokens are skipped rather than raising.
+    """
+    ports: set[int] = set()
+    for line in read_lines(custom_file):
+        for part in line.split(","):
+            part = part.strip()
+            if not part or part.startswith("u:"):
+                continue
+            if "-" in part:
+                lo, _, hi = part.partition("-")
+                try:
+                    start, end = int(lo), int(hi)
+                except ValueError:
+                    continue
+                if start > end:
+                    start, end = end, start
+                start, end = max(1, start), min(65535, end)
+                if start <= end:
+                    ports.update(range(start, end + 1))
+            else:
+                try:
+                    port = int(part)
+                except ValueError:
+                    continue
+                if 1 <= port <= 65535:
+                    ports.add(port)
+    return ports
+
+
 def _naabu_entries(stdout: str, protocol: ScanProtocol) -> list[str]:
     entries: list[str] = []
     for line in (stdout or "").splitlines():
