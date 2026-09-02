@@ -665,7 +665,13 @@ just more noise.
 
 ### What to measure
 
-None of this is currently measurable: the product is self-hosted with no telemetry. The
+~~None of this is currently measurable: the product is self-hosted with no telemetry.~~ The
+in-product half now exists: `GET /api/adoption` and the **Adoption** page compute, per tenant
+and per window, closures and the share a scan confirmed, SLA adherence at closure, median
+time to fix by severity, reopen share, findings per asset, owner / context / 30-day scan /
+dual-source coverage, closed-and-verified per analyst, time to first scan and first finding,
+and overlay age — from tables that already existed, with `null` where there is nothing to
+divide by. The opt-in aggregated export is not built. The original precondition read: the
 precondition is an in-product **Adoption** page built on tables that already exist
 (`vulnerability_events`, `risk_score_snapshots`, `assets`, `jobs`), plus an opt-in aggregated
 export. Then: MTTR by severity and asset criticality; share of findings within SLA; **share of

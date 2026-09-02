@@ -81,6 +81,7 @@ export const queryKeys = {
   reportTemplates: ["reports", "templates"] as const,
   reportSchedules: ["reports", "schedules"] as const,
   generatedReports: (limit = 50) => ["reports", "generated", limit] as const,
+  adoption: (windowDays: number) => ["adoption", windowDays] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

@@ -2233,3 +2233,70 @@ export async function deleteGeneratedReport(reportId: string) {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Adoption metrics (ROADMAP Track E, "What to measure")
+// ---------------------------------------------------------------------------
+
+export type AdoptionFindings = {
+  open: number;
+  accepted_open: number;
+  closed_in_window: number;
+  machine_verified_closed: number;
+  /** Shares are percentages 0-100, or null when there is nothing to divide by. */
+  machine_verified_share: number | null;
+  closed_within_sla_share: number | null;
+  mttr_hours: number | null;
+  mttr_hours_by_severity: Record<string, number | null>;
+  reopened_share: number | null;
+  open_per_asset: number | null;
+};
+
+export type AdoptionAssets = {
+  active: number;
+  with_owner_share: number | null;
+  with_context_share: number | null;
+  scanned_recently_share: number | null;
+  dual_source_share: number | null;
+  coverage_days: number;
+  unowned: number;
+};
+
+export type AdoptionAnalyst = { analyst: string; closed: number; machine_verified: number };
+
+export type AdoptionOnboarding = {
+  tenant_created_at: string | null;
+  first_successful_scan_at: string | null;
+  first_tracked_finding_at: string | null;
+  hours_to_first_scan: number | null;
+  hours_to_first_finding: number | null;
+};
+
+export type AdoptionEnrichmentDataset = {
+  name: string;
+  present: boolean;
+  age_days: number | null;
+  stale: boolean;
+};
+
+export type AdoptionMetrics = {
+  tenant_id: string;
+  window_days: number;
+  generated_at: string;
+  findings: AdoptionFindings;
+  assets: AdoptionAssets;
+  analysts: AdoptionAnalyst[];
+  onboarding: AdoptionOnboarding;
+  enrichment: AdoptionEnrichmentDataset[];
+};
+
+export async function fetchAdoption(windowDays = 90) {
+  try {
+    const { data } = await api.get<AdoptionMetrics>("/adoption", {
+      params: { window_days: windowDays },
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}

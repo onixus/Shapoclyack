@@ -6,6 +6,25 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **An Adoption page: is the product producing outcomes, or data?** —
+  ROADMAP Track E ends with a list of what would have to be measured before
+  any of its features can be called a success, and with the admission that
+  none of it was measurable. `GET /api/adoption?window_days=…` (viewer, one
+  tenant) and the **Adoption** console page now compute it from tables that
+  already existed: closures in the window and the share a scan confirmed
+  (`machine_verified`, so the page cannot disagree with the Vulnerability
+  Center's summary), the share closed within SLA, median time to fix overall
+  and by severity, reopen share, open findings per asset; active assets with
+  an owner, with business context, seen by a run in the last 30 days, and
+  also reporting an endpoint inventory; closed-and-verified per analyst — the
+  quarterly control question, as a table; hours from tenant creation to the
+  first successful scan and the first tracked finding; and the age of each
+  enrichment overlay. Two rules shape every number: a share with nothing to
+  divide by is `null` (rendered `n/a`), never 0% or 100%, and durations are
+  medians, so one finding that sat for a year while procurement argued does
+  not move the number a security lead is judged on. Nothing leaves the
+  installation; the opt-in aggregated export ROADMAP also names is not built.
+
 - **Report factory and compliance mapping** (ROADMAP Track E, Sprint 4). An
   MSSP sells the report, and the platform had one: a per-run PDF with this
   project's name on it. There is now a branded, scheduled, per-tenant report
