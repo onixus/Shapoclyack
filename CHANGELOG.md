@@ -324,6 +324,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The SQLite dev fallback brings an existing file up to the models** —
+  `create_all` creates absent tables and leaves existing ones alone, so a dev
+  database made before a model gained a column kept its old shape and the
+  first query naming the column failed (`no such column: users.email` on a
+  `scanner/state/octo_man.db` from before OIDC; `test_security_headers_middleware`
+  tripped over it on any machine with such a file). Postgres has Alembic for
+  this and SQLite had nothing but "delete your database". The engine now adds
+  each missing column with `ALTER TABLE … ADD COLUMN` on open — the additive
+  case a model change almost always is — and never drops, renames or retypes;
+  a NOT NULL column without a default is added nullable, since the rows that
+  predate it genuinely have no value for it.
+
 - **A JetStream stream that cannot be created is a startup failure, not a
   warning** — `NatsBus._ensure_stream` logged `stream INGEST not ready after
   retries` and returned normally, so `_connect` succeeded, the bus came up
