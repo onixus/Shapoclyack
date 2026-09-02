@@ -342,6 +342,20 @@ All notable changes to Shapoclyack are documented in this file.
   the client with no prompt. Locally it is `tests/e2e/ssh-deploy.sh`; in CI it
   is the `SSH deploy (live sshd)` stage, with the server pinned by digest.
 
+- **The datastore NetworkPolicies are verified under a CNI that enforces
+  them** — #225 shipped `base/networkpolicy-datastores.yaml` reviewed and
+  validated as objects, and ROADMAP recorded that enforcement had never been
+  exercised: kind's default CNI ignores NetworkPolicy, so nothing in any lab
+  had ever dropped a packet because of them.
+  `k8s/scripts/verify-networkpolicy.sh` creates a throwaway kind cluster with
+  Calico (pinned), deploys the real `kind-dev` overlay, waits for the API to
+  come up through the allow rules, then connects from an unlabeled pod, a
+  `backup`-labelled pod, an `agent`-labelled pod and the API pod to every
+  datastore port. Run 2026-09-02 under Calico v3.30.3: 16 of 16 rows matched
+  the manifest, and the datastores' kubelet probes survived the policy as its
+  note on host traffic predicted. The result is recorded in
+  [docs/operations.md](docs/operations.md#networkpolicy-decision).
+
 - **Migration `0025`'s grandfather path has a test that runs it** — the
   insert that keeps existing tenants scanning after the upgrade to
   fail-closed scopes (#226) is the one line that decides whether an upgrade

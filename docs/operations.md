@@ -1010,6 +1010,21 @@ Two things it does not cover, both by design:
   They were never the only control: every one of these three services now also
   requires credentials, and that is the part that holds regardless of CNI.
 
+**Verified under enforcement.** `k8s/scripts/verify-networkpolicy.sh` is the
+proof rather than the argument: it creates a throwaway kind cluster with
+Calico (pinned; kindnet does not enforce NetworkPolicy), deploys the real
+`overlays/kind-dev`, waits for the API to become Ready — which is the allowed
+direction working, since the API reaches all three datastores on the way
+there — and then connects from pods the policies must refuse and pods they
+must admit. Run on 2026-09-02 against Calico v3.30.3: 16 of 16 rows matched —
+an unlabeled pod is refused by Postgres, ClickHouse (both ports) and NATS
+4222 and admitted by NATS 8222; a `backup`-labelled pod reaches Postgres and
+nothing else; an `agent`-labelled pod reaches NATS and nothing else; the API
+pod reaches all three. The datastores' kubelet probes kept passing, as the
+manifest's note on host traffic predicted. Needs docker, kind and the
+locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
+cluster up for inspection.
+
 ## Data-plane credentials
 
 The control plane (JWT, RBAC, tenant scoping) has always been authenticated.
