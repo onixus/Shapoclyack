@@ -163,6 +163,28 @@ This split keeps slow or broken receivers from creating JetStream consumer lag a
 
 The dispatcher runs in every API replica. It does not need leader election: due rows are claimed with `FOR UPDATE SKIP LOCKED`, and a visibility timeout moves the claim deadline forward so replicas divide work and abandoned claims become eligible again. A batch is POSTed serially, so that timeout scales with the size of the claim — one `OCTO_WEBHOOK_TIMEOUT_SECONDS` per claimed row plus two of slack, never under 30 seconds — otherwise the lease expires mid-batch and a peer re-sends a delivery still in flight. A dispatcher that fails part-way through a batch releases the rows it never attempted back to the queue instead of letting them sit out that window; they keep their retry budget, because no attempt was made.
 
+### Webhook deployment modes
+
+The two halves are switched independently, so an installation can shape which
+replicas talk to the broker and which open connections to third parties
+(#153). Every mode keeps the `/api/webhooks` surface — subscriptions, the DLQ
+and its replay, the audit trail — because those are rows, not threads.
+
+| Mode | `OCTO_WEBHOOK_FANOUT_ENABLED` | `OCTO_WEBHOOK_DISPATCH_ENABLED` | What the replica does |
+|------|-------------------------------|---------------------------------|-----------------------|
+| Default | `true` | `true` | Consumes events and delivers; correct at any replica count |
+| API-only | `false` | `false` | Serves the API; something else must run the other two |
+| Fan-out worker | `true` | `false` | Turns events into delivery rows; never opens an outbound connection, so it needs no egress |
+| Egress worker | `false` | `true` | Claims due rows and delivers; the only replicas that need a route to receivers |
+
+With `OCTO_WEBHOOKS_ENABLED=false` none of it runs and the routes are not
+registered, whatever the two flags say. Fan-out additionally needs
+`OCTO_NATS_URL`: with no broker there is no stream to consume, and the flag
+is then moot. At least one replica must run each half, or events accumulate as
+consumer lag (fan-out off everywhere) or as `pending` rows (dispatch off
+everywhere) — both are visible: `octo_nats_consumer_pending` for the former,
+`octo_webhook_delivery_queue{status="pending"}` for the latter.
+
 Retry classification is bounded and explicit: timeouts, 5xx, 408, and 429 retry with capped exponential backoff; other 4xx responses are dead-lettered immediately rather than replaying the same malformed request until the budget is exhausted.
 
 Webhook payloads are signed by default with HMAC over `{timestamp}.{body}`. The secret is generated at subscription creation, returned once, stored write-only from the API perspective, and rotatable. Receivers should validate both the signature and timestamp freshness.
