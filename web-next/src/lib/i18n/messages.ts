@@ -18,6 +18,7 @@ export const en = {
   "nav.geo": "Geo Map",
   "nav.reports": "Reports",
   "nav.compliance": "Compliance",
+  "nav.adoption": "Adoption",
   "nav.system": "System",
   "nav.serviceTokens": "Service tokens",
 
@@ -372,6 +373,7 @@ export const ru: Record<MsgKey, string> = {
   "nav.geo": "Геокарта",
   "nav.reports": "Отчёты",
   "nav.compliance": "Соответствие",
+  "nav.adoption": "Внедрение",
   "nav.system": "Система",
   "nav.serviceTokens": "Сервисные токены",
 
