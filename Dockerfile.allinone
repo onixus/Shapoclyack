@@ -75,7 +75,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG INSTALL_NMAP=1
 RUN set -eux; \
     apt-get update; \
-    PKGS="ca-certificates curl fping git jq"; \
+    # openssh-client: the SSH push deployment (api/services/agent_deployer.py)
+    # runs `ssh`/`ssh-keyscan` from this image; without it the feature fails
+    # with HostKeyUnavailable before anything is sent to the target.
+    PKGS="ca-certificates curl fping git jq openssh-client"; \
     if [ "${INSTALL_NMAP}" = "1" ]; then PKGS="${PKGS} nmap"; fi; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     rm -rf /var/lib/apt/lists/*

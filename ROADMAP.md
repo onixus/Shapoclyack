@@ -524,15 +524,28 @@ and an argument injection in the SSH deployer
 `f"{username}@{host}"` with neither field validated, and `ssh` reads a leading `-` as an
 option, so `-oProxyCommand=…` ran under `/bin/sh` in the API process **before** the host key
 was compared. The pin (#232) and the outbound policy (#240) both sat behind that point. Not
-reachable in the published images, which ship neither `paramiko` nor `openssh-client` — but
-that is an absent dependency, not a control, and the feature does not work without it.
+reachable in the `0.43-0828` images, which shipped neither `paramiko` nor `openssh-client` — but
+that was an absent dependency, not a control, and the feature did not work without it. The
+`api` and `aio` images now install `openssh-client`, and the deployer's argv is run against a
+real `sshd` in CI (`tests/test_ssh_deploy_live.py`, stage `SSH deploy (live sshd)`).
 
-Three limits of what was verified, stated rather than implied: NetworkPolicy **enforcement** was
-never exercised on a live cluster; the SSH path was never run end to end against a real sshd —
-and #272 is a reminder of what that gap costs, since a live run is where an unusable argv would
-have surfaced; and migration `0025`'s grandfather path — the one that decides whether existing
-installs keep scanning after the upgrade — has no automated test and was checked by hand against
-a database built at `0024`. All three are noted where they apply.
+Three limits of what was verified, stated rather than implied — all three closed after the
+0.43 cut: ~~NetworkPolicy **enforcement** was never exercised on a live cluster~~ — on
+2026-09-02 `k8s/scripts/verify-networkpolicy.sh` created a kind cluster with Calico v3.30.3
+instead of kindnet, deployed the real `kind-dev` overlay and connected from pods the policies
+must refuse and pods they must admit: 16 of 16 rows matched (an unlabeled pod refused by all
+three datastores and admitted by NATS's monitoring port; `backup` admitted by Postgres only;
+`agent` by NATS only; the API by all three), and the datastores' kubelet probes survived the
+policy as the manifest predicted; ~~the SSH path was never run end to end against a real sshd~~
+— closed after the 0.43 cut: the transport (probe, `SSH_ASKPASS`, stdin, key login, refused
+pin) runs against a real `sshd` on every CI build, and #272 is what that gap had cost; and
+~~migration `0025`'s grandfather path — the one that decides whether existing installs keep
+scanning after the upgrade — has no automated test~~ — closed as well:
+`tests/test_migration_0025_grandfather.py` builds a sibling database, brings it to `0024`,
+creates tenants there and upgrades past `0025`, then asserts the allow-all rows, the scope the
+API loads from them, that a tenant created afterwards is fail-closed, and that the downgrade
+returns to `0024`. What a CNI that ignores NetworkPolicy does is unchanged and still documented:
+the objects are inert there, and the credentials on each datastore are the control that holds.
 
 ### Claimed Done, broken in code
 
