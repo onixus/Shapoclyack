@@ -533,9 +533,12 @@ Three limits of what was verified, stated rather than implied: NetworkPolicy **e
 never exercised on a live cluster; ~~the SSH path was never run end to end against a real sshd~~
 — closed after the 0.43 cut: the transport (probe, `SSH_ASKPASS`, stdin, key login, refused
 pin) runs against a real `sshd` on every CI build, and #272 is what that gap had cost; and
-migration `0025`'s grandfather path — the one that decides whether existing installs keep
-scanning after the upgrade — has no automated test and was checked by hand against a database
-built at `0024`. The two that remain are noted where they apply.
+~~migration `0025`'s grandfather path — the one that decides whether existing installs keep
+scanning after the upgrade — has no automated test~~ — closed as well:
+`tests/test_migration_0025_grandfather.py` builds a sibling database, brings it to `0024`,
+creates tenants there and upgrades past `0025`, then asserts the allow-all rows, the scope the
+API loads from them, that a tenant created afterwards is fail-closed, and that the downgrade
+returns to `0024`. The one that remains — NetworkPolicy enforcement — is noted where it applies.
 
 ### Claimed Done, broken in code
 

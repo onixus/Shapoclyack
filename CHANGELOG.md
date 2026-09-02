@@ -342,6 +342,19 @@ All notable changes to Shapoclyack are documented in this file.
   the client with no prompt. Locally it is `tests/e2e/ssh-deploy.sh`; in CI it
   is the `SSH deploy (live sshd)` stage, with the server pinned by digest.
 
+- **Migration `0025`'s grandfather path has a test that runs it** — the
+  insert that keeps existing tenants scanning after the upgrade to
+  fail-closed scopes (#226) is the one line that decides whether an upgrade
+  is safe, and it had only ever been checked by hand: the CI database is
+  migrated to head before the suite starts, so nothing in it ran `0025` over a
+  tenant. `tests/test_migration_0025_grandfather.py` creates a sibling
+  database, brings it to `0024`, inserts tenants, upgrades to head and asserts
+  the three allow-all rows per tenant stamped `migration-0025`, that
+  `load_scope` reads them as allow-all in both address families, that a tenant
+  created after the upgrade gets nothing and is refused, and that the
+  documented downgrade drops the table and the `auth_events.detail` column
+  with it. Postgres only, like the migration.
+
 - **A JetStream stream that cannot be created is a startup failure, not a
   warning** — `NatsBus._ensure_stream` logged `stream INGEST not ready after
   retries` and returned normally, so `_connect` succeeded, the bus came up
