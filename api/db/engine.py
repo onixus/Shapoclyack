@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Column, Engine, MetaData, create_engine, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -61,6 +61,65 @@ def _create_schema_if_unmanaged(engine: Engine) -> None:
     from api.db import models
 
     models.Base.metadata.create_all(engine)
+    _add_missing_sqlite_columns(engine, models.Base.metadata)
+
+
+def _add_missing_sqlite_columns(engine: Engine, metadata: MetaData) -> None:
+    """Bring an existing SQLite file up to today's models, column by column.
+
+    ``create_all`` creates tables that are absent and leaves existing ones
+    alone, so a dev database created before a model grew a column keeps its
+    old shape and the first query that names the new column fails with
+    ``no such column``. Postgres has Alembic for this; the SQLite fallback
+    has nothing, and "delete your dev database" is not a migration path
+    anyone documents. This adds each missing column with ``ALTER TABLE …
+    ADD COLUMN``, which SQLite supports for the additive case that a
+    model change on ``main`` almost always is. It never drops, renames or
+    retypes anything: a column the models no longer know about is left
+    where it is.
+
+    A NOT NULL column without a server default cannot be added to a table
+    that already has rows, so it is added nullable; the models fill it on
+    every insert, and a pre-existing row with NULL there is the honest
+    state of data written before the column existed.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table in metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        present = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present:
+                continue
+            spec = _sqlite_add_column_spec(engine, column)
+            with engine.begin() as conn:
+                conn.exec_driver_sql(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN {spec}'
+                )
+            _log.info("sqlite: added missing column %s.%s", table.name, column.name)
+
+
+def _sqlite_add_column_spec(engine: Engine, column: Column) -> str:
+    type_sql = column.type.compile(dialect=engine.dialect)
+    spec = f'"{column.name}" {type_sql}'
+    default = column.server_default
+    if default is not None and getattr(default, "arg", None) is not None:
+        arg = default.arg
+        literal = arg.text if hasattr(arg, "text") else str(arg)
+        lowered = literal.strip().lower()
+        if lowered in ("true", "false"):
+            # The models write ``server_default="false"`` for Boolean columns.
+            # Quoting that would store the *text* 'false', which is truthy to
+            # SQLAlchemy's Boolean processor; SQLite has no boolean type, so
+            # the honest literal is the integer.
+            literal = "1" if lowered == "true" else "0"
+        elif not literal.startswith("'") and not literal.replace(".", "", 1).lstrip("-").isdigit():
+            literal = "'" + literal.replace("'", "''") + "'"
+        spec += f" DEFAULT {literal}"
+        if not column.nullable:
+            spec += " NOT NULL"
+    return spec
 
 
 @contextmanager
