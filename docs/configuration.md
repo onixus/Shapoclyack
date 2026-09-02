@@ -375,6 +375,7 @@ Outbound webhooks (see
 |---|---|---|
 | `OCTO_WEBHOOKS_ENABLED` | `true` | Register `/api/webhooks` and consume asset events. Off means no subscriptions, no deliveries, no endpoints |
 | `OCTO_WEBHOOK_DISPATCH_ENABLED` | `true` | Run the delivery loop in *this* replica. Off keeps the API surface (subscriptions, DLQ, audit trail) while confining outbound HTTP to selected replicas |
+| `OCTO_WEBHOOK_FANOUT_ENABLED` | `true` | Run the JetStream fan-out consumer in *this* replica (events → delivery rows). Independent of dispatch since #153; see [deployment modes](architecture.md#webhook-deployment-modes) |
 | `OCTO_WEBHOOK_MAX_ATTEMPTS` | `6` | Attempts, including the first, before a delivery is dead-lettered |
 | `OCTO_WEBHOOK_RETRY_BASE_SECONDS` | `30` | First backoff; doubles per attempt |
 | `OCTO_WEBHOOK_RETRY_MAX_SECONDS` | `3600` | Backoff cap |
