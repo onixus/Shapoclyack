@@ -40,6 +40,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
+| `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age | Viewer |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | Admin |
@@ -293,6 +294,14 @@ Removing an agent from this page forgets its registration. A process still
 running on the host re-registers on its next heartbeat; stop it there first.
 
 ## Compliance posture
+
+`/adoption` reads `GET /api/adoption?window_days=…` (30/90/180/365 from the page)
+and renders it as tiles and three panels. A share the API could not compute —
+no closures, no assets — is shown as `n/a`, never as 0% or 100%: an empty
+denominator is not a verdict in either direction. Everything on the page is
+computed inside the installation from the tenant's own tables; nothing is sent
+anywhere, which is what makes it usable as the precondition ROADMAP Track E
+names for judging its own features.
 
 `/compliance` reads `GET /api/compliance/frameworks` and
 `GET /api/compliance/{framework_id}`, and shows one framework's control table

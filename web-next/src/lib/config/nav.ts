@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Database,
   FileText,
+  Gauge,
   Globe2,
   Home,
   KeyRound,
@@ -38,6 +39,7 @@ export const NAV = [
   { href: "/geo", labelKey: "nav.geo", icon: Globe2 },
   { href: "/reports", labelKey: "nav.reports", icon: FileText },
   { href: "/compliance", labelKey: "nav.compliance", icon: ClipboardCheck },
+  { href: "/adoption", labelKey: "nav.adoption", icon: Gauge },
   { href: "/service-tokens", labelKey: "nav.serviceTokens", icon: KeyRound },
   { href: "/system", labelKey: "nav.system", icon: SlidersHorizontal },
 ] as const;

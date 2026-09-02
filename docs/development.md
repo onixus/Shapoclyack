@@ -35,6 +35,13 @@ python -m compileall scanner api tests agent
 python -m pytest
 ```
 
+Two suites are live and skip themselves unless their target is present: the
+NATS tests need `OCTO_NATS_URL`, and `tests/test_ssh_deploy_live.py` needs a
+real `sshd`. For the latter, `tests/e2e/ssh-deploy.sh` starts one in a
+container (docker and a local OpenSSH client required), reads its host key
+off the server's own files, and runs the suite against it — the same thing
+the CI stage `SSH deploy (live sshd)` does.
+
 Run the API locally:
 
 ```bash

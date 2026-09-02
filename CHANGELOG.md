@@ -6,6 +6,25 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **An Adoption page: is the product producing outcomes, or data?** —
+  ROADMAP Track E ends with a list of what would have to be measured before
+  any of its features can be called a success, and with the admission that
+  none of it was measurable. `GET /api/adoption?window_days=…` (viewer, one
+  tenant) and the **Adoption** console page now compute it from tables that
+  already existed: closures in the window and the share a scan confirmed
+  (`machine_verified`, so the page cannot disagree with the Vulnerability
+  Center's summary), the share closed within SLA, median time to fix overall
+  and by severity, reopen share, open findings per asset; active assets with
+  an owner, with business context, seen by a run in the last 30 days, and
+  also reporting an endpoint inventory; closed-and-verified per analyst — the
+  quarterly control question, as a table; hours from tenant creation to the
+  first successful scan and the first tracked finding; and the age of each
+  enrichment overlay. Two rules shape every number: a share with nothing to
+  divide by is `null` (rendered `n/a`), never 0% or 100%, and durations are
+  medians, so one finding that sat for a year while procurement argued does
+  not move the number a security lead is judged on. Nothing leaves the
+  installation; the opt-in aggregated export ROADMAP also names is not built.
+
 - **Report factory and compliance mapping** (ROADMAP Track E, Sprint 4). An
   MSSP sells the report, and the platform had one: a per-run PDF with this
   project's name on it. There is now a branded, scheduled, per-tenant report
@@ -349,6 +368,51 @@ All notable changes to Shapoclyack are documented in this file.
   a non-root user needs passwordless sudo, and a native install needs a
   staged agent package — both now stated in
   [docs/operations.md](docs/operations.md#ssh-push-deployment).
+
+- **The api and aio images now ship `openssh-client`, and the SSH push
+  deployment is tested against a real `sshd`** — `shapoclyack-0.43-0828`
+  documented UI-driven SSH deployment, pinned host keys and a removal route
+  for the pin, and none of it could run: `api/services/agent_deployer.py`
+  shells out to `ssh` and `ssh-keyscan`, and neither the `api` nor the `aio`
+  image installed them, so every deployment failed at the probe with
+  `HostKeyUnavailable` before anything reached the target. The package is the
+  Debian one (`openssh-client`, the only apt package in the api image);
+  `paramiko` stays undeclared, since the OpenSSH path is complete and a
+  second SSH implementation is a second place for #272 to happen.
+  `tests/test_ssh_deploy_live.py` hands the deployer's argv to that client
+  against a real server — ROADMAP recorded that this had never been done, and
+  #272 is what the gap cost — and checks the probe's fingerprint against the
+  server's own key file, the password through `SSH_ASKPASS`, stdin reaching
+  the remote command, a private-key login, and that a wrong pin is refused by
+  the client with no prompt. Locally it is `tests/e2e/ssh-deploy.sh`; in CI it
+  is the `SSH deploy (live sshd)` stage, with the server pinned by digest.
+
+- **The datastore NetworkPolicies are verified under a CNI that enforces
+  them** — #225 shipped `base/networkpolicy-datastores.yaml` reviewed and
+  validated as objects, and ROADMAP recorded that enforcement had never been
+  exercised: kind's default CNI ignores NetworkPolicy, so nothing in any lab
+  had ever dropped a packet because of them.
+  `k8s/scripts/verify-networkpolicy.sh` creates a throwaway kind cluster with
+  Calico (pinned), deploys the real `kind-dev` overlay, waits for the API to
+  come up through the allow rules, then connects from an unlabeled pod, a
+  `backup`-labelled pod, an `agent`-labelled pod and the API pod to every
+  datastore port. Run 2026-09-02 under Calico v3.30.3: 16 of 16 rows matched
+  the manifest, and the datastores' kubelet probes survived the policy as its
+  note on host traffic predicted. The result is recorded in
+  [docs/operations.md](docs/operations.md#networkpolicy-decision).
+
+- **Migration `0025`'s grandfather path has a test that runs it** — the
+  insert that keeps existing tenants scanning after the upgrade to
+  fail-closed scopes (#226) is the one line that decides whether an upgrade
+  is safe, and it had only ever been checked by hand: the CI database is
+  migrated to head before the suite starts, so nothing in it ran `0025` over a
+  tenant. `tests/test_migration_0025_grandfather.py` creates a sibling
+  database, brings it to `0024`, inserts tenants, upgrades to head and asserts
+  the three allow-all rows per tenant stamped `migration-0025`, that
+  `load_scope` reads them as allow-all in both address families, that a tenant
+  created after the upgrade gets nothing and is refused, and that the
+  documented downgrade drops the table and the `auth_events.detail` column
+  with it. Postgres only, like the migration.
 
 - **A JetStream stream that cannot be created is a startup failure, not a
   warning** — `NatsBus._ensure_stream` logged `stream INGEST not ready after

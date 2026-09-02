@@ -9,6 +9,19 @@
 # ProjectDiscovery rebuilds with patched Go — revisit and bump the pins then.
 CVE-2025-68121
 
+# CVE-2026-56854 / GO-2026-6303 — golang.org/x/crypto/ssh: the source-address
+# critical option was not enforced for Permissions returned by password,
+# keyboard-interactive, no-client-auth and GSSAPI callbacks. Fixed in x/crypto
+# 0.55.0. The affected symbols are ssh.NewServerConn / serverAuthenticate —
+# the SSH *server* side. Present in all three Go binaries (dnsx 1.2.3 carries
+# 0.45.0, naabu 2.6.1 0.46.0, nuclei v3.11.1 0.53.0), all as an indirect
+# dependency, and none of them accepts an SSH connection: nuclei has an SSH
+# client for templates, dnsx and naabu never touch the package. No upstream
+# release carries the fix as of 2026-09-02 (dnsx 1.3.1 of 2026-08-31 is on
+# 0.52.0, nuclei 3.11.1 is the latest). Revisit and bump the pins when one
+# does; do not extend this exception to any client-side x/crypto/ssh advisory.
+CVE-2026-56854
+
 # GHSA-r277-6w6q-xmqw (kin-openapi fail-open auth bypass) is NOT ignored here:
 # nuclei v3.11.1 pins kin-openapi 0.144.0, which carries the fix, and that is
 # the version the nuclei-build stage compiles (see Dockerfile ARG
