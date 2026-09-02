@@ -19,6 +19,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OCTO_API_PORT=8080
 
 WORKDIR /app
+# openssh-client is the only system package: the SSH push deployment
+# (api/services/agent_deployer.py) shells out to `ssh` and `ssh-keyscan`, and
+# the image used to ship neither, so the documented feature failed with
+# HostKeyUnavailable before anything reached the target.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends openssh-client; \
+    rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-api.txt /app/
 RUN pip install --no-cache-dir -r requirements-api.txt
 

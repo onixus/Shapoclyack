@@ -1745,3 +1745,66 @@ class GenerateReportRequest(BaseModel):
     sections: dict[str, bool] | None = None
     format: Literal["pdf", "html", "json"] = "pdf"
     title: str | None = Field(default=None, max_length=300)
+
+
+# --------------------------------------------------------------------------
+# Adoption metrics (ROADMAP Track E, "What to measure")
+# --------------------------------------------------------------------------
+
+
+class AdoptionFindings(BaseModel):
+    """Window-scoped remediation outcomes. Shares are ``None`` with no denominator."""
+
+    open: int
+    accepted_open: int = 0
+    closed_in_window: int
+    machine_verified_closed: int = 0
+    machine_verified_share: float | None = None
+    closed_within_sla_share: float | None = None
+    # Medians of (closed_at - sla_started_at), in hours.
+    mttr_hours: float | None = None
+    mttr_hours_by_severity: dict[str, float | None] = Field(default_factory=dict)
+    reopened_share: float | None = None
+    open_per_asset: float | None = None
+
+
+class AdoptionAssets(BaseModel):
+    active: int
+    with_owner_share: float | None = None
+    with_context_share: float | None = None
+    scanned_recently_share: float | None = None
+    dual_source_share: float | None = None
+    coverage_days: int
+    unowned: int = 0
+
+
+class AdoptionAnalyst(BaseModel):
+    analyst: str
+    closed: int
+    machine_verified: int
+
+
+class AdoptionOnboarding(BaseModel):
+    tenant_created_at: str | None = None
+    first_successful_scan_at: str | None = None
+    first_tracked_finding_at: str | None = None
+    hours_to_first_scan: float | None = None
+    hours_to_first_finding: float | None = None
+
+
+class AdoptionEnrichmentDataset(BaseModel):
+    name: str
+    present: bool
+    age_days: float | None = None
+    stale: bool = False
+
+
+class AdoptionMetrics(BaseModel):
+    tenant_id: str
+    window_days: int
+    generated_at: str
+    findings: AdoptionFindings
+    assets: AdoptionAssets
+    analysts: list[AdoptionAnalyst] = Field(default_factory=list)
+    onboarding: AdoptionOnboarding
+    enrichment: list[AdoptionEnrichmentDataset] = Field(default_factory=list)
