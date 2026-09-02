@@ -185,6 +185,8 @@ if [[ "${USE_DOCKER}" -eq 1 ]]; then
         --name "${CONTAINER_NAME}" \
         --restart always \
         --net host \
+        --cap-add NET_RAW \
+        --cap-add NET_ADMIN \
         --env-file "${CONF_DIR}/agent.env" \
         --entrypoint python \
         "${AGENT_IMAGE:-ghcr.io/onixus/shapoclyack-scanner:latest}" \
