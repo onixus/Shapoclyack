@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import AdoptionPage, { hours, share } from "@/app/(dashboard)/adoption/page";
+import AdoptionPage from "@/app/(dashboard)/adoption/page";
+import { hours, share } from "@/lib/adoption-format";
 import * as apiModule from "@/lib/api";
 import type { AdoptionMetrics } from "@/lib/api";
 
