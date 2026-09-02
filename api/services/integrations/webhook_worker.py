@@ -304,19 +304,24 @@ _DISPATCHER: WebhookDispatcher | None = None
 def start_worker(settings: Settings) -> None:
     """Start whichever halves this deployment can run.
 
-    The dispatcher runs whenever webhooks and dispatch are both enabled; the
-    fan-out consumer additionally needs a broker, since with no NATS there is
-    no event stream to consume. A broker-less installation can still create
+    The two halves are gated independently (#153): the dispatcher by
+    ``webhook_dispatch_enabled``, the fan-out consumer by
+    ``webhook_fanout_enabled`` — and the consumer additionally needs a broker,
+    since with no NATS there is no event stream to consume. Until #153 the
+    dispatch flag switched both off, so "confine outbound HTTP to these
+    replicas" also meant "only these replicas turn events into deliveries",
+    and there was no way to run a fan-out worker that never opens a connection
+    to a third party. A broker-less installation can still create
     subscriptions, send a test delivery, and replay the DLQ — deliveries are
     rows, and the dispatcher reads them from Postgres.
     """
     global _FANOUT, _DISPATCHER
-    if not settings.webhooks_enabled or not settings.webhook_dispatch_enabled:
+    if not settings.webhooks_enabled:
         return
-    if _DISPATCHER is None:
+    if _DISPATCHER is None and settings.webhook_dispatch_enabled:
         _DISPATCHER = WebhookDispatcher(settings=settings)
         _DISPATCHER.start()
-    if _FANOUT is None and settings.nats_url.strip():
+    if _FANOUT is None and settings.webhook_fanout_enabled and settings.nats_url.strip():
         _FANOUT = WebhookFanoutWorker(nats_url=settings.nats_url)
         _FANOUT.start()
 

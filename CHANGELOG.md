@@ -324,6 +324,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Webhook fan-out and dispatch are switched independently, and the
+  per-tenant subscription cap holds under concurrent creates**
+  ([#153](https://github.com/onixus/Shapoclyack/issues/153)) —
+  `OCTO_WEBHOOK_DISPATCH_ENABLED=false` used to stop the fan-out consumer as
+  well, so "confine outbound HTTP to these replicas" also meant "only these
+  replicas turn events into deliveries", and a fan-out worker that never
+  opens a connection to a third party was not a shape the flags could
+  express. `OCTO_WEBHOOK_FANOUT_ENABLED` (default `true`) gates the consumer
+  on its own; the four resulting modes — default, API-only, fan-out worker,
+  egress worker — are in [docs/architecture.md](docs/architecture.md#webhook-deployment-modes)
+  with what each needs and what accumulates when a half runs nowhere.
+  The cap on subscriptions per tenant was count-then-insert, which two
+  requests could both pass at N-1; creates now lock the tenant row for the
+  transaction, so the count the second request sees includes the first's row.
+  A Postgres test races eight creates for the last slot and asserts one
+  succeeds. Queue depth and consumer lag already had metrics
+  (`octo_webhook_delivery_queue`, `octo_nats_consumer_pending`), and the kill
+  switch over a queued backlog was pinned by a test in 0.43; those two items
+  of #153 needed no code.
+
 - **A JetStream stream that cannot be created is a startup failure, not a
   warning** — `NatsBus._ensure_stream` logged `stream INGEST not ready after
   retries` and returned normally, so `_connect` succeeded, the bus came up

@@ -185,6 +185,14 @@ class Settings:
     # and so tests can exercise the endpoints without a thread POSTing in the
     # background.
     webhook_dispatch_enabled: bool = True
+    # Whether *this* process runs the fan-out consumer (JetStream → delivery
+    # rows). Separate from dispatch (#153): fan-out touches the broker and
+    # Postgres only, dispatch is the half that opens connections to third
+    # parties, and an installation that confines egress to a few replicas
+    # should not have to confine the consumer with it — or the other way round.
+    # Three shapes fall out of the pair: API-only (both off), fan-out worker
+    # (fan-out on, dispatch off) and egress worker (dispatch on, fan-out off).
+    webhook_fanout_enabled: bool = True
     # Attempts (including the first) before a delivery is dead-lettered.
     webhook_max_attempts: int = 6
     # Exponential backoff between attempts: base * 2**(attempts-1), capped.
@@ -697,6 +705,8 @@ def load_settings() -> Settings:
         webhooks_enabled=os.environ.get("OCTO_WEBHOOKS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
         webhook_dispatch_enabled=os.environ.get("OCTO_WEBHOOK_DISPATCH_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+        webhook_fanout_enabled=os.environ.get("OCTO_WEBHOOK_FANOUT_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
         webhook_max_attempts=max(1, int(os.environ.get("OCTO_WEBHOOK_MAX_ATTEMPTS", "6"))),
         webhook_retry_base_seconds=max(

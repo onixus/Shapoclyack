@@ -229,11 +229,36 @@ def test_start_worker_respects_the_flags(monkeypatch):
     webhook_worker.start_worker(Settings(webhooks_enabled=False, nats_url="nats://x"))
     assert started == []
 
-    # Dispatch off: the API surface stays, outbound HTTP does not.
+    # Dispatch off: outbound HTTP does not run here, but the fan-out consumer
+    # still turns events into delivery rows for whichever replica does (#153).
     webhook_worker.start_worker(
         Settings(webhooks_enabled=True, webhook_dispatch_enabled=False, nats_url="nats://x")
     )
+    assert started == ["fanout"]
+    assert webhook_worker.worker_stats() == {"fanout": webhook_worker._FANOUT.stats}
+    webhook_worker.stop_worker()
+    started.clear()
+
+    # Fan-out off: an egress-only replica that opens connections to receivers
+    # and never touches the broker.
+    webhook_worker.start_worker(
+        Settings(webhooks_enabled=True, webhook_fanout_enabled=False, nats_url="nats://x")
+    )
+    assert started == ["dispatch"]
+    webhook_worker.stop_worker()
+    started.clear()
+
+    # Both off: API-only — subscriptions, DLQ and audit trail, no threads.
+    webhook_worker.start_worker(
+        Settings(
+            webhooks_enabled=True,
+            webhook_dispatch_enabled=False,
+            webhook_fanout_enabled=False,
+            nats_url="nats://x",
+        )
+    )
     assert started == []
+    assert webhook_worker.worker_stats() is None
 
     # No broker: nothing to consume, but the DLQ is still replayable.
     webhook_worker.start_worker(Settings(webhooks_enabled=True, nats_url=""))
