@@ -107,7 +107,14 @@ def _sqlite_add_column_spec(engine: Engine, column: Column) -> str:
     if default is not None and getattr(default, "arg", None) is not None:
         arg = default.arg
         literal = arg.text if hasattr(arg, "text") else str(arg)
-        if not literal.startswith("'") and not literal.replace(".", "", 1).lstrip("-").isdigit():
+        lowered = literal.strip().lower()
+        if lowered in ("true", "false"):
+            # The models write ``server_default="false"`` for Boolean columns.
+            # Quoting that would store the *text* 'false', which is truthy to
+            # SQLAlchemy's Boolean processor; SQLite has no boolean type, so
+            # the honest literal is the integer.
+            literal = "1" if lowered == "true" else "0"
+        elif not literal.startswith("'") and not literal.replace(".", "", 1).lstrip("-").isdigit():
             literal = "'" + literal.replace("'", "''") + "'"
         spec += f" DEFAULT {literal}"
         if not column.nullable:

@@ -57,6 +57,48 @@ def test_an_old_sqlite_file_gains_the_columns_the_models_grew(tmp_path) -> None:
         db_engine.reset_for_tests()
 
 
+def test_boolean_defaults_are_added_as_integers_not_text(tmp_path) -> None:
+    """``server_default="false"`` on a Boolean must not become ``DEFAULT 'false'``:
+    SQLite would store the text, which reads back truthy."""
+    url = f"sqlite:///{tmp_path / 'bool.db'}"
+    old = create_engine(url, future=True)
+    with old.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE vulnerabilities (vuln_id VARCHAR PRIMARY KEY, tenant_id VARCHAR NOT NULL, "
+                "asset_id VARCHAR NOT NULL, severity VARCHAR NOT NULL, state VARCHAR NOT NULL, "
+                "state_changed_at DATETIME NOT NULL, first_seen_at DATETIME NOT NULL, "
+                "last_seen_at DATETIME NOT NULL, sla_started_at DATETIME NOT NULL, "
+                "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO vulnerabilities VALUES ('v1','t','a','high','OPEN','2026-01-01','2026-01-01',"
+                "'2026-01-01','2026-01-01','2026-01-01','2026-01-01')"
+            )
+        )
+    old.dispose()
+
+    db_engine.reset_for_tests()
+    try:
+        engine = db_engine.get_engine(url)
+        with engine.connect() as conn:
+            value, kind = conn.execute(
+                text("SELECT machine_verified, typeof(machine_verified) FROM vulnerabilities")
+            ).one()
+        assert (value, kind) == (0, "integer")
+        from sqlalchemy.orm import Session
+
+        from api.db import models
+
+        with Session(engine) as session:
+            row = session.get(models.Vulnerability, "v1")
+            assert row is not None and row.machine_verified is False and row.in_kev is False
+    finally:
+        db_engine.reset_for_tests()
+
+
 def test_a_fresh_sqlite_file_is_unchanged_by_the_repair(tmp_path) -> None:
     url = f"sqlite:///{tmp_path / 'fresh.db'}"
     db_engine.reset_for_tests()
