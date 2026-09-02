@@ -186,7 +186,7 @@ if [[ "${USE_DOCKER}" -eq 1 ]]; then
         --restart always \
         --net host \
         --env-file "${CONF_DIR}/agent.env" \
-        ghcr.io/onixus/shapoclyack:latest \
+        "${AGENT_IMAGE:-ghcr.io/onixus/shapoclyack-scanner:latest}" \
         python -m agent
 
     log "Docker agent container '${CONTAINER_NAME}' started successfully!"

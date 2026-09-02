@@ -324,6 +324,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The SSH push deployment survives a non-POSIX login shell and finds its
+  own installer** — the first live run of `POST /api/agent/deploy/ssh`
+  against a real host (2026-09-02) stopped twice before reaching `sudo`.
+  The remote command was handed to the target user's login shell as-is, and
+  under fish `INSTALLER=$(mktemp)` is a syntax error: exit 127 before
+  anything ran. It is now `sh -c '…'`, so the login shell only passes one
+  argument through and the script's dialect is ours. Then
+  `GET /api/agent/install.sh` answered 404 because it read
+  `scripts/install-agent.sh` relative to the process's working directory,
+  which is `/app` in the images and anything at all for `python -m api`; it
+  resolves from the package now, with `OCTO_AGENT_INSTALLER` as an override.
+  The installer's `--docker` mode also named an image that does not exist
+  (`ghcr.io/onixus/shapoclyack:latest`); it runs `shapoclyack-scanner`
+  (`AGENT_IMAGE` overrides). What the same run confirmed and did not change:
+  a non-root user needs passwordless sudo, and a native install needs a
+  staged agent package — both now stated in
+  [docs/operations.md](docs/operations.md#ssh-push-deployment).
+
 - **A JetStream stream that cannot be created is a startup failure, not a
   warning** — `NatsBus._ensure_stream` logged `stream INGEST not ready after
   retries` and returned normally, so `_connect` succeeded, the bus came up

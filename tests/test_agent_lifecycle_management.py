@@ -1160,3 +1160,40 @@ def test_unpinning_takes_admin_like_deploying(tmp_path: Path, monkeypatch):
         headers=admin_hdrs,
     )
     assert probed.json()["pinned"] is True
+
+
+def test_the_remote_install_command_does_not_depend_on_the_login_shell():
+    """``ssh host <cmd>`` runs ``cmd`` under the remote user's login shell.
+
+    The first live deployment ran against a user whose shell is fish, which
+    rejects ``VAR=$(...)`` outright and exited 127 before ``mktemp`` ran. The
+    command is therefore ``sh -c <one quoted argument>``: the login shell only
+    has to pass a single word through, and the script's dialect is ours.
+    """
+    import shlex
+
+    from api.schemas import AgentDeploySSHRequest
+    from api.services.agent_deployer import _install_command
+
+    command = _install_command(
+        AgentDeploySSHRequest(host="10.0.0.5", username="deploy"),
+        server_url="http://api.example:8080",
+        install_url="http://api.example:8080/api/agent/install.sh",
+        agent_id="agent-1",
+    )
+    words = shlex.split(command)
+    assert words[:2] == ["sh", "-c"]
+    assert len(words) == 3, "the whole script must travel as one argument"
+    script = words[2]
+    assert script.startswith("INSTALLER=$(mktemp)")
+    assert "sudo -n bash" in script
+    assert "--key-stdin" in script
+    assert "--agent-id agent-1" in script
+    # root needs no sudo, and the wrapper is the same either way.
+    as_root = _install_command(
+        AgentDeploySSHRequest(host="10.0.0.5", username="root"),
+        server_url="http://api.example:8080",
+        install_url="http://api.example:8080/api/agent/install.sh",
+        agent_id="agent-1",
+    )
+    assert "sudo" not in shlex.split(as_root)[2]

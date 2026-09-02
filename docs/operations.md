@@ -481,6 +481,24 @@ installer on the target, feeding it the key on stdin → wait up to 30 s for the
 agent's first heartbeat. Paramiko is used when installed, otherwise the OpenSSH
 CLI.
 
+**What the target needs.** Three things a live run against a real host
+(2026-09-02) made explicit, in the order the deployment meets them:
+
+- The user's login shell does not matter: the remote command is wrapped in
+  `sh -c`, so a fish or zsh login shell only passes one argument through.
+  (Before that wrapper the first live run exited 127 under fish.)
+- A non-root user needs **passwordless sudo** (`sudo -n`). A sudo that prompts
+  would consume the provisioning key arriving on stdin as its password guess,
+  so the deployer never lets it prompt; on a host where `sudo` asks, the run
+  fails at `Installation failed` with `sudo: a password is required` in the
+  remote log. Root over SSH needs no sudo.
+- The installer needs an agent package. The API serves none, so a native
+  (systemd) install through this route ends with `No agent package available`
+  unless an `agent` directory is already staged in `/opt/shapoclyack-agent`;
+  `use_docker: true` avoids that by running the published
+  `shapoclyack-scanner` image (`AGENT_IMAGE` overrides it), which is the
+  shape this route can complete unattended today.
+
 **Host key verification.** The first deployment to a host is refused unless the
 request names the fingerprint you expect:
 
