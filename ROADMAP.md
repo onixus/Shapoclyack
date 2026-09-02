@@ -524,15 +524,18 @@ and an argument injection in the SSH deployer
 `f"{username}@{host}"` with neither field validated, and `ssh` reads a leading `-` as an
 option, so `-oProxyCommand=…` ran under `/bin/sh` in the API process **before** the host key
 was compared. The pin (#232) and the outbound policy (#240) both sat behind that point. Not
-reachable in the published images, which ship neither `paramiko` nor `openssh-client` — but
-that is an absent dependency, not a control, and the feature does not work without it.
+reachable in the `0.43-0828` images, which shipped neither `paramiko` nor `openssh-client` — but
+that was an absent dependency, not a control, and the feature did not work without it. The
+`api` and `aio` images now install `openssh-client`, and the deployer's argv is run against a
+real `sshd` in CI (`tests/test_ssh_deploy_live.py`, stage `SSH deploy (live sshd)`).
 
 Three limits of what was verified, stated rather than implied: NetworkPolicy **enforcement** was
-never exercised on a live cluster; the SSH path was never run end to end against a real sshd —
-and #272 is a reminder of what that gap costs, since a live run is where an unusable argv would
-have surfaced; and migration `0025`'s grandfather path — the one that decides whether existing
-installs keep scanning after the upgrade — has no automated test and was checked by hand against
-a database built at `0024`. All three are noted where they apply.
+never exercised on a live cluster; ~~the SSH path was never run end to end against a real sshd~~
+— closed after the 0.43 cut: the transport (probe, `SSH_ASKPASS`, stdin, key login, refused
+pin) runs against a real `sshd` on every CI build, and #272 is what that gap had cost; and
+migration `0025`'s grandfather path — the one that decides whether existing installs keep
+scanning after the upgrade — has no automated test and was checked by hand against a database
+built at `0024`. The two that remain are noted where they apply.
 
 ### Claimed Done, broken in code
 

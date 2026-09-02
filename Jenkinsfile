@@ -197,6 +197,71 @@ pipeline {
       }
     }
 
+    stage('SSH deploy (live sshd)') {
+      // tests/test_ssh_deploy_live.py: the deployer's argv handed to a real
+      // OpenSSH client against a real sshd. Every other test of
+      // agent_deployer.py stubs `ssh`, which is how #272 (an argv the client
+      // read as options) lived on main unnoticed. Locally the same thing is
+      // tests/e2e/ssh-deploy.sh; here the container is orchestrated from
+      // Groovy because a port published on the host's loopback is not
+      // reachable from this agent.
+      //
+      // apt is deliberate and retried: python:3.12-slim has no ssh client,
+      // and the client under test has to be the one Debian ships in the api
+      // and aio images, not a stub. Three attempts before a deb.debian.org
+      // hiccup fails the stage.
+      agent any
+      steps {
+        script {
+          def net = "shapoclyack-ssh-${CI_SLUG}"
+          sh "docker network create ${net}"
+          try {
+            docker.image('lscr.io/linuxserver/openssh-server@sha256:2a48f9ce01f61c1d7b376b7be99bd12801a3ecd9f339a4c7e7698d529e8d0b47').withRun(
+              "--network ${net} --network-alias sshd " +
+              "-e PASSWORD_ACCESS=true -e USER_NAME=deploy -e USER_PASSWORD=deploy-ci-secret -e PUID=1000 -e PGID=1000"
+            ) { sshd ->
+              def fingerprint = ''
+              for (int i = 0; i < 60 && !fingerprint; i++) {
+                fingerprint = sh(
+                  script: "docker exec ${sshd.id} ssh-keygen -lf /config/ssh_host_keys/ssh_host_ed25519_key.pub 2>/dev/null | awk '{print \$2}' || true",
+                  returnStdout: true
+                ).trim()
+                if (!fingerprint) { sleep 1 }
+              }
+              if (!fingerprint) { error 'sshd never wrote its host key' }
+              docker.image('python:3.12-slim').inside("--network ${net} ${PIP_CACHE}") {
+                withEnv([
+                  'OCTO_SSHD_TEST_HOST=sshd',
+                  'OCTO_SSHD_TEST_PORT=2222',
+                  'OCTO_SSHD_TEST_USER=deploy',
+                  'OCTO_SSHD_TEST_PASSWORD=deploy-ci-secret',
+                  "OCTO_SSHD_TEST_FINGERPRINT=${fingerprint}",
+                ]) {
+                  sh '''
+                    set -eu
+                    for i in 1 2 3; do
+                      apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-client && break
+                      echo "[ci] apt attempt $i failed; retrying"; sleep 10
+                    done
+                    ssh -V
+                    pip install --quiet -r requirements-dev.txt
+                    for i in $(seq 1 60); do
+                      python -c "import socket;socket.create_connection(('sshd',2222),1)" 2>/dev/null && break
+                      sleep 1
+                    done
+                    python -m pytest -q tests/test_ssh_deploy_live.py --junitxml=junit-ssh-live.xml
+                  '''
+                }
+              }
+            }
+          } finally {
+            sh "docker network rm ${net} || true"
+            junit allowEmptyResults: true, testResults: 'junit-ssh-live.xml'
+          }
+        }
+      }
+    }
+
     stage('Kustomize') {
       agent any
       steps {

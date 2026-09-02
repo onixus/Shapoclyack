@@ -324,6 +324,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The api and aio images now ship `openssh-client`, and the SSH push
+  deployment is tested against a real `sshd`** — `shapoclyack-0.43-0828`
+  documented UI-driven SSH deployment, pinned host keys and a removal route
+  for the pin, and none of it could run: `api/services/agent_deployer.py`
+  shells out to `ssh` and `ssh-keyscan`, and neither the `api` nor the `aio`
+  image installed them, so every deployment failed at the probe with
+  `HostKeyUnavailable` before anything reached the target. The package is the
+  Debian one (`openssh-client`, the only apt package in the api image);
+  `paramiko` stays undeclared, since the OpenSSH path is complete and a
+  second SSH implementation is a second place for #272 to happen.
+  `tests/test_ssh_deploy_live.py` hands the deployer's argv to that client
+  against a real server — ROADMAP recorded that this had never been done, and
+  #272 is what the gap cost — and checks the probe's fingerprint against the
+  server's own key file, the password through `SSH_ASKPASS`, stdin reaching
+  the remote command, a private-key login, and that a wrong pin is refused by
+  the client with no prompt. Locally it is `tests/e2e/ssh-deploy.sh`; in CI it
+  is the `SSH deploy (live sshd)` stage, with the server pinned by digest.
+
 - **A JetStream stream that cannot be created is a startup failure, not a
   warning** — `NatsBus._ensure_stream` logged `stream INGEST not ready after
   retries` and returned normally, so `_connect` succeeded, the bus came up

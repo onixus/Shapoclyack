@@ -478,8 +478,12 @@ older installer needs a re-run of this one.**
 agent** dialog in the UI) runs the same installer from the API: verify the
 target's host key → connect → mint a tenant provisioning key → run the
 installer on the target, feeding it the key on stdin → wait up to 30 s for the
-agent's first heartbeat. Paramiko is used when installed, otherwise the OpenSSH
-CLI.
+agent's first heartbeat. The API runs the OpenSSH client (`ssh`,
+`ssh-keyscan`); the `api` and `aio` images install `openssh-client` for it.
+Images before `0.43-0828` inclusive shipped no SSH client at all, and every
+deployment from them failed at the host-key probe with `HostKeyUnavailable`.
+Paramiko is used instead when it happens to be installed, but it is not a
+declared dependency and the images do not carry it.
 
 **Host key verification.** The first deployment to a host is refused unless the
 request names the fingerprint you expect:
