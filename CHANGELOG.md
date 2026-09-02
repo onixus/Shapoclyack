@@ -337,7 +337,11 @@ All notable changes to Shapoclyack are documented in this file.
   resolves from the package now, with `OCTO_AGENT_INSTALLER` as an override.
   The installer's `--docker` mode also named an image that does not exist
   (`ghcr.io/onixus/shapoclyack:latest`); it runs `shapoclyack-scanner`
-  (`AGENT_IMAGE` overrides). What the same run confirmed and did not change:
+  (`AGENT_IMAGE` overrides) — with `--entrypoint python`, because that
+  image's entrypoint is `scanner.main` and `python -m agent` after it was
+  parsed as scanner arguments (`unrecognized arguments: python -m agent`,
+  restart loop). Verified by running the container by hand on the same host:
+  the agent exchanged its provisioning key, registered and went online. What the same run confirmed and did not change:
   a non-root user needs passwordless sudo, and a native install needs a
   staged agent package — both now stated in
   [docs/operations.md](docs/operations.md#ssh-push-deployment).
