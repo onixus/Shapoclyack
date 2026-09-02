@@ -203,6 +203,16 @@ def create_subscription(
         updated_at=now,
     )
     with get_session(settings.postgres_url) as session:
+        # The cap is enforced by count-then-insert, which two concurrent
+        # requests can both pass at N-1 (#153). Serialising creates on the
+        # tenant row makes the count authoritative for the transaction that
+        # inserts: the second request waits, then counts N, then is refused.
+        # A no-op on SQLite, whose writers are serialised by the file lock.
+        session.execute(
+            select(models.Tenant.tenant_id)
+            .where(models.Tenant.tenant_id == tenant_id)
+            .with_for_update()
+        ).all()
         existing = session.execute(
             select(func.count())
             .select_from(models.WebhookSubscription)

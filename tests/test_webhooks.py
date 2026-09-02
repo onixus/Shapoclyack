@@ -698,3 +698,56 @@ def test_api_rotate_secret(tmp_path, monkeypatch):
     )
     assert rotated.status_code == 200
     assert rotated.json()["secret"] not in (None, created["secret"])
+
+
+def test_the_subscription_cap_holds_under_concurrent_creates(settings: Settings, monkeypatch):
+    """#153: count-then-insert let two requests both pass at N-1. With the
+    tenant row locked for the transaction, exactly ``limit`` rows exist
+    afterwards no matter how many creates raced for the last slot.
+
+    The window between the count and the insert is microseconds, which is why
+    the race was never seen in a test; ``flush`` is slowed so every thread has
+    counted before any has inserted. With the lock, the slow flush happens
+    inside the critical section and the others wait at the ``SELECT … FOR
+    UPDATE`` instead — that is the whole difference under test.
+    """
+    from sqlalchemy.orm import Session
+
+    limit = 5
+    settings.webhook_max_subscriptions_per_tenant = limit
+    for i in range(limit - 1):
+        _subscribe(settings, name=f"seed-{i}", url=f"https://receiver.example/{i}")
+
+    real_flush = Session.flush
+
+    def slow_flush(self, *args, **kwargs):
+        time.sleep(0.2)
+        return real_flush(self, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "flush", slow_flush)
+
+    gate = threading.Barrier(8)
+    outcomes: list[str] = []
+    lock = threading.Lock()
+
+    def race(i: int) -> None:
+        gate.wait()
+        try:
+            _subscribe(settings, name=f"race-{i}", url=f"https://receiver.example/race/{i}")
+            result = "created"
+        except ValueError as exc:
+            result = "refused" if "limit" in str(exc) else f"error: {exc}"
+        with lock:
+            outcomes.append(result)
+
+    threads = [threading.Thread(target=race, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert outcomes.count("created") == 1, outcomes
+    assert outcomes.count("refused") == 7, outcomes
+    with get_session(settings.postgres_url) as session:
+        total = session.query(models.WebhookSubscription).filter_by(tenant_id="default").count()
+    assert total == limit
