@@ -912,12 +912,21 @@ def _install_command(
     # reads the key from its own stdin and a pipe would already own it. The
     # trap, not `set -e`, is what removes the file: with `set -e` a failing
     # installer exits the shell before any cleanup line is reached.
-    return (
+    script = (
         "INSTALLER=$(mktemp); "
         "trap 'rm -f \"$INSTALLER\"' EXIT; "
         f"curl -sSL --fail {shlex.quote(install_url)} -o \"$INSTALLER\" || exit 1; "
         f"{sudo_prefix}bash \"$INSTALLER\" {quoted}"
     )
+    # ``ssh host <command>`` hands the string to the *login shell of the remote
+    # user*, whatever that is. The first live run of this path was against a
+    # user whose shell is fish, which does not accept ``VAR=$(...)`` and exited
+    # 127 before mktemp ran. Wrapping in ``sh -c`` makes the script's dialect
+    # our decision rather than the target's: the login shell only has to pass
+    # one quoted argument through, which every shell does. stdin (the
+    # provisioning key) is inherited by ``sh`` and reaches the installer as
+    # before.
+    return f"sh -c {shlex.quote(script)}"
 
 
 def _deploy_worker(

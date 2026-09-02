@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -351,9 +353,17 @@ def get_deploy_status(
     return deploy_status
 
 
+# Resolved from the package, not from the working directory: the API is
+# started from wherever the operator (or the image's WORKDIR) happens to be,
+# and a relative path there answered 404 to the very installer the SSH push
+# deployment had just told the target to fetch. OCTO_AGENT_INSTALLER overrides
+# it for an installation that ships its own script.
+_INSTALLER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "install-agent.sh"
+
+
 @router.get("/agent/install.sh", response_class=PlainTextResponse)
 def get_install_script() -> PlainTextResponse:
-    script_path = Path("scripts/install-agent.sh")
+    script_path = Path(os.environ.get("OCTO_AGENT_INSTALLER") or _INSTALLER_SCRIPT)
     if not script_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Installer script not found")
     content = script_path.read_text(encoding="utf-8")

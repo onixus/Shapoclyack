@@ -343,6 +343,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The SSH push deployment survives a non-POSIX login shell and finds its
+  own installer** — the first live run of `POST /api/agent/deploy/ssh`
+  against a real host (2026-09-02) stopped twice before reaching `sudo`.
+  The remote command was handed to the target user's login shell as-is, and
+  under fish `INSTALLER=$(mktemp)` is a syntax error: exit 127 before
+  anything ran. It is now `sh -c '…'`, so the login shell only passes one
+  argument through and the script's dialect is ours. Then
+  `GET /api/agent/install.sh` answered 404 because it read
+  `scripts/install-agent.sh` relative to the process's working directory,
+  which is `/app` in the images and anything at all for `python -m api`; it
+  resolves from the package now, with `OCTO_AGENT_INSTALLER` as an override.
+  The installer's `--docker` mode also named an image that does not exist
+  (`ghcr.io/onixus/shapoclyack:latest`); it runs `shapoclyack-scanner`
+  (`AGENT_IMAGE` overrides) — with `--entrypoint python`, because that
+  image's entrypoint is `scanner.main` and `python -m agent` after it was
+  parsed as scanner arguments (`unrecognized arguments: python -m agent`,
+  restart loop), and with `NET_RAW` and `NET_ADMIN`, because `naabu` in the
+  image carries file capabilities and a container without them cannot exec
+  the binary at all (`Operation not permitted: 'naabu'`, and the `ports` stage
+  fails even in CONNECT mode). Verified by running the container by hand on
+  the same host: the agent exchanged its provisioning key, registered, went
+  online, claimed a job and completed a scan of its own host. What the same run confirmed and did not change:
+  a non-root user needs passwordless sudo, and a native install needs a
+  staged agent package — both now stated in
+  [docs/operations.md](docs/operations.md#ssh-push-deployment).
+
 - **The SQLite dev fallback brings an existing file up to the models** —
   `create_all` creates absent tables and leaves existing ones alone, so a dev
   database made before a model gained a column kept its old shape and the
