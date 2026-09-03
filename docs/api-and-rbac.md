@@ -674,10 +674,16 @@ Retry-After: 1209600
 standing fact; this one stops being true on its own, so the answer can say
 when. `Retry-After` is the seconds remaining until the period rolls over, and
 an integration that already retries on `429` does the right thing without being
-taught anything about quotas. Verification re-scans (`system:verification`,
-[#183](https://github.com/onixus/Shapoclyack/issues/183)) are exempt: refusing
+taught anything about quotas. Verification re-scans
+([#183](https://github.com/onixus/Shapoclyack/issues/183)) are exempt: refusing
 the machine check that closes a finding would strand it in `VERIFYING` and turn
-a billing limit into a correctness bug.
+a billing limit into a correctness bug. The exemption travels on the job
+(`jobs.quota_exempt`), stamped by the caller that dispatches the scan, and such
+a scan is left out of the count as well as out of the refusal. It is
+deliberately not keyed on a username: the verification path carries the
+*analyst's* name into the dispatch, so a name-based exemption would never fire
+for the one case it exists for — and a console account someone named
+`system:verification` would inherit an unlimited quota.
 
 Assets are capped **at ingest**, and an asset quota never fails a scan. The
 ingest path asks how many *new* assets it may create and honours the answer

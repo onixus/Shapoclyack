@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import UsagePage from "@/app/(dashboard)/usage/page";
 import * as apiModule from "@/lib/api";
-import type { FleetUsage, Me, TenantUsage, UsageResource } from "@/lib/api";
+import type { FleetUsage, Me, TenantQuota, TenantUsage, UsageResource } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 /** The history chart renders through recharts' ResponsiveContainer, which
@@ -66,6 +66,28 @@ function fleet(overrides: Partial<FleetUsage> = {}): FleetUsage {
     ],
     ...overrides,
   };
+}
+
+/** What `GET /tenants/{id}/quota` returns: the row stored for the tenant, which
+ * is not what the fleet table shows — that carries the limits in force. */
+function storedQuota(overrides: Partial<TenantQuota> = {}): TenantQuota {
+  return {
+    tenant_id: "acme",
+    max_assets: 100,
+    max_scans_per_month: 10,
+    quota_source: "tenant",
+    note: null,
+    updated_at: "2026-09-01T10:00:00",
+    updated_by: "admin",
+    ...overrides,
+  };
+}
+
+async function openEditor(tenantName: string) {
+  const rows = screen.getAllByRole("row").slice(1);
+  const row = rows.find((r) => within(r).queryByText(tenantName)) as HTMLElement;
+  await userEvent.click(within(row).getByRole("button", { name: "Edit quota" }));
+  return row;
 }
 
 function signIn(user: Partial<Me> = {}) {
@@ -162,23 +184,20 @@ describe("UsagePage", () => {
   it("sends an emptied ceiling as unlimited rather than as zero", async () => {
     vi.spyOn(apiModule, "fetchUsage").mockResolvedValue(usage());
     vi.spyOn(apiModule, "fetchFleetUsage").mockResolvedValue(fleet());
-    const put = vi.spyOn(apiModule, "updateTenantQuota").mockResolvedValue({
-      tenant_id: "acme",
-      max_assets: null,
-      max_scans_per_month: 10,
-      quota_source: "tenant",
-      note: null,
-      updated_at: "2026-09-03T11:00:00",
-      updated_by: "admin",
-    });
+    vi.spyOn(apiModule, "fetchTenantQuota").mockResolvedValue(storedQuota());
+    const put = vi.spyOn(apiModule, "updateTenantQuota").mockResolvedValue(
+      storedQuota({ max_assets: null, updated_at: "2026-09-03T11:00:00" }),
+    );
     signIn({ role: "admin", is_platform_admin: true });
     renderPage();
+
+    await screen.findByText("ACME");
+    await openEditor("ACME");
 
     const box = await screen.findByLabelText("Max assets — acme");
     expect(box).toHaveValue("100");
     await userEvent.clear(box);
-    const rows = screen.getAllByRole("row").slice(1);
-    await userEvent.click(within(rows[0]).getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(put).toHaveBeenCalledWith("acme", {
@@ -186,5 +205,85 @@ describe("UsagePage", () => {
         max_scans_per_month: 10,
       }),
     );
+  });
+
+  it("prefills the stored note and sends it back, instead of wiping it on the next edit", async () => {
+    vi.spyOn(apiModule, "fetchUsage").mockResolvedValue(usage());
+    vi.spyOn(apiModule, "fetchFleetUsage").mockResolvedValue(fleet());
+    vi.spyOn(apiModule, "fetchTenantQuota").mockResolvedValue(
+      storedQuota({ note: "Contract ACME-2026" }),
+    );
+    const put = vi.spyOn(apiModule, "updateTenantQuota").mockResolvedValue(storedQuota());
+    signIn({ role: "admin", is_platform_admin: true });
+    renderPage();
+
+    await screen.findByText("ACME");
+    await openEditor("ACME");
+
+    expect(await screen.findByLabelText("Note — acme")).toHaveValue("Contract ACME-2026");
+    const assets = screen.getByLabelText("Max assets — acme");
+    await userEvent.clear(assets);
+    await userEvent.type(assets, "250");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith("acme", {
+        max_assets: 250,
+        max_scans_per_month: 10,
+        note: "Contract ACME-2026",
+      }),
+    );
+  });
+
+  it("opens an inherited tenant with empty boxes rather than pinning the platform default", async () => {
+    vi.spyOn(apiModule, "fetchUsage").mockResolvedValue(usage());
+    vi.spyOn(apiModule, "fetchFleetUsage").mockResolvedValue(fleet());
+    const get = vi.spyOn(apiModule, "fetchTenantQuota").mockResolvedValue(
+      storedQuota({
+        tenant_id: "calm",
+        quota_source: "default",
+        updated_at: null,
+        updated_by: null,
+      }),
+    );
+    signIn({ role: "admin", is_platform_admin: true });
+    renderPage();
+
+    await screen.findByText("Calm Corp");
+    await openEditor("Calm Corp");
+
+    expect(get).toHaveBeenCalledWith("calm");
+    // The fleet row says 100 assets, but that ceiling is the platform's, not
+    // this tenant's — saving it would pin it here forever.
+    expect(await screen.findByLabelText("Max assets — calm")).toHaveValue("");
+    expect(screen.getByLabelText("Max scans per month — calm")).toHaveValue("");
+    expect(screen.getByText(/no quota of its own/i)).toBeInTheDocument();
+    // Nothing to reset: the tenant has no row to drop.
+    expect(
+      screen.queryByRole("button", { name: "Reset to platform default" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("resets a tenant-specific quota back to the platform default, once confirmed", async () => {
+    vi.spyOn(apiModule, "fetchUsage").mockResolvedValue(usage());
+    vi.spyOn(apiModule, "fetchFleetUsage").mockResolvedValue(fleet());
+    vi.spyOn(apiModule, "fetchTenantQuota").mockResolvedValue(storedQuota());
+    const remove = vi.spyOn(apiModule, "deleteTenantQuota").mockResolvedValue(undefined);
+    signIn({ role: "admin", is_platform_admin: true });
+    renderPage();
+
+    await screen.findByText("ACME");
+    await openEditor("ACME");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Reset to platform default" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/Reset acme to the platform default\?/)).toBeInTheDocument();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Reset to platform default" }),
+    );
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("acme"));
   });
 });

@@ -18,6 +18,14 @@ default from ``Settings`` (unlimited unless the operator configured one).
 per-tenant *override* meaning "unlimited for this one", which is how a single
 customer is exempted without turning metering off for everybody else.
 
+``jobs.quota_exempt`` is the one column this revision adds outside its own
+table. A scan that the platform dispatched to close its own loop — the
+verification re-scan of #183 — must neither be refused by a quota nor consume
+one, and that is a property of the dispatch, not of the analyst whose name is
+on the request. Keyed on a username it would be both wrong (the route passes
+the operator's name) and forgeable; as a column it is stamped by the caller
+that knows.
+
 There is no usage column here. What a tenant has consumed is counted from
 ``assets`` and ``jobs`` at read time, so the meter cannot drift away from the
 data it claims to measure — a counter column would eventually disagree with
@@ -49,6 +57,14 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["tenant_id"], ["tenants.tenant_id"], ondelete="CASCADE"),
     )
 
+    op.add_column(
+        "jobs",
+        sa.Column(
+            "quota_exempt", sa.Boolean(), nullable=False, server_default=sa.text("false")
+        ),
+    )
+
 
 def downgrade() -> None:
+    op.drop_column("jobs", "quota_exempt")
     op.drop_table("tenant_quotas")

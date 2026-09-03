@@ -1023,6 +1023,12 @@ class Job(Base):
     exit_code: Mapped[int | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(default=None)
     asset_upsert_error: Mapped[str | None] = mapped_column(default=None)
+    # Excluded from the tenant's monthly scan quota (Track E). Set by the
+    # caller that dispatches the scan, never inferred from who asked for it: a
+    # verification re-scan is exempt because it is the platform closing its own
+    # loop, and that is a property of the dispatch, not of the analyst whose
+    # name is on it.
+    quota_exempt: Mapped[bool] = mapped_column(default=False, server_default="false")
 
     __table_args__ = (
         Index("ix_jobs_tenant_status", "tenant_id", "status"),

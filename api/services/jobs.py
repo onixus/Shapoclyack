@@ -1007,7 +1007,14 @@ def start_scan(
     *,
     username: str,
     idempotency_key: str | None = None,
+    quota_exempt: bool = False,
 ) -> JobInfo:
+    """``quota_exempt`` marks a scan the platform dispatched to close its own
+    loop — today only the verification re-scan of #183. It is neither refused
+    by the tenant's monthly quota nor counted against it, and it is a property
+    of *this dispatch*: the requester's name is the analyst's on that path, so
+    recognising the exemption by username would be both wrong and forgeable.
+    """
     if not settings.allow_scan_start:
         raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
 
@@ -1022,7 +1029,8 @@ def start_scan(
     # operations). Placed here rather than in the route because the recurring
     # dispatcher and every other caller reach start_scan and none of them
     # reach the route — a quota only one entry point honours is not a quota.
-    quotas.assert_scan_quota(settings, tenant_id=tenant_id, username=username)
+    if not quota_exempt:
+        quotas.assert_scan_quota(settings, tenant_id=tenant_id)
 
     job_id = uuid.uuid4().hex[:12]
     execution = "agent" if settings.job_execution_mode == "agent" else "local"
@@ -1132,6 +1140,7 @@ def start_scan(
         # by any worker and must not be reconciled when this replica restarts.
         owner_id=settings.instance_id if execution == "local" else None,
         idempotency_key=(idempotency_key or None),
+        quota_exempt=quota_exempt,
         queued_at=_now(),
     )
     try:

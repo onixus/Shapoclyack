@@ -345,14 +345,18 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
     now = _now()
     created = 0
     updated = 0
-    # How many *new* assets this tenant may still register (None = unlimited).
-    # Read once per run rather than per host: the number cannot be exceeded
-    # inside the loop because this is the only path that creates rows here,
-    # and re-counting per host would put a COUNT(*) in front of every result.
-    capacity = quotas.asset_capacity(settings, tenant_id)
     quota_skipped = 0
+    # Assets this run has added to the billed count: new rows plus revivals.
+    claimed = 0
 
     with get_session(settings.postgres_url) as session:
+        # How many *new* billed assets this tenant may still register
+        # (None = unlimited). Counted once per run on this session rather than
+        # per host: this loop is the only thing creating rows inside the
+        # transaction, so it can track its own consumption, and a COUNT(*) in
+        # front of every host would be a table scan per result.
+        capacity = quotas.asset_capacity_in_session(session, settings, tenant_id)
+
         for entry in hosts:
             host_ip = str(entry.get("host") or "")
             names = entry.get("names") if isinstance(entry.get("names"), list) else []
@@ -371,11 +375,20 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
                 asset_id = primary.key
 
             asset = session.get(models.Asset, asset_id)
-            if asset is None and capacity is not None and created >= capacity:
+            # Reviving a decommissioned asset adds to the billed count exactly
+            # as creating one does — only "active" and "stale" are metered — so
+            # it spends capacity too. Without this, a tenant at its ceiling
+            # could grow indefinitely by re-observing retired hosts.
+            claims_capacity = asset is None or asset.status not in quotas.BILLED_ASSET_STATUSES
+            if claims_capacity and capacity is not None and claimed >= capacity:
                 # At the limit: skip the *new* host and keep going, so the
-                # assets the customer paid for still get this run's data.
+                # assets the customer paid for still get this run's data. A
+                # decommissioned asset stays decommissioned rather than being
+                # quietly brought back inside a full quota.
                 quota_skipped += 1
                 continue
+            if claims_capacity:
+                claimed += 1
             if asset is None:
                 asset = models.Asset(
                     asset_id=asset_id,

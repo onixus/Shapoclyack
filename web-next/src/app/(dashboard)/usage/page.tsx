@@ -7,9 +7,25 @@ import { KpiCard } from "@/components/kpi-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useFleetUsage, useUpdateTenantQuota, useUsage } from "@/hooks/use-usage";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  useDeleteTenantQuota,
+  useFleetUsage,
+  useTenantQuota,
+  useUpdateTenantQuota,
+  useUsage,
+} from "@/hooks/use-usage";
 import { useAuthStore } from "@/lib/auth-store";
-import type { TenantUsageRow, UsageResource } from "@/lib/api";
+import type { TenantQuota, TenantUsageRow, UsageResource } from "@/lib/api";
 import { useT, type Translate } from "@/lib/i18n";
 import {
   barPercent,
@@ -117,59 +133,168 @@ function ResourceCell({ resource, t }: { resource: UsageResource; t: Translate }
   );
 }
 
-/** Prefilled from the ceilings currently in force; an empty box is how both
- * this form and the API spell "unlimited". */
-function QuotaEditor({ row, t }: { row: TenantUsageRow; t: Translate }) {
-  const [maxAssets, setMaxAssets] = useState(quotaInputValue(row.assets.limit));
-  const [maxScans, setMaxScans] = useState(quotaInputValue(row.scans.limit));
-  const [note, setNote] = useState("");
+/** The editor works on the tenant's **stored** quota, not on the limits in
+ * force for it. The fleet row carries whatever ceiling applies, which for a
+ * tenant with no row of its own is the platform default — prefilling from that
+ * would turn an inherited number into a tenant-specific override on the next
+ * save, and nothing in the UI could undo it. So the form waits for
+ * `GET /tenants/{id}/quota` and seeds itself from that: limits *and* the note,
+ * which a whole-row PUT would otherwise wipe. */
+function QuotaEditor({
+  row,
+  t,
+  onClose,
+}: {
+  row: TenantUsageRow;
+  t: Translate;
+  onClose: () => void;
+}) {
+  const { data, isLoading, error } = useTenantQuota(row.tenant_id);
+
+  if (error) {
+    return <p className="text-xs text-rose-400">{(error as Error).message}</p>;
+  }
+  if (isLoading || !data) {
+    return <p className="text-xs text-muted-foreground">{t("page.usage.loading")}</p>;
+  }
+  return <QuotaForm quota={data} t={t} onClose={onClose} />;
+}
+
+/** Split out so the stored quota can seed `useState` directly — the form is
+ * only ever mounted once its row has arrived. */
+function QuotaForm({
+  quota,
+  t,
+  onClose,
+}: {
+  quota: TenantQuota;
+  t: Translate;
+  onClose: () => void;
+}) {
+  const inherited = quota.quota_source === "default";
+  // An inherited tenant has no stored ceilings of its own, so the boxes start
+  // empty: filling them in with the platform's numbers would silently pin them.
+  const [maxAssets, setMaxAssets] = useState(
+    inherited ? "" : quotaInputValue(quota.max_assets),
+  );
+  const [maxScans, setMaxScans] = useState(
+    inherited ? "" : quotaInputValue(quota.max_scans_per_month),
+  );
+  const [note, setNote] = useState(quota.note ?? "");
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const mutation = useUpdateTenantQuota();
-  const pending = mutation.isPending && mutation.variables?.tenantId === row.tenant_id;
+  const reset = useDeleteTenantQuota();
+  const tenantId = quota.tenant_id;
+  const pending = mutation.isPending && mutation.variables?.tenantId === tenantId;
+  const resetting = reset.isPending && reset.variables === tenantId;
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Input
-        className="h-8 w-24 text-xs"
-        inputMode="numeric"
-        aria-label={`${t("page.usage.maxAssets")} — ${row.tenant_id}`}
-        placeholder={t("page.usage.unlimitedPlaceholder")}
-        value={maxAssets}
-        onChange={(event) => setMaxAssets(event.target.value)}
-      />
-      <Input
-        className="h-8 w-24 text-xs"
-        inputMode="numeric"
-        aria-label={`${t("page.usage.maxScans")} — ${row.tenant_id}`}
-        placeholder={t("page.usage.unlimitedPlaceholder")}
-        value={maxScans}
-        onChange={(event) => setMaxScans(event.target.value)}
-      />
-      <Input
-        className="h-8 w-36 text-xs"
-        aria-label={`${t("page.usage.note")} — ${row.tenant_id}`}
-        placeholder={t("page.usage.note")}
-        value={note}
-        onChange={(event) => setNote(event.target.value)}
-      />
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        className="h-8 text-xs"
-        disabled={pending}
-        onClick={() =>
-          mutation.mutate({
-            tenantId: row.tenant_id,
-            quota: {
-              max_assets: parseQuotaInput(maxAssets),
-              max_scans_per_month: parseQuotaInput(maxScans),
-              ...(note.trim() ? { note: note.trim() } : {}),
-            },
-          })
-        }
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          className="h-8 w-24 text-xs"
+          inputMode="numeric"
+          aria-label={`${t("page.usage.maxAssets")} — ${tenantId}`}
+          placeholder={
+            inherited
+              ? t("page.usage.inheritPlaceholder")
+              : t("page.usage.unlimitedPlaceholder")
+          }
+          value={maxAssets}
+          onChange={(event) => setMaxAssets(event.target.value)}
+        />
+        <Input
+          className="h-8 w-24 text-xs"
+          inputMode="numeric"
+          aria-label={`${t("page.usage.maxScans")} — ${tenantId}`}
+          placeholder={
+            inherited
+              ? t("page.usage.inheritPlaceholder")
+              : t("page.usage.unlimitedPlaceholder")
+          }
+          value={maxScans}
+          onChange={(event) => setMaxScans(event.target.value)}
+        />
+        <Input
+          className="h-8 w-36 text-xs"
+          aria-label={`${t("page.usage.note")} — ${tenantId}`}
+          placeholder={t("page.usage.note")}
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs"
+          disabled={pending || resetting}
+          onClick={() =>
+            mutation.mutate({
+              tenantId,
+              quota: {
+                max_assets: parseQuotaInput(maxAssets),
+                max_scans_per_month: parseQuotaInput(maxScans),
+                ...(note.trim() ? { note: note.trim() } : {}),
+              },
+            })
+          }
+        >
+          {pending ? t("page.usage.saving") : t("page.usage.save")}
+        </Button>
+        {inherited ? null : (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-8 text-xs text-muted-foreground"
+            disabled={pending || resetting}
+            onClick={() => setConfirmingReset(true)}
+          >
+            {resetting ? t("page.usage.resetting") : t("page.usage.reset")}
+          </Button>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-8 text-xs text-muted-foreground"
+          onClick={onClose}
+        >
+          {t("page.usage.close")}
+        </Button>
+      </div>
+      {/* "Inherited" and "unlimited here" are different answers, and an empty
+        * box means one of them in each state — so the editor says which. */}
+      <p className="text-[11px] text-muted-foreground">
+        {inherited ? t("page.usage.editorInherited") : t("page.usage.editorTenant")}
+      </p>
+
+      <AlertDialog
+        open={confirmingReset}
+        onOpenChange={(open) => !open && setConfirmingReset(false)}
       >
-        {pending ? t("page.usage.saving") : t("page.usage.save")}
-      </Button>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("page.usage.resetConfirmTitle", { tenant: tenantId })}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-xs">
+              {t("page.usage.resetConfirmBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("page.usage.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmingReset(false);
+                reset.mutate(tenantId, { onSuccess: onClose });
+              }}
+            >
+              {t("page.usage.reset")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -180,6 +305,8 @@ export default function UsagePage() {
   const isPlatformAdmin = Boolean(user?.is_platform_admin);
   const { data, isLoading, error } = useUsage(HISTORY_MONTHS);
   const fleet = useFleetUsage(isPlatformAdmin);
+  // One editor at a time: only the open one fetches its tenant's stored quota.
+  const [editing, setEditing] = useState<string | null>(null);
 
   const history = useMemo(
     () =>
@@ -381,7 +508,19 @@ export default function UsagePage() {
                         <ResourceCell resource={row.scans} t={t} />
                       </td>
                       <td className="py-2 align-top">
-                        <QuotaEditor row={row} t={t} />
+                        {editing === row.tenant_id ? (
+                          <QuotaEditor row={row} t={t} onClose={() => setEditing(null)} />
+                        ) : (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 text-xs"
+                            onClick={() => setEditing(row.tenant_id)}
+                          >
+                            {t("page.usage.edit")}
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}

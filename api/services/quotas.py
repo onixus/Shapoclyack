@@ -28,7 +28,12 @@ The two limits are also enforced differently, on purpose:
   ``jobs_service.start_scan``, so the operator gets a 429 naming the limit and
   the date it resets, and no work is started. Verification re-scans (#183) are
   exempt: refusing the machine check that closes a finding would leave it stuck
-  in ``VERIFYING`` and make the quota a correctness bug.
+  in ``VERIFYING`` and make the quota a correctness bug. The exemption is
+  carried by ``jobs.quota_exempt``, stamped by the caller that dispatches the
+  scan — never by the requester's name, which is the analyst's on that path and
+  would be both wrong and forgeable. Exempt scans are excluded from the count
+  as well as from the refusal: work the customer is not allowed to decline is
+  work they should not be billed for either.
 * **Assets** are capped at ingest — :func:`asset_capacity` tells the ingest
   path how many *new* assets it may create. It never fails the scan, and it
   never touches assets that already exist: a customer at their limit keeps
@@ -57,13 +62,6 @@ _log = logging.getLogger(__name__)
 #: Resource names, used in the API, the metric label and the refusal message.
 RESOURCE_ASSETS = "assets"
 RESOURCE_SCANS = "scans"
-
-#: Callers whose scans are never counted against a quota, because refusing
-#: them would break the platform rather than the customer's budget. The
-#: verification re-scan (#183) is the mechanical half of a finding closure:
-#: quota-refusing it would strand findings in ``VERIFYING`` for a reason that
-#: has nothing to do with the finding.
-EXEMPT_USERNAMES = frozenset({"system:verification"})
 
 #: Asset statuses that consume quota. A decommissioned asset is inventory
 #: history, not capacity in use — billing for it would make deleting an asset
@@ -152,6 +150,26 @@ def _normalise_limit(value: int | None) -> int | None:
     return int(value)
 
 
+def _quota_in_session(session, settings: Settings, tenant_id: str) -> Quota:
+    row = session.get(models.TenantQuota, tenant_id)
+    if row is not None:
+        return Quota(
+            tenant_id=tenant_id,
+            max_assets=_normalise_limit(row.max_assets),
+            max_scans_per_month=_normalise_limit(row.max_scans_per_month),
+            source="tenant",
+            note=row.note or "",
+            updated_at=row.updated_at,
+            updated_by=row.updated_by or "",
+        )
+    return Quota(
+        tenant_id=tenant_id,
+        max_assets=_normalise_limit(settings.quota_default_max_assets),
+        max_scans_per_month=_normalise_limit(settings.quota_default_max_scans_per_month),
+        source="default",
+    )
+
+
 def get_quota(settings: Settings, tenant_id: str) -> Quota:
     """The limits that apply to ``tenant_id`` right now.
 
@@ -160,23 +178,7 @@ def get_quota(settings: Settings, tenant_id: str) -> Quota:
     else is metered against, rather than by turning metering off globally.
     """
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.TenantQuota, tenant_id)
-        if row is not None:
-            return Quota(
-                tenant_id=tenant_id,
-                max_assets=_normalise_limit(row.max_assets),
-                max_scans_per_month=_normalise_limit(row.max_scans_per_month),
-                source="tenant",
-                note=row.note or "",
-                updated_at=row.updated_at,
-                updated_by=row.updated_by or "",
-            )
-    return Quota(
-        tenant_id=tenant_id,
-        max_assets=_normalise_limit(settings.quota_default_max_assets),
-        max_scans_per_month=_normalise_limit(settings.quota_default_max_scans_per_month),
-        source="default",
-    )
+        return _quota_in_session(session, settings, tenant_id)
 
 
 def set_quota(
@@ -221,18 +223,29 @@ def clear_quota(settings: Settings, tenant_id: str) -> None:
             session.delete(row)
 
 
+def assets_used_in_session(session, tenant_id: str) -> int:
+    """Billed asset count on an already-open session.
+
+    The ingest paths need this *inside* their write transaction: counting from
+    a second connection while that transaction is open is how a SQLite dev
+    install deadlocks, and on Postgres it would read a snapshot that does not
+    include the assets the same run just created.
+    """
+    return int(
+        session.execute(
+            select(func.count())
+            .select_from(models.Asset)
+            .where(
+                models.Asset.tenant_id == tenant_id,
+                models.Asset.status.in_(BILLED_ASSET_STATUSES),
+            )
+        ).scalar_one()
+    )
+
+
 def assets_used(settings: Settings, tenant_id: str) -> int:
     with get_session(settings.postgres_url) as session:
-        return int(
-            session.execute(
-                select(func.count())
-                .select_from(models.Asset)
-                .where(
-                    models.Asset.tenant_id == tenant_id,
-                    models.Asset.status.in_(BILLED_ASSET_STATUSES),
-                )
-            ).scalar_one()
-        )
+        return assets_used_in_session(session, tenant_id)
 
 
 def scans_used(settings: Settings, tenant_id: str, *, since: datetime | None = None) -> int:
@@ -241,6 +254,10 @@ def scans_used(settings: Settings, tenant_id: str, *, since: datetime | None = N
     Counted from ``jobs.queued_at``, so a job that is still queued counts: the
     customer has consumed the entitlement by asking for the work, and a limit
     that only counted finished scans could be bypassed by starting a thousand.
+
+    ``quota_exempt`` rows are left out. A verification re-scan cannot be
+    refused, so counting it would let the platform's own housekeeping spend an
+    entitlement the customer is then refused for using.
     """
     start = since if since is not None else period_bounds()[0]
     with get_session(settings.postgres_url) as session:
@@ -248,22 +265,26 @@ def scans_used(settings: Settings, tenant_id: str, *, since: datetime | None = N
             session.execute(
                 select(func.count())
                 .select_from(models.Job)
-                .where(models.Job.tenant_id == tenant_id, models.Job.queued_at >= start)
+                .where(
+                    models.Job.tenant_id == tenant_id,
+                    models.Job.queued_at >= start,
+                    models.Job.quota_exempt.is_(False),
+                )
             ).scalar_one()
         )
 
 
-def assert_scan_quota(settings: Settings, *, tenant_id: str, username: str) -> None:
+def assert_scan_quota(settings: Settings, *, tenant_id: str) -> None:
     """Refuse a scan that would exceed this month's entitlement.
 
     Called from ``jobs_service.start_scan``, which is the single choke point
-    every path reaches — the API route, the recurring-scan dispatcher and the
-    verification re-scan alike — so a quota cannot be walked around by
-    scheduling the scan instead of starting it.
+    every path reaches — the API route and the recurring-scan dispatcher alike
+    — so a quota cannot be walked around by scheduling the scan instead of
+    starting it. The one caller that skips it is the one that dispatches an
+    exempt scan, and it says so explicitly rather than being recognised by a
+    username.
     """
     if not settings.quota_enforcement_enabled:
-        return
-    if username in EXEMPT_USERNAMES:
         return
     quota = get_quota(settings, tenant_id)
     limit = quota.max_scans_per_month
@@ -286,6 +307,21 @@ def assert_scan_quota(settings: Settings, *, tenant_id: str, username: str) -> N
     )
 
 
+def asset_capacity_in_session(session, settings: Settings, tenant_id: str) -> int | None:
+    """:func:`asset_capacity` for a caller that already holds a session.
+
+    Deliberately lazy at the call site: the endpoint-inventory path reaches it
+    only when it is about to create an asset, so the overwhelming majority of
+    agent snapshots — devices already linked to one — pay for no count at all.
+    """
+    if not settings.quota_enforcement_enabled:
+        return None
+    quota = _quota_in_session(session, settings, tenant_id)
+    if quota.max_assets is None:
+        return None
+    return max(0, quota.max_assets - assets_used_in_session(session, tenant_id))
+
+
 def asset_capacity(settings: Settings, tenant_id: str) -> int | None:
     """How many *new* assets this tenant may still register. ``None`` = unlimited.
 
@@ -294,12 +330,8 @@ def asset_capacity(settings: Settings, tenant_id: str) -> int | None:
     that are inside the quota, so the answer has to be a number they can honour
     partially. A tenant already over its limit gets 0, never a negative.
     """
-    if not settings.quota_enforcement_enabled:
-        return None
-    quota = get_quota(settings, tenant_id)
-    if quota.max_assets is None:
-        return None
-    return max(0, quota.max_assets - assets_used(settings, tenant_id))
+    with get_session(settings.postgres_url) as session:
+        return asset_capacity_in_session(session, settings, tenant_id)
 
 
 def record_asset_refusal(tenant_id: str, skipped: int) -> None:
@@ -361,24 +393,31 @@ def usage(settings: Settings, tenant_id: str, *, history_months: int = 12) -> di
 def scan_history(settings: Settings, tenant_id: str, *, months: int = 12) -> list[dict[str, Any]]:
     """Scans per calendar month, oldest first, with empty months present.
 
-    Months with no scans are returned as zeroes rather than omitted: a gap a
-    chart has to guess at is how a customer's quiet quarter turns into a
-    missing bar somebody reads as missing data.
+    Grouped in SQL rather than counted in Python: this is a viewer-reachable
+    read, and a tenant with a year of scans behind it would otherwise ship
+    every job row to the API process to be tallied there.
+
+    Months with no scans are filled in here as zeroes rather than omitted: a
+    gap a chart has to guess at is how a customer's quiet quarter turns into a
+    missing bar somebody reads as missing data. Exempt scans are excluded, so
+    the history and the current period's number are counted the same way.
     """
     months = max(1, min(int(months), 36))
     start, _ = period_bounds()
     first = _shift_months(start, -(months - 1))
+    year = func.extract("year", models.Job.queued_at)
+    month = func.extract("month", models.Job.queued_at)
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
-            select(models.Job.queued_at).where(
-                models.Job.tenant_id == tenant_id, models.Job.queued_at >= first
+            select(year, month, func.count())
+            .where(
+                models.Job.tenant_id == tenant_id,
+                models.Job.queued_at >= first,
+                models.Job.quota_exempt.is_(False),
             )
+            .group_by(year, month)
         ).all()
-    counts: dict[str, int] = {}
-    for (queued_at,) in rows:
-        if queued_at is None:
-            continue
-        counts[queued_at.strftime("%Y-%m")] = counts.get(queued_at.strftime("%Y-%m"), 0) + 1
+    counts = {f"{int(y):04d}-{int(m):02d}": int(count) for y, m, count in rows}
     out: list[dict[str, Any]] = []
     cursor = first
     while cursor <= start:
@@ -407,7 +446,7 @@ def tenant_summaries(settings: Settings) -> dict[str, Any]:
         ).all()
         scan_rows = session.execute(
             select(models.Job.tenant_id, func.count())
-            .where(models.Job.queued_at >= start)
+            .where(models.Job.queued_at >= start, models.Job.quota_exempt.is_(False))
             .group_by(models.Job.tenant_id)
         ).all()
         quota_rows = {

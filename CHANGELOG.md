@@ -41,8 +41,14 @@ All notable changes to Shapoclyack are documented in this file.
   discarding a whole result set would punish the findings for the assets the
   customer did pay for. An endpoint agent's inventory is accepted for the same
   reason: the device stays `unlinked` and links itself once the quota is
-  raised. Verification re-scans (#183) are exempt — quota-refusing the
-  mechanical check that closes a finding would strand it in `VERIFYING`.
+  raised, and reviving a decommissioned asset spends capacity exactly as
+  creating one does, since only `active` and `stale` are billed. Verification
+  re-scans (#183) are exempt — quota-refusing the mechanical check that closes
+  a finding would strand it in `VERIFYING` — and the exemption travels on the
+  job (`jobs.quota_exempt`) rather than on a username, because that path
+  carries the analyst's name and a name-keyed exemption would never have fired
+  for it. An exempt scan is also excluded from the count: work a customer
+  cannot decline is work they should not be billed for.
   Enforcement is separable from metering (`OCTO_QUOTA_ENFORCEMENT_ENABLED`),
   because an MSSP usually wants to watch consumption against the number it
   sold for a period or two before it starts refusing its customer's scans.

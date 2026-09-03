@@ -169,7 +169,7 @@ def _reconcile_asset(
     tenant_id: str,
     device: models.EndpointDevice,
     hostname: str,
-    asset_capacity: int | None = None,
+    settings: Settings,
 ) -> None:
     """Priority order per Agent_plan.md §6. Only runs when the device has no
     asset link yet — an existing link (or an established conflict) is
@@ -191,13 +191,18 @@ def _reconcile_asset(
         return
 
     # A new asset is about to be registered, so the tenant's asset quota
-    # applies here exactly as it does to a network scan (Track E). The
-    # snapshot itself is still accepted: the endpoint inventory is the value
-    # the agent was installed for, and refusing it would lose software and
-    # patch data over a *registry* limit. The device stays ``unlinked`` and
-    # links itself on a later submit once the quota is raised, because
+    # applies here exactly as it does to a network scan (Track E). Read only
+    # now, on the same session: most snapshots come from devices that are
+    # already linked and returned above, and counting a tenant's assets on
+    # every one of those would be a table scan per heartbeat.
+    #
+    # The snapshot itself is still accepted: the endpoint inventory is the
+    # value the agent was installed for, and refusing it would lose software
+    # and patch data over a *registry* limit. The device stays ``unlinked``
+    # and links itself on a later submit once the quota is raised, because
     # reconciliation re-runs for any device without an asset.
-    if asset_capacity is not None and asset_capacity <= 0:
+    capacity = quotas.asset_capacity_in_session(session, settings, tenant_id)
+    if capacity is not None and capacity <= 0:
         device.reconciliation_status = "unlinked"
         quotas.record_asset_refusal(tenant_id, 1)
         return
@@ -259,10 +264,6 @@ def ingest_snapshot(
     digest = _canonical_digest(request)
     collected_at = _parse_dt(request.collected_at)
     now = _now()
-    # Read outside the write transaction below: this is a COUNT on the same
-    # tenant's assets, and issuing it from a second connection while the
-    # snapshot's own transaction is open is how SQLite dev installs deadlock.
-    asset_capacity = quotas.asset_capacity(settings, tenant_id)
 
     with get_session(settings.postgres_url) as session:
         existing_snapshot = session.get(models.EndpointInventorySnapshot, request.snapshot_id)
@@ -317,7 +318,7 @@ def ingest_snapshot(
             tenant_id=tenant_id,
             device=device,
             hostname=request.hostname,
-            asset_capacity=asset_capacity,
+            settings=settings,
         )
 
         previous_items: dict[str, str | None] = {}

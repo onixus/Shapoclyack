@@ -26,6 +26,7 @@ import pytest
 
 from api.db import models
 from api.db.engine import get_session
+from api.schemas import StartScanRequest
 from api.services import metrics as metrics_service
 from api.services import quotas
 from api.services import tenants as tenants_service
@@ -52,7 +53,14 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def _job(settings: Settings, tenant_id: str, *, queued_at: datetime, job_id: str) -> None:
+def _job(
+    settings: Settings,
+    tenant_id: str,
+    *,
+    queued_at: datetime,
+    job_id: str,
+    quota_exempt: bool = False,
+) -> None:
     with get_session(settings.postgres_url) as session:
         session.add(
             models.Job(
@@ -61,6 +69,7 @@ def _job(settings: Settings, tenant_id: str, *, queued_at: datetime, job_id: str
                 status="succeeded",
                 queued_at=queued_at,
                 finished_at=queued_at,
+                quota_exempt=quota_exempt,
             )
         )
 
@@ -115,7 +124,7 @@ def test_a_tenant_nobody_configured_is_unlimited_not_zero(settings: Settings):
         assert shape["over_limit"] is False
 
     assert quotas.asset_capacity(settings, DEFAULT) is None
-    quotas.assert_scan_quota(settings, tenant_id=DEFAULT, username="operator")
+    quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
 
 
 def test_the_platform_default_applies_until_a_row_overrides_it(settings: Settings):
@@ -158,7 +167,7 @@ def test_a_stored_null_exempts_one_tenant_from_the_platform_default(settings: Se
     assert quota.max_assets is None
     assert quota.max_scans_per_month is None
     assert quotas.asset_capacity(settings, DEFAULT) is None
-    quotas.assert_scan_quota(settings, tenant_id=DEFAULT, username="operator")
+    quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
 
 
 def test_zero_is_stored_and_read_back_as_unlimited(settings: Settings):
@@ -180,13 +189,13 @@ def test_scan_quota_refuses_at_the_limit_and_counts_the_refusal(settings: Settin
     _job(settings, DEFAULT, queued_at=_now(), job_id="job-1")
 
     # One under the limit: still allowed.
-    quotas.assert_scan_quota(settings, tenant_id=DEFAULT, username="operator")
+    quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
 
     _job(settings, DEFAULT, queued_at=_now(), job_id="job-2")
     before = _denied(quotas.RESOURCE_SCANS)
 
     with pytest.raises(quotas.QuotaExceeded) as excinfo:
-        quotas.assert_scan_quota(settings, tenant_id=DEFAULT, username="operator")
+        quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
 
     exc = excinfo.value
     assert exc.tenant_id == DEFAULT
@@ -198,20 +207,60 @@ def test_scan_quota_refuses_at_the_limit_and_counts_the_refusal(settings: Settin
     assert _denied(quotas.RESOURCE_SCANS) == before + 1
 
 
-def test_the_verification_rescan_is_never_refused(settings: Settings):
+def test_an_exempt_scan_is_neither_refused_nor_counted(settings: Settings):
     """Quota-refusing the machine check that closes a finding would strand it
-    in VERIFYING — a billing limit turning into a correctness bug (#183)."""
-    assert "system:verification" in quotas.EXEMPT_USERNAMES
+    in VERIFYING — a billing limit turning into a correctness bug (#183).
+
+    The exemption is carried by the dispatch (``jobs.quota_exempt``), not by
+    the requester's name: the verification route passes the *analyst's*
+    username, so a name-keyed exemption would never have fired.
+    """
+    quotas.set_quota(settings, DEFAULT, max_assets=None, max_scans_per_month=1)
+    _job(settings, DEFAULT, queued_at=_now(), job_id="job-1", quota_exempt=True)
+
+    # The exempt job did not spend the entitlement, so an operator's scan is
+    # still admitted afterwards.
+    assert quotas.scans_used(settings, DEFAULT) == 0
+    quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
+
+    _job(settings, DEFAULT, queued_at=_now(), job_id="job-2")
+    assert quotas.scans_used(settings, DEFAULT) == 1
+    with pytest.raises(quotas.QuotaExceeded):
+        quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
+
+
+def test_verification_dispatch_survives_an_exhausted_scan_quota(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The whole point of the exemption, exercised through the real path.
+
+    ``trigger_verification`` always passes the operator's username, so this is
+    the test that a name-based exemption would have failed while still
+    reporting the constant as present.
+    """
+    from api.services import jobs as jobs_service
+
+    settings = make_settings(tmp_path, job_execution_mode="agent")
+    configured_client(tmp_path, monkeypatch, settings=settings)
     quotas.set_quota(settings, DEFAULT, max_assets=None, max_scans_per_month=1)
     _job(settings, DEFAULT, queued_at=_now(), job_id="job-1")
 
+    # An ordinary scan is refused at this point...
     with pytest.raises(quotas.QuotaExceeded):
-        quotas.assert_scan_quota(settings, tenant_id=DEFAULT, username="operator")
+        quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
 
-    before = _denied(quotas.RESOURCE_SCANS)
-    for exempt in quotas.EXEMPT_USERNAMES:
-        quotas.assert_scan_quota(settings, tenant_id=DEFAULT, username=exempt)
-    assert _denied(quotas.RESOURCE_SCANS) == before
+    # ...while the dispatch the platform owns goes through under the operator's
+    # own username, and is not billed. This is the case a name-keyed exemption
+    # got wrong: trigger_verification passes the analyst's name, never the
+    # platform's.
+    job = jobs_service.start_scan(
+        settings,
+        StartScanRequest(tenant_id=DEFAULT, ranges="192.0.2.10/32"),
+        username="operator",
+        quota_exempt=True,
+    )
+    assert job.job_id
+    assert quotas.scans_used(settings, DEFAULT) == 1
 
 
 def test_enforcement_disabled_still_meters_but_never_refuses(settings: Settings):
@@ -224,7 +273,7 @@ def test_enforcement_disabled_still_meters_but_never_refuses(settings: Settings)
     _asset(settings, DEFAULT, "asset-1")
     _asset(settings, DEFAULT, "asset-2")
 
-    quotas.assert_scan_quota(settings, tenant_id=DEFAULT, username="operator")
+    quotas.assert_scan_quota(settings, tenant_id=DEFAULT)
     assert quotas.asset_capacity(settings, DEFAULT) is None
 
     report = quotas.usage(settings, DEFAULT)
@@ -503,6 +552,20 @@ def test_quota_routes_answer_404_for_a_tenant_that_does_not_exist(tmp_path, monk
 # --------------------------------------------------------------------------
 
 
+def _identifier(
+    settings: Settings, tenant_id: str, asset_id: str, kind: str, value: str
+) -> None:
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.AssetIdentifier(
+                asset_id=asset_id,
+                tenant_id=tenant_id,
+                identifier_type=kind,
+                identifier_value=value,
+            )
+        )
+
+
 def _write_run(settings: Settings, run_id: str, hosts: list[dict]) -> None:
     run_dir = settings.output_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -547,4 +610,35 @@ def test_ingest_creates_what_fits_and_keeps_updating_what_exists(settings: Setti
     third = assets_service.upsert_assets_from_run(settings, tenant_id=DEFAULT, run_id="run-1")
     assert third.quota_skipped == 0
     assert third.assets_created == 1
+    assert quotas.assets_used(settings, DEFAULT) == 2
+
+
+def test_reviving_a_decommissioned_asset_spends_capacity(settings: Settings):
+    """Only ``active``/``stale`` assets are billed, so bringing a retired one
+    back adds to the count exactly as creating one does.
+
+    Without this the ceiling is bypassable by re-observing retired hosts: each
+    revival is an "update" that lands the tenant one asset further over a limit
+    ``asset_capacity`` had already reported as full.
+    """
+    from api.services import assets as assets_service
+
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    _asset(settings, DEFAULT, "10.0.0.5", status="decommissioned")
+    _identifier(settings, DEFAULT, "10.0.0.5", "ip", "10.0.0.5")
+    _asset(settings, DEFAULT, "asset-live")
+    quotas.set_quota(settings, DEFAULT, max_assets=1, max_scans_per_month=None)
+    assert quotas.assets_used(settings, DEFAULT) == 1
+    assert quotas.asset_capacity(settings, DEFAULT) == 0
+
+    _write_run(settings, "run-revive", [{"host": "10.0.0.5"}])
+    stats = assets_service.upsert_assets_from_run(settings, tenant_id=DEFAULT, run_id="run-revive")
+
+    assert stats.quota_skipped == 1
+    assert quotas.assets_used(settings, DEFAULT) == 1
+
+    # With room, the same run revives it and the count moves by one.
+    quotas.set_quota(settings, DEFAULT, max_assets=2, max_scans_per_month=None)
+    revived = assets_service.upsert_assets_from_run(settings, tenant_id=DEFAULT, run_id="run-revive")
+    assert revived.quota_skipped == 0
     assert quotas.assets_used(settings, DEFAULT) == 2

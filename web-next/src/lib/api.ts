@@ -2411,3 +2411,13 @@ export async function updateTenantQuota(tenantId: string, body: TenantQuotaUpdat
     throw new Error(apiErrorMessage(error));
   }
 }
+
+/** Drops the tenant's own quota row so it follows the platform default again —
+ * the only way back to `quota_source: "default"`. 204, platform admin only. */
+export async function deleteTenantQuota(tenantId: string) {
+  try {
+    await api.delete(`/tenants/${encodeURIComponent(tenantId)}/quota`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}

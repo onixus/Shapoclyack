@@ -387,6 +387,16 @@ export const en = {
   "page.usage.save": "Save",
   "page.usage.saving": "Saving…",
   "page.usage.unlimitedPlaceholder": "Unlimited",
+  "page.usage.edit": "Edit quota",
+  "page.usage.close": "Close",
+  "page.usage.cancel": "Cancel",
+  "page.usage.inheritPlaceholder": "Inherited",
+  "page.usage.editorInherited": "This tenant has no quota of its own — the boxes are empty because it follows the platform default. Saving pins whatever you type to this tenant.",
+  "page.usage.editorTenant": "Set for this tenant. An empty box means unlimited for this tenant, not inherited — use reset for that.",
+  "page.usage.reset": "Reset to platform default",
+  "page.usage.resetting": "Resetting…",
+  "page.usage.resetConfirmTitle": "Reset {tenant} to the platform default?",
+  "page.usage.resetConfirmBody": "Drops this tenant’s own quota row, note included. It then follows the platform default and moves with it.",
   "page.usage.loading": "Loading…",
 } as const;
 
@@ -777,6 +787,16 @@ export const ru: Record<MsgKey, string> = {
   "page.usage.save": "Сохранить",
   "page.usage.saving": "Сохранение…",
   "page.usage.unlimitedPlaceholder": "Без ограничений",
+  "page.usage.edit": "Изменить квоту",
+  "page.usage.close": "Закрыть",
+  "page.usage.cancel": "Отмена",
+  "page.usage.inheritPlaceholder": "Унаследовано",
+  "page.usage.editorInherited": "У арендатора нет своей квоты — поля пусты, потому что он следует умолчанию платформы. Сохранение закрепит введённые значения за этим арендатором.",
+  "page.usage.editorTenant": "Задано для этого арендатора. Пустое поле означает «без ограничений» для него, а не наследование — для этого используйте сброс.",
+  "page.usage.reset": "Вернуть умолчание платформы",
+  "page.usage.resetting": "Сброс…",
+  "page.usage.resetConfirmTitle": "Вернуть {tenant} к умолчанию платформы?",
+  "page.usage.resetConfirmBody": "Собственная строка квоты арендатора будет удалена вместе с примечанием. Дальше он следует умолчанию платформы и меняется вместе с ним.",
   "page.usage.loading": "Загрузка…",
 };
 
