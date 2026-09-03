@@ -3,7 +3,14 @@
 > Integration architecture, technical specifications, and delivery backlog for the Lariska endpoint inventory.
 > For operator documentation, see [docs/README.md](docs/README.md) and [docs/operations.md](docs/operations.md).
 
-**Current Status:** S1–S10 are **completed and merged to `main`** (Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and comprehensive E2E lifecycle test suite).
+**Current Status (2026-09-03):** the integration contract (**S1–S10**) is **completed and merged to `main`** — Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and an E2E lifecycle test suite.
+
+The inventory is no longer the end of the line. Two **ROADMAP Track E** milestones now consume it and are also merged:
+
+- **M1 — software→CVE matching.** Installed packages are matched against offline-first Debian and Ubuntu vendor advisories with purl/CPE identity and real dpkg/rpm EVR comparison, persisted to `software_cve_matches` (migration `0027_software_cve_matches`). `unknown` is a first-class result, never silently "clean". See [docs/software-cve-matching.md](docs/software-cve-matching.md).
+- **M2 — patch-gap analysis.** The matcher's `vulnerable` rows are regrouped, on read, by the package an operator actually upgrades, with the target version and the command that applies it. No table of its own — a gap cannot outlive the snapshot behind it.
+
+What Track D deliberately does **not** do is unchanged: it does not reuse the scan-result path, and Lariska does not become an EDR (ROADMAP, *Not doing, and why*). What is still open is listed in [16.3 Remaining scope](#163-remaining-scope-m3).
 
 ---
 
@@ -27,6 +34,7 @@
   - [5.3 `endpoint_inventory_snapshots`](#53-endpoint_inventory_snapshots)
   - [5.4 `endpoint_software_items`](#54-endpoint_software_items)
   - [5.5 `endpoint_software_changes`](#55-endpoint_software_changes)
+  - [5.6 `software_cve_matches`](#56-software_cve_matches)
 - [6. Asset Reconciliation](#6-asset-reconciliation)
 - [7. Ingestion Pipeline & Service Behavior](#7-ingestion-pipeline--service-behavior)
 - [8. Validation, Normalization & Limits](#8-validation-normalization--limits)
@@ -37,7 +45,10 @@
 - [13. Testing Strategy](#13-testing-strategy)
 - [14. Observability & Metrics](#14-observability--metrics)
 - [15. Rollout & Compatibility](#15-rollout--compatibility)
-- [16. Implementation Phases (S1–S10)](#16-implementation-phases-s1s10)
+- [16. Implementation Phases](#16-implementation-phases)
+  - [16.1 Track D — Integration contract (S1–S10)](#161-track-d--integration-contract-s1s10)
+  - [16.2 Track E — Assessment over the inventory (M1–M2)](#162-track-e--assessment-over-the-inventory-m1m2)
+  - [16.3 Remaining scope (M3+)](#163-remaining-scope-m3)
 - [17. Architecture Decision Records (ADRs)](#17-architecture-decision-records-adrs)
 - [18. Implementation Guidelines](#18-implementation-guidelines)
 
@@ -113,6 +124,11 @@ Server integration is considered complete when:
 8. **UI Visibility:** Asset detail view displays endpoint summary, software inventory table, and change events.
 9. **Operations:** Body size limits, retention pruning, RBAC, migrations, and operational metrics are implemented and documented.
 10. **Backward Compatibility:** Existing scan agent workflows and APIs remain 100% backward compatible.
+
+All ten are met on `main`. The assessment layer built on top of them (M1/M2) adds its own bar:
+
+11. **Assessment:** Installed packages of a supported distribution are matched against vendor advisories, and anything that cannot be assessed is reported as `unknown` with a machine-readable reason rather than omitted.
+12. **Actionability:** Outstanding upgrades are expressed per package, with a target version and a runnable command, and are derived from the matches rather than stored beside them.
 
 ---
 
@@ -196,12 +212,23 @@ All query routes require authenticated user credentials with at least `viewer` r
 - `GET /api/endpoint/devices/{device_id}` — Endpoint device detail.
 - `GET /api/endpoint/devices/{device_id}/snapshots` — Historical snapshots for a device.
 - `GET /api/endpoint/devices/{device_id}/changes` — Software change history (installed/removed/updated).
+- `GET /api/endpoint/changes` — Recent software changes across the tenant.
+
+**Assessment routes (M1/M2).** Reads require `viewer`; the two refresh routes are work, not a query, and require `operator` — the same line the risk-history snapshot route draws.
+
+- `GET /api/endpoint/cve-matches/summary` — Tenant tallies by status and severity, plus the provenance (provider, feed date) of the advisory data behind them.
+- `GET /api/endpoint/cve-matches` — Tenant-wide matches, worst status first; filters `match_status` (`vulnerable|fixed|not_applicable|unknown`), `severity`, `cve`, `limit` (≤ 500).
+- `POST /api/endpoint/cve-matches/refresh` — Re-run the matcher over every device in the tenant (`operator`).
+- `GET /api/endpoint/devices/{device_id}/cve-matches` — One device's matches.
+- `POST /api/endpoint/devices/{device_id}/cve-matches/refresh` — Re-run the matcher for one device (`operator`).
+- `GET /api/endpoint/patch-gaps` — Estate-wide patch gap, worst devices first; totals cover the tenant even when the device list is capped by `limit`.
+- `GET /api/endpoint/devices/{device_id}/patch-gap` — One endpoint's outstanding upgrades and the command that applies them. A device with nothing outstanding answers with an empty gap list; only an unknown device is a `404`.
 
 ---
 
 ## 5. Data Model
 
-Implemented in Postgres via SQLAlchemy ([api/db/models.py](api/db/models.py)) and Alembic migrations (`0004_endpoint_inventory`, `0006_endpoint_fk_cascade`).
+Implemented in Postgres via SQLAlchemy ([api/db/models.py](api/db/models.py)) and Alembic migrations (`0004_endpoint_inventory`, `0005_endpoint_changes_fix`, `0006_endpoint_fk_cascade`, and `0027_software_cve_matches` for the assessment layer).
 
 ```mermaid
 erDiagram
@@ -212,6 +239,7 @@ erDiagram
     endpoint_inventory_snapshots ||--o{ endpoint_software_items : "snapshot_id"
     endpoint_inventory_snapshots ||--o{ endpoint_software_changes : "snapshot_id"
     assets ||--o| endpoint_devices : "asset_id (nullable, ON DELETE SET NULL)"
+    endpoint_devices ||--o{ software_cve_matches : "device_id (derived)"
 ```
 
 ### 5.1 `endpoint_devices`
@@ -302,6 +330,34 @@ Audit trail of software lifecycle events between consecutive accepted snapshots.
 | `old_version` | String | Previous version (for `updated` / `removed`) |
 | `new_version` | String | New version (for `installed` / `updated`) |
 | `observed_at` | Timestamp | Ingestion timestamp |
+
+### 5.6 `software_cve_matches`
+
+**Derived, not authored.** Every row is recomputed from a device's latest accepted snapshot against the advisory dataset on disk, and a run replaces that device's rows wholesale. Dropping the table loses nothing — `downgrade` in [migration 0027](api/db/migrations/versions/0027_software_cve_matches.py) does exactly that.
+
+| Field | Type | Constraints / Description |
+|---|---|---|
+| `id` | Integer | Primary Key (autoincrement) |
+| `tenant_id` | String | Foreign Key (`tenants.tenant_id`, ON DELETE CASCADE) |
+| `device_id` | String | Foreign Key (`endpoint_devices.device_id`, ON DELETE CASCADE) |
+| `snapshot_id` | String | Snapshot the match was computed from (nullable) |
+| `match_key` | String | SHA-256 over `(cve_id, source_package, unknown_reason)`; part of `uq_software_cve_match_row (tenant_id, device_id, match_key)` |
+| `cve_id` | String | CVE identifier, or `""` on an `unknown` row |
+| `status` | Enum | `vulnerable`, `fixed`, `not_applicable`, `unknown` |
+| `severity` | String | Vendor severity (`critical`…`negligible`, `unknown`) |
+| `source_package` / `installed_package` | String | Advisory source package and the installed binary package |
+| `installed_version` / `fixed_version` | String | Compared with dpkg/rpm EVR rules ([api/services/version_compare.py](api/services/version_compare.py)) |
+| `advisory_id` / `advisory_url` / `provider` | String | Advisory provenance |
+| `distro` / `distro_release` | String | Resolved distribution context |
+| `purl` / `cpe23` | String | Package identity ([api/services/package_identity.py](api/services/package_identity.py)) |
+| `unknown_reason` | String | `no_version`, `unparsable_version`, `non_distro_source`, `unknown_distro`, `unknown_release`, `unsupported_distro` |
+| `feed_date` | String | Age of the dataset the row was computed from |
+| `evidence` | JSON | Advisory state and how the source package was resolved |
+| `matched_at` | Timestamp | When the run produced the row |
+
+Two row shapes share the table. A CVE match carries a `cve_id`; an `unknown` row carries the empty string and a reason. `unknown` rows are emitted **one per reason per device**, not one per package — "1842 packages could not be assessed because the distribution is unsupported" is the answer an operator needs, and 1842 rows say it worse.
+
+A **patch gap has no table.** It is computed on read from the `vulnerable` rows by [api/services/patch_gap.py](api/services/patch_gap.py), so it cannot outlive the snapshot behind it or disagree with the matches it came from. A vulnerable package with no published fix is counted separately as `unfixed` and carries no command.
 
 ---
 
@@ -442,6 +498,13 @@ Delivered in [`web-next/src/app/(dashboard)/assets/view/page.tsx`](<web-next/src
 - **Change Log:** Displays installed, removed, and updated software events since previous snapshot.
 - **Security:** All agent-supplied metadata fields are rendered with strict context-aware escaping.
 
+Extended for the assessment layer:
+
+- **CVE Match Panel** — [`web-next/src/components/endpoint/software-cve-panel.tsx`](web-next/src/components/endpoint/software-cve-panel.tsx) on the asset Software tab: matches for the device with status/severity filters, advisory links, and an explicit `unknown` count with its reason rather than an implied "clean".
+- **Patch Gap** — [`web-next/src/components/endpoint/patch-gap-panel.tsx`](web-next/src/components/endpoint/patch-gap-panel.tsx) and [`device-patch-gap-section.tsx`](web-next/src/components/endpoint/device-patch-gap-section.tsx): outstanding upgrades per package with the command that applies them.
+- **Endpoints page** — [`web-next/src/app/(dashboard)/endpoints/page.tsx`](<web-next/src/app/(dashboard)/endpoints/page.tsx>): fleet view of devices with reconciliation status, recent software changes, and the estate-wide patch gap.
+- **Feed provenance:** advisory dataset source, feed date and entry counts are surfaced on the System page, because an old feed silently under-reports.
+
 ---
 
 ## 12. Security & Privacy
@@ -462,6 +525,9 @@ Delivered in [`web-next/src/app/(dashboard)/assets/view/page.tsx`](<web-next/src
 | **API & Auth Tests** | JWT validation, tenant isolation, rate limits, status codes | [tests/test_api_system.py](tests/test_api_system.py) |
 | **Database & Migration Tests** | Constraints, indexes, foreign key cascades, migration 0004/0006 | [tests/test_endpoint_retention.py](tests/test_endpoint_retention.py) |
 | **Retention Tests** | Snapshot pruning, batching, preserving current device snapshot | [tests/test_endpoint_retention.py](tests/test_endpoint_retention.py) |
+| **API Contract Tests** | Ingestion + read routes, RBAC on refresh, filters, 404 vs empty | [tests/test_api_endpoint_inventory.py](tests/test_api_endpoint_inventory.py), [tests/test_api_software_cve_match.py](tests/test_api_software_cve_match.py) |
+| **E2E Lifecycle** | Enrol → ingest → reconcile → diff → query → prune, with Lariska fixtures | [tests/test_endpoint_inventory_lifecycle.py](tests/test_endpoint_inventory_lifecycle.py) |
+| **Matcher Tests** | Advisory providers, package identity, EVR comparison, `unknown` reasons, patch-gap grouping | [tests/test_advisory_providers.py](tests/test_advisory_providers.py), [tests/test_package_identity.py](tests/test_package_identity.py), [tests/test_version_compare.py](tests/test_version_compare.py), [tests/test_software_cve_match.py](tests/test_software_cve_match.py), [tests/test_patch_gap.py](tests/test_patch_gap.py) |
 | **Regression Tests** | Existing scanner agent jobs, uploads, heartbeat, and scans | [tests/test_agent_worker.py](tests/test_agent_worker.py), [tests/test_api_agents.py](tests/test_api_agents.py) |
 
 ---
@@ -471,10 +537,14 @@ Delivered in [`web-next/src/app/(dashboard)/assets/view/page.tsx`](<web-next/src
 Prometheus metrics exposed in [api/services/metrics.py](api/services/metrics.py):
 
 - `octo_endpoint_inventory_submissions_total{status="accepted|rejected|conflict"}` — Submission volume and outcomes.
-- `octo_endpoint_inventory_duration_seconds` — Ingestion processing and database latency.
+- `octo_endpoint_inventory_ingest_duration_seconds` — Ingestion processing and database latency.
 - `octo_endpoint_inventory_software_items` — Histogram of software item counts per snapshot.
+- `octo_endpoint_inventory_software_changes_total` — Software lifecycle events by change type.
 - `octo_endpoint_devices{status="active|stale"}` — Current endpoint device counts.
-- `octo_endpoint_retention_pruned_total` — Number of expired software items pruned by retention sweeps.
+- `octo_endpoint_retention_deleted_total` — Rows removed by retention sweeps.
+- `octo_endpoint_retention_run_duration_seconds` — Retention sweep latency.
+
+The matcher has **no metrics of its own** — it runs on request rather than on a schedule, so there is no background loop to observe. That changes if M3 makes matching automatic.
 
 ---
 
@@ -483,10 +553,13 @@ Prometheus metrics exposed in [api/services/metrics.py](api/services/metrics.py)
 1. **Feature Flag:** Rollout gated by `OCTO_ENDPOINT_INVENTORY_ENABLED` (default: `true`).
 2. **Zero-Downtime Migrations:** Migrations `0004_endpoint_inventory` and `0006_endpoint_fk_cascade` are non-blocking.
 3. **Backward Compatibility:** Agent API (`/api/agent/*`) and scanner worker behavior remain completely untouched.
+4. **Advisory Data:** Offline-first. `OCTO_DEBIAN_ADVISORY_DATABASE` / `OCTO_UBUNTU_ADVISORY_DATABASE` point at the datasets on disk; `OCTO_ADVISORY_FETCH_ENABLED` gates any network refresh, and matching works with it off. The matcher is exactly as current as the dataset — absence of a match is not evidence of absence of a vulnerability.
 
 ---
 
-## 16. Implementation Phases (S1–S10)
+## 16. Implementation Phases
+
+### 16.1 Track D — Integration contract (S1–S10)
 
 | Phase | Title | Scope Summary | Status |
 |---|---|---|---|
@@ -500,6 +573,33 @@ Prometheus metrics exposed in [api/services/metrics.py](api/services/metrics.py)
 | **S8** | NATS Stream Integration | Optional event publish to `ingest.endpoint_inventory.{tenant_id}` | **Done** |
 | **S9** | Retention, Ops & Metrics | Pruning sweeps, 15 MiB body cap, staleness tracking, Prometheus metrics | **Done** |
 | **S10** | Cross-Repo E2E Tests | Automated cross-repository integration tests with Lariska fixtures | **Done** |
+
+### 16.2 Track E — Assessment over the inventory (M1–M2)
+
+Tracked in [ROADMAP.md](ROADMAP.md#track-e--product-direction); recorded here because it is built entirely on this contract.
+
+| Milestone | Title | Scope Summary | Status |
+|---|---|---|---|
+| **M1a** | Version Comparison | dpkg and rpm EVR comparison in pure Python ([api/services/version_compare.py](api/services/version_compare.py)) | **Done** |
+| **M1b** | Package Identity | purl and CPE identity for inventory software, and the `unknown` reason vocabulary ([api/services/package_identity.py](api/services/package_identity.py)) | **Done** |
+| **M1c** | Advisory Providers | Offline-first Debian and Ubuntu providers ([api/services/advisories/](api/services/advisories/)) | **Done** |
+| **M1d** | Matcher & Storage | `software_cve_matches`, migration `0027`, tenant/device runs and read APIs ([api/services/software_cve_match.py](api/services/software_cve_match.py)) | **Done** |
+| **M1e** | Console Integration | Endpoint CVE match panel on the asset Software tab; feed provenance on the System page | **Done** |
+| **M2** | Patch-Gap Analysis | Per-package upgrades, target version, runnable command; `unfixed` counted separately ([api/services/patch_gap.py](api/services/patch_gap.py)) | **Done** |
+
+### 16.3 Remaining scope (M3+)
+
+Not started; listed so the two sections above are not misread as coverage of the estate.
+
+| Item | Why it is open |
+|---|---|
+| **More distributions** | RHEL, Rocky, AlmaLinux, Fedora, Amazon Linux, SUSE are *recognised* but have no provider, so their packages are `unknown` with `unsupported_distro`. The rpm comparison already exists and is tested — each one is a normalizer plus a small provider subclass. |
+| **Language ecosystems** | npm, PyPI, RubyGems, Go modules, Maven, Cargo are neither collected by the agent nor covered by vendor advisories. A large share of real application risk lives here. |
+| **Windows and macOS** | Registry/MSI and Homebrew inventory is collected but not matched — neither patch model maps onto the distribution advisory model. Reported as `unknown`. |
+| **Findings lifecycle** | A match is not yet a tracked finding: it carries no SLA, owner, state machine or remediation-verification path, so the closed loop (#183) does not apply to it. |
+| **Scheduled matching** | Matching runs only on `POST .../cve-matches/refresh`. Nothing re-runs it when a new snapshot arrives or when the advisory feed is updated, so a device's matches can be older than its inventory. |
+| **Offline enrichment bundle** | The advisory datasets ship in the image, but there is no air-gapped bundle covering them together with the EPSS/KEV/CVSS4 overlays. |
+| **Kernel livepatching** | A livepatched host reports the booted package version and can read as `vulnerable`. There is no signal in the inventory to correct this. |
 
 ---
 
@@ -518,6 +618,14 @@ Prometheus metrics exposed in [api/services/metrics.py](api/services/metrics.py)
 9. **Tenant Deletion Cascades:** Migration `0006_endpoint_fk_cascade` establishes `ON DELETE CASCADE` across all child endpoint tables and `ON DELETE SET NULL` on `asset_id`.
 10. **Schema & Agent Versioning:** Schema version is strictly enforced as `Literal[1]`. Agent version remains informational metadata until a future schema v2 is defined.
 
+*Decisions added with the assessment layer (2026-08-30 → 2026-09-01):*
+
+11. **Matches Are Derived, Never Authored:** `software_cve_matches` is recomputed from the latest accepted snapshot and replaced wholesale per device. Nothing in it is authored by a person, so `downgrade` drops the table outright and no run needs to reconcile with a prior one.
+12. **`unknown` Is a Result, Not an Omission:** A package that cannot be assessed produces an `unknown` row with a machine-readable reason. An endpoint whose distribution could not be resolved must never read as clean. Unknown rows are collapsed to one per reason per device.
+13. **Patch Gap Is a View:** No stored table. A stored gap would need its own invalidation and would eventually disagree with the matches behind it. The target version is the highest fix among the CVEs on that package, ordered by the distribution's own comparison rules, so one command per package is correct rather than a convenient simplification.
+14. **Matching Is On-Demand and `operator`-Gated:** A refresh walks every package on every device in the tenant — a workload, not a query — so it sits behind `operator`, alongside `POST /vulnerabilities/risk-history/snapshot`. Automatic re-matching is deferred to M3.
+15. **Offline-First Advisories:** Providers read datasets from disk and work with `OCTO_ADVISORY_FETCH_ENABLED` off. Feed date and entry counts are surfaced rather than hidden, because a stale feed under-reports silently.
+
 ---
 
 ## 18. Implementation Guidelines
@@ -528,4 +636,6 @@ When extending or maintaining endpoint inventory code:
 2. **Tenant Scoping:** Never rely solely on route-level guards; always include `tenant_id` filters in core service queries.
 3. **PostgreSQL Compatibility:** Validate constraint and cascade behavior on PostgreSQL.
 4. **Regression Safety:** Ensure existing scanner worker unit/integration tests ([tests/test_agent_worker.py](tests/test_agent_worker.py)) continue to pass.
-5. **Keep Documentation Synchronized:** When modifying configuration keys or behavior, update [docs/configuration.md](docs/configuration.md) and [docs/operations.md](docs/operations.md).
+5. **Keep Documentation Synchronized:** When modifying configuration keys or behavior, update [docs/configuration.md](docs/configuration.md), [docs/operations.md](docs/operations.md) and, for the assessment layer, [docs/software-cve-matching.md](docs/software-cve-matching.md).
+6. **Do Not Invent Coverage:** When a package, distribution or ecosystem cannot be assessed, emit `unknown` with a reason. Silently skipping it turns an unassessed host into a clean one, which is the single most damaging way to misread this feature.
+7. **Keep Derived Data Derived:** Matches are recomputed and replaced; patch gaps are computed on read. Do not add a cache or a stored aggregate without an invalidation story tied to the snapshot.
