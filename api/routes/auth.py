@@ -5,7 +5,7 @@ from __future__ import annotations
 import urllib.parse
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from api.auth import (
@@ -38,6 +38,8 @@ from api.schemas import (
     SsoStatus,
     TenantInfo,
     TenantPosture,
+    TenantQuotaInfo,
+    TenantQuotaRequest,
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
@@ -46,6 +48,7 @@ from api.services import auth as auth_service
 from api.services import auth_audit
 from api.services import memberships as memberships_service
 from api.services import oidc as oidc_service
+from api.services import quotas
 from api.services import scan_scopes
 from api.services import tenant_posture
 from api.services import tenants as tenants_service
@@ -484,6 +487,87 @@ def revoke_provisioning_key(
     if revoked is None or revoked.get("tenant_id") != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="key not found")
     return ProvisioningKeyInfo.model_validate(revoked)
+
+
+@router.get("/tenants/{tenant_id}/quota", response_model=TenantQuotaInfo)
+def get_tenant_quota(
+    tenant_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TenantQuotaInfo:
+    """What this tenant was sold (Track E). Platform admin only.
+
+    ``quota_source`` distinguishes a limit somebody wrote for this customer
+    from the platform default they merely inherited — a distinction that
+    matters when the answer is "unlimited", because only one of the two is a
+    decision.
+    """
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    quota = quotas.get_quota(settings, tenant_id)
+    return TenantQuotaInfo(
+        tenant_id=tenant_id,
+        max_assets=quota.max_assets,
+        max_scans_per_month=quota.max_scans_per_month,
+        quota_source=quota.source,
+        note=quota.note,
+        updated_at=quota.updated_at,
+        updated_by=quota.updated_by,
+    )
+
+
+@router.put("/tenants/{tenant_id}/quota", response_model=TenantQuotaInfo)
+def set_tenant_quota(
+    tenant_id: str,
+    body: TenantQuotaRequest,
+    user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TenantQuotaInfo:
+    """Set this tenant's limits, replacing whatever applied before.
+
+    Platform admin, for the reason scan-scope approval is: a tenant operator
+    who could raise their own quota is the control removing itself. The
+    caller's username and the moment are stamped on the row, so "who sold them
+    5,000 assets" has an answer that is not a memory.
+    """
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    quota = quotas.set_quota(
+        settings,
+        tenant_id,
+        max_assets=body.max_assets,
+        max_scans_per_month=body.max_scans_per_month,
+        note=body.note,
+        updated_by=user.username,
+    )
+    return TenantQuotaInfo(
+        tenant_id=tenant_id,
+        max_assets=quota.max_assets,
+        max_scans_per_month=quota.max_scans_per_month,
+        quota_source=quota.source,
+        note=quota.note,
+        updated_at=quota.updated_at,
+        updated_by=quota.updated_by,
+    )
+
+
+@router.delete("/tenants/{tenant_id}/quota", status_code=status.HTTP_204_NO_CONTENT)
+def clear_tenant_quota(
+    tenant_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """Return this tenant to the platform default.
+
+    Distinct from a PUT of nulls, which stores "unlimited **for this
+    tenant**": that row survives a later change to the platform default,
+    and deleting it is the only way to say the customer should follow
+    whatever the platform is set to from now on.
+    """
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    quotas.clear_quota(settings, tenant_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/tenants/{tenant_id}/scan-scope", response_model=list[ScanScopeEntryInfo])

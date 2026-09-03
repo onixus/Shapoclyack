@@ -48,6 +48,7 @@ from api.services import job_states
 from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
+from api.services import quotas
 from api.services import auth_audit
 from api.services import results_ingest
 from api.services import runs as runs_service
@@ -1016,6 +1017,12 @@ def start_scan(
         raise ValueError(f"Unknown tenant_id: {tenant_id}")
     if tenant.get("status") != "active":
         raise ValueError(f"Tenant is not active: {tenant_id}")
+
+    # Before any work is prepared: what the tenant bought (Track E, MSSP
+    # operations). Placed here rather than in the route because the recurring
+    # dispatcher and every other caller reach start_scan and none of them
+    # reach the route — a quota only one entry point honours is not a quota.
+    quotas.assert_scan_quota(settings, tenant_id=tenant_id, username=username)
 
     job_id = uuid.uuid4().hex[:12]
     execution = "agent" if settings.job_execution_mode == "agent" else "local"

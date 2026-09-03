@@ -1,5 +1,6 @@
 import {
   BookText,
+  CircleGauge,
   ClipboardCheck,
   CalendarDays,
   Database,
@@ -40,6 +41,7 @@ export const NAV = [
   { href: "/reports", labelKey: "nav.reports", icon: FileText },
   { href: "/compliance", labelKey: "nav.compliance", icon: ClipboardCheck },
   { href: "/adoption", labelKey: "nav.adoption", icon: Gauge },
+  { href: "/usage", labelKey: "nav.usage", icon: CircleGauge },
   { href: "/service-tokens", labelKey: "nav.serviceTokens", icon: KeyRound },
   { href: "/system", labelKey: "nav.system", icon: SlidersHorizontal },
 ] as const;

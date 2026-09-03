@@ -99,6 +99,7 @@ The Web UI provides these primary surfaces:
 - scan jobs, runs, findings, reports, and the report factory;
 - compliance posture per framework;
 - adoption metrics: are findings being closed and verified, or only produced;
+- usage against quota per tenant, with the provider's cross-tenant view;
 - tenants and remote agent fleet;
 - wordlists, service tokens, system status, and editable safe configuration
   overrides.

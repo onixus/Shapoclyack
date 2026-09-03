@@ -287,6 +287,25 @@ def due_schedules(now: datetime) -> list[dict[str, Any]]:
     return [_to_dict(row) for row in rows]
 
 
+def record_skipped_dispatch(schedule_id: str, *, ran_at: datetime) -> dict[str, Any] | None:
+    """Advance a schedule past a tick that produced no job (quota refusal).
+
+    ``last_run_at`` and ``last_job_id`` are deliberately left alone: the
+    schedule did not run, and claiming it did would put a scan in the
+    customer's history that never happened. Only ``next_run_at`` moves, so a
+    tenant that has spent its monthly entitlement is not re-attempted — and
+    re-refused — on every tick until the month turns.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.ScanSchedule, schedule_id)
+        if row is None:
+            return None
+        row.next_run_at = _compute_next_run(row.cron, row.interval_seconds, after=ran_at)
+        session.flush()
+        return _to_dict(row)
+
+
 def record_dispatch(schedule_id: str, *, job_id: str, ran_at: datetime) -> dict[str, Any] | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:

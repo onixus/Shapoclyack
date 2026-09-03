@@ -233,6 +233,18 @@ class Settings:
     # keeps a year, because "the quarterly report we sent in March" is a thing
     # customers ask for and a scan-retention window would not cover.
     report_retention_days: int = 365
+    # Per-tenant usage quotas (ROADMAP Track E, MSSP operations). These are the
+    # platform *defaults*, applied to any tenant without a ``tenant_quotas``
+    # row; 0 means unlimited, which is what an installation that never sold a
+    # limit keeps getting. A per-tenant row overrides them in either direction,
+    # including back to unlimited. Quotas are a commercial boundary, so they
+    # fail open on upgrade — unlike the approved scan scope, which does not.
+    quota_default_max_assets: int = 0
+    quota_default_max_scans_per_month: int = 0
+    # Enforcement is separable from metering on purpose: an MSSP typically
+    # wants to see consumption against the number it sold for a billing period
+    # or two before it starts refusing its customer's scans.
+    quota_enforcement_enabled: bool = True
     # SMTP for report delivery. Separate from the scanner's alert SMTP
     # (scanner/pipeline/alerts.py): an alert goes to the operations channel and
     # a report goes to a customer, and one installation routinely needs
@@ -737,6 +749,16 @@ def load_settings() -> Settings:
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         reports_enabled=os.environ.get("OCTO_REPORTS_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        quota_default_max_assets=max(
+            0, int(os.environ.get("OCTO_QUOTA_DEFAULT_MAX_ASSETS", "0"))
+        ),
+        quota_default_max_scans_per_month=max(
+            0, int(os.environ.get("OCTO_QUOTA_DEFAULT_MAX_SCANS_PER_MONTH", "0"))
+        ),
+        quota_enforcement_enabled=os.environ.get(
+            "OCTO_QUOTA_ENFORCEMENT_ENABLED", "true"
+        ).lower()
         in {"1", "true", "yes"},
         report_dispatch_enabled=os.environ.get("OCTO_REPORT_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},

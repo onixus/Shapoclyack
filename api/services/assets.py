@@ -17,6 +17,7 @@ from sqlalchemy import func, or_, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import asset_events
+from api.services import quotas
 from api.services import runs as runs_service
 from api.settings import Settings
 from scanner.pipeline.asset_identity import (
@@ -56,6 +57,9 @@ class AssetUpsertStats:
     marked_stale: int
     identities_linked: int = 0
     identities_merged: int = 0
+    #: Hosts that were discovered but not registered because the tenant is at
+    #: its asset quota. Existing assets in the same run are still updated.
+    quota_skipped: int = 0
 
 
 def _now() -> datetime:
@@ -341,6 +345,12 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
     now = _now()
     created = 0
     updated = 0
+    # How many *new* assets this tenant may still register (None = unlimited).
+    # Read once per run rather than per host: the number cannot be exceeded
+    # inside the loop because this is the only path that creates rows here,
+    # and re-counting per host would put a COUNT(*) in front of every result.
+    capacity = quotas.asset_capacity(settings, tenant_id)
+    quota_skipped = 0
 
     with get_session(settings.postgres_url) as session:
         for entry in hosts:
@@ -361,6 +371,11 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
                 asset_id = primary.key
 
             asset = session.get(models.Asset, asset_id)
+            if asset is None and capacity is not None and created >= capacity:
+                # At the limit: skip the *new* host and keep going, so the
+                # assets the customer paid for still get this run's data.
+                quota_skipped += 1
+                continue
             if asset is None:
                 asset = models.Asset(
                     asset_id=asset_id,
@@ -399,6 +414,7 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
             session, tenant_id=tenant_id, run_id=run_id, run_dir=run_dir, now=now
         )
 
+    quotas.record_asset_refusal(tenant_id, quota_skipped)
     marked_stale = mark_stale_assets(settings, tenant_id=tenant_id)
     return AssetUpsertStats(
         hosts_seen=len(hosts),
@@ -407,6 +423,7 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
         marked_stale=marked_stale,
         identities_linked=linked,
         identities_merged=merged,
+        quota_skipped=quota_skipped,
     )
 
 

@@ -26,6 +26,7 @@ from api.schemas import StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import metrics as metrics_service
+from api.services import quotas
 from api.services import scan_schedules
 from api.services.leader_lock import SCHEDULE_DISPATCHER_LOCK_ID, LeaderLock
 from api.settings import Settings
@@ -54,6 +55,7 @@ class ScheduleDispatcher:
             "dispatched": 0,
             "skipped_overlap": 0,
             "skipped_not_leader": 0,
+            "skipped_quota": 0,
             "errors": 0,
         }
 
@@ -142,6 +144,17 @@ class ScheduleDispatcher:
             job = jobs_service.start_scan(
                 self._settings, request, username="scheduler", idempotency_key=key
             )
+        except quotas.QuotaExceeded as exc:
+            # Expected, not an error: the tenant has spent this month's
+            # entitlement. Counting it in "errors" would page whoever watches
+            # the dispatcher for a billing fact, and a traceback every tick
+            # would bury the real failures — so it is a warning, its own stat,
+            # and the schedule moves on to its next occurrence without
+            # claiming a run that did not happen.
+            self._stats["skipped_quota"] += 1
+            LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], exc)
+            scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
+            return
         except jobs_service.IdempotentReplay as replay:
             # Another replica won this tick. Its job is the tick's job; record
             # it here too so the schedule's bookkeeping still moves forward if
