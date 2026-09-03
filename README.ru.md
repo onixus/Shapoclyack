@@ -36,6 +36,7 @@ Kubernetes-приложение или как единый all-in-one конте
 | Патчинг endpoints | Установленное ПО сопоставляется с advisories вендоров и группируется в patch gap по пакету — с командой обновления |
 | Отчётность | Брендированная фабрика отчётов на тенант (executive, technical, compliance) в PDF, HTML или JSON, с доставкой по расписанию |
 | Compliance | Статус контролей PCI DSS 4.0, CIS Controls v8 и ISO/IEC 27001:2022 по данным самого тенанта |
+| Adoption | Метрики результата по тенанту — подтверждённые закрытия, соблюдение SLA, время до исправления, покрытие владельцами и сканами, время до первой ценности, возраст overlay-данных обогащения |
 | Эксплуатация | Jobs, schedules, diff, alerts, reports, remote agents, resume |
 | Платформа | JWT RBAC, OIDC SSO, service tokens, multi-tenancy, PostgreSQL, ClickHouse, NATS JetStream |
 | Развёртывание | Kubernetes/Kustomize (kind для локальной разработки) |
@@ -97,6 +98,7 @@ Web UI включает:
 - граф поверхности атаки и карту гео;
 - jobs, runs, findings, отчёты и фабрику отчётов;
 - статус compliance по выбранному фреймворку;
+- метрики adoption: находки закрываются и проверяются — или только производятся;
 - tenants и парк удалённых агентов;
 - wordlists, service tokens, статус компонентов и безопасные overrides
   конфигурации.

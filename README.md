@@ -35,6 +35,7 @@ single all-in-one container.
 | Endpoint patching | Installed software matched against vendor advisories, regrouped into per-package patch gaps with the upgrade command |
 | Reporting | Branded per-tenant report factory (executive, technical, compliance) rendered as PDF, HTML or JSON, with scheduled delivery |
 | Compliance | PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status from this tenant's own evidence |
+| Adoption | Per-tenant outcome metrics — verified closures, SLA adherence, time to fix, owner and scan coverage, time to first value, enrichment overlay age |
 | Operations | Jobs, schedules, diffs, alerts, reports, remote agents, and resume |
 | Platform | JWT RBAC, OIDC single sign-on, service tokens, multi-tenancy, PostgreSQL, ClickHouse, and NATS JetStream |
 | Deployment | Kubernetes with Kustomize (kind for local dev) |
@@ -97,6 +98,7 @@ The Web UI provides these primary surfaces:
 - attack-surface graph and geo map;
 - scan jobs, runs, findings, reports, and the report factory;
 - compliance posture per framework;
+- adoption metrics: are findings being closed and verified, or only produced;
 - tenants and remote agent fleet;
 - wordlists, service tokens, system status, and editable safe configuration
   overrides.
