@@ -291,6 +291,24 @@ All notable changes to Shapoclyack are documented in this file.
   tool, prints the offending key on failure and exits `2` — which is what
   `docs/getting-started.md` and `docs/configuration.md` already claimed.
 
+- **`Agent_plan.md` records the assessment layer, not just the contract.** The
+  endpoint design record ended at S10 while the inventory it defines had grown
+  a software→CVE matcher and patch-gap analysis reading from the same
+  snapshots. It now carries the `cve-matches` / `patch-gaps` routes and their
+  `viewer`/`operator` split, the `software_cve_matches` column contract and the
+  `unknown_reason` vocabulary, the console panels, the matcher test suites, and
+  five further ADRs — matches are derived and replaced wholesale, `unknown` is
+  a result rather than an omission, a patch gap is a view with no table,
+  matching is on-demand, advisories are offline-first. Two Prometheus metric
+  names in it never matched the code and now do
+  (`octo_endpoint_inventory_ingest_duration_seconds`,
+  `octo_endpoint_retention_deleted_total`). What is *not* covered is stated as
+  its own section rather than left to inference: other distributions, language
+  ecosystems, Windows and macOS, the findings lifecycle, kernel livepatching,
+  and the fact that nothing re-runs the matcher when a snapshot arrives, so a
+  device's matches can be older than its inventory. `ROADMAP.md`'s Track D row
+  says the same.
+
 - **Documentation pass over `main`.** Corrections rather than new prose, each
   against the code:
   - `docs/configuration.md` conflated the two profile settings into one table
@@ -341,6 +359,21 @@ All notable changes to Shapoclyack are documented in this file.
   missing dependency, not a control, and it goes away the moment the feature
   is made to work.
 
+- **`CVE-2026-56854` / `GO-2026-6303` accepted as a documented Trivy
+  exception** — `golang.org/x/crypto/ssh` failed to enforce the
+  `source-address` critical option for `Permissions` returned by the password,
+  keyboard-interactive, no-client-auth and GSSAPI callbacks. The affected
+  symbols are `ssh.NewServerConn` / `serverAuthenticate` — the SSH **server**
+  side. All three bundled Go binaries carry the package below 0.55.0 as an
+  indirect dependency (dnsx 1.2.3 on 0.45.0, naabu 2.6.1 on 0.46.0, nuclei
+  v3.11.1 on 0.53.0) and none of them accepts an SSH connection: nuclei has an
+  SSH *client* for templates, dnsx and naabu never touch the package. No
+  upstream release carried the fix at the time, so the gate was failing every
+  build on a symbol none of the binaries can reach. Same shape, and the same
+  standing obligation, as the `CVE-2025-68121` exception above it in
+  `.trivyignore`: bump the pins when upstream rebuilds, and do not extend the
+  exception to any *client*-side `x/crypto/ssh` advisory.
+
 ### Fixed
 
 - **The SSH push deployment survives a non-POSIX login shell and finds its
@@ -379,7 +412,11 @@ All notable changes to Shapoclyack are documented in this file.
   each missing column with `ALTER TABLE … ADD COLUMN` on open — the additive
   case a model change almost always is — and never drops, renames or retypes;
   a NOT NULL column without a default is added nullable, since the rows that
-  predate it genuinely have no value for it.
+  predate it genuinely have no value for it. A Boolean's `server_default` is
+  written as `0`/`1` rather than quoted: the models write
+  `server_default="false"`, and `DEFAULT 'false'` stores the *text* in a
+  database with no boolean type, which SQLAlchemy's `Boolean` reads back
+  truthy — so every backfilled row would have come out `True`.
 
 - **Webhook fan-out and dispatch are switched independently, and the
   per-tenant subscription cap holds under concurrent creates**
