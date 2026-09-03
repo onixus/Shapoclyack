@@ -2300,3 +2300,124 @@ export async function fetchAdoption(windowDays = 90) {
     throw new Error(apiErrorMessage(error));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Usage metering and quotas
+// ---------------------------------------------------------------------------
+
+/** One metered resource. `limit: null` is an unlimited quota, and then there is
+ * nothing to be remaining of and nothing to take a ratio against — both come
+ * back null rather than as 0 or 100%. `used_ratio` is a fraction 0..1. */
+export type UsageResource = {
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  used_ratio: number | null;
+  over_limit: boolean;
+};
+
+export type UsageScanMonth = { month: string; scans: number };
+
+export type QuotaSource = "tenant" | "default";
+
+export type TenantUsage = {
+  tenant_id: string;
+  period_start: string;
+  period_end: string;
+  /** "tenant" when an operator set the quota, "default" when it is inherited. */
+  quota_source: QuotaSource;
+  enforced: boolean;
+  note: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+  assets: UsageResource;
+  scans: UsageResource;
+  scan_history: UsageScanMonth[];
+};
+
+export async function fetchUsage(historyMonths = 12) {
+  try {
+    const { data } = await api.get<TenantUsage>("/usage", {
+      params: { history_months: historyMonths },
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type TenantUsageRow = {
+  tenant_id: string;
+  name: string;
+  status: string;
+  quota_source: QuotaSource;
+  assets: UsageResource;
+  scans: UsageResource;
+};
+
+export type FleetUsage = {
+  period_start: string;
+  period_end: string;
+  tenants: TenantUsageRow[];
+};
+
+/** Platform admin only — 403 for everyone else, so the caller gates the query
+ * on `is_platform_admin` rather than letting it fire and fail. */
+export async function fetchFleetUsage() {
+  try {
+    const { data } = await api.get<FleetUsage>("/usage/tenants");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type TenantQuota = {
+  tenant_id: string;
+  max_assets: number | null;
+  max_scans_per_month: number | null;
+  quota_source: QuotaSource;
+  note: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+};
+
+export type TenantQuotaUpdate = {
+  max_assets: number | null;
+  max_scans_per_month: number | null;
+  note?: string;
+};
+
+export async function fetchTenantQuota(tenantId: string) {
+  try {
+    const { data } = await api.get<TenantQuota>(
+      `/tenants/${encodeURIComponent(tenantId)}/quota`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** A null (or absent) ceiling is how the API spells "unlimited". */
+export async function updateTenantQuota(tenantId: string, body: TenantQuotaUpdate) {
+  try {
+    const { data } = await api.put<TenantQuota>(
+      `/tenants/${encodeURIComponent(tenantId)}/quota`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Drops the tenant's own quota row so it follows the platform default again —
+ * the only way back to `quota_source: "default"`. 204, platform admin only. */
+export async function deleteTenantQuota(tenantId: string) {
+  try {
+    await api.delete(`/tenants/${encodeURIComponent(tenantId)}/quota`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}

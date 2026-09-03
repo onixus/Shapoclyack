@@ -405,6 +405,24 @@ goes to an operations channel and a report goes to a customer.
 | `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than sending the report and the relay password in cleartext; set `false` only for a relay that genuinely cannot do TLS |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
 
+Per-tenant usage quotas (ROADMAP Track E, MSSP operations; see
+[api-and-rbac.md](api-and-rbac.md#usage-metering-and-quotas)). These are the
+platform **defaults**, applied to any tenant that has no `tenant_quotas` row of
+its own; a row overrides them in either direction, including back to unlimited.
+The shipped default is **unlimited**, and that is a decision, not an oversight:
+a quota is a commercial boundary, so it fails open on upgrade, unlike the
+approved scan scope, which deliberately fails closed. An installation that
+never sold a limit keeps scanning exactly as before.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_QUOTA_DEFAULT_MAX_ASSETS` | `0` | Assets a tenant without its own quota row may hold (`active` or `stale`). `0` means unlimited. Newly discovered assets past the limit are not registered; existing ones keep being updated and the scan still succeeds |
+| `OCTO_QUOTA_DEFAULT_MAX_SCANS_PER_MONTH` | `0` | Scans a tenant without its own quota row may start per UTC calendar month. `0` means unlimited. Past the limit `POST /api/jobs` answers `429` with `Retry-After` set to the seconds left in the period |
+| `OCTO_QUOTA_ENFORCEMENT_ENABLED` | `true` | Whether a reached limit actually refuses anything. Off, the meter still counts and `/api/usage` still answers — metering-only is the normal first state, because an MSSP wants to watch consumption against the number it sold for a billing period or two before it starts refusing its customer's scans |
+
+A negative value is floored to `0`, i.e. unlimited: this is a billing setting,
+and the safe direction for it to fail in is "do not refuse the customer".
+
 OpenTelemetry (ROADMAP P3). Empty endpoint means no TracerProvider — the
 API does not buffer spans nobody will read. Traces are request timing, not
 scan observations.

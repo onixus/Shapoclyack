@@ -549,6 +549,159 @@ still has to stop it. The model, the third barrier inside the run, and the
 grandfathering migration `0025` applies on upgrade are described in
 [operations.md](operations.md#approved-scan-scope-per-tenant).
 
+## Usage metering and quotas
+
+An MSSP sells capacity — "up to 2,000 assets, 40 scans a month" — and Track E
+makes that number readable and enforceable. Two properties of the design show
+through the API and are worth stating before the routes.
+
+**Usage is counted, never accumulated.** There is no `used` column anywhere:
+assets are counted from `assets` and scans from `jobs` at the moment of the
+read. A counter row would eventually disagree with the asset list the same
+customer is looking at, and in that argument the customer is right and the
+invoice is wrong.
+
+**Quotas fail open; the approved scan scope does not.** Migration `0025`
+grandfathered every tenant into an explicit allow-all because an absent scope
+must never mean "scan anything". Migration `0030` inserts nothing at all, on
+purpose: a tenant with no `tenant_quotas` row inherits the platform default,
+which ships as unlimited. A scope is a security boundary and a quota is a
+commercial one — refusing customers' scans after an upgrade because nobody had
+yet typed a number would be an outage caused by billing.
+
+### Reading the meter
+
+```http
+GET /api/usage?history_months=12
+```
+
+Viewer, and single-tenant like every other tenant-scoped read: the tenant is
+resolved server-side from the caller. This is the customer's own view of their
+consumption, deliberately not admin-gated — a number the person doing the work
+cannot open is a number that gets estimated in a slide at renewal.
+`history_months` is `1..36` (default `12`); anything else is `422`.
+
+```json
+{
+  "tenant_id": "acme",
+  "period_start": "2026-09-01T00:00:00",
+  "period_end": "2026-10-01T00:00:00",
+  "quota_source": "tenant",
+  "enforced": true,
+  "note": "Renewal 2027-01, 2k assets",
+  "updated_at": "2026-08-14T09:12:33",
+  "updated_by": "platform-admin",
+  "assets": {"used": 1840, "limit": 2000, "remaining": 160, "used_ratio": 0.92, "over_limit": false},
+  "scans":  {"used": 31, "limit": 40, "remaining": 9, "used_ratio": 0.775, "over_limit": false},
+  "scan_history": [{"month": "2025-10", "scans": 0}, {"month": "2025-11", "scans": 18}]
+}
+```
+
+- The period is one **UTC calendar month**, `[period_start, period_end)`, because
+  that is what a contract says and what an invoice covers. A rolling 30-day
+  window would make "how many scans do I have left this month" unanswerable
+  without a chart.
+- `quota_source` is `tenant` when somebody wrote a row for this customer and
+  `default` when they merely inherited the platform setting. The distinction
+  matters most when the answer is "unlimited", because only one of the two is a
+  decision.
+- `enforced` mirrors `OCTO_QUOTA_ENFORCEMENT_ENABLED`. Metering always runs; a
+  provider that has not switched enforcement on is looking at consumption
+  without refusing anything.
+- **`limit: null` means unlimited**, and then `remaining` and `used_ratio` are
+  `null` too — the same rule the Adoption page follows. A share with nothing to
+  divide by is `null`, never `0` or `1`: a bar at 0% against no limit reads as
+  "plenty left" and one at 100% reads as an outage.
+- `scan_history` is oldest-first and includes **empty months as zeroes**. A gap
+  a chart has to guess at is how a customer's quiet quarter becomes a missing
+  bar somebody reads as missing data.
+
+What counts: assets in status `active` or `stale` (a `decommissioned` asset is
+inventory history, not capacity in use — billing for it would make deletion the
+customer's only way to stop paying for a machine they already retired), and
+jobs by `queued_at`, so a job still sitting in the queue counts. A limit that
+only counted finished scans could be walked past by starting a thousand.
+
+```http
+GET /api/usage/tenants
+```
+
+Platform admin. The provider's side of the same meter: every tenant's
+consumption in the current period, so "who is near their limit" does not
+require opening twelve customers in turn. Returns `period_start`, `period_end`
+and `tenants[]`, each row `tenant_id`, `name`, `status`, `quota_source` and the
+same `assets`/`scans` shapes. Rows are sorted by display name.
+
+### Setting a limit
+
+```http
+GET /api/tenants/{tenant_id}/quota
+PUT /api/tenants/{tenant_id}/quota   {"max_assets": 2000, "max_scans_per_month": 40, "note": "Renewal 2027-01"}
+```
+
+Platform admin, for the reason scan-scope approval is: a tenant operator who
+could raise their own quota is the control removing itself. `PUT` replaces
+whatever applied before and stamps the caller and the moment on the row, so
+"who sold them 5,000 assets" has an answer that is not a memory. An unknown
+tenant is `404`; a value outside `0..10000000` (assets) or `0..1000000`
+(scans), or a `note` over 500 characters, is `422`.
+
+`null` — or `0`, accepted as the same thing — is **unlimited**. Both fields are
+spelled explicitly rather than by omission: a `PUT` that dropped a limit because
+a client forgot to send the field would be a silently widened contract. A stored
+row wins over the platform default *including when its columns are null*, which
+is how one customer is exempted from a default everybody else is metered
+against, rather than by turning metering off globally. `DELETE
+/api/tenants/{tenant_id}/quota` (204, platform admin) drops the row and returns
+the tenant to `quota_source: "default"` — deliberately distinct from a `PUT` of
+nulls, which stores "unlimited *for this tenant*" and keeps that answer when
+the platform default later changes.
+
+### What a quota refuses, and how
+
+Scans are refused **at admission**, inside `jobs_service.start_scan` rather
+than in the route, because the recurring-scan dispatcher and every other caller
+reach that function and none of them reach the route — a quota only one entry
+point honours is not a quota.
+
+```http
+POST /api/jobs   →  429 Too Many Requests
+Retry-After: 1209600
+{"detail": "Scan quota reached for tenant acme: 40/40 scans this month; resets 2026-10-01"}
+```
+
+**`429`, not the `403` an out-of-scope scan gets.** A scope refusal is a
+standing fact; this one stops being true on its own, so the answer can say
+when. `Retry-After` is the seconds remaining until the period rolls over, and
+an integration that already retries on `429` does the right thing without being
+taught anything about quotas. Verification re-scans
+([#183](https://github.com/onixus/Shapoclyack/issues/183)) are exempt: refusing
+the machine check that closes a finding would strand it in `VERIFYING` and turn
+a billing limit into a correctness bug. The exemption travels on the job
+(`jobs.quota_exempt`), stamped by the caller that dispatches the scan, and such
+a scan is left out of the count as well as out of the refusal. It is
+deliberately not keyed on a username: the verification path carries the
+*analyst's* name into the dispatch, so a name-based exemption would never fire
+for the one case it exists for — and a console account someone named
+`system:verification` would inherit an unlimited quota.
+
+Assets are capped **at ingest**, and an asset quota never fails a scan. The
+ingest path asks how many *new* assets it may create and honours the answer
+partially: assets that already exist keep getting this run's data, and only
+newly discovered hosts are dropped (`quota_skipped` in the upsert stats).
+Refusing the whole result set would throw away findings for the assets inside
+the quota as well, which punishes the wrong thing. An endpoint-inventory
+snapshot from an agent is accepted for the same reason — the device is left
+`reconciliation_status: "unlinked"` and links itself on a later submit once the
+limit is raised, because losing software and patch data over a *registry* limit
+is not a trade anybody asked for.
+
+That refusal is the one in this feature nobody sees interactively: the operator's
+scan succeeded and some discovered hosts are simply not in the inventory. It is
+therefore loud where machines look — a `WARNING` naming the tenant and the
+count, and `octo_quota_denied_total{resource="assets"}`. The scan refusal
+increments the same counter with `resource="scans"`.
+
 ## Tenant memberships
 
 Which tenants a user may act in comes from the `user_tenants` table, managed by

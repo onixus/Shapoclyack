@@ -126,6 +126,7 @@ def reset_for_tests() -> None:
         session.query(models.Wordlist).delete()
         session.query(models.ProvisioningKey).delete()
         session.query(models.ServiceToken).delete()
+        session.query(models.TenantQuota).delete()
         session.query(models.Tenant).delete()
 
 

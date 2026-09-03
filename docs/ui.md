@@ -41,6 +41,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
 | `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age | Viewer |
+| `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | Admin |
@@ -331,6 +332,46 @@ delivery (`admin`) and on-demand generation (`operator`). A generated report is
 one body rendered as PDF, HTML or JSON, so the JSON an MSSP pipes into its own
 portal is the same report as the PDF its customer opens. Delivery is recorded
 per recipient rather than per report.
+
+## Usage and quotas
+
+`/usage` is what the tenant has consumed against what was sold (ROADMAP Track E).
+It reads `GET /api/usage?history_months=12` for the selected tenant and shows:
+
+- **This period** — assets and scans as used against limit, with the remaining
+  count. The period is one UTC calendar month, named on the page with the date
+  it resets, because that is what a contract covers.
+- **Scan volume** — twelve months of scans per month, oldest first, empty
+  months drawn as zero bars rather than skipped, so a quiet quarter does not
+  read as missing data.
+- Whether the limit is one **sold to this customer** or the **platform default**
+  they inherited (`quota_source`), plus the note, who last changed it and when.
+  "Unlimited because we sold it" and "unlimited because nobody configured this"
+  are not the same answer at renewal.
+- Whether enforcement is on at all. With `OCTO_QUOTA_ENFORCEMENT_ENABLED` off
+  the page is a meter and nothing is refused.
+
+An unlimited resource shows as **unlimited**, not as a bar at 0% or 100%: the
+API sends `null` for the limit and for both derived shares, and the page keeps
+that distinction — a full-looking bar against no limit reads as an outage.
+
+For a platform admin the page adds two things a customer never sees: a
+**cross-tenant table** (`GET /api/usage/tenants`) of every tenant's assets and
+scans this period, so "who is near their limit" is one screen rather than
+twelve, and a **quota editor** (`GET`/`PUT /api/tenants/{id}/quota`) with the
+two limits and a note. Blank or `0` in a limit field means unlimited for that
+tenant. Editing is admin-only for the reason scan-scope approval is: an
+operator who could raise their own quota is the control removing itself.
+
+The consequences of a quota show up elsewhere in the console rather than here.
+A scan refused because the month's entitlement is spent answers `429` on
+`/jobs`, with the limit, the count and the reset date in the error text — the
+operator sees the refusal where they started the scan. An **asset** limit never
+fails a scan and produces no console message at all: the run succeeds, the
+assets already in the inventory get its data, and only newly discovered hosts
+are left unregistered. That refusal is visible in the API logs and in
+`octo_quota_denied_total{resource="assets"}`, not in the UI. See
+[api-and-rbac.md](api-and-rbac.md#usage-metering-and-quotas).
 
 ## Endpoint inventory and patch gaps
 

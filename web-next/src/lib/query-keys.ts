@@ -82,6 +82,9 @@ export const queryKeys = {
   reportSchedules: ["reports", "schedules"] as const,
   generatedReports: (limit = 50) => ["reports", "generated", limit] as const,
   adoption: (windowDays: number) => ["adoption", windowDays] as const,
+  usage: (historyMonths: number) => ["usage", historyMonths] as const,
+  fleetUsage: ["usage", "tenants"] as const,
+  tenantQuota: (tenantId: string) => ["tenants", tenantId, "quota"] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

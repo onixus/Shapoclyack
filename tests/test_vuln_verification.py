@@ -17,7 +17,7 @@ from api.services import vuln_states
 from api.services import vulnerabilities as vulns
 from api.services.integrations import ticket_sync
 from api.services.integrations.delivery import DeliveryResult
-from tests.conftest import requires_postgres
+from tests.conftest import approve_scan_scope, requires_postgres
 
 from tests.test_vuln_lifecycle import _seed, _write_run
 
@@ -403,6 +403,49 @@ def test_verification_is_refused_when_scanning_is_disabled(tmp_path):
     after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=target)
     assert after["state"] == vuln_states.FIXING
     assert after["verification_job_id"] is None
+
+
+@requires_postgres
+def test_verification_is_dispatched_even_with_the_scan_quota_spent(tmp_path):
+    """A spent monthly quota must not strand a finding in FIXING.
+
+    The verification re-scan is the platform closing its own loop, so it is
+    exempt — and the exemption has to survive the fact that this path carries
+    the *analyst's* username into ``start_scan``, which is what made an earlier
+    username-keyed exemption never fire.
+    """
+    from api.db import models
+    from api.db.engine import get_session
+    from api.services import quotas
+
+    settings, tenant_id = _seed(tmp_path)
+    approve_scan_scope(settings)
+    vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    target = _vuln_ids(settings, tenant_id)["CVE-2024-0001"]["vuln_id"]
+    _advance_to_fixing(settings, tenant_id, target)
+
+    quotas.set_quota(settings, tenant_id, max_assets=None, max_scans_per_month=1)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Job(
+                job_id="quota-filler",
+                tenant_id=tenant_id,
+                status="succeeded",
+                queued_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+    with pytest.raises(quotas.QuotaExceeded):
+        quotas.assert_scan_quota(settings, tenant_id=tenant_id)
+
+    result = vulns.trigger_verification(
+        settings, tenant_id=tenant_id, vuln_id=target, actor="alice"
+    )
+
+    assert result is not None
+    assert result["state"] == vuln_states.VERIFYING
+    assert result["verification_job_id"]
+    # And it did not spend the customer's entitlement on the way through.
+    assert quotas.scans_used(settings, tenant_id) == 1
 
 
 @requires_postgres

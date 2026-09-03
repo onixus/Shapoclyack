@@ -6,6 +6,53 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Usage metering and per-tenant quotas** (ROADMAP Track E, enterprise
+  operations & MSSP). An MSSP sells capacity, and the platform could express
+  none of it: a tenant registered assets until the disk filled and started
+  scans until the queue was the only limit, so neither the provider nor the
+  customer could answer *how much of what we sold is being used*. That question
+  is asked at renewal, and being unable to answer it is how a platform gets
+  replaced by a spreadsheet.
+
+  `tenant_quotas` (migration `0030`) holds `max_assets` and
+  `max_scans_per_month` per tenant, `GET /api/usage` is the customer's own
+  consumption against them with twelve months of scan volume,
+  `GET /api/usage/tenants` is the provider's view across every tenant, and
+  `GET/PUT /api/tenants/{id}/quota` is platform-admin only for the reason
+  scan-scope approval is: a tenant operator who could raise their own quota is
+  the control removing itself. The console gets a **Usage** page for the same
+  two views.
+
+  Three decisions are worth stating, because they are what makes this a
+  product feature rather than a counter. **Usage is counted, never
+  accumulated** — there is no `used` column; assets come from `assets` and
+  scans from `jobs` at read time, so the meter cannot drift away from the
+  lists the customer is looking at and be wrong about the invoice.
+  **Quotas fail open**, unlike the approved scan scope of migration `0025`
+  which deliberately does the opposite: a tenant with no row inherits a
+  platform default that ships as unlimited, because an upgrade that started
+  refusing customers' scans over a number nobody had typed yet would be an
+  outage caused by billing. And the two limits are enforced at different
+  moments — a scan is refused at admission with **429** and a `Retry-After`
+  naming the reset, while an asset quota **never fails a scan**: the assets
+  already inside the quota keep getting that run's data and only newly
+  discovered hosts are left unregistered, loudly in the log and in
+  `octo_quota_denied_total{resource}` but silently to the operator, because
+  discarding a whole result set would punish the findings for the assets the
+  customer did pay for. An endpoint agent's inventory is accepted for the same
+  reason: the device stays `unlinked` and links itself once the quota is
+  raised, and reviving a decommissioned asset spends capacity exactly as
+  creating one does, since only `active` and `stale` are billed. Verification
+  re-scans (#183) are exempt — quota-refusing the mechanical check that closes
+  a finding would strand it in `VERIFYING` — and the exemption travels on the
+  job (`jobs.quota_exempt`) rather than on a username, because that path
+  carries the analyst's name and a name-keyed exemption would never have fired
+  for it. An exempt scan is also excluded from the count: work a customer
+  cannot decline is work they should not be billed for.
+  Enforcement is separable from metering (`OCTO_QUOTA_ENFORCEMENT_ENABLED`),
+  because an MSSP usually wants to watch consumption against the number it
+  sold for a period or two before it starts refusing its customer's scans.
+
 - **An Adoption page: is the product producing outcomes, or data?** —
   ROADMAP Track E ends with a list of what would have to be measured before
   any of its features can be called a success, and with the admission that

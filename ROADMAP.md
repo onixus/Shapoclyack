@@ -615,7 +615,7 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 | No compliance mapping | **Closed (Sprint 4).** PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory, with `not_assessed` for anything the platform cannot observe and a score that is explicitly the share of *assessed* controls rather than compliance with the standard. Custom frameworks and archivable evidence packages are not in scope |
 | Asset context filled by hand | `business_service`/`environment`/`owner_email` only via PATCH. At 50k assets the dashboard's "unowned assets" will read ~45k and the whole owner/SLA workflow never starts |
 | The loop is not closed | **Partly closed (#183).** A finding can be sent for **mechanical verification** — a targeted re-scan whose result, not an operator's assertion, moves it out of `VERIFYING` — and ticket status is now synchronized both ways. What is still missing is verification for finding classes a re-scan cannot observe, and remediation SLAs measured against the verified close rather than the state change |
-| No MSSP operations | No quotas, no per-tenant consumption metering, no onboarding wizard, no white-label, no customer read-only portal |
+| No MSSP operations | **Partly closed.** Per-tenant quotas (`max_assets`, `max_scans_per_month`) and consumption metering have landed: `GET /api/usage`, `GET /api/usage/tenants`, platform-admin `GET/PUT /api/tenants/{id}/quota`, a **Usage** console page, and enforcement at scan admission (429 + `Retry-After`) and at asset ingest — see [docs/api-and-rbac.md](docs/api-and-rbac.md). White-label is covered by the report factory's per-tenant branding. What is still missing is an onboarding wizard and a customer read-only portal |
 | Enrichment data has no air-gapped bundle | The overlays are no longer stubs — the image ships EPSS 365,017, KEV 1,676, exploit maturity 25,943 and CVSS4 31,715 entries, and `GET /api/system` reports each dataset's source, feed date, entry count and whether the build fetched it or fell back. What is still missing is an offline bundle, and a product-level judgement that turns overlay age into "your priorities are wrong" rather than a date on a status page |
 
 ### Order
@@ -642,10 +642,16 @@ effort on this list, and it gives sales a demo artifact while the matcher is sti
   mapping that reports `not_assessed` rather than inventing a pass
   ([docs/reports-and-compliance.md](docs/reports-and-compliance.md)).
 
-**Next** — enterprise operations & MSSP: usage metering, asset and scan
-quotas, a customer read-only portal, an onboarding wizard. Metering means
-something once there is a report to show the customer, which is why it
-follows the factory rather than leading it.
+**Next** — enterprise operations & MSSP: ~~usage metering, asset and scan
+quotas~~ — **merged**: usage is counted from `assets` and `jobs` at read time
+rather than accumulated in a column, so the meter cannot disagree with the
+lists the customer is looking at; quotas fail open on upgrade (they are a
+commercial boundary, unlike the approved scan scope, which is not) and are
+enforced at scan admission with a 429 that names the reset, while the asset
+limit never fails a scan and only leaves newly discovered hosts unregistered.
+Remaining: a customer read-only portal and an onboarding wizard. Metering meant
+something once there was a report to show the customer, which is why it
+followed the factory rather than leading it.
 
 **Later** — scale and ecosystem connectors: asset-context connectors
 (AWS/GCP/Azure inventory and Active Directory sync, 4–5 sprints — expensive

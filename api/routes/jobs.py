@@ -9,6 +9,7 @@ from api.routes._pagination import PageParams, build_page
 from api.schemas import JobInfo, Page, StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
+from api.services import quotas
 from api.services import scan_scopes
 from api.settings import Settings
 
@@ -117,6 +118,21 @@ def start_job(
         jobs_service.note_start_replay()
         response.status_code = status.HTTP_200_OK
         return replay.job
+    except quotas.QuotaExceeded as exc:
+        # 429 rather than 403: unlike a scope refusal this one expires by
+        # itself, so the answer can say when — an integration that retries on
+        # 429 with Retry-After does the right thing without being taught
+        # anything about quotas.
+        headers = (
+            {"Retry-After": str(exc.retry_after_seconds)}
+            if exc.retry_after_seconds is not None
+            else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers=headers,
+        ) from exc
     except scan_scopes.ScanScopeDenied as exc:
         # 403, not 422: the targets are well-formed, this tenant is simply not
         # approved for them (#226). The refusal is already in the audit trail.

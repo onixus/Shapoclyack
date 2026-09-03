@@ -1070,7 +1070,14 @@ def trigger_verification(
     )
     try:
         job = jobs_service.start_scan(
-            settings, scan_request, username=actor or "system:verification"
+            settings,
+            scan_request,
+            username=actor or "system:verification",
+            # The platform closing its own loop, not the customer spending an
+            # entitlement: a quota-refused verification would strand the
+            # finding in VERIFYING with nothing looking at it, which is the
+            # exact state this function exists to never create.
+            quota_exempt=True,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 409
         LOG.warning("Verification dispatch failed for %s: %s", vuln_id, exc, exc_info=True)

@@ -1808,3 +1808,82 @@ class AdoptionMetrics(BaseModel):
     analysts: list[AdoptionAnalyst] = Field(default_factory=list)
     onboarding: AdoptionOnboarding
     enrichment: list[AdoptionEnrichmentDataset] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# Usage metering and quotas (ROADMAP Track E, enterprise operations & MSSP)
+# --------------------------------------------------------------------------
+
+
+class QuotaResourceUsage(BaseModel):
+    """One metered resource. ``limit`` of ``None`` means unlimited.
+
+    ``remaining`` and ``used_ratio`` are then ``None`` too, following the
+    Adoption page's rule: a share with nothing to divide by is ``null``, not a
+    number that reads as full or empty.
+    """
+
+    used: int
+    limit: int | None = None
+    remaining: int | None = None
+    used_ratio: float | None = None
+    over_limit: bool = False
+
+
+class UsageMonth(BaseModel):
+    month: str
+    scans: int
+
+
+class TenantUsage(BaseModel):
+    tenant_id: str
+    period_start: datetime
+    period_end: datetime
+    # tenant = a limit somebody sold this customer; default = the platform
+    # setting they inherited because no row exists.
+    quota_source: Literal["tenant", "default"]
+    enforced: bool = True
+    note: str = ""
+    updated_at: datetime | None = None
+    updated_by: str = ""
+    assets: QuotaResourceUsage
+    scans: QuotaResourceUsage
+    scan_history: list[UsageMonth] = Field(default_factory=list)
+
+
+class TenantUsageRow(BaseModel):
+    tenant_id: str
+    name: str
+    status: str
+    quota_source: Literal["tenant", "default"]
+    assets: QuotaResourceUsage
+    scans: QuotaResourceUsage
+
+
+class TenantUsageSummary(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    tenants: list[TenantUsageRow] = Field(default_factory=list)
+
+
+class TenantQuotaInfo(BaseModel):
+    tenant_id: str
+    max_assets: int | None = None
+    max_scans_per_month: int | None = None
+    quota_source: Literal["tenant", "default"]
+    note: str = ""
+    updated_at: datetime | None = None
+    updated_by: str = ""
+
+
+class TenantQuotaRequest(BaseModel):
+    """``null`` is unlimited for this tenant; 0 is accepted as the same thing.
+
+    Spelled with an explicit ``null`` rather than by omitting the field: a PUT
+    that dropped a limit because a client forgot to send it would be a
+    silently widened contract.
+    """
+
+    max_assets: int | None = Field(default=None, ge=0, le=10_000_000)
+    max_scans_per_month: int | None = Field(default=None, ge=0, le=1_000_000)
+    note: str = Field(default="", max_length=500)

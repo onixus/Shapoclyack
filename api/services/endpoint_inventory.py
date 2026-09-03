@@ -25,6 +25,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.schemas import EndpointInventorySnapshotRequest
 from api.services import metrics as metrics_service
+from api.services import quotas
 from api.settings import Settings
 
 _log = logging.getLogger("shapoclyack.endpoint-inventory")
@@ -162,7 +163,14 @@ def _check_rate_limit(session, settings: Settings, *, tenant_id: str, agent_id: 
         )
 
 
-def _reconcile_asset(session, *, tenant_id: str, device: models.EndpointDevice, hostname: str) -> None:
+def _reconcile_asset(
+    session,
+    *,
+    tenant_id: str,
+    device: models.EndpointDevice,
+    hostname: str,
+    settings: Settings,
+) -> None:
     """Priority order per Agent_plan.md §6. Only runs when the device has no
     asset link yet — an existing link (or an established conflict) is
     preserved across resubmits, never re-evaluated."""
@@ -180,6 +188,23 @@ def _reconcile_asset(session, *, tenant_id: str, device: models.EndpointDevice, 
     if matched_asset_id is not None:
         device.asset_id = matched_asset_id
         device.reconciliation_status = "linked"
+        return
+
+    # A new asset is about to be registered, so the tenant's asset quota
+    # applies here exactly as it does to a network scan (Track E). Read only
+    # now, on the same session: most snapshots come from devices that are
+    # already linked and returned above, and counting a tenant's assets on
+    # every one of those would be a table scan per heartbeat.
+    #
+    # The snapshot itself is still accepted: the endpoint inventory is the
+    # value the agent was installed for, and refusing it would lose software
+    # and patch data over a *registry* limit. The device stays ``unlinked``
+    # and links itself on a later submit once the quota is raised, because
+    # reconciliation re-runs for any device without an asset.
+    capacity = quotas.asset_capacity_in_session(session, settings, tenant_id)
+    if capacity is not None and capacity <= 0:
+        device.reconciliation_status = "unlinked"
+        quotas.record_asset_refusal(tenant_id, 1)
         return
 
     now = _now()
@@ -288,7 +313,13 @@ def ingest_snapshot(
         session.flush()
 
         _upsert_identifiers(session, tenant_id=tenant_id, device=device, identifiers=request.identifiers)
-        _reconcile_asset(session, tenant_id=tenant_id, device=device, hostname=request.hostname)
+        _reconcile_asset(
+            session,
+            tenant_id=tenant_id,
+            device=device,
+            hostname=request.hostname,
+            settings=settings,
+        )
 
         previous_items: dict[str, str | None] = {}
         previous_name_by_key: dict[str, str] = {}

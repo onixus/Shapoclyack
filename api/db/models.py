@@ -1023,6 +1023,12 @@ class Job(Base):
     exit_code: Mapped[int | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(default=None)
     asset_upsert_error: Mapped[str | None] = mapped_column(default=None)
+    # Excluded from the tenant's monthly scan quota (Track E). Set by the
+    # caller that dispatches the scan, never inferred from who asked for it: a
+    # verification re-scan is exempt because it is the platform closing its own
+    # loop, and that is a property of the dispatch, not of the analyst whose
+    # name is on it.
+    quota_exempt: Mapped[bool] = mapped_column(default=False, server_default="false")
 
     __table_args__ = (
         Index("ix_jobs_tenant_status", "tenant_id", "status"),
@@ -1327,3 +1333,39 @@ class GeneratedReport(Base):
     __table_args__ = (
         Index("ix_generated_reports_tenant_time", "tenant_id", "generated_at"),
     )
+
+
+class TenantQuota(Base):
+    """What one tenant is allowed to consume (ROADMAP Track E, MSSP operations).
+
+    An MSSP sells capacity, and until this table existed the platform had no
+    expression of it: any tenant could register an unbounded number of assets
+    and start an unbounded number of scans, so the only limit was the hardware
+    the provider had bought. "How much is this customer using, and how much did
+    they buy?" could be answered by neither the operator nor the customer.
+
+    One row per tenant, and **the absence of a row is not zero** — it is the
+    platform default from ``Settings`` (unlimited unless the operator set one).
+    A quota is a commercial boundary, not a security one, so unlike the scan
+    scope of migration 0025 it fails *open*: an install that upgrades into this
+    table keeps running exactly as before until somebody sells a limit.
+
+    ``NULL`` in a limit column means "unlimited for this tenant" and is
+    distinct from the missing row: it overrides a platform default that would
+    otherwise apply, which is how one customer is exempted without disabling
+    metering for everyone.
+    """
+
+    __tablename__ = "tenant_quotas"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    # NULL = unlimited for this tenant (an override, not an absence).
+    max_assets: Mapped[int | None] = mapped_column(default=None)
+    max_scans_per_month: Mapped[int | None] = mapped_column(default=None)
+    # Free-text contract reference, so the limit can be traced to what was
+    # sold rather than to whoever happened to type it.
+    note: Mapped[str] = mapped_column(default="", server_default="")
+    updated_at: Mapped[datetime]
+    updated_by: Mapped[str] = mapped_column(default="", server_default="")

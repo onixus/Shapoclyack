@@ -74,6 +74,17 @@ AUTH_ATTEMPTS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+QUOTA_DENIED_TOTAL = Counter(
+    "octo_quota_denied_total",
+    "Actions refused because a tenant's purchased limit was reached, by "
+    "resource (assets, scans). 'scans' is a refused scan start the operator "
+    "sees as a 429; 'assets' counts ingest events where newly discovered "
+    "assets were not registered — nobody is told about that one interactively, "
+    "which is why it is a metric.",
+    ["resource"],
+    registry=REGISTRY,
+)
+
 NATS_CONSUMER_PENDING = Gauge(
     "octo_nats_consumer_pending",
     "JetStream durable consumer pending message count (consumer lag).",
