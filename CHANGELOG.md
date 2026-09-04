@@ -6,6 +6,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Promoted related domains now reach the next scan** (`org_profile` M4,
+  EPIC #182). `POST /api/runs/{id}/related-domains/{domain}/promote` used to
+  append the domain to `promoted_domains.txt` in the run directory, and that
+  was the whole feature: nothing read the file when the next scan started,
+  and run retention (#187) deleted it with the run. The decision now lives on
+  the tenant (`tenant_promoted_domains`, migration `0031`) and every ordinary
+  scan the tenant starts carries those domains in addition to its own targets
+  — as a separate `--promoted-domains` input the scanner merges into its name
+  scope, so a run on the installation's default target files is widened rather
+  than retargeted. Three boundaries: a promotion is checked against the
+  approved scan scope (#226) when it is made (403, journalled in
+  `auth_events`) and again when a scan starts (a domain the scope no longer
+  covers is dropped and recorded on the job as `promoted_domains_refused`,
+  not a reason to refuse the operator's own targets); a verification re-scan
+  (#183) is never widened; and a promotion can be withdrawn —
+  `DELETE .../promote`, and the Org Profile tab's button flips to *Withdraw
+  from Scope*. Platform admins see what the operators added underneath the
+  scope they approved via `GET /api/tenants/{id}/promoted-domains`.
+  Nothing is grandfathered: the per-run files were never consumed, so there
+  is no behaviour to preserve — domains promoted before this change are
+  promoted again from the run's Org Profile tab.
+
 - **Usage metering and per-tenant quotas** (ROADMAP Track E, enterprise
   operations & MSSP). An MSSP sells capacity, and the platform could express
   none of it: a tenant registered assets until the disk filled and started

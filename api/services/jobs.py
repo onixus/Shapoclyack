@@ -49,6 +49,7 @@ from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
 from api.services import quotas
+from api.services import promoted_domains
 from api.services import auth_audit
 from api.services import results_ingest
 from api.services import runs as runs_service
@@ -69,7 +70,19 @@ SCAN_SCOPE_INPUT = "scan_scope.json"
 
 #: What a job hands to its worker. The scope rides the same channel as the
 #: targets on purpose: a worker that receives one receives the other.
-_JOB_INPUT_FILES = ("ranges.txt", "domains.txt", "ports.txt", "ports_udp.txt", SCAN_SCOPE_INPUT)
+#: Related domains the tenant's operators promoted (org_profile M4). A separate
+#: file rather than lines appended to ``domains.txt``: the scanner merges it
+#: into the name scope *in addition to* whatever target files the run reads, so
+#: a run on the installation's default targets is widened rather than replaced.
+PROMOTED_DOMAINS_INPUT = "promoted_domains.txt"
+_JOB_INPUT_FILES = (
+    "ranges.txt",
+    "domains.txt",
+    "ports.txt",
+    "ports_udp.txt",
+    SCAN_SCOPE_INPUT,
+    PROMOTED_DOMAINS_INPUT,
+)
 
 
 def _now() -> datetime:
@@ -406,6 +419,7 @@ def _prepare_target_inputs(
     request: StartScanRequest,
     *,
     tenant_id: str,
+    promoted: list[str] | None = None,
 ) -> tuple[Path | None, dict[str, int] | None, list[str]]:
     """Write per-job input files, and the scope the run is to be held to.
 
@@ -438,8 +452,14 @@ def _prepare_target_inputs(
     extra: list[str] = ["--scan-scope", str(scope_path)]
     counts: dict[str, int] = {}
 
+    if promoted:
+        promoted_path = inputs_dir / PROMOTED_DOMAINS_INPUT
+        _write_lines(promoted_path, promoted)
+        extra.extend(["--promoted-domains", str(promoted_path)])
+        counts["promoted_domains"] = len(promoted)
+
     if parsed is None:
-        return inputs_dir, None, extra
+        return inputs_dir, counts or None, extra
 
     if parsed.ranges is not None and parsed.domains is not None:
         ranges_path = inputs_dir / "ranges.txt"
@@ -1038,9 +1058,32 @@ def start_scan(
     if execution == "agent" and not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
+    # Related domains the tenant's operators promoted (org_profile M4) ride
+    # along with every ordinary scan — that is what promotion means. Not with
+    # a verification re-scan: it is aimed at one finding, and widening it is
+    # how "not observed" would stop meaning "fixed". Held to the approved
+    # scope as it stands *now*: a domain promoted under a wider scope is
+    # dropped and recorded, not a reason to refuse the operator's own targets.
+    promoted_admitted: list[str] = []
+    promoted_refused: list[str] = []
+    if not quota_exempt:
+        promoted_admitted, promoted_refused = promoted_domains.split_by_scope(
+            scan_scopes.load_scope(settings, tenant_id),
+            promoted_domains.promoted_names(settings, tenant_id),
+        )
+        if promoted_refused:
+            _log.warning(
+                "Tenant %s: %d promoted domain(s) outside the approved scan scope "
+                "dropped from job %s: %s",
+                tenant_id,
+                len(promoted_refused),
+                job_id,
+                ", ".join(promoted_refused[:8]),
+            )
+
     try:
         _, target_counts, target_args = _prepare_target_inputs(
-            settings, job_id, request, tenant_id=tenant_id
+            settings, job_id, request, tenant_id=tenant_id, promoted=promoted_admitted
         )
         # Second barrier, deliberately redundant. start_scan is also reached
         # from schedule_dispatcher, which replays targets stored days ago and
@@ -1128,6 +1171,10 @@ def start_scan(
             "intent": resolved.intent,
             "intent_summary": resolved.summary if resolved.intent else None,
             "delta": resolved.delta,
+            # Visible on the job rather than only in the log: which promoted
+            # domains this scan carried, and which the scope kept out.
+            **({"promoted_domains": promoted_admitted} if promoted_admitted else {}),
+            **({"promoted_domains_refused": promoted_refused} if promoted_refused else {}),
             "skip_nse": resolved.skip_nse,
             "notify": request.notify,
             "export_defectdojo": request.export_defectdojo,

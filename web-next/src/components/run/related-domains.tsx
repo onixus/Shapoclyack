@@ -10,8 +10,8 @@ import {
   ChevronDown,
   ChevronRight,
   PlusCircle,
+  MinusCircle,
   AlertCircle,
-  FileCheck,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   fetchOrgProfile,
   promoteRelatedDomain,
+  withdrawRelatedDomain,
   type OrgProfileDetail,
   type RelatedDomainCandidate,
 } from "@/lib/api";
@@ -36,12 +37,14 @@ function CandidateRow({
   candidate,
   isPromoted,
   onPromote,
+  onWithdraw,
   isPromoting,
   canOperate,
 }: {
   candidate: RelatedDomainCandidate;
   isPromoted: boolean;
   onPromote: (domain: string) => void;
+  onWithdraw: (domain: string) => void;
   isPromoting: boolean;
   canOperate: boolean;
 }) {
@@ -110,19 +113,25 @@ function CandidateRow({
             <Button
               size="sm"
               variant={isPromoted ? "secondary" : "outline"}
-              disabled={isPromoted || isPromoting}
+              disabled={isPromoting}
+              title={
+                isPromoted
+                  ? "Every scan of this tenant carries this domain; withdraw to stop that"
+                  : "Add to the targets of every later scan of this tenant (starts nothing)"
+              }
               className={`h-7 text-xs font-mono gap-1.5 ${
-                isPromoted ? "opacity-60 cursor-default" : "hover:border-sky-500 hover:text-sky-300"
+                isPromoted ? "hover:border-rose-500 hover:text-rose-300" : "hover:border-sky-500 hover:text-sky-300"
               }`}
               onClick={(e) => {
                 e.stopPropagation();
-                onPromote(candidate.domain);
+                if (isPromoted) onWithdraw(candidate.domain);
+                else onPromote(candidate.domain);
               }}
             >
               {isPromoted ? (
                 <>
-                  <FileCheck className="h-3.5 w-3.5 text-emerald-400" />
-                  In Scope
+                  <MinusCircle className="h-3.5 w-3.5 text-rose-400" />
+                  Withdraw from Scope
                 </>
               ) : (
                 <>
@@ -168,13 +177,22 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
     queryFn: () => fetchOrgProfile(runId),
   });
 
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["org-profile", runId] });
+    queryClient.invalidateQueries({ queryKey: ["run", runId] });
+  };
   const promoteMutation = useMutation({
     mutationFn: (domain: string) => promoteRelatedDomain(runId, domain),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["org-profile", runId] });
-      queryClient.invalidateQueries({ queryKey: ["run", runId] });
-    },
+    onSuccess: invalidate,
   });
+  const withdrawMutation = useMutation({
+    mutationFn: (domain: string) => withdrawRelatedDomain(runId, domain),
+    onSuccess: invalidate,
+  });
+  // A 403 here is the approved scan scope refusing the domain — the operator
+  // decides attribution, an admin decides authorization — and it must be
+  // read, not swallowed into a button that silently did nothing.
+  const actionError = promoteMutation.error?.message || withdrawMutation.error?.message || null;
 
   if (isLoading) {
     return (
@@ -304,6 +322,15 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         </div>
 
         <CardContent className="p-0">
+          {actionError && (
+            <div
+              role="alert"
+              className="px-4 py-2 bg-rose-950/30 border-b border-rose-900/40 flex items-center gap-2 text-[11px] text-rose-300"
+            >
+              <AlertCircle className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+              <span>{actionError}</span>
+            </div>
+          )}
           {filteredCandidates.length > 0 ? (
             <div className="divide-y divide-slate-800/60">
               {filteredCandidates.map((cand) => (
@@ -312,7 +339,8 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
                   candidate={cand}
                   isPromoted={promotedSet.has(cand.domain)}
                   onPromote={(d) => promoteMutation.mutate(d)}
-                  isPromoting={promoteMutation.isPending}
+                  onWithdraw={(d) => withdrawMutation.mutate(d)}
+                  isPromoting={promoteMutation.isPending || withdrawMutation.isPending}
                   canOperate={canOperate}
                 />
               ))}

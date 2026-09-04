@@ -1503,6 +1503,16 @@ class PromoteDomainResponse(BaseModel):
     promoted_at: str | None = None
 
 
+class PromotedDomainInfo(BaseModel):
+    """One row of a tenant's promoted related domains (org_profile M4)."""
+
+    tenant_id: str
+    domain: str
+    source_run_id: str = ""
+    promoted_by: str = ""
+    promoted_at: datetime
+
+
 class BreachSummary(BaseModel):
     name: str
     title: str | None = None

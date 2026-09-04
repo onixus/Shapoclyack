@@ -938,6 +938,18 @@ export async function promoteRelatedDomain(runId: string, domain: string) {
   }
 }
 
+/** Withdraw a promotion: the tenant's next scan no longer carries the domain. */
+export async function withdrawRelatedDomain(runId: string, domain: string) {
+  try {
+    const { data } = await api.delete<PromoteDomainResponse>(
+      `/runs/${encodeURIComponent(runId)}/related-domains/${encodeURIComponent(domain)}/promote`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 /** Encode each path segment but keep the "/" separators for the :path route param. */
 function encodeArtifactPath(path: string): string {
   return path

@@ -136,4 +136,32 @@ describe("RelatedDomainsPanel Component", () => {
       expect(promoteSpy).toHaveBeenCalledWith("run-test-org-123", "acme-corp.net");
     });
   });
+
+  it("withdraws a promoted domain and shows the scope refusal on a failed promote", async () => {
+    useAuthStore.setState({
+      user: { username: "operator1", role: "operator", tenants: ["default"], default_tenant: "default", is_platform_admin: false },
+    });
+    vi.spyOn(apiModule, "fetchOrgProfile").mockResolvedValue({
+      ...mockOrgProfile,
+      promoted_domains: ["acme-corp.net"],
+    });
+    const withdrawSpy = vi.spyOn(apiModule, "withdrawRelatedDomain").mockResolvedValue({
+      domain: "acme-corp.net",
+      promoted: false,
+      message: "withdrawn",
+    });
+    vi.spyOn(apiModule, "promoteRelatedDomain").mockRejectedValue(
+      new Error("targets outside the approved scan scope of tenant default: acme-partner.org"),
+    );
+
+    renderWithQuery(<RelatedDomainsPanel runId="run-test-org-123" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Withdraw from Scope/i }));
+    await vi.waitFor(() => {
+      expect(withdrawSpy).toHaveBeenCalledWith("run-test-org-123", "acme-corp.net");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Promote to Scope/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/outside the approved scan scope/);
+  });
 });

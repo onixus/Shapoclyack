@@ -32,6 +32,7 @@ from api.schemas import (
     MembershipInfo,
     OidcLoginResponse,
     Page,
+    PromotedDomainInfo,
     ProvisioningKeyInfo,
     ReplaceScanScopeRequest,
     ScanScopeEntryInfo,
@@ -48,6 +49,7 @@ from api.services import auth as auth_service
 from api.services import auth_audit
 from api.services import memberships as memberships_service
 from api.services import oidc as oidc_service
+from api.services import promoted_domains
 from api.services import quotas
 from api.services import scan_scopes
 from api.services import tenant_posture
@@ -586,6 +588,27 @@ def list_scan_scope(
     return [
         ScanScopeEntryInfo.model_validate(entry)
         for entry in scan_scopes.list_entries(settings, tenant_id)
+    ]
+
+
+@router.get("/tenants/{tenant_id}/promoted-domains", response_model=list[PromotedDomainInfo])
+def list_promoted_domains(
+    tenant_id: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[PromotedDomainInfo]:
+    """Related domains this tenant's operators promoted into scope (org_profile M4).
+
+    The admin's cross-check on the scope above: every scan the tenant starts
+    carries these in addition to its own targets, so the admin approving the
+    scope should be able to see what the operators have added underneath it.
+    Withdrawal is the operator's ``DELETE /runs/{id}/related-domains/{domain}/promote``.
+    """
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    return [
+        PromotedDomainInfo(**item.as_dict())
+        for item in promoted_domains.list_promoted(settings, tenant_id)
     ]
 
 

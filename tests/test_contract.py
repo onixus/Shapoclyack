@@ -35,3 +35,22 @@ def test_validate_inputs_handles_missing_files(tmp_path: Path):
     assert result.valid_ips_or_cidr == []
     assert result.valid_fqdns == []
     assert result.rejected == []
+
+
+def test_read_promoted_domains_validates_and_normalizes(tmp_path: Path):
+    """Promoted related domains (org_profile M4) cross a process boundary and
+    are re-read as untrusted input: one hostname per line, nothing else."""
+    from scanner.pipeline.contract import read_promoted_domains
+
+    path = tmp_path / "promoted_domains.txt"
+    path.write_text(
+        "Acme-Partner.COM.\n\n10.0.0.1\nnot a domain\nshop.example.net\n",
+        encoding="utf-8",
+    )
+
+    valid, rejected = read_promoted_domains(path)
+
+    assert valid == ["acme-partner.com", "shop.example.net"]
+    assert rejected == ["10.0.0.1", "not a domain"]
+    assert read_promoted_domains(None) == ([], [])
+    assert read_promoted_domains(tmp_path / "missing.txt") == ([], [])

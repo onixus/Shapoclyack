@@ -278,6 +278,13 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         scope_path = workdir / "scan_scope.json"
         scope_path.write_text(inputs["scan_scope.json"], encoding="utf-8")
         args.extend(["--scan-scope", str(scope_path)])
+    if "promoted_domains.txt" in inputs:
+        # Related domains the tenant promoted (org_profile M4). Also handed
+        # through unread: the pipeline merges them into its name scope and
+        # holds them to the scope above like every other name.
+        promoted_path = workdir / "promoted_domains.txt"
+        promoted_path.write_text(inputs["promoted_domains.txt"], encoding="utf-8")
+        args.extend(["--promoted-domains", str(promoted_path)])
     return args
 
 
