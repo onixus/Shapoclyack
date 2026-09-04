@@ -8,9 +8,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.settings import Settings
 from api.services import promoted_domains
-from tests.conftest import approve_scan_scope, auth_headers, requires_postgres
+from api.settings import Settings
+from tests.conftest import approve_scan_scope, auth_headers, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -79,6 +79,13 @@ def _setup_test_run(output_dir: Path, run_id: str) -> None:
     )
 
 
+def _settings(tmp_path: Path) -> Settings:
+    """The same control plane the app under test uses — promotion now reads
+    and writes Postgres, so a bare ``Settings()`` with no database URL is not
+    enough for the org-profile routes any more."""
+    return make_settings(tmp_path, output_dir=tmp_path / "output", state_dir=tmp_path / "state")
+
+
 def _client(tmp_path: Path) -> TestClient:
     output = tmp_path / "output"
     state = tmp_path / "state"
@@ -87,7 +94,7 @@ def _client(tmp_path: Path) -> TestClient:
 
     _setup_test_run(output, "run-org-profile")
 
-    settings = Settings(output_dir=output, state_dir=state)
+    settings = _settings(tmp_path)
     # Promotion is held to the approved scope (#226): allow everything except
     # one candidate, so the refusal path has something to refuse.
     approve_scan_scope(
@@ -151,8 +158,7 @@ def test_promote_rejects_a_newline_injected_domain(tmp_path: Path):
     )
     assert response.status_code == 400, response.text
 
-    settings = Settings(output_dir=tmp_path / "output", state_dir=tmp_path / "state")
-    assert promoted_domains.list_promoted(settings, "default") == []
+    assert promoted_domains.list_promoted(_settings(tmp_path), "default") == []
 
 
 def test_promote_rejects_a_domain_this_run_never_discovered(tmp_path: Path):
@@ -209,8 +215,7 @@ def test_promote_outside_the_approved_scope_is_403_and_journalled(tmp_path: Path
     assert response.status_code == 403, response.text
     assert "approved scan scope" in response.json()["detail"]
 
-    settings = Settings(output_dir=tmp_path / "output", state_dir=tmp_path / "state")
-    assert promoted_domains.list_promoted(settings, "default") == []
+    assert promoted_domains.list_promoted(_settings(tmp_path), "default") == []
 
     # The refusal lands in the same journal a refused scan start goes to.
     events = client.get("/api/auth/events", headers=auth_headers(client, "admin")).json()
