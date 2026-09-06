@@ -938,11 +938,15 @@ export async function promoteRelatedDomain(runId: string, domain: string) {
   }
 }
 
-/** Withdraw a promotion: the tenant's next scan no longer carries the domain. */
-export async function withdrawRelatedDomain(runId: string, domain: string) {
+/**
+ * Withdraw a promotion: the tenant's next scan no longer carries the domain.
+ * Keyed on the tenant, not on a run — the run that proposed the domain may be
+ * gone by the time the operator changes their mind.
+ */
+export async function withdrawPromotedDomain(domain: string) {
   try {
     const { data } = await api.delete<PromoteDomainResponse>(
-      `/runs/${encodeURIComponent(runId)}/related-domains/${encodeURIComponent(domain)}/promote`,
+      `/promoted-domains/${encodeURIComponent(domain)}`,
     );
     return data;
   } catch (error) {

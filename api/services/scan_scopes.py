@@ -382,8 +382,9 @@ def _resolve(host: str) -> list[str]:
     return sorted({str(info[4][0]).split("%", 1)[0] for info in infos})
 
 
-def _denied_by_resolution(scope: ScanScope, domains: list[str]) -> list[str]:
-    """Domains whose current addresses land inside a denied range.
+def _denied_by_resolution(scope: ScanScope, domains: list[str]) -> list[tuple[str, str]]:
+    """``(domain, "<domain> -> <address> (<reason>)")`` for every domain whose
+    current addresses land inside a denied range.
 
     Only runs when the scope actually denies ranges — otherwise there is
     nothing a resolved address could be refused against, and a scan start must
@@ -392,7 +393,7 @@ def _denied_by_resolution(scope: ScanScope, domains: list[str]) -> list[str]:
     if not domains or not scope.has_deny_networks:
         return []
 
-    refused: list[str] = []
+    refused: list[tuple[str, str]] = []
     # Not a ``with`` block: its exit joins the worker threads, which would give
     # back exactly the unbounded wait ``_RESOLVE_TIMEOUT_SECONDS`` is here to
     # prevent. A lookup still running is abandoned instead.
@@ -417,10 +418,24 @@ def _denied_by_resolution(scope: ScanScope, domains: list[str]) -> list[str]:
             for address in addresses:
                 reason = scope.rejects_network(address)
                 if reason and reason.startswith("denied by"):
-                    refused.append(f"{name} -> {address} ({reason})")
+                    refused.append((name, f"{name} -> {address} ({reason})"))
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     return refused
+
+
+def resolution_refusals(
+    settings: Settings, scope: ScanScope, domains: list[str]
+) -> list[tuple[str, str]]:
+    """The resolve-time half of the admission check, for callers that hold
+    names the request text does not carry (promoted related domains).
+
+    ``[]`` when ``OCTO_SCAN_SCOPE_RESOLVE_CHECK`` is off; otherwise one
+    ``(domain, detail)`` per domain whose addresses land in a denied range.
+    """
+    if not settings.scan_scope_resolve_check:
+        return []
+    return _denied_by_resolution(scope, [_normalize_domain(name) for name in domains])
 
 
 def assert_scan_allowed(
@@ -429,6 +444,7 @@ def assert_scan_allowed(
     tenant_id: str,
     ranges_text: str | None,
     domains_text: str | None,
+    scope: ScanScope | None = None,
 ) -> None:
     """The second barrier: re-check a scan's targets at the moment it starts.
 
@@ -437,15 +453,20 @@ def assert_scan_allowed(
     from that call's output: this is the barrier for the paths that never ran
     the first one (``schedule_dispatcher`` replaying stored targets) and for
     a scope that was narrowed after the targets were entered.
+
+    ``scope`` lets a caller that already loaded the tenant's scope in the
+    same call frame hand it in instead of paying for the same SELECT again;
+    what is re-derived here is the *target list*, not the scope.
     """
-    scope = load_scope(settings, tenant_id)
+    if scope is None:
+        scope = load_scope(settings, tenant_id)
     ranges = split_target_lines(ranges_text)
     domains = split_target_lines(domains_text)
     scope.check(ranges=ranges, domains=domains)
 
     if not settings.scan_scope_resolve_check:
         return
-    refused = _denied_by_resolution(scope, [_normalize_domain(name) for name in domains])
+    refused = [detail for _, detail in resolution_refusals(settings, scope, domains)]
     if refused:
         raise ScanScopeDenied(
             f"targets resolve into a denied range for tenant {tenant_id}: {_sample(refused)}",

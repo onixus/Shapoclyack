@@ -18,12 +18,19 @@ All notable changes to Shapoclyack are documented in this file.
   than retargeted. Three boundaries: a promotion is checked against the
   approved scan scope (#226) when it is made (403, journalled in
   `auth_events`) and again when a scan starts (a domain the scope no longer
-  covers is dropped and recorded on the job as `promoted_domains_refused`,
-  not a reason to refuse the operator's own targets); a verification re-scan
-  (#183) is never widened; and a promotion can be withdrawn —
-  `DELETE .../promote`, and the Org Profile tab's button flips to *Withdraw
-  from Scope*. Platform admins see what the operators added underneath the
-  scope they approved via `GET /api/tenants/{id}/promoted-domains`.
+  covers, by suffix or by resolved address, is dropped and recorded on the
+  job as `promoted_domains_refused`, not a reason to refuse the operator's
+  own targets); a verification re-scan (#183) is never widened
+  (`start_scan(widen_with_promoted=False)`, a switch of its own rather than
+  the billing exemption); and a promotion can be withdrawn without the run
+  that proposed it — `DELETE /api/promoted-domains/{domain}` (operator), the
+  same undo from the run's Org Profile tab, whose *Promoted Scope* block
+  lists the tenant's whole promoted list because a promoted domain is a seed
+  on the next run and is never proposed again. Both directions are
+  journalled in `auth_events` as `trust_change` with the actor. The tenant
+  reads its own list at `GET /api/promoted-domains`; platform admins see
+  what the operators added underneath the scope they approved via
+  `GET /api/tenants/{id}/promoted-domains`.
   Nothing is grandfathered: the per-run files were never consumed, so there
   is no behaviour to preserve — domains promoted before this change are
   promoted again from the run's Org Profile tab.

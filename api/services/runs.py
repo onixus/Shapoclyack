@@ -753,23 +753,16 @@ def get_org_profile(
     )
     related_data = _load_json(run_dir / "related_domains.json")
     controls_data = _load_json(run_dir / "controls.json")
-    # Which of this run's candidates the tenant has promoted — read from the
-    # tenant's durable list, not from the run: the decision outlives the run.
-    candidate_names: set[str] = set()
-    if isinstance(related_data, dict):
-        for candidate in related_data.get("candidates") or []:
-            if isinstance(candidate, dict) and candidate.get("domain"):
-                candidate_names.add(promoted_service.normalize_domain(str(candidate["domain"])))
-    promoted_lines = [
-        name
-        for name in promoted_service.promoted_names(settings, read_run_tenant(run_dir))
-        if name in candidate_names
-    ]
-
     if not ownership_data and not related_data and not controls_data:
         # A viewer on a run that only produced ownership.json still gets a 404
         # rather than a hint that the restricted artifact exists.
         return None
+
+    # The tenant's whole promoted list, not just this run's candidates: a
+    # promoted domain is a seed on the next run and is never proposed again,
+    # so an intersection would hide every promotion from every later run —
+    # and with it the only place the operator sees what widens their scans.
+    promoted_lines = promoted_service.promoted_names(settings, read_run_tenant(run_dir))
 
     seed_domains: list[str] = []
     if isinstance(related_data, dict):
@@ -805,31 +798,42 @@ class PromoteDomainError(ValueError):
     """Raised when a promote request names something that may not be promoted."""
 
 
+def _clean_domain(domain: str) -> str:
+    name = promoted_service.normalize_domain(domain)
+    if not _DOMAIN_RE.match(name):
+        raise PromoteDomainError(f"'{domain}' is not a valid domain name")
+    return name
+
+
+def _candidate_domains(run_dir: Path) -> set[str]:
+    """The related-domain candidates this run proposed, normalised the way
+    promotions are stored — one parser for the gate and the display."""
+    related_data = _load_json(run_dir / "related_domains.json")
+    names: set[str] = set()
+    if isinstance(related_data, dict):
+        for candidate in related_data.get("candidates") or []:
+            if isinstance(candidate, dict) and candidate.get("domain"):
+                names.add(promoted_service.normalize_domain(str(candidate["domain"])))
+    return names
+
+
 def _promotable_candidate(
     settings: Settings, run_id: str, domain: str, *, tenant_id: str | None
 ) -> tuple[Path, str] | None:
     """``(run_dir, domain)`` when ``domain`` is a candidate this run proposed.
 
     Only a syntactically valid domain that this run actually discovered as a
-    related-domain candidate may be promoted or withdrawn: the list feeds the
-    scope of every later scan, and an operator should not be able to authorize
-    a host the scanner never proposed by typing it into the URL.
+    related-domain candidate may be promoted: the list feeds the scope of
+    every later scan, and an operator should not be able to authorize a host
+    the scanner never proposed by typing it into the URL. Withdrawal is not
+    gated this way — see :func:`withdraw_related_domain`.
     """
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
 
-    domain_clean = domain.strip().lower().rstrip(".")
-    if not _DOMAIN_RE.match(domain_clean):
-        raise PromoteDomainError(f"'{domain}' is not a valid domain name")
-
-    related_data = _load_json(run_dir / "related_domains.json")
-    known: set[str] = set()
-    if isinstance(related_data, dict):
-        for candidate in related_data.get("candidates") or []:
-            if isinstance(candidate, dict) and candidate.get("domain"):
-                known.add(str(candidate["domain"]).strip().lower().rstrip("."))
-    if domain_clean not in known:
+    domain_clean = _clean_domain(domain)
+    if domain_clean not in _candidate_domains(run_dir):
         raise PromoteDomainError(
             f"'{domain_clean}' is not a related-domain candidate discovered by this run"
         )
@@ -871,16 +875,28 @@ def promote_related_domain(
 
 
 def withdraw_related_domain(
-    settings: Settings, run_id: str, domain: str, *, tenant_id: str | None = None
+    settings: Settings,
+    run_id: str,
+    domain: str,
+    *,
+    tenant_id: str | None = None,
+    username: str = "",
 ) -> dict[str, Any] | None:
-    """Withdraw a promotion. The plan's own risk table says an attribution
-    error is a scan of somebody else's infrastructure, so this is the undo."""
-    found = _promotable_candidate(settings, run_id, domain, tenant_id=tenant_id)
-    if found is None:
+    """Withdraw a promotion from the run's Org Profile tab.
+
+    The run only names the tenant; the undo itself is keyed on ``(tenant,
+    domain)`` and deliberately does *not* require the domain to still be a
+    candidate of this run — a promoted domain is a seed on the next run and
+    is never proposed again, and the run that proposed it expires with
+    retention. ``DELETE /api/promoted-domains/{domain}`` is the same undo
+    without a run at all.
+    """
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
         return None
-    run_dir, domain_clean = found
+    domain_clean = _clean_domain(domain)
     removed = promoted_service.withdraw(
-        settings, tenant_id=read_run_tenant(run_dir), domain=domain_clean
+        settings, tenant_id=read_run_tenant(run_dir), domain=domain_clean, withdrawn_by=username
     )
     return {
         "domain": domain_clean,

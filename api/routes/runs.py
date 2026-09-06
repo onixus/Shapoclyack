@@ -310,7 +310,11 @@ def withdraw_related_domain(
     """Withdraw a promotion: the next scan no longer carries the domain."""
     try:
         res = runs_service.withdraw_related_domain(
-            settings, run_id, domain, tenant_id=_run_tenant_filter(principal)
+            settings,
+            run_id,
+            domain,
+            tenant_id=_run_tenant_filter(principal),
+            username=principal.username,
         )
     except runs_service.PromoteDomainError as exc:
         raise HTTPException(

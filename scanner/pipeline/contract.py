@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from .scan_scope import normalize_domain
 from .utils import is_fqdn, is_ip_or_cidr, read_lines, save_json, write_lines
 
 
@@ -73,7 +74,7 @@ def read_promoted_domains(path: Path | None) -> tuple[list[str], list[str]]:
     valid: list[str] = []
     rejected: list[str] = []
     for value in read_lines(path):
-        normalized = value.strip().rstrip(".").lower()
+        normalized = normalize_domain(value)
         if normalized and is_fqdn(normalized):
             valid.append(normalized)
         else:

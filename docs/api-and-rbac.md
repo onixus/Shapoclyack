@@ -534,6 +534,17 @@ PUT /api/tenants/{tenant_id}/scan-scope   {"entries": [{"effect": "allow", "kind
 GET /api/tenants/{tenant_id}/promoted-domains   # related domains the tenant's operators promoted under that scope
 ```
 
+The tenant's own view of the same list is tenant-scoped rather than admin:
+`GET /api/promoted-domains` (viewer) and `DELETE /api/promoted-domains/{domain}`
+(operator, the role that promotes). The undo is keyed on the tenant and needs no
+run — the run that proposed a domain expires with retention, the promotion does
+not. Both directions are journalled as `trust_change` events
+(`promoted_domain_added` / `promoted_domain_withdrawn`) with the actor, like
+the SSH host-key pins.
+
+```http
+```
+
 `PUT` replaces the whole scope in one transaction and stamps the caller as
 `approved_by` on every resulting row; `entries: []` is accepted and means the
 tenant scans nothing. A malformed entry is `422`, an unknown tenant `404`.

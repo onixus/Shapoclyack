@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   fetchOrgProfile,
   promoteRelatedDomain,
-  withdrawRelatedDomain,
+  withdrawPromotedDomain,
   type OrgProfileDetail,
   type RelatedDomainCandidate,
 } from "@/lib/api";
@@ -181,18 +181,21 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
     queryClient.invalidateQueries({ queryKey: ["org-profile", runId] });
     queryClient.invalidateQueries({ queryKey: ["run", runId] });
   };
-  const promoteMutation = useMutation({
-    mutationFn: (domain: string) => promoteRelatedDomain(runId, domain),
-    onSuccess: invalidate,
-  });
-  const withdrawMutation = useMutation({
-    mutationFn: (domain: string) => withdrawRelatedDomain(runId, domain),
+  // One mutation for both directions, so the error state belongs to the
+  // *latest* action: a 403 from promoting one domain must not stay pinned
+  // over a later successful withdraw of another. (Two mutations would each
+  // keep their own error until they themselves ran again.)
+  const scopeMutation = useMutation({
+    mutationFn: ({ action, domain }: { action: "promote" | "withdraw"; domain: string }) =>
+      action === "promote" ? promoteRelatedDomain(runId, domain) : withdrawPromotedDomain(domain),
     onSuccess: invalidate,
   });
   // A 403 here is the approved scan scope refusing the domain — the operator
   // decides attribution, an admin decides authorization — and it must be
   // read, not swallowed into a button that silently did nothing.
-  const actionError = promoteMutation.error?.message || withdrawMutation.error?.message || null;
+  const actionError = scopeMutation.error?.message || null;
+  const promote = (domain: string) => scopeMutation.mutate({ action: "promote", domain });
+  const withdraw = (domain: string) => scopeMutation.mutate({ action: "withdraw", domain });
 
   if (isLoading) {
     return (
@@ -221,7 +224,12 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
 
   const related = data.related_domains;
   const candidates = related?.candidates || [];
-  const promotedSet = new Set(data.promoted_domains || []);
+  // The tenant's whole promoted list — what every scan of this tenant carries —
+  // not just what this run proposed: a promoted domain is a seed on the next
+  // run and is never proposed again, so this is the only place it stays visible
+  // and withdrawable.
+  const promoted = data.promoted_domains || [];
+  const promotedSet = new Set(promoted);
 
   const filteredCandidates = candidates.filter((c) => {
     if (filter === "confirmed") return c.status === "confirmed";
@@ -273,6 +281,46 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
           </div>
         )}
       </div>
+
+      {/* Promoted scope: tenant-wide, survives the run that proposed each domain */}
+      <Card className="border-slate-800/80 bg-slate-900/80 shadow-md">
+        <CardHeader className="py-3.5 px-4 border-b border-slate-800/80">
+          <CardTitle className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+            <PlusCircle className="h-4 w-4 text-purple-400" />
+            Promoted Scope ({promoted.length})
+          </CardTitle>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Every ordinary scan of this tenant carries these domains in addition to its own targets.
+          </p>
+        </CardHeader>
+        <CardContent className="p-0">
+          {promoted.length > 0 ? (
+            <ul className="divide-y divide-slate-800/60" data-testid="promoted-scope">
+              {promoted.map((domain) => (
+                <li key={domain} className="flex items-center justify-between px-4 py-2.5 gap-3">
+                  <span className="font-mono text-sm text-slate-100">{domain}</span>
+                  {canOperate && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={scopeMutation.isPending}
+                      className="h-7 text-xs font-mono gap-1.5 hover:border-rose-500 hover:text-rose-300"
+                      onClick={() => withdraw(domain)}
+                    >
+                      <MinusCircle className="h-3.5 w-3.5 text-rose-400" />
+                      Withdraw from Scope
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="py-5 text-center text-slate-500 text-xs">
+              Nothing promoted yet. Promote a discovered domain below to add it to every later scan.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Related Domains Card */}
       <Card className="border-slate-800/80 bg-slate-900/80 shadow-md">
@@ -338,9 +386,9 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
                   key={cand.domain}
                   candidate={cand}
                   isPromoted={promotedSet.has(cand.domain)}
-                  onPromote={(d) => promoteMutation.mutate(d)}
-                  onWithdraw={(d) => withdrawMutation.mutate(d)}
-                  isPromoting={promoteMutation.isPending || withdrawMutation.isPending}
+                  onPromote={promote}
+                  onWithdraw={withdraw}
+                  isPromoting={scopeMutation.isPending}
                   canOperate={canOperate}
                 />
               ))}

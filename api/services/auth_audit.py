@@ -77,6 +77,11 @@ REASON_DEPLOY_TARGET = "deploy_target_denied"
 # events that distinguishes a planned rebuild from a substitution.
 REASON_HOST_KEY_PINNED = "ssh_host_key_pinned"
 REASON_HOST_KEY_UNPINNED = "ssh_host_key_unpinned"
+#: A related domain promoted into, or withdrawn from, a tenant's scan scope
+#: (org_profile M4). Same outcome as the pins: a deliberate change to what
+#: the platform scans, attributable to the operator who made it.
+REASON_PROMOTED_DOMAIN_ADDED = "promoted_domain_added"
+REASON_PROMOTED_DOMAIN_WITHDRAWN = "promoted_domain_withdrawn"
 # Single sign-on (ROADMAP Track E). A refused callback -- bad state, bad
 # signature, wrong audience, replayed nonce -- and an identity the provider
 # authenticated but this installation has no account for. Two reasons rather

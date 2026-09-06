@@ -602,12 +602,12 @@ def list_promoted_domains(
     The admin's cross-check on the scope above: every scan the tenant starts
     carries these in addition to its own targets, so the admin approving the
     scope should be able to see what the operators have added underneath it.
-    Withdrawal is the operator's ``DELETE /runs/{id}/related-domains/{domain}/promote``.
+    Withdrawal is the operator's ``DELETE /api/promoted-domains/{domain}``.
     """
     if tenants_service.get_tenant(tenant_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
     return [
-        PromotedDomainInfo(**item.as_dict())
+        PromotedDomainInfo.model_validate(item)
         for item in promoted_domains.list_promoted(settings, tenant_id)
     ]
 

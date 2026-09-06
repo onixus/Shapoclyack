@@ -94,9 +94,12 @@ pipeline {
                 // Данные — в tmpfs, не в анонимном томе: withRun снимает
                 // контейнер без -v, и каждый прогон оставлял в Docker-VM том
                 // на ~1.5 ГБ; 33 таких тома и забили диск (DiskFull в
-                // билде feat/org-profile-promoted-scope #1, 2026-09-04).
+                // билде feat/org-profile-promoted-scope #1, 2026-09-04). size=
+                // обязателен: без него tmpfs растёт до половины RAM VM и
+                // разросшаяся база уронит OOM-killer'ом что попало вместо
+                // внятной ошибки записи postgres.
                 docker.image('postgres:16-alpine').withRun(
-                  "--network ${net} --network-alias pg --tmpfs /var/lib/postgresql/data " +
+                  "--network ${net} --network-alias pg --tmpfs /var/lib/postgresql/data:size=2g " +
                   "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
                 ) { pg ->
                   // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та

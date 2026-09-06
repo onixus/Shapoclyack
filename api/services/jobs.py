@@ -420,6 +420,7 @@ def _prepare_target_inputs(
     *,
     tenant_id: str,
     promoted: list[str] | None = None,
+    scope: scan_scopes.ScanScope | None = None,
 ) -> tuple[Path | None, dict[str, int] | None, list[str]]:
     """Write per-job input files, and the scope the run is to be held to.
 
@@ -434,7 +435,8 @@ def _prepare_target_inputs(
     a scope — not whether the files agree with it. The scanner opens them, and
     now has the scope in hand when it does.
     """
-    scope = scan_scopes.load_scope(settings, tenant_id)
+    if scope is None:
+        scope = scan_scopes.load_scope(settings, tenant_id)
     parsed = parse_target_payload(
         scope=scope,
         ranges_text=request.ranges,
@@ -1028,8 +1030,16 @@ def start_scan(
     username: str,
     idempotency_key: str | None = None,
     quota_exempt: bool = False,
+    widen_with_promoted: bool = True,
 ) -> JobInfo:
-    """``quota_exempt`` marks a scan the platform dispatched to close its own
+    """``widen_with_promoted`` is whether this scan carries the related domains
+    the tenant's operators promoted (org_profile M4) on top of its own targets.
+    On by default — that is what promotion means — and off for a dispatch
+    that is aimed at one thing, today the verification re-scan of #183. A
+    separate switch from ``quota_exempt`` on purpose: billing and targeting
+    are different policies that happen to coincide on that one caller.
+
+    ``quota_exempt`` marks a scan the platform dispatched to close its own
     loop — today only the verification re-scan of #183. It is neither refused
     by the tenant's monthly quota nor counted against it, and it is a property
     of *this dispatch*: the requester's name is the analyst's on that path, so
@@ -1058,18 +1068,20 @@ def start_scan(
     if execution == "agent" and not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
+    # Loaded once here and handed to both barriers below: the scope cannot
+    # change inside this call frame, and each load is a round trip.
+    scope = scan_scopes.load_scope(settings, tenant_id)
+
     # Related domains the tenant's operators promoted (org_profile M4) ride
-    # along with every ordinary scan — that is what promotion means. Not with
-    # a verification re-scan: it is aimed at one finding, and widening it is
-    # how "not observed" would stop meaning "fixed". Held to the approved
-    # scope as it stands *now*: a domain promoted under a wider scope is
-    # dropped and recorded, not a reason to refuse the operator's own targets.
+    # along with every ordinary scan — that is what promotion means. Held to
+    # the approved scope as it stands *now*, suffix and resolve-time checks
+    # both: a domain promoted under a wider scope is dropped and recorded,
+    # not a reason to refuse the operator's own targets.
     promoted_admitted: list[str] = []
     promoted_refused: list[str] = []
-    if not quota_exempt:
-        promoted_admitted, promoted_refused = promoted_domains.split_by_scope(
-            scan_scopes.load_scope(settings, tenant_id),
-            promoted_domains.promoted_names(settings, tenant_id),
+    if widen_with_promoted:
+        promoted_admitted, promoted_refused = promoted_domains.split_for_scan(
+            settings, scope, promoted_domains.promoted_names(settings, tenant_id)
         )
         if promoted_refused:
             _log.warning(
@@ -1083,7 +1095,7 @@ def start_scan(
 
     try:
         _, target_counts, target_args = _prepare_target_inputs(
-            settings, job_id, request, tenant_id=tenant_id, promoted=promoted_admitted
+            settings, job_id, request, tenant_id=tenant_id, promoted=promoted_admitted, scope=scope
         )
         # Second barrier, deliberately redundant. start_scan is also reached
         # from schedule_dispatcher, which replays targets stored days ago and
@@ -1095,6 +1107,7 @@ def start_scan(
             tenant_id=tenant_id,
             ranges_text=request.ranges,
             domains_text=request.domains,
+            scope=scope,
         )
     except scan_scopes.ScanScopeDenied as denied:
         scan_scopes.record_denial(username=username, denied=denied)

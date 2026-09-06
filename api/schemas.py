@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 # Single source of truth for the intent vocabulary: the resolver in
 # api.services.scan_intents owns which intents exist and what each one does.
@@ -1505,6 +1505,8 @@ class PromoteDomainResponse(BaseModel):
 
 class PromotedDomainInfo(BaseModel):
     """One row of a tenant's promoted related domains (org_profile M4)."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     tenant_id: str
     domain: str

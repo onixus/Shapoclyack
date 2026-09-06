@@ -10,6 +10,7 @@ when it is made and when it is used.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -141,17 +142,76 @@ def test_promote_refuses_a_domain_the_run_never_proposed(settings):
         runs_service.promote_related_domain(settings, "run-1", "other.example", username="operator")
 
 
-def test_withdraw_removes_the_promotion(settings):
+def test_promote_refuses_a_domain_that_resolves_into_a_denied_range(settings, monkeypatch):
+    """The resolve-time half of the admission check applies to a promotion
+    too — a typed target would be refused here, and so is this."""
+    _scope(settings, ALLOW_PARTNER, {"effect": "deny", "kind": "cidr", "value": "169.254.0.0/16"})
+    _run_with_candidates(settings, "run-1", "acme-partner.com")
+    monkeypatch.setattr(scan_scopes, "_resolve", lambda host: ["169.254.169.254"])
+
+    with pytest.raises(scan_scopes.ScanScopeDenied, match="resolve into a denied range"):
+        runs_service.promote_related_domain(settings, "run-1", "acme-partner.com", username="operator")
+    assert promoted_domains.list_promoted(settings, "default") == []
+
+
+def _journal(outcome: str) -> list[dict]:
+    items, _ = auth_audit.list_events(outcome=outcome, limit=50)
+    return items
+
+
+def test_withdraw_needs_no_run_and_is_journalled_with_the_actor(settings):
+    """The undo is keyed on the tenant: the run that proposed the domain may be
+    gone (retention) or may no longer list it (it is a seed now)."""
     _scope(settings, ALLOW_PARTNER)
     _run_with_candidates(settings, "run-1", "acme-partner.com")
+    runs_service.promote_related_domain(settings, "run-1", "acme-partner.com", username="alice")
+    shutil.rmtree(settings.output_dir / "runs" / "run-1")
+
+    assert promoted_domains.withdraw(
+        settings, tenant_id="default", domain="Acme-Partner.com.", withdrawn_by="bob"
+    )
+    assert promoted_domains.list_promoted(settings, "default") == []
+    assert not promoted_domains.withdraw(
+        settings, tenant_id="default", domain="acme-partner.com", withdrawn_by="bob"
+    )
+
+    trail = _journal(auth_audit.OUTCOME_TRUST_CHANGE)
+    reasons = {(e["username"], e["reason"]) for e in trail}
+    assert ("alice", auth_audit.REASON_PROMOTED_DOMAIN_ADDED) in reasons
+    assert ("bob", auth_audit.REASON_PROMOTED_DOMAIN_WITHDRAWN) in reasons
+    withdrawn = next(e for e in trail if e["reason"] == auth_audit.REASON_PROMOTED_DOMAIN_WITHDRAWN)
+    # What the row knew travels into the journal before the row goes.
+    assert "promoted_by=alice" in withdrawn["detail"]
+    assert "run=run-1" in withdrawn["detail"]
+
+
+def test_withdraw_from_a_run_does_not_require_the_domain_to_be_its_candidate(settings):
+    _scope(settings, ALLOW_PARTNER)
+    _run_with_candidates(settings, "run-1", "acme-partner.com")
+    _run_with_candidates(settings, "run-2", "other.example")
     runs_service.promote_related_domain(settings, "run-1", "acme-partner.com", username="operator")
 
-    res = runs_service.withdraw_related_domain(settings, "run-1", "acme-partner.com")
+    res = runs_service.withdraw_related_domain(
+        settings, "run-2", "acme-partner.com", username="operator"
+    )
     assert res["promoted"] is False
     assert promoted_domains.list_promoted(settings, "default") == []
 
-    again = runs_service.withdraw_related_domain(settings, "run-1", "acme-partner.com")
+    again = runs_service.withdraw_related_domain(settings, "run-2", "acme-partner.com", username="operator")
     assert "was not promoted" in again["message"]
+
+
+def test_org_profile_lists_the_whole_promoted_scope_not_only_this_runs_candidates(settings):
+    """A promoted domain is a seed on the next run and is never proposed again;
+    intersecting with the run's candidates would hide every promotion from
+    every later run."""
+    _scope(settings, ALLOW_PARTNER)
+    _run_with_candidates(settings, "run-1", "acme-partner.com")
+    _run_with_candidates(settings, "run-2", "other.example")
+    runs_service.promote_related_domain(settings, "run-1", "acme-partner.com", username="operator")
+
+    profile = runs_service.get_org_profile(settings, "run-2", allow_restricted=True)
+    assert profile["promoted_domains"] == ["acme-partner.com"]
 
 
 # --- the consumer ------------------------------------------------------------
@@ -219,8 +279,42 @@ def test_a_domain_the_scope_no_longer_covers_is_dropped_and_recorded(agent_setti
     ]
 
 
+def test_a_promoted_domain_resolving_into_a_denied_range_is_dropped_and_recorded(
+    agent_settings, monkeypatch
+):
+    """The resolve-time deny check a typed target gets at admission applies to
+    promoted names too — drop-and-record rather than refuse, like the suffix
+    check above, but never silently admitted."""
+    _scope(agent_settings, ALLOW_EXAMPLE, ALLOW_PARTNER)
+    _run_with_candidates(agent_settings, "run-1", "acme-partner.com")
+    runs_service.promote_related_domain(agent_settings, "run-1", "acme-partner.com", username="operator")
+    _scope(
+        agent_settings,
+        ALLOW_EXAMPLE,
+        ALLOW_PARTNER,
+        {"effect": "deny", "kind": "cidr", "value": "169.254.0.0/16"},
+    )
+    monkeypatch.setattr(
+        scan_scopes,
+        "_resolve",
+        lambda host: ["169.254.169.254"] if host == "acme-partner.com" else ["203.0.113.10"],
+    )
+
+    job = jobs_service.start_scan(
+        agent_settings,
+        StartScanRequest(mode="balanced", domains="www.example.com"),
+        username="operator",
+    )
+
+    assert "--promoted-domains" not in job.command
+    assert job.scan_options["promoted_domains_refused"] == [
+        "acme-partner.com -> 169.254.169.254 (denied by 169.254.0.0/16)"
+    ]
+
+
 def test_a_verification_rescan_is_not_widened(agent_settings):
-    """A re-check aimed at one finding must stay aimed at it (#183)."""
+    """A re-check aimed at one finding must stay aimed at it (#183). The
+    switch is its own, not the billing exemption that happens to ride along."""
     _scope(agent_settings, ALLOW_EXAMPLE, ALLOW_PARTNER)
     _run_with_candidates(agent_settings, "run-1", "acme-partner.com")
     runs_service.promote_related_domain(agent_settings, "run-1", "acme-partner.com", username="operator")
@@ -230,11 +324,29 @@ def test_a_verification_rescan_is_not_widened(agent_settings):
         StartScanRequest(mode="safe", intent="vuln", domains="www.example.com", ports="8443"),
         username="system:verification",
         quota_exempt=True,
+        widen_with_promoted=False,
     )
 
     assert "--promoted-domains" not in job.command
     assert "promoted_domains" not in job.scan_options
     assert not _promoted_file(agent_settings, job).exists()
+
+
+def test_quota_exemption_alone_does_not_narrow_a_scan(agent_settings):
+    """Billing and targeting are separate policies: a scan the platform does
+    not meter still carries the tenant's promoted scope unless told otherwise."""
+    _scope(agent_settings, ALLOW_EXAMPLE, ALLOW_PARTNER)
+    _run_with_candidates(agent_settings, "run-1", "acme-partner.com")
+    runs_service.promote_related_domain(agent_settings, "run-1", "acme-partner.com", username="operator")
+
+    job = jobs_service.start_scan(
+        agent_settings,
+        StartScanRequest(mode="balanced", domains="www.example.com"),
+        username="operator",
+        quota_exempt=True,
+    )
+
+    assert job.scan_options["promoted_domains"] == ["acme-partner.com"]
 
 
 def test_the_claim_hands_the_promoted_domains_to_the_worker(agent_settings, tmp_path):
