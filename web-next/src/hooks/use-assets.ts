@@ -58,12 +58,12 @@ export function useAssetContextEvents(assetId: string | null, tenantId = "defaul
   });
 }
 
-export function useUpdateAsset(assetId: string) {
+export function useUpdateAsset(assetId: string, tenantId = "default") {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: UpdateAssetBody) => updateAsset(assetId, body),
     onSuccess: async (updated) => {
-      queryClient.setQueryData(queryKeys.asset(assetId), updated);
+      queryClient.setQueryData(queryKeys.asset(assetId, tenantId), updated);
       await queryClient.invalidateQueries({ queryKey: ["assets"] });
       await queryClient.invalidateQueries({ queryKey: ["asset", assetId] });
       toast.success("Asset updated");
