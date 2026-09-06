@@ -440,7 +440,7 @@ def build_reports(
         )
 
     if sarif_export:
-        build_sarif_report(output_dir, vulnerabilities, findings)
+        build_sarif_report(output_dir, vulnerabilities)
 
     if csv_export:
         csv_path = output_dir / "findings.csv"

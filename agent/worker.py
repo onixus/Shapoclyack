@@ -468,7 +468,7 @@ def _execute_job(
             client,
             agent_id=agent_id,
             job_id=job["job_id"],
-            run_id=str(job.get("run_id") or ""),
+            run_id=str(job["run_id"]),
             output_dir=output_dir,
             interval=heartbeat_interval,
         ):
@@ -661,37 +661,6 @@ class AgentNatsSession:
             return None
 
 
-async def _nats_pull_and_claim(
-    nats_url: str,
-    client: AgentClient,
-    agent_id: str,
-    *,
-    timeout: float = 5.0,
-) -> dict[str, Any] | None:
-    """One-shot pull (tests / legacy); prefer :class:`AgentNatsSession` in the agent loop."""
-    session = AgentNatsSession(nats_url)
-    try:
-        session.start()
-        return session.pull_and_claim(client, agent_id, timeout=timeout)
-    finally:
-        session.close()
-
-
-def _pull_nats_job(
-    nats_url: str,
-    client: AgentClient,
-    agent_id: str,
-    *,
-    timeout: float = 5.0,
-    session: AgentNatsSession | None = None,
-) -> dict[str, Any] | None:
-    if session is not None:
-        return session.pull_and_claim(client, agent_id, timeout=timeout)
-    return asyncio.run(
-        _nats_pull_and_claim(nats_url, client, agent_id, timeout=timeout)
-    )
-
-
 def run_loop(args: argparse.Namespace) -> int:
     client = AgentClient(args.api_url, args.token or "pending", timeout=args.timeout)
     if args.provisioning_key:
@@ -760,12 +729,8 @@ def run_loop(args: argparse.Namespace) -> int:
                 client.heartbeat(agent_id, status="idle")
                 job: dict[str, Any] | None = None
                 if nats_session is not None:
-                    job = _pull_nats_job(
-                        args.nats_url,
-                        client,
-                        agent_id,
-                        timeout=max(1.0, args.poll_interval),
-                        session=nats_session,
+                    job = nats_session.pull_and_claim(
+                        client, agent_id, timeout=max(1.0, args.poll_interval)
                     )
                 else:
                     job = client.claim(agent_id)

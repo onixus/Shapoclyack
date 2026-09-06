@@ -35,7 +35,7 @@ export function ArtifactsPanel({ runId, artifacts }: { runId: string; artifacts:
 
   const pdfReport = artifacts.find((path) => path === "summary.pdf");
   const sarifReport = artifacts.find((path) => path === "sarif.json");
-  const rest = artifacts.filter((path) => path !== "summary.pdf");
+  const rest = artifacts.filter((path) => path !== "summary.pdf" && path !== "sarif.json");
 
   async function handleDownload(path: string) {
     setBusyPath(path);

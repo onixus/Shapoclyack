@@ -61,12 +61,21 @@ export function AgentDetailsDrawer({
 
   const handleUpgrade = async () => {
     if (!agentId) return;
-    await upgradeMutation.mutateAsync(agentId);
+    try {
+      await upgradeMutation.mutateAsync(agentId);
+    } catch {
+      // Surfaced via the mutation's onError toast; nothing further to do here.
+    }
   };
 
   const handleDelete = async () => {
     if (!agentId) return;
-    await deleteMutation.mutateAsync(agentId);
+    try {
+      await deleteMutation.mutateAsync(agentId);
+    } catch {
+      // Surfaced via the mutation's onError toast; keep the confirm dialog open.
+      return;
+    }
     setConfirmDelete(false);
     onOpenChange(false);
   };

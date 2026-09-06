@@ -5,7 +5,10 @@ Discovers co-owned organizational domains across independent sources:
 2. ``ct_org``: Certificate Transparency search by registrant Organization name (crt.sh).
 3. ``reverse_ns``: Shared authoritative nameservers with strict exclusion of public providers.
 4. ``reverse_mx``: Shared mail exchange servers with strict exclusion of public mail hosts.
-5. ``asn``: Infrastructure correlation against organization-owned autonomous systems.
+
+``asn`` and ``reverse_whois`` carry source weights below for forward
+compatibility but have no extractor yet -- they are not in the default
+``sources`` list and contribute no candidates today.
 
 SAFETY INVARIANTS:
 - Finding-only by default (``merge_into_scope: false``): candidate domains are NEVER actively

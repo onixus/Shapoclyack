@@ -227,7 +227,7 @@ def run_discovery_stage(
         if not refresh_hosts and resume:
             refresh_hosts = read_lines(output_dir / "discover" / "delta.refresh.targets.txt")
         if refresh_hosts:
-            probe_rate = max(500, profile.discover_rate // 4)
+            probe_rate = _wave2_rate(profile, None)
             logging.info(
                 "discovery delta refresh: re-probing %s known host(s) at rate %s",
                 len(refresh_hosts),

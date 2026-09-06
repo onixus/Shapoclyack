@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   createAgentDeploymentKey,
   deleteAgent,
@@ -101,6 +102,9 @@ export function useUpgradeAgent() {
       queryClient.invalidateQueries({ queryKey: queryKeys.agentSummary });
       queryClient.invalidateQueries({ queryKey: queryKeys.agentDetail(agentId) });
     },
+    onError: (err: Error) => {
+      toast.error("Failed to mark agent for upgrade", { description: err.message });
+    },
   });
 }
 
@@ -111,6 +115,9 @@ export function useDeleteAgent() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents });
       queryClient.invalidateQueries({ queryKey: queryKeys.agentSummary });
+    },
+    onError: (err: Error) => {
+      toast.error("Failed to deregister agent", { description: err.message });
     },
   });
 }

@@ -419,7 +419,6 @@ def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> Non
 
 def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
     settings = _require_settings()
-    now = _now()
     with get_session(settings.postgres_url) as session:
         query = select(models.Agent)
         if tenant_id:
@@ -437,8 +436,7 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
     for r in rows:
         t = r.tenant_id or "default"
         by_tenant[t] = by_tenant.get(t, 0) + 1
-        is_on = r.last_seen_at and (now - r.last_seen_at).total_seconds() <= settings.agent_stale_seconds
-        if not is_on:
+        if not _is_online(r.last_seen_at):
             stale += 1
         else:
             online += 1

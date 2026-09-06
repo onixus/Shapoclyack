@@ -22,6 +22,7 @@ from .protocol import (
     ScanProtocol,
     endpoint_checkpoint_key,
     format_endpoint,
+    is_ipv6,
     parse_endpoint,
 )
 from .utils import run_command, write_lines
@@ -33,8 +34,6 @@ def _running_as_root() -> bool:
 
 
 def _format_nmap_host(host: str) -> str:
-    from .protocol import is_ipv6
-
     if is_ipv6(host):
         return f"[{host}]"
     return host

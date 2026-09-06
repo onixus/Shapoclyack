@@ -105,7 +105,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nats_bus.shutdown_bus()
 
 
-
 def create_app() -> FastAPI:
     settings = get_settings()
     tenants_service.load_tenants(settings)

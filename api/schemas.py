@@ -1387,7 +1387,6 @@ class RiskScoreSnapshotInfo(BaseModel):
     source: str = "run"
 
 
-
 class TenantPosture(BaseModel):
     """One customer's risk posture for the MSSP comparison (#139).
 
@@ -1562,9 +1561,6 @@ class LeakIdentifiersResponse(BaseModel):
     withheld_reason: str | None = None
     withheld_identifiers: int = 0
     generated_at: str | None = None
-
-
-
 
 
 # --------------------------------------------------------------- compliance

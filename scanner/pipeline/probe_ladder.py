@@ -190,7 +190,7 @@ def run_probe_ladder(
 
 def merge_discovery_stats(output_dir: Path) -> dict[str, int]:
     """Aggregate per-batch probe stats into ``discovery_stats.json``."""
-    from .utils import load_json, save_json as write_stats
+    from .utils import load_json
 
     discover_dir = output_dir / "discover"
     merged = {method: 0 for method in PROBE_METHODS}
@@ -201,5 +201,5 @@ def merge_discovery_stats(output_dir: Path) -> dict[str, int]:
             merged["batches"] += 1
             for method in PROBE_METHODS:
                 merged[method] += int(data.get(method, 0))
-    write_stats(output_dir / "discovery_stats.json", merged)
+    save_json(output_dir / "discovery_stats.json", merged)
     return merged

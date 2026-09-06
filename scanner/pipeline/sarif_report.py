@@ -61,7 +61,6 @@ def _make_rule_id(item: dict[str, Any]) -> str:
 def build_sarif_report(
     output_dir: Path,
     vulnerabilities: list[dict[str, Any]],
-    findings: list[dict[str, Any]] | None = None,
     *,
     tool_version: str = "0.42.0",
 ) -> dict[str, Any]:
