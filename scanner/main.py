@@ -25,7 +25,7 @@ from scanner.pipeline.config_schema import (
     resolve_service_probe_backend,
 )
 from scanner.pipeline.discovery_profiles import apply_discovery_profile, resolve_discovery_profile_name
-from scanner.pipeline.contract import validate_inputs
+from scanner.pipeline.contract import validate_inputs, read_promoted_domains
 from scanner.pipeline.discovery_runner import run_discovery_stage, verify_alive_without_ports
 from scanner.pipeline.discovery_delta import (
     load_previous_alive,
@@ -86,6 +86,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ranges", default="scanner/inputs/ranges.txt", help="Path to CIDR/IP inputs")
     parser.add_argument("--domains", default="scanner/inputs/domains.txt", help="Path to FQDN inputs")
+    parser.add_argument(
+        "--promoted-domains",
+        help=(
+            "Path to related domains the tenant's operators promoted into scope "
+            "(org_profile M4). Merged into the FQDN scope on top of --domains, so "
+            "the run is widened rather than retargeted; held to --scan-scope like "
+            "every other name. Set by the API; omitted for a standalone run."
+        ),
+    )
     parser.add_argument(
         "--scan-scope",
         help=(
@@ -361,9 +370,21 @@ def _run_pipeline_body(
 
     contract = validate_inputs(Path(args.ranges), Path(args.domains), paths.output_dir)
     checkpoint.mark_done("contract")
+    promoted_fqdns, promoted_rejected = read_promoted_domains(
+        Path(args.promoted_domains) if args.promoted_domains else None
+    )
+    if promoted_rejected:
+        logging.warning(
+            "Ignoring %d malformed promoted domain(s): %s",
+            len(promoted_rejected),
+            ", ".join(promoted_rejected[:8]),
+        )
+    if promoted_fqdns:
+        logging.info("Merging %d promoted related domain(s) into scope", len(promoted_fqdns))
     if (
         not contract.valid_ips_or_cidr
         and not contract.valid_fqdns
+        and not promoted_fqdns
         and not config.discovery.cloudflare.enabled
         and not config.discovery.ct.enabled
         and not config.discovery.asn.enabled
@@ -373,7 +394,10 @@ def _run_pipeline_body(
         return exit_codes.INPUT_ERROR
 
     # Phase 5: expand FQDN/IP scope via Cloudflare zone import + CT subdomains (before resolve).
-    scope_fqdns = list(contract.valid_fqdns)
+    # Promoted related domains (org_profile M4) join the name scope here, before
+    # the scope filter below, so they get exactly the treatment a typed target
+    # gets: a name the tenant is not approved for is dropped, not looked up.
+    scope_fqdns = merge_name_lists(list(contract.valid_fqdns), promoted_fqdns)
     scope_ips = list(contract.valid_ips_or_cidr)
 
     # Filtered before the OSINT stages, not only before the scan: a name the

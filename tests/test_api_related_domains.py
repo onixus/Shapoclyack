@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from api.services import promoted_domains
 from api.settings import Settings
-from tests.conftest import auth_headers, requires_postgres
+from tests.conftest import approve_scan_scope, auth_headers, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -56,6 +58,13 @@ def _setup_test_run(output_dir: Path, run_id: str) -> None:
                     "status": "confirmed",
                     "confidence": 0.85,
                     "sources": ["cert_san", "ct_org"],
+                    "evidence": [],
+                },
+                {
+                    "domain": "denied-partner.com",
+                    "status": "candidate",
+                    "confidence": 0.5,
+                    "sources": ["reverse_ns"],
                     "evidence": [
                         {
                             "source": "cert_san",
@@ -71,6 +80,13 @@ def _setup_test_run(output_dir: Path, run_id: str) -> None:
     )
 
 
+def _settings(tmp_path: Path) -> Settings:
+    """The same control plane the app under test uses — promotion now reads
+    and writes Postgres, so a bare ``Settings()`` with no database URL is not
+    enough for the org-profile routes any more."""
+    return make_settings(tmp_path, output_dir=tmp_path / "output", state_dir=tmp_path / "state")
+
+
 def _client(tmp_path: Path) -> TestClient:
     output = tmp_path / "output"
     state = tmp_path / "state"
@@ -79,7 +95,17 @@ def _client(tmp_path: Path) -> TestClient:
 
     _setup_test_run(output, "run-org-profile")
 
-    settings = Settings(output_dir=output, state_dir=state)
+    settings = _settings(tmp_path)
+    # Promotion is held to the approved scope (#226): allow everything except
+    # one candidate, so the refusal path has something to refuse.
+    approve_scan_scope(
+        settings,
+        entries=[
+            {"effect": "allow", "kind": "domain", "value": "*"},
+            {"effect": "deny", "kind": "domain", "value": "denied-partner.com"},
+        ],
+    )
+    promoted_domains.reset_for_tests(settings)
     app = create_app()
     from api.auth import get_settings
 
@@ -121,8 +147,8 @@ def test_org_profile_withholds_ownership_from_a_viewer(tmp_path: Path):
 
 
 def test_promote_rejects_a_newline_injected_domain(tmp_path: Path):
-    """promoted_domains.txt is line-oriented scope for a later run, so an
-    embedded newline must not smuggle a second entry into it."""
+    """A promoted name is scope for every later scan, so an embedded newline
+    must not smuggle a second entry into it."""
     client = _client(tmp_path)
     headers = auth_headers(client, "operator")
 
@@ -133,8 +159,7 @@ def test_promote_rejects_a_newline_injected_domain(tmp_path: Path):
     )
     assert response.status_code == 400, response.text
 
-    promoted = (tmp_path / "runs" / "run-org-profile" / "promoted_domains.txt")
-    assert not promoted.exists() or "evil.example.net" not in promoted.read_text()
+    assert promoted_domains.list_promoted(_settings(tmp_path), "default") == []
 
 
 def test_promote_rejects_a_domain_this_run_never_discovered(tmp_path: Path):
@@ -167,6 +192,72 @@ def test_promote_related_domain_operator(tmp_path: Path):
     # Verify promoted domain shows up in subsequent org-profile call
     get_res = client.get("/api/runs/run-org-profile/org-profile", headers=headers)
     assert "acme-partner.com" in get_res.json()["promoted_domains"]
+
+    # ...and is withdrawn by the same operator through the DELETE counterpart.
+    withdrawn = client.delete(
+        "/api/runs/run-org-profile/related-domains/acme-partner.com/promote",
+        headers=headers,
+    )
+    assert withdrawn.status_code == 200, withdrawn.text
+    assert withdrawn.json()["promoted"] is False
+    get_res = client.get("/api/runs/run-org-profile/org-profile", headers=headers)
+    assert get_res.json()["promoted_domains"] == []
+
+
+def test_the_tenant_level_list_and_withdraw_need_no_run(tmp_path: Path):
+    """The run that proposed a domain expires with retention; the promotion
+    does not, so neither may the operator's view of it or their undo."""
+    client = _client(tmp_path)
+    operator = auth_headers(client, "operator")
+    viewer = auth_headers(client, "viewer")
+
+    assert client.post(
+        "/api/runs/run-org-profile/related-domains/acme-partner.com/promote", headers=operator
+    ).status_code == 200
+    shutil.rmtree(tmp_path / "output" / "runs" / "run-org-profile")
+
+    listed = client.get("/api/promoted-domains", headers=viewer)
+    assert listed.status_code == 200, listed.text
+    assert [(row["domain"], row["promoted_by"], row["source_run_id"]) for row in listed.json()] == [
+        ("acme-partner.com", "operator", "run-org-profile")
+    ]
+
+    # Viewer reads, operator withdraws — the role that promotes.
+    assert client.delete("/api/promoted-domains/acme-partner.com", headers=viewer).status_code == 403
+    gone = client.delete("/api/promoted-domains/Acme-Partner.com.", headers=operator)
+    assert gone.status_code == 200, gone.text
+    assert gone.json()["promoted"] is False
+    assert client.get("/api/promoted-domains", headers=viewer).json() == []
+    assert client.delete("/api/promoted-domains/acme-partner.com", headers=operator).status_code == 404
+
+    # Both directions in the access-decision journal, with the actor.
+    events = client.get(
+        "/api/auth/events", headers=auth_headers(client, "admin"), params={"outcome": "trust_change"}
+    ).json()
+    items = events["items"] if isinstance(events, dict) else events
+    reasons = {(item["username"], item["reason"]) for item in items}
+    assert ("operator", "promoted_domain_added") in reasons
+    assert ("operator", "promoted_domain_withdrawn") in reasons
+
+
+def test_promote_outside_the_approved_scope_is_403_and_journalled(tmp_path: Path):
+    """The operator decides attribution; the admin decides authorization."""
+    client = _client(tmp_path)
+    headers = auth_headers(client, "operator")
+
+    response = client.post(
+        "/api/runs/run-org-profile/related-domains/denied-partner.com/promote",
+        headers=headers,
+    )
+    assert response.status_code == 403, response.text
+    assert "approved scan scope" in response.json()["detail"]
+
+    assert promoted_domains.list_promoted(_settings(tmp_path), "default") == []
+
+    # The refusal lands in the same journal a refused scan start goes to.
+    events = client.get("/api/auth/events", headers=auth_headers(client, "admin")).json()
+    items = events["items"] if isinstance(events, dict) else events
+    assert any("denied-partner.com" in json.dumps(item) for item in items)
 
 
 def test_promote_related_domain_forbidden_for_viewer(tmp_path: Path):

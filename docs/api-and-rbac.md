@@ -523,7 +523,7 @@ install with neither an account nor that variable refuses to start. See
 ## Approved scanning scope
 
 What a tenant may point the platform at is a stored, approved list rather than
-a syntax check (#226). Both endpoints are platform admin, for the same reason
+a syntax check (#226). All three endpoints are platform admin, for the same reason
 provisioning-key creation is (#231): deciding that a tenant may scan a network
 is an administrative act, and an operator who could widen their own scope
 would be the control removing itself.
@@ -531,6 +531,18 @@ would be the control removing itself.
 ```http
 GET /api/tenants/{tenant_id}/scan-scope
 PUT /api/tenants/{tenant_id}/scan-scope   {"entries": [{"effect": "allow", "kind": "cidr", "value": "203.0.113.0/24"}]}
+GET /api/tenants/{tenant_id}/promoted-domains   # related domains the tenant's operators promoted under that scope
+```
+
+The tenant's own view of the same list is tenant-scoped rather than admin:
+`GET /api/promoted-domains` (viewer) and `DELETE /api/promoted-domains/{domain}`
+(operator, the role that promotes). The undo is keyed on the tenant and needs no
+run — the run that proposed a domain expires with retention, the promotion does
+not. Both directions are journalled as `trust_change` events
+(`promoted_domain_added` / `promoted_domain_withdrawn`) with the actor, like
+the SSH host-key pins.
+
+```http
 ```
 
 `PUT` replaces the whole scope in one transaction and stamps the caller as

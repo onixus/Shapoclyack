@@ -136,4 +136,60 @@ describe("RelatedDomainsPanel Component", () => {
       expect(promoteSpy).toHaveBeenCalledWith("run-test-org-123", "acme-corp.net");
     });
   });
+
+  it("lists the tenant's promoted scope with a withdraw action, even for a domain this run never proposed", async () => {
+    useAuthStore.setState({
+      user: { username: "operator1", role: "operator", tenants: ["default"], default_tenant: "default", is_platform_admin: false },
+    });
+    vi.spyOn(apiModule, "fetchOrgProfile").mockResolvedValue({
+      ...mockOrgProfile,
+      promoted_domains: ["acme-corp.net", "legacy-from-old-run.example"],
+    });
+    const withdrawSpy = vi.spyOn(apiModule, "withdrawPromotedDomain").mockResolvedValue({
+      domain: "legacy-from-old-run.example",
+      promoted: false,
+      message: "withdrawn",
+    });
+
+    renderWithQuery(<RelatedDomainsPanel runId="run-test-org-123" />);
+
+    const scope = await screen.findByTestId("promoted-scope");
+    expect(scope).toHaveTextContent("legacy-from-old-run.example");
+    const buttons = screen.getAllByRole("button", { name: /Withdraw from Scope/i });
+    // Two in the promoted-scope list plus one on the promoted candidate row.
+    expect(buttons.length).toBe(3);
+
+    fireEvent.click(buttons[1]);
+    await vi.waitFor(() => {
+      expect(withdrawSpy).toHaveBeenCalledWith("legacy-from-old-run.example");
+    });
+  });
+
+  it("shows the scope refusal on a failed promote and clears it after the next successful action", async () => {
+    useAuthStore.setState({
+      user: { username: "operator1", role: "operator", tenants: ["default"], default_tenant: "default", is_platform_admin: false },
+    });
+    vi.spyOn(apiModule, "fetchOrgProfile").mockResolvedValue({
+      ...mockOrgProfile,
+      promoted_domains: ["acme-corp.net"],
+    });
+    vi.spyOn(apiModule, "promoteRelatedDomain").mockRejectedValue(
+      new Error("targets outside the approved scan scope of tenant default: acme-partner.org"),
+    );
+    vi.spyOn(apiModule, "withdrawPromotedDomain").mockResolvedValue({
+      domain: "acme-corp.net",
+      promoted: false,
+      message: "withdrawn",
+    });
+
+    renderWithQuery(<RelatedDomainsPanel runId="run-test-org-123" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Promote to Scope/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/outside the approved scan scope/);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Withdraw from Scope/i })[0]);
+    await vi.waitFor(() => {
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+  });
 });

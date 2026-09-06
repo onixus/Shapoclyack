@@ -18,6 +18,7 @@ from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
+from api.routes import promoted_domains as promoted_domains_routes
 from api.routes import adoption as adoption_routes
 from api.routes import usage as usage_routes
 from api.routes import compliance as compliance_routes
@@ -213,6 +214,7 @@ def create_app() -> FastAPI:
     app.include_router(compliance_routes.router, prefix="/api")
     app.include_router(adoption_routes.router, prefix="/api")
     app.include_router(usage_routes.router, prefix="/api")
+    app.include_router(promoted_domains_routes.router, prefix="/api")
     if settings.reports_enabled:
         app.include_router(reports_routes.router, prefix="/api")
     if settings.webhooks_enabled:

@@ -1078,6 +1078,9 @@ def trigger_verification(
             # finding in VERIFYING with nothing looking at it, which is the
             # exact state this function exists to never create.
             quota_exempt=True,
+            # Aimed at one finding: widening it with the tenant's promoted
+            # related domains is how "not observed" would stop meaning "fixed".
+            widen_with_promoted=False,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 409
         LOG.warning("Verification dispatch failed for %s: %s", vuln_id, exc, exc_info=True)

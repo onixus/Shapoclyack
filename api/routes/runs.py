@@ -20,6 +20,7 @@ from api.schemas import (
     VulnerabilityItem,
 )
 from api.services import runs as runs_service
+from api.services import scan_scopes
 from api.settings import Settings
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -273,10 +274,47 @@ def promote_related_domain(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> PromoteDomainResponse:
-    """Promote a discovered related domain into future scope (operator-only action, org_profile M4)."""
+    """Promote a discovered related domain into the tenant's scope (operator-only, org_profile M4).
+
+    Every scan the tenant starts afterwards carries the domain; this call
+    starts none. 403 when the approved scan scope (#226) does not cover it —
+    the operator decides attribution, an admin decides authorization.
+    """
     try:
         res = runs_service.promote_related_domain(
-            settings, run_id, domain, tenant_id=_run_tenant_filter(principal)
+            settings,
+            run_id,
+            domain,
+            tenant_id=_run_tenant_filter(principal),
+            username=principal.username,
+        )
+    except runs_service.PromoteDomainError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except scan_scopes.ScanScopeDenied as exc:
+        scan_scopes.record_denial(username=principal.username, denied=exc)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    if res is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return PromoteDomainResponse(**res)
+
+
+@router.delete("/{run_id}/related-domains/{domain}/promote", response_model=PromoteDomainResponse)
+def withdraw_related_domain(
+    run_id: str,
+    domain: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PromoteDomainResponse:
+    """Withdraw a promotion: the next scan no longer carries the domain."""
+    try:
+        res = runs_service.withdraw_related_domain(
+            settings,
+            run_id,
+            domain,
+            tenant_id=_run_tenant_filter(principal),
+            username=principal.username,
         )
     except runs_service.PromoteDomainError as exc:
         raise HTTPException(

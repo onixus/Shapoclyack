@@ -1335,6 +1335,37 @@ class GeneratedReport(Base):
     )
 
 
+class TenantPromotedDomain(Base):
+    """A related domain an operator promoted into the tenant's scan scope
+    (org_profile M4, EPIC #182).
+
+    The org-profile stage proposes domains that *probably* belong to the
+    organisation (shared certificates, CT organisation matches, same NS/MX),
+    and never scans them on its own: attribution is probabilistic and a wrong
+    guess is a scan of somebody else's infrastructure. Promotion is the
+    operator saying "yes, ours" — and that decision belongs to the tenant, not
+    to the run that happened to make the proposal, which is why it is a row
+    here rather than a file in the run directory that retention deletes.
+
+    Every scan the tenant starts afterwards (``jobs.start_scan``) carries these
+    domains in addition to its own targets, after the approved scan scope
+    (#226) has been applied to them; a verification re-scan (#183) does not,
+    because widening a targeted re-check is how "not observed" stops meaning
+    "fixed". Deleting the row withdraws the promotion.
+    """
+
+    __tablename__ = "tenant_promoted_domains"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    domain: Mapped[str] = mapped_column(primary_key=True)
+    # The run whose related_domains.json proposed it — the evidence trail.
+    source_run_id: Mapped[str] = mapped_column(default="", server_default="")
+    promoted_by: Mapped[str] = mapped_column(default="", server_default="")
+    promoted_at: Mapped[datetime]
+
+
 class TenantQuota(Base):
     """What one tenant is allowed to consume (ROADMAP Track E, MSSP operations).
 

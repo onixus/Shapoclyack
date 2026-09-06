@@ -8,6 +8,7 @@ from typing import Any
 
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
 from api.services import pagination
+from api.services import promoted_domains as promoted_service
 from api.services import tenants as tenants_service
 from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
 from scanner.pipeline.asset_identity import registrable_domain
@@ -752,12 +753,16 @@ def get_org_profile(
     )
     related_data = _load_json(run_dir / "related_domains.json")
     controls_data = _load_json(run_dir / "controls.json")
-    promoted_lines = _read_lines(run_dir / "promoted_domains.txt")
-
     if not ownership_data and not related_data and not controls_data:
         # A viewer on a run that only produced ownership.json still gets a 404
         # rather than a hint that the restricted artifact exists.
         return None
+
+    # The tenant's whole promoted list, not just this run's candidates: a
+    # promoted domain is a seed on the next run and is never proposed again,
+    # so an intersection would hide every promotion from every later run —
+    # and with it the only place the operator sees what widens their scans.
+    promoted_lines = promoted_service.promoted_names(settings, read_run_tenant(run_dir))
 
     seed_domains: list[str] = []
     if isinstance(related_data, dict):
@@ -780,10 +785,10 @@ def get_org_profile(
     }
 
 
-#: A promoted entry becomes scope for a later run, so the value that lands in
-#: ``promoted_domains.txt`` has to be a single hostname and nothing else. The
-#: path parameter arrives URL-decoded, so ``%0A`` would otherwise write a second
-#: line into the scope file.
+#: A promoted entry becomes scope for every later scan of the tenant, so the
+#: value that is stored has to be a single hostname and nothing else. The path
+#: parameter arrives URL-decoded, so ``%0A`` would otherwise smuggle a second
+#: name into the target list the scanner is handed.
 _DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"
 )
@@ -793,48 +798,115 @@ class PromoteDomainError(ValueError):
     """Raised when a promote request names something that may not be promoted."""
 
 
-def promote_related_domain(
-    settings: Settings, run_id: str, domain: str, *, tenant_id: str | None = None
-) -> dict[str, Any] | None:
-    """Record operator decision to promote a discovered related domain into future scope.
+def _clean_domain(domain: str) -> str:
+    name = promoted_service.normalize_domain(domain)
+    if not _DOMAIN_RE.match(name):
+        raise PromoteDomainError(f"'{domain}' is not a valid domain name")
+    return name
+
+
+def _candidate_domains(run_dir: Path) -> set[str]:
+    """The related-domain candidates this run proposed, normalised the way
+    promotions are stored — one parser for the gate and the display."""
+    related_data = _load_json(run_dir / "related_domains.json")
+    names: set[str] = set()
+    if isinstance(related_data, dict):
+        for candidate in related_data.get("candidates") or []:
+            if isinstance(candidate, dict) and candidate.get("domain"):
+                names.add(promoted_service.normalize_domain(str(candidate["domain"])))
+    return names
+
+
+def _promotable_candidate(
+    settings: Settings, run_id: str, domain: str, *, tenant_id: str | None
+) -> tuple[Path, str] | None:
+    """``(run_dir, domain)`` when ``domain`` is a candidate this run proposed.
 
     Only a syntactically valid domain that this run actually discovered as a
-    related-domain candidate may be promoted: the file feeds the scope of a
-    later scan, and an operator should not be able to authorize a host the
-    scanner never proposed by typing it into the URL.
+    related-domain candidate may be promoted: the list feeds the scope of
+    every later scan, and an operator should not be able to authorize a host
+    the scanner never proposed by typing it into the URL. Withdrawal is not
+    gated this way — see :func:`withdraw_related_domain`.
     """
-    from datetime import datetime, timezone
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
 
-    domain_clean = domain.strip().lower().rstrip(".")
-    if not _DOMAIN_RE.match(domain_clean):
-        raise PromoteDomainError(f"'{domain}' is not a valid domain name")
-
-    related_data = _load_json(run_dir / "related_domains.json")
-    known: set[str] = set()
-    if isinstance(related_data, dict):
-        for candidate in related_data.get("candidates") or []:
-            if isinstance(candidate, dict) and candidate.get("domain"):
-                known.add(str(candidate["domain"]).strip().lower().rstrip("."))
-    if domain_clean not in known:
+    domain_clean = _clean_domain(domain)
+    if domain_clean not in _candidate_domains(run_dir):
         raise PromoteDomainError(
             f"'{domain_clean}' is not a related-domain candidate discovered by this run"
         )
+    return run_dir, domain_clean
 
-    promoted_file = run_dir / "promoted_domains.txt"
-    current = set(_read_lines(promoted_file))
-    current.add(domain_clean)
 
-    sorted_list = sorted(current)
-    promoted_file.write_text("\n".join(sorted_list) + "\n", encoding="utf-8")
+def promote_related_domain(
+    settings: Settings,
+    run_id: str,
+    domain: str,
+    *,
+    tenant_id: str | None = None,
+    username: str = "",
+) -> dict[str, Any] | None:
+    """Record the operator's decision that a discovered domain is the tenant's.
 
+    Stored on the tenant (``tenant_promoted_domains``), not in the run: every
+    scan the tenant starts afterwards carries it. Raises
+    ``scan_scopes.ScanScopeDenied`` when the approved scope does not cover the
+    domain — attribution is the operator's call, authorization is the admin's.
+    """
+    found = _promotable_candidate(settings, run_id, domain, tenant_id=tenant_id)
+    if found is None:
+        return None
+    run_dir, domain_clean = found
+    record = promoted_service.promote(
+        settings,
+        tenant_id=read_run_tenant(run_dir),
+        domain=domain_clean,
+        source_run_id=run_id,
+        promoted_by=username,
+    )
     return {
         "domain": domain_clean,
         "promoted": True,
-        "message": f"Domain '{domain_clean}' promoted to scope for run {run_id}",
-        "promoted_at": datetime.now(timezone.utc).isoformat(),
+        "message": f"Domain '{domain_clean}' promoted to scope of tenant {record.tenant_id}",
+        "promoted_at": record.promoted_at.isoformat(),
+    }
+
+
+def withdraw_related_domain(
+    settings: Settings,
+    run_id: str,
+    domain: str,
+    *,
+    tenant_id: str | None = None,
+    username: str = "",
+) -> dict[str, Any] | None:
+    """Withdraw a promotion from the run's Org Profile tab.
+
+    The run only names the tenant; the undo itself is keyed on ``(tenant,
+    domain)`` and deliberately does *not* require the domain to still be a
+    candidate of this run — a promoted domain is a seed on the next run and
+    is never proposed again, and the run that proposed it expires with
+    retention. ``DELETE /api/promoted-domains/{domain}`` is the same undo
+    without a run at all.
+    """
+    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
+    if run_dir is None:
+        return None
+    domain_clean = _clean_domain(domain)
+    removed = promoted_service.withdraw(
+        settings, tenant_id=read_run_tenant(run_dir), domain=domain_clean, withdrawn_by=username
+    )
+    return {
+        "domain": domain_clean,
+        "promoted": False,
+        "message": (
+            f"Domain '{domain_clean}' withdrawn from scope"
+            if removed
+            else f"Domain '{domain_clean}' was not promoted"
+        ),
+        "promoted_at": None,
     }
 
 
