@@ -1077,7 +1077,6 @@ class RiskScoreSnapshot(Base):
     )
 
 
-
 class TenantScanScope(Base):
     """One allow or deny entry in a tenant's approved scanning scope (#226).
 
