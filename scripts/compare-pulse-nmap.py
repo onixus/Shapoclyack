@@ -258,7 +258,7 @@ def main() -> int:
     os_detect = args.os or is_root
 
     # Prefer local GenDec build if present
-    default_pulse = ROOT.parent / "GenA" / "pulse" / "target" / "release" / "pulse"
+    default_pulse = ROOT.parent / "GenDec" / "pulse" / "target" / "release" / "pulse"
     if "PULSE_BIN" not in os.environ and default_pulse.is_file():
         os.environ["PULSE_BIN"] = str(default_pulse)
 
