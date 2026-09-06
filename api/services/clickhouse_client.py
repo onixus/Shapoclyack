@@ -9,6 +9,7 @@ LOG = logging.getLogger("shapoclyack.clickhouse")
 
 VULN_TABLE = "shapoclyack.shapoclyack_vulnerabilities"
 PORTS_TABLE = "shapoclyack.shapoclyack_open_ports"
+CONTROLS_TABLE = "shapoclyack.shapoclyack_controls"
 
 VULN_COLUMNS = [
     "tenant_id",
@@ -30,6 +31,28 @@ PORT_COLUMNS = [
     "port",
     "protocol",
     "run_id",
+    "timestamp",
+]
+
+# One row per control per run (EPIC #182): the artifact holds the snapshot, these
+# rows hold the trend. overall_verdict/overall_risk are denormalised onto every
+# row so the run-level posture can be read without a second query.
+CONTROL_COLUMNS = [
+    "tenant_id",
+    "run_id",
+    "control",
+    "title",
+    "status",
+    "impact",
+    "risk_level",
+    "coverage_checked",
+    "coverage_total",
+    "findings_critical",
+    "findings_high",
+    "findings_medium",
+    "findings_low",
+    "overall_verdict",
+    "overall_risk",
     "timestamp",
 ]
 
@@ -108,6 +131,54 @@ def ping(url: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         LOG.debug("ClickHouse ping failed", exc_info=True)
+        return False
+
+
+# Mirrors the CREATE TABLE in k8s/shapoclyack/base/clickhouse/init-local.sql and
+# the ConfigMap next to it. That DDL only runs on ClickHouse's first boot, so an
+# installation upgraded into EPIC #182 would otherwise have no controls table and
+# every ingest message would fail on the insert. The worker runs this once at
+# connect instead; it is a no-op where the init script already created the table.
+CONTROLS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_controls (
+    tenant_id UUID,
+    run_id String,
+    control LowCardinality(String),
+    title String,
+    status LowCardinality(String),
+    impact LowCardinality(String),
+    risk_level LowCardinality(String),
+    coverage_checked UInt32,
+    coverage_total UInt32,
+    findings_critical UInt32,
+    findings_high UInt32,
+    findings_medium UInt32,
+    findings_low UInt32,
+    overall_verdict LowCardinality(String),
+    overall_risk LowCardinality(String),
+    timestamp DateTime
+) ENGINE = ReplacingMergeTree()
+ORDER BY (tenant_id, control, timestamp, run_id)
+TTL timestamp + INTERVAL 365 DAY
+"""
+
+
+def ensure_controls_table(client: Any) -> bool:
+    """Create the controls table if missing. False when the DDL was refused.
+
+    A read-only ClickHouse user is a legitimate deployment: the caller then skips
+    control rows rather than failing the whole ingest, so vulnerability and port
+    ingest keeps working on an installation that cannot run DDL.
+    """
+    try:
+        client.command(CONTROLS_TABLE_DDL)
+        return True
+    except Exception:  # noqa: BLE001
+        LOG.warning(
+            "Could not ensure %s; control-matrix rows will be skipped",
+            CONTROLS_TABLE,
+            exc_info=True,
+        )
         return False
 
 

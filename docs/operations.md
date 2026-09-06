@@ -256,12 +256,16 @@ define a table-level TTL policy:
 ```sql
 TTL timestamp + INTERVAL 90 DAY
 ```
+`shapoclyack.shapoclyack_controls` (the org_profile control matrix, one row per
+control per run) keeps 365 days instead: a control trend is only useful across
+release cycles, and the rows are a few hundred bytes each.
 Expired partitions and rows are merged and deleted automatically in the background
 by ClickHouse without requiring external cron scripts. To modify the retention window,
 run:
 ```sql
 ALTER TABLE shapoclyack.shapoclyack_vulnerabilities MODIFY TTL timestamp + INTERVAL 180 DAY;
 ALTER TABLE shapoclyack.shapoclyack_open_ports MODIFY TTL timestamp + INTERVAL 180 DAY;
+ALTER TABLE shapoclyack.shapoclyack_controls MODIFY TTL timestamp + INTERVAL 180 DAY;
 ```
 
 ### Scan run artifact retention (ROADMAP #187)

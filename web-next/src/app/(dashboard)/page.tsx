@@ -7,6 +7,7 @@ import { ArrowUpRight, Camera, Play, RefreshCw, ShieldAlert, TrendingUp } from "
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { KpiCard } from "@/components/kpi-card";
+import { OrgPostureTile } from "@/components/org-profile/posture-tile";
 import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { useAssetSummary } from "@/hooks/use-assets";
@@ -183,7 +184,7 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard
           label={t("page.risk.kpiEstate")}
           value={estateLabel}
@@ -226,6 +227,7 @@ export default function DashboardPage() {
           href="/assets?unowned=1"
           decorationColor="amber"
         />
+        <OrgPostureTile runId={latest?.run_id ?? ""} />
       </div>
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">

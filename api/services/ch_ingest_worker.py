@@ -60,7 +60,15 @@ class ClickHouseIngestWorker:
         self._settings = settings
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._stats = {"messages": 0, "vuln_rows": 0, "port_rows": 0, "errors": 0}
+        # Flipped off when the controls table is missing and cannot be created.
+        self._controls_enabled = True
+        self._stats = {
+            "messages": 0,
+            "vuln_rows": 0,
+            "port_rows": 0,
+            "control_rows": 0,
+            "errors": 0,
+        }
 
     @property
     def stats(self) -> dict[str, int]:
@@ -126,6 +134,7 @@ class ClickHouseIngestWorker:
                 )
 
             client = ch.get_client(self._clickhouse_url)
+            self._controls_enabled = await asyncio.to_thread(ch.ensure_controls_table, client)
             LOG.info("CH ingest subscribed stream=%s consumer=%s", STREAM_INGEST, CONSUMER_CH_INGEST)
 
             while not self._stop.is_set():
@@ -181,7 +190,7 @@ class ClickHouseIngestWorker:
             if not isinstance(payload, dict):
                 await msg.term()
                 return
-            vuln_rows, port_rows = await asyncio.to_thread(
+            vuln_rows, port_rows, control_rows = await asyncio.to_thread(
                 ch_transform.transform_ingest_payload,
                 payload,
                 settings=self._settings,
@@ -200,17 +209,30 @@ class ClickHouseIngestWorker:
                 ch.PORT_COLUMNS,
                 port_rows,
             )
+            inserted_c = (
+                await asyncio.to_thread(
+                    ch.insert_rows,
+                    client,
+                    ch.CONTROLS_TABLE,
+                    ch.CONTROL_COLUMNS,
+                    control_rows,
+                )
+                if self._controls_enabled
+                else 0
+            )
             self._stats["messages"] += 1
             self._stats["vuln_rows"] += inserted_v
             self._stats["port_rows"] += inserted_p
+            self._stats["control_rows"] += inserted_c
             metrics_service.CH_INGEST_MESSAGES_TOTAL.labels(result="ok").inc()
             await msg.ack()
             LOG.info(
-                "Ingested job=%s run=%s vulns=%s ports=%s",
+                "Ingested job=%s run=%s vulns=%s ports=%s controls=%s",
                 payload.get("job_id"),
                 payload.get("run_id"),
                 inserted_v,
                 inserted_p,
+                inserted_c,
             )
         except Exception:  # noqa: BLE001
             self._stats["errors"] += 1
