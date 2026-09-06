@@ -399,7 +399,3 @@ def monitor_domains(
         dangling_count,
     )
     return result
-
-
-# Naming symmetry with other stage entry-point imports in main.py.
-monitor_domains_sync = monitor_domains

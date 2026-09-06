@@ -99,8 +99,9 @@ class HIBPLeakProvider:
         if not self.api_key:
             return LeakReport(domain=domain, status="not_checked", reason="no_api_key")
 
-        import urllib.request
         import urllib.error
+        import urllib.parse
+        import urllib.request
 
         url = f"{HIBP_API_BASE}/breacheddomain/{urllib.parse.quote(domain)}"
         req = urllib.request.Request(
@@ -178,6 +179,7 @@ class HIBPLeakProvider:
         )
 
     def _fetch_breach_meta(self, breach_name: str) -> dict[str, Any]:
+        import urllib.parse
         import urllib.request
         url = f"{HIBP_API_BASE}/breach/{urllib.parse.quote(breach_name)}"
         req = urllib.request.Request(url, headers={"user-agent": USER_AGENT, "Accept": "application/json"})

@@ -49,7 +49,7 @@ from typing import Any
 import httpx
 
 from .config_schema import FingerprintConfig
-from .protocol import parse_endpoint
+from .protocol import is_ipv6, parse_endpoint
 from .utils import save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.fingerprint")
@@ -149,8 +149,6 @@ def _candidate_endpoints(
 
 
 def _build_url(host: str, port: int, scheme: str) -> str:
-    from .protocol import is_ipv6
-
     hostpart = f"[{host}]" if is_ipv6(host) else host
     return f"{scheme}://{hostpart}:{port}/"
 

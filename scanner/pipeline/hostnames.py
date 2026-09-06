@@ -362,6 +362,7 @@ async def discover_ct_subdomains(
         "domains": [],
         "subdomains": [],
         "by_provider": {},
+        "truncated": False,
         "skipped_reason": None,
     }
     if not config.enabled:
