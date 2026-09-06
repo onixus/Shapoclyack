@@ -81,7 +81,6 @@ import {
   vulnListHref,
 } from "@/lib/vuln-lifecycle";
 
-
 const CRIT_UNSET = "unset";
 const CONTEXT_UNSET = "unset";
 

@@ -1836,8 +1836,6 @@ export async function clearVulnerabilityTicket(vulnId: string) {
   }
 }
 
-
-
 export type RiskScoreSnapshot = {
   snapshot_id: string;
   tenant_id: string;
@@ -1886,7 +1884,6 @@ export async function triggerRiskSnapshot() {
     throw new Error(apiErrorMessage(error));
   }
 }
-
 
 /** Whether this installation offers single sign-on (ROADMAP Track E).
  * Deliberately unauthenticated and deliberately not the issuer: the login form
