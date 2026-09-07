@@ -33,7 +33,7 @@ pipeline {
     string(
       name: 'TAG',
       defaultValue: '',
-      description: 'Тег релиза целиком, как он есть в git: shapoclyack-0.41-0817. Собирается именно он, не HEAD ветки. Тег и есть тег образа — манифесты k8s ссылаются на ghcr.io/onixus/shapoclyack-aio:<TAG>, так что сокращённое "0.41" или "v0.41" даст образ, которого никто не ищет. Вписывать только значение — без префикса "TAG=".'
+      description: 'Тег релиза целиком, как он есть в git: shapoclyack-0.41-0817. Собирается именно он, не HEAD ветки. Тег и есть тег образа — манифесты k8s ссылаются на ghcr.io/onixus/shapoclyack-aio:<TAG>, так что сокращённое "0.41" или "v0.41" даст образ, которого никто не ищет. Вписывать только значение — без префикса "TAG=". Пререлиз — тот же тег с суффиксом -alpha<N>, -beta<N> или -rc<N> (shapoclyack-0.44-0907-beta1): такой прогон НЕ трогает :latest.'
     )
     booleanParam(
       name: 'DRY_RUN',
@@ -83,8 +83,17 @@ pipeline {
           if (tag != tag.trim()) {
             error("TAG='${tag}' содержит пробелы по краям. Тег идёт в имя образа как есть, так что пробел даст ghcr-тег, которого никто не ищет.")
           }
-          if (!(tag ==~ /^shapoclyack-\d+\.\d+-\d{4}$/)) {
-            error("TAG='${tag}' не похож на тег релиза. Ожидается shapoclyack-<MAJOR>.<MINOR>-<MMDD>, например shapoclyack-0.41-0817 — целиком, потому что тег и есть тег образа: на ghcr.io/onixus/shapoclyack-aio:<TAG> ссылаются манифесты k8s. Если когда-нибудь понадобится тег другой формы, править регулярку здесь.")
+          if (!(tag ==~ /^shapoclyack-\d+\.\d+-\d{4}(-(?:alpha|beta|rc)\d+)?$/)) {
+            error("TAG='${tag}' не похож на тег релиза. Ожидается shapoclyack-<MAJOR>.<MINOR>-<MMDD> с необязательным суффиксом пререлиза -alpha<N>/-beta<N>/-rc<N>, например shapoclyack-0.41-0817 или shapoclyack-0.44-0907-beta1 — целиком, потому что тег и есть тег образа: на ghcr.io/onixus/shapoclyack-aio:<TAG> ссылаются манифесты k8s. Если когда-нибудь понадобится тег другой формы, править регулярку здесь.")
+          }
+          // Пререлиз не двигает :latest. Тег релиза — это ссылка на образ, а
+          // :latest — обещание «то, что можно брать»; бета, перезаписавшая его,
+          // раздаёт непроверенный образ всем, кто не пинит версию. Манифесты k8s
+          // пинят tag@sha256 и не пострадали бы, но они здесь не единственный
+          // потребитель.
+          env.IS_PRERELEASE = (tag ==~ /^shapoclyack-\d+\.\d+-\d{4}-(?:alpha|beta|rc)\d+$/) ? 'true' : 'false'
+          if (env.IS_PRERELEASE == 'true') {
+            echo "TAG='${tag}' — пререлиз: образы получат только тег ${tag}, :latest останется на прежнем релизе."
           }
         }
         // Собираем строго содержимое тега. refspec с тегами обязателен:
@@ -144,7 +153,11 @@ pipeline {
           // Тот же credential, что использует основной пайплайн.
           withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
             for (m in selected) {
-              echo "=== ${m.name}: ${m.image}:${version}${m.suffix}"
+              def tagArgs = "-t ${m.image}:${version}${m.suffix}"
+              if (env.IS_PRERELEASE != 'true') {
+                tagArgs += " -t ${m.image}:latest${m.suffix}"
+              }
+              echo "=== ${m.name}: ${tagArgs}"
               sh """
                 set -eu
                 docker buildx build --builder shapo-publisher \
@@ -155,8 +168,7 @@ pipeline {
                   --build-arg ENRICHMENT_STRICT=1 \
                   --secret id=github_token,env=GH_TOKEN \
                   --provenance mode=max --sbom true \
-                  -t ${m.image}:${version}${m.suffix} \
-                  -t ${m.image}:latest${m.suffix} \
+                  ${tagArgs} \
                   ${output} .
               """
             }
@@ -165,7 +177,11 @@ pipeline {
           if (params.DRY_RUN) {
             echo "DRY_RUN: собрано ${selected.size()} образ(ов), публикации не было."
           } else {
-            echo "Опубликовано ${selected.size()} образ(ов) с тегами ${version} и latest."
+            if (env.IS_PRERELEASE == 'true') {
+              echo "Опубликовано ${selected.size()} образ(ов) с тегом ${version}. :latest не тронут — это пререлиз."
+            } else {
+              echo "Опубликовано ${selected.size()} образ(ов) с тегами ${version} и latest."
+            }
           }
         }
       }

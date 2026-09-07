@@ -4,6 +4,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **`shapoclyack-publish` accepts prerelease tags, and they do not move
+  `:latest`** — the job's `TAG` regex allowed only
+  `shapoclyack-<MAJOR>.<MINOR>-<MMDD>`, so there was no way to publish a beta
+  at all, and every run tagged `:latest` alongside the version. Those two facts
+  together meant the only way to ship something for testing was to ship it as
+  the release everyone tracking `:latest` picks up. The regex now also accepts
+  an `-alpha<N>`, `-beta<N>` or `-rc<N>` suffix, and a tag carrying one is
+  published under that tag only. The k8s manifests pin `tag@sha256` and were
+  never exposed to this, but they are not the only consumer. Nothing changes
+  for a normal release tag: it still gets both its version and `:latest`.
+
 ### Fixed
 
 - **Pulse integration polish** — defects in the Shapoclyack ↔ Pulse seam,
