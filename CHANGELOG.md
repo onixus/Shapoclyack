@@ -543,13 +543,23 @@ All notable changes to Shapoclyack are documented in this file.
   x/crypto 0.52.0, naabu 2.6.1 on 0.46.0, nuclei v3.11.1 on 0.53.0 — so
   waiting was the only thing the exceptions were doing.
   `Dockerfile` and `Dockerfile.allinone` now build all three from source in one
-  `go-tools` stage on `golang:1.26`, with `XCRYPTO_VERSION` (v0.56.0) forced
-  over each tool's own `go.mod`. The pinned tool versions are unchanged
-  (dnsx 1.2.3, naabu 2.6.1, nuclei v3.11.1); each gets its own throwaway module
-  so a shared dependency graph cannot silently upgrade one tool to another's
-  requirements, and the stage asserts the bump landed in every binary
-  (`go version -m | grep`) — the same build metadata Trivy reads, so a silent
-  regression fails the image build rather than the gate. Upstream builds all
+  `go-tools` stage on `golang:1.26`, with `GO_SECURITY_PINS` forcing fixed
+  dependency versions over each tool's own `go.mod`. The pinned tool versions
+  are unchanged (dnsx 1.2.3, naabu 2.6.1, nuclei v3.11.1); each gets its own
+  throwaway module so a shared dependency graph cannot silently upgrade one
+  tool to another's requirements, and the stage asserts every pin that is
+  linked into a binary is at the pinned version (`go version -m`) — the same
+  build metadata Trivy reads, so a silent regression fails the image build
+  rather than the gate. The tool and its pins go into a single `go get`:
+  fetching them one at a time re-resolves the graph per call and leaves go.sum
+  without the entries an earlier step had settled (x/exp, via goflags), which
+  the build then fails on.
+  Beyond x/crypto v0.56.0, the list carries the three fixes nuclei had not
+  picked up either — go-git v5.19.2 (CVE-2026-71556), x/mod v0.40.0
+  (CVE-2026-56864, CVE-2026-56865) and grpc v1.83.1 (CVE-2026-84304). These are
+  HIGH, below the CRITICAL gate, and were found by scanning the built image
+  rather than by CI. Scanned after the change, nuclei and naabu report no
+  vulnerabilities at any severity and dnsx reports one LOW. Upstream builds all
   three with `CGO_ENABLED=0 -s -w` (their `.goreleaser.yml` and `Makefile`),
   which is what the stage does, so the binaries differ from the released ones
   only in the toolchain and the x/crypto bump; naabu's SYN path is unaffected

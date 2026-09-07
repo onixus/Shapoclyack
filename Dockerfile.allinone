@@ -8,8 +8,9 @@
 # CVE-2026-56854 is golang.org/x/crypto below 0.55.0, an indirect dependency
 # none of the three has bumped yet (dnsx 1.2.3 asks for 0.45.0, naabu 2.6.1 for
 # 0.46.0, nuclei v3.11.1 for 0.53.0). Once we compile, both are ours to fix:
-# the golang image supplies the toolchain and XCRYPTO_VERSION overrides every
-# tool's own go.mod.
+# the golang image supplies the toolchain and GO_SECURITY_PINS overrides every
+# tool's own go.mod — that list also carries the go-git, x/mod and grpc fixes
+# nuclei had not picked up.
 #
 # The sha256 pins on the release zips went with the downloads. Module downloads
 # are verified against Go's checksum database (GOSUMDB, on by default) instead —
@@ -27,25 +28,52 @@ FROM golang:1.26-bookworm AS go-tools
 ARG NUCLEI_VERSION=v3.11.1
 ARG DNSX_VERSION=v1.2.3
 ARG NAABU_VERSION=v2.6.1
-# Forced over each tool's own, lower requirement — this is the CVE-2026-56854
-# fix, and the build below fails if it does not land in the binary. Raise it,
-# never lower it; drop the override only once every pinned tool asks for
-# >= v0.55.0 by itself.
-ARG XCRYPTO_VERSION=v0.56.0
+
+# Dependency versions forced over whatever the pinned tools ask for, because
+# each closes a vulnerability none of them has picked up yet. Only ever raise
+# these, and drop one only once every tool requires that version by itself:
+#
+#   x/crypto v0.56.0   CVE-2026-56854 (ssh source-address not enforced,
+#                      CRITICAL) plus the 0.46-0.52 batch; all three tools
+#   go-git   v5.19.2   CVE-2026-71556 (arbitrary file read/write via symlink
+#                      resolution); nuclei
+#   x/mod    v0.40.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
+#                      verification bypass); nuclei
+#   grpc     v1.83.1   CVE-2026-84304; nuclei
+#
+# The list is applied to every tool, not only the one that reported the
+# finding: a pin the binary does not link in costs nothing, and a tool that
+# grows the dependency later inherits the fixed version rather than a fresh
+# advisory.
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.1"
 
 # One throwaway module per tool, not one shared module: a shared module would
 # resolve a single dependency graph across all three and silently upgrade one
 # tool's dependencies to another's.
+#
+# The tool and every pin go into a SINGLE `go get`. Getting them one at a time
+# resolves the graph once per call and leaves go.sum missing entries for
+# modules an earlier step had already settled (x/exp, via goflags), which the
+# build then fails on.
+#
+# Each binary is then checked against the pin list: a pinned module that is
+# linked in must be at the pinned version. "Not linked in at all" passes — a
+# module absent from the binary carries no vulnerability into the image.
 RUN set -eux; \
     build_tool() { \
       mkdir -p "/build/$1"; \
       cd "/build/$1"; \
       go mod init "shapoclyack.local/toolbuild/$1"; \
-      go get "$2@$3"; \
-      go get "golang.org/x/crypto@${XCRYPTO_VERSION}"; \
+      go get "$2@$3" ${GO_SECURITY_PINS}; \
       CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "/out/$1" "$2"; \
-      go version -m "/out/$1" \
-        | grep -qE "golang.org/x/crypto[[:space:]]+${XCRYPTO_VERSION}([[:space:]]|$)"; \
+      for pin in ${GO_SECURITY_PINS}; do \
+        mod="${pin%@*}"; want="${pin#*@}"; \
+        got="$(go version -m "/out/$1" | awk -v m="$mod" '$1=="dep" && $2==m {print $3}')"; \
+        if [ -n "$got" ] && [ "$got" != "$want" ]; then \
+          echo "$1: $mod resolved to $got, expected $want" >&2; \
+          exit 1; \
+        fi; \
+      done; \
     }; \
     build_tool dnsx github.com/projectdiscovery/dnsx/cmd/dnsx "${DNSX_VERSION}"; \
     build_tool naabu github.com/projectdiscovery/naabu/v2/cmd/naabu "${NAABU_VERSION}"; \
