@@ -189,12 +189,19 @@ jobs:
           exit-code: "0"
       - name: Trivy gate (fail on fixable CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
+        # Путь к ignore-файлу передаём через TRIVY_IGNOREFILE, а не через вход
+        # `trivyignores:`: тот копирует перечисленные файлы в один временный
+        # без расширения, а Trivy выбирает YAML-парсер по расширению имени.
+        # Разобрав .trivyignore.yaml как текст, он не упал бы — просто счёл бы
+        # каждую строку идентификатором, исключения молча перестали бы
+        # действовать, и гейт покраснел бы на уже принятых CVE.
+        env:
+          TRIVY_IGNOREFILE: .trivyignore.yaml
         with:
           image-ref: network-scan-cli:ci
           format: table
           severity: CRITICAL
           ignore-unfixed: true
-          trivyignores: .trivyignore.yaml
           exit-code: "1"
       - name: Generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@v0.24.0

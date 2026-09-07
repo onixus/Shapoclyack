@@ -542,10 +542,15 @@ All notable changes to Shapoclyack are documented in this file.
   server-side `x/crypto/ssh` in the bundled dnsx/naabu/nuclei binaries) keep
   their existing justification verbatim and are dated 2026-12-07; when a date
   passes Trivy stops honouring the entry and the gate goes red until the pin
-  is bumped or the exception is re-justified. The GitHub Actions gate
-  (`trivyignores:`), the Jenkins `--ignorefile` mount and `SECURITY.md` point
-  at the new file; the non-blocking report step still ignores it, so the CVEs
-  stay visible in CI logs either way.
+  is bumped or the exception is re-justified. The Jenkins `--ignorefile` mount
+  and `SECURITY.md` point at the new file; the non-blocking report step still
+  ignores it, so the CVEs stay visible in CI logs either way. The (currently
+  dispatch-only) GitHub Actions gate names it through `TRIVY_IGNOREFILE`
+  rather than the action's `trivyignores:` input, which copies the listed
+  files into one temporary file with no extension — and Trivy picks its YAML
+  parser by extension, so the file would have been read as plain text, every
+  line taken for an ID, and the exceptions would have stopped applying
+  without an error.
 
 - **An SSH destination can no longer be read as an `ssh` option** —
   `_execute_openssh_command` built its destination as `f"{username}@{host}"`
