@@ -9,10 +9,12 @@ already have open ports from naabu, writes canonical artifacts:
   output_dir/os.json              — octo.os.v1 list
   output_dir/pulse_cves.json      — optional CVE findings from pulse
 
-Hosts are probed in chunks; each chunk gets its own pulse ``--checkpoint``
-named after the chunk's content (see ``chunk_key``), so a ``--resume`` that
-re-cuts the pending hosts can never hand pulse a checkpoint from a different
-host set.
+Hosts are probed in chunks of ``chunk_hosts``. Pulse's own ``--checkpoint`` is
+deliberately not used: Shapoclyack already tracks per-host progress in its
+CheckpointStore, a chunk is cheap to rescan, and a pulse checkpoint that
+outlives one invocation is a liability -- pulse trusts the file over
+``--targets-file`` and *replays* a finished (or all-hosts-completed) one
+without OS detection, CVE correlation or the TLS probe. See ``chunk_key``.
 
 ``--os`` needs raw sockets. When pulse refuses for that reason the stage does
 not fail: it drops ``--os`` for the rest of the run and keeps services,
@@ -84,18 +86,21 @@ def _pulse_available(bin_path: str) -> bool:
     return shutil.which(bin_path) is not None
 
 
-def chunk_key(hosts: Iterable[str], ports: Iterable[int]) -> str:
-    """Stable id of one (hosts, ports) chunk; names its hosts file and checkpoint.
+def chunk_key(hosts: Iterable[str], ports: Iterable[int], mode: str = "connect") -> str:
+    """Stable id of one (hosts, ports, scan mode) chunk; names its hosts file.
 
-    Pulse keys resume on the checkpoint *file*: when the ``--checkpoint`` path
-    already exists it is loaded and its stored host list wins over
-    ``--targets-file`` -- a finished one is replayed without touching the
-    network, an unfinished one continues the stored hosts, and a different port
-    list aborts the run. Chunks are re-cut from the pending hosts on
-    ``--resume``, so an index-based name (``chunk_0000``) would hand a new host
-    set an old checkpoint: pulse would answer for the hosts of the previous run
-    and the new ones would be marked done without ever being scanned. Naming
-    the file after its content means a chunk can only resume itself.
+    Chunks are re-cut from the pending hosts on ``--resume``, so a position
+    (``chunk_0000``) means a different host set every time; a content key keeps
+    each chunk's ``hosts.txt`` and its ``chunks[]`` record in ``pulse/raw.json``
+    attributable across runs. ``mode`` (``connect``/``syn``) is part of the
+    identity for the same reason pulse puts it in its own job fingerprint.
+
+    History: this key once also named a per-chunk pulse ``--checkpoint``. It
+    does not any more -- pulse trusts an existing checkpoint file over
+    ``--targets-file`` and replays a finished one without OS/CVE/TLS, and both
+    ``run_command``'s timeout retry and the settle retry re-run the same
+    command, so no naming scheme could make a surviving checkpoint safe. A
+    chunk that dies is simply rescanned.
     """
     digest = hashlib.sha256()
     for host in sorted(set(hosts)):
@@ -103,45 +108,20 @@ def chunk_key(hosts: Iterable[str], ports: Iterable[int]) -> str:
         digest.update(b"\n")
     digest.update(b"|")
     digest.update(",".join(str(p) for p in sorted(set(ports))).encode("ascii"))
+    digest.update(b"|")
+    digest.update(mode.encode("ascii"))
     return digest.hexdigest()[:16]
 
 
-def _drop_replayable_checkpoint(ckpt: Path) -> bool:
-    """Delete ``ckpt`` when pulse would replay it instead of scanning; True if dropped.
+#: Consecutive chunks that may end in a pulse exit without JSON before the
+#: stage gives up. A crash that repeats across chunks is a broken binary or a
+#: bad flag, not weather; sleeping and re-spawning it once per chunk for the
+#: rest of a large run only delays the same empty result by hours.
+MAX_CONSECUTIVE_CRASHED_CHUNKS = 3
 
-    Pulse does not resume a checkpoint that has no hosts left, it *replays*
-    it: the stored open ports are printed and the process exits 0 without
-    running OS detection, CVE correlation or the TLS probe (GenDec
-    ``src/main.rs``: the ``CheckpointStatus::Done`` branch, and the
-    ``remaining.is_empty()`` branch right after it). Two on-disk states reach
-    that code: ``status: done``, and ``status: in_progress`` with every host in
-    ``completed_hosts`` -- pulse marks ``done`` only after enrichment, and each
-    host batch resets the status to in-progress, so a kill during OS/CVE/TLS
-    (timeout, OOM, pod eviction, an NVD round-trip) leaves the second shape
-    behind. Either way a replay would hand the report services without their
-    findings and the hosts would be marked done for good; a rescan costs one
-    chunk. A checkpoint with hosts still pending is a real resume and is kept.
-    """
-    try:
-        data = json.loads(ckpt.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(data, dict):
-        return False
-    if str(data.get("status") or "").lower() == "done":
-        ckpt.unlink(missing_ok=True)
-        return True
-    all_hosts = data.get("all_hosts")
-    completed = data.get("completed_hosts")
-    if (
-        isinstance(all_hosts, list)
-        and all_hosts
-        and isinstance(completed, list)
-        and set(map(str, all_hosts)) <= set(map(str, completed))
-    ):
-        ckpt.unlink(missing_ok=True)
-        return True
-    return False
+
+class PulseCrashLoopError(RuntimeError):
+    """pulse exited without JSON for MAX_CONSECUTIVE_CRASHED_CHUNKS chunks in a row."""
 
 
 def _is_os_raw_socket_failure(stderr: str) -> bool:
@@ -635,6 +615,8 @@ def run_pulse_probe(
     Raises ``FileNotFoundError`` when there is work to do and no pulse binary:
     Pulse is the default backend and the only source of services on that path,
     so a missing binary is a deployment error to surface, not a stage to skip.
+    Raises ``PulseCrashLoopError`` after ``MAX_CONSECUTIVE_CRASHED_CHUNKS``
+    chunks in a row end in a pulse exit without JSON.
     """
     pulse_bin = resolve_pulse_bin(bin_path)
     grouped = _group_tcp_ports(open_ports)
@@ -674,6 +656,8 @@ def run_pulse_probe(
     # of raw sockets; every later chunk then skips the doomed attempt.
     os_detect_effective = os_detect
     os_detect_degraded: str | None = None
+    consecutive_crashes = 0
+    scan_mode = "syn" if syn else "connect"
 
     # Global port union keeps one pulse invocation simpler; overscans closed
     # ports on hosts that don't share the full set — acceptable for MVP.
@@ -689,17 +673,9 @@ def run_pulse_probe(
         if not ports_list:
             continue
 
-        key = chunk_key(host_chunk, ports_list)
+        key = chunk_key(host_chunk, ports_list, scan_mode)
         hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
         write_lines(hosts_file, host_chunk)
-        ckpt = pulse_dir / f"chunk_{key}.ckpt"
-        if ckpt.is_file() and _drop_replayable_checkpoint(ckpt):
-            logging.info(
-                "pulse_probe chunk %s (%s): previous run scanned every host of this chunk "
-                "but did not finish it; rescanning instead of replaying the checkpoint",
-                idx,
-                key,
-            )
 
         def _command(*, with_os: bool) -> list[str]:
             return build_pulse_command(
@@ -717,7 +693,7 @@ def run_pulse_probe(
                 cve=cve,
                 cve_online=cve_online,
                 syn=syn,
-                checkpoint=ckpt,
+                checkpoint=None,
                 max_hosts=max(max_hosts, len(host_chunk) + 1),
             )
 
@@ -739,10 +715,7 @@ def run_pulse_probe(
         # --os cannot open raw sockets (unprivileged host install, a pod
         # without NET_RAW). Losing services, banners and CVEs over a missing
         # OS guess is the wrong trade, and nse.py already makes the same call
-        # for nmap -O. Drop --os for the rest of the run and ask again now:
-        # no settle pause, and no checkpoint cleanup -- the capability check
-        # runs before pulse even opens the checkpoint path, so whatever is on
-        # disk is an earlier run's progress and must survive.
+        # for nmap -O. Drop --os for the rest of the run and ask again now.
         if (
             returncode != 0
             and not payload
@@ -767,45 +740,58 @@ def run_pulse_probe(
                 cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
             )
 
-        # Every host here reached this stage because naabu proved a port open on
-        # it moments ago, so an all-closed chunk is a contradiction rather than a
-        # finding: the ports burst saturates the path and the probe lands before
-        # it recovers. Pause and ask once more. The checkpoint has to go first --
-        # pulse honours its own "status: done" and would replay the same zero
-        # without touching the network. A crashed pulse (non-zero exit, no JSON)
-        # takes the same second chance but is named for what it is.
-        if not (payload.get("open") if payload else None) and retry_settle_seconds:
-            if returncode != 0 and not payload:
-                logging.warning(
-                    "pulse_probe chunk %s: pulse exited %s without JSON (%s); "
-                    "re-probing in %ss",
-                    idx,
-                    returncode,
-                    stderr[:300] or "no stderr",
-                    retry_settle_seconds,
-                )
-            else:
-                logging.warning(
-                    "pulse_probe chunk %s: 0 services across %s host(s) with known-open "
-                    "ports; re-probing in %ss",
-                    idx,
-                    len(host_chunk),
-                    retry_settle_seconds,
-                )
-            ckpt.unlink(missing_ok=True)
+        crashed = returncode != 0 and not payload
+        if crashed:
+            # A crash is not weather: re-run at once, no settle pause. The
+            # pause below exists for a saturated network path, which has
+            # nothing to do with exit 2 or a panic.
+            logging.warning(
+                "pulse_probe chunk %s: pulse exited %s without JSON (%s); re-probing now",
+                idx,
+                returncode,
+                stderr[:300] or "no stderr",
+            )
+            payload, returncode, stderr = _probe_chunk(
+                cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
+            )
+            crashed = returncode != 0 and not payload
+        elif not payload.get("open") and retry_settle_seconds:
+            # Every host here reached this stage because naabu proved a port
+            # open on it moments ago, so an all-closed chunk is a contradiction
+            # rather than a finding: the ports burst saturates the path and the
+            # probe lands before it recovers. Pause and ask once more.
+            logging.warning(
+                "pulse_probe chunk %s: 0 services across %s host(s) with known-open "
+                "ports; re-probing in %ss",
+                idx,
+                len(host_chunk),
+                retry_settle_seconds,
+            )
             time.sleep(retry_settle_seconds)
             payload, returncode, stderr = _probe_chunk(
                 cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
             )
 
+        if crashed:
+            consecutive_crashes += 1
+            if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
+                raise PulseCrashLoopError(
+                    f"pulse exited {returncode} without JSON for "
+                    f"{consecutive_crashes} chunks in a row; last stderr: "
+                    f"{stderr[:500] or 'empty'}. Fix the binary/flags "
+                    f"({pulse_bin}) and re-run with --resume."
+                )
+        else:
+            consecutive_crashes = 0
+
+
         resolved = bool(payload.get("open") if payload else None)
         if not resolved:
-            # Leave nothing behind that records this chunk as finished-and-closed.
-            # Dropping pulse's own checkpoint is not enough on its own: the hosts
-            # would still be marked done below and the caller would still mark the
-            # whole stage done, so --resume would skip the stage outright and keep
-            # the false-empty result the retry above exists to recover from.
-            ckpt.unlink(missing_ok=True)
+            # Leave nothing behind that records this chunk as finished-and-closed:
+            # the hosts must not be marked done below, and the caller must not
+            # mark the whole stage done, or --resume would skip the stage
+            # outright and keep the false-empty result the retry exists to
+            # recover from.
             if on_unresolved:
                 on_unresolved(list(host_chunk))
 

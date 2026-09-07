@@ -78,7 +78,7 @@ service_probe:
   backend: pulse   # nmap | hybrid
   shadow: false    # or OCTO_PULSE_SHADOW=1
   pulse:
-    bin: ""                  # empty → OCTO_PULSE_BIN, then PATH
+    bin: ""                  # OCTO_PULSE_BIN overrides this; else this path; else PATH
     concurrency: 500
     rate: 2000
     adaptive: true
@@ -144,6 +144,7 @@ COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
+| `PULSE_SKIP_CHECKSUM` | `0` | `1` installs the tarball without checking it against `checksums.txt` (warns) |
 
 The pin is the **engine** (banner / OS / `--cve` / TLS JSON). Shapoclyack does
 not invoke `pulse monitor`, `pulse --server`, `--alert-*`, `--scripts`, or
@@ -155,9 +156,9 @@ tls` still flows into extra vulnerabilities — `tls_posture` is opt-in and
 writes a separate artifact, so dropping those rows would hide cert expiry on
 the default path.
 
-Both the image stage and the host installer download `checksums.txt` from
-the same release and refuse to unpack a tarball whose SHA-256 does not match
-it. This is an **integrity** check, not provenance: the checksum file travels
+The image stage runs `scripts/install-pulse.sh`, so images and host installs
+share one implementation. It downloads `checksums.txt` first and refuses to
+unpack a tarball whose SHA-256 does not match it. This is an **integrity** check, not provenance: the checksum file travels
 over the same connection from the same release, so it catches a truncated,
 corrupted or swapped download, not a compromised release. Provenance for a
 binary that receives `cap_net_raw`/`cap_net_admin` would need a signature
@@ -165,7 +166,10 @@ over `checksums.txt` (cosign/minisign in GenDec's release job) or an expected
 digest pinned in this repository next to `PULSE_VERSION`; neither exists yet.
 `PULSE_SKIP_CHECKSUM=1` (script) / `--build-arg PULSE_SKIP_CHECKSUM=1`
 (images) opt out with a warning for a release that ships no `checksums.txt`,
-which GenDec's release job treats as an optional asset.
+which GenDec's release job treats as an optional asset. A download that
+fails for any other reason (5xx, timeout) is reported as such and does not
+suggest the override. Neither the script nor the image stage uses `set -x`:
+the token would land in the build log.
 
 Local image build (GenDec is private, so pass a token with `contents:read`):
 
@@ -195,29 +199,22 @@ Connect-mode Pulse works without root; SYN/OS still need caps/root like nmap.
 
 ## Checkpoint
 
-Hosts are probed in chunks of `chunk_hosts`; each chunk is one pulse
-invocation with its own `--checkpoint` under the run's `pulse/`. Files are
-named after the chunk's *content* — `chunk_<sha256(hosts, ports)[:16]>.ckpt`
-plus the matching `.hosts.txt` — not after its position. Pulse trusts an
-existing checkpoint file over `--targets-file` (a finished one is replayed
-without touching the network; an unfinished one continues its stored host
-list; a different port list aborts the run), and a `--resume` re-cuts the
-chunks from the hosts still pending, so a position-based name would hand a
-new host set the previous run's checkpoint and let those hosts be marked done
-unscanned. With content-keyed names a chunk can only ever resume itself.
-A checkpoint pulse would *replay* is deleted before pulse runs: one marked
-`done`, or one still `in_progress` whose `completed_hosts` already covers
-every host (pulse marks done only after OS/CVE/TLS enrichment, so a kill
-during that phase leaves this shape). Pulse answers both from the file
-without re-running OS detection, CVE correlation or the TLS probe, and a
-rescan of one chunk is cheaper than a report whose services lost their
-findings. A checkpoint with hosts still pending is resumed as-is, including
-when the run has just dropped `--os`: that refusal happens before pulse opens
-the checkpoint, so the file is an earlier run's progress.
+Shapoclyack's own stage checkpoint (`CheckpointStore`) marks hosts done under
+key `pulse` (and `nse` for nmap) for chunks that returned at least one
+service; the stage itself is marked done only when no chunk was left
+unresolved, so `--resume` re-probes exactly the hosts that never got an
+answer.
 
-Shapoclyack's own stage checkpoint marks hosts done under key `pulse` (and
-`nse` for nmap) only for chunks that returned at least one service; the
-stage itself is marked done only when no chunk was left unresolved.
+Pulse's `--checkpoint` is **not** used. Pulse trusts an existing checkpoint
+file over `--targets-file` and *replays* a finished one — or an unfinished
+one whose hosts are all completed, which a kill during OS/CVE/TLS enrichment
+leaves behind — without re-running OS detection, CVE correlation or the TLS
+probe. Both `run_command`'s timeout retry and the adapter's own re-probe
+re-run the same command, so no naming or cleanup scheme could make a
+surviving checkpoint safe. A chunk (`chunk_hosts`, default 64) that dies is
+simply rescanned; that costs seconds. Each chunk's hosts file is still named
+after its content, `chunk_<sha256(hosts, ports, mode)[:16]>.hosts.txt`, so
+the `chunks[]` records in `pulse/raw.json` stay attributable across runs.
 
 ## When pulse cannot run
 
@@ -225,9 +222,9 @@ stage itself is marked done only when no chunk was left unresolved.
 |-----------|-----------|
 | No `pulse` binary and there are TCP ports to probe | The stage fails immediately with `FileNotFoundError` naming `scripts/install-pulse.sh`, `OCTO_PULSE_BIN` and `service_probe.pulse.bin`. Pulse is the default backend and the only source of services on that path, so this is a deployment error to surface, not a stage to skip. With no TCP ports at all the stage writes empty artifacts and never looks for the binary. |
 | `os_detect: true` but no raw sockets (unprivileged host install, pod without `NET_RAW`) | Pulse aborts the whole invocation, not just OS detection. The adapter recognises its "OS detection needs raw sockets" refusal, drops `--os` for the rest of the run, re-runs the chunk at once and logs a warning; services, banners, TLS and CVEs are kept. `pulse/raw.json` records it under `adapter.os_detect_degraded`. This mirrors nse.py, which drops nmap `-O` when not root. |
-| `syn: true` without raw sockets | Not downgraded: SYN is an explicit opt-in. The chunk fails, is retried once after `retry_settle_seconds`, and its hosts stay unresolved. |
-| A chunk reports every port closed | A contradiction, not a result: naabu proved those ports open moments ago. The chunk's pulse checkpoint is deleted (pulse would otherwise replay the zero) and the chunk is re-probed after `retry_settle_seconds`. A chunk that is still empty afterwards leaves its hosts unmarked so `--resume` asks again. |
-| Pulse exits non-zero without JSON for any other reason | Logged as a crash with its stderr (not as "0 services") and given the same single retry. |
+| `syn: true` without raw sockets | Not downgraded: SYN is an explicit opt-in. The chunk fails, is re-run once at once, its hosts stay unresolved, and the crash-loop breaker above ends the stage after three such chunks. |
+| A chunk reports every port closed | A contradiction, not a result: naabu proved those ports open moments ago. The chunk is re-probed after `retry_settle_seconds`. A chunk that is still empty afterwards leaves its hosts unmarked so `--resume` asks again. |
+| Pulse exits non-zero without JSON for any other reason | Logged as a crash with its stderr (not as "0 services") and re-run **at once** — the settle pause is for a saturated network path, not for exit 2. After three consecutive chunks that still end in a crash the stage raises `PulseCrashLoopError` naming the exit code and stderr: a crash that repeats across chunks is a broken binary or a bad flag, and sleeping through the rest of a large run would only delay the same empty result. |
 
 `pulse/raw.json` also carries `adapter.pulse_bin`, `adapter.chunk_hosts`, a
 `chunks` list with every chunk's key, hosts, last exit code and `resolved`
