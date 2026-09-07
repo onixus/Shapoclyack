@@ -259,3 +259,27 @@ def test_auto_merge_requires_merge_into_scope(tmp_path: Path):
     assert result["merged_domains"] == []
     assert result["auto_merged"] is False
     assert not (tmp_path / "merged_related_domains.txt").exists()
+
+
+def test_artifact_states_what_each_source_contributed(tmp_path):
+    """An enabled source that found nothing has to say so.
+
+    Silence from reverse_ns/reverse_mx is ambiguous: with the default wiring
+    they correlate over artifacts that cover exactly the seed set, so "no
+    candidates" may mean "nothing to correlate against" rather than "no
+    relatives exist".
+    """
+    (tmp_path / "cert_names.json").write_text(json.dumps({"entries": []}), encoding="utf-8")
+    config = RelatedDomainsConfig(
+        enabled=True, sources=["cert_san", "reverse_ns", "reverse_mx"]
+    )
+
+    result = discover_related_domains(tmp_path, config, seed_domains=["example.com"])
+
+    assert result["sources_evaluated"] == {
+        "cert_san": 0,
+        "reverse_ns": 0,
+        "reverse_mx": 0,
+    }
+    # ct_org was not enabled, so it is absent rather than reported as zero.
+    assert "ct_org" not in result["sources_evaluated"]

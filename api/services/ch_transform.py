@@ -226,7 +226,10 @@ def open_ports_to_rows(
 # anything unrecognised is normalised to an explicit "we do not know" bucket
 # (`not_checked`, `unassessed`, `unknown`), never to a reassuring or a least
 # severe one.
+# "partial" is a matrix-level verdict only (some controls passed, others were
+# never evaluated); an individual control never carries it.
 _CONTROL_STATUSES = frozenset({"ok", "weak", "fail", "not_checked", "error"})
+_OVERALL_VERDICTS = _CONTROL_STATUSES | {"partial"}
 _CONTROL_IMPACTS = frozenset({"critical", "high", "medium", "low"})
 _CONTROL_RISK_LEVELS = frozenset(
     {"very_high", "high", "moderate", "low", "very_low", "unassessed"}
@@ -272,7 +275,7 @@ def controls_to_rows(
     ts = _parse_timestamp(raw_ts)
 
     overall_verdict = str(summary.get("overall_verdict") or "not_checked").lower()
-    if overall_verdict not in _CONTROL_STATUSES:
+    if overall_verdict not in _OVERALL_VERDICTS:
         overall_verdict = "not_checked"
     overall_risk = str(summary.get("overall_risk") or "unassessed").lower()
     if overall_risk not in _CONTROL_RISK_LEVELS:

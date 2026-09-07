@@ -38,6 +38,11 @@ def _seed_run(output: Path, run_id: str = "run-own") -> Path:
     (run_dir / "ownership_findings.txt").write_text(
         "example.com:ok:registrant=public:registrar=RESERVED-Registrar\n", encoding="utf-8"
     )
+    # related_domains writes this one, and it embeds ownership.json verbatim.
+    (run_dir / "org_profile.json").write_text(
+        json.dumps({"seed_domains": ["example.com"], "ownership": OWNERSHIP}),
+        encoding="utf-8",
+    )
     return run_dir
 
 
@@ -84,3 +89,27 @@ def test_unrestricted_artifact_stays_readable_for_a_viewer(tmp_path: Path, monke
     client = _client(tmp_path, monkeypatch)
     text = client.get("/api/runs/run-own/artifacts/summary.json", headers=auth_headers(client, "viewer"))
     assert text.status_code == 200
+
+
+def test_org_profile_artifact_does_not_leak_ownership_around_the_gate(
+    tmp_path: Path, monkeypatch
+):
+    """org_profile.json embeds ownership.json, so it needs the same gate.
+
+    Without it a viewer, blocked on ownership.json and served an ownership-less
+    GET /runs/{id}/org-profile, could still download the registrant org and
+    abuse contacts from this artifact.
+    """
+    client = _client(tmp_path, monkeypatch)
+    viewer = auth_headers(client, "viewer")
+
+    detail = client.get("/api/runs/run-own", headers=auth_headers(client, "operator"))
+    assert "org_profile.json" not in detail.json()["artifacts"]
+
+    assert client.get("/api/runs/run-own/artifacts/org_profile.json", headers=viewer).status_code == 404
+    assert client.get("/api/runs/run-own/download/org_profile.json", headers=viewer).status_code == 404
+
+    operator = auth_headers(client, "operator")
+    body = client.get("/api/runs/run-own/artifacts/org_profile.json", headers=operator)
+    assert body.status_code == 200
+    assert "Example Holding LLC" in body.text

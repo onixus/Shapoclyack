@@ -657,6 +657,8 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
     has_fail = False
     has_weak = False
     has_ok = False
+    has_error = False
+    has_not_checked = False
 
     for defn in CONTROL_DEFINITIONS:
         cid = defn["id"]
@@ -678,6 +680,10 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
             has_weak = True
         elif status == "ok":
             has_ok = True
+        elif status == "error":
+            has_error = True
+        else:
+            has_not_checked = True
 
         item = {
             "control": cid,
@@ -693,13 +699,22 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
         }
         controls_list.append(item)
 
-    # Overall verdict
+    # Overall verdict. "ok" has to mean the whole matrix was answered: one
+    # passing control alongside five not_checked ones used to read as a clean
+    # bill of health, which is the module invariant ("absence of data never
+    # yields ok") broken at the level that operators actually look at.
+    # `partial` is the same ladder credential_leaks.py already uses inside a
+    # single control, lifted to the matrix.
     if has_fail:
         overall_verdict = "fail"
     elif has_weak:
         overall_verdict = "weak"
-    elif has_ok:
+    elif has_error:
+        overall_verdict = "error"
+    elif has_ok and not has_not_checked:
         overall_verdict = "ok"
+    elif has_ok:
+        overall_verdict = "partial"
     else:
         overall_verdict = "not_checked"
 

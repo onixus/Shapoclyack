@@ -402,3 +402,24 @@ def test_credential_leaks_partial_coverage_is_reported(tmp_path: Path):
     assert leaks["status"] == "ok"
     assert leaks["coverage"] == {"checked": 1, "total": 2}
     assert "not covered" in leaks["why"]
+
+
+def test_one_passing_control_among_unchecked_ones_is_not_ok(tmp_path):
+    """`ok` has to mean the whole matrix was answered.
+
+    A single evaluated control used to carry the overall verdict to "ok" while
+    five others sat at not_checked — the module invariant ("absence of data
+    never yields ok") broken exactly where an operator reads it.
+    """
+    # tls_posture.json alone: one control answers "ok", the other five have no
+    # data at all.
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({"checked_count": 3, "targets_considered": 3, "findings": []}),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+
+    statuses = {c["control"]: c["status"] for c in summary["controls"]}
+    assert "ok" in statuses.values()
+    assert "not_checked" in statuses.values()
+    assert summary["overall_verdict"] == "partial"

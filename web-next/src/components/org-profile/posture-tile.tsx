@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { KpiCard } from "@/components/kpi-card";
-import { fetchRunControls, type ControlStatus, type OrgProfileControlsSummary } from "@/lib/api";
+import { fetchRunControls, type OrgProfileControlsSummary, type OverallVerdict } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 /** Link to the org-profile page for one run. */
@@ -15,6 +15,7 @@ const VERDICT_COLOR: Record<string, string> = {
   weak: "amber",
   fail: "rose",
   error: "rose",
+  partial: "blue",
   not_checked: "slate",
 };
 
@@ -23,7 +24,7 @@ const VERDICT_COLOR: Record<string, string> = {
  * "requires a check" cell of the matrix — and never to a reassuring verdict. */
 export function postureVerdict(
   data: OrgProfileControlsSummary | undefined,
-): ControlStatus {
+): OverallVerdict {
   return data?.overall_verdict ?? "not_checked";
 }
 

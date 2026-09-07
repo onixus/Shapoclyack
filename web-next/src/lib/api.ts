@@ -234,6 +234,10 @@ export type ControlCoverage = {
 };
 
 export type ControlStatus = "ok" | "weak" | "fail" | "not_checked" | "error";
+/** Matrix-level verdict. "partial" = some controls passed, others were never
+ * evaluated — distinct from "ok" so an unevaluated control cannot read as a
+ * pass. An individual control never carries it. */
+export type OverallVerdict = ControlStatus | "partial";
 
 export type ControlItem = {
   control: string;
@@ -249,7 +253,7 @@ export type ControlItem = {
 };
 
 export type OrgProfileControlsSummary = {
-  overall_verdict: ControlStatus;
+  overall_verdict: OverallVerdict;
   overall_risk: string;
   controls: ControlItem[];
   evaluated_at?: string | null;
@@ -276,6 +280,9 @@ export type RelatedDomainsSummary = {
   candidate_count: number;
   total_candidates: number;
   truncated: boolean;
+  /** Candidate domains contributed per source. An enabled source at 0 states
+   * its coverage, rather than implying there is nothing out there. */
+  sources_evaluated?: Record<string, number>;
   auto_merged: boolean;
   merge_into_scope?: boolean;
   merged_domains: string[];
