@@ -6,6 +6,55 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Pulse integration polish** — defects in the Shapoclyack ↔ Pulse seam,
+  found by reading the adapter against GenDec v1.1.0's own source and then
+  reviewing the fix.
+  *Pulse checkpoints no longer cross invocations.* `pulse_probe.py` gave each
+  chunk a pulse `--checkpoint` named by position (`chunk_0000.ckpt`) while
+  `--resume` re-cuts chunks from the hosts still pending, so a resumed run
+  could be answered from the previous chunk's file: pulse trusts an existing
+  checkpoint over `--targets-file` and replays a finished one — or an
+  in-progress one whose hosts are all completed, which a kill during
+  enrichment leaves behind — without OS detection, CVE correlation or the TLS
+  probe. Content-keyed names and inspecting the checkpoint's status closed
+  the resume path but not `run_command`'s own timeout retry, which re-runs
+  the same command with the file intact. The adapter now passes no
+  `--checkpoint` at all: Shapoclyack's `CheckpointStore` already tracks
+  per-host progress and a 64-host chunk is cheap to rescan. Hosts files keep
+  a content key (`chunk_<sha256(hosts, ports, mode)[:16]>`) so `chunks[]` in
+  `pulse/raw.json` stays attributable.
+  *Failures wore the wrong label.* A pulse that exited non-zero without JSON
+  was logged as "0 services across N hosts with known-open ports" and given
+  the 15-second settle retry. The most common such exit is pulse's `--os`
+  capability check, which aborts the whole invocation when raw sockets are
+  unavailable — on an unprivileged host install or a pod without `NET_RAW`
+  the default configuration produced no services at all. The adapter now
+  recognises that refusal, drops `--os` for the rest of the run (the same
+  call `nse.py` makes for nmap `-O`), re-runs at once and records
+  `adapter.os_detect_degraded` in `pulse/raw.json`. Any other crash is
+  logged with its stderr and re-run at once without the settle pause; three
+  consecutive crashed chunks raise `PulseCrashLoopError` instead of sleeping
+  through the rest of a large run. A missing binary fails fast with an
+  install hint. Every chunk is on the `chunks[]` record, failed ones
+  included; `stats` is summed across chunks.
+  *Installer and images.* `scripts/install-pulse.sh` fetched
+  `releases/download/<tag>/<asset>` with a bearer token, which GitHub answers
+  with 404 for a private repository — the documented private-repo path had
+  never worked. It now resolves assets through the API, downloads
+  `checksums.txt` first and checks the tarball's SHA-256 against it (an
+  integrity check against a bad download, not provenance — the file comes
+  over the same connection; `PULSE_SKIP_CHECKSUM=1` opts out with a warning
+  for a release without it), and tells a missing release apart from a failed
+  download by HTTP status so a transient error never suggests the override.
+  The `pulse-bin` stage of `Dockerfile` and `Dockerfile.allinone` — until now
+  a hand-copied second and third implementation of the same logic — runs
+  that script, and drops `set -x`, which traced the GenDec token into the
+  BuildKit log (masked in Jenkins console output, unmasked in
+  `docker buildx history logs`). Also: the `-t` floor matches the schema's
+  `timeout_ms ≥ 50`; `docs/pulse-backend.md` documents the resume semantics,
+  the failure table, the full `service_probe.pulse.*` block and the build
+  args, corrects the `OCTO_PULSE_BIN`-vs-`bin` precedence, and drops a
+  `PULSE_REF` build-arg the Dockerfile never had.
 - **org_profile polish: nine defects across the module** (EPIC #182). A review
   pass over `ownership.py`, `related_domains.py`, `dns_hygiene.py`,
   `mail_posture.py`, `credential_leaks.py` and `controls.py`.

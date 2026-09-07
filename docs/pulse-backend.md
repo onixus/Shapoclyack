@@ -78,15 +78,21 @@ service_probe:
   backend: pulse   # nmap | hybrid
   shadow: false    # or OCTO_PULSE_SHADOW=1
   pulse:
+    bin: ""                  # OCTO_PULSE_BIN overrides this; else this path; else PATH
     concurrency: 500
     rate: 2000
     adaptive: true
     host_parallel: 8
+    timeout_ms: 800          # per-connect timeout (pulse -t)
     banner: true
-    os_detect: true
+    os_detect: true          # needs raw sockets; dropped for the run if pulse refuses
     os_mode: auto
     cve: true
     cve_online: false
+    syn: false               # half-open scan; needs raw sockets, never auto-downgraded
+    max_hosts: 65536
+    chunk_hosts: 64          # hosts per pulse invocation / checkpoint
+    retry_settle_seconds: 15 # pause before re-probing an all-closed chunk; 0 disables
 
 profiles:
   balanced:
@@ -138,6 +144,7 @@ COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
+| `PULSE_SKIP_CHECKSUM` | `0` | `1` installs the tarball without checking it against `checksums.txt` (warns) |
 
 The pin is the **engine** (banner / OS / `--cve` / TLS JSON). Shapoclyack does
 not invoke `pulse monitor`, `pulse --server`, `--alert-*`, `--scripts`, or
@@ -149,26 +156,42 @@ tls` still flows into extra vulnerabilities — `tls_posture` is opt-in and
 writes a separate artifact, so dropping those rows would hide cert expiry on
 the default path.
 
-Host install without Docker:
+The image stage runs `scripts/install-pulse.sh`, so images and host installs
+share one implementation. It downloads `checksums.txt` first and refuses to
+unpack a tarball whose SHA-256 does not match it. This is an **integrity** check, not provenance: the checksum file travels
+over the same connection from the same release, so it catches a truncated,
+corrupted or swapped download, not a compromised release. Provenance for a
+binary that receives `cap_net_raw`/`cap_net_admin` would need a signature
+over `checksums.txt` (cosign/minisign in GenDec's release job) or an expected
+digest pinned in this repository next to `PULSE_VERSION`; neither exists yet.
+`PULSE_SKIP_CHECKSUM=1` (script) / `--build-arg PULSE_SKIP_CHECKSUM=1`
+(images) opt out with a warning for a release that ships no `checksums.txt`,
+which GenDec's release job treats as an optional asset. A download that
+fails for any other reason (5xx, timeout) is reported as such and does not
+suggest the override. Neither the script nor the image stage uses `set -x`:
+the token would land in the build log.
+
+Local image build (GenDec is private, so pass a token with `contents:read`):
 
 ```bash
-scripts/install-pulse.sh                  # from release
-PULSE_VERSION=v1.1.0 scripts/install-pulse.sh
-PULSE_FROM_SOURCE=1 scripts/install-pulse.sh  # cargo fallback
-```
-
-```bash
+printf '%s' "$GITHUB_TOKEN" > /tmp/gh_token
 docker build -f Dockerfile \
-  --build-arg PULSE_REF=main \
+  --secret id=github_token,src=/tmp/gh_token \
+  --build-arg PULSE_VERSION=v1.1.0 \
   -t shapoclyack-scanner:local .
 ```
 
-Host install without image rebuild:
+Host install without Docker:
 
 ```bash
-scripts/install-pulse.sh
+GITHUB_TOKEN=… scripts/install-pulse.sh          # release tarball, verified
+PULSE_VERSION=v1.1.0 scripts/install-pulse.sh    # pick a tag
+PULSE_DEST=$HOME/.local/bin/pulse scripts/install-pulse.sh
+PULSE_FROM_SOURCE=1 scripts/install-pulse.sh     # cargo fallback (PULSE_REF picks a ref)
 scripts/smoke-pulse.sh
 ```
+
+`GH_TOKEN` is accepted as an alias.
 
 System UI / API status probes `pulse --version` alongside nmap/naabu/nuclei.
 
@@ -176,8 +199,37 @@ Connect-mode Pulse works without root; SYN/OS still need caps/root like nmap.
 
 ## Checkpoint
 
-Pulse chunk checkpoints live under the run’s `pulse/*.ckpt`. Shapoclyack
-stage checkpoint marks hosts done under key `pulse` (and `nse` for nmap).
+Shapoclyack's own stage checkpoint (`CheckpointStore`) marks hosts done under
+key `pulse` (and `nse` for nmap) for chunks that returned at least one
+service; the stage itself is marked done only when no chunk was left
+unresolved, so `--resume` re-probes exactly the hosts that never got an
+answer.
+
+Pulse's `--checkpoint` is **not** used. Pulse trusts an existing checkpoint
+file over `--targets-file` and *replays* a finished one — or an unfinished
+one whose hosts are all completed, which a kill during OS/CVE/TLS enrichment
+leaves behind — without re-running OS detection, CVE correlation or the TLS
+probe. Both `run_command`'s timeout retry and the adapter's own re-probe
+re-run the same command, so no naming or cleanup scheme could make a
+surviving checkpoint safe. A chunk (`chunk_hosts`, default 64) that dies is
+simply rescanned; that costs seconds. Each chunk's hosts file is still named
+after its content, `chunk_<sha256(hosts, ports, mode)[:16]>.hosts.txt`, so
+the `chunks[]` records in `pulse/raw.json` stay attributable across runs.
+
+## When pulse cannot run
+
+| Situation | Behaviour |
+|-----------|-----------|
+| No `pulse` binary and there are TCP ports to probe | The stage fails immediately with `FileNotFoundError` naming `scripts/install-pulse.sh`, `OCTO_PULSE_BIN` and `service_probe.pulse.bin`. Pulse is the default backend and the only source of services on that path, so this is a deployment error to surface, not a stage to skip. With no TCP ports at all the stage writes empty artifacts and never looks for the binary. |
+| `os_detect: true` but no raw sockets (unprivileged host install, pod without `NET_RAW`) | Pulse aborts the whole invocation, not just OS detection. The adapter recognises its "OS detection needs raw sockets" refusal, drops `--os` for the rest of the run, re-runs the chunk at once and logs a warning; services, banners, TLS and CVEs are kept. `pulse/raw.json` records it under `adapter.os_detect_degraded`. This mirrors nse.py, which drops nmap `-O` when not root. |
+| `syn: true` without raw sockets | Not downgraded: SYN is an explicit opt-in. The chunk fails, is re-run once at once, its hosts stay unresolved, and the crash-loop breaker above ends the stage after three such chunks. |
+| A chunk reports every port closed | A contradiction, not a result: naabu proved those ports open moments ago. The chunk is re-probed after `retry_settle_seconds`. A chunk that is still empty afterwards leaves its hosts unmarked so `--resume` asks again. |
+| Pulse exits non-zero without JSON for any other reason | Logged as a crash with its stderr (not as "0 services") and re-run **at once** — the settle pause is for a saturated network path, not for exit 2. After three consecutive chunks that still end in a crash the stage raises `PulseCrashLoopError` naming the exit code and stderr: a crash that repeats across chunks is a broken binary or a bad flag, and sleeping through the rest of a large run would only delay the same empty result. |
+
+`pulse/raw.json` also carries `adapter.pulse_bin`, `adapter.chunk_hosts`, a
+`chunks` list with every chunk's key, hosts, last exit code and `resolved`
+flag (failed chunks included), and `stats` summed over the chunks that
+answered (`rate_pps` recomputed from the totals).
 
 ## TLS posture without nmap (Phase 4)
 

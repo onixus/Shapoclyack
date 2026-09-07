@@ -3,10 +3,22 @@
 Invokes the Pulse CLI (https://github.com/onixus/GenDec) against hosts that
 already have open ports from naabu, writes canonical artifacts:
 
-  output_dir/pulse/raw.json       — full pulse JSON
+  output_dir/pulse/raw.json       — merged pulse JSON (+ ``adapter`` block)
+  output_dir/pulse/tls.json       — octo.pulse_tls.v1 (tls[] + tls-class findings)
   output_dir/services.json        — octo.service.v1 list
   output_dir/os.json              — octo.os.v1 list
   output_dir/pulse_cves.json      — optional CVE findings from pulse
+
+Hosts are probed in chunks of ``chunk_hosts``. Pulse's own ``--checkpoint`` is
+deliberately not used: Shapoclyack already tracks per-host progress in its
+CheckpointStore, a chunk is cheap to rescan, and a pulse checkpoint that
+outlives one invocation is a liability -- pulse trusts the file over
+``--targets-file`` and *replays* a finished (or all-hosts-completed) one
+without OS detection, CVE correlation or the TLS probe. See ``chunk_key``.
+
+``--os`` needs raw sockets. When pulse refuses for that reason the stage does
+not fail: it drops ``--os`` for the rest of the run and keeps services,
+banners and CVEs (mirrors nse.py, which drops nmap ``-O`` when not root).
 
 Does **not** replace NSE scripts (ssl-enum-ciphers, vulners, …). Use
 ``service_probe.backend: hybrid`` or ``nmap`` when those are required.
@@ -21,6 +33,7 @@ Environment:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -63,6 +76,78 @@ def resolve_pulse_bin(configured: str = "") -> str:
         if Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
     return "pulse"
+
+
+def _pulse_available(bin_path: str) -> bool:
+    """True when ``bin_path`` is an executable file or resolves on PATH."""
+    path = Path(bin_path)
+    if path.is_file():
+        return os.access(path, os.X_OK)
+    return shutil.which(bin_path) is not None
+
+
+def chunk_key(hosts: Iterable[str], ports: Iterable[int], mode: str = "connect") -> str:
+    """Stable id of one (hosts, ports, scan mode) chunk; names its hosts file.
+
+    Chunks are re-cut from the pending hosts on ``--resume``, so a position
+    (``chunk_0000``) means a different host set every time; a content key keeps
+    each chunk's ``hosts.txt`` and its ``chunks[]`` record in ``pulse/raw.json``
+    attributable across runs. ``mode`` (``connect``/``syn``) is part of the
+    identity for the same reason pulse puts it in its own job fingerprint.
+
+    History: this key once also named a per-chunk pulse ``--checkpoint``. It
+    does not any more -- pulse trusts an existing checkpoint file over
+    ``--targets-file`` and replays a finished one without OS/CVE/TLS, and both
+    ``run_command``'s timeout retry and the settle retry re-run the same
+    command, so no naming scheme could make a surviving checkpoint safe. A
+    chunk that dies is simply rescanned.
+    """
+    digest = hashlib.sha256()
+    for host in sorted(set(hosts)):
+        digest.update(host.encode("utf-8"))
+        digest.update(b"\n")
+    digest.update(b"|")
+    digest.update(",".join(str(p) for p in sorted(set(ports))).encode("ascii"))
+    digest.update(b"|")
+    digest.update(mode.encode("ascii"))
+    return digest.hexdigest()[:16]
+
+
+#: Consecutive chunks that may end in a pulse exit without JSON before the
+#: stage gives up. A crash that repeats across chunks is a broken binary or a
+#: bad flag, not weather; sleeping and re-spawning it once per chunk for the
+#: rest of a large run only delays the same empty result by hours.
+MAX_CONSECUTIVE_CRASHED_CHUNKS = 3
+
+
+class PulseCrashLoopError(RuntimeError):
+    """pulse exited without JSON for MAX_CONSECUTIVE_CRASHED_CHUNKS chunks in a row."""
+
+
+def _is_os_raw_socket_failure(stderr: str) -> bool:
+    """pulse ``ensure_os_capable`` refused: ``--os`` cannot open raw sockets.
+
+    GenDec ``src/scanner/osdetect.rs`` aborts the whole run with "OS detection
+    needs raw sockets (run as root/sudo, or setcap cap_net_raw+ep on Linux)".
+    Matched loosely on both halves so a reworded hint still counts; ``--syn``
+    has its own capability check and is deliberately not matched -- SYN is an
+    explicit opt-in, silently downgrading it to connect would change what the
+    operator asked for.
+    """
+    text = (stderr or "").lower()
+    return "os detection" in text and "raw socket" in text
+
+
+def _merge_stats(acc: dict[str, Any], new: dict[str, Any]) -> None:
+    """Sum one chunk's pulse ``stats`` into ``acc`` (rate is recomputed, not summed)."""
+    for key, value in new.items():
+        if key == "rate_pps" or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        acc[key] = acc.get(key, 0) + value
+    total = acc.get("total")
+    elapsed_ms = acc.get("elapsed_ms")
+    if isinstance(total, (int, float)) and isinstance(elapsed_ms, (int, float)) and elapsed_ms > 0:
+        acc["rate_pps"] = round(total / (elapsed_ms / 1000.0), 1)
 
 
 def _group_tcp_ports(open_ports: list[str]) -> dict[str, list[int]]:
@@ -115,7 +200,7 @@ def build_pulse_command(
         "-c",
         str(max(1, concurrency)),
         "-t",
-        str(max(100, timeout_ms)),
+        str(max(50, timeout_ms)),
         "--max-hosts",
         str(max(1, max_hosts)),
         "-f",
@@ -459,8 +544,8 @@ def sync_report_primary_marker(pulse_dir: Path, report_primary: bool | None) -> 
 
 def _probe_chunk(
     cmd: list[str], *, timeout_seconds: int, retries: int, idx: int
-) -> tuple[dict[str, Any], int]:
-    """Run one pulse invocation and return its parsed payload and exit code."""
+) -> tuple[dict[str, Any], int, str]:
+    """Run one pulse invocation; return (parsed payload, exit code, stderr)."""
     completed = run_command(
         cmd,
         timeout=timeout_seconds,
@@ -469,12 +554,13 @@ def _probe_chunk(
         capture_output=True,
     )
     stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
     if completed.returncode != 0:
         logging.warning(
             "pulse exited %s for chunk %s: %s",
             completed.returncode,
             idx,
-            (completed.stderr or stdout)[:500],
+            (stderr or stdout)[:500],
         )
     payload: dict[str, Any] = {}
     if stdout:
@@ -489,7 +575,7 @@ def _probe_chunk(
                 except json.JSONDecodeError:
                     logging.warning("pulse_probe: could not parse JSON for chunk %s", idx)
                     payload = {}
-    return payload, completed.returncode
+    return payload, completed.returncode, stderr
 
 
 def run_pulse_probe(
@@ -525,6 +611,12 @@ def run_pulse_probe(
     ``report_primary``: when True, write ``pulse/REPORT_PRIMARY`` so report.py
     prefers services.json/os.json. When None, fall back to
     ``OCTO_SERVICE_BACKEND`` in {pulse, hybrid}.
+
+    Raises ``FileNotFoundError`` when there is work to do and no pulse binary:
+    Pulse is the default backend and the only source of services on that path,
+    so a missing binary is a deployment error to surface, not a stage to skip.
+    Raises ``PulseCrashLoopError`` after ``MAX_CONSECUTIVE_CRASHED_CHUNKS``
+    chunks in a row end in a pulse exit without JSON.
     """
     pulse_bin = resolve_pulse_bin(bin_path)
     grouped = _group_tcp_ports(open_ports)
@@ -553,6 +645,20 @@ def run_pulse_probe(
         sync_report_primary_marker(pulse_dir, report_primary)
         return pulse_dir
 
+    if not _pulse_available(pulse_bin):
+        raise FileNotFoundError(
+            f"pulse binary not found ({pulse_bin!r}); install it with "
+            "scripts/install-pulse.sh, or point OCTO_PULSE_BIN / "
+            "service_probe.pulse.bin at an existing binary"
+        )
+
+    # Effective --os for this run. Flipped off once pulse refuses it for lack
+    # of raw sockets; every later chunk then skips the doomed attempt.
+    os_detect_effective = os_detect
+    os_detect_degraded: str | None = None
+    consecutive_crashes = 0
+    scan_mode = "syn" if syn else "connect"
+
     # Global port union keeps one pulse invocation simpler; overscans closed
     # ports on hosts that don't share the full set — acceptable for MVP.
     # Chunk by hosts for timeout/resume.
@@ -567,46 +673,93 @@ def run_pulse_probe(
         if not ports_list:
             continue
 
-        hosts_file = pulse_dir / f"chunk_{idx:04d}.hosts.txt"
+        key = chunk_key(host_chunk, ports_list, scan_mode)
+        hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
         write_lines(hosts_file, host_chunk)
-        ckpt = pulse_dir / f"chunk_{idx:04d}.ckpt"
-        cmd = build_pulse_command(
-            bin_path=pulse_bin,
-            hosts_file=hosts_file,
-            ports=ports_list,
-            concurrency=concurrency,
-            rate=rate,
-            adaptive=adaptive,
-            host_parallel=host_parallel,
-            timeout_ms=timeout_ms,
-            banner=banner,
-            os_detect=os_detect,
-            os_mode=os_mode,
-            cve=cve,
-            cve_online=cve_online,
-            syn=syn,
-            checkpoint=ckpt,
-            max_hosts=max(max_hosts, len(host_chunk) + 1),
-        )
+
+        def _command(*, with_os: bool) -> list[str]:
+            return build_pulse_command(
+                bin_path=pulse_bin,
+                hosts_file=hosts_file,
+                ports=ports_list,
+                concurrency=concurrency,
+                rate=rate,
+                adaptive=adaptive,
+                host_parallel=host_parallel,
+                timeout_ms=timeout_ms,
+                banner=banner,
+                os_detect=with_os,
+                os_mode=os_mode,
+                cve=cve,
+                cve_online=cve_online,
+                syn=syn,
+                checkpoint=None,
+                max_hosts=max(max_hosts, len(host_chunk) + 1),
+            )
+
+        cmd = _command(with_os=os_detect_effective)
 
         logging.info(
-            "pulse_probe chunk %s/%s: %s hosts, %s ports",
+            "pulse_probe chunk %s/%s (%s): %s hosts, %s ports",
             idx + 1,
             len(chunks),
+            key,
             len(host_chunk),
             len(ports_list),
         )
-        payload, returncode = _probe_chunk(
+        payload, returncode, stderr = _probe_chunk(
             cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
         )
 
-        # Every host here reached this stage because naabu proved a port open on
-        # it moments ago, so an all-closed chunk is a contradiction rather than a
-        # finding: the ports burst saturates the path and the probe lands before
-        # it recovers. Pause and ask once more. The checkpoint has to go first --
-        # pulse honours its own "status: done" and would replay the same zero
-        # without touching the network.
-        if not (payload.get("open") if payload else None) and retry_settle_seconds:
+        # pulse aborts the whole invocation -- not just OS detection -- when
+        # --os cannot open raw sockets (unprivileged host install, a pod
+        # without NET_RAW). Losing services, banners and CVEs over a missing
+        # OS guess is the wrong trade, and nse.py already makes the same call
+        # for nmap -O. Drop --os for the rest of the run and ask again now.
+        if (
+            returncode != 0
+            and not payload
+            and os_detect_effective
+            and _is_os_raw_socket_failure(stderr)
+        ):
+            os_detect_effective = False
+            # Keep pulse's own sentence, not anyhow's "Caused by:" tail.
+            os_detect_degraded = next(
+                (line.strip() for line in stderr.splitlines() if "raw socket" in line.lower()),
+                "raw sockets unavailable",
+            )[:200]
+            logging.warning(
+                "pulse_probe: OS detection needs raw sockets and this process has none "
+                "(%s); continuing without --os for the rest of the run -- services, "
+                "banners and CVEs still run. Grant cap_net_raw/cap_net_admin to the "
+                "pulse binary or the pod (docs/pulse-backend.md) to get OS guesses back.",
+                os_detect_degraded,
+            )
+            cmd = _command(with_os=False)
+            payload, returncode, stderr = _probe_chunk(
+                cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
+            )
+
+        crashed = returncode != 0 and not payload
+        if crashed:
+            # A crash is not weather: re-run at once, no settle pause. The
+            # pause below exists for a saturated network path, which has
+            # nothing to do with exit 2 or a panic.
+            logging.warning(
+                "pulse_probe chunk %s: pulse exited %s without JSON (%s); re-probing now",
+                idx,
+                returncode,
+                stderr[:300] or "no stderr",
+            )
+            payload, returncode, stderr = _probe_chunk(
+                cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
+            )
+            crashed = returncode != 0 and not payload
+        elif not payload.get("open") and retry_settle_seconds:
+            # Every host here reached this stage because naabu proved a port
+            # open on it moments ago, so an all-closed chunk is a contradiction
+            # rather than a finding: the ports burst saturates the path and the
+            # probe lands before it recovers. Pause and ask once more.
             logging.warning(
                 "pulse_probe chunk %s: 0 services across %s host(s) with known-open "
                 "ports; re-probing in %ss",
@@ -614,20 +767,31 @@ def run_pulse_probe(
                 len(host_chunk),
                 retry_settle_seconds,
             )
-            ckpt.unlink(missing_ok=True)
             time.sleep(retry_settle_seconds)
-            payload, returncode = _probe_chunk(
+            payload, returncode, stderr = _probe_chunk(
                 cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
             )
 
+        if crashed:
+            consecutive_crashes += 1
+            if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
+                raise PulseCrashLoopError(
+                    f"pulse exited {returncode} without JSON for "
+                    f"{consecutive_crashes} chunks in a row; last stderr: "
+                    f"{stderr[:500] or 'empty'}. Fix the binary/flags "
+                    f"({pulse_bin}) and re-run with --resume."
+                )
+        else:
+            consecutive_crashes = 0
+
+
         resolved = bool(payload.get("open") if payload else None)
         if not resolved:
-            # Leave nothing behind that records this chunk as finished-and-closed.
-            # Dropping pulse's own checkpoint is not enough on its own: the hosts
-            # would still be marked done below and the caller would still mark the
-            # whole stage done, so --resume would skip the stage outright and keep
-            # the false-empty result the retry above exists to recover from.
-            ckpt.unlink(missing_ok=True)
+            # Leave nothing behind that records this chunk as finished-and-closed:
+            # the hosts must not be marked done below, and the caller must not
+            # mark the whole stage done, or --resume would skip the stage
+            # outright and keep the false-empty result the retry exists to
+            # recover from.
             if on_unresolved:
                 on_unresolved(list(host_chunk))
 
@@ -643,11 +807,19 @@ def run_pulse_probe(
                 payload.get("findings") or payload.get("cves") or []
             )
             merged_raw["tls"].extend(payload.get("tls") or [])
-            merged_raw["chunks"].append(
-                {"index": idx, "hosts": host_chunk, "returncode": returncode}
-            )
             if isinstance(payload.get("stats"), dict):
-                merged_raw["stats"] = payload["stats"]
+                _merge_stats(merged_raw["stats"], payload["stats"])
+        # Every chunk is on the record, failed ones included -- an artifact
+        # that lists only the chunks that answered looks like a clean run.
+        merged_raw["chunks"].append(
+            {
+                "index": idx,
+                "key": key,
+                "hosts": host_chunk,
+                "returncode": returncode,
+                "resolved": resolved,
+            }
+        )
 
         if resolved:
             for h in host_chunk:
@@ -683,6 +855,12 @@ def run_pulse_probe(
         tls_seen.add(key)
         tls_deduped.append(row)
     merged_raw["tls"] = tls_deduped
+    merged_raw["adapter"] = {
+        "pulse_bin": pulse_bin,
+        "os_detect": os_detect_effective,
+        "os_detect_degraded": os_detect_degraded,
+        "chunk_hosts": size,
+    }
 
     write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
 
@@ -690,10 +868,11 @@ def run_pulse_probe(
     sync_report_primary_marker(pulse_dir, report_primary)
 
     logging.info(
-        "pulse_probe done: %s services, %s os, %s cves, %s tls",
+        "pulse_probe done: %s services, %s os, %s cves, %s tls%s",
         len(deduped),
         len(all_os),
         len(all_cves),
         len(tls_deduped),
+        " (OS detection skipped: no raw sockets)" if os_detect_degraded else "",
     )
     return pulse_dir

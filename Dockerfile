@@ -11,48 +11,33 @@ RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/c
 
 # Pulse CLI from GenDec releases (not vendored source).
 # Pin PULSE_VERSION to a GenDec release tag. Optional BuildKit secret
-# github_token for private GenDec release assets.
-# Prefer: COPY --from=ghcr.io/onixus/pulse:0.2.0 when GHCR is public/logged-in.
+# github_token for private GenDec release assets. scripts/install-pulse.sh
+# does the fetch and the checksums.txt check; see docs/pulse-backend.md.
 # Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
 FROM debian:bookworm-slim AS pulse-bin
 ARG PULSE_VERSION=v1.1.0
 ARG PULSE_GITHUB_REPO=onixus/GenDec
+# GenDec's release job treats checksums.txt as optional (docs/release.md);
+# this lets a build opt out explicitly. Same knob as the installer script.
+ARG PULSE_SKIP_CHECKSUM=0
+# One implementation for host installs and images: the script resolves the
+# asset (via the API when a token is present -- the plain releases/download
+# URL 404s for private repos), checks it against the release's checksums.txt,
+# and installs it. Anything about how Pulse is fetched belongs in the script.
+COPY scripts/install-pulse.sh /tmp/install-pulse.sh
+# No `set -x`: the token would be traced into the build log (BuildKit keeps
+# the unmasked trace in `docker buildx history logs`).
 RUN --mount=type=secret,id=github_token,required=false \
-    set -eux; \
+    set -eu; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq; \
-    arch="$(dpkg --print-architecture)"; \
-    case "${arch}" in \
-      amd64) a=amd64 ;; \
-      arm64) a=arm64 ;; \
-      *) echo "unsupported arch: ${arch}"; exit 1 ;; \
-    esac; \
-    ver="${PULSE_VERSION}"; \
-    case "${ver}" in v*) ;; *) ver="v${ver}" ;; esac; \
-    name="pulse-${ver}-linux-${a}.tar.gz"; \
-    auth_header=""; \
-    if [ -f /run/secrets/github_token ] && [ -s /run/secrets/github_token ]; then \
-      auth_header="Authorization: Bearer $(cat /run/secrets/github_token)"; \
+    if [ -s /run/secrets/github_token ]; then \
+      GITHUB_TOKEN="$(cat /run/secrets/github_token)"; export GITHUB_TOKEN; \
     fi; \
-    if [ -n "${auth_header}" ]; then \
-      # Private repos: the plain releases/download/... URL 404s even with a
-      # valid token (that path only works for public repos / browser
-      # sessions) -- resolve the numeric asset id via the API first, then
-      # fetch it from the assets endpoint with Accept: octet-stream.
-      asset_url="$(curl -fsSL -H "${auth_header}" -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${PULSE_GITHUB_REPO}/releases/tags/${ver}" \
-        | jq -r --arg name "${name}" '.assets[] | select(.name == $name) | .url')"; \
-      test -n "${asset_url}"; \
-      echo "Fetching ${asset_url} (private, via API)"; \
-      curl -fsSL -H "${auth_header}" -H "Accept: application/octet-stream" -o /tmp/pulse.tgz "${asset_url}"; \
-    else \
-      url="https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/${name}"; \
-      echo "Fetching ${url}"; \
-      curl -fsSL -o /tmp/pulse.tgz "${url}"; \
-    fi; \
-    mkdir -p /out; \
-    tar -xzf /tmp/pulse.tgz -C /out; \
+    PULSE_DEST=/out/pulse PULSE_VERSION="${PULSE_VERSION}" \
+      PULSE_GITHUB_REPO="${PULSE_GITHUB_REPO}" PULSE_SKIP_CHECKSUM="${PULSE_SKIP_CHECKSUM}" \
+      bash /tmp/install-pulse.sh; \
     test -x /out/pulse; \
-    chmod 755 /out/pulse; \
+    rm -f /tmp/install-pulse.sh; \
     rm -rf /var/lib/apt/lists/*
 
 # Shapoclyack scanner pipeline image.
