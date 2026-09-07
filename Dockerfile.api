@@ -6,7 +6,7 @@ RUN npm ci
 COPY web-next/ ./
 RUN npm run build
 
-FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-api" \
@@ -28,7 +28,14 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends openssh-client; \
     rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-api.txt /app/
-RUN pip install --no-cache-dir -r requirements-api.txt
+# Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
+# five MEDIUM and one LOW advisory that the scan reports against our image.
+# Pinned rather than left as --upgrade so the build stays reproducible; raise
+# it deliberately, the same way the base digest above is refreshed.
+ARG PIP_VERSION=26.2.1
+RUN set -eux; \
+    pip install --no-cache-dir "pip==${PIP_VERSION}"; \
+    pip install --no-cache-dir -r requirements-api.txt
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.

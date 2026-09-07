@@ -558,8 +558,30 @@ All notable changes to Shapoclyack are documented in this file.
   picked up either — go-git v5.19.2 (CVE-2026-71556), x/mod v0.40.0
   (CVE-2026-56864, CVE-2026-56865) and grpc v1.83.1 (CVE-2026-84304). These are
   HIGH, below the CRITICAL gate, and were found by scanning the built image
-  rather than by CI. Scanned after the change, nuclei and naabu report no
-  vulnerabilities at any severity and dnsx reports one LOW. Upstream builds all
+  rather than by CI. utls v1.8.2 (CVE-2026-27017) joins them for dnsx — pinned
+  at 1.8.2 rather than the 1.8.1 that carries the fix because naabu 2.6.1
+  already requires 1.8.2, and `go get` fails the build outright rather than
+  downgrading a module a tool pins higher. After the change every Go binary in
+  the image reports no vulnerabilities at any severity.
+
+- **The image's base and pip are current again** — a digest pin is
+  reproducible, never current, so every Debian security update since it was
+  taken was a finding the scan reported against us. `Dockerfile`,
+  `Dockerfile.allinone` and `Dockerfile.api` move to the `python:3.12-slim`
+  index digest of 2026-09-07, which clears every fixable HIGH in the OS layer
+  (30 of them) and all but five fixable MEDIUM. All three then install a
+  pinned `pip==26.2.1` before requirements, closing five MEDIUM and one LOW
+  the base's bundled pip 25.0.1 carried.
+  Two things the bump does *not* fix, both worth knowing. The three CRITICALs
+  in `perl-base` (CVE-2026-13221, CVE-2026-42496, CVE-2026-8376) survive it:
+  Debian publishes no fixed perl, apt offers no candidate above 5.40.1-6, and
+  `perl-base` is Essential so it cannot be removed. They are excluded from the
+  gate by `--ignore-unfixed`, not by an exception. And the newer pip makes
+  three findings appear that the older one hid — its vendored setuptools
+  70.3.0 and msgpack 1.1.2. That is disclosure, not regression: pip 25.0.1
+  vendors the *same* setuptools 70.3.0 and an older msgpack 1.1.0, and only
+  26.x ships the CycloneDX SBOM that lets Trivy see them. They are inside the
+  pip wheel and not separately upgradable. Upstream builds all
   three with `CGO_ENABLED=0 -s -w` (their `.goreleaser.yml` and `Makefile`),
   which is what the stage does, so the binaries differ from the released ones
   only in the toolchain and the x/crypto bump; naabu's SYN path is unaffected

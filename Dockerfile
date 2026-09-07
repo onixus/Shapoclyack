@@ -37,12 +37,17 @@ ARG NAABU_VERSION=v2.6.1
 #   x/mod    v0.40.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
 #                      verification bypass); nuclei
 #   grpc     v1.83.1   CVE-2026-84304; nuclei
+#   utls     v1.8.2    CVE-2026-27017; dnsx
+#
+# A pin must be >= what every tool already requires: `go get` refuses to
+# downgrade a module a tool pins higher (naabu 2.6.1 requires utls v1.8.2)
+# and fails the build outright rather than resolving around it.
 #
 # The list is applied to every tool, not only the one that reported the
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.1"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.1 github.com/refraction-networking/utls@v1.8.2"
 
 # One throwaway module per tool, not one shared module: a shared module would
 # resolve a single dependency graph across all three and silently upgrade one
@@ -111,7 +116,16 @@ RUN --mount=type=secret,id=github_token,required=false \
 # Shapoclyack scanner pipeline image.
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
-FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e
+# Refresh this digest deliberately: a pin is only reproducible, never current,
+# so every Debian security update since it was taken is a finding the scan
+# reports against us. Bumping it to the 3.12-slim of 2026-09-07 cleared every
+# fixable HIGH (30) and all but five fixable MEDIUM in the OS layer.
+# The three CRITICALs in perl-base (CVE-2026-13221, CVE-2026-42496,
+# CVE-2026-8376) are NOT among them: Debian ships no fixed perl and apt offers
+# no candidate above 5.40.1-6, and perl-base is Essential so it cannot be
+# removed. They survive a base bump and are excluded from the gate by
+# --ignore-unfixed, not by an exception. Revisit when Debian publishes a fix.
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-scanner" \
@@ -207,7 +221,14 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
+# five MEDIUM and one LOW advisory that the scan reports against our image.
+# Pinned rather than left as --upgrade so the build stays reproducible; raise
+# it deliberately, the same way the base digest above is refreshed.
+ARG PIP_VERSION=26.2.1
+RUN set -eux; \
+    pip install --no-cache-dir "pip==${PIP_VERSION}"; \
+    pip install --no-cache-dir -r /app/requirements.txt
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.
