@@ -7,7 +7,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.43-0828@sha256:00450ee0f1e84f53390f20082facb2fd5081ead8e9ffd4986088488109852716
+          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.44-0907@sha256:121a857f921c52a7937f7ed5e589c2a97b03eb47b25f4eb6371e85610b5b6df4
           env:
             - name: OCTO_ALLOW_SCAN_START
               value: "false"
