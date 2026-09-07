@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+import pytest
 
 from scanner.pipeline.pulse_probe import (
     build_pulse_command,
+    chunk_key,
     load_service_artifacts,
     parse_pulse_json,
     write_pulse_artifacts,
@@ -374,38 +378,61 @@ def test_service_record_roundtrip():
 class _FakeCompleted:
     """Stand-in for subprocess.CompletedProcess."""
 
-    def __init__(self, stdout: str, returncode: int = 0):
+    def __init__(self, stdout: str, returncode: int = 0, stderr: str = ""):
         self.stdout = stdout
-        self.stderr = ""
+        self.stderr = stderr
         self.returncode = returncode
 
 
 _ONE_SERVICE = '{"open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}]}'
 _ALL_CLOSED = '{"open": [], "os": [], "cves": []}'
+# What GenDec's ensure_os_capable() prints when --os cannot open raw sockets
+# (src/scanner/osdetect.rs); pulse exits 1 without any JSON.
+_NO_RAW_SOCKETS = _FakeCompleted(
+    "",
+    returncode=1,
+    stderr="Error: OS detection needs raw sockets (run as root/sudo, or setcap cap_net_raw+ep on Linux)\n\n"
+    "Caused by:\n    Operation not permitted (os error 1)",
+)
 
 
-def _run_probe(tmp_path, monkeypatch, stdouts, **kwargs):
-    """Drive run_pulse_probe with a scripted sequence of pulse outputs."""
+def _ckpt_arg(command: list[str]) -> Path:
+    return Path(command[command.index("--checkpoint") + 1])
+
+
+def _run_probe(tmp_path, monkeypatch, outputs, open_ports=("10.0.0.1:22/tcp",), **kwargs):
+    """Drive run_pulse_probe with a scripted sequence of pulse outputs.
+
+    ``outputs`` items are either a stdout string (exit 0) or a ready-made
+    ``_FakeCompleted``. Returns the commands issued, the checkpoint path of the
+    single default chunk, and whether that checkpoint existed at each call.
+    """
     from scanner.pipeline import pulse_probe as pp
 
     calls: list[list[str]] = []
     ckpt_alive_at_call: list[bool] = []
-    ckpt = tmp_path / "pulse" / "chunk_0000.ckpt"
+    ckpt = tmp_path / "pulse" / f"chunk_{chunk_key(['10.0.0.1'], [22])}.ckpt"
 
     def fake_run_command(command, **_):
         calls.append(command)
         ckpt_alive_at_call.append(ckpt.exists())
+        scripted = outputs[min(len(calls) - 1, len(outputs) - 1)]
+        completed = scripted if isinstance(scripted, _FakeCompleted) else _FakeCompleted(scripted)
         # pulse writes its checkpoint as it goes; mimic that so the test can
-        # tell whether the retry cleared it first.
-        ckpt.parent.mkdir(parents=True, exist_ok=True)
-        ckpt.write_text('{"status": "done"}', encoding="utf-8")
-        return _FakeCompleted(stdouts[min(len(calls) - 1, len(stdouts) - 1)])
+        # tell whether the retry cleared it first. A refused --os never gets
+        # that far (the capability check runs before the checkpoint is created).
+        if completed is not _NO_RAW_SOCKETS:
+            target = _ckpt_arg(command)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{"status": "done"}', encoding="utf-8")
+        return completed
 
     monkeypatch.setattr(pp, "run_command", fake_run_command)
     monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "pulse")
+    monkeypatch.setattr(pp, "_pulse_available", lambda _: True)
     monkeypatch.setattr(pp.time, "sleep", lambda _: None)
 
-    pp.run_pulse_probe(["10.0.0.1:22/tcp"], output_dir=tmp_path, **kwargs)
+    pp.run_pulse_probe(list(open_ports), output_dir=tmp_path, **kwargs)
     return calls, ckpt, ckpt_alive_at_call
 
 
@@ -473,3 +500,154 @@ def test_resolved_chunk_marks_hosts_done(tmp_path, monkeypatch):
 
     assert done == ["10.0.0.1"]
     assert unresolved == []
+
+
+# --- checkpoint identity -----------------------------------------------------
+
+
+def test_chunk_key_depends_on_content_not_order():
+    assert chunk_key(["b", "a"], [443, 22]) == chunk_key(["a", "b"], [22, 443])
+    assert chunk_key(["a"], [22]) != chunk_key(["b"], [22])
+    assert chunk_key(["a"], [22]) != chunk_key(["a"], [22, 80])
+    assert len(chunk_key(["a"], [22])) == 16
+
+
+def test_checkpoint_is_named_after_the_chunk_not_its_position(tmp_path, monkeypatch):
+    """A --resume re-cuts chunks from the pending hosts, so position 0 is a
+    different host set every time. pulse trusts an existing checkpoint file
+    over --targets-file, so an index-named file would make it answer for the
+    previous run's hosts and let the new ones be marked done unscanned."""
+    two_hosts = ("10.0.0.1:22/tcp", "10.0.0.2:22/tcp")
+    first_run, _, _ = _run_probe(
+        tmp_path, monkeypatch, [_ONE_SERVICE], open_ports=two_hosts, chunk_hosts=1
+    )
+    by_host = {Path(c[c.index("--targets-file") + 1]).read_text().split()[0]: _ckpt_arg(c) for c in first_run}
+    assert set(by_host) == {"10.0.0.1", "10.0.0.2"}
+    assert by_host["10.0.0.1"] != by_host["10.0.0.2"]
+    assert "chunk_0000" not in str(by_host["10.0.0.1"])
+
+    # Resume with the first host already done: the second host is now at
+    # position 0 but must keep *its own* checkpoint from the first run.
+    resumed, _, _ = _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_ONE_SERVICE],
+        open_ports=two_hosts,
+        chunk_hosts=1,
+        done_hosts={"10.0.0.1"},
+    )
+    assert len(resumed) == 1
+    assert _ckpt_arg(resumed[0]) == by_host["10.0.0.2"]
+
+
+# --- failure is not "all closed" ----------------------------------------------
+
+
+def test_os_detection_degrades_when_raw_sockets_are_unavailable(tmp_path, monkeypatch):
+    """pulse aborts the whole run when --os cannot open raw sockets; the
+    adapter must keep services/banners/CVEs rather than lose the stage."""
+    calls, _, _ = _run_probe(tmp_path, monkeypatch, [_NO_RAW_SOCKETS, _ONE_SERVICE])
+    assert len(calls) == 2, "expected one immediate re-run without --os"
+    assert "--os" in calls[0]
+    assert "--os" not in calls[1]
+    assert "--os-mode" not in calls[1]
+
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["adapter"]["os_detect"] is False
+    assert "raw sockets" in raw["adapter"]["os_detect_degraded"]
+    assert [row["ip"] for row in raw["open"]] == ["10.0.0.1"]
+
+
+def test_os_degrade_sticks_for_later_chunks(tmp_path, monkeypatch):
+    """Every later chunk would hit the same refusal; do not pay it per chunk."""
+    calls, _, _ = _run_probe(
+        tmp_path,
+        monkeypatch,
+        [_NO_RAW_SOCKETS, _ONE_SERVICE, _ONE_SERVICE],
+        open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"),
+        chunk_hosts=1,
+    )
+    assert len(calls) == 3
+    assert "--os" in calls[0]
+    assert all("--os" not in c for c in calls[1:])
+
+
+def test_os_degrade_is_not_triggered_by_other_failures(tmp_path, monkeypatch):
+    """A crash for any other reason keeps --os: the settle retry handles it."""
+    crash = _FakeCompleted("", returncode=101, stderr="thread 'main' panicked at src/x.rs")
+    calls, _, _ = _run_probe(tmp_path, monkeypatch, [crash, _ONE_SERVICE])
+    assert len(calls) == 2
+    assert all("--os" in c for c in calls)
+
+
+def test_syn_capability_failure_is_not_downgraded(tmp_path, monkeypatch):
+    """--syn is an explicit opt-in; the adapter must not silently switch it off."""
+    refused = _FakeCompleted("", returncode=1, stderr="Error: SYN scan needs raw sockets (root)")
+    calls, _, _ = _run_probe(tmp_path, monkeypatch, [refused, _ONE_SERVICE], syn=True)
+    assert all("--syn" in c and "--os" in c for c in calls)
+
+
+def test_pulse_crash_is_logged_as_a_crash_not_as_zero_services(tmp_path, monkeypatch, caplog):
+    crash = _FakeCompleted("", returncode=2, stderr="error: unexpected argument '--bogus'")
+    with caplog.at_level(logging.WARNING, logger=None):
+        _run_probe(tmp_path, monkeypatch, [crash, _ONE_SERVICE])
+    text = caplog.text
+    assert "exited 2 without JSON" in text
+    assert "unexpected argument" in text
+    assert "0 services across" not in text
+
+
+def test_missing_binary_fails_fast_with_an_install_hint(tmp_path, monkeypatch):
+    from scanner.pipeline import pulse_probe as pp
+
+    monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "pulse")
+    monkeypatch.setattr(pp, "_pulse_available", lambda _: False)
+    monkeypatch.setattr(pp, "run_command", lambda *a, **k: pytest.fail("pulse must not be invoked"))
+    with pytest.raises(FileNotFoundError, match="install-pulse.sh"):
+        pp.run_pulse_probe(["10.0.0.1:22/tcp"], output_dir=tmp_path)
+
+
+def test_missing_binary_is_fine_when_there_is_nothing_to_probe(tmp_path, monkeypatch):
+    """No TCP ports → empty artifacts, no pulse needed."""
+    from scanner.pipeline import pulse_probe as pp
+
+    monkeypatch.setattr(pp, "resolve_pulse_bin", lambda _: "pulse")
+    monkeypatch.setattr(pp, "_pulse_available", lambda _: False)
+    pp.run_pulse_probe(["10.0.0.1:53/udp"], output_dir=tmp_path)
+    assert json.loads((tmp_path / "services.json").read_text(encoding="utf-8")) == []
+
+
+# --- merged raw ---------------------------------------------------------------
+
+
+def test_stats_are_summed_across_chunks_and_rate_recomputed(tmp_path, monkeypatch):
+    chunk = json.dumps(
+        {
+            "open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}],
+            "stats": {"total": 10, "open": 1, "closed": 9, "elapsed_ms": 500, "rate_pps": 20.0},
+        }
+    )
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [chunk],
+        open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"),
+        chunk_hosts=1,
+    )
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["stats"] == {"total": 20, "open": 2, "closed": 18, "elapsed_ms": 1000, "rate_pps": 20.0}
+    assert [c["key"] for c in raw["chunks"]] == [chunk_key(["10.0.0.1"], [22]), chunk_key(["10.0.0.2"], [22])]
+
+
+def test_finished_checkpoint_is_rescanned_not_replayed(tmp_path, monkeypatch):
+    """pulse replays a done checkpoint without --os/--cve/TLS; the adapter
+    must not resume from one. An in-progress checkpoint is a real resume."""
+    ckpt = tmp_path / "pulse" / f"chunk_{chunk_key(['10.0.0.1'], [22])}.ckpt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_text('{"version": 1, "status": "done", "open": []}', encoding="utf-8")
+    _, _, alive_at_call = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
+    assert alive_at_call == [False], "a finished checkpoint must be dropped before pulse runs"
+
+    ckpt.write_text('{"version": 1, "status": "in_progress", "open": []}', encoding="utf-8")
+    _, _, alive_at_call = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
+    assert alive_at_call == [True], "an unfinished checkpoint is a genuine resume"

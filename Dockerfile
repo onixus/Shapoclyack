@@ -11,8 +11,8 @@ RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/c
 
 # Pulse CLI from GenDec releases (not vendored source).
 # Pin PULSE_VERSION to a GenDec release tag. Optional BuildKit secret
-# github_token for private GenDec release assets.
-# Prefer: COPY --from=ghcr.io/onixus/pulse:0.2.0 when GHCR is public/logged-in.
+# github_token for private GenDec release assets. The tarball is verified
+# against the release's checksums.txt before anything is extracted.
 # Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
 FROM debian:bookworm-slim AS pulse-bin
 ARG PULSE_VERSION=v1.1.0
@@ -33,26 +33,40 @@ RUN --mount=type=secret,id=github_token,required=false \
     if [ -f /run/secrets/github_token ] && [ -s /run/secrets/github_token ]; then \
       auth_header="Authorization: Bearer $(cat /run/secrets/github_token)"; \
     fi; \
+    # Same logic as scripts/install-pulse.sh: keep the two in step.
     if [ -n "${auth_header}" ]; then \
       # Private repos: the plain releases/download/... URL 404s even with a
       # valid token (that path only works for public repos / browser
-      # sessions) -- resolve the numeric asset id via the API first, then
-      # fetch it from the assets endpoint with Accept: octet-stream.
-      asset_url="$(curl -fsSL -H "${auth_header}" -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${PULSE_GITHUB_REPO}/releases/tags/${ver}" \
-        | jq -r --arg name "${name}" '.assets[] | select(.name == $name) | .url')"; \
-      test -n "${asset_url}"; \
-      echo "Fetching ${asset_url} (private, via API)"; \
-      curl -fsSL -H "${auth_header}" -H "Accept: application/octet-stream" -o /tmp/pulse.tgz "${asset_url}"; \
-    else \
-      url="https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/${name}"; \
-      echo "Fetching ${url}"; \
-      curl -fsSL -o /tmp/pulse.tgz "${url}"; \
+      # sessions) -- resolve the numeric asset ids via the API once, then
+      # fetch each asset from its API url with Accept: octet-stream.
+      curl -fsSL -H "${auth_header}" -H "Accept: application/vnd.github+json" \
+        -o /tmp/release.json \
+        "https://api.github.com/repos/${PULSE_GITHUB_REPO}/releases/tags/${ver}"; \
     fi; \
+    fetch() { \
+      if [ -n "${auth_header}" ]; then \
+        asset_url="$(jq -r --arg name "$1" '.assets[] | select(.name == $name) | .url' /tmp/release.json)"; \
+        test -n "${asset_url}"; \
+        echo "Fetching $1 (private, via API)"; \
+        curl -fsSL -H "${auth_header}" -H "Accept: application/octet-stream" -o "$2" "${asset_url}"; \
+      else \
+        echo "Fetching https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/$1"; \
+        curl -fsSL -o "$2" "https://github.com/${PULSE_GITHUB_REPO}/releases/download/${ver}/$1"; \
+      fi; \
+    }; \
+    fetch "${name}" /tmp/pulse.tgz; \
+    # The binary gets cap_net_raw/cap_net_admin below; do not install it on
+    # the strength of a TLS connection alone. checksums.txt lines read
+    # "<sha256>  dist/<asset>", so match on the basename.
+    fetch checksums.txt /tmp/checksums.txt; \
+    expected="$(awk -v n="${name}" '{ f = $2; sub(/^\*/, "", f); sub(/.*\//, "", f); if (f == n) { print $1; exit } }' /tmp/checksums.txt)"; \
+    test -n "${expected}"; \
+    echo "${expected}  /tmp/pulse.tgz" | sha256sum -c -; \
     mkdir -p /out; \
     tar -xzf /tmp/pulse.tgz -C /out; \
     test -x /out/pulse; \
     chmod 755 /out/pulse; \
+    rm -f /tmp/pulse.tgz /tmp/checksums.txt /tmp/release.json; \
     rm -rf /var/lib/apt/lists/*
 
 # Shapoclyack scanner pipeline image.

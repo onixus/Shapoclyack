@@ -6,6 +6,45 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Pulse integration polish** — three defects in the Shapoclyack ↔ Pulse
+  seam, found by reading the adapter against GenDec v1.1.0's own source.
+  *Checkpoint identity.* `pulse_probe.py` named each chunk's pulse
+  `--checkpoint` by position (`chunk_0000.ckpt`) while `--resume` re-cuts the
+  chunks from the hosts still pending, so position 0 was a different host set
+  on every resume. Pulse trusts an existing checkpoint file over
+  `--targets-file`: a finished one is replayed without touching the network,
+  an unfinished one continues its *stored* host list, a different port list
+  aborts. A resumed run could therefore be answered with the previous
+  chunk's results and mark the new hosts done without scanning them.
+  Checkpoints (and hosts files) are now named after the chunk's content,
+  `chunk_<sha256(hosts, ports)[:16]>`, so a chunk can only resume itself;
+  a checkpoint pulse already marked done is deleted rather than resumed,
+  because pulse replays those without OS detection, CVE correlation or the
+  TLS probe.
+  *Failures wore the wrong label.* A pulse that exited non-zero without JSON
+  was indistinguishable from a chunk that found nothing, so it was logged as
+  "0 services across N hosts with known-open ports" and given the 15-second
+  settle retry. The most common such exit is pulse's own `--os` capability
+  check — it aborts the whole invocation when raw sockets are unavailable,
+  which on an unprivileged host install or a pod without `NET_RAW` meant the
+  default configuration produced no services at all. The adapter now
+  recognises that refusal, drops `--os` for the rest of the run (the same
+  call `nse.py` makes for nmap `-O`), re-runs at once, and records
+  `adapter.os_detect_degraded` in `pulse/raw.json`; other crashes are logged
+  with their stderr. A missing binary fails fast with an install hint instead
+  of surfacing as a retried `FileNotFoundError` deep in `run_command`.
+  *Installer and image provenance.* `scripts/install-pulse.sh` fetched
+  `releases/download/<tag>/<asset>` with a bearer token, which GitHub answers
+  with 404 for a private repository — the documented private-repo path had
+  never worked. It now resolves the asset through the API exactly as the
+  Dockerfiles do, and both the script and the `pulse-bin` stage of
+  `Dockerfile` / `Dockerfile.allinone` verify the tarball against the
+  release's `checksums.txt` before extracting a binary that is about to get
+  `cap_net_raw`/`cap_net_admin`. Also: `stats` in `pulse/raw.json` is summed
+  over chunks instead of keeping the last chunk's; the `-t` floor matches the
+  schema's `timeout_ms ≥ 50`; `docs/pulse-backend.md` documents the resume
+  semantics, the failure table, the full `service_probe.pulse.*` block, and
+  drops a `PULSE_REF` build-arg the Dockerfile never had.
 - **org_profile polish: nine defects across the module** (EPIC #182). A review
   pass over `ownership.py`, `related_domains.py`, `dns_hygiene.py`,
   `mail_posture.py`, `credential_leaks.py` and `controls.py`.
