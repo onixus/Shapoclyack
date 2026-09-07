@@ -1,0 +1,40 @@
+# Accepted, documented vulnerability exceptions for the Trivy CI gate.
+# The non-blocking "Trivy report" step does NOT use this file, so anything
+# listed here still shows up in CI logs for visibility.
+#
+# There are currently no accepted exceptions: both entries this file used to
+# carry were remediated rather than renewed (see below).
+#
+# Adding one is a last resort — fix it first. If an exception is genuinely
+# unavoidable, give it an `expired_at` review date so it cannot outlive its
+# justification:
+#
+#   vulnerabilities:
+#     - id: CVE-0000-00000
+#       statement: why this cannot be fixed, and what would fix it
+#       expired_at: 2026-12-07
+#
+# Once that date passes Trivy stops honouring the entry and the gate goes red
+# again — that is the intended reminder, not a regression.
+
+vulnerabilities: []
+
+# --- Remediated, do not re-add ------------------------------------------------
+#
+# CVE-2025-68121 (Go stdlib crypto/tls, certificate validation on TLS session
+# resumption) and CVE-2026-56854 / GO-2026-6303 (golang.org/x/crypto/ssh below
+# 0.55.0, source-address option not enforced) were both accepted exceptions
+# while dnsx, naabu and nuclei came from upstream release archives: the first
+# needs a compiler >= Go 1.24.13, the second a dependency none of the three had
+# bumped, and neither is something you can patch in a downloaded binary.
+#
+# The Dockerfiles now build all three from source on golang:1.26 with
+# XCRYPTO_VERSION forcing x/crypto over each tool's own go.mod, so both are
+# fixed at the root. The go-tools stage asserts the bump landed in every binary
+# (`go version -m | grep`), which is the same build metadata Trivy reads, so a
+# silent regression fails the image build before it reaches this gate.
+#
+# GHSA-r277-6w6q-xmqw (kin-openapi fail-open auth bypass) was never ignored
+# here: nuclei v3.11.1 pins kin-openapi 0.144.0, which carries the fix, and
+# that is the version the go-tools stage compiles. Do not add it as an
+# exception — bump nuclei instead.

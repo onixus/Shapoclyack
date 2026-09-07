@@ -4,6 +4,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **`shapoclyack-publish` accepts prerelease tags, and they do not move
+  `:latest`** — the job's `TAG` regex allowed only
+  `shapoclyack-<MAJOR>.<MINOR>-<MMDD>`, so there was no way to publish a beta
+  at all, and every run tagged `:latest` alongside the version. Those two facts
+  together meant the only way to ship something for testing was to ship it as
+  the release everyone tracking `:latest` picks up. The regex now also accepts
+  an `-alpha<N>`, `-beta<N>` or `-rc<N>` suffix, and a tag carrying one is
+  published under that tag only. The k8s manifests pin `tag@sha256` and were
+  never exposed to this, but they are not the only consumer. Nothing changes
+  for a normal release tag: it still gets both its version and `:latest`.
+
 ### Fixed
 
 - **Pulse integration polish** — defects in the Shapoclyack ↔ Pulse seam,
@@ -530,6 +543,75 @@ All notable changes to Shapoclyack are documented in this file.
   fire against servers that were not publishing one.
 
 ### Security
+
+- **Both accepted CRITICALs are fixed at the root, not ignored** —
+  `CVE-2025-68121` (Go stdlib `crypto/tls`, certificate validation on TLS
+  session resumption) and `CVE-2026-56854` / GO-2026-6303
+  (`golang.org/x/crypto/ssh` below 0.55.0, the `source-address` critical option
+  not enforced) were exceptions in `.trivyignore` because they lived in
+  prebuilt dnsx/naabu/nuclei release archives: the first is fixed only by a
+  compiler >= Go 1.24.13, the second by a dependency bump, and neither can be
+  applied to a binary someone else built. Checked against the module proxy, no
+  upstream release carries the fix even now — the newest dnsx (1.3.1) is on
+  x/crypto 0.52.0, naabu 2.6.1 on 0.46.0, nuclei v3.11.1 on 0.53.0 — so
+  waiting was the only thing the exceptions were doing.
+  `Dockerfile` and `Dockerfile.allinone` now build all three from source in one
+  `go-tools` stage on `golang:1.26`, with `GO_SECURITY_PINS` forcing fixed
+  dependency versions over each tool's own `go.mod`. The pinned tool versions
+  are unchanged (dnsx 1.2.3, naabu 2.6.1, nuclei v3.11.1); each gets its own
+  throwaway module so a shared dependency graph cannot silently upgrade one
+  tool to another's requirements, and the stage asserts every pin that is
+  linked into a binary is at the pinned version (`go version -m`) — the same
+  build metadata Trivy reads, so a silent regression fails the image build
+  rather than the gate. The tool and its pins go into a single `go get`:
+  fetching them one at a time re-resolves the graph per call and leaves go.sum
+  without the entries an earlier step had settled (x/exp, via goflags), which
+  the build then fails on.
+  Beyond x/crypto v0.56.0, the list carries the three fixes nuclei had not
+  picked up either — go-git v5.19.2 (CVE-2026-71556), x/mod v0.40.0
+  (CVE-2026-56864, CVE-2026-56865) and grpc v1.83.1 (CVE-2026-84304). These are
+  HIGH, below the CRITICAL gate, and were found by scanning the built image
+  rather than by CI. utls v1.8.2 (CVE-2026-27017) joins them for dnsx — pinned
+  at 1.8.2 rather than the 1.8.1 that carries the fix because naabu 2.6.1
+  already requires 1.8.2, and `go get` fails the build outright rather than
+  downgrading a module a tool pins higher. After the change every Go binary in
+  the image reports no vulnerabilities at any severity.
+
+- **The image's base and pip are current again** — a digest pin is
+  reproducible, never current, so every Debian security update since it was
+  taken was a finding the scan reported against us. `Dockerfile`,
+  `Dockerfile.allinone` and `Dockerfile.api` move to the `python:3.12-slim`
+  index digest of 2026-09-07, which clears every fixable HIGH in the OS layer
+  (30 of them) and all but five fixable MEDIUM. All three then install a
+  pinned `pip==26.2.1` before requirements, closing five MEDIUM and one LOW
+  the base's bundled pip 25.0.1 carried.
+  Two things the bump does *not* fix, both worth knowing. The three CRITICALs
+  in `perl-base` (CVE-2026-13221, CVE-2026-42496, CVE-2026-8376) survive it:
+  Debian publishes no fixed perl, apt offers no candidate above 5.40.1-6, and
+  `perl-base` is Essential so it cannot be removed. They are excluded from the
+  gate by `--ignore-unfixed`, not by an exception. And the newer pip makes
+  three findings appear that the older one hid — its vendored setuptools
+  70.3.0 and msgpack 1.1.2. That is disclosure, not regression: pip 25.0.1
+  vendors the *same* setuptools 70.3.0 and an older msgpack 1.1.0, and only
+  26.x ships the CycloneDX SBOM that lets Trivy see them. They are inside the
+  pip wheel and not separately upgradable. Upstream builds all
+  three with `CGO_ENABLED=0 -s -w` (their `.goreleaser.yml` and `Makefile`),
+  which is what the stage does, so the binaries differ from the released ones
+  only in the toolchain and the x/crypto bump; naabu's SYN path is unaffected
+  and still needs no libpcap. The per-arch sha256 pins on the release zips are
+  gone with the downloads — module downloads are verified against Go's checksum
+  database (GOSUMDB) instead, the trade this file already made for nuclei.
+  `.trivyignore` became `.trivyignore.yaml` and now holds no exceptions at all;
+  what remains is the format, the rule that any future entry carries an
+  `expired_at` review date so it cannot outlive its justification, and the
+  standing note that GHSA-r277-6w6q-xmqw must never be added (nuclei v3.11.1
+  already pins the fixed kin-openapi 0.144.0). The Jenkins `--ignorefile` mount
+  and `SECURITY.md` point at the new file; the (currently dispatch-only) GitHub
+  Actions gate names it through `TRIVY_IGNOREFILE` rather than the action's
+  `trivyignores:` input, which copies the listed files into one temporary file
+  with no extension — and Trivy picks its YAML parser by extension, so the file
+  would have been read as plain text, every line taken for an ID, and any
+  exception would have stopped applying without an error.
 
 - **An SSH destination can no longer be read as an `ssh` option** —
   `_execute_openssh_command` built its destination as `f"{username}@{host}"`

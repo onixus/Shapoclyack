@@ -1,13 +1,86 @@
-# nuclei has no arch-specific prebuilt zip we can sha256-pin the way dnsx/naabu
-# are below (see nuclei-build stage note); `go install` at a pinned version tag
-# instead relies on Go's own module checksum database (GOSUMDB, on by default)
-# to verify every downloaded module cryptographically — arguably stronger than
-# a hand-copied release sha256, and needs no manual checksum bookkeeping here.
-FROM golang:1.26-bookworm AS nuclei-build
+# dnsx, naabu and nuclei are all built from source here rather than taken from
+# upstream release archives. Two accepted CRITICALs came out of those prebuilt
+# binaries and neither had an upstream release carrying a fix: CVE-2025-68121
+# is Go's own stdlib crypto/tls, fixed only by compiling on Go >= 1.24.13, and
+# CVE-2026-56854 is golang.org/x/crypto below 0.55.0, an indirect dependency
+# none of the three has bumped yet (dnsx 1.2.3 asks for 0.45.0, naabu 2.6.1 for
+# 0.46.0, nuclei v3.11.1 for 0.53.0). Once we compile, both are ours to fix:
+# the golang image supplies the toolchain and GO_SECURITY_PINS overrides every
+# tool's own go.mod — that list also carries the go-git, x/mod and grpc fixes
+# nuclei had not picked up.
+#
+# The sha256 pins on the release zips went with the downloads. Module downloads
+# are verified against Go's checksum database (GOSUMDB, on by default) instead —
+# the same trade this file already made for nuclei, and per-module rather than
+# per-archive.
+#
+# Upstream builds all three with CGO_ENABLED=0 and -s -w (their .goreleaser.yml
+# and Makefile), which is what we do below, so these binaries differ from the
+# released ones only in the toolchain and the x/crypto bump. In particular
+# naabu's SYN path stays exactly as upstream ships it and needs no libpcap.
+FROM golang:1.26-bookworm AS go-tools
+
 # v3.11.1 is the first release that pins kin-openapi >= 0.144.0
 # (GHSA-r277-6w6q-xmqw); do not downgrade below it.
 ARG NUCLEI_VERSION=v3.11.1
-RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
+ARG DNSX_VERSION=v1.2.3
+ARG NAABU_VERSION=v2.6.1
+
+# Dependency versions forced over whatever the pinned tools ask for, because
+# each closes a vulnerability none of them has picked up yet. Only ever raise
+# these, and drop one only once every tool requires that version by itself:
+#
+#   x/crypto v0.56.0   CVE-2026-56854 (ssh source-address not enforced,
+#                      CRITICAL) plus the 0.46-0.52 batch; all three tools
+#   go-git   v5.19.2   CVE-2026-71556 (arbitrary file read/write via symlink
+#                      resolution); nuclei
+#   x/mod    v0.40.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
+#                      verification bypass); nuclei
+#   grpc     v1.83.1   CVE-2026-84304; nuclei
+#   utls     v1.8.2    CVE-2026-27017; dnsx
+#
+# A pin must be >= what every tool already requires: `go get` refuses to
+# downgrade a module a tool pins higher (naabu 2.6.1 requires utls v1.8.2)
+# and fails the build outright rather than resolving around it.
+#
+# The list is applied to every tool, not only the one that reported the
+# finding: a pin the binary does not link in costs nothing, and a tool that
+# grows the dependency later inherits the fixed version rather than a fresh
+# advisory.
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.1 github.com/refraction-networking/utls@v1.8.2"
+
+# One throwaway module per tool, not one shared module: a shared module would
+# resolve a single dependency graph across all three and silently upgrade one
+# tool's dependencies to another's.
+#
+# The tool and every pin go into a SINGLE `go get`. Getting them one at a time
+# resolves the graph once per call and leaves go.sum missing entries for
+# modules an earlier step had already settled (x/exp, via goflags), which the
+# build then fails on.
+#
+# Each binary is then checked against the pin list: a pinned module that is
+# linked in must be at the pinned version. "Not linked in at all" passes — a
+# module absent from the binary carries no vulnerability into the image.
+RUN set -eux; \
+    build_tool() { \
+      mkdir -p "/build/$1"; \
+      cd "/build/$1"; \
+      go mod init "shapoclyack.local/toolbuild/$1"; \
+      go get "$2@$3" ${GO_SECURITY_PINS}; \
+      CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "/out/$1" "$2"; \
+      for pin in ${GO_SECURITY_PINS}; do \
+        mod="${pin%@*}"; want="${pin#*@}"; \
+        got="$(go version -m "/out/$1" | awk -v m="$mod" '$1=="dep" && $2==m {print $3}')"; \
+        if [ -n "$got" ] && [ "$got" != "$want" ]; then \
+          echo "$1: $mod resolved to $got, expected $want" >&2; \
+          exit 1; \
+        fi; \
+      done; \
+    }; \
+    build_tool dnsx github.com/projectdiscovery/dnsx/cmd/dnsx "${DNSX_VERSION}"; \
+    build_tool naabu github.com/projectdiscovery/naabu/v2/cmd/naabu "${NAABU_VERSION}"; \
+    build_tool nuclei github.com/projectdiscovery/nuclei/v3/cmd/nuclei "${NUCLEI_VERSION}"; \
+    rm -rf /build
 
 # Pulse CLI from GenDec releases (not vendored source).
 # Pin PULSE_VERSION to a GenDec release tag. Optional BuildKit secret
@@ -43,7 +116,16 @@ RUN --mount=type=secret,id=github_token,required=false \
 # Shapoclyack scanner pipeline image.
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
-FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e
+# Refresh this digest deliberately: a pin is only reproducible, never current,
+# so every Debian security update since it was taken is a finding the scan
+# reports against us. Bumping it to the 3.12-slim of 2026-09-07 cleared every
+# fixable HIGH (30) and all but five fixable MEDIUM in the OS layer.
+# The three CRITICALs in perl-base (CVE-2026-13221, CVE-2026-42496,
+# CVE-2026-8376) are NOT among them: Debian ships no fixed perl and apt offers
+# no candidate above 5.40.1-6, and perl-base is Essential so it cannot be
+# removed. They survive a base bump and are excluded from the gate by
+# --ignore-unfixed, not by an exception. Revisit when Debian publishes a fix.
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-scanner" \
@@ -70,30 +152,11 @@ COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.
-ARG DNSX_VERSION=1.2.3
-ARG NAABU_VERSION=2.6.1
-ARG DNSX_SHA256_AMD64=f58d93f511c1e1f653eac2ae1d44be8ea1ee8eba0d95825ab54ca2be6b9d703d
-ARG DNSX_SHA256_ARM64=e52b1dc48ea4713ad0fd0e731edbe2156e094c44623d7dade3735790c703c8f3
-ARG NAABU_SHA256_AMD64=018c4c9884dea971eda860435ede3021d1150732f34cfd245498c6726d8cab90
-ARG NAABU_SHA256_ARM64=3adc2bb2395c3efff89623499b20eea66ef54924c485d3ae86762393a31736ea
-
-RUN set -eux; \
-    ARCH="$(dpkg --print-architecture)"; \
-    case "${ARCH}" in \
-      amd64) GOARCH="amd64"; DNSX_SHA="${DNSX_SHA256_AMD64}"; NAABU_SHA="${NAABU_SHA256_AMD64}" ;; \
-      arm64) GOARCH="arm64"; DNSX_SHA="${DNSX_SHA256_ARM64}"; NAABU_SHA="${NAABU_SHA256_ARM64}" ;; \
-      *) echo "Unsupported architecture: ${ARCH}"; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://github.com/projectdiscovery/dnsx/releases/download/v${DNSX_VERSION}/dnsx_${DNSX_VERSION}_linux_${GOARCH}.zip" -o /tmp/dnsx.zip; \
-    curl -fsSL "https://github.com/projectdiscovery/naabu/releases/download/v${NAABU_VERSION}/naabu_${NAABU_VERSION}_linux_${GOARCH}.zip" -o /tmp/naabu.zip; \
-    echo "${DNSX_SHA}  /tmp/dnsx.zip" | sha256sum -c -; \
-    echo "${NAABU_SHA}  /tmp/naabu.zip" | sha256sum -c -; \
-    apt-get update && apt-get install -y --no-install-recommends unzip; \
-    unzip -q -o /tmp/dnsx.zip dnsx -d /usr/local/bin; \
-    unzip -q -o /tmp/naabu.zip naabu -d /usr/local/bin; \
-    chmod +x /usr/local/bin/dnsx /usr/local/bin/naabu; \
-    rm -f /tmp/dnsx.zip /tmp/naabu.zip; \
-    apt-get purge -y unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+# dnsx and naabu: built from source in the go-tools stage above, which is also
+# where their versions are pinned — see the note there on why they are no
+# longer fetched as release archives.
+COPY --from=go-tools /out/dnsx /usr/local/bin/dnsx
+COPY --from=go-tools /out/naabu /usr/local/bin/naabu
 
 # Vulnerability NSE scripts (only when INSTALL_NMAP=1):
 #  - nmap-vulners: maps service versions (-sV) to CVEs via the vulners.com API (needs egress).
@@ -116,10 +179,10 @@ RUN set -eux; \
     nmap --script-updatedb
 
 # Nuclei: template-based HTTP vulnerability/misconfig scanning (opt-in, see
-# scanner/pipeline/nuclei_scan.py). Binary built in the nuclei-build stage
+# scanner/pipeline/nuclei_scan.py). Binary built in the go-tools stage
 # above; templates pinned to a release tag for the same reproducible-build
 # reason as NMAP_VULNERS_REF/VULSCAN_REF above.
-COPY --from=nuclei-build /out/nuclei /usr/local/bin/nuclei
+COPY --from=go-tools /out/nuclei /usr/local/bin/nuclei
 ARG NUCLEI_TEMPLATES_REF=v9.9.4
 # Shallow-clone the tag directly: a full clone pulls years of history that the
 # next line throws away, which took ~an hour and broke often enough on a flaky
@@ -158,7 +221,14 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
+# five MEDIUM and one LOW advisory that the scan reports against our image.
+# Pinned rather than left as --upgrade so the build stays reproducible; raise
+# it deliberately, the same way the base digest above is refreshed.
+ARG PIP_VERSION=26.2.1
+RUN set -eux; \
+    pip install --no-cache-dir "pip==${PIP_VERSION}"; \
+    pip install --no-cache-dir -r /app/requirements.txt
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.

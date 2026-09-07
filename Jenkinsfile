@@ -355,10 +355,10 @@ pipeline {
               # Гейт — падаем на исправимых CRITICAL
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                 -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
-                -v "\$WORKSPACE/.trivyignore":/.trivyignore \
+                -v "\$WORKSPACE/.trivyignore.yaml":/.trivyignore.yaml \
                 aquasec/trivy:latest image \
                 --format table --severity CRITICAL --ignore-unfixed \
-                --ignorefile /.trivyignore --exit-code 1 ${IMAGE_TAG}
+                --ignorefile /.trivyignore.yaml --exit-code 1 ${IMAGE_TAG}
             """
           }
         }
