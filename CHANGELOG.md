@@ -4,6 +4,10 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+_Nothing yet._
+
+## [0.44-0907] — 2026-09-07
+
 ### Added
 
 - **`shapoclyack-publish` accepts prerelease tags, and they do not move

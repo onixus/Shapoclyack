@@ -189,7 +189,7 @@ builders use 26). See
 ## Releases
 
 The current documented release is
-[`shapoclyack-0.43-0828`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.43-0828).
+[`shapoclyack-0.44-0907`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.44-0907).
 Published images:
 
 | Image | Role |
