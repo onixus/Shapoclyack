@@ -8,11 +8,13 @@ import io
 import json
 import tarfile
 from datetime import datetime
+from unittest import mock
 
 from api.services import ch_ingest_worker
 from api.services import ch_transform
 from api.services import metrics as metrics_service
 from api.services import nats_bus
+from api.services import clickhouse_client
 from api.services.clickhouse_client import _parse_url
 from tests.conftest import POSTGRES_URL, requires_postgres
 
@@ -57,7 +59,7 @@ def test_transform_vulnerabilities_and_ports(monkeypatch):
         "job_id": "job1",
         "archive_b64": base64.b64encode(archive).decode(),
     }
-    vuln_rows, port_rows = ch_transform.transform_ingest_payload(payload)
+    vuln_rows, port_rows, control_rows = ch_transform.transform_ingest_payload(payload)
     assert len(vuln_rows) == 2  # invalid host skipped
     assert vuln_rows[0][2] == "CVE-2020-1"
     assert vuln_rows[0][3] == 7.5
@@ -73,7 +75,107 @@ def test_transform_vulnerabilities_and_ports(monkeypatch):
     ports = {(r[1], r[2], r[3]) for r in port_rows}
     assert ("10.0.0.1", 22, "tcp") in ports
     assert ("10.0.0.2", 443, "tcp") in ports
+    # No controls.json in this archive: the controls stage is opt-in, and its
+    # absence must produce no rows rather than a row full of zeroes.
+    assert control_rows == []
     reset_scorer_for_tests(None)
+
+
+def test_controls_to_rows_maps_the_matrix_snapshot():
+    """controls.json -> one row per control, carrying the run-level verdict."""
+    controls = {
+        "overall_verdict": "fail",
+        "overall_risk": "high",
+        "evaluated_at": "2026-07-17T11:30:00Z",
+        "controls": [
+            {
+                "control": "mail_protection",
+                "title": "Mail protection",
+                "status": "fail",
+                "impact": "high",
+                "risk_level": "high",
+                "coverage": {"checked": 12, "total": 15},
+                "findings_by_severity": {"critical": 0, "high": 4, "medium": 2},
+            },
+            {
+                "control": "credential_leaks",
+                "title": "Credential leaks",
+                "status": "not_checked",
+                "impact": "critical",
+                "risk_level": "unassessed",
+                "coverage": {"checked": 0, "total": 3},
+                "findings_by_severity": {},
+            },
+        ],
+    }
+    archive = _archive(**{"controls.json": json.dumps(controls).encode()})
+    payload = {
+        "tenant_id": "ten_acme",
+        "run_id": "run7",
+        "job_id": "job7",
+        "archive_b64": base64.b64encode(archive).decode(),
+    }
+    _, _, rows = ch_transform.transform_ingest_payload(payload)
+
+    assert len(rows) == 2
+    mail = rows[0]
+    assert mail[1:7] == ["run7", "mail_protection", "Mail protection", "fail", "high", "high"]
+    assert mail[7:13] == [12, 15, 0, 4, 2, 0]
+    assert mail[13:15] == ["fail", "high"]
+    assert mail[15] == datetime(2026, 7, 17, 11, 30)
+    # Every row carries the run-level verdict, so the posture of a run reads off
+    # any one of its rows without a second query.
+    assert rows[1][13:15] == ["fail", "high"]
+    assert rows[1][4] == "not_checked"
+
+
+def test_controls_to_rows_rejects_values_outside_the_scanner_vocabulary():
+    """An unknown status/impact/risk must not widen the ClickHouse enums.
+
+    ``not_checked`` is the honest bucket for a status the scanner never emits —
+    the module's invariant is that missing data never reads as ``ok``.
+    """
+    controls = {
+        "overall_verdict": "green",
+        "overall_risk": "catastrophic",
+        "controls": [
+            {
+                "control": "dns_structure",
+                "status": "green",
+                "impact": "apocalyptic",
+                "risk_level": "catastrophic",
+                "coverage": {"checked": -3, "total": "x"},
+                "findings_by_severity": {"high": "many"},
+            },
+            {"control": "dns_structure", "status": "ok"},  # duplicate id dropped
+            {"control": "", "status": "ok"},  # unnamed control dropped
+        ],
+    }
+    meta = {"started_at": "2026-07-17T10:00:00Z"}
+    archive = _archive(
+        **{
+            "controls.json": json.dumps(controls).encode(),
+            "run_meta.json": json.dumps(meta).encode(),
+        }
+    )
+    payload = {
+        "tenant_id": "ten_acme",
+        "run_id": "run8",
+        "archive_b64": base64.b64encode(archive).decode(),
+    }
+    _, _, rows = ch_transform.transform_ingest_payload(payload)
+
+    assert len(rows) == 1
+    assert rows[0][4] == "not_checked"
+    # Not "low": filing an unrecognised rating under the least severe impact
+    # would understate the control everywhere the column is read.
+    assert rows[0][5] == "unknown"
+    assert rows[0][6] == "unassessed"
+    assert rows[0][7:9] == [0, 0]
+    assert rows[0][10] == 0
+    assert rows[0][13:15] == ["not_checked", "unassessed"]
+    # No evaluated_at in the artifact: fall back to the run start.
+    assert rows[0][15] == datetime(2026, 7, 17, 10, 0)
 
 
 def test_vulnerabilities_to_rows_applies_on_path_waf_from_fingerprint():
@@ -133,7 +235,7 @@ def test_parse_clickhouse_url():
 
 
 def test_skip_when_archive_not_inlined():
-    vulns, ports = ch_transform.transform_ingest_payload(
+    vulns, ports, _controls = ch_transform.transform_ingest_payload(
         {"tenant_id": "t", "archive_inline": False}
     )
     assert vulns == []
@@ -206,7 +308,7 @@ def test_vulnerabilities_to_rows_uses_stored_asset_criticality(tmp_path):
             "job_id": "job1",
             "archive_b64": base64.b64encode(archive).decode(),
         }
-        vuln_rows, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
+        vuln_rows, _, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
         assert len(vuln_rows) == 1
         assert vuln_rows[0][5] == 4
     finally:
@@ -237,12 +339,12 @@ def test_vulnerabilities_to_rows_falls_back_when_asset_unset(tmp_path):
             "archive_b64": base64.b64encode(archive).decode(),
         }
         # No asset row seeded for this host at all — falls back cleanly.
-        vuln_rows, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
+        vuln_rows, _, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
         assert vuln_rows[0][5] == expected
 
         # An asset row that exists but has no criticality set also falls back.
         _seed_asset(settings, tenant_id, "10.0.2.2", None)
-        vuln_rows2, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
+        vuln_rows2, _, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
         assert vuln_rows2[0][5] == expected
     finally:
         reset_scorer_for_tests(None)
@@ -280,7 +382,7 @@ def test_vulnerabilities_to_rows_batches_lookup_per_host(tmp_path):
             "api.services.ch_transform.assets_service.get_asset_criticality_by_ip",
             wraps=ch_transform.assets_service.get_asset_criticality_by_ip,
         ) as spy:
-            vuln_rows, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
+            vuln_rows, _, _ = ch_transform.transform_ingest_payload(payload, settings=settings)
         assert len(vuln_rows) == 3
         assert all(row[5] == 3 for row in vuln_rows)
         assert spy.call_count == 1
@@ -351,7 +453,7 @@ def test_endpoint_inventory_message_is_not_counted_as_an_ingest(monkeypatch):
     monkeypatch.setattr(
         ch_ingest_worker.ch_transform,
         "transform_ingest_payload",
-        lambda payload, settings=None: ([], []),
+        lambda payload, settings=None: ([], [], []),
     )
 
     before_ok, before_err = _counter("ok"), _counter("error")
@@ -377,3 +479,83 @@ def test_endpoint_inventory_message_is_not_counted_as_an_ingest(monkeypatch):
     assert result.acked is True
     assert _counter("ok") == before_ok + 1
     assert worker.stats["messages"] == 1
+
+
+def test_controls_rows_are_skipped_when_the_table_cannot_be_created():
+    """A read-only ClickHouse user must not break vulnerability ingest.
+
+    ``ensure_controls_table`` returns False there; the worker then inserts no
+    control rows and still acks the message instead of naking it forever.
+    """
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    worker._controls_enabled = False  # noqa: SLF001
+    inserted: list[str] = []
+
+    def _insert(client, table, columns, rows):
+        inserted.append(table)
+        return len(rows)
+
+    with mock.patch.object(ch_ingest_worker.ch, "insert_rows", _insert), mock.patch.object(
+        ch_ingest_worker.ch, "ensure_controls_table", lambda client: False
+    ), mock.patch.object(
+        ch_ingest_worker.ch_transform,
+        "transform_ingest_payload",
+        lambda payload, settings=None: ([["v"]], [["p"]], [["c"]]),
+    ):
+        msg = _FakeMsg(
+            nats_bus.ingest_results_subject("ten_acme"),
+            {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+        )
+        asyncio.run(worker._handle_msg(object(), msg))  # noqa: SLF001
+
+    assert msg.acked is True
+    assert inserted == [ch_ingest_worker.ch.VULN_TABLE, ch_ingest_worker.ch.PORTS_TABLE]
+    assert worker.stats["control_rows"] == 0
+    assert worker.stats["vuln_rows"] == 1
+
+
+def test_a_transient_ddl_failure_does_not_disable_controls_for_good():
+    """The skip flag is retried, not latched.
+
+    A blip while creating the table at connect used to cost every control row
+    until the consume loop crashed and reconnected; now the next message
+    carrying control rows retries the DDL.
+    """
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    worker._controls_enabled = False  # noqa: SLF001
+    inserted: list[str] = []
+
+    with mock.patch.object(
+        ch_ingest_worker.ch,
+        "insert_rows",
+        lambda client, table, columns, rows: inserted.append(table) or len(rows),
+    ), mock.patch.object(
+        ch_ingest_worker.ch, "ensure_controls_table", lambda client: True
+    ), mock.patch.object(
+        ch_ingest_worker.ch_transform,
+        "transform_ingest_payload",
+        lambda payload, settings=None: ([], [], [["c"]]),
+    ):
+        msg = _FakeMsg(
+            nats_bus.ingest_results_subject("ten_acme"),
+            {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+        )
+        asyncio.run(worker._handle_msg(object(), msg))  # noqa: SLF001
+
+    assert msg.acked is True
+    assert ch_ingest_worker.ch.CONTROLS_TABLE in inserted
+    assert worker._controls_enabled is True  # noqa: SLF001
+    assert worker.stats["control_rows"] == 1
+
+
+def test_ensure_controls_table_reports_a_refused_ddl():
+    client = mock.Mock()
+    assert clickhouse_client.ensure_controls_table(client) is True
+    assert "shapoclyack_controls" in client.command.call_args[0][0]
+
+    client.command.side_effect = RuntimeError("read only")
+    assert clickhouse_client.ensure_controls_table(client) is False

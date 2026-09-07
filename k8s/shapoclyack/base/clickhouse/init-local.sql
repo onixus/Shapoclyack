@@ -28,3 +28,23 @@ CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_open_ports (
 ORDER BY (tenant_id, target_ip, port)
 TTL timestamp + INTERVAL 90 DAY;
 
+CREATE TABLE IF NOT EXISTS shapoclyack.shapoclyack_controls (
+    tenant_id UUID,
+    run_id String,
+    control LowCardinality(String),
+    title String,
+    status LowCardinality(String),
+    impact LowCardinality(String),
+    risk_level LowCardinality(String),
+    coverage_checked UInt32,
+    coverage_total UInt32,
+    findings_critical UInt32,
+    findings_high UInt32,
+    findings_medium UInt32,
+    findings_low UInt32,
+    overall_verdict LowCardinality(String),
+    overall_risk LowCardinality(String),
+    timestamp DateTime
+) ENGINE = ReplacingMergeTree()
+ORDER BY (tenant_id, control, timestamp, run_id)
+TTL timestamp + INTERVAL 365 DAY;

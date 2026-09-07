@@ -185,6 +185,7 @@ Client DNS: `shapoclyack-clickhouse-client:8123` (HTTP) / `:9000` (native).
 First-boot schema via `/docker-entrypoint-initdb.d/init.sql` (ConfigMap):
 - `shapoclyack.shapoclyack_vulnerabilities` (`ReplacingMergeTree`, ORDER BY `tenant_id, asset_ip, cve_id`)
 - `shapoclyack.shapoclyack_open_ports` (`ReplacingMergeTree`, ORDER BY `tenant_id, target_ip, port`)
+- `shapoclyack.shapoclyack_controls` (`ReplacingMergeTree`, ORDER BY `tenant_id, control, timestamp, run_id`) — org_profile control trend, 365-day TTL
 
 Enable API ingest worker:
 

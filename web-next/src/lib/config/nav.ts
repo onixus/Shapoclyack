@@ -1,5 +1,6 @@
 import {
   BookText,
+  Building2,
   CircleGauge,
   ClipboardCheck,
   CalendarDays,
@@ -37,6 +38,7 @@ export const NAV = [
   { href: "/runs", labelKey: "nav.runs", icon: Play },
   { href: "/endpoints", labelKey: "nav.endpoints", icon: Laptop },
   { href: "/attack-surface", labelKey: "nav.attackSurface", icon: Share2 },
+  { href: "/org-profile", labelKey: "nav.orgProfile", icon: Building2 },
   { href: "/geo", labelKey: "nav.geo", icon: Globe2 },
   { href: "/reports", labelKey: "nav.reports", icon: FileText },
   { href: "/compliance", labelKey: "nav.compliance", icon: ClipboardCheck },

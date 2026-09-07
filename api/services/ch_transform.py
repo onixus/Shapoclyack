@@ -220,10 +220,120 @@ def open_ports_to_rows(
     return rows
 
 
+# Status/impact/risk vocabularies from scanner/pipeline/controls.py. Rows land in
+# ClickHouse for the control trend over time (EPIC #182, M3), so a value the
+# scanner does not emit must not silently widen the enum on the ClickHouse side:
+# anything unrecognised is normalised to an explicit "we do not know" bucket
+# (`not_checked`, `unassessed`, `unknown`), never to a reassuring or a least
+# severe one.
+_CONTROL_STATUSES = frozenset({"ok", "weak", "fail", "not_checked", "error"})
+_CONTROL_IMPACTS = frozenset({"critical", "high", "medium", "low"})
+_CONTROL_RISK_LEVELS = frozenset(
+    {"very_high", "high", "moderate", "low", "very_low", "unassessed"}
+)
+
+
+def _severity_count(counts: Any, key: str) -> int:
+    if not isinstance(counts, dict):
+        return 0
+    try:
+        value = int(counts.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(value, 0)
+
+
+def controls_to_rows(
+    payload: dict[str, Any],
+    members: dict[str, bytes],
+) -> list[list[Any]]:
+    """Map controls.json -> shapoclyack_controls rows (one per control per run).
+
+    The controls matrix is a per-run snapshot, so the trend lives in the rows,
+    not in the artifact: ORDER BY (tenant_id, control, timestamp, run_id) lets a
+    dashboard read how one control moved across runs.
+    """
+    tenant_id = str(payload.get("tenant_id") or "default")
+    tenant_uuid = tenant_to_uuid(tenant_id)
+    run_id = str(payload.get("run_id") or "")
+    summary = _load_json_member(members, "controls.json")
+    if not isinstance(summary, dict):
+        return []
+    controls = summary.get("controls")
+    if not isinstance(controls, list):
+        return []
+
+    # The controls stage stamps its own evaluated_at; fall back to the run start
+    # so a run whose artifact predates that field still lands on the timeline.
+    meta = _load_json_member(members, "run_meta.json") or {}
+    raw_ts = summary.get("evaluated_at") or (
+        meta.get("started_at") if isinstance(meta, dict) else None
+    )
+    ts = _parse_timestamp(raw_ts)
+
+    overall_verdict = str(summary.get("overall_verdict") or "not_checked").lower()
+    if overall_verdict not in _CONTROL_STATUSES:
+        overall_verdict = "not_checked"
+    overall_risk = str(summary.get("overall_risk") or "unassessed").lower()
+    if overall_risk not in _CONTROL_RISK_LEVELS:
+        overall_risk = "unassessed"
+
+    seen: set[str] = set()
+    rows: list[list[Any]] = []
+    for item in controls:
+        if not isinstance(item, dict):
+            continue
+        control = str(item.get("control") or "").strip()
+        if not control or control in seen:
+            continue
+        seen.add(control)
+
+        status = str(item.get("status") or "not_checked").lower()
+        if status not in _CONTROL_STATUSES:
+            status = "not_checked"
+        impact = str(item.get("impact") or "").lower()
+        if impact not in _CONTROL_IMPACTS:
+            # Not "low": impact is a fixed weight per control, and silently
+            # filing an unrecognised rating under the least severe one would
+            # understate the control in every query that reads the column.
+            # "unknown" is the honest bucket, and it is visible as such.
+            impact = "unknown"
+        risk_level = str(item.get("risk_level") or "unassessed").lower()
+        if risk_level not in _CONTROL_RISK_LEVELS:
+            risk_level = "unassessed"
+
+        coverage = item.get("coverage")
+        checked = _severity_count(coverage, "checked")
+        total = _severity_count(coverage, "total")
+        severities = item.get("findings_by_severity")
+
+        rows.append(
+            [
+                tenant_uuid,
+                run_id,
+                control,
+                str(item.get("title") or ""),
+                status,
+                impact,
+                risk_level,
+                checked,
+                total,
+                _severity_count(severities, "critical"),
+                _severity_count(severities, "high"),
+                _severity_count(severities, "medium"),
+                _severity_count(severities, "low"),
+                overall_verdict,
+                overall_risk,
+                ts,
+            ]
+        )
+    return rows
+
+
 def transform_ingest_payload(
     payload: dict[str, Any], *, settings: Settings | None = None
-) -> tuple[list[list[Any]], list[list[Any]]]:
-    """Return (vuln_rows, port_rows) from a NATS ingest message body."""
+) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]]]:
+    """Return (vuln_rows, port_rows, control_rows) from a NATS ingest body."""
     archive = archive_bytes_from_payload(payload)
     if archive is None:
         if payload.get("archive_inline") is False:
@@ -232,13 +342,14 @@ def transform_ingest_payload(
                 payload.get("job_id"),
                 payload.get("run_id"),
             )
-        return [], []
+        return [], [], []
     try:
         members = extract_archive_members(archive)
     except Exception:  # noqa: BLE001
         LOG.exception("Failed to extract ingest archive job=%s", payload.get("job_id"))
-        return [], []
+        return [], [], []
     return (
         vulnerabilities_to_rows(payload, members, settings=settings),
         open_ports_to_rows(payload, members),
+        controls_to_rows(payload, members),
     )

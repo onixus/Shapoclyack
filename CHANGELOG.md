@@ -6,6 +6,30 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Control matrix trend and an organization-wide view** (`org_profile` M3/M4,
+  EPIC #182). The controls matrix existed only as a per-run snapshot: reading
+  how a control moved meant opening two runs side by side, and the matrix was
+  reachable only from inside a run. Three additions close that.
+  `controls.json` now also lands in ClickHouse as
+  `shapoclyack.shapoclyack_controls` — one row per control per run, ordered by
+  `(tenant_id, control, timestamp, run_id)` so a single control reads as a
+  timeline, with the run-level verdict denormalised onto every row and a
+  365-day TTL (a control trend is only useful across release cycles). The
+  transform normalises anything outside the scanner's own status/impact/risk
+  vocabulary into the `not_checked`/`unassessed` bucket rather than widening
+  the ClickHouse enums, keeping the module invariant that missing data never
+  reads as `ok`. The table is created at worker connect
+  (`CREATE TABLE IF NOT EXISTS`), not only by the first-boot init script, so an
+  upgraded installation does not start failing every ingest message; where the
+  ClickHouse user cannot run DDL the worker skips control rows and vulnerability
+  and port ingest continues.
+  `/org-profile` is a page of its own — owner, related domains with their
+  evidence and the promote action, and the control matrix — defaulting to the
+  newest run and pinnable to an older one via `?runId=`, with the attribution
+  disclaimer on the page rather than only in the artifact. The dashboard gains
+  a posture tile with the newest run's verdict; a run without the stage reads
+  `not checked`, never `ok`.
+
 - **Promoted related domains now reach the next scan** (`org_profile` M4,
   EPIC #182). `POST /api/runs/{id}/related-domains/{domain}/promote` used to
   append the domain to `promoted_domains.txt` in the run directory, and that
