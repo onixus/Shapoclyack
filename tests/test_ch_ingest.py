@@ -167,7 +167,9 @@ def test_controls_to_rows_rejects_values_outside_the_scanner_vocabulary():
 
     assert len(rows) == 1
     assert rows[0][4] == "not_checked"
-    assert rows[0][5] == "low"
+    # Not "low": filing an unrecognised rating under the least severe impact
+    # would understate the control everywhere the column is read.
+    assert rows[0][5] == "unknown"
     assert rows[0][6] == "unassessed"
     assert rows[0][7:9] == [0, 0]
     assert rows[0][10] == 0
@@ -496,6 +498,8 @@ def test_controls_rows_are_skipped_when_the_table_cannot_be_created():
         return len(rows)
 
     with mock.patch.object(ch_ingest_worker.ch, "insert_rows", _insert), mock.patch.object(
+        ch_ingest_worker.ch, "ensure_controls_table", lambda client: False
+    ), mock.patch.object(
         ch_ingest_worker.ch_transform,
         "transform_ingest_payload",
         lambda payload, settings=None: ([["v"]], [["p"]], [["c"]]),
@@ -510,6 +514,42 @@ def test_controls_rows_are_skipped_when_the_table_cannot_be_created():
     assert inserted == [ch_ingest_worker.ch.VULN_TABLE, ch_ingest_worker.ch.PORTS_TABLE]
     assert worker.stats["control_rows"] == 0
     assert worker.stats["vuln_rows"] == 1
+
+
+def test_a_transient_ddl_failure_does_not_disable_controls_for_good():
+    """The skip flag is retried, not latched.
+
+    A blip while creating the table at connect used to cost every control row
+    until the consume loop crashed and reconnected; now the next message
+    carrying control rows retries the DDL.
+    """
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://localhost:4222", clickhouse_url="http://localhost:8123"
+    )
+    worker._controls_enabled = False  # noqa: SLF001
+    inserted: list[str] = []
+
+    with mock.patch.object(
+        ch_ingest_worker.ch,
+        "insert_rows",
+        lambda client, table, columns, rows: inserted.append(table) or len(rows),
+    ), mock.patch.object(
+        ch_ingest_worker.ch, "ensure_controls_table", lambda client: True
+    ), mock.patch.object(
+        ch_ingest_worker.ch_transform,
+        "transform_ingest_payload",
+        lambda payload, settings=None: ([], [], [["c"]]),
+    ):
+        msg = _FakeMsg(
+            nats_bus.ingest_results_subject("ten_acme"),
+            {"tenant_id": "ten_acme", "job_id": "job1", "run_id": "run1"},
+        )
+        asyncio.run(worker._handle_msg(object(), msg))  # noqa: SLF001
+
+    assert msg.acked is True
+    assert ch_ingest_worker.ch.CONTROLS_TABLE in inserted
+    assert worker._controls_enabled is True  # noqa: SLF001
+    assert worker.stats["control_rows"] == 1
 
 
 def test_ensure_controls_table_reports_a_refused_ddl():

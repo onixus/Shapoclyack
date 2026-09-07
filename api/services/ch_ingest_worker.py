@@ -61,6 +61,9 @@ class ClickHouseIngestWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         # Flipped off when the controls table is missing and cannot be created.
+        # Not latched: a message carrying control rows retries the DDL, so a
+        # transient failure at connect costs those rows once, not for the life
+        # of the consume loop.
         self._controls_enabled = True
         self._stats = {
             "messages": 0,
@@ -209,6 +212,10 @@ class ClickHouseIngestWorker:
                 ch.PORT_COLUMNS,
                 port_rows,
             )
+            if control_rows and not self._controls_enabled:
+                self._controls_enabled = await asyncio.to_thread(
+                    ch.ensure_controls_table, client
+                )
             inserted_c = (
                 await asyncio.to_thread(
                     ch.insert_rows,

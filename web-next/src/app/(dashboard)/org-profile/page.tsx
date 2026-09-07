@@ -44,6 +44,12 @@ function OrgProfileInner() {
   const runs = data?.items ?? [];
   const latest = pickLatestRun(runs);
   const runId = pinnedRunId || latest?.run_id || "";
+  // `useRuns()` returns only the first page, so a run pinned via ?runId= need
+  // not be in it. Without its own option the controlled select would fall back
+  // to showing the newest run while the panels below render the pinned one.
+  const options = runs.some((run) => run.run_id === runId)
+    ? runs.map((run) => run.run_id)
+    : [runId, ...runs.map((run) => run.run_id)].filter(Boolean);
 
   return (
     <div className="space-y-6">
@@ -68,9 +74,9 @@ function OrgProfileInner() {
                 // survives a reload.
                 onChange={(event) => router.push(orgProfileHref(event.target.value))}
               >
-                {runs.map((run) => (
-                  <option key={run.run_id} value={run.run_id}>
-                    {run.run_id}
+                {options.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
                   </option>
                 ))}
               </select>

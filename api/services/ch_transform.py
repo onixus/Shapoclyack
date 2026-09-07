@@ -223,7 +223,9 @@ def open_ports_to_rows(
 # Status/impact/risk vocabularies from scanner/pipeline/controls.py. Rows land in
 # ClickHouse for the control trend over time (EPIC #182, M3), so a value the
 # scanner does not emit must not silently widen the enum on the ClickHouse side:
-# anything unknown is normalised to the "unassessed"/"not_checked" bucket.
+# anything unrecognised is normalised to an explicit "we do not know" bucket
+# (`not_checked`, `unassessed`, `unknown`), never to a reassuring or a least
+# severe one.
 _CONTROL_STATUSES = frozenset({"ok", "weak", "fail", "not_checked", "error"})
 _CONTROL_IMPACTS = frozenset({"critical", "high", "medium", "low"})
 _CONTROL_RISK_LEVELS = frozenset(
@@ -291,7 +293,11 @@ def controls_to_rows(
             status = "not_checked"
         impact = str(item.get("impact") or "").lower()
         if impact not in _CONTROL_IMPACTS:
-            impact = "low"
+            # Not "low": impact is a fixed weight per control, and silently
+            # filing an unrecognised rating under the least severe one would
+            # understate the control in every query that reads the column.
+            # "unknown" is the honest bucket, and it is visible as such.
+            impact = "unknown"
         risk_level = str(item.get("risk_level") or "unassessed").lower()
         if risk_level not in _CONTROL_RISK_LEVELS:
             risk_level = "unassessed"
