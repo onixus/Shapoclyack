@@ -1,16 +1,56 @@
 # Shapoclyack all-in-one: scanner tools + FastAPI + Web UI v2 (web-next static export).
 # Default: OCTO_ALLOW_SCAN_START=true, OCTO_JOB_EXECUTION_MODE=local.
 
-# nuclei has no arch-specific prebuilt zip we can sha256-pin the way dnsx/naabu
-# are below (see nuclei-build stage note); `go install` at a pinned version tag
-# instead relies on Go's own module checksum database (GOSUMDB, on by default)
-# to verify every downloaded module cryptographically — arguably stronger than
-# a hand-copied release sha256, and needs no manual checksum bookkeeping here.
-FROM golang:1.26-bookworm AS nuclei-build
+# dnsx, naabu and nuclei are all built from source here rather than taken from
+# upstream release archives. Two accepted CRITICALs came out of those prebuilt
+# binaries and neither had an upstream release carrying a fix: CVE-2025-68121
+# is Go's own stdlib crypto/tls, fixed only by compiling on Go >= 1.24.13, and
+# CVE-2026-56854 is golang.org/x/crypto below 0.55.0, an indirect dependency
+# none of the three has bumped yet (dnsx 1.2.3 asks for 0.45.0, naabu 2.6.1 for
+# 0.46.0, nuclei v3.11.1 for 0.53.0). Once we compile, both are ours to fix:
+# the golang image supplies the toolchain and XCRYPTO_VERSION overrides every
+# tool's own go.mod.
+#
+# The sha256 pins on the release zips went with the downloads. Module downloads
+# are verified against Go's checksum database (GOSUMDB, on by default) instead —
+# the same trade this file already made for nuclei, and per-module rather than
+# per-archive.
+#
+# Upstream builds all three with CGO_ENABLED=0 and -s -w (their .goreleaser.yml
+# and Makefile), which is what we do below, so these binaries differ from the
+# released ones only in the toolchain and the x/crypto bump. In particular
+# naabu's SYN path stays exactly as upstream ships it and needs no libpcap.
+FROM golang:1.26-bookworm AS go-tools
+
 # v3.11.1 is the first release that pins kin-openapi >= 0.144.0
 # (GHSA-r277-6w6q-xmqw); do not downgrade below it.
 ARG NUCLEI_VERSION=v3.11.1
-RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
+ARG DNSX_VERSION=v1.2.3
+ARG NAABU_VERSION=v2.6.1
+# Forced over each tool's own, lower requirement — this is the CVE-2026-56854
+# fix, and the build below fails if it does not land in the binary. Raise it,
+# never lower it; drop the override only once every pinned tool asks for
+# >= v0.55.0 by itself.
+ARG XCRYPTO_VERSION=v0.56.0
+
+# One throwaway module per tool, not one shared module: a shared module would
+# resolve a single dependency graph across all three and silently upgrade one
+# tool's dependencies to another's.
+RUN set -eux; \
+    build_tool() { \
+      mkdir -p "/build/$1"; \
+      cd "/build/$1"; \
+      go mod init "shapoclyack.local/toolbuild/$1"; \
+      go get "$2@$3"; \
+      go get "golang.org/x/crypto@${XCRYPTO_VERSION}"; \
+      CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "/out/$1" "$2"; \
+      go version -m "/out/$1" \
+        | grep -qE "golang.org/x/crypto[[:space:]]+${XCRYPTO_VERSION}([[:space:]]|$)"; \
+    }; \
+    build_tool dnsx github.com/projectdiscovery/dnsx/cmd/dnsx "${DNSX_VERSION}"; \
+    build_tool naabu github.com/projectdiscovery/naabu/v2/cmd/naabu "${NAABU_VERSION}"; \
+    build_tool nuclei github.com/projectdiscovery/nuclei/v3/cmd/nuclei "${NUCLEI_VERSION}"; \
+    rm -rf /build
 
 # Pulse CLI from GenDec GitHub Release (see GenDec docs/release.md).
 FROM debian:bookworm-slim AS pulse-bin
@@ -81,30 +121,11 @@ RUN set -eux; \
 
 COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 
-ARG DNSX_VERSION=1.2.3
-ARG NAABU_VERSION=2.6.1
-ARG DNSX_SHA256_AMD64=f58d93f511c1e1f653eac2ae1d44be8ea1ee8eba0d95825ab54ca2be6b9d703d
-ARG DNSX_SHA256_ARM64=e52b1dc48ea4713ad0fd0e731edbe2156e094c44623d7dade3735790c703c8f3
-ARG NAABU_SHA256_AMD64=018c4c9884dea971eda860435ede3021d1150732f34cfd245498c6726d8cab90
-ARG NAABU_SHA256_ARM64=3adc2bb2395c3efff89623499b20eea66ef54924c485d3ae86762393a31736ea
-
-RUN set -eux; \
-    ARCH="$(dpkg --print-architecture)"; \
-    case "${ARCH}" in \
-      amd64) GOARCH="amd64"; DNSX_SHA="${DNSX_SHA256_AMD64}"; NAABU_SHA="${NAABU_SHA256_AMD64}" ;; \
-      arm64) GOARCH="arm64"; DNSX_SHA="${DNSX_SHA256_ARM64}"; NAABU_SHA="${NAABU_SHA256_ARM64}" ;; \
-      *) echo "Unsupported architecture: ${ARCH}"; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://github.com/projectdiscovery/dnsx/releases/download/v${DNSX_VERSION}/dnsx_${DNSX_VERSION}_linux_${GOARCH}.zip" -o /tmp/dnsx.zip; \
-    curl -fsSL "https://github.com/projectdiscovery/naabu/releases/download/v${NAABU_VERSION}/naabu_${NAABU_VERSION}_linux_${GOARCH}.zip" -o /tmp/naabu.zip; \
-    echo "${DNSX_SHA}  /tmp/dnsx.zip" | sha256sum -c -; \
-    echo "${NAABU_SHA}  /tmp/naabu.zip" | sha256sum -c -; \
-    apt-get update && apt-get install -y --no-install-recommends unzip; \
-    unzip -q -o /tmp/dnsx.zip dnsx -d /usr/local/bin; \
-    unzip -q -o /tmp/naabu.zip naabu -d /usr/local/bin; \
-    chmod +x /usr/local/bin/dnsx /usr/local/bin/naabu; \
-    rm -f /tmp/dnsx.zip /tmp/naabu.zip; \
-    apt-get purge -y unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+# dnsx and naabu: built from source in the go-tools stage above, which is also
+# where their versions are pinned — see the note there on why they are no
+# longer fetched as release archives.
+COPY --from=go-tools /out/dnsx /usr/local/bin/dnsx
+COPY --from=go-tools /out/naabu /usr/local/bin/naabu
 
 ARG NMAP_VULNERS_REF=0555294abe71857c581afc2ef62ea3ca5c7b7145
 ARG VULSCAN_REF=bd642ed1bc9d96795a91cdf1acd8c93ceef2d07e
@@ -122,10 +143,10 @@ RUN set -eux; \
     nmap --script-updatedb
 
 # Nuclei: template-based HTTP vulnerability/misconfig scanning (opt-in, see
-# scanner/pipeline/nuclei_scan.py). Binary built in the nuclei-build stage
+# scanner/pipeline/nuclei_scan.py). Binary built in the go-tools stage
 # above; templates pinned to a release tag for the same reproducible-build
 # reason as NMAP_VULNERS_REF/VULSCAN_REF above.
-COPY --from=nuclei-build /out/nuclei /usr/local/bin/nuclei
+COPY --from=go-tools /out/nuclei /usr/local/bin/nuclei
 ARG NUCLEI_TEMPLATES_REF=v9.9.4
 # Shallow-clone the tag directly: a full clone pulls years of history that the
 # next line throws away, which took ~an hour and broke often enough on a flaky

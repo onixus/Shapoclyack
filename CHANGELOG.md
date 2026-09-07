@@ -531,26 +531,42 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
-- **Trivy exceptions now expire** — `.trivyignore` became
-  `.trivyignore.yaml`, so each accepted CRITICAL carries a machine-readable
-  `statement` and an `expired_at` review date instead of a comment nobody is
-  scheduled to re-read. The plain-text format has no expiry field: an
-  exception taken for an upstream binary we cannot patch stayed silently in
-  force long after the upstream release that fixed it, and the only signal
-  would have been someone happening to re-read the file. Both current
-  entries (CVE-2025-68121, CVE-2026-56854 — unfixable Go stdlib and
-  server-side `x/crypto/ssh` in the bundled dnsx/naabu/nuclei binaries) keep
-  their existing justification verbatim and are dated 2026-12-07; when a date
-  passes Trivy stops honouring the entry and the gate goes red until the pin
-  is bumped or the exception is re-justified. The Jenkins `--ignorefile` mount
-  and `SECURITY.md` point at the new file; the non-blocking report step still
-  ignores it, so the CVEs stay visible in CI logs either way. The (currently
-  dispatch-only) GitHub Actions gate names it through `TRIVY_IGNOREFILE`
-  rather than the action's `trivyignores:` input, which copies the listed
-  files into one temporary file with no extension — and Trivy picks its YAML
-  parser by extension, so the file would have been read as plain text, every
-  line taken for an ID, and the exceptions would have stopped applying
-  without an error.
+- **Both accepted CRITICALs are fixed at the root, not ignored** —
+  `CVE-2025-68121` (Go stdlib `crypto/tls`, certificate validation on TLS
+  session resumption) and `CVE-2026-56854` / GO-2026-6303
+  (`golang.org/x/crypto/ssh` below 0.55.0, the `source-address` critical option
+  not enforced) were exceptions in `.trivyignore` because they lived in
+  prebuilt dnsx/naabu/nuclei release archives: the first is fixed only by a
+  compiler >= Go 1.24.13, the second by a dependency bump, and neither can be
+  applied to a binary someone else built. Checked against the module proxy, no
+  upstream release carries the fix even now — the newest dnsx (1.3.1) is on
+  x/crypto 0.52.0, naabu 2.6.1 on 0.46.0, nuclei v3.11.1 on 0.53.0 — so
+  waiting was the only thing the exceptions were doing.
+  `Dockerfile` and `Dockerfile.allinone` now build all three from source in one
+  `go-tools` stage on `golang:1.26`, with `XCRYPTO_VERSION` (v0.56.0) forced
+  over each tool's own `go.mod`. The pinned tool versions are unchanged
+  (dnsx 1.2.3, naabu 2.6.1, nuclei v3.11.1); each gets its own throwaway module
+  so a shared dependency graph cannot silently upgrade one tool to another's
+  requirements, and the stage asserts the bump landed in every binary
+  (`go version -m | grep`) — the same build metadata Trivy reads, so a silent
+  regression fails the image build rather than the gate. Upstream builds all
+  three with `CGO_ENABLED=0 -s -w` (their `.goreleaser.yml` and `Makefile`),
+  which is what the stage does, so the binaries differ from the released ones
+  only in the toolchain and the x/crypto bump; naabu's SYN path is unaffected
+  and still needs no libpcap. The per-arch sha256 pins on the release zips are
+  gone with the downloads — module downloads are verified against Go's checksum
+  database (GOSUMDB) instead, the trade this file already made for nuclei.
+  `.trivyignore` became `.trivyignore.yaml` and now holds no exceptions at all;
+  what remains is the format, the rule that any future entry carries an
+  `expired_at` review date so it cannot outlive its justification, and the
+  standing note that GHSA-r277-6w6q-xmqw must never be added (nuclei v3.11.1
+  already pins the fixed kin-openapi 0.144.0). The Jenkins `--ignorefile` mount
+  and `SECURITY.md` point at the new file; the (currently dispatch-only) GitHub
+  Actions gate names it through `TRIVY_IGNOREFILE` rather than the action's
+  `trivyignores:` input, which copies the listed files into one temporary file
+  with no extension — and Trivy picks its YAML parser by extension, so the file
+  would have been read as plain text, every line taken for an ID, and any
+  exception would have stopped applying without an error.
 
 - **An SSH destination can no longer be read as an `ssh` option** —
   `_execute_openssh_command` built its destination as `f"{username}@{host}"`
