@@ -38,7 +38,7 @@ spec:
               app.kubernetes.io/component: agent
       containers:
         - name: agent
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.43-0828@sha256:e97b021f8c7fe50813cea875befc597dcb9305e3e24c2790ef2ac66671fcdb77
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.44-0907@sha256:d5dee841f44057c56a68750fffed49f970af85fe0e5419af160b6d0ccd9873ba
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "agent"]
           args:
