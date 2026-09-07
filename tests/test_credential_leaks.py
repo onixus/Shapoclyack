@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
+from scanner.pipeline import credential_leaks
 from scanner.pipeline.config_schema import CredentialLeaksConfig
 from scanner.pipeline.controls import evaluate_controls, ControlsConfig
 from scanner.pipeline.credential_leaks import (
@@ -177,3 +179,35 @@ def test_all_domains_answered_still_yields_ok(tmp_path: Path):
 
     assert result["status"] == "ok"
     assert result["checked_domains"] == 1
+
+
+def test_unavailable_breach_metadata_is_not_reported_as_email_only():
+    """A breach whose metadata never arrived must not read as harmless.
+
+    The fallback ["Email addresses"] asserted a data class nobody observed and,
+    with it, has_passwords=False — downgrading a password dump from critical to
+    high and telling the operator only addresses leaked.
+    """
+    provider = credential_leaks.HIBPLeakProvider(api_key="k", timeout_seconds=1)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"alice": ["AcmeBreach"]}).encode()
+
+    # urllib is imported inside the method, so patch it at its own module.
+    with mock.patch("urllib.request.urlopen", lambda *a, **kw: _Resp()), mock.patch.object(
+        credential_leaks.HIBPLeakProvider, "_fetch_breach_meta", lambda self, name: {}
+    ):
+        report = provider.domain_breaches("example.com")
+
+    assert report.status == "fail"
+    breach = report.breaches[0]
+    assert breach.data_classes == []
+    assert breach.data_classes_known is False
+    assert breach.has_passwords is False

@@ -45,6 +45,12 @@ SOURCE_WEIGHTS: dict[str, float] = {
     "reverse_whois": 0.60,
 }
 
+# crt.sh answers an O= query with one row per certificate, so a common
+# organisation name ("Acme Inc") can return tens of megabytes. Cap what is read
+# into memory; past the cap the organisation is skipped, not truncated, because
+# a half-parsed JSON array is not a partial answer.
+CT_ORG_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
 DISCLAIMER = (
     "Attribution is probabilistic. The operator is responsible for verifying domain "
     "authorization prior to active scanning."
@@ -155,6 +161,7 @@ def _extract_ct_org_candidates(
             if org and status not in ("redacted", "natural_person", "unknown") and len(org.strip()) >= 3:
                 org_names.add(org.strip())
 
+    seen_pairs: set[tuple[str, str]] = set()
     for org_name in org_names:
         LOG.info("Searching crt.sh for certificates issued to organization: %s", org_name)
         try:
@@ -164,22 +171,43 @@ def _extract_ct_org_candidates(
 
             req = Request(url, headers={"User-Agent": "shapoclyack/related_domains", "Accept": "application/json"})
             with urlopen(req, timeout=timeout_seconds) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if isinstance(data, list):
-                    for row in data:
-                        if not isinstance(row, dict):
+                # A common organisation name matches an enormous CT slice, and
+                # this response is attacker-influenceable in the sense that
+                # anyone can get a certificate issued under a colliding O=.
+                # Read a bounded prefix and drop an oversized answer rather
+                # than parsing whatever arrives.
+                raw = resp.read(CT_ORG_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > CT_ORG_MAX_RESPONSE_BYTES:
+                LOG.warning(
+                    "crt.sh response for '%s' exceeds %d bytes; skipping this organization",
+                    org_name,
+                    CT_ORG_MAX_RESPONSE_BYTES,
+                )
+                continue
+            data = json.loads(raw.decode("utf-8"))
+            if isinstance(data, list):
+                for row in data:
+                    if not isinstance(row, dict):
+                        continue
+                    name_val = str(row.get("name_value") or "")
+                    for line in name_val.splitlines():
+                        clean = line.strip().lower().lstrip("*.")
+                        reg_dom = registrable_domain(clean)
+                        if not reg_dom or reg_dom in seed_domains:
                             continue
-                        name_val = str(row.get("name_value") or "")
-                        for line in name_val.splitlines():
-                            clean = line.strip().lower().lstrip("*.")
-                            reg_dom = registrable_domain(clean)
-                            if reg_dom and reg_dom not in seed_domains:
-                                evidence_item = {
-                                    "source": "ct_org",
-                                    "indicator": "crt_sh_org",
-                                    "detail": f"Matched certificate issued to Organization '{org_name}'",
-                                }
-                                candidates.setdefault(reg_dom, []).append(evidence_item)
+                        # One certificate per subdomain means thousands of rows
+                        # carrying the identical evidence dict. Deduplicate at
+                        # the source instead of after the list is built: the
+                        # later pass could only shrink what already fit in
+                        # memory.
+                        if (reg_dom, org_name) in seen_pairs:
+                            continue
+                        seen_pairs.add((reg_dom, org_name))
+                        candidates.setdefault(reg_dom, []).append({
+                            "source": "ct_org",
+                            "indicator": "crt_sh_org",
+                            "detail": f"Matched certificate issued to Organization '{org_name}'",
+                        })
         except Exception as exc:
             LOG.warning("crt.sh organization query failed for '%s': %s", org_name, exc)
 
@@ -355,28 +383,41 @@ def discover_related_domains(
     candidate_evidence: dict[str, list[dict[str, Any]]] = {}
 
     # 1. Cert SAN
-    if "cert_san" in config.sources:
-        san_res = _extract_cert_san_candidates(output_dir, seeds)
-        for dom, evs in san_res.items():
+    # Per-source tally. A source that contributes nothing is worth stating: with
+    # the default configuration reverse_ns/reverse_mx correlate over
+    # dns_hygiene.json / mail_posture.json, which cover exactly the seed set, so
+    # they can only speak when those stages were pointed at a wider list of
+    # domains than this stage's seeds. Silence from an enabled source otherwise
+    # reads as "nothing out there", which is not what happened.
+    sources_evaluated: dict[str, int] = {}
+
+    def _collect(source: str, found: dict[str, list[dict[str, Any]]]) -> None:
+        sources_evaluated[source] = len(found)
+        for dom, evs in found.items():
             candidate_evidence.setdefault(dom, []).extend(evs)
+
+    if "cert_san" in config.sources:
+        _collect("cert_san", _extract_cert_san_candidates(output_dir, seeds))
 
     # 2. CT Org
     if "ct_org" in config.sources:
-        ct_res = _extract_ct_org_candidates(output_dir, seeds, config.timeout_seconds)
-        for dom, evs in ct_res.items():
-            candidate_evidence.setdefault(dom, []).extend(evs)
+        _collect(
+            "ct_org", _extract_ct_org_candidates(output_dir, seeds, config.timeout_seconds)
+        )
 
     # 3. Reverse NS
     if "reverse_ns" in config.sources:
-        ns_res = _extract_reverse_ns_candidates(output_dir, seeds, config.excluded_ns_providers)
-        for dom, evs in ns_res.items():
-            candidate_evidence.setdefault(dom, []).extend(evs)
+        _collect(
+            "reverse_ns",
+            _extract_reverse_ns_candidates(output_dir, seeds, config.excluded_ns_providers),
+        )
 
     # 4. Reverse MX
     if "reverse_mx" in config.sources:
-        mx_res = _extract_reverse_mx_candidates(output_dir, seeds, config.excluded_mx_providers)
-        for dom, evs in mx_res.items():
-            candidate_evidence.setdefault(dom, []).extend(evs)
+        _collect(
+            "reverse_mx",
+            _extract_reverse_mx_candidates(output_dir, seeds, config.excluded_mx_providers),
+        )
 
     # Build candidate items
     items: list[dict[str, Any]] = []
@@ -426,8 +467,19 @@ def discover_related_domains(
         confirmed_domains = [x["domain"] for x in items if x["status"] == "confirmed"]
         merged_domains = confirmed_domains[: config.max_merged_domains]
         if merged_domains:
+            # Recorded, not acted on: this stage runs after the report stage, so
+            # there is no target list left to widen in this run, and nothing
+            # reads the file afterwards. The route into an actual scan is the
+            # operator promoting a domain (POST .../promote), which puts it on
+            # the tenant and into the *next* run. Say that rather than logging a
+            # merge that did not happen.
             write_lines(output_dir / "merged_related_domains.txt", merged_domains)
-            LOG.info("Auto-merged %d confirmed related domains into target list", len(merged_domains))
+            LOG.info(
+                "related_domains: selected %d confirmed domain(s) for merge into "
+                "merged_related_domains.txt; this run's scope is unchanged — promote "
+                "them to carry them into the next scan",
+                len(merged_domains),
+            )
 
     result = {
         "status": "ok",
@@ -436,6 +488,7 @@ def discover_related_domains(
         "candidate_count": candidate_count,
         "total_candidates": total_candidates,
         "truncated": truncated,
+        "sources_evaluated": sources_evaluated,
         "auto_merged": merge_enabled,
         "merge_into_scope": config.merge_into_scope,
         "merged_domains": merged_domains,

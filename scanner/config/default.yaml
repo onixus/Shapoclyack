@@ -426,6 +426,7 @@ org_profile:
   # (cert_san, ct_org, reverse_ns, reverse_mx). merge_into_scope: false by default.
   related_domains:
     enabled: false
+    domains: []             # empty = base domains from input FQDNs
     sources: [cert_san, ct_org, reverse_ns, reverse_mx]
     excluded_ns_providers: [
       cloudflare.com, awsdns, googledomains, azure-dns,

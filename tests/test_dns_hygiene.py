@@ -333,3 +333,21 @@ def test_domain_with_no_dns_answer_is_not_checked(tmp_path: Path, monkeypatch):
     record = result["domains"]["example.com"]
     assert record["status"] == "not_checked"
     assert record["reason"] == "no_dns_answer"
+
+
+def test_truncated_ns_list_does_not_accuse_the_soa_mname():
+    """`soa_mname_not_in_ns` on a truncated NS set is a finding about our cap.
+
+    The zone may well list the MNAME past MAX_NS_PER_DOMAIN in the set we kept,
+    so with an incomplete list its absence says nothing.
+    """
+    soa = {"mname": "ns99.example.com", "timers": {}}
+    kept = [f"ns{i}.example.com" for i in range(1, 11)]
+
+    complete = dns_hygiene._classify_soa("example.com", soa, kept)
+    assert [f["kind"] for f in complete] == ["soa_mname_not_in_ns"]
+
+    truncated = dns_hygiene._classify_soa(
+        "example.com", soa, kept, nameservers_complete=False
+    )
+    assert truncated == []

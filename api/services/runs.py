@@ -582,6 +582,10 @@ _RESTRICTED_ARTIFACTS = frozenset(
     {
         "ownership.json",
         "ownership_findings.txt",
+        # org_profile.json embeds ownership.json verbatim (registrant org,
+        # abuse contacts), so leaving it open would hand a viewer through the
+        # artifact endpoints exactly what GET /runs/{id}/org-profile withholds.
+        "org_profile.json",
         "credential_leaks.json",
         "credential_leaks_findings.txt",
         "credential_leaks_identifiers.json",

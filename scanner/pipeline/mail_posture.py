@@ -187,12 +187,31 @@ def _evaluate_spf(
     Breadth-first with a visited set and a depth ceiling, so ``a.example
     include:b.example`` / ``b.example include:a.example`` terminates on the
     second visit instead of recursing. One dnsx batch per level, not per name.
+
+    A repeat visit is not by itself a loop: two records including the same
+    provider is a diamond, and only an edge back to an ancestor is reported in
+    ``cycles``.
     """
     visited = {domain}
+    # Who included whom, so a repeat visit can be told apart from a real loop.
+    # Two parents including the same SPF record (a diamond: both including
+    # _spf.google.com, say) is ordinary and legal; only an edge back to an
+    # ancestor is the RFC 7208 loop worth reporting.
+    parent_of: dict[str, str] = {}
     lookups = 0
     cycles: list[str] = []
     depth_reached = 0
     frontier = {domain: record}
+
+    def _is_ancestor(candidate: str, of_name: str) -> bool:
+        walker: str | None = of_name
+        seen_walk: set[str] = set()
+        while walker is not None and walker not in seen_walk:
+            if walker == candidate:
+                return True
+            seen_walk.add(walker)
+            walker = parent_of.get(walker)
+        return False
 
     for depth in range(SPF_MAX_DEPTH):
         depth_reached = depth + 1
@@ -205,10 +224,15 @@ def _evaluate_spf(
                 lookups += 1
                 if name not in ("include", "redirect") or not value:
                     continue
-                if value in visited:
+                if _is_ancestor(value, terms_owner):
                     cycles.append(f"{terms_owner}->{value}")
                     continue
+                if value in visited:
+                    # Already expanded on another branch: nothing new to fetch,
+                    # and nothing wrong either.
+                    continue
                 visited.add(value)
+                parent_of[value] = terms_owner
                 next_names.append(value)
         if not next_names or lookups > SPF_MAX_LOOKUPS:
             break
@@ -356,11 +380,16 @@ def _classify_dkim(
     records: dict[str, dict[str, Any]],
     *,
     queried: bool,
+    unqueried_reason: str = "selector_budget_exhausted",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """DKIM for one domain. Never reports "absent" -- see the module docstring."""
     if not queried:
+        # The two ways a domain goes unqueried are not interchangeable: one is
+        # answered by shortening dkim_selectors, the other by fixing the
+        # resolver. Reporting the budget for a failed lookup sends the operator
+        # to the wrong knob.
         return (
-            {"status": "not_checked", "reason": "selector_budget_exhausted", "selectors": {}},
+            {"status": "not_checked", "reason": unqueried_reason, "selectors": {}},
             [],
         )
 
@@ -577,10 +606,12 @@ def check_mail_posture(
         dkim_records = _run_dnsx_txt(
             dkim_names, output_dir, kind="dkim", timeout=timeout, retries=retries
         )
+        dkim_unqueried_reason = "selector_budget_exhausted"
     except DnsxError as exc:
         LOG.warning("mail_posture: DKIM lookups failed: %s", exc)
         dkim_records = {}
         dkim_domains = []
+        dkim_unqueried_reason = "dkim_lookup_failed"
 
     findings: list[dict[str, Any]] = []
     records: dict[str, dict[str, Any]] = {}
@@ -618,7 +649,11 @@ def check_mail_posture(
         domain_findings.extend(dmarc_findings)
 
         dkim, dkim_findings = _classify_dkim(
-            domain, selectors, dkim_records, queried=domain in dkim_domains
+            domain,
+            selectors,
+            dkim_records,
+            queried=domain in dkim_domains,
+            unqueried_reason=dkim_unqueried_reason,
         )
         domain_findings.extend(dkim_findings)
 

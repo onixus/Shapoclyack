@@ -20,9 +20,10 @@ import {
   type ControlItem,
   type ControlStatus,
   type OrgProfileControlsSummary,
+  type OverallVerdict,
 } from "@/lib/api";
 
-function StatusBadge({ status }: { status: ControlStatus }) {
+function StatusBadge({ status }: { status: ControlStatus | OverallVerdict }) {
   switch (status) {
     case "ok":
       return (
@@ -50,6 +51,15 @@ function StatusBadge({ status }: { status: ControlStatus }) {
         <Badge className="bg-rose-950/60 text-rose-400 border-rose-800 gap-1 font-mono">
           <AlertTriangle className="h-3.5 w-3.5" />
           ERROR
+        </Badge>
+      );
+    case "partial":
+      // Some controls passed and others were never evaluated. Deliberately not
+      // green: a matrix with holes in it is not a clean bill of health.
+      return (
+        <Badge className="bg-sky-500/20 text-sky-300 border-sky-500/40 gap-1 font-mono">
+          <ShieldQuestion className="h-3.5 w-3.5" />
+          PARTIAL
         </Badge>
       );
     default:

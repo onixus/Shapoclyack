@@ -314,13 +314,20 @@ def _classify_ns(
 
 
 def _classify_soa(
-    domain: str, soa: dict[str, Any] | None, nameservers: list[str]
+    domain: str,
+    soa: dict[str, Any] | None,
+    nameservers: list[str],
+    *,
+    nameservers_complete: bool = True,
 ) -> list[dict[str, Any]]:
     if soa is None:
         return [_finding("soa_missing", "high", domain)]
     findings: list[dict[str, Any]] = []
     mname = soa.get("mname")
-    if mname and nameservers and mname not in nameservers:
+    # With a truncated NS list the absence of the MNAME says nothing: it may sit
+    # past MAX_NS_PER_DOMAIN in the sorted set we kept. Reporting it anyway is a
+    # finding about our own cap, not about the zone.
+    if mname and nameservers and nameservers_complete and mname not in nameservers:
         findings.append(_finding("soa_mname_not_in_ns", "low", domain, mname=mname))
     out_of_range = {
         field: value
@@ -627,7 +634,11 @@ def check_dns_hygiene(
         domain_findings.extend(ns_findings)
 
         soa = _parse_soa(soa_records.get(domain, {}))
-        domain_findings.extend(_classify_soa(domain, soa, ns_list))
+        domain_findings.extend(
+            _classify_soa(
+                domain, soa, ns_list, nameservers_complete=domain not in ns_truncated
+            )
+        )
 
         caa = _parse_caa(caa_records.get(domain, {}))
         domain_findings.extend(_classify_caa(domain, caa))

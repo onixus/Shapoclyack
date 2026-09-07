@@ -885,6 +885,7 @@ export const STATUS_EN: Record<string, string> = {
   weak: "weak",
   fail: "fail",
   "not checked": "not checked",
+  partial: "partial",
 };
 
 export const STATUS_RU: Record<string, string> = {
@@ -952,5 +953,6 @@ export const STATUS_RU: Record<string, string> = {
   weak: "слабо",
   fail: "не пройден",
   "not checked": "требуется проверка",
+  partial: "частично",
 };
 

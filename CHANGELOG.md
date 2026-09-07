@@ -4,6 +4,47 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- **org_profile polish: nine defects across the module** (EPIC #182). A review
+  pass over `ownership.py`, `related_domains.py`, `dns_hygiene.py`,
+  `mail_posture.py`, `credential_leaks.py` and `controls.py`.
+  Two were disclosure- and severity-level: `org_profile.json` embeds
+  `ownership.json` verbatim (registrant organisation, abuse contacts) but was
+  not a restricted artifact, so a viewer could download through the artifact
+  endpoints exactly what `GET /runs/{id}/org-profile` withholds from them; and
+  a breach whose HIBP metadata never arrived (rate limit, transport error) was
+  written up with a fabricated `["Email addresses"]` data class, which asserts
+  `has_passwords: false` and downgrades a password dump from critical to high.
+  Breaches now carry `data_classes_known`, an empty class list means "not
+  answered", and the finding says the exposure is unknown instead of implying
+  it was harmless.
+  Three were honest-reporting bugs of the same family the module's own
+  invariant names. The controls matrix returned `ok` whenever any single
+  control passed, so one evaluated control alongside five `not_checked` ones
+  read as a clean bill of health; the verdict is now `partial`, the ladder
+  `credential_leaks.py` already used inside one control, lifted to the matrix
+  and carried through the API, ClickHouse and the UI. `soa_mname_not_in_ns`
+  fired when the nameserver list had been truncated at `MAX_NS_PER_DOMAIN` —
+  a finding about our own cap, not the zone. A DKIM lookup that failed at the
+  resolver was reported as `selector_budget_exhausted`, sending the operator to
+  the `dkim_selectors` knob instead of the resolver.
+  The rest: an SPF diamond (two records both including a shared provider) was
+  reported as an RFC 7208 loop, dropping mail_protection to `weak` — only an
+  edge back to an ancestor is a cycle now; the crt.sh `O=` query read an
+  unbounded response and appended one identical evidence dict per certificate
+  row, so a common organisation name could exhaust memory (8 MiB cap,
+  deduplicated at the source); `related_domains` took its seed set from
+  `ownership.domains`, whose size is an RDAP call budget, so narrowing it to
+  save calls silently reclassified the operator's own in-scope domains as
+  related candidates — the stage has its own `domains` list now; and
+  `auto_merge` logged "Auto-merged N domains into target list" for a file
+  nothing reads, written by a stage that runs after the report.
+  `related_domains.json` also gains `sources_evaluated`, a per-source candidate
+  tally: with the default wiring `reverse_ns`/`reverse_mx` correlate over
+  artifacts that cover exactly the seed set, and silence from an enabled source
+  should not read as "no relatives exist".
+
 ### Added
 
 - **Control matrix trend and an organization-wide view** (`org_profile` M3/M4,

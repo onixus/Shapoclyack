@@ -66,6 +66,11 @@ class BreachDetail:
     description: str
     data_classes: list[str]
     has_passwords: bool
+    # False when HIBP's breach metadata could not be fetched (rate limit,
+    # transport error). The breach is real either way — what is unknown is what
+    # it exposed, and an empty data_classes then means "not answered", never
+    # "nothing but the address".
+    data_classes_known: bool = True
     is_verified: bool = True
     is_sensitive: bool = False
     is_fabricated: bool = False
@@ -147,7 +152,12 @@ class HIBPLeakProvider:
             all_accounts.update(accounts)
             # Fetch breach metadata if possible
             b_meta = self._fetch_breach_meta(bname)
-            data_classes = b_meta.get("DataClasses") or ["Email addresses"]
+            # No fabricated fallback here: inventing ["Email addresses"] for a
+            # breach whose metadata never arrived also asserts has_passwords is
+            # False, which downgrades a password dump from critical to high and
+            # tells the operator the breach was harmless.
+            data_classes_known = bool(b_meta)
+            data_classes = [str(dc) for dc in (b_meta.get("DataClasses") or [])]
             has_pw = any(dc.lower() in PASSWORD_DATA_CLASSES for dc in data_classes)
 
             breach_details.append(
@@ -161,6 +171,7 @@ class HIBPLeakProvider:
                     description=b_meta.get("Description") or "",
                     data_classes=data_classes,
                     has_passwords=has_pw,
+                    data_classes_known=data_classes_known,
                     is_verified=bool(b_meta.get("IsVerified", True)),
                     is_sensitive=bool(b_meta.get("IsSensitive", False)),
                     is_fabricated=bool(b_meta.get("IsFabricated", False)),
@@ -170,7 +181,9 @@ class HIBPLeakProvider:
                 )
             )
 
-        status = "fail" if any(b.has_passwords for b in breach_details) or len(breach_details) > 0 else "ok"
+        # Any breach at all is a fail; has_passwords only moves the severity of
+        # the individual finding, so testing it here as well said nothing.
+        status = "fail" if breach_details else "ok"
         return LeakReport(
             domain=domain,
             status=status,
@@ -302,6 +315,7 @@ def check_credential_leaks(
                 "pwn_count": b.pwn_count,
                 "description": b.description,
                 "data_classes": b.data_classes,
+                "data_classes_known": b.data_classes_known,
                 "has_passwords": b.has_passwords,
                 "is_verified": b.is_verified,
                 "is_sensitive": b.is_sensitive,
@@ -309,13 +323,20 @@ def check_credential_leaks(
             })
             domain_identifiers[b.name] = b.accounts
 
-            sev = "critical" if b.has_passwords else "high"
+            if b.has_passwords:
+                qualifier = " (passwords exposed)"
+            elif not b.data_classes_known:
+                # Unknown is not "no passwords": say so instead of implying the
+                # quieter of the two readings.
+                qualifier = " (exposed data classes unknown: breach metadata unavailable)"
+            else:
+                qualifier = ""
             findings.append({
                 "kind": "passwords_exposed" if b.has_passwords else "credential_leak",
-                "severity": sev,
+                "severity": "critical" if b.has_passwords else "high",
                 "domain": domain,
-                "detail": f"{len(b.accounts)} corporate account(s) exposed in breach '{b.title or b.name}'"
-                + (" (passwords exposed)" if b.has_passwords else ""),
+                "detail": f"{len(b.accounts)} corporate account(s) exposed in breach "
+                f"'{b.title or b.name}'" + qualifier,
             })
 
         identifiers_by_domain[domain] = domain_identifiers

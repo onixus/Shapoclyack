@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import ipaddress
 from pathlib import Path
+from unittest import mock
 
 from scanner.pipeline import mail_posture, safe_http
 from scanner.pipeline.config_schema import MailPostureConfig
@@ -380,3 +381,52 @@ def test_domain_with_no_dns_answer_is_not_checked(tmp_path: Path, monkeypatch):
     record = result["domains"]["example.com"]
     assert record["status"] == "not_checked"
     assert record["reason"] == "no_dns_answer"
+
+
+def test_spf_diamond_include_is_not_a_cycle():
+    """Two parents including the same record is legal, not an RFC 7208 loop.
+
+    A single global `visited` set reported the second visit as a cycle, which
+    dropped mail_protection to "weak" for the very common shape of two includes
+    both pulling in a shared provider record.
+    """
+    records = {
+        "a.example": {"txt": ["v=spf1 include:shared.example -all"]},
+        "b.example": {"txt": ["v=spf1 include:shared.example -all"]},
+        "shared.example": {"txt": ["v=spf1 ip4:198.51.100.0/24 -all"]},
+    }
+    with mock.patch.object(mail_posture, "_run_dnsx_txt", lambda names, *a, **kw: records):
+        result = mail_posture._evaluate_spf(
+            "seed.example",
+            "v=spf1 include:a.example include:b.example -all",
+            Path("."),
+            timeout=5,
+            retries=0,
+        )
+    assert result["cycles"] == []
+    assert "shared.example" in result["visited"]
+
+
+def test_spf_self_reference_is_still_a_cycle():
+    """A back edge to an ancestor stays reported."""
+    records = {"loop.example": {"txt": ["v=spf1 include:seed.example -all"]}}
+    with mock.patch.object(mail_posture, "_run_dnsx_txt", lambda names, *a, **kw: records):
+        result = mail_posture._evaluate_spf(
+            "seed.example",
+            "v=spf1 include:loop.example -all",
+            Path("."),
+            timeout=5,
+            retries=0,
+        )
+    assert result["cycles"] == ["loop.example->seed.example"]
+
+
+def test_dkim_lookup_failure_is_not_reported_as_a_selector_budget():
+    """The two unqueried reasons point at different fixes; don't conflate them."""
+    budget, _ = mail_posture._classify_dkim("example.com", ["default"], {}, queried=False)
+    assert budget["reason"] == "selector_budget_exhausted"
+
+    failed, _ = mail_posture._classify_dkim(
+        "example.com", ["default"], {}, queried=False, unqueried_reason="dkim_lookup_failed"
+    )
+    assert failed["reason"] == "dkim_lookup_failed"

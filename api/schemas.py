@@ -1448,7 +1448,9 @@ class ControlItem(BaseModel):
 
 
 class OrgProfileControlsSummary(BaseModel):
-    overall_verdict: Literal["ok", "weak", "fail", "not_checked", "error"]
+    # "partial": part of the matrix passed and part was never evaluated. Kept
+    # distinct from "ok" so an unevaluated control cannot read as a pass.
+    overall_verdict: Literal["ok", "weak", "fail", "partial", "not_checked", "error"]
     overall_risk: str = "unassessed"
     controls: list[ControlItem] = Field(default_factory=list)
     evaluated_at: str | None = None
@@ -1475,6 +1477,9 @@ class RelatedDomainsSummary(BaseModel):
     candidate_count: int = 0
     total_candidates: int = 0
     truncated: bool = False
+    # Candidate domains contributed per source; an enabled source sitting at 0
+    # is a fact about coverage, not an absence of relatives.
+    sources_evaluated: dict[str, int] = Field(default_factory=dict)
     auto_merged: bool = False
     merge_into_scope: bool = False
     merged_domains: list[str] = Field(default_factory=list)

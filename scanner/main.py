@@ -1007,7 +1007,13 @@ def _run_pipeline_body(
         if args.resume and checkpoint.is_done("related_domains"):
             timer.skip("related_domains")
         else:
-            rel_domains = config.org_profile.ownership.domains or base_domains_from_fqdns(scope_fqdns)
+            # Not ownership.domains: that list is capped by the RDAP query
+            # budget, and narrowing it to save calls would silently reclassify
+            # the operator's own in-scope domains as related "candidates".
+            rel_domains = (
+                config.org_profile.related_domains.domains
+                or base_domains_from_fqdns(scope_fqdns)
+            )
             _run_stage(
                 "related_domains",
                 lambda: discover_related_domains(

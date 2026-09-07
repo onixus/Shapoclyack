@@ -862,6 +862,11 @@ class ControlsConfig(BaseModel):
 
 class RelatedDomainsConfig(BaseModel):
     enabled: bool = False
+    # Which domains count as *verified ours*. Everything the sources turn up
+    # outside this set becomes a candidate, so it is the stage's trust anchor
+    # and belongs here rather than being borrowed from the ownership stage,
+    # whose own list is sized by an RDAP call budget (max_domains).
+    domains: list[str] = Field(default_factory=list)
     sources: list[str] = Field(
         default_factory=lambda: ["cert_san", "ct_org", "reverse_ns", "reverse_mx"]
     )
