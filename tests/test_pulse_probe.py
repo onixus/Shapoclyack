@@ -584,7 +584,32 @@ def test_syn_capability_failure_is_not_downgraded(tmp_path, monkeypatch):
     """--syn is an explicit opt-in; the adapter must not silently switch it off."""
     refused = _FakeCompleted("", returncode=1, stderr="Error: SYN scan needs raw sockets (root)")
     calls, _, _ = _run_probe(tmp_path, monkeypatch, [refused, _ONE_SERVICE], syn=True)
+    assert len(calls) == 2, "one settle retry, nothing more"
     assert all("--syn" in c and "--os" in c for c in calls)
+
+
+def test_os_degrade_keeps_an_earlier_runs_checkpoint(tmp_path, monkeypatch):
+    """pulse checks raw sockets before it opens the checkpoint path, so a refused
+    --os proves nothing about the file on disk: it is a previous run's progress."""
+    ckpt = tmp_path / "pulse" / f"chunk_{chunk_key(['10.0.0.1'], [22])}.ckpt"
+    ckpt.parent.mkdir(parents=True)
+    partial = '{"version": 1, "status": "in_progress", "all_hosts": ["10.0.0.1", "10.0.0.9"], "completed_hosts": ["10.0.0.9"]}'
+    ckpt.write_text(partial, encoding="utf-8")
+    _, _, alive_at_call = _run_probe(tmp_path, monkeypatch, [_NO_RAW_SOCKETS, _ONE_SERVICE])
+    assert alive_at_call == [True, True], "the degrade re-run must see the earlier progress"
+
+
+def test_failed_chunks_are_on_the_record(tmp_path, monkeypatch):
+    crash = _FakeCompleted("", returncode=101, stderr="panic")
+    _run_probe(
+        tmp_path,
+        monkeypatch,
+        [crash, crash, _ONE_SERVICE, _ONE_SERVICE],
+        open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"),
+        chunk_hosts=1,
+    )
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert [(c["returncode"], c["resolved"]) for c in raw["chunks"]] == [(101, False), (0, True)]
 
 
 def test_pulse_crash_is_logged_as_a_crash_not_as_zero_services(tmp_path, monkeypatch, caplog):
@@ -648,6 +673,19 @@ def test_finished_checkpoint_is_rescanned_not_replayed(tmp_path, monkeypatch):
     _, _, alive_at_call = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
     assert alive_at_call == [False], "a finished checkpoint must be dropped before pulse runs"
 
-    ckpt.write_text('{"version": 1, "status": "in_progress", "open": []}', encoding="utf-8")
+    # pulse marks done only after enrichment and each batch resets the status,
+    # so a kill during OS/CVE/TLS leaves "in_progress" with every host
+    # completed -- and pulse replays that shape exactly like "done".
+    ckpt.write_text(
+        '{"version": 1, "status": "in_progress", "all_hosts": ["10.0.0.1"], "completed_hosts": ["10.0.0.1"]}',
+        encoding="utf-8",
+    )
+    _, _, alive_at_call = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
+    assert alive_at_call == [False], "all hosts completed is a replay, not a resume"
+
+    ckpt.write_text(
+        '{"version": 1, "status": "in_progress", "all_hosts": ["10.0.0.1", "10.0.0.9"], "completed_hosts": ["10.0.0.9"]}',
+        encoding="utf-8",
+    )
     _, _, alive_at_call = _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE])
     assert alive_at_call == [True], "an unfinished checkpoint is a genuine resume"

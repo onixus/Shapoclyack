@@ -106,24 +106,39 @@ def chunk_key(hosts: Iterable[str], ports: Iterable[int]) -> str:
     return digest.hexdigest()[:16]
 
 
-def _drop_finished_checkpoint(ckpt: Path) -> bool:
-    """Delete ``ckpt`` when pulse marked it ``done``; return True if dropped.
+def _drop_replayable_checkpoint(ckpt: Path) -> bool:
+    """Delete ``ckpt`` when pulse would replay it instead of scanning; True if dropped.
 
-    A finished checkpoint is not resumed by pulse, it is *replayed*: the stored
-    open ports are printed and the process exits without running OS detection,
-    CVE correlation or the TLS probe again (GenDec ``src/main.rs``, the
-    ``CheckpointStatus::Done`` branch). Reaching this point with a finished
-    checkpoint for the same chunk means the previous run ended between pulse
-    finishing and Shapoclyack recording the hosts as done; a fresh scan costs
-    one chunk and keeps the artifacts whole, a replay would silently hand the
-    report services without their findings. An unfinished checkpoint is a real
-    resume and is left alone.
+    Pulse does not resume a checkpoint that has no hosts left, it *replays*
+    it: the stored open ports are printed and the process exits 0 without
+    running OS detection, CVE correlation or the TLS probe (GenDec
+    ``src/main.rs``: the ``CheckpointStatus::Done`` branch, and the
+    ``remaining.is_empty()`` branch right after it). Two on-disk states reach
+    that code: ``status: done``, and ``status: in_progress`` with every host in
+    ``completed_hosts`` -- pulse marks ``done`` only after enrichment, and each
+    host batch resets the status to in-progress, so a kill during OS/CVE/TLS
+    (timeout, OOM, pod eviction, an NVD round-trip) leaves the second shape
+    behind. Either way a replay would hand the report services without their
+    findings and the hosts would be marked done for good; a rescan costs one
+    chunk. A checkpoint with hosts still pending is a real resume and is kept.
     """
     try:
         data = json.loads(ckpt.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    if isinstance(data, dict) and str(data.get("status") or "").lower() == "done":
+    if not isinstance(data, dict):
+        return False
+    if str(data.get("status") or "").lower() == "done":
+        ckpt.unlink(missing_ok=True)
+        return True
+    all_hosts = data.get("all_hosts")
+    completed = data.get("completed_hosts")
+    if (
+        isinstance(all_hosts, list)
+        and all_hosts
+        and isinstance(completed, list)
+        and set(map(str, all_hosts)) <= set(map(str, completed))
+    ):
         ckpt.unlink(missing_ok=True)
         return True
     return False
@@ -678,10 +693,10 @@ def run_pulse_probe(
         hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
         write_lines(hosts_file, host_chunk)
         ckpt = pulse_dir / f"chunk_{key}.ckpt"
-        if ckpt.is_file() and _drop_finished_checkpoint(ckpt):
+        if ckpt.is_file() and _drop_replayable_checkpoint(ckpt):
             logging.info(
-                "pulse_probe chunk %s (%s): previous run finished this chunk but never "
-                "recorded it; rescanning instead of replaying the checkpoint",
+                "pulse_probe chunk %s (%s): previous run scanned every host of this chunk "
+                "but did not finish it; rescanning instead of replaying the checkpoint",
                 idx,
                 key,
             )
@@ -724,8 +739,10 @@ def run_pulse_probe(
         # --os cannot open raw sockets (unprivileged host install, a pod
         # without NET_RAW). Losing services, banners and CVEs over a missing
         # OS guess is the wrong trade, and nse.py already makes the same call
-        # for nmap -O. Drop --os for the rest of the run and ask again now;
-        # no settle pause, the network was never touched.
+        # for nmap -O. Drop --os for the rest of the run and ask again now:
+        # no settle pause, and no checkpoint cleanup -- the capability check
+        # runs before pulse even opens the checkpoint path, so whatever is on
+        # disk is an earlier run's progress and must survive.
         if (
             returncode != 0
             and not payload
@@ -745,7 +762,6 @@ def run_pulse_probe(
                 "pulse binary or the pod (docs/pulse-backend.md) to get OS guesses back.",
                 os_detect_degraded,
             )
-            ckpt.unlink(missing_ok=True)
             cmd = _command(with_os=False)
             payload, returncode, stderr = _probe_chunk(
                 cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
@@ -805,11 +821,19 @@ def run_pulse_probe(
                 payload.get("findings") or payload.get("cves") or []
             )
             merged_raw["tls"].extend(payload.get("tls") or [])
-            merged_raw["chunks"].append(
-                {"index": idx, "key": key, "hosts": host_chunk, "returncode": returncode}
-            )
             if isinstance(payload.get("stats"), dict):
                 _merge_stats(merged_raw["stats"], payload["stats"])
+        # Every chunk is on the record, failed ones included -- an artifact
+        # that lists only the chunks that answered looks like a clean run.
+        merged_raw["chunks"].append(
+            {
+                "index": idx,
+                "key": key,
+                "hosts": host_chunk,
+                "returncode": returncode,
+                "resolved": resolved,
+            }
+        )
 
         if resolved:
             for h in host_chunk:

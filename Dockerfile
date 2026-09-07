@@ -11,12 +11,16 @@ RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/projectdiscovery/nuclei/v3/c
 
 # Pulse CLI from GenDec releases (not vendored source).
 # Pin PULSE_VERSION to a GenDec release tag. Optional BuildKit secret
-# github_token for private GenDec release assets. The tarball is verified
-# against the release's checksums.txt before anything is extracted.
+# github_token for private GenDec release assets. The tarball's SHA-256 is
+# checked against the release's checksums.txt before anything is extracted.
 # Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
 FROM debian:bookworm-slim AS pulse-bin
 ARG PULSE_VERSION=v1.1.0
 ARG PULSE_GITHUB_REPO=onixus/GenDec
+# GenDec's release job treats checksums.txt as optional (docs/release.md);
+# mirror scripts/install-pulse.sh and let a build opt out explicitly rather
+# than fail on a bare curl 404.
+ARG PULSE_SKIP_CHECKSUM=0
 RUN --mount=type=secret,id=github_token,required=false \
     set -eux; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq; \
@@ -55,13 +59,20 @@ RUN --mount=type=secret,id=github_token,required=false \
       fi; \
     }; \
     fetch "${name}" /tmp/pulse.tgz; \
-    # The binary gets cap_net_raw/cap_net_admin below; do not install it on
-    # the strength of a TLS connection alone. checksums.txt lines read
-    # "<sha256>  dist/<asset>", so match on the basename.
-    fetch checksums.txt /tmp/checksums.txt; \
-    expected="$(awk -v n="${name}" '{ f = $2; sub(/^\*/, "", f); sub(/.*\//, "", f); if (f == n) { print $1; exit } }' /tmp/checksums.txt)"; \
-    test -n "${expected}"; \
-    echo "${expected}  /tmp/pulse.tgz" | sha256sum -c -; \
+    # Integrity check, not provenance: checksums.txt comes from the same
+    # release over the same connection, so it catches a truncated or swapped
+    # download, not a compromised release. Lines read "<sha256>  dist/<asset>";
+    # match on the basename.
+    if [ "${PULSE_SKIP_CHECKSUM}" = "1" ]; then \
+      echo "WARNING: PULSE_SKIP_CHECKSUM=1, installing ${name} unverified"; \
+    else \
+      if ! fetch checksums.txt /tmp/checksums.txt; then \
+        echo "release ${ver} has no checksums.txt; refusing to install an unverified pulse (build with --build-arg PULSE_SKIP_CHECKSUM=1 to override)"; exit 1; \
+      fi; \
+      expected="$(awk -v n="${name}" '{ f = $2; sub(/^\*/, "", f); sub(/.*\//, "", f); if (f == n) { print $1; exit } }' /tmp/checksums.txt)"; \
+      if [ -z "${expected}" ]; then echo "checksums.txt on ${ver} has no entry for ${name}"; exit 1; fi; \
+      echo "${expected}  /tmp/pulse.tgz" | sha256sum -c -; \
+    fi; \
     mkdir -p /out; \
     tar -xzf /tmp/pulse.tgz -C /out; \
     test -x /out/pulse; \

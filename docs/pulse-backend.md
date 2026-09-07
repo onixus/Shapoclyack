@@ -157,8 +157,15 @@ the default path.
 
 Both the image stage and the host installer download `checksums.txt` from
 the same release and refuse to unpack a tarball whose SHA-256 does not match
-it: the binary is about to receive `cap_net_raw`/`cap_net_admin`, so a TLS
-connection alone is not enough provenance.
+it. This is an **integrity** check, not provenance: the checksum file travels
+over the same connection from the same release, so it catches a truncated,
+corrupted or swapped download, not a compromised release. Provenance for a
+binary that receives `cap_net_raw`/`cap_net_admin` would need a signature
+over `checksums.txt` (cosign/minisign in GenDec's release job) or an expected
+digest pinned in this repository next to `PULSE_VERSION`; neither exists yet.
+`PULSE_SKIP_CHECKSUM=1` (script) / `--build-arg PULSE_SKIP_CHECKSUM=1`
+(images) opt out with a warning for a release that ships no `checksums.txt`,
+which GenDec's release job treats as an optional asset.
 
 Local image build (GenDec is private, so pass a token with `contents:read`):
 
@@ -180,9 +187,7 @@ PULSE_FROM_SOURCE=1 scripts/install-pulse.sh     # cargo fallback (PULSE_REF pic
 scripts/smoke-pulse.sh
 ```
 
-`GH_TOKEN` is accepted as an alias. `PULSE_SKIP_CHECKSUM=1` exists for a
-release that ships no `checksums.txt`; it prints a warning and should not be
-needed for any v1.x tag.
+`GH_TOKEN` is accepted as an alias.
 
 System UI / API status probes `pulse --version` alongside nmap/naabu/nuclei.
 
@@ -200,10 +205,15 @@ list; a different port list aborts the run), and a `--resume` re-cuts the
 chunks from the hosts still pending, so a position-based name would hand a
 new host set the previous run's checkpoint and let those hosts be marked done
 unscanned. With content-keyed names a chunk can only ever resume itself.
-A *finished* checkpoint is deleted before pulse runs: pulse replays one
+A checkpoint pulse would *replay* is deleted before pulse runs: one marked
+`done`, or one still `in_progress` whose `completed_hosts` already covers
+every host (pulse marks done only after OS/CVE/TLS enrichment, so a kill
+during that phase leaves this shape). Pulse answers both from the file
 without re-running OS detection, CVE correlation or the TLS probe, and a
 rescan of one chunk is cheaper than a report whose services lost their
-findings. Only an unfinished checkpoint is resumed.
+findings. A checkpoint with hosts still pending is resumed as-is, including
+when the run has just dropped `--os`: that refusal happens before pulse opens
+the checkpoint, so the file is an earlier run's progress.
 
 Shapoclyack's own stage checkpoint marks hosts done under key `pulse` (and
 `nse` for nmap) only for chunks that returned at least one service; the
@@ -220,8 +230,9 @@ stage itself is marked done only when no chunk was left unresolved.
 | Pulse exits non-zero without JSON for any other reason | Logged as a crash with its stderr (not as "0 services") and given the same single retry. |
 
 `pulse/raw.json` also carries `adapter.pulse_bin`, `adapter.chunk_hosts`, a
-per-chunk list with each chunk's key and exit code, and `stats` summed over
-all chunks (`rate_pps` recomputed from the totals).
+`chunks` list with every chunk's key, hosts, last exit code and `resolved`
+flag (failed chunks included), and `stats` summed over the chunks that
+answered (`rate_pps` recomputed from the totals).
 
 ## TLS posture without nmap (Phase 4)
 

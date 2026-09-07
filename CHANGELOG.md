@@ -18,9 +18,10 @@ All notable changes to Shapoclyack are documented in this file.
   chunk's results and mark the new hosts done without scanning them.
   Checkpoints (and hosts files) are now named after the chunk's content,
   `chunk_<sha256(hosts, ports)[:16]>`, so a chunk can only resume itself;
-  a checkpoint pulse already marked done is deleted rather than resumed,
-  because pulse replays those without OS detection, CVE correlation or the
-  TLS probe.
+  a checkpoint pulse would replay — marked done, or in-progress with every
+  host already completed, which a kill during enrichment leaves behind — is
+  deleted rather than resumed, because pulse answers both from the file
+  without OS detection, CVE correlation or the TLS probe.
   *Failures wore the wrong label.* A pulse that exited non-zero without JSON
   was indistinguishable from a chunk that found nothing, so it was logged as
   "0 services across N hosts with known-open ports" and given the 15-second
@@ -38,9 +39,11 @@ All notable changes to Shapoclyack are documented in this file.
   with 404 for a private repository — the documented private-repo path had
   never worked. It now resolves the asset through the API exactly as the
   Dockerfiles do, and both the script and the `pulse-bin` stage of
-  `Dockerfile` / `Dockerfile.allinone` verify the tarball against the
-  release's `checksums.txt` before extracting a binary that is about to get
-  `cap_net_raw`/`cap_net_admin`. Also: `stats` in `pulse/raw.json` is summed
+  `Dockerfile` / `Dockerfile.allinone` check the tarball's SHA-256 against
+  the release's `checksums.txt` before extracting (an integrity check against
+  a bad download, not provenance — the file comes over the same connection;
+  `PULSE_SKIP_CHECKSUM` opts out for a release without it). Also: `stats` in
+  `pulse/raw.json` is summed
   over chunks instead of keeping the last chunk's; the `-t` floor matches the
   schema's `timeout_ms ≥ 50`; `docs/pulse-backend.md` documents the resume
   semantics, the failure table, the full `service_probe.pulse.*` block, and
