@@ -74,8 +74,11 @@ issues. Actual timelines depend on severity, exploitability, and release risk.
 - findings that require already-compromised cluster-admin or host-root access
   without crossing an additional documented trust boundary.
 
-Accepted image exceptions are documented in [`.trivyignore`](../.trivyignore)
-and must be reviewed when affected packages or base images change.
+Accepted image exceptions are documented in [`.trivyignore.yaml`](../.trivyignore.yaml)
+and must be reviewed when affected packages or base images change. Each entry
+carries an `expired_at` review date: once it passes Trivy stops honouring the
+exception and the CI gate fails until the pin is bumped or the exception is
+re-justified with a new date.
 
 ## Safe harbor
 

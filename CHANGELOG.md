@@ -531,6 +531,22 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Trivy exceptions now expire** — `.trivyignore` became
+  `.trivyignore.yaml`, so each accepted CRITICAL carries a machine-readable
+  `statement` and an `expired_at` review date instead of a comment nobody is
+  scheduled to re-read. The plain-text format has no expiry field: an
+  exception taken for an upstream binary we cannot patch stayed silently in
+  force long after the upstream release that fixed it, and the only signal
+  would have been someone happening to re-read the file. Both current
+  entries (CVE-2025-68121, CVE-2026-56854 — unfixable Go stdlib and
+  server-side `x/crypto/ssh` in the bundled dnsx/naabu/nuclei binaries) keep
+  their existing justification verbatim and are dated 2026-12-07; when a date
+  passes Trivy stops honouring the entry and the gate goes red until the pin
+  is bumped or the exception is re-justified. The GitHub Actions gate
+  (`trivyignores:`), the Jenkins `--ignorefile` mount and `SECURITY.md` point
+  at the new file; the non-blocking report step still ignores it, so the CVEs
+  stay visible in CI logs either way.
+
 - **An SSH destination can no longer be read as an `ssh` option** —
   `_execute_openssh_command` built its destination as `f"{username}@{host}"`
   and appended it to argv, where neither field was validated beyond a length.

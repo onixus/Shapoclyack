@@ -194,7 +194,7 @@ jobs:
           format: table
           severity: CRITICAL
           ignore-unfixed: true
-          trivyignores: .trivyignore
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
       - name: Generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@v0.24.0
