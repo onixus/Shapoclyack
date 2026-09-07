@@ -894,6 +894,14 @@ below safe, and it is the reason a rollback procedure can be short.
    (its triggers are commented out; `workflow_dispatch` remains for a manual
    cross-check). `DRY_RUN` defaults to true, so a first run builds without
    publishing.
+
+   A prerelease is the same tag with an `-alpha<N>`, `-beta<N>` or `-rc<N>`
+   suffix (`shapoclyack-0.44-0907-beta1`). It is published exactly like a
+   release except that it does **not** move `:latest`, so anything tracking
+   `:latest` stays on the last real release. Upgrade to a prerelease by naming
+   its tag explicitly; never by following `:latest`. The job reads the tag from
+   the local clone, so the tag has to exist there — pushing it to GitHub alone
+   is not enough.
 2. Take a backup and confirm it is current — see
    [PostgreSQL scheduled backup](#postgresql-scheduled-backup). The rollback
    path below assumes one exists.
