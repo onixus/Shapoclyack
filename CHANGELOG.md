@@ -41,7 +41,9 @@ All notable changes to Shapoclyack are documented in this file.
   since the seed's mtime is the build's, and the console was rendering a
   fresh-built seed as a green `fresh`. `usable` is the build's own verdict
   against the floor, and it is `null` rather than `false` when no manifest was
-  found.
+  found. The System page reads it: a dataset the build called unusable is
+  badged `stub` and never `fresh`, and a `null` — no manifest, nothing recorded
+  — is left to the age check exactly as before.
 - **Three ways the provenance could lie, closed before they shipped.**
   A refresh run that did not *attempt* a dataset used to overwrite its `origin`
   with `seed`. That is not a hypothetical path: the API pod's enrichment

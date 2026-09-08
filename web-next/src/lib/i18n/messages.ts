@@ -286,6 +286,8 @@ export const en = {
   "page.reports.subtitle": "PDF and artifact discovery from completed runs.",
   "page.system.title": "System Telemetry & Config",
   "page.system.subtitle": "Versions, dependencies, stage timings and runtime. Edits need admin.",
+  "page.system.enrichment.stub":
+    "Present and loadable, but below the size a real feed publishes — the build shipped a seed, or a refresh came back truncated. Matching answers \"unknown\" outside what it covers.",
   "page.exposure.alert": "Drawing an internet-facing count from public addresses would launder a heuristic as a fact. Mark exposure on the asset card; this list is that decision.",
   "page.threats.alert": "KEV membership is copied from the last observation onto the tracked finding, so it survives run pruning. Attack-path chaining is not modelled.",
   "page.jobs.denied": "Operator or admin role privileges required to launch and monitor scan jobs.",
@@ -698,6 +700,8 @@ export const ru: Record<MsgKey, string> = {
   "page.reports.subtitle": "PDF и артефакты завершённых прогонов.",
   "page.system.title": "Телеметрия и конфигурация",
   "page.system.subtitle": "Версии, зависимости, тайминги стадий и runtime. Правки — администратор.",
+  "page.system.enrichment.stub":
+    "Файл на месте и читается, но меньше того, что публикует настоящий фид: в сборке сид либо обновление вернуло обрезанный документ. Вне покрытия сопоставление отвечает «неизвестно».",
   "page.exposure.alert": "Считать интернет-facing по публичным адресам — выдать эвристику за факт. Отметьте экспозицию на карточке актива; этот список — то решение.",
   "page.threats.alert": "Членство в KEV копируется с последнего наблюдения на отслеживаемую находку и переживает обрезку прогонов. Цепочки атаки не моделируются.",
   "page.jobs.denied": "Запускать и смотреть задания сканирования могут оператор или администратор.",
@@ -881,6 +885,7 @@ export const STATUS_EN: Record<string, string> = {
   "no findings": "no findings",
   missing: "missing",
   fresh: "fresh",
+  stub: "stub",
   ok: "ok",
   weak: "weak",
   fail: "fail",
@@ -949,6 +954,7 @@ export const STATUS_RU: Record<string, string> = {
   "no findings": "без находок",
   missing: "нет",
   fresh: "актуально",
+  stub: "заглушка",
   ok: "в норме",
   weak: "слабо",
   fail: "не пройден",

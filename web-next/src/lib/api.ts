@@ -751,6 +751,15 @@ export type EnrichmentDb = {
   modified_at: string | null;
   age_days: number | null;
   stale?: boolean;
+  /**
+   * The build's verdict on whether this file is a corpus or a placeholder,
+   * against the per-dataset floor in scripts/enrichment_manifest.py. Age and
+   * entry count cannot answer it: the committed advisory seed is present, has
+   * the build's mtime and a non-zero count whether it holds eight advisories or
+   * four hundred thousand. `null` means no manifest was found — "nothing
+   * recorded", which is not the same claim as `false`.
+   */
+  usable?: boolean | null;
 };
 
 export type ScanConfigSummary = {
