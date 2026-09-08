@@ -104,6 +104,136 @@ All notable changes to Shapoclyack are documented in this file.
   there is no signal in the inventory to correct it, and the supported path is
   a risk acceptance with a reason and an expiry rather than a guess.
 
+- **False-positive verdicts, and a suppression that survives the next scan**
+  (ROADMAP Track E) — a finding could be closed as noise, but
+  `register_findings_from_run` re-opened *any* closed row it saw again, so an
+  honest verdict cost a reopen, a restarted SLA clock and a permanent place in
+  the breach report. Marking noise correctly was the expensive option, which is
+  the wrong incentive to put on triage.
+  `POST /api/vulnerabilities/{id}/false-positive` (admin) now records the
+  verdict as an expiring attribute of the row — reason, evidence, who, and a
+  mandatory `suppress_days` between 1 and 365 (default 90), so "forever" cannot
+  be spelled. While it holds, a re-observation leaves the finding `CLOSED` and
+  moves `observation_count` and `fp_observations` without touching
+  `reopen_count` or the SLA clock. `DELETE` on the same path takes only
+  `operator`: releasing a suppression can only put work back on the queue.
+  The verdict is overruled by evidence rather than only by time — a higher
+  severity, `in_kev` turning true, `network_exposure` becoming `external` or a
+  higher `exploit_maturity` re-opens the finding at once and records an
+  `fp_overridden` event naming what changed. The finding never disappears: it
+  stays in the Vulnerability Center as `CLOSED`, keeps its audit trail, and does
+  not touch run artifacts, ClickHouse or `vulnerabilities.json`.
+  The rule is one shared entry point rather than a copy per observer. Findings
+  are re-observed by two paths — the scan run and the endpoint-software fold,
+  which the matcher re-runs on a timer — and only the first knew verdicts
+  existed, so a suppressed `endpoint_software` finding came back `OPEN` on the
+  next inventory snapshot, with `reopen_count` incremented and the SLA clock
+  restarted, while the console still rendered the suppression on it. Both paths
+  now weigh a re-observation through `weigh_fp_verdict`, escalation override
+  included, and all four re-open paths — run, snapshot, operator transition and
+  a resolved ticket coming back — drop the `fp_*` columns as they go, so an open
+  finding can no longer advertise a verdict that stopped holding. Withdrawing a
+  verdict that is not there answers `409` instead of a `200` for a call that
+  changed nothing; the console's Withdraw button reads the closure rather than
+  the leftover columns, so it no longer appears on an open finding at all.
+  Compliance says what its score was built on. A false-positive closure leaves
+  the active population, so it can turn a failing control green — intended, and
+  the score is *not* docked for it, because penalising a tenant for correcting
+  its own evidence restores the incentive to leave noise open. But every
+  guardrail on the verdict constrains who may make one, and none of them is
+  visible where the score is read, so each framework's posture now carries
+  `suppressed_findings`: how many findings an unexpired verdict is holding out
+  of the assessment. It is on the console beside the evidence base and in every
+  generated report.
+  Migration `0034_vuln_false_positive`; its downgrade is destructive and is
+  listed as such in [docs/operations.md](docs/operations.md), as is
+  `0035_asset_scan_coverage`'s, for the same reason its own docstring gives:
+  there is no backfill and there cannot be one, so an operator who rolls back
+  and forward again loses the whole Coverage block until every asset has been
+  reached by a new run.
+  `fp_marked_at` and `fp_suppress_until` are `timestamp without time zone`, like
+  every other lifecycle column on the table and like the naive UTC the services
+  write. Declared as `timestamptz`, they were filled with naive UTC that
+  Postgres reinterprets by the session `TimeZone` — which nothing here pins — so
+  on an installation not running UTC the verdict's timestamp sat hours from the
+  `first_seen_at` it is subtracted from, and "median hours to a verdict" read
+  `-9.0` for a verdict made the same minute the finding appeared. The same
+  correction applies to `0035_asset_scan_coverage`'s three columns, and
+  `api/services/assets.py` now writes naive UTC as `vulnerabilities.py` does.
+  Both revisions are unreleased, so the types are corrected in place rather than
+  by a follow-up `ALTER`; an installation that already ran them off this branch
+  should `downgrade 0033` and upgrade again.
+
+- **Adoption's noise and coverage blocks, and the metrics they had to correct
+  first** (ROADMAP Track E). Two shares on that page were wrong in the
+  direction that flatters the installation.
+  `scanned_recently_share` read `assets.last_seen`, which
+  `api/services/endpoint_inventory.py` moves whenever an agent checks in with a
+  software inventory — so a fleet of endpoint agents reporting on schedule made
+  an estate nobody had scanned in months report full coverage, the metric saying
+  the opposite of the truth in exactly the case it exists to catch. Migration
+  `0035_asset_scan_coverage` adds `assets.last_scanned_at`, `last_scan_run_id`
+  and `last_vuln_scan_at`, written **only** by the scan-ingest path in
+  `api/services/assets.py`. There is no backfill and there cannot be one —
+  nothing in the schema records which past run covered which asset — so coverage
+  reads `null` until real runs fill the columns, which is the honest answer
+  rather than a zero that reads as an alarm about the upgrade. Because they fill
+  one run at a time, the withholding is a floor on the estate's scan history and
+  not a check for a clean zero: 50,000 assets with one 500-host subnet scanned
+  would otherwise read "Scanned in 30 days: 1%", indistinguishable from scanning
+  having collapsed and a statement about the rollout either way.
+  `last_vuln_scan_at` is set from what the run actually did, not from the
+  presence of `vulnerabilities.json`: `report.py` exports that file
+  unconditionally and the `report` stage runs in every pipeline, so an
+  installation with `nuclei.enabled: false` and no nmap-vulners — a supported
+  opt-out — stamped vulnerability coverage on every host of every run and the
+  tile read 100% for an estate nothing had assessed. It now takes findings in
+  the file, or a vulnerability stage recorded as `ok` in the run's own
+  `stage_timings.json` (with `nuclei.json`'s `skipped_reason` consulted, since
+  that stage is invoked even when it is switched off).
+  And every remediation metric counted a false-positive closure as a fix:
+  `closed_in_window`, `machine_verified_share`, `closed_within_sla_share` and
+  the `mttr_hours*` medians now count real closures only, with
+  `false_positive_in_window` beside them, so the quarterly control question
+  ROADMAP asks cannot be answered by relabelling noise — and honest triage no
+  longer drags the verification rate down while doing it.
+  On top of that, `false_positives` reports the verdicts' share of all closures,
+  their severities, the suppressions in force and lapsed, the ones the scanner
+  broke by evidence, the median hours to a verdict, and per-detector and
+  per-observer rates. A rate is withheld below 20 closures — one verdict out of
+  one closure is not a 100% error rate — and advisory matches, which have no
+  `script_id`, go to their own `unknown` bucket instead of being blamed on a
+  script. `coverage` adds reach against `tenant_scan_scopes`, counted in
+  **approved ranges reached rather than in addresses**: a share of the approved
+  address space answered 2.9% for a fully scanned /22 with thirty live hosts,
+  could not tell an empty range from one nobody had ever scanned, and
+  double-counted overlapping approvals (`10.0.0.0/24` plus `10.0.0.128/25` was
+  384 addresses). A range counts as reached when it contains an *active* asset a
+  scan touched inside the window — not merely one that was discovered once,
+  which is exactly the tenant the block exists to catch — and the ranges nothing
+  has reached are listed by name, which is the half an operator can act on. Deny
+  rows are counted apart instead of being folded into "approved entries", and
+  wildcard and domain approvals are named as unmeasurable rather than counted as
+  missed.
+  Both blocks are additive on `GET /api/adoption`, and the console grows a
+  **Noise** and a **Coverage** section plus a **False positive** card on the
+  finding page.
+
+- **`metrics()` stopped reading the tenant's whole history into Python.** It
+  issued two unwindowed `select`s — every finding and every asset the tenant had
+  ever had — and counted them in a loop, which on a 50k-asset estate was the
+  worst read in the product. The point-in-time counts are now SQL aggregates and
+  the closure pass is bounded by the window and served by the index
+  `0034_vuln_false_positive` adds; only the rows the medians genuinely need are
+  materialised. The two new blocks were built on that shape rather than added
+  in front of the old one — with one exception worth naming rather than
+  implying: scope coverage still does its CIDR membership test in Python, over
+  the IP identifiers of active assets a scan reached inside the window. That is
+  a bounded fraction of the identifier table rather than the whole of it, but it
+  is not SQL, and `inet <<=` would do it better on Postgres; the repo has no
+  `inet` usage yet and casting an identifier column that is a plain string is
+  its own risk, so it is left as a known read and not claimed as an aggregate.
+
 ### Changed
 
 - **The tenant-wide matcher run is batched** — `run_for_tenant` opened a
@@ -262,6 +392,14 @@ All notable changes to Shapoclyack are documented in this file.
   `tests/test_software_findings_consumers.py` is the statement a future
   `source`-aware filter has to argue with.
 
+- **A finding the scanner re-opened kept claiming it had been verified** — the
+  operator reopen in `transition()` cleared `machine_verified` and
+  `closure_reason`, but the observer's own reopen path in
+  `register_findings_from_run` cleared neither. A machine-verified closure that
+  came back stayed `machine_verified=True` while `OPEN`, still asserting that a
+  verification run had confirmed a fix for something visibly still there — the
+  one claim that column exists to make un-fakeable. Found while auditing the
+  reopen path for the false-positive work.
 
 ## [0.44-0907] — 2026-09-07
 

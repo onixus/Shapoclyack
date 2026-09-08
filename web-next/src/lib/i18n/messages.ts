@@ -374,6 +374,21 @@ export const en = {
     "Verified by the next inventory snapshot from this endpoint, not by a re-scan: a scan does not observe an installed package.",
   "vuln.software.lastSnapshot": "Last observed",
   "vuln.software.device": "Endpoint",
+
+  // False-positive verdicts (Track E). The verdict is an expiring attribute of
+  // the finding, so every string here names the expiry as well as the verdict.
+  "vuln.reason.falsePositive": "Not a real finding",
+  "vuln.fp.title": "False positive",
+  "vuln.fp.hint":
+    "Closes the finding as never having been real and stops the scanner re-opening it. A reason and an end date are both required — a suppression nobody revisits is how a real finding disappears.",
+  "vuln.fp.reason": "Why this is not a real finding",
+  "vuln.fp.suppressDays": "Suppress for (days, 1-365)",
+  "vuln.fp.markBtn": "Mark false positive",
+  "vuln.fp.clearBtn": "Withdraw verdict",
+  "vuln.fp.saving": "Saving…",
+  "vuln.fp.suppressedUntil": "Suppressed until {when}",
+  "vuln.fp.lapsed": "The verdict has expired — the next observation re-opens this finding",
+  "vuln.fp.observations": "seen {count}× while suppressed",
   "softwareCve.trackedFinding": "Tracked finding",
   // One string per reason. A single "no published fix" was printed for every
   // row without a finding, including rows with the fix in the next column.
@@ -805,6 +820,20 @@ export const ru: Record<MsgKey, string> = {
     "Проверяется следующим инвентарём с этого хоста, а не пересканом: скан не видит установленный пакет.",
   "vuln.software.lastSnapshot": "Последнее наблюдение",
   "vuln.software.device": "Хост",
+
+  // Вердикт «ложное срабатывание» (Track E).
+  "vuln.reason.falsePositive": "Ложное срабатывание",
+  "vuln.fp.title": "Ложное срабатывание",
+  "vuln.fp.hint":
+    "Закрывает находку как никогда не существовавшую и запрещает сканеру открывать её заново. Причина и срок обязательны: бессрочное подавление — это то, как исчезает настоящая находка.",
+  "vuln.fp.reason": "Почему находка не настоящая",
+  "vuln.fp.suppressDays": "Подавить на (дней, 1-365)",
+  "vuln.fp.markBtn": "Пометить ложным",
+  "vuln.fp.clearBtn": "Снять вердикт",
+  "vuln.fp.saving": "Сохранение…",
+  "vuln.fp.suppressedUntil": "Подавлено до {when}",
+  "vuln.fp.lapsed": "Срок вердикта истёк — следующее наблюдение переоткроет находку",
+  "vuln.fp.observations": "наблюдалась {count}× под подавлением",
   "softwareCve.trackedFinding": "Находка",
   "softwareCve.noTrackedFinding.noFix": "не отслеживается — нет опубликованного фикса",
   "softwareCve.noTrackedFinding.fixed": "не отслеживается — на этом хосте уже исправлено",

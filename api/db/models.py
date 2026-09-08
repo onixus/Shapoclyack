@@ -229,7 +229,22 @@ class Asset(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
     status: Mapped[str] = mapped_column(default="active")  # active | stale | decommissioned
     first_seen: Mapped[datetime]
+    # Moved by *anything* that observes the host, an endpoint agent's inventory
+    # check-in included. It is not a coverage signal, which is what the three
+    # columns below are for: they are written only by the scan-ingest path in
+    # api/services/assets.py, so "scanned recently" cannot be satisfied by an
+    # agent phoning home. Nullable with no backfill — nothing records which
+    # past run covered which asset, so coverage reads as unknown until real
+    # runs fill them.
     last_seen: Mapped[datetime]
+    last_scanned_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_scan_run_id: Mapped[str | None] = mapped_column(default=None)
+    # A discovery run covers the asset for inventory but says nothing about its
+    # vulnerabilities. Set only when the run actually assessed them — findings
+    # in vulnerabilities.json, or a vulnerability stage recorded as run in
+    # stage_timings.json. The file's *existence* means nothing: report.py writes
+    # it on every run (see api/services/assets.py::_assessed_vulnerabilities).
+    last_vuln_scan_at: Mapped[datetime | None] = mapped_column(default=None)
     # "Ownership" (roadmap Phase 7.1) as plain nullable columns rather than a
     # join table — nothing in the scan pipeline produces multi-owner data yet;
     # a real ownership graph is Phase 11 territory.
@@ -786,10 +801,24 @@ class Vulnerability(Base):
     # never close a finding as verified.
     verification_job_id: Mapped[str | None] = mapped_column(default=None)
     last_verified_at: Mapped[datetime | None] = mapped_column(default=None)
-    # verified_remediated | manual | ticket_resolved | patched. The last is the
-    # software path's own: the next accepted inventory snapshot no longer
-    # matches the CVE, which is a machine observation but not a re-scan.
+    # verified_remediated | manual | ticket_resolved | patched |
+    # false_positive. See CLOSURE_REASONS in
+    # api/services/vulnerabilities.py. ``patched`` is the software path's
+    # own: the next accepted inventory snapshot no longer matches the CVE,
+    # which is a machine observation but not a re-scan.
     closure_reason: Mapped[str | None] = mapped_column(default=None)
+    # False-positive verdict, expiring — an attribute for the same reason
+    # accepted risk is one (see the vuln_states docstring). `fp_suppress_until`
+    # is mandatory whenever the verdict is set: a suppression with no end date
+    # is a finding nobody looks at again. `fp_observations` counts how often the
+    # scanner still saw it while suppressed, which is the number that says
+    # whether the verdict was wrong.
+    fp_reason: Mapped[str | None] = mapped_column(default=None)
+    fp_marked_by: Mapped[str | None] = mapped_column(default=None)
+    fp_marked_at: Mapped[datetime | None] = mapped_column(default=None)
+    fp_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    fp_suppress_until: Mapped[datetime | None] = mapped_column(default=None)
+    fp_observations: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -808,6 +837,9 @@ class Vulnerability(Base):
         # The source filter, and the software worker's "what is still open from
         # the endpoint inventory" read.
         Index("ix_vulnerabilities_source", "tenant_id", "source", "state"),
+        # Adoption: one tenant's closures inside a window, by reason.
+        Index("ix_vulnerabilities_fp", "tenant_id", "closure_reason", "closed_at"),
+        Index("ix_vulnerabilities_closed", "tenant_id", "state", "closed_at"),
     )
 
 

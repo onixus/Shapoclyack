@@ -15,6 +15,7 @@ function posture(overrides: Partial<CompliancePosture> = {}): CompliancePosture 
     generated_at: "2026-08-31T10:00:00Z",
     asset_count: 12,
     open_findings: 7,
+    suppressed_findings: 0,
     controls_total: 3,
     controls_assessed: 2,
     controls_passed: 1,
@@ -111,6 +112,30 @@ describe("CompliancePage", () => {
       screen.getByText("An inventory of in-scope system components is maintained"),
     );
     expect(await screen.findByText(/no assets data in this tenant/i)).toBeInTheDocument();
+  });
+
+  it("says how many findings a verdict is holding out of the score", async () => {
+    // A control can pass because the estate was fixed or because the findings
+    // behind it were marked as never real, and the score is the same number
+    // either way. The score is not docked for it — that would put the
+    // incentive back on leaving noise open — so the disclosure is the only
+    // thing that lets a reader tell the two apart.
+    vi.spyOn(apiModule, "fetchCompliancePosture").mockResolvedValue(
+      posture({ suppressed_findings: 4 }),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByText(/4 findings held out by a false-positive verdict/i),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about verdicts when there are none", async () => {
+    vi.spyOn(apiModule, "fetchCompliancePosture").mockResolvedValue(posture());
+    renderPage();
+
+    expect(await screen.findByText("50%")).toBeInTheDocument();
+    expect(screen.queryByText(/false-positive verdict/i)).not.toBeInTheDocument();
   });
 
   it("does not present an unassessable estate as a pass", async () => {

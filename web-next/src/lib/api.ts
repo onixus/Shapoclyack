@@ -1609,8 +1609,20 @@ export type TrackedVulnerability = {
   machine_verified?: boolean;
   verification_job_id?: string | null;
   last_verified_at?: string | null;
-  /** verified_remediated | patched | manual | ticket_resolved. */
+  /** verified_remediated | patched | manual | ticket_resolved | false_positive. */
   closure_reason?: string | null;
+  /** False-positive verdict, an expiring attribute of the finding rather than a
+   * state of its own. `fp_suppressed` is the server's derived answer to "does a
+   * re-observation still leave this closed" — the verdict *and* an unexpired
+   * `fp_suppress_until` — so the console never has to compute it from a clock
+   * it does not share with the API. */
+  fp_reason?: string | null;
+  fp_marked_by?: string | null;
+  fp_marked_at?: string | null;
+  fp_evidence?: Record<string, unknown>;
+  fp_suppress_until?: string | null;
+  fp_observations?: number;
+  fp_suppressed?: boolean;
 };
 
 export type TicketSystem = "jira" | "servicenow" | "smax" | "defectdojo" | "other";
@@ -1694,6 +1706,16 @@ export type VulnerabilityAssignBody = {
 export type VulnerabilityExceptionBody = {
   until: string;
   reason: string;
+};
+
+/** Body for the false-positive verdict. `suppress_days` is bounded 1-365 by the
+ * API rather than optional-and-unbounded, so "suppress this forever" has no
+ * spelling; `evidence` is free-form because no fixed shape fits every detector,
+ * and it is what makes the verdict re-checkable by whoever inherits it. */
+export type VulnerabilityFalsePositiveBody = {
+  reason: string;
+  suppress_days?: number;
+  evidence?: Record<string, unknown>;
 };
 
 export async function fetchTrackedVulnerabilities(
@@ -1801,6 +1823,32 @@ export async function clearVulnerabilityException(vulnId: string) {
   try {
     const { data } = await api.delete<TrackedVulnerability>(
       `/vulnerabilities/${encodeURIComponent(vulnId)}/exception`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function setVulnerabilityFalsePositive(
+  vulnId: string,
+  body: VulnerabilityFalsePositiveBody,
+) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/false-positive`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function clearVulnerabilityFalsePositive(vulnId: string) {
+  try {
+    const { data } = await api.delete<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/false-positive`,
     );
     return data;
   } catch (error) {
@@ -2041,6 +2089,10 @@ export type CompliancePosture = {
   generated_at: string;
   asset_count: number;
   open_findings: number;
+  /** Findings an unexpired false-positive verdict is holding out of the active
+   * population this posture was assessed from. Reported beside the score and
+   * never subtracted from it. */
+  suppressed_findings: number;
   controls_total: number;
   controls_assessed: number;
   controls_passed: number;
@@ -2283,7 +2335,12 @@ export async function deleteGeneratedReport(reportId: string) {
 export type AdoptionFindings = {
   open: number;
   accepted_open: number;
+  /** Remediation closures only. Findings closed as never having been real are
+   * `false_positive_in_window` instead, and are excluded from every share and
+   * median below — otherwise the quarterly control question is answerable by
+   * relabelling noise. */
   closed_in_window: number;
+  false_positive_in_window: number;
   machine_verified_closed: number;
   /** Shares are percentages 0-100, or null when there is nothing to divide by. */
   machine_verified_share: number | null;
@@ -2302,6 +2359,57 @@ export type AdoptionAssets = {
   dual_source_share: number | null;
   coverage_days: number;
   unowned: number;
+};
+
+export type AdoptionNoiseSource = {
+  /** A detector's `script_id`, `unknown` for advisory matches that have none,
+   * or — in `by_origin` — the observer: `scan` or `endpoint_software`. */
+  source: string;
+  closed: number;
+  false_positive: number;
+  /** `null` below `source_threshold` closures: one verdict out of one closure
+   * is a data point, not a 100% error rate. The counts are always there. */
+  false_positive_share: number | null;
+};
+
+export type AdoptionFalsePositives = {
+  in_window: number;
+  share_of_closures: number | null;
+  by_severity: Record<string, number>;
+  by_source: AdoptionNoiseSource[];
+  by_origin: AdoptionNoiseSource[];
+  source_threshold: number;
+  suppressions_active: number;
+  suppressions_lapsed: number;
+  overridden_in_window: number;
+  median_hours_to_verdict: number | null;
+};
+
+/** `scan_history_reason` is why the two scan shares are withheld
+ * (`no_scan_history`, `partial_scan_history` — migration 0035 has no backfill,
+ * so the columns fill one run at a time). `scope_unbounded_reason` is why scope
+ * coverage is: `no_scope`, `no_measurable_scope` (every approval is a wildcard
+ * or a domain suffix), or the scan-history reason.
+ *
+ * Scope coverage counts **approvals reached**, not addresses: a share of an
+ * address space read 2.9% for a fully scanned /22 and could not tell an empty
+ * subnet from an unscanned one. `scope_uncovered_entries` names the approved
+ * ranges no scan has reached, capped — `measurable_entries` has the total. */
+export type AdoptionCoverage = {
+  coverage_days: number;
+  assets_with_scan_history: number;
+  scan_history_share: number | null;
+  scan_history_reason: string | null;
+  scanned_share: number | null;
+  vuln_scanned_share: number | null;
+  approved_entries: number;
+  denied_entries: number;
+  measurable_entries: number;
+  unmeasurable_entries: string[];
+  scope_covered_entries: number | null;
+  scope_covered_share: number | null;
+  scope_uncovered_entries: string[];
+  scope_unbounded_reason: string | null;
 };
 
 export type AdoptionAnalyst = { analyst: string; closed: number; machine_verified: number };
@@ -2326,7 +2434,12 @@ export type AdoptionMetrics = {
   window_days: number;
   generated_at: string;
   findings: AdoptionFindings;
+  /** Added after the page shipped, and optional here for the same reason the
+   * API defaults them: an older server answers without either block and the
+   * page has to keep rendering the rest. */
+  false_positives?: AdoptionFalsePositives;
   assets: AdoptionAssets;
+  coverage?: AdoptionCoverage | null;
   analysts: AdoptionAnalyst[];
   onboarding: AdoptionOnboarding;
   enrichment: AdoptionEnrichmentDataset[];

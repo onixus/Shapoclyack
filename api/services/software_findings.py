@@ -319,6 +319,13 @@ class SoftwareFindingStats:
     #: floor moved. Held open, and counted apart from the above so the two
     #: reasons are not one number.
     held_open_untracked_match: int = 0
+    #: Findings matched again while a false-positive verdict held them closed,
+    #: and verdicts this fold broke early because the assessment got worse. The
+    #: same two counters the run path reports, for the same reason: a
+    #: suppression that is quietly doing nothing and one that is quietly hiding
+    #: something look identical without them.
+    fp_suppressed: int = 0
+    fp_overridden: int = 0
 
     def add(self, other: SoftwareFindingStats) -> None:
         for name in self.__dataclass_fields__:
@@ -487,10 +494,36 @@ def _fold_device(
             )
             continue
 
+        # A false-positive verdict is weighed *before* the row is refreshed —
+        # an escalation is a difference between what the verdict was made on
+        # and what this snapshot says — and only for an observation that is
+        # actually new. This module used to have no idea verdicts existed, so a
+        # suppressed finding came back OPEN on the very next snapshot while the
+        # console still showed the verdict on it; the rule lives in
+        # ``vulnerabilities.py`` precisely so both observers obey the same one.
+        fresh_observation = observed_at > row.last_seen_at
+        outcome = (
+            vulns_service.weigh_fp_verdict(
+                session,
+                row,
+                latest,
+                tenant_id=tenant_id,
+                now=now,
+                detail={
+                    "source": SOURCE,
+                    "device_id": device.device_id,
+                    "snapshot_id": device.latest_snapshot_id,
+                    "severity": severity,
+                },
+            )
+            if fresh_observation
+            else vulns_service.FP_NONE
+        )
+
         for name, value in latest.items():
             setattr(row, name, value)
         row.updated_at = now
-        if observed_at <= row.last_seen_at:
+        if not fresh_observation:
             # The same snapshot, re-folded. The matcher is re-run on a timer
             # and by hand, and counting each pass as a fresh observation would
             # fill the audit trail with events at which nothing happened. The
@@ -501,6 +534,16 @@ def _fold_device(
         row.last_seen_at = observed_at
         row.observation_count += 1
         stats.reobserved += 1
+
+        if outcome == vulns_service.FP_HELD:
+            # The verdict stands: the match is still there, and the verdict
+            # said that is what it looks like when it is not real. The finding
+            # stays CLOSED, the SLA clock stays stopped and ``reopen_count``
+            # stays put, exactly as on the run path.
+            stats.fp_suppressed += 1
+            continue
+        if outcome == vulns_service.FP_OVERRIDDEN:
+            stats.fp_overridden += 1
 
         if row.state == vuln_states.CLOSED:
             days, sla_source = vulns_service._resolve_sla_days(  # noqa: SLF001
@@ -515,6 +558,19 @@ def _fold_device(
             row.state_changed_by = None
             row.closed_at = None
             row.machine_verified = False
+            reopen_detail: dict[str, Any] = {
+                "source": SOURCE,
+                "device_id": device.device_id,
+                "snapshot_id": device.latest_snapshot_id,
+            }
+            # Either the suppression ran out or an escalation broke it. Both
+            # mean the verdict no longer holds, and leaving it on an open row
+            # is what made the console offer to withdraw a verdict that was no
+            # longer suppressing anything.
+            if vulns_service.drop_fp_verdict_on_reopen(row):
+                reopen_detail["after_fp_suppression"] = True
+                if outcome == vulns_service.FP_OVERRIDDEN:
+                    reopen_detail["fp_overridden"] = True
             row.closure_reason = None
             row.sla_started_at = observed_at
             row.due_at = observed_at + timedelta(days=days)
@@ -531,12 +587,7 @@ def _fold_device(
                 from_state=previous,
                 to_state=vuln_states.OPEN,
                 note="Matched again by a later inventory snapshot",
-                detail={
-                    "source": SOURCE,
-                    "device_id": device.device_id,
-                    "snapshot_id": device.latest_snapshot_id,
-                    "reopen_count": row.reopen_count,
-                },
+                detail={**reopen_detail, "reopen_count": row.reopen_count},
             )
         else:
             vulns_service._record_event(  # noqa: SLF001

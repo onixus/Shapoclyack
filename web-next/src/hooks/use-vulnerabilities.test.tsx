@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
+import { queryKeys } from "@/lib/query-keys";
 import type { ReactNode } from "react";
 import type { TrackedVulnerability, VulnerabilitySummary } from "@/lib/api";
 
@@ -17,16 +19,22 @@ vi.mock("@/lib/api", () => ({
   assignVulnerability: vi.fn(),
   setVulnerabilityException: vi.fn(),
   clearVulnerabilityException: vi.fn(),
+  setVulnerabilityFalsePositive: vi.fn(),
+  clearVulnerabilityFalsePositive: vi.fn(),
 }));
 
 import {
   assignVulnerability,
+  clearVulnerabilityFalsePositive,
   fetchTrackedVulnerabilities,
   fetchVulnerabilitySummary,
+  setVulnerabilityFalsePositive,
   transitionVulnerability,
 } from "@/lib/api";
 import {
   useAssignVulnerability,
+  useClearVulnerabilityFalsePositive,
+  useSetVulnerabilityFalsePositive,
   useTrackedVulnerabilities,
   useTransitionVulnerability,
   useVulnerabilitySummary,
@@ -100,11 +108,22 @@ const SUMMARY: VulnerabilitySummary = {
   generated_at: "2026-08-18T00:00:00Z",
 };
 
-function wrapper({ children }: { children: ReactNode }) {
-  const queryClient = new QueryClient({
+function makeClient() {
+  return new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+}
+
+/** A wrapper over a client the test holds, so what a mutation wrote to the
+ * cache can be read back. The shared `wrapper` builds its own and cannot. */
+function wrapperFor(client: QueryClient) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  };
+}
+
+function wrapper({ children }: { children: ReactNode }) {
+  return wrapperFor(makeClient())({ children });
 }
 
 afterEach(() => {
@@ -156,6 +175,92 @@ describe("useAssignVulnerability", () => {
     expect(assignVulnerability).toHaveBeenCalledWith("vuln_1", {
       assignee: "ada",
       owner_team: null,
+    });
+  });
+});
+
+describe("useSetVulnerabilityFalsePositive", () => {
+  it("sends the reason and a bounded expiry, and seeds the cache with the answer", async () => {
+    // Asserting `fp_suppressed` back out of the mock would only prove the mock
+    // returns what it was told to. What is worth pinning is the hook's own
+    // work: the row the API answered with becomes the cached detail row, so
+    // the card re-renders from the server's verdict rather than from a clock
+    // the console does not share with it.
+    const suppressed: TrackedVulnerability = {
+      ...VULN,
+      state: "CLOSED",
+      closure_reason: "false_positive",
+      fp_reason: "the banner is the load balancer's",
+      fp_suppress_until: "2026-12-01T00:00:00Z",
+      fp_suppressed: true,
+    };
+    vi.mocked(setVulnerabilityFalsePositive).mockResolvedValueOnce(suppressed);
+    const client = makeClient();
+    client.setQueryData(queryKeys.vulnerability("vuln_1"), VULN);
+    const { result } = renderHook(() => useSetVulnerabilityFalsePositive("vuln_1"), {
+      wrapper: wrapperFor(client),
+    });
+    result.current.mutate({ reason: "the banner is the load balancer's", suppress_days: 90 });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(setVulnerabilityFalsePositive).toHaveBeenCalledWith("vuln_1", {
+      reason: "the banner is the load balancer's",
+      suppress_days: 90,
+    });
+    expect(client.getQueryData(queryKeys.vulnerability("vuln_1"))).toEqual(suppressed);
+    expect(toast.success).toHaveBeenCalledWith("Marked a false positive");
+  });
+});
+
+describe("useClearVulnerabilityFalsePositive", () => {
+  it("withdraws with no body and replaces the cached row with the re-opened one", async () => {
+    const reopened: TrackedVulnerability = {
+      ...VULN,
+      state: "OPEN",
+      closure_reason: null,
+      fp_reason: null,
+      fp_suppress_until: null,
+      fp_suppressed: false,
+    };
+    vi.mocked(clearVulnerabilityFalsePositive).mockResolvedValueOnce(reopened);
+    const client = makeClient();
+    client.setQueryData(queryKeys.vulnerability("vuln_1"), {
+      ...VULN,
+      state: "CLOSED",
+      closure_reason: "false_positive",
+      fp_suppressed: true,
+    });
+    const { result } = renderHook(() => useClearVulnerabilityFalsePositive("vuln_1"), {
+      wrapper: wrapperFor(client),
+    });
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(clearVulnerabilityFalsePositive).toHaveBeenCalledWith("vuln_1");
+    expect(client.getQueryData(queryKeys.vulnerability("vuln_1"))).toEqual(reopened);
+    expect(toast.success).toHaveBeenCalledWith("Verdict withdrawn");
+  });
+
+  it("reports a refused withdrawal instead of announcing one", async () => {
+    // The API answers 409 when there is no verdict to withdraw — it used to
+    // answer 200 for a call that changed nothing, and the toast said "Verdict
+    // withdrawn" over a finding that had never left the queue. Nothing may be
+    // written to the cache, and the message has to be the failure.
+    vi.mocked(clearVulnerabilityFalsePositive).mockRejectedValueOnce(
+      new Error("vln_1 is not closed as a false positive"),
+    );
+    const client = makeClient();
+    client.setQueryData(queryKeys.vulnerability("vuln_1"), VULN);
+    const { result } = renderHook(() => useClearVulnerabilityFalsePositive("vuln_1"), {
+      wrapper: wrapperFor(client),
+    });
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(client.getQueryData(queryKeys.vulnerability("vuln_1"))).toEqual(VULN);
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("Could not withdraw the verdict", {
+      description: "vln_1 is not closed as a false positive",
     });
   });
 });

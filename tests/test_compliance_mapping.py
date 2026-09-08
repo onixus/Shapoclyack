@@ -196,6 +196,108 @@ def test_closed_findings_stop_failing_and_accepted_risk_is_separated(tmp_path):
     assert by_id["A.8.21"]["accepted_count"] == 1
 
 
+def _seed_own_tenant(tmp_path: Path):
+    """``_seed`` in a tenant of this test's own.
+
+    The findings in this file are keyed on ``(asset, cve-or-script, port)``,
+    which is stable across ``tmp_path``\ s, so every test that uses ``_seed``
+    shares one set of rows in the shared database. A test that *closes* one
+    would leave the next one asserting against a finding somebody else already
+    moved, so the two verdict tests below get their own tenant.
+    """
+    import uuid
+
+    from api.services import assets as assets_service
+    from api.services import tenants as tenants_service
+
+    settings = make_settings(tmp_path)
+    run_dir = settings.output_dir / "runs" / "run-1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "alive_hosts.json").write_text(json.dumps(_HOSTS), encoding="utf-8")
+    (run_dir / "vulnerabilities.json").write_text(json.dumps(_FINDINGS), encoding="utf-8")
+
+    tenants_service.configure(settings)
+    tenants_service.load_tenants(settings)
+    tenant_id = tenants_service.create_tenant(
+        tenant_id=f"ten_{uuid.uuid4().hex[:12]}", name="Verdict"
+    )["tenant_id"]
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    return settings, tenant_id
+
+
+def test_a_score_says_how_many_findings_a_verdict_held_out_of_it(tmp_path):
+    """A control can pass because the estate was fixed or because noise was marked.
+
+    Both produce the same score, because a false-positive closure leaves the
+    active population every control is assessed from — which is intended: a
+    verdict is a correction to the evidence, and docking the score for making
+    one would put the incentive back on leaving noise open. But the reader of a
+    compliance page is precisely the reader who has to be able to tell the two
+    apart, and none of the guardrails around the verdict (admin, a mandatory
+    reason and expiry, the audit trail, the escalation override) is visible at
+    the point the score is read. So the count travels beside it.
+    """
+    settings, tenant_id = _seed_own_tenant(tmp_path)
+    rows, _total = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)
+    telnet = next(row for row in rows if row["script_id"] == "telnet-encryption")
+
+    before = compliance.assess(settings, framework_id="iso-27001-2022", tenant_id=tenant_id)
+    assert before["suppressed_findings"] == 0
+
+    vulns.mark_false_positive(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=telnet["vuln_id"],
+        reason="the banner is the load balancer's, not the host's",
+        suppress_days=90,
+        actor="admin",
+    )
+    after = compliance.assess(settings, framework_id="iso-27001-2022", tenant_id=tenant_id)
+
+    # The finding left the active population, so the control it was failing
+    # passes — and the page now says what that pass was built on.
+    assert after["open_findings"] == before["open_findings"] - 1
+    assert after["suppressed_findings"] == 1
+    # The score is not docked for it: this is disclosure, not a penalty.
+    assert after["coverage_score"] >= before["coverage_score"]
+
+
+def test_a_lapsed_verdict_stops_counting_against_the_score_it_qualified(tmp_path):
+    """The disclosure tracks the *suppression*, which is the thing that expires.
+
+    Once it has, the finding is back under the ordinary re-open rule and the
+    next observation returns it to the active population, so carrying it here
+    would tell an auditor something is being held out when nothing is.
+    """
+    from sqlalchemy import update
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    settings, tenant_id = _seed_own_tenant(tmp_path)
+    rows, _total = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)
+    telnet = next(row for row in rows if row["script_id"] == "telnet-encryption")
+    vulns.mark_false_positive(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=telnet["vuln_id"],
+        reason="noise",
+        suppress_days=1,
+        actor="admin",
+    )
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.Vulnerability)
+            .where(models.Vulnerability.vuln_id == telnet["vuln_id"])
+            .values(fp_suppress_until=datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1))
+        )
+
+    posture = compliance.assess(settings, framework_id="iso-27001-2022", tenant_id=tenant_id)
+
+    assert posture["suppressed_findings"] == 0
+
+
 # The controls written about "an admin service reachable from an untrusted
 # network". Failing these on an internal SSH port is the difference between a
 # compliance page an auditor reads and one every tenant learns to ignore.

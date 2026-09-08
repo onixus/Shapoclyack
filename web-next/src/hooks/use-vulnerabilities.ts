@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   assignVulnerability,
   clearVulnerabilityException,
+  clearVulnerabilityFalsePositive,
   clearVulnerabilityTicket,
   commentOnVulnerability,
   fetchRiskHistory,
@@ -14,6 +15,7 @@ import {
   fetchVulnerabilityEvents,
   fetchVulnerabilitySummary,
   setVulnerabilityException,
+  setVulnerabilityFalsePositive,
   setVulnerabilityTicket,
   syncVulnTicket,
   transitionVulnerability,
@@ -23,6 +25,7 @@ import {
   type TrackedVulnerability,
   type VulnerabilityAssignBody,
   type VulnerabilityExceptionBody,
+  type VulnerabilityFalsePositiveBody,
   type VulnerabilityListFilters,
   type VulnerabilityTicketBody,
   type VulnerabilityTransitionBody,
@@ -226,6 +229,33 @@ export function useClearVulnerabilityException(vulnId: string) {
     onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Acceptance withdrawn"),
     onError: (err) => {
       toast.error("Could not withdraw acceptance", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useSetVulnerabilityFalsePositive(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: VulnerabilityFalsePositiveBody) =>
+      setVulnerabilityFalsePositive(vulnId, body),
+    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Marked a false positive"),
+    onError: (err) => {
+      toast.error("Could not mark a false positive", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useClearVulnerabilityFalsePositive(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => clearVulnerabilityFalsePositive(vulnId),
+    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Verdict withdrawn"),
+    onError: (err) => {
+      toast.error("Could not withdraw the verdict", {
         description: err instanceof Error ? err.message : undefined,
       });
     },
