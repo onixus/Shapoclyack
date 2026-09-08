@@ -1887,21 +1887,35 @@ class AdoptionFalsePositives(BaseModel):
 class AdoptionCoverage(BaseModel):
     """Is the scanner looking at the whole of what it was allowed to look at?
 
-    Every share is ``None`` rather than zero when its denominator is not real:
-    before ``assets.last_scanned_at`` has data (migration 0035 has no backfill),
-    and when the approved scope has no finite address space —
-    ``scope_unbounded_reason`` says which of ``wildcard``, ``domain``,
-    ``no_scope`` or ``too_large`` applies.
+    Every share is ``None`` rather than zero when its denominator is not real.
+    ``scan_history_reason`` is why the two scan shares are withheld —
+    ``no_scan_history`` or ``partial_scan_history``, since migration 0035 has no
+    backfill and the columns fill one run at a time. ``scope_unbounded_reason``
+    is why scope coverage is: ``no_scope`` (nothing approved),
+    ``no_measurable_scope`` (every approval is a wildcard or a domain suffix,
+    neither of which is an address space), or the scan-history reason, because
+    a scope share taken off columns that have not filled is the same withheld
+    number wearing another tile's clothes.
+
+    Scope coverage counts **approvals reached**, not addresses: a share of an
+    address space reported 2.9% for a fully scanned /22 and could not tell an
+    empty subnet from an unscanned one. ``scope_uncovered_entries`` names the
+    approved ranges no scan has reached, which is the part an operator acts on.
     """
 
     coverage_days: int
     assets_with_scan_history: int = 0
+    scan_history_share: float | None = None
+    scan_history_reason: str | None = None
     scanned_share: float | None = None
     vuln_scanned_share: float | None = None
     approved_entries: int = 0
-    approved_addresses: int | None = None
-    assets_in_scope: int | None = None
+    denied_entries: int = 0
+    measurable_entries: int = 0
+    unmeasurable_entries: list[str] = Field(default_factory=list)
+    scope_covered_entries: int | None = None
     scope_covered_share: float | None = None
+    scope_uncovered_entries: list[str] = Field(default_factory=list)
     scope_unbounded_reason: str | None = None
 
 

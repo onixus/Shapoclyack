@@ -152,7 +152,20 @@ All notable changes to Shapoclyack are documented in this file.
   `api/services/assets.py`. There is no backfill and there cannot be one —
   nothing in the schema records which past run covered which asset — so coverage
   reads `null` until real runs fill the columns, which is the honest answer
-  rather than a zero that reads as an alarm about the upgrade.
+  rather than a zero that reads as an alarm about the upgrade. Because they fill
+  one run at a time, the withholding is a floor on the estate's scan history and
+  not a check for a clean zero: 50,000 assets with one 500-host subnet scanned
+  would otherwise read "Scanned in 30 days: 1%", indistinguishable from scanning
+  having collapsed and a statement about the rollout either way.
+  `last_vuln_scan_at` is set from what the run actually did, not from the
+  presence of `vulnerabilities.json`: `report.py` exports that file
+  unconditionally and the `report` stage runs in every pipeline, so an
+  installation with `nuclei.enabled: false` and no nmap-vulners — a supported
+  opt-out — stamped vulnerability coverage on every host of every run and the
+  tile read 100% for an estate nothing had assessed. It now takes findings in
+  the file, or a vulnerability stage recorded as `ok` in the run's own
+  `stage_timings.json` (with `nuclei.json`'s `skipped_reason` consulted, since
+  that stage is invoked even when it is switched off).
   And every remediation metric counted a false-positive closure as a fix:
   `closed_in_window`, `machine_verified_share`, `closed_within_sla_share` and
   the `mttr_hours*` medians now count real closures only, with
@@ -165,9 +178,18 @@ All notable changes to Shapoclyack are documented in this file.
   per-observer rates. A rate is withheld below 20 closures — one verdict out of
   one closure is not a 100% error rate — and advisory matches, which have no
   `script_id`, go to their own `unknown` bucket instead of being blamed on a
-  script. `coverage` adds reach against `tenant_scan_scopes`, and reports no
-  share at all when the approval has no finite address space (a wildcard or a
-  domain suffix) or is too large to be a target list.
+  script. `coverage` adds reach against `tenant_scan_scopes`, counted in
+  **approved ranges reached rather than in addresses**: a share of the approved
+  address space answered 2.9% for a fully scanned /22 with thirty live hosts,
+  could not tell an empty range from one nobody had ever scanned, and
+  double-counted overlapping approvals (`10.0.0.0/24` plus `10.0.0.128/25` was
+  384 addresses). A range counts as reached when it contains an *active* asset a
+  scan touched inside the window — not merely one that was discovered once,
+  which is exactly the tenant the block exists to catch — and the ranges nothing
+  has reached are listed by name, which is the half an operator can act on. Deny
+  rows are counted apart instead of being folded into "approved entries", and
+  wildcard and domain approvals are named as unmeasurable rather than counted as
+  missed.
   Both blocks are additive on `GET /api/adoption`, and the console grows a
   **Noise** and a **Coverage** section plus a **False positive** card on the
   finding page.
@@ -179,7 +201,13 @@ All notable changes to Shapoclyack are documented in this file.
   the closure pass is bounded by the window and served by the index
   `0034_vuln_false_positive` adds; only the rows the medians genuinely need are
   materialised. The two new blocks were built on that shape rather than added
-  in front of the old one.
+  in front of the old one — with one exception worth naming rather than
+  implying: scope coverage still does its CIDR membership test in Python, over
+  the IP identifiers of active assets a scan reached inside the window. That is
+  a bounded fraction of the identifier table rather than the whole of it, but it
+  is not SQL, and `inet <<=` would do it better on Postgres; the repo has no
+  `inet` usage yet and casting an identifier column that is a plain string is
+  its own risk, so it is left as a known read and not claimed as an aggregate.
 
 ### Changed
 

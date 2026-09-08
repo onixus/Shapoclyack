@@ -15,18 +15,34 @@ export function hours(value: number | null): string {
  *
  * A `null` share and a `0%` share look identical if the page prints "n/a" and
  * stops there, and they mean opposite things: one says the estate is not
- * covered, the other says the approval has no size to be covered *of*. The
- * reason is the only thing that separates them for the reader. */
+ * covered, the other says there was nothing to be covered *of*. The reason is
+ * the only thing that separates them for the reader. */
 export function scopeReason(reason: string | null): string | null {
   switch (reason) {
-    case "wildcard":
-      return "The approved scope is a wildcard, so there is no address space to be a share of.";
-    case "domain":
-      return "A domain approval says nothing about how many hosts are behind it.";
     case "no_scope":
       return "Nothing has been approved for scanning yet.";
-    case "too_large":
-      return "The approval is larger than a target list; a share of it would read as zero.";
+    case "no_measurable_scope":
+      return "Every approval is a wildcard or a domain suffix, and neither is an address space that can be reached or missed.";
+    case "no_scan_history":
+    case "partial_scan_history":
+      return scanHistoryReason(reason);
+    default:
+      return null;
+  }
+}
+
+/** Why the two scan shares are withheld.
+ *
+ * Migration 0035 has no backfill, so the columns fill one run at a time after
+ * an upgrade. A share taken before enough of them have is a statement about the
+ * rollout, not about the estate — and "1%" reads exactly like scanning having
+ * collapsed. */
+export function scanHistoryReason(reason: string | null): string | null {
+  switch (reason) {
+    case "no_scan_history":
+      return "No scan has been ingested since the coverage columns were added — no coverage data, which is not the same as no coverage.";
+    case "partial_scan_history":
+      return "Too few assets have any scan history yet for a share of the estate to mean anything; it would read as collapsed scanning rather than as an upgrade still filling in.";
     default:
       return null;
   }

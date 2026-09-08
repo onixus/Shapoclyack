@@ -83,6 +83,68 @@ def _host_records(run_dir: Path) -> list[dict]:
     return [{"host": ip} for ip in runs_service._read_lines(run_dir / "alive_ips.txt")]  # noqa: SLF001
 
 
+#: Pipeline stages that can put a row in ``vulnerabilities.json``. A run that
+#: executed none of them enumerated hosts and nothing else.
+VULN_STAGES = ("nuclei", "pulse", "nse")
+
+
+def _assessed_vulnerabilities(run_dir: Path) -> bool:
+    """Did this run look for vulnerabilities, or did it only enumerate hosts?
+
+    Not ``(run_dir / "vulnerabilities.json").exists()``: ``report.py`` writes
+    that file unconditionally — "OS and vulnerability findings are core
+    deliverables and always exported" — and the ``report`` stage runs in every
+    pipeline. Its existence is therefore equally true of a discovery-only
+    sweep, of an installation running with ``nuclei.enabled: false`` and no
+    nmap-vulners, and of a run that assessed everything and found nothing. Read
+    as coverage it stamped ``last_vuln_scan_at`` on every host of every run and
+    made "Assessed for vulnerabilities" read 100% for an estate nothing had
+    assessed — the same lie ``assets.last_seen`` told, in the column that was
+    added to replace it.
+
+    Two answers count, in order:
+
+    * the file has findings in it — something assessed this estate, whatever
+      produced them;
+    * otherwise ``stage_timings.json`` has to show a vulnerability-producing
+      stage that actually ran. ``status`` is ``skipped`` for a stage the run
+      never entered (``skip_nse``, a ``--resume`` checkpoint) and ``error`` for
+      one that fell over, and neither is an assessment. ``nuclei`` is the
+      exception that needs its own artifact: the stage is invoked
+      unconditionally and degrades to a clean ``skipped_reason`` when it is
+      disabled, has no binary or has no templates, so an ``ok`` timing alone
+      does not mean it looked.
+
+    A run with neither findings nor a manifest reads ``False``. A run whose
+    shape cannot be established did not establish coverage either, and the
+    column is nullable precisely so "we do not know" has a spelling.
+
+    What it deliberately does not try to settle is whether a stage that *did*
+    run was configured to produce CVEs at all — ``pulse`` without ``--cve``,
+    an NSE profile without ``vulners``. Both are on by default, neither leaves
+    a marker in the run directory, and guessing would put the tile back in the
+    business of asserting things it cannot see.
+    """
+    findings = runs_service._load_json(run_dir / "vulnerabilities.json")  # noqa: SLF001
+    if isinstance(findings, list) and findings:
+        return True
+    timings = runs_service._load_json(run_dir / "stage_timings.json")  # noqa: SLF001
+    stages = timings.get("stages") if isinstance(timings, dict) else None
+    if not isinstance(stages, list):
+        return False
+    ran = {
+        str(stage.get("name"))
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("status") == "ok"
+    }
+    if not ran & set(VULN_STAGES):
+        return False
+    if ran & {"pulse", "nse"}:
+        return True
+    nuclei = runs_service._load_json(run_dir / "nuclei.json")  # noqa: SLF001
+    return isinstance(nuclei, dict) and not nuclei.get("skipped_reason")
+
+
 def _find_existing_asset_id(
     session, tenant_id: str, candidates: list[IdentityCandidate]
 ) -> str | None:
@@ -373,7 +435,7 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
     # Whether this run assessed vulnerabilities at all, as opposed to only
     # enumerating hosts. Read once per run: it is a property of the run, and a
     # discovery-only sweep must not be allowed to claim vulnerability coverage.
-    vuln_scanned = (run_dir / "vulnerabilities.json").exists()
+    vuln_scanned = _assessed_vulnerabilities(run_dir)
     created = 0
     updated = 0
     quota_skipped = 0

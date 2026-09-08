@@ -240,7 +240,10 @@ class Asset(Base):
     last_scanned_at: Mapped[datetime | None] = mapped_column(default=None)
     last_scan_run_id: Mapped[str | None] = mapped_column(default=None)
     # A discovery run covers the asset for inventory but says nothing about its
-    # vulnerabilities; only a run that produced findings data sets this.
+    # vulnerabilities. Set only when the run actually assessed them — findings
+    # in vulnerabilities.json, or a vulnerability stage recorded as run in
+    # stage_timings.json. The file's *existence* means nothing: report.py writes
+    # it on every run (see api/services/assets.py::_assessed_vulnerabilities).
     last_vuln_scan_at: Mapped[datetime | None] = mapped_column(default=None)
     # "Ownership" (roadmap Phase 7.1) as plain nullable columns rather than a
     # join table — nothing in the scan pipeline produces multi-owner data yet;

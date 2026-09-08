@@ -2381,18 +2381,30 @@ export type AdoptionFalsePositives = {
   median_hours_to_verdict: number | null;
 };
 
-/** `scope_unbounded_reason` is why there is no share to report:
- * `wildcard`/`domain` (the approval has no finite address space), `no_scope`
- * (nothing approved) or `too_large` (an approval that is not a target list). */
+/** `scan_history_reason` is why the two scan shares are withheld
+ * (`no_scan_history`, `partial_scan_history` — migration 0035 has no backfill,
+ * so the columns fill one run at a time). `scope_unbounded_reason` is why scope
+ * coverage is: `no_scope`, `no_measurable_scope` (every approval is a wildcard
+ * or a domain suffix), or the scan-history reason.
+ *
+ * Scope coverage counts **approvals reached**, not addresses: a share of an
+ * address space read 2.9% for a fully scanned /22 and could not tell an empty
+ * subnet from an unscanned one. `scope_uncovered_entries` names the approved
+ * ranges no scan has reached, capped — `measurable_entries` has the total. */
 export type AdoptionCoverage = {
   coverage_days: number;
   assets_with_scan_history: number;
+  scan_history_share: number | null;
+  scan_history_reason: string | null;
   scanned_share: number | null;
   vuln_scanned_share: number | null;
   approved_entries: number;
-  approved_addresses: number | null;
-  assets_in_scope: number | null;
+  denied_entries: number;
+  measurable_entries: number;
+  unmeasurable_entries: string[];
+  scope_covered_entries: number | null;
   scope_covered_share: number | null;
+  scope_uncovered_entries: string[];
   scope_unbounded_reason: string | null;
 };
 

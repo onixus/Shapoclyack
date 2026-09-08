@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { useAdoption } from "@/hooks/use-adoption";
 import type { AdoptionMetrics, AdoptionNoiseSource } from "@/lib/api";
-import { hours, scopeReason, share } from "@/lib/adoption-format";
+import { hours, scanHistoryReason, scopeReason, share } from "@/lib/adoption-format";
 
 const WINDOWS = [30, 90, 180, 365] as const;
 
@@ -263,37 +263,70 @@ export default function AdoptionPage() {
                 <KpiCard
                   label={`Scanned in ${data.coverage.coverage_days} days`}
                   value={share(data.coverage.scanned_share)}
-                  hint={`${data.coverage.assets_with_scan_history} active assets have ever been reached by a scan since the column existed`}
+                  hint={
+                    scanHistoryReason(data.coverage.scan_history_reason) ??
+                    `${data.coverage.assets_with_scan_history} active assets have been reached by a scan at some point`
+                  }
                   decorationColor={data.coverage.scanned_share === null ? "slate" : "blue"}
                 />
                 <KpiCard
-                  label="Assessed for vulnerabilities"
+                  label={`Assessed for vulnerabilities in ${data.coverage.coverage_days} days`}
                   value={share(data.coverage.vuln_scanned_share)}
-                  hint="A discovery sweep covers an asset for inventory and says nothing about its vulnerabilities; only a run that produced findings counts here"
+                  hint={
+                    scanHistoryReason(data.coverage.scan_history_reason) ??
+                    "A discovery sweep covers an asset for inventory and says nothing about its vulnerabilities; only a run whose manifest shows a vulnerability stage that actually ran counts here"
+                  }
                   decorationColor={data.coverage.vuln_scanned_share === null ? "slate" : "sky"}
                 />
                 <KpiCard
-                  label="Approved scope covered"
+                  label="Approved ranges reached"
                   value={share(data.coverage.scope_covered_share)}
                   hint={
                     scopeReason(data.coverage.scope_unbounded_reason) ??
-                    `${data.coverage.assets_in_scope} known addresses inside ${data.coverage.approved_addresses} approved ones`
+                    `${data.coverage.scope_covered_entries} of ${data.coverage.measurable_entries} approved ranges contain an asset a scan reached in the last ${data.coverage.coverage_days} days`
                   }
                   decorationColor={data.coverage.scope_covered_share === null ? "slate" : "emerald"}
                 />
                 <KpiCard
                   label="Approved entries"
                   value={data.coverage.approved_entries}
-                  hint="Rows in this tenant's scan scope. The denominator comes from the approval, not from what was discovered — which is how a subnet nobody ever pointed the scanner at shows up"
+                  hint={`Allow rows in this tenant's scan scope${
+                    data.coverage.denied_entries > 0
+                      ? `, beside ${data.coverage.denied_entries} deny rows that are not counted`
+                      : ""
+                  }. The denominator comes from the approval, not from what was discovered — which is how a subnet nobody ever pointed the scanner at shows up`}
                   decorationColor="slate"
                 />
               </div>
+              {data.coverage.scope_uncovered_entries.length > 0 ? (
+                <p className="mt-3 max-w-3xl text-xs text-muted-foreground">
+                  Approved and never reached:{" "}
+                  {data.coverage.scope_uncovered_entries.map((entry) => (
+                    <span key={entry} className="mr-2 font-mono text-foreground">
+                      {entry}
+                    </span>
+                  ))}
+                </p>
+              ) : null}
+              {data.coverage.unmeasurable_entries.length > 0 ? (
+                <p className="mt-2 max-w-3xl text-xs text-muted-foreground">
+                  Not measurable, and left out of the share rather than counted as missed:{" "}
+                  {data.coverage.unmeasurable_entries.map((entry) => (
+                    <span key={entry} className="mr-2 font-mono text-foreground">
+                      {entry}
+                    </span>
+                  ))}
+                  — a wildcard or a domain suffix says nothing about which addresses are behind it.
+                </p>
+              ) : null}
               <p className="mt-3 max-w-3xl text-xs text-muted-foreground">
                 Read from a column only the scan-ingest path writes, never from{" "}
                 <span className="font-mono">last_seen</span>, which an endpoint agent checking in
                 also moves. There is no backfill, so an installation that has not scanned since
                 upgrading reads <span className="font-mono">n/a</span> — no coverage data, which
-                is not the same as no coverage.
+                is not the same as no coverage. Scope is counted in approved ranges rather than in
+                addresses: a fully scanned /22 with thirty live hosts is 100% of one approval and
+                2.9% of an address space, and only the first is about this estate.
               </p>
             </section>
           ) : null}

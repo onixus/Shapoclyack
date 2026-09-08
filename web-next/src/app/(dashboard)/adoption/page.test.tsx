@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdoptionPage from "@/app/(dashboard)/adoption/page";
-import { hours, scopeReason, share } from "@/lib/adoption-format";
+import { hours, scanHistoryReason, scopeReason, share } from "@/lib/adoption-format";
 import * as apiModule from "@/lib/api";
 import type { AdoptionMetrics } from "@/lib/api";
 
@@ -50,12 +50,17 @@ function metrics(overrides: Partial<AdoptionMetrics> = {}): AdoptionMetrics {
     coverage: {
       coverage_days: 30,
       assets_with_scan_history: 27,
+      scan_history_share: 90,
+      scan_history_reason: null,
       scanned_share: 90,
       vuln_scanned_share: 70,
-      approved_entries: 2,
-      approved_addresses: 256,
-      assets_in_scope: 24,
-      scope_covered_share: 9.4,
+      approved_entries: 5,
+      denied_entries: 1,
+      measurable_entries: 5,
+      unmeasurable_entries: [],
+      scope_covered_entries: 4,
+      scope_covered_share: 80,
+      scope_uncovered_entries: ["10.9.0.0/24"],
       scope_unbounded_reason: null,
     },
     assets: {
@@ -112,11 +117,15 @@ describe("share and hours formatting", () => {
   it("says why a coverage share is absent, because n/a alone does not", () => {
     // "No share" and "0% covered" print the same dash and mean the opposite
     // things; the reason is the only thing separating them for the reader.
-    expect(scopeReason("domain")).toMatch(/says nothing about how many hosts/i);
-    expect(scopeReason("too_large")).toMatch(/larger than a target list/i);
+    expect(scopeReason("no_measurable_scope")).toMatch(/wildcard or a domain suffix/i);
     expect(scopeReason("no_scope")).toMatch(/nothing has been approved/i);
+    // A scope share riding on columns that have not filled in is withheld for
+    // the scan block's reason, and says so rather than borrowing a scope one.
+    expect(scopeReason("no_scan_history")).toMatch(/no coverage data/i);
+    expect(scanHistoryReason("partial_scan_history")).toMatch(/too few assets/i);
     expect(scopeReason(null)).toBeNull();
     expect(scopeReason("something-new")).toBeNull();
+    expect(scanHistoryReason("something-new")).toBeNull();
   });
 });
 
@@ -170,12 +179,17 @@ describe("AdoptionPage", () => {
         coverage: {
           coverage_days: 30,
           assets_with_scan_history: 0,
+          scan_history_share: null,
+          scan_history_reason: "no_scan_history",
           scanned_share: null,
           vuln_scanned_share: null,
           approved_entries: 0,
-          approved_addresses: null,
-          assets_in_scope: null,
+          denied_entries: 0,
+          measurable_entries: 0,
+          unmeasurable_entries: [],
+          scope_covered_entries: null,
           scope_covered_share: null,
+          scope_uncovered_entries: [],
           scope_unbounded_reason: "no_scope",
         },
         analysts: [],
@@ -220,26 +234,44 @@ describe("AdoptionPage", () => {
     expect(screen.getByText(/at least 20 closures behind it/)).toBeInTheDocument();
   });
 
-  it("explains an unbounded scope instead of printing a coverage number", async () => {
+  it("names the approved ranges nothing has reached, which is the actionable half", async () => {
+    vi.spyOn(apiModule, "fetchAdoption").mockResolvedValue(metrics());
+    renderPage();
+
+    expect(await screen.findByText("10.9.0.0/24")).toBeInTheDocument();
+    expect(
+      screen.getByText(/4 of 5 approved ranges contain an asset a scan reached/),
+    ).toBeInTheDocument();
+  });
+
+  it("explains an unmeasurable scope instead of printing a coverage number", async () => {
     vi.spyOn(apiModule, "fetchAdoption").mockResolvedValue(
       metrics({
         coverage: {
           coverage_days: 30,
           assets_with_scan_history: 27,
+          scan_history_share: 90,
+          scan_history_reason: null,
           scanned_share: 90,
           vuln_scanned_share: 70,
           approved_entries: 1,
-          approved_addresses: null,
-          assets_in_scope: null,
+          denied_entries: 0,
+          measurable_entries: 0,
+          unmeasurable_entries: ["example.com"],
+          scope_covered_entries: null,
           scope_covered_share: null,
-          scope_unbounded_reason: "domain",
+          scope_uncovered_entries: [],
+          scope_unbounded_reason: "no_measurable_scope",
         },
       }),
     );
     renderPage();
 
     expect(
-      await screen.findByText(/says nothing about how many hosts are behind it/i),
+      await screen.findByText(/wildcard or a domain suffix, and neither is an address space/i),
     ).toBeInTheDocument();
+    // ...and the entry it could not measure is named rather than silently
+    // dropped out of the denominator.
+    expect(screen.getByText("example.com")).toBeInTheDocument();
   });
 });

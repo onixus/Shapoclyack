@@ -18,13 +18,14 @@ it exists to catch.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import adoption, coverage, vuln_states
+from api.services import adoption, vuln_states
 from api.services import vulnerabilities as vulns
 from tests.conftest import requires_postgres
 from tests.test_vuln_lifecycle import _FINDINGS, _HOSTS, _seed, _settings, _write_run
@@ -224,29 +225,134 @@ def test_a_scan_sets_the_coverage_columns_and_the_run_that_did_it(tmp_path):
         ).first()
     assert asset.last_scan_run_id == "run-1"
     assert asset.last_scanned_at is not None
-    # _seed's run carries vulnerabilities.json, so it covers the asset for
-    # findings too, not only for inventory.
+    # _seed's run produced findings, so it covers the asset for vulnerabilities
+    # too, not only for inventory.
     assert asset.last_vuln_scan_at is not None
     assert report["coverage"]["scanned_share"] == 100.0
     assert report["coverage"]["vuln_scanned_share"] == 100.0
 
 
-def test_a_discovery_only_run_does_not_claim_vulnerability_coverage(tmp_path):
-    """Enumerating a host says nothing about whether it was assessed."""
-    from api.services import assets as assets_service
+def _pipeline_run(
+    settings,
+    run_id: str,
+    *,
+    findings: list[dict],
+    stages: list[tuple[str, str]],
+    nuclei_skipped: str | None = "nuclei.disabled",
+) -> None:
+    """A run directory in the shape ``scanner/main.py`` really leaves behind.
 
-    settings = _settings(tmp_path)
+    Which matters, because the shape is the thing under test. ``report.py``
+    exports ``vulnerabilities.json`` unconditionally — "OS and vulnerability
+    findings are core deliverables and always exported" — and the ``report``
+    stage runs in every pipeline, so *every* run has that file whether or not
+    anything looked for a vulnerability. A fixture that writes only
+    ``alive_hosts.json`` is a directory the pipeline never produces, and a test
+    built on one cannot tell the two cases apart.
+    """
+    run_dir = settings.output_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "alive_hosts.json").write_text(
+        json.dumps([{"host": "10.0.0.9", "hostname": "edge.example.com"}]), encoding="utf-8"
+    )
+    for name in ("os_findings.json", "script_findings.json"):
+        (run_dir / name).write_text("[]", encoding="utf-8")
+    (run_dir / "vulnerabilities.json").write_text(json.dumps(findings), encoding="utf-8")
+    (run_dir / "stage_timings.json").write_text(
+        json.dumps(
+            {
+                "pipeline_wall_sec": 12.0,
+                "stages_sum_sec": 11.0,
+                "stages": [
+                    {"name": name, "duration_sec": 1.0, "status": status}
+                    for name, status in stages
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "nuclei.json").write_text(
+        json.dumps({"cve_findings": [], "skipped_reason": nuclei_skipped}), encoding="utf-8"
+    )
+
+
+def test_a_run_that_never_looked_for_vulnerabilities_claims_no_coverage(tmp_path):
+    """The file exists on every run; only the estate's assessment is at stake.
+
+    ``nuclei.enabled: false`` is a supported opt-out and nmap-vulners is not
+    always installed, so this is an ordinary installation and not a corner:
+    nobody assessed anything, and the tile used to answer 100%.
+    """
+    from api.services import assets as assets_service
     from api.services import tenants as tenants_service
 
+    settings = _settings(tmp_path)
     tenant_id = tenants_service.DEFAULT_TENANT_ID
-    run_dir = settings.output_dir / "runs" / "run-discovery"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "alive_hosts.json").write_text('[{"host": "10.0.0.9"}]', encoding="utf-8")
+    _pipeline_run(
+        settings,
+        "run-discovery",
+        findings=[],
+        stages=[("discover", "ok"), ("ports", "ok"), ("nuclei", "ok"), ("report", "ok")],
+        nuclei_skipped="nuclei.disabled",
+    )
 
     assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-discovery")
 
+    with get_session(settings.postgres_url) as session:
+        asset = session.scalars(
+            select(models.Asset).where(models.Asset.tenant_id == tenant_id)
+        ).first()
+    assert asset.last_scanned_at is not None
+    assert asset.last_vuln_scan_at is None
+
     report = adoption.metrics(settings, tenant_id=tenant_id)
     assert report["coverage"]["scanned_share"] == 100.0
+    assert report["coverage"]["vuln_scanned_share"] == 0.0
+
+
+def test_a_stage_that_ran_and_found_nothing_is_still_coverage(tmp_path):
+    """"Assessed and clean" and "never assessed" must not read the same.
+
+    An empty ``vulnerabilities.json`` is the good outcome as often as it is the
+    empty one, so the manifest — not the findings — is what separates them.
+    """
+    from api.services import assets as assets_service
+    from api.services import tenants as tenants_service
+
+    settings = _settings(tmp_path)
+    tenant_id = tenants_service.DEFAULT_TENANT_ID
+    _pipeline_run(
+        settings,
+        "run-clean",
+        findings=[],
+        stages=[("ports", "ok"), ("nse", "ok"), ("nuclei", "ok"), ("report", "ok")],
+        nuclei_skipped="nuclei.disabled",
+    )
+
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-clean")
+
+    report = adoption.metrics(settings, tenant_id=tenant_id)
+    assert report["coverage"]["vuln_scanned_share"] == 100.0
+
+
+def test_a_skipped_stage_is_not_an_assessment(tmp_path):
+    """``skip_nse`` and a ``--resume`` checkpoint both record ``skipped``."""
+    from api.services import assets as assets_service
+    from api.services import tenants as tenants_service
+
+    settings = _settings(tmp_path)
+    tenant_id = tenants_service.DEFAULT_TENANT_ID
+    _pipeline_run(
+        settings,
+        "run-ports-only",
+        findings=[],
+        stages=[("ports", "ok"), ("pulse", "skipped"), ("nse", "skipped"), ("report", "ok")],
+        nuclei_skipped="no_web_ports",
+    )
+
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-ports-only")
+
+    report = adoption.metrics(settings, tenant_id=tenant_id)
     assert report["coverage"]["vuln_scanned_share"] == 0.0
 
 
@@ -326,6 +432,46 @@ def test_coverage_is_unknown_rather_than_zero_before_the_column_has_data(tmp_pat
     assert report["coverage"]["assets_with_scan_history"] == 0
     assert report["coverage"]["scanned_share"] is None
     assert report["assets"]["scanned_recently_share"] is None
+    assert report["coverage"]["scan_history_reason"] == "no_scan_history"
+
+
+def test_one_scanned_subnet_out_of_an_estate_is_not_a_one_percent_reading(tmp_path):
+    """The guard fired only at a clean zero, which is one instant long.
+
+    50,000 assets and one 500-host subnet scanned reads "Scanned in 30 days:
+    1%", and nothing on the page separates that from scanning having fallen
+    over — while the reason it is 1% is that migration 0035 has no backfill and
+    the columns are still filling, which is what the guard was written for.
+    """
+    settings, tenant_id = _seed(tmp_path)
+    # Ten more active assets, none of them ever scan-ingested: fewer than one
+    # in ten has any scan history at all.
+    for index in range(10):
+        _bare_asset(settings, tenant_id, asset_id=f"ast_dark_{index}")
+
+    report = adoption.metrics(settings, tenant_id=tenant_id)
+
+    assert report["coverage"]["assets_with_scan_history"] == 1
+    assert report["coverage"]["scan_history_share"] == 9.1
+    assert report["coverage"]["scan_history_reason"] == "partial_scan_history"
+    assert report["coverage"]["scanned_share"] is None
+    assert report["coverage"]["vuln_scanned_share"] is None
+    assert report["assets"]["scanned_recently_share"] is None
+
+
+def _bare_asset(settings, tenant_id: str, *, asset_id: str) -> None:
+    """An active asset the scan-ingest path has never written to."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Asset(
+                asset_id=asset_id,
+                tenant_id=tenant_id,
+                status="active",
+                first_seen=now,
+                last_seen=now,
+            )
+        )
 
 
 # --------------------------------------------------------------------------
@@ -349,38 +495,158 @@ def _scope(settings, tenant_id: str, entries: list[tuple[str, str, str]]) -> Non
             )
 
 
-def test_scope_coverage_counts_known_addresses_against_the_approval(tmp_path):
+def _asset(
+    settings,
+    tenant_id: str,
+    *,
+    asset_id: str,
+    ip: str,
+    scanned: bool,
+    status: str = "active",
+) -> None:
+    """One more asset, with the two properties scope coverage is made of."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Asset(
+                asset_id=asset_id,
+                tenant_id=tenant_id,
+                status=status,
+                first_seen=now,
+                last_seen=now,
+                last_scanned_at=now if scanned else None,
+                last_scan_run_id="run-1" if scanned else None,
+            )
+        )
+        session.add(
+            models.AssetIdentifier(
+                asset_id=asset_id,
+                tenant_id=tenant_id,
+                identifier_type="ip",
+                identifier_value=ip,
+            )
+        )
+
+
+def test_an_approval_is_covered_when_a_scan_reached_something_inside_it(tmp_path):
+    """Reach, not discovery. The unit is the approval somebody wrote down.
+
+    Dividing known addresses by the approved *address space* answered 2.9% for
+    a fully scanned /22 with thirty live hosts, and could not tell an estate
+    that is mostly empty address space from one nobody had scanned — which is
+    the one distinction the tile exists to draw.
+    """
     settings, tenant_id = _seed(tmp_path)
-    _scope(settings, tenant_id, [("allow", "cidr", "10.0.0.0/29")])
+    _scope(
+        settings,
+        tenant_id,
+        [("allow", "cidr", "10.0.0.0/29"), ("allow", "cidr", "10.9.0.0/29")],
+    )
 
     block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
 
-    assert block["approved_addresses"] == 8
-    assert block["assets_in_scope"] == 1
-    assert block["scope_covered_share"] == 12.5
+    assert block["approved_entries"] == 2
+    assert block["measurable_entries"] == 2
+    assert block["scope_covered_entries"] == 1
+    assert block["scope_covered_share"] == 50.0
+    # The actionable half: the range nobody has pointed the scanner at, by name.
+    assert block["scope_uncovered_entries"] == ["10.9.0.0/29"]
     assert block["scope_unbounded_reason"] is None
 
 
-def test_a_wildcard_or_domain_scope_has_no_share_to_report(tmp_path):
-    """A suffix approval says nothing about how many hosts are behind it."""
+def test_an_asset_nobody_has_scanned_does_not_cover_the_range_it_is_in(tmp_path):
+    """The defect: coverage was satisfied by having *discovered* a host.
+
+    A tenant that enumerated its estate once and never scanned it again read as
+    covered — the exact case the block promises to catch.
+    """
     settings, tenant_id = _seed(tmp_path)
-    _scope(settings, tenant_id, [("allow", "domain", "example.com")])
+    _asset(settings, tenant_id, asset_id="ast_seen_only", ip="10.9.0.3", scanned=False)
+    _scope(
+        settings,
+        tenant_id,
+        [("allow", "cidr", "10.0.0.0/29"), ("allow", "cidr", "10.9.0.0/29")],
+    )
 
     block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
 
+    assert block["scope_covered_entries"] == 1
+    assert block["scope_covered_share"] == 50.0
+    assert block["scope_uncovered_entries"] == ["10.9.0.0/29"]
+
+
+def test_a_decommissioned_asset_stops_covering_the_range_it_was_retired_from(tmp_path):
+    settings, tenant_id = _seed(tmp_path)
+    _asset(
+        settings,
+        tenant_id,
+        asset_id="ast_retired",
+        ip="10.9.0.3",
+        scanned=True,
+        status="decommissioned",
+    )
+    _scope(
+        settings,
+        tenant_id,
+        [("allow", "cidr", "10.0.0.0/29"), ("allow", "cidr", "10.9.0.0/29")],
+    )
+
+    block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
+
+    assert block["scope_covered_share"] == 50.0
+    assert block["scope_uncovered_entries"] == ["10.9.0.0/29"]
+
+
+def test_overlapping_approvals_do_not_inflate_the_denominator(tmp_path):
+    """``10.0.0.0/24`` plus ``10.0.0.128/25`` used to be 384 addresses.
+
+    The uniqueness constraint on the scope table stops duplicate rows, not
+    overlapping ones, and the address-space denominator counted the overlap
+    twice — a third of the reading, silently in the flattering direction for a
+    tenant with a tidy approval and against one whose ranges nest.
+    """
+    settings, tenant_id = _seed(tmp_path)
+    _scope(
+        settings,
+        tenant_id,
+        [("allow", "cidr", "10.0.0.0/24"), ("allow", "cidr", "10.0.0.128/25")],
+    )
+
+    block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
+
+    # 10.0.0.5 is in the /24 and not in the /25: one approval reached, one not.
+    assert block["measurable_entries"] == 2
+    assert block["scope_covered_share"] == 50.0
+
+
+def test_a_wildcard_or_domain_approval_is_reported_apart_rather_than_as_missed(tmp_path):
+    """A suffix approval says nothing about which hosts are behind it."""
+    settings, tenant_id = _seed(tmp_path)
+    _scope(settings, tenant_id, [("allow", "domain", "example.com"), ("allow", "cidr", "*")])
+
+    block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
+
+    assert block["approved_entries"] == 2
+    assert block["measurable_entries"] == 0
+    assert sorted(block["unmeasurable_entries"]) == ["*", "example.com"]
     assert block["scope_covered_share"] is None
-    assert block["scope_unbounded_reason"] == "domain"
+    assert block["scope_unbounded_reason"] == "no_measurable_scope"
 
 
-def test_an_approval_too_large_to_be_a_target_list_reports_no_share(tmp_path):
+def test_a_very_large_approval_is_still_a_readable_number(tmp_path):
+    """A /8 has no address-space share worth printing; as an approval it does.
+
+    The old reading capped out at ``too_large`` and printed nothing, which left
+    the tenants with the biggest approvals — the ones most likely to have an
+    unscanned corner — with no reading at all.
+    """
     settings, tenant_id = _seed(tmp_path)
     _scope(settings, tenant_id, [("allow", "cidr", "10.0.0.0/8")])
 
     block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
 
-    assert block["approved_addresses"] > coverage.MAX_SCOPE_ADDRESSES
-    assert block["scope_covered_share"] is None
-    assert block["scope_unbounded_reason"] == "too_large"
+    assert block["scope_covered_share"] == 100.0
+    assert block["scope_uncovered_entries"] == []
 
 
 def test_a_tenant_with_no_approved_scope_reports_no_share(tmp_path):
@@ -393,8 +659,12 @@ def test_a_tenant_with_no_approved_scope_reports_no_share(tmp_path):
     assert block["scope_unbounded_reason"] == "no_scope"
 
 
-def test_deny_entries_do_not_raise_coverage(tmp_path):
-    """Carving holes in an approval must not make reach look better."""
+def test_deny_entries_neither_raise_coverage_nor_count_as_approvals(tmp_path):
+    """Carving holes in an approval must not make reach look better.
+
+    And the page's "Approved entries" must not be a count of every row in the
+    table while the docstring beside it says deny rows are ignored.
+    """
     settings, tenant_id = _seed(tmp_path)
     _scope(
         settings,
@@ -404,8 +674,31 @@ def test_deny_entries_do_not_raise_coverage(tmp_path):
 
     block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
 
-    assert block["approved_addresses"] == 8
-    assert block["scope_covered_share"] == 12.5
+    assert block["approved_entries"] == 1
+    assert block["denied_entries"] == 1
+    assert block["scope_covered_share"] == 100.0
+
+
+def test_scope_coverage_is_unknown_while_the_scan_columns_are_still_filling(tmp_path):
+    """The two blocks must not disagree about whether there is data to divide.
+
+    0% here beside an honest "n/a" next door is the same withheld number
+    wearing the other tile's clothes.
+    """
+    settings, tenant_id = _seed(tmp_path)
+    _scope(settings, tenant_id, [("allow", "cidr", "10.0.0.0/29")])
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.Asset)
+            .where(models.Asset.tenant_id == tenant_id)
+            .values(last_scanned_at=None, last_vuln_scan_at=None, last_scan_run_id=None)
+        )
+
+    block = adoption.metrics(settings, tenant_id=tenant_id)["coverage"]
+
+    assert block["scanned_share"] is None
+    assert block["scope_covered_share"] is None
+    assert block["scope_unbounded_reason"] == "no_scan_history"
 
 
 def test_coverage_never_reaches_into_another_tenant(tmp_path):
@@ -442,4 +735,4 @@ def test_coverage_never_reaches_into_another_tenant(tmp_path):
     # not an empty read.
     neighbour = adoption.metrics(settings, tenant_id=other)["coverage"]
     assert neighbour["assets_with_scan_history"] == 1
-    assert neighbour["scope_covered_share"] == 12.5
+    assert neighbour["scope_covered_share"] == 100.0

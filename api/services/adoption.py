@@ -250,7 +250,12 @@ def metrics(settings: Settings, *, tenant_id: str, window_days: int = DEFAULT_WI
         scan_coverage = coverage_service.scan_coverage(
             session, tenant_id=tenant_id, since=coverage_since
         )
-        scope_coverage = coverage_service.scope_coverage(session, tenant_id=tenant_id)
+        scope_coverage = coverage_service.scope_coverage(
+            session,
+            tenant_id=tenant_id,
+            since=coverage_since,
+            history_reason=scan_coverage["history_reason"],
+        )
 
         tenant_created = session.execute(
             select(models.Tenant.created_at).where(models.Tenant.tenant_id == tenant_id)
@@ -418,12 +423,23 @@ def metrics(settings: Settings, *, tenant_id: str, window_days: int = DEFAULT_WI
         "coverage": {
             "coverage_days": COVERAGE_DAYS,
             "assets_with_scan_history": scan_coverage["with_scan_history"],
+            "scan_history_share": scan_coverage["scan_history_share"],
+            # Why the two shares below are ``None``, when they are: the columns
+            # have no backfill, so they fill one run at a time after an upgrade
+            # and a share taken too early is a statement about the rollout.
+            "scan_history_reason": scan_coverage["history_reason"],
             "scanned_share": scan_coverage["scanned_share"],
             "vuln_scanned_share": scan_coverage["vuln_scanned_share"],
+            # Approvals, not addresses — see api/services/coverage.py for why a
+            # share of an address space could not be read.
             "approved_entries": scope_coverage["approved_entries"],
-            "approved_addresses": scope_coverage["approved_addresses"],
-            "assets_in_scope": scope_coverage["assets_in_scope"],
+            "denied_entries": scope_coverage["denied_entries"],
+            "measurable_entries": scope_coverage["measurable_entries"],
+            "unmeasurable_entries": scope_coverage["unmeasurable_entries"],
+            "scope_covered_entries": scope_coverage["covered_entries"],
             "scope_covered_share": scope_coverage["covered_share"],
+            # The actionable half: approved ranges no scan has reached.
+            "scope_uncovered_entries": scope_coverage["uncovered_entries"],
             "scope_unbounded_reason": scope_coverage["unbounded_reason"],
         },
         "analysts": analysts,

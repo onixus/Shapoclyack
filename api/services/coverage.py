@@ -12,22 +12,34 @@ Two independent readings, deliberately not combined into one score:
   reached by a scan run recently. Read from ``assets.last_scanned_at``, which is
   written only by the scan-ingest path, and never from ``last_seen``, which an
   endpoint agent's inventory check-in also moves.
-* **Scope coverage** — of the addresses the tenant approved (``tenant_scan_scopes``),
-  how many correspond to a known asset. This is the one that finds the subnet
-  nobody ever pointed the scanner at, because its denominator comes from the
-  approval rather than from what was discovered.
+* **Scope coverage** — of the ranges the tenant approved (``tenant_scan_scopes``),
+  how many contain an asset a scan has actually reached. This is the one that
+  finds the subnet nobody ever pointed the scanner at, because its denominator
+  comes from the approval rather than from what was discovered.
 
-Both go to ``None`` rather than to a number whenever the denominator is not a
-real denominator, and scope coverage has two such cases beyond an empty estate:
+**Scope coverage counts approvals, not addresses.** It used to divide known IP
+identifiers by ``sum(network.num_addresses)``, and that number could not be
+read: a fully scanned ``/22`` with thirty live hosts reported "2.9% approved
+scope covered", which is a statement about how empty IPv4 subnets are and not
+about this estate. Worse, the two things an operator actually wants to tell
+apart — a subnet that is mostly empty address space and a subnet nobody has
+ever scanned — produced the same low number, and overlapping approvals
+(``10.0.0.0/24`` plus ``10.0.0.128/25``) inflated the denominator by a third.
+An approval is the unit somebody actually wrote down and can act on, so the
+share is *how many approved ranges have been reached at all*, and the ranges
+that have not been are listed by name. "Three of your eleven approved ranges
+have never been scanned, here they are" is actionable; "2.9%" is not.
 
-* a ``*`` wildcard or a ``domain`` entry has **no finite address space**, so
-  there is nothing to be a share *of*. A domain suffix approval says nothing
-  about how many hosts are behind it, and counting the ones already discovered
-  against themselves would report 100% for an estate the scanner has never
-  looked past the front of.
-* an approval so large it is not a target list — a ``/8`` is 16.7 million
-  addresses, and a real estate inside one produces a share indistinguishable
-  from zero. ``MAX_SCOPE_ADDRESSES`` caps what is worth expressing as a share.
+Every share is ``None`` rather than a number whenever the denominator is not a
+real denominator:
+
+* the estate has no scan history yet, or so little of it that a share would be
+  a statement about the rollout rather than about the estate (see
+  :data:`MIN_SCAN_HISTORY_SHARE`);
+* an approval has **no finite address space** — a ``*`` wildcard or a ``domain``
+  suffix. A domain approval says nothing about which hosts are behind it, so
+  such rows are counted and reported apart rather than folded into a share they
+  cannot belong to.
 
 Split out of ``adoption.py`` rather than added to it: the arithmetic is about
 scanning scope, it needs ``ipaddress`` and the scope table, and adoption's
@@ -44,10 +56,20 @@ from sqlalchemy import func, select
 
 from api.db import models
 
-#: Above this many approved addresses a share stops meaning anything — see the
-#: module docstring. A /16 (65,536) is still a network an operator can reason
-#: about; a /8 is not a target list.
-MAX_SCOPE_ADDRESSES = 1 << 17
+#: Below this share of the active estate carrying *any* scan history, the two
+#: scan shares are withheld. Migration ``0035_asset_scan_coverage`` has no
+#: backfill and cannot have one, so after an upgrade the columns fill one run at
+#: a time: a tenant with 50,000 assets that has scanned one 500-host subnet
+#: would otherwise read "Scanned in 30 days: 1%", which is indistinguishable
+#: from scanning having collapsed. The guard used to be ``known > 0``, which
+#: fires only on the single instant before the first run finishes — the
+#: docstring's own scenario walked straight through it.
+MIN_SCAN_HISTORY_SHARE = 0.1
+
+#: How many never-reached approvals to name on the page. The count is exact;
+#: this caps only the list, because an operator with sixty unscanned ranges
+#: needs the number and the first few, not a wall.
+UNCOVERED_SAMPLE = 10
 
 
 def _share(part: int, whole: int) -> float | None:
@@ -60,11 +82,11 @@ def scan_coverage(session: Any, *, tenant_id: str, since: datetime) -> dict[str,
     """Active assets reached by a scan run since ``since``.
 
     ``known`` is how many active assets have *ever* been scan-ingested since the
-    columns existed. While it is zero the share is ``None``: migration
-    ``0035_asset_scan_coverage`` has no backfill and cannot have one, so an
-    installation that has not scanned since upgrading has no coverage data — not
-    zero coverage. Reporting 0% there would raise an alarm about the upgrade
-    rather than about the estate.
+    columns existed. While it is below :data:`MIN_SCAN_HISTORY_SHARE` of the
+    estate both shares are ``None`` and ``history_reason`` says why: reporting a
+    single-digit percentage there would raise an alarm about the upgrade rather
+    than about the estate, which is the failure this block was added to stop
+    making in the other direction.
     """
     asset = models.Asset
     active, known, scanned, vuln_scanned = session.execute(
@@ -75,43 +97,71 @@ def scan_coverage(session: Any, *, tenant_id: str, since: datetime) -> dict[str,
             func.count(1).filter(asset.last_vuln_scan_at >= since),
         ).where(asset.tenant_id == tenant_id, asset.status == "active")
     ).one()
+    history_share = _share(known, active)
+    if known == 0:
+        reason = "no_scan_history"
+    elif known < active * MIN_SCAN_HISTORY_SHARE:
+        reason = "partial_scan_history"
+    else:
+        reason = None
     return {
         "active_assets": active,
         "with_scan_history": known,
-        "scanned_share": _share(scanned, active) if known else None,
-        "vuln_scanned_share": _share(vuln_scanned, active) if known else None,
+        "scan_history_share": history_share,
+        "history_reason": reason,
+        "scanned_share": _share(scanned, active) if reason is None else None,
+        "vuln_scanned_share": _share(vuln_scanned, active) if reason is None else None,
     }
 
 
 def _allowed_networks(rows: list[tuple[str, str, str]]) -> tuple[list, list[str]]:
-    """Allowed CIDRs, and the reasons the approved space has no finite size."""
+    """Approved CIDRs, and the approvals that have no address space at all."""
     networks: list = []
-    unbounded: list[str] = []
+    unmeasurable: list[str] = []
     for effect, kind, value in rows:
         if effect != "allow":
             continue
         if value == "*":
-            unbounded.append("wildcard")
+            unmeasurable.append(value)
             continue
         if kind == "domain":
             # A suffix approval is a permission, not an address space: nothing
-            # says how many hosts live behind it.
-            unbounded.append("domain")
+            # says which hosts live behind it, so it can be neither covered nor
+            # uncovered here.
+            unmeasurable.append(value)
             continue
         try:
             networks.append(ipaddress.ip_network(value, strict=False))
         except ValueError:  # pragma: no cover - the table is written normalised
-            continue
-    return networks, sorted(set(unbounded))
+            unmeasurable.append(value)
+    return networks, unmeasurable
 
 
-def scope_coverage(session: Any, *, tenant_id: str) -> dict[str, Any]:
-    """Approved addresses that correspond to a known asset.
+def scope_coverage(
+    session: Any, *, tenant_id: str, since: datetime, history_reason: str | None = None
+) -> dict[str, Any]:
+    """Approved ranges that contain an asset a scan has actually reached.
+
+    "Reached" is ``assets.last_scanned_at >= since`` on an **active** asset, and
+    both halves of that are load-bearing. Without the timestamp the reading was
+    about discovery, not coverage: a tenant that enumerated its estate once and
+    never scanned again reported full reach, which is precisely the tenant this
+    block exists to catch. Without the status filter, decommissioned assets went
+    on covering the ranges they had been retired from.
 
     Deny entries are ignored on purpose. They subtract from what may be scanned,
     so counting them would *raise* the coverage of a tenant that approved a
     range and then carved holes in it — the reading would improve because less
-    was allowed, which is the wrong direction for a metric about reach.
+    was allowed, which is the wrong direction for a metric about reach. They are
+    reported as their own count so the page's "approved entries" is not silently
+    a count of every row in the table.
+
+    ``history_reason`` is :func:`scan_coverage`'s verdict on whether the columns
+    this reads have enough data to divide by. It is threaded through rather than
+    re-derived because the two blocks must not be able to disagree: a tenant
+    whose scan history has not filled in yet has no scope coverage either, and
+    answering 0% here while the neighbouring tile honestly says "n/a" would be
+    the same lie wearing the other tile's clothes.
     """
     rows = session.execute(
         select(
@@ -120,48 +170,64 @@ def scope_coverage(session: Any, *, tenant_id: str) -> dict[str, Any]:
             models.TenantScanScope.value,
         ).where(models.TenantScanScope.tenant_id == tenant_id)
     ).all()
-    networks, unbounded = _allowed_networks(rows)
+    networks, unmeasurable = _allowed_networks(rows)
+    denied = sum(1 for effect, _, _ in rows if effect != "allow")
 
     result: dict[str, Any] = {
-        "approved_entries": len(rows),
-        "approved_addresses": None,
-        "assets_in_scope": None,
+        # Allow rows only: a deny row is not an approval, and counting it under
+        # a heading that reads "approved" while the docstring above says deny is
+        # ignored was two different claims about the same number.
+        "approved_entries": len(networks) + len(unmeasurable),
+        "denied_entries": denied,
+        "measurable_entries": len(networks),
+        # Wildcard and domain approvals, named so the page can say what it could
+        # not measure instead of quietly narrowing the denominator.
+        "unmeasurable_entries": sorted(set(unmeasurable))[:UNCOVERED_SAMPLE],
+        "covered_entries": None,
         "covered_share": None,
-        "unbounded_reason": unbounded[0] if unbounded else None,
+        "uncovered_entries": [],
+        "unbounded_reason": None,
     }
-    if unbounded or not networks:
-        # No finite denominator: either an entry has no address space, or the
-        # tenant approved nothing at all. Both are `None`, and the reason is
-        # carried so the console can say which rather than printing a dash.
-        if not unbounded and not networks:
-            result["unbounded_reason"] = "no_scope"
+    if not networks:
+        # No range to be covered: either nothing was approved at all, or every
+        # approval is a permission rather than an address space. The two are
+        # different answers and the console prints which.
+        result["unbounded_reason"] = "no_scope" if not rows else "no_measurable_scope"
+        return result
+    if history_reason is not None:
+        result["unbounded_reason"] = history_reason
         return result
 
-    total = sum(network.num_addresses for network in networks)
-    if total > MAX_SCOPE_ADDRESSES:
-        result["approved_addresses"] = total
-        result["unbounded_reason"] = "too_large"
-        return result
-
-    addresses = {
-        value
-        for (value,) in session.execute(
-            select(models.AssetIdentifier.identifier_value).where(
-                models.AssetIdentifier.tenant_id == tenant_id,
-                models.AssetIdentifier.identifier_type == "ip",
-            )
+    # Only the assets that can *make* a range covered: active, in this tenant,
+    # and reached by a scan inside the window. On an estate of any size this is
+    # a small fraction of the identifier table, which the previous version read
+    # in full and unfiltered on every call to /api/adoption.
+    addresses = session.execute(
+        select(models.AssetIdentifier.identifier_value)
+        .join(models.Asset, models.Asset.asset_id == models.AssetIdentifier.asset_id)
+        .where(
+            models.AssetIdentifier.tenant_id == tenant_id,
+            models.AssetIdentifier.identifier_type == "ip",
+            models.Asset.status == "active",
+            models.Asset.last_scanned_at >= since,
         )
-    }
-    in_scope = 0
+        .distinct()
+    ).scalars()
+
+    covered: set[Any] = set()
     for raw in addresses:
         try:
             address = ipaddress.ip_address(raw)
         except ValueError:  # pragma: no cover - identifiers are normalised
             continue
-        if any(address in network for network in networks):
-            in_scope += 1
+        for network in networks:
+            if address in network:
+                covered.add(network)
+        if len(covered) == len(networks):
+            break
 
-    result["approved_addresses"] = total
-    result["assets_in_scope"] = in_scope
-    result["covered_share"] = _share(in_scope, total)
+    uncovered = [str(network) for network in networks if network not in covered]
+    result["covered_entries"] = len(covered)
+    result["covered_share"] = _share(len(covered), len(networks))
+    result["uncovered_entries"] = sorted(uncovered)[:UNCOVERED_SAMPLE]
     return result

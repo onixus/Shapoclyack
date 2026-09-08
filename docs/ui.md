@@ -40,7 +40,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
-| `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age; plus **Noise** (false-positive verdicts, suppressions in force and lapsed, overrides, noisiest detectors and observers) and **Coverage** (scanned share and approved-scope reach) | Viewer |
+| `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age; plus **Noise** (false-positive verdicts, suppressions in force and lapsed, overrides, noisiest detectors and observers) and **Coverage** (scanned share, vulnerability-assessed share, and how many approved ranges a scan has reached) | Viewer |
 | `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
@@ -339,11 +339,25 @@ the scanner looking at the whole of what it was allowed to look at? The scanned
 share is read from a column only the scan-ingest path writes, never from
 `last_seen`, which an endpoint agent's inventory check-in also moves — a fleet
 of agents reporting on schedule used to make an unscanned estate look fully
-covered. There is no backfill, so an installation that has not scanned since
-upgrading reads `n/a`: no coverage *data*, which is not the same as no coverage.
-The approved-scope tile has no share to report at all when the approval has no
-finite address space (a wildcard or a domain suffix) or is too large to be a
-target list, and prints the reason rather than a dash.
+covered. There is no backfill, so the columns fill one run at a time after an
+upgrade, and both scan shares read `n/a` until enough of the estate has any scan
+history for a share to be about the estate rather than about the rollout: no
+coverage *data*, which is not the same as no coverage. **Assessed for
+vulnerabilities** is a separate reading, because a discovery sweep covers an
+asset for inventory and says nothing about its vulnerabilities; it counts a run
+only when the run's own stage manifest shows a vulnerability stage that actually
+ran, since `vulnerabilities.json` is exported by every run whether or not
+anything looked.
+
+**Approved ranges reached** counts approvals, not addresses. A share of the
+approved *address space* answered 2.9% for a fully scanned /22 with thirty live
+hosts — a statement about how empty IPv4 subnets are — and could not tell an
+empty range from one nobody had ever scanned. The unit is now the approval
+somebody wrote down: how many approved ranges contain an asset a scan reached
+inside the window, with the ranges that contain none listed by name underneath,
+which is the part an operator acts on. Deny rows are not approvals and are
+counted separately; a wildcard or a domain suffix is no address space at all,
+so those entries are named apart rather than counted as missed.
 
 On `/vulnerabilities/view`, an admin gets a **False positive** card beside
 Accepted risk: a reason and a suppression length between 1 and 365 days, both
