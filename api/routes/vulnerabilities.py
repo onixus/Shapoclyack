@@ -190,6 +190,14 @@ def list_vulnerabilities(
     ] = False,
     severity: Annotated[str | None, Query(description="critical | high | medium | low | unknown")] = None,
     asset_id: str | None = None,
+    source: Annotated[
+        str | None,
+        Query(
+            description="scan | endpoint_software — which observer found it. "
+            "Software findings come from the endpoint inventory and are "
+            "verified by the next snapshot, not by a re-scan."
+        ),
+    ] = None,
     assignee: str | None = None,
     unassigned: Annotated[
         bool, Query(description="Open findings with no assignee — the dashboard's unowned work")
@@ -218,6 +226,7 @@ def list_vulnerabilities(
             states=sorted(vuln_states.ACTIVE) if open_only else None,
             severity=severity,
             asset_id=asset_id,
+            source=source,
             assignee=assignee,
             unassigned=unassigned,
             sla=sla,
@@ -439,7 +448,10 @@ def verify(
     409 when the move is not legal from the finding's current state, and also
     when the scan could not be dispatched: a finding parked in ``VERIFYING``
     with no scan behind it would later be closed as machine-verified by a run
-    that never looked at it, so the request fails instead.
+    that never looked at it, so the request fails instead. A finding from the
+    endpoint software inventory is 409 for the same reason — a port scan does
+    not observe an installed package — and is verified by its device's next
+    accepted snapshot.
     """
     try:
         return _found(

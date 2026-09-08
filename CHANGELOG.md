@@ -4,7 +4,72 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
-_Nothing yet._
+### Added
+
+- **Software→CVE matches are tracked findings** (ROADMAP Track E, M3;
+  migration `0032`) — a match lived in `software_cve_matches`, keyed on
+  `device_id` and replaced wholesale on every run, so an authenticated finding
+  had no `finding_key`, no SLA, no owner, no ticket, no NIST risk and no line
+  in `vulnerability_events`; it was absent from the Vulnerability Center,
+  every report and the remediation board, and it vanished at the next run.
+  Matches now fold into the same `vulnerabilities` table the scanner writes,
+  carrying `source = "endpoint_software"` and the `device_id` they were seen
+  on. `GET /api/vulnerabilities?source=` narrows to either observer.
+
+  Four decisions are worth naming.
+
+  *The scan `finding_key` is untouched.* Widening that hash to tell the two
+  sources apart would have renamed every finding already in the table — every
+  open one would look new and every closed one would come back. Software
+  findings get their own namespaced key over `(asset, device, CVE)`; `device_id`
+  is in it because one asset can carry several endpoints and which host a
+  package is behind on is part of what the finding is.
+
+  *Only a `vulnerable` match with a published fix becomes a finding.* `fixed`
+  and `not_applicable` are the evidence that the matcher looked and answered,
+  and `unknown` is the honest "we could not tell" — a deadline attached to "we
+  do not know this endpoint's OS" puts the SLA report behind a non-statement.
+  The published-fix rule is not an optimisation: a full feed across a large
+  estate produces millions of `vulnerable` matches, and an SLA dashboard with
+  a million breaches is unreadable on its first day.
+  `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` adds a floor on top.
+
+  *Closure requires an observation, not an absence.* A software finding closes
+  as `closure_reason = patched`, `machine_verified = true`, only when the match
+  is gone **and** the device sent a newer accepted snapshot **and** the
+  distribution still resolved. A device that went quiet produces exactly the
+  same "no match" as a device that was patched; when the finding is not closed
+  its `last_seen_at` does not move either, so `?stale_days=` still surfaces it.
+
+  *`POST /api/vulnerabilities/{id}/verify` is `409` for a software finding.*
+  The asset has a scannable address and a scan would happily run — and prove
+  nothing, because a port scan does not observe an installed package. The
+  console hides the button and says what does verify it instead.
+
+  New worker `api/services/software_match_worker.py` keeps the lifecycle
+  current: leader-locked, batched, and due-when a device's
+  `latest_snapshot_id` differs from the one its matches were written from —
+  a durable queue that needs no column and is the same answer in every replica.
+  An accepted submission wakes it rather than re-matching inline, which would
+  have put a fleet-wide advisory walk on the agent's rate-limited ingest path.
+  Both `cve-matches/refresh` routes now fold synchronously and report what they
+  did in a `lifecycle` object. `OCTO_SOFTWARE_MATCH_ENABLED`,
+  `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`, `OCTO_SOFTWARE_MATCH_BATCH_SIZE`.
+
+  A livepatched kernel still reads as `vulnerable` and now gets a deadline —
+  there is no signal in the inventory to correct it, and the supported path is
+  a risk acceptance with a reason and an expiry rather than a guess.
+
+### Changed
+
+- **The tenant-wide matcher run is batched** — `run_for_tenant` opened a
+  session per device and issued a `DELETE` plus one `INSERT` per row, so its
+  cost scaled with the device count rather than the row count. It now walks
+  devices in batches, one `DELETE … IN` and one executemany `INSERT` per batch.
+- **Endpoint CVE-match rows carry `vuln_id`** — the tracked finding a match
+  produced, or null. Without it the console had two unconnected places talking
+  about the same CVE on the same host; the Matched CVEs panel now links to the
+  finding, and says "not tracked — no published fix" where there is none.
 
 ## [0.44-0907] — 2026-09-07
 

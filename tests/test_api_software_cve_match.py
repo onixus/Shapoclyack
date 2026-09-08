@@ -331,13 +331,20 @@ def test_matches_are_confined_to_their_tenant(client: TestClient) -> None:
     other_run = client.post(
         "/api/endpoint/cve-matches/refresh?tenant_id=ten_other", headers=admin
     ).json()
-    assert other_run == {
-        "tenant_id": "ten_other",
-        "devices": 0,
-        "matches": 0,
-        "by_status": {"vulnerable": 0, "fixed": 0, "not_applicable": 0, "unknown": 0},
-        "results": [],
+    assert other_run["tenant_id"] == "ten_other"
+    assert other_run["devices"] == 0
+    assert other_run["matches"] == 0
+    assert other_run["by_status"] == {
+        "vulnerable": 0,
+        "fixed": 0,
+        "not_applicable": 0,
+        "unknown": 0,
     }
+    assert other_run["results"] == []
+    # The same run folds into the lifecycle (Track E, M3) and, with no devices
+    # in this tenant, has nothing to fold.
+    assert other_run["lifecycle"]["created"] == 0
+    assert other_run["lifecycle"]["devices"] == 0
     assert len(client.get("/api/endpoint/cve-matches", headers=admin).json()) == 4
 
 

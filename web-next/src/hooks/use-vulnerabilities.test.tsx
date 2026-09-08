@@ -37,6 +37,8 @@ const VULN: TrackedVulnerability = {
   tenant_id: "default",
   asset_id: "asset_1",
   finding_key: "abc",
+  source: "scan",
+  device_id: null,
   cve: "CVE-2024-1",
   cwe: [],
   script_id: null,

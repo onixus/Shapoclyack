@@ -362,6 +362,19 @@ export const en = {
   "vuln.verificationRate": "Machine verification rate",
   "vuln.verifiedClosedCount": "{count} verified closures",
 
+  // Endpoint software findings (Track E, M3).
+  "vuln.reason.patched": "Patched on the endpoint",
+  "vuln.source": "Source",
+  "vuln.source.any": "Any source",
+  "vuln.source.scan": "Network scan",
+  "vuln.source.endpointSoftware": "Endpoint software",
+  "vuln.software.noVerify":
+    "Verified by the next inventory snapshot from this endpoint, not by a re-scan: a scan does not observe an installed package.",
+  "vuln.software.lastSnapshot": "Last observed",
+  "vuln.software.device": "Endpoint",
+  "softwareCve.trackedFinding": "Tracked finding",
+  "softwareCve.noTrackedFinding": "not tracked — no published fix",
+
   // Per-tenant usage metering and quotas.
   "nav.usage": "Usage",
   "page.usage.title": "Usage",
@@ -771,6 +784,19 @@ export const ru: Record<MsgKey, string> = {
   "vuln.reason.ticketResolved": "Решено в трекере",
   "vuln.verificationRate": "Доля закрытий, подтверждённых сканом",
   "vuln.verifiedClosedCount": "{count} подтверждено сканом",
+
+  // Находки из инвентаря ПО на хостах (Track E, M3).
+  "vuln.reason.patched": "Обновлено на хосте",
+  "vuln.source": "Источник",
+  "vuln.source.any": "Любой источник",
+  "vuln.source.scan": "Сетевой скан",
+  "vuln.source.endpointSoftware": "Инвентарь ПО",
+  "vuln.software.noVerify":
+    "Проверяется следующим инвентарём с этого хоста, а не пересканом: скан не видит установленный пакет.",
+  "vuln.software.lastSnapshot": "Последнее наблюдение",
+  "vuln.software.device": "Хост",
+  "softwareCve.trackedFinding": "Находка",
+  "softwareCve.noTrackedFinding": "не отслеживается — нет опубликованного фикса",
 
   // Per-tenant usage metering and quotas.
   "nav.usage": "Потребление",

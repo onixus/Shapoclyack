@@ -224,7 +224,7 @@ not an authorization control.
 | `/api/agent/deploy` | Operator-driven SSH push installation of an agent onto a Linux host |
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
-| `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
+| `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher **and fold the result into the vulnerability lifecycle** are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
 | `/api/tenants` | Tenant lifecycle, provisioning keys, and the approved scanning scope (`/api/tenants/{id}/scan-scope`, admin). A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
@@ -287,6 +287,14 @@ request is well-formed; the refusal is about the finding's current state) and
 `422` on a state that is not in the model. A finding in another tenant answers
 `404`. The states, the SLA resolution order and the exception rules are in
 [vulnerability-lifecycle.md](vulnerability-lifecycle.md).
+
+**Two sources.** `GET /api/vulnerabilities?source=` narrows to `scan` (the
+network scanner) or `endpoint_software` (a software→CVE match on a managed
+endpoint); an unknown value is `422`. `POST /{id}/verify` answers `409` for
+every `endpoint_software` finding: a port scan does not observe an installed
+package, so a "machine verified" closure from one would be false. Those
+findings are verified by their device's next accepted inventory snapshot — see
+[software-cve-matching.md](software-cve-matching.md#lifecycle-tracked-findings).
 
 **Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
 tenant's persisted risk snapshots — `recorded_at`, estate risk level, open and

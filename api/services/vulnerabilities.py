@@ -100,6 +100,15 @@ VULN_EVENT_KINDS = (
 
 TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
 
+#: Which observer produced a finding. ``scan`` is this module's own path;
+#: ``endpoint_software`` is ``api/services/software_findings.py``.
+SOURCES = ("scan", "endpoint_software")
+
+#: Why a finding is closed. Never taken from a request body — the value of
+#: ``machine_verified`` is that it cannot be self-attested. ``patched`` is the
+#: software path's: a later accepted inventory snapshot no longer matches it.
+CLOSURE_REASONS = ("verified_remediated", "patched", "manual", "ticket_resolved")
+
 #: Derived SLA readings. ``none`` is a finding with no deadline at all, which
 #: happens only for a CLOSED row.
 SLA_STATES = ("on_track", "due_soon", "breached", "accepted", "none")
@@ -765,6 +774,8 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "tenant_id": row.tenant_id,
         "asset_id": row.asset_id,
         "finding_key": row.finding_key,
+        "source": row.source,
+        "device_id": row.device_id,
         "cve": row.cve,
         "cwe": list(row.cwe or []),
         "script_id": row.script_id,
@@ -1026,12 +1037,28 @@ def trigger_verification(
     The move is refused if the scan could not be dispatched. A finding sitting
     in ``VERIFYING`` with nothing actually looking at it is the state that
     produces a false "machine verified" closure later, so it is never created.
+
+    It is refused outright for a ``endpoint_software`` finding. The asset does
+    have a scannable address, so ``_verification_target`` would happily return
+    one and a scan would happily run — and it would prove nothing, because an
+    installed package is not something a port scan observes. The finding would
+    then be closed as machine-verified on the strength of a scan that never
+    looked at it, which is the exact thing this whole path exists to prevent.
+    Its verification is the next inventory snapshot.
     """
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
             return None
+        if row.source == "endpoint_software":
+            raise VerificationDispatchError(
+                f"Vulnerability '{vuln_id}' came from the endpoint software inventory, "
+                "which a network re-scan cannot verify: a scan does not observe an "
+                "installed package, so a 'machine verified' closure from one would be "
+                "false. It is verified by the next accepted inventory snapshot from "
+                "its device."
+            )
         previous = row.state
         # Goes through the same state machine as an operator's move: a closed
         # finding is not re-verified, it is reopened first.
@@ -1520,6 +1547,7 @@ def list_vulnerabilities(
     states: list[str] | None = None,
     severity: str | None = None,
     asset_id: str | None = None,
+    source: str | None = None,
     assignee: str | None = None,
     unassigned: bool = False,
     sla: str | None = None,
@@ -1544,6 +1572,8 @@ def list_vulnerabilities(
         raise ValueError(f"unknown sla filter {sla!r}; expected one of {', '.join(SLA_STATES)}")
     if unassigned and assignee:
         raise ValueError("unassigned and assignee cannot be combined")
+    if source and source not in SOURCES:
+        raise ValueError(f"unknown source {source!r}; expected one of {', '.join(SOURCES)}")
     if severity:
         severity = _validate_severity(severity)
 
@@ -1562,6 +1592,8 @@ def list_vulnerabilities(
         filters.append(models.Vulnerability.severity == severity)
     if asset_id:
         filters.append(models.Vulnerability.asset_id == asset_id)
+    if source:
+        filters.append(models.Vulnerability.source == source)
     if unassigned:
         filters.append(models.Vulnerability.assignee.is_(None))
     elif assignee:

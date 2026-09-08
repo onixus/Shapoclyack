@@ -512,6 +512,16 @@ Endpoint inventory (Lariska ingestion):
 | `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval |
 | `OCTO_ENDPOINT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per statement |
 
+Software→CVE findings in the vulnerability lifecycle (Track E, M3 — see
+[software-cve-matching.md](software-cve-matching.md#lifecycle-tracked-findings)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SOFTWARE_MATCH_ENABLED` | `true` | Run the in-process worker that re-matches endpoints whose latest snapshot moved and folds the result into `vulnerabilities`. Leader-locked, so it is safe to leave on in every replica. Off means software findings only move when somebody calls the refresh route |
+| `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS` | `900` | Worker tick. A ceiling on how stale a tracked software finding can be, not a scan cadence — an accepted submission wakes the worker early |
+| `OCTO_SOFTWARE_MATCH_BATCH_SIZE` | `100` | Devices re-matched per tick, and per statement. Raise it on a large estate with a fast advisory feed; the whole batch is one transaction |
+| `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` | *(unset)* | Severity floor for creating a tracked finding: `critical`, `high`, `medium` or `low`. Unset means no floor. Applies **on top of** the built-in rule that only a match with a published fix becomes a finding at all — raise it when the SLA dashboard is drowning in low-severity backports |
+
 Web screenshots (ROADMAP P4.4 / Phase 9.3):
 
 | Variable | Default | Purpose |

@@ -11,6 +11,7 @@ import type {
   SlaState,
   SoftwareCveMatchStatus,
   TenantInfo,
+  VulnerabilitySource,
   VulnLifecycleState,
 } from "@/lib/api";
 import type { Severity } from "@/lib/run-data";
@@ -138,6 +139,13 @@ export const SOFTWARE_CVE_MATCH_STATUS: Record<SoftwareCveMatchStatus, StatusSty
   fixed: { label: "fixed", className: SUCCESS },
   not_applicable: { label: "not applicable", variant: "secondary", className: MUTED },
   unknown: { label: "unknown", variant: "outline", className: IN_PROGRESS },
+};
+
+/** Which observer found a tracked finding (Track E, M3). Deliberately quiet
+ * styling: the source is context for the row, not a severity signal. */
+export const VULN_SOURCE_STATUS: Record<VulnerabilitySource, StatusStyle> = {
+  scan: { label: "scan", variant: "outline", className: MUTED },
+  endpoint_software: { label: "endpoint", variant: "outline", className: INFO_VIOLET },
 };
 
 export const SEVERITY_STATUS: Record<Severity, StatusStyle & { tremorColor: string }> = {
