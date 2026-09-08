@@ -2089,6 +2089,10 @@ export type CompliancePosture = {
   generated_at: string;
   asset_count: number;
   open_findings: number;
+  /** Findings an unexpired false-positive verdict is holding out of the active
+   * population this posture was assessed from. Reported beside the score and
+   * never subtracted from it. */
+  suppressed_findings: number;
   controls_total: number;
   controls_assessed: number;
   controls_passed: number;

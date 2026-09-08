@@ -1677,6 +1677,11 @@ class CompliancePosture(BaseModel):
     generated_at: str
     asset_count: int = 0
     open_findings: int = 0
+    #: Findings an unexpired false-positive verdict is holding out of the active
+    #: population this posture was assessed from. Reported, never subtracted:
+    #: the score is not docked for honest triage, but a reader has to be able to
+    #: see how much of the estate the score did not look at.
+    suppressed_findings: int = 0
     controls_total: int = 0
     controls_assessed: int = 0
     controls_passed: int = 0

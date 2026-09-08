@@ -375,6 +375,12 @@ counts, and expands to the evidence behind it.
 Three things on the page are deliberate rather than decorative, and should stay
 that way if it is restyled:
 
+- the evidence base says how many findings an unexpired **false-positive
+  verdict** is holding out of the assessment. A control can pass because the
+  estate was fixed or because the findings behind it were marked as never real,
+  and the score is the same number either way; it is not docked for a verdict,
+  but the reader of a compliance page is the reader who has to be able to tell
+  the two apart;
 - a control with no evidence in this tenant is **`not_assessed`**, shown with
   its reason, and excluded from the score — an empty estate scores nothing, not
   100%;

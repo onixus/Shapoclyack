@@ -136,6 +136,15 @@ All notable changes to Shapoclyack are documented in this file.
   verdict that is not there answers `409` instead of a `200` for a call that
   changed nothing; the console's Withdraw button reads the closure rather than
   the leftover columns, so it no longer appears on an open finding at all.
+  Compliance says what its score was built on. A false-positive closure leaves
+  the active population, so it can turn a failing control green — intended, and
+  the score is *not* docked for it, because penalising a tenant for correcting
+  its own evidence restores the incentive to leave noise open. But every
+  guardrail on the verdict constrains who may make one, and none of them is
+  visible where the score is read, so each framework's posture now carries
+  `suppressed_findings`: how many findings an unexpired verdict is holding out
+  of the assessment. It is on the console beside the evidence base and in every
+  generated report.
   Migration `0034_vuln_false_positive`; its downgrade is destructive and is
   listed as such in [docs/operations.md](docs/operations.md), as is
   `0035_asset_scan_coverage`'s, for the same reason its own docstring gives:
