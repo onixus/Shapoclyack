@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import case, delete, insert, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -547,6 +547,11 @@ def _tracked_finding_ids(session, *, tenant_id: str, device_ids: list[str]) -> d
     second small query rather than an outer join so the match list keeps
     working unchanged when a match has no finding — which is the normal case,
     since only matches with a published fix become one.
+
+    ``device_ids`` is the devices *on the page*, never the tenant's. The
+    ``IN (...)`` list is a bound parameter each, and psycopg refuses a
+    statement past roughly 65k of them — which is a 500 for the whole tenant
+    on exactly the estate that needs this endpoint most.
     """
     if not device_ids:
         return {}
@@ -605,6 +610,24 @@ def _sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
         -_STATUS_RANK.get(item["status"], 0),
         _SEVERITY_RANK.get(item.get("severity") or "unknown", 5),
         item.get("cve_id") or "",
+    )
+
+
+def _order_by() -> tuple[Any, ...]:
+    """:func:`_sort_key`, expressed for the database.
+
+    The tenant listing has to order *before* it limits, or the page it returns
+    is an arbitrary one; ordering in Python meant reading the tenant's entire
+    match table into the process on every request, and then handing every
+    device id in it to :func:`_tracked_finding_ids` as an ``IN (...)`` list —
+    which psycopg refuses outright past about 65k parameters. Kept beside
+    ``_sort_key`` so the two cannot drift: the in-memory sort still runs over
+    the page, and must agree with this.
+    """
+    return (
+        case(_STATUS_RANK, value=models.SoftwareCveMatch.status, else_=0).desc(),
+        case(_SEVERITY_RANK, value=models.SoftwareCveMatch.severity, else_=5).asc(),
+        models.SoftwareCveMatch.cve_id.asc(),
     )
 
 
@@ -667,7 +690,7 @@ def list_for_tenant(
             stmt = stmt.where(models.SoftwareCveMatch.severity == severity)
         if cve_id:
             stmt = stmt.where(models.SoftwareCveMatch.cve_id == cve_id.strip().upper())
-        rows = session.execute(stmt).all()
+        rows = session.execute(stmt.order_by(*_order_by()).limit(limit)).all()
         tracked = _tracked_finding_ids(
             session,
             tenant_id=tenant_id,
@@ -680,7 +703,7 @@ def list_for_tenant(
             for row, hostname in rows
         ]
     items.sort(key=_sort_key)
-    return items[:limit]
+    return items
 
 
 def summary(settings: Settings, *, tenant_id: str) -> dict[str, Any]:

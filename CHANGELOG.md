@@ -154,6 +154,13 @@ All notable changes to Shapoclyack are documented in this file.
   due or `OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS` (new, default 60) is spent,
   shared across tenants, oldest inventory first.
 
+- **`GET /api/endpoint/cve-matches` pages in SQL.** It read every match row in
+  the tenant, sorted them in Python and sliced afterwards, then handed the
+  device id of every one of them to the tracked-finding lookup as an
+  `IN (...)` list. Past roughly 65k parameters psycopg refuses the statement,
+  so the endpoint returned 500 for the whole tenant at the estate size it is
+  most needed at. The ordering and the limit are now the database's.
+
 ## [0.44-0907] — 2026-09-07
 
 ### Added
