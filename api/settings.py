@@ -297,6 +297,11 @@ class Settings:
     software_match_enabled: bool = True
     software_match_interval_seconds: int = 900
     software_match_batch_size: int = 100
+    # How long a tick may spend draining. The tick takes batches until the
+    # tenant has nothing due or this is spent, because one batch per tick made
+    # the interval above a ceiling on nothing — the real one was
+    # ``due_devices / batch_size × interval``.
+    software_match_tick_budget_seconds: int = 60
     # Severity floor for creating a tracked finding, on top of the "must have a
     # published fix" rule. Empty means no floor. Raise it on an installation
     # whose SLA dashboard is drowning in low-severity backports.
@@ -842,6 +847,9 @@ def load_settings() -> Settings:
             os.environ.get("OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS", "900")
         ),
         software_match_batch_size=int(os.environ.get("OCTO_SOFTWARE_MATCH_BATCH_SIZE", "100")),
+        software_match_tick_budget_seconds=max(
+            1, int(os.environ.get("OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS", "60"))
+        ),
         software_finding_min_severity=os.environ.get("OCTO_SOFTWARE_FINDING_MIN_SEVERITY", "")
         .strip()
         .lower(),

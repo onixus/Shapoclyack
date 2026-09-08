@@ -16,9 +16,33 @@ shorten this worker's wait.
 
 **What the queue actually is.** The durable statement "this device needs
 re-matching" is a comparison of ``endpoint_devices.latest_snapshot_id`` against
-the ``snapshot_id`` its ``software_cve_matches`` rows were written from. That
-survives a restart, is the same answer in every replica, and cannot drift from
-reality the way an in-memory list would. :func:`notify` is latency only.
+``last_matched_snapshot_id`` — the snapshot the fold last ran over, whatever it
+concluded. That survives a restart, is the same answer in every replica, and
+cannot drift from reality the way an in-memory list would. :func:`notify` is
+latency only.
+
+It used to be derived from the match rows instead, which needed no column and
+was wrong for the host the matcher has nothing to say about: every package
+matchable, no advisory hits, no ``unknown`` placeholders, therefore zero rows
+and no snapshot to compare — so the device was due again on the next tick, and
+on every tick after that. With ``LIMIT batch_size`` and no ``ORDER BY``, a few
+hundred such hosts permanently starve the devices that changed. Migration
+``0033`` added the marker.
+
+**A tick drains, it does not take one batch.**
+``OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`` is documented as a ceiling on how
+stale a tracked software finding may be. One batch per tick made the real
+ceiling ``due_devices / batch_size × interval`` — for 50k due devices at the
+defaults, the better part of a working week. A tick now keeps taking batches
+until the tenant has nothing due or ``OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS``
+is spent, which bounds the tick without bounding the queue.
+
+**One device cannot stop a tenant.** The fold takes each device in a SAVEPOINT
+and holds a device that raised off with a capped backoff
+(``software_findings._hold_off``). Before that, a whole batch shared one
+transaction and the sweep caught at tenant level, so one poisonous device
+failed its batch and was re-read at the head of the same batch on the next
+tick, forever.
 
 **Leader-locked**, like the schedule and report dispatchers and unlike the job
 reaper: this worker takes no per-row claim, so two replicas would re-match the
@@ -32,6 +56,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -51,58 +76,90 @@ def _now() -> datetime:
 
 
 def pending_device_ids(settings: Settings, *, tenant_id: str, limit: int) -> list[str]:
-    """Devices whose matches were written from an older snapshot than the
-    device's current one, worst-stale first is not needed — any order will do,
-    because every one of them is due.
+    """Devices whose current snapshot has not been folded yet.
 
-    A device with a snapshot and no match rows at all is included: it has never
-    been matched, which is the same work.
+    "Folded", not "matched into rows": ``last_matched_snapshot_id`` is written
+    for every verdict the fold reaches, so a host with nothing to report leaves
+    the queue like any other. A device held off after a failure
+    (``match_retry_after`` in the future) is still due, just not yet.
+
+    Ordered oldest-inventory first. Any order is *correct* — every row is due —
+    but the unordered ``LIMIT`` meant a device that could not be drained in one
+    tick sat at the head of every batch, and the one that had just been
+    patched waited behind it.
     """
+    now = _now().replace(tzinfo=None)
     with get_session(settings.postgres_url) as session:
-        matched_snapshot = (
-            select(
-                models.SoftwareCveMatch.device_id.label("device_id"),
-                models.SoftwareCveMatch.snapshot_id.label("snapshot_id"),
-            )
-            .where(models.SoftwareCveMatch.tenant_id == tenant_id)
-            .distinct()
-            .subquery()
-        )
         rows = session.execute(
             select(models.EndpointDevice.device_id)
-            .outerjoin(
-                matched_snapshot,
-                matched_snapshot.c.device_id == models.EndpointDevice.device_id,
-            )
             .where(
                 models.EndpointDevice.tenant_id == tenant_id,
                 models.EndpointDevice.latest_snapshot_id.is_not(None),
-                (matched_snapshot.c.snapshot_id.is_(None))
-                | (matched_snapshot.c.snapshot_id != models.EndpointDevice.latest_snapshot_id),
+                (models.EndpointDevice.last_matched_snapshot_id.is_(None))
+                | (
+                    models.EndpointDevice.last_matched_snapshot_id
+                    != models.EndpointDevice.latest_snapshot_id
+                ),
+                (models.EndpointDevice.match_retry_after.is_(None))
+                | (models.EndpointDevice.match_retry_after <= now),
             )
+            .order_by(models.EndpointDevice.last_inventory_at.asc())
             .limit(limit)
         ).scalars().all()
-    # ``distinct()`` is over (device, snapshot) pairs, so a device mid-rewrite
-    # can appear twice; the caller must not re-match it twice in one pass.
     return list(dict.fromkeys(rows))
 
 
-def sweep_tenant(settings: Settings, tenant_id: str) -> dict[str, Any]:
-    """One pass over one tenant's stale devices."""
+def sweep_tenant(
+    settings: Settings, tenant_id: str, *, deadline: float | None = None
+) -> dict[str, Any]:
+    """Drain one tenant's due devices, in batches, until the budget runs out.
+
+    ``deadline`` is a :func:`time.monotonic` reading, defaulting to
+    ``OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS`` from now. Taking a single batch
+    per tick made ``OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`` a ceiling on nothing
+    — the real one was ``due / batch_size × interval``, which for a large
+    estate is days. Whatever is left when the budget expires is still due and
+    is picked up by the next tick; the marker makes that resumption exact.
+    """
     batch_size = max(1, settings.software_match_batch_size)
-    device_ids = pending_device_ids(settings, tenant_id=tenant_id, limit=batch_size)
-    if not device_ids:
+    if deadline is None:
+        deadline = time.monotonic() + max(
+            1.0, float(settings.software_match_tick_budget_seconds)
+        )
+    stats = software_findings.SoftwareFindingStats()
+    batches = 0
+    while True:
+        device_ids = pending_device_ids(settings, tenant_id=tenant_id, limit=batch_size)
+        if not device_ids:
+            break
+        stats.add(
+            software_findings.ingest_devices(
+                settings, tenant_id=tenant_id, device_ids=device_ids
+            )
+        )
+        batches += 1
+        if time.monotonic() >= deadline:
+            LOG.info(
+                "Software match sweep: tenant=%s out of tick budget after %d batches",
+                tenant_id,
+                batches,
+            )
+            break
+    if not batches:
         return {"devices": 0}
-    stats = software_findings.ingest_devices(
-        settings, tenant_id=tenant_id, device_ids=device_ids
-    )
     LOG.info("Software match sweep: tenant=%s %s", tenant_id, stats.as_dict())
     return stats.as_dict()
 
 
 def sweep(settings: Settings) -> dict[str, Any]:
     """One pass across every tenant. Fail-soft per tenant, like the retention
-    sweep: one tenant with an unreadable advisory feed must not stop the rest."""
+    sweep: one tenant with an unreadable advisory feed must not stop the rest.
+
+    The tick budget is shared across tenants and re-read per tenant, so a
+    first tenant that used it all still leaves the rest one batch each rather
+    than none — otherwise the tenant that happens to sort first would be the
+    only one ever swept on a loaded installation.
+    """
     from api.services import tenants as tenants_service
 
     totals: dict[str, Any] = {"tenants": 0, "devices": 0, "created": 0, "closed": 0, "errors": 0}
@@ -113,15 +170,21 @@ def sweep(settings: Settings) -> dict[str, Any]:
         totals["errors"] += 1
         return totals
 
-    for tenant_id in tenant_ids:
+    budget = max(1.0, float(settings.software_match_tick_budget_seconds))
+    started = time.monotonic()
+    for index, tenant_id in enumerate(tenant_ids):
         totals["tenants"] += 1
+        remaining = len(tenant_ids) - index
+        share = max(0.0, budget - (time.monotonic() - started)) / remaining
         try:
-            result = sweep_tenant(settings, tenant_id)
+            result = sweep_tenant(
+                settings, tenant_id, deadline=time.monotonic() + share
+            )
         except Exception:  # noqa: BLE001 - keep sweeping the remaining tenants
             totals["errors"] += 1
             LOG.exception("Software match sweep failed for tenant %s", tenant_id)
             continue
-        for key in ("devices", "created", "closed"):
+        for key in ("devices", "created", "closed", "errors"):
             totals[key] += int(result.get(key, 0))
     return totals
 

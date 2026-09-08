@@ -381,9 +381,26 @@ class EndpointDevice(Base):
     last_seen: Mapped[datetime]
     last_inventory_at: Mapped[datetime | None] = mapped_column(default=None)
     latest_snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    # The software→CVE matcher's queue marker (migration 0033). The queue used
+    # to be "``latest_snapshot_id`` differs from the ``snapshot_id`` on this
+    # device's ``software_cve_matches`` rows", which cannot tell "matched, and
+    # there was nothing to report" from "never matched": a host with no
+    # matches has no rows. Those devices were due forever and, at
+    # ``batch_size`` a tick with no ordering, crowded out the ones that had
+    # actually changed. This column records the snapshot the fold last ran
+    # over, whatever the fold's verdict was.
+    last_matched_snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    # Consecutive failures folding this device, and when it may be tried
+    # again. One device that raises must not be re-read at the head of every
+    # batch for the rest of the installation's life.
+    match_failure_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    match_retry_after: Mapped[datetime | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "agent_id", name="uq_endpoint_device_tenant_agent"),
+        # The worker's due-devices read, which is a tenant-scoped comparison of
+        # the two snapshot columns.
+        Index("ix_endpoint_devices_match_queue", "tenant_id", "last_matched_snapshot_id"),
     )
 
 

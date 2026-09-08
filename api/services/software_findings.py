@@ -311,6 +311,9 @@ class SoftwareFindingStats:
     #: Open findings whose match is gone but which the rules above refuse to
     #: close, kept as a counter so "why is this still open" has an answer.
     held_open_stale_snapshot: int = 0
+    #: Devices whose fold raised. Each is held off with a backoff rather than
+    #: retried at the head of the next batch; see :func:`_hold_off`.
+    errors: int = 0
     #: Open findings whose match is still ``vulnerable`` but no longer passes
     #: :func:`is_trackable` — the vendor withdrew the fix, or the severity
     #: floor moved. Held open, and counted apart from the above so the two
@@ -638,43 +641,111 @@ def ingest_devices(
             device = session.get(models.EndpointDevice, device_id)
             if device is None or device.tenant_id != tenant_id:
                 continue
-            if device.asset_id is None:
-                # ``unlinked``: reconciliation was refused by the asset quota.
-                # The endpoint's matches are still recorded and visible; they
-                # just have nothing to hang a tracked finding on.
-                stats.skipped_unlinked += 1
-                continue
-            asset = session.get(models.Asset, device.asset_id)
-            if asset is None:
-                stats.skipped_unlinked += 1
-                continue
-            observed_at = _snapshot_received_at(session, device.latest_snapshot_id)
-            if observed_at is None:
-                continue
-            matches = list(
-                session.scalars(
-                    select(models.SoftwareCveMatch).where(
-                        models.SoftwareCveMatch.tenant_id == tenant_id,
-                        models.SoftwareCveMatch.device_id == device_id,
+            try:
+                # One SAVEPOINT per device. Without it a single device that
+                # raises aborts the batch's transaction, so its healthy
+                # neighbours lose their fold too — and the worker, catching at
+                # tenant level, re-read the same batch on the next tick and
+                # failed at the same device. That tenant never progressed.
+                with session.begin_nested():
+                    stats.add(
+                        _fold_one(
+                            session,
+                            tenant_id=tenant_id,
+                            device=device,
+                            min_severity=min_severity,
+                            now=now,
+                        )
                     )
-                ).all()
-            )
-            stats.add(
-                _fold_device(
-                    session,
-                    tenant_id=tenant_id,
-                    context=_DeviceContext(
-                        device=device,
-                        asset=asset,
-                        observed_at=observed_at,
-                        assessment_possible=assessment_possible(device),
-                        matches=matches,
-                    ),
-                    min_severity=min_severity,
-                    now=now,
+            except Exception:  # noqa: BLE001 - see _hold_off below
+                stats.errors += 1
+                LOG.exception(
+                    "Software findings: device %s failed to fold (tenant %s)",
+                    device_id,
+                    tenant_id,
                 )
-            )
+                _hold_off(session, device=device, now=now)
+                continue
+            _mark_matched(device)
     return stats
+
+
+def _fold_one(
+    session: Any,
+    *,
+    tenant_id: str,
+    device: models.EndpointDevice,
+    min_severity: str,
+    now: datetime,
+) -> SoftwareFindingStats:
+    """One device's fold, from the device row. Raises on anything unexpected;
+    the caller holds the SAVEPOINT and the backoff."""
+    if device.asset_id is None:
+        # ``unlinked``: reconciliation was refused by the asset quota. The
+        # endpoint's matches are still recorded and visible; they just have
+        # nothing to hang a tracked finding on.
+        return SoftwareFindingStats(skipped_unlinked=1)
+    asset = session.get(models.Asset, device.asset_id)
+    if asset is None:
+        return SoftwareFindingStats(skipped_unlinked=1)
+    observed_at = _snapshot_received_at(session, device.latest_snapshot_id)
+    if observed_at is None:
+        return SoftwareFindingStats()
+    matches = list(
+        session.scalars(
+            select(models.SoftwareCveMatch).where(
+                models.SoftwareCveMatch.tenant_id == tenant_id,
+                models.SoftwareCveMatch.device_id == device.device_id,
+            )
+        ).all()
+    )
+    return _fold_device(
+        session,
+        tenant_id=tenant_id,
+        context=_DeviceContext(
+            device=device,
+            asset=asset,
+            observed_at=observed_at,
+            assessment_possible=assessment_possible(device),
+            matches=matches,
+        ),
+        min_severity=min_severity,
+        now=now,
+    )
+
+
+def _mark_matched(device: models.EndpointDevice) -> None:
+    """Record that the fold ran over this device's current snapshot.
+
+    Written for every verdict the fold can reach, including "no matches to
+    record" and "no asset to hang findings on". The queue used to be derived
+    from the match rows, which cannot express either: a host the matcher has
+    nothing to say about writes no rows, so it was due on every tick for the
+    rest of its life. See migration ``0033``.
+    """
+    device.last_matched_snapshot_id = device.latest_snapshot_id
+    device.match_failure_count = 0
+    device.match_retry_after = None
+
+
+#: Backoff after consecutive fold failures, worst case six hours. Capped
+#: rather than unbounded because a device recovers when the *feed* is fixed,
+#: which is an event this process cannot see; a day-long backoff would mean
+#: fixing the feed and waiting a day for the estate to notice.
+_RETRY_BACKOFF_SECONDS = (60, 300, 900, 3600, 21600)
+
+
+def _hold_off(session: Any, *, device: models.EndpointDevice, now: datetime) -> None:
+    """Keep a device that raised out of the queue for a while.
+
+    The marker is deliberately **not** advanced: the snapshot has not been
+    folded and the device is still due, just not yet. Written outside the
+    device's own SAVEPOINT, which has been rolled back by the time this runs.
+    """
+    failures = int(device.match_failure_count or 0) + 1
+    delay = _RETRY_BACKOFF_SECONDS[min(failures, len(_RETRY_BACKOFF_SECONDS)) - 1]
+    device.match_failure_count = failures
+    device.match_retry_after = now + timedelta(seconds=delay)
 
 
 def ingest_device(

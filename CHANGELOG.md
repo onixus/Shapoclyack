@@ -128,6 +128,32 @@ All notable changes to Shapoclyack are documented in this file.
   for a `not_applicable` row about a release the vendor says is not affected,
   and for a match the severity floor filtered out. Four reasons, four strings.
 
+- **The software match queue drains, and can be left** (migration `0033`).
+  Three faults, one queue.
+
+  *A host with nothing to report never left it.* The queue was derived from
+  the match rows — due when `latest_snapshot_id` differs from the `snapshot_id`
+  those rows were written from — and a host where every package is matchable
+  and no advisory hits writes no rows at all, not even an `unknown`
+  placeholder. It was due on every tick for ever, and with `LIMIT batch_size`
+  and no `ORDER BY` a few hundred such hosts permanently starve the devices
+  that actually changed. `endpoint_devices.last_matched_snapshot_id` now
+  records the snapshot the fold ran over, whatever it concluded; the migration
+  backfills it from the existing match rows so nothing re-folds on deploy.
+
+  *One device stopped its whole tenant.* The fold ran a batch in one session
+  and the sweep caught at tenant level, so a device that raised failed its
+  batch and was re-read at the head of the same batch on the next tick, and
+  the next. Each device now folds in its own SAVEPOINT and a failure is held
+  off with a capped backoff (60s → 6h) rather than blocking the queue.
+
+  *A tick took one batch.* `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS` is
+  documented as a ceiling on how stale a software finding may be; the real
+  ceiling was `due / batch_size × interval`, which for 50k due devices at the
+  defaults is nearly five days. A tick now drains until the tenant has nothing
+  due or `OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS` (new, default 60) is spent,
+  shared across tenants, oldest inventory first.
+
 ## [0.44-0907] — 2026-09-07
 
 ### Added
