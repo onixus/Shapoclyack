@@ -35,9 +35,18 @@ def normalize_usn_json(payload: Any) -> Iterator[dict[str, Any]]:
 
     The USN shape is ``{usn_id: {"cves": [...], "releases": {codename:
     {"sources": {pkg: {"version": …, "description": …}},
-     "binaries": {pkg: {"version": …}}}}}}``. Entries are emitted for the source
-    package and for every binary built from it, all pointing at the same fixed
-    version, since that is what the USN itself states.
+     "binaries": {pkg: {"version": …}},
+     "allbinaries": {pkg: {"version": …}}}}}}``. Entries are emitted for the
+    source package and for every binary built from it, all pointing at the same
+    fixed version, since that is what the USN itself states.
+
+    ``binaries`` is the headline subset Canonical shows on the notice page;
+    ``allbinaries`` is the full list. Reading only the first is a false
+    negative on every binary it leaves out — an inventory reporting
+    ``libssl-dev`` found nothing for a USN that names it, fell through to the
+    ``_BINARY_SUFFIXES`` heuristic and answered ``unknown``. The three groups
+    overlap by construction, so a package already emitted for this release is
+    skipped rather than yielded twice.
     """
     if not isinstance(payload, dict):
         return
@@ -64,14 +73,16 @@ def normalize_usn_json(payload: Any) -> Iterator[dict[str, Any]]:
         for release, detail in releases.items():
             if not isinstance(detail, dict):
                 continue
-            for group in ("sources", "binaries"):
+            emitted: set[str] = set()
+            for group in ("sources", "binaries", "allbinaries"):
                 packages = detail.get(group)
                 if not isinstance(packages, dict):
                     continue
                 for package, info in packages.items():
                     version = info.get("version") if isinstance(info, dict) else None
-                    if not version:
+                    if not version or str(package) in emitted:
                         continue
+                    emitted.add(str(package))
                     yield {
                         "advisory_id": str(usn_id),
                         "cve_ids": cve_ids,

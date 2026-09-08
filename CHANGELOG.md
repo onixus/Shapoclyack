@@ -114,6 +114,14 @@ All notable changes to Shapoclyack are documented in this file.
   The function now branches on `source` and re-keys a software finding with
   `software_findings.software_finding_key`.
 
+- **The Ubuntu USN converter reads `allbinaries`, not just `binaries`.**
+  `binaries` is the headline subset Canonical shows on the notice page;
+  `allbinaries` is what the USN actually covers. An inventory reporting
+  `libssl-dev` therefore found no advisory for a USN that names it, fell
+  through to the binary-name heuristic, derived a source package no dataset
+  has, and answered `unknown` — a false negative on a package with a published
+  fix. Entries are deduplicated per release, since the groups overlap.
+
 ## [0.44-0907] — 2026-09-07
 
 ### Added
