@@ -1,0 +1,21 @@
+# The base CronJob is capped at 1Gi, which is what GeoIP/CVSS4/EPSS/KEV need.
+# The Debian tracker is different in kind: api/services/advisories/fetch.py
+# reads the ~50 MB document whole, parses it whole and re-serializes it whole,
+# and a JSON of nested per-release objects is several hundred megabytes once it
+# is Python. An OOMKill there would take the other four refreshes down with it,
+# so the ceiling is set for the largest source in the job -- but only once the
+# job is actually fetching it, which is what the ConfigMap beside this decides.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: enrichment-refresh
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: fetch-enrichment
+              resources:
+                limits:
+                  memory: 2Gi

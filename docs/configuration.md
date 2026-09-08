@@ -278,12 +278,26 @@ OCTO_ADVISORY_FETCH_ENABLED=true python3 scripts/fetch-advisories.py debian
 OCTO_ADVISORY_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 ```
 
-In Kubernetes the flag reaches the enrichment CronJob through an optional
-ConfigMap — apply
-`k8s/shapoclyack/examples/enrichment-configmap.example.yaml` and the daily job
-starts refreshing them; without it the job behaves exactly as before. The
-Debian tracker document is around 50 MB, which is why this is a decision rather
-than a default: an installation with no egress to
+In Kubernetes the opt-in is one overlay:
+
+```bash
+kubectl apply -k k8s/shapoclyack/overlays/enrichment-advisories
+```
+
+That is `overlays/enrichment` plus the `base/enrichment-advisories` component,
+which carries two things that belong together: the ConfigMap the CronJob reads
+the flag from (through an `optional: true` `configMapKeyRef`, so not applying it
+is the default) and the `2Gi` memory limit the Debian tracker parse needs. The
+base CronJob stays at `1Gi`, which is what GeoIP/CVSS4/EPSS/KEV need — a cluster
+that never took the opt-in must not have its pod rejected by a namespace
+`LimitRange` for a dataset it does not fetch.
+
+The API pod's enrichment initContainer deliberately does **not** get the flag.
+It would turn a daily download into one per pod start, per replica, per rollout,
+and the datasets are on the shared volume the CronJob already refreshes.
+
+The Debian tracker document is around 50 MB, which is why this is a decision
+rather than a default: an installation with no egress to
 `security-tracker.debian.org` is a supported configuration, and the matcher
 answers `unknown` instead of guessing.
 
@@ -292,6 +306,13 @@ It is a seed, not a feed: it proves the path works and covers a handful of
 packages. The manifest floors (`100000` Debian, `10000` Ubuntu) are sized for
 the real feeds, so a build carrying only the seed is recorded `usable: false`
 — reported, never fatal, because these datasets are not required.
+
+Those same floors are what `scripts/fetch-advisories.py` refuses to publish
+below. A feed answering `200` with a truncated document normalizes to a dozen
+statements, and a floor of one would let that replace a corpus; refusing at the
+number the manifest already keeps means the fetch and the report use one number.
+A refresh that succeeds and still lands under the floor is not silent either —
+`origin: fetch` with `usable: false` exits `1` (degraded).
 
 ### Provenance: what the image actually shipped
 
@@ -306,6 +327,14 @@ dataset's floor (`usable`), and — the field that matters — `origin`:
 | `seed` | The committed baseline, never replaced by a fetch |
 | `stale` | A fetch was attempted and failed; the previous data is still in place |
 | `missing` | No data at this path at all |
+
+A run that did not *attempt* a dataset — the advisory opt-in being off is the
+only way that happens — is a fourth case, and it writes none of these: it keeps
+whatever the previous run recorded. That matters because the API pod's
+enrichment initContainer runs the same script without the opt-in, so every API
+rollout re-inspects datasets the nightly CronJob filled. Rewriting them to
+`seed` would make `GET /api/system` report `origin: seed` over four hundred
+thousand fetched entries and send an operator to a build log with nothing in it.
 
 `GET /api/system` reports these alongside `age_days` on every enrichment entry
 (`null` for an image built before the manifest existed, or a volume without

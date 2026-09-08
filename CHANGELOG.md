@@ -16,18 +16,22 @@ All notable changes to Shapoclyack are documented in this file.
   exactly that.
   `scripts/fetch-advisories.py` is the missing CLI, a thin wrapper over
   `refresh()` in the shape of `scripts/fetch-cvss4-db.py`: it stages the
-  download beside the destination and promotes it only once it has entries, so
-  a feed answering `200` with an empty document cannot wipe a populated
-  dataset, and it exits `3` for "nobody opted in" rather than reporting a
-  failure. `scripts/fetch-enrichment.sh` runs both feeds beside cvss4/epss/kev
-  when `OCTO_ADVISORY_FETCH_ENABLED` is set, and floors both paths from the
-  committed seed so a freshly provisioned enrichment volume is never simply
-  empty. In Kubernetes this rides the enrichment CronJob that already exists;
-  the opt-in reaches it through an optional ConfigMap
-  (`k8s/shapoclyack/examples/enrichment-configmap.example.yaml`), and the job's
-  memory ceiling went to 2Gi because the Debian tracker document is read,
-  parsed and re-serialized whole. The Dockerfiles are untouched: a ~50 MB feed
-  that changes daily does not belong in an image layer.
+  download beside the destination and promotes it only once it clears the
+  dataset's floor — the same number `scripts/enrichment_manifest.py` reports
+  `usable` against, so the fetch and the report use one number and not two — so
+  a feed answering `200` with an empty or truncated document cannot wipe a
+  populated dataset, and it exits `3` for "nobody opted in" rather than
+  reporting a failure. `scripts/fetch-enrichment.sh` runs both feeds beside
+  cvss4/epss/kev when `OCTO_ADVISORY_FETCH_ENABLED` is set, and floors both
+  paths from the committed seed so a freshly provisioned enrichment volume is
+  never simply empty. In Kubernetes this rides the enrichment CronJob that
+  already exists; the opt-in is one overlay,
+  `k8s/shapoclyack/overlays/enrichment-advisories`, which layers the
+  `base/enrichment-advisories` component on: the ConfigMap the job reads the
+  flag from and the `2Gi` memory limit the Debian tracker parse needs, in one
+  place, because taking either without the other is a defect. The base CronJob
+  stays at `1Gi`. The Dockerfiles are untouched: a ~50 MB feed that changes
+  daily does not belong in an image layer.
   Both datasets now carry a real feed's floor in the manifest — 100k Debian,
   10k Ubuntu — while staying **not required**, which is what lets "this build
   ships a seed" and "this build ships coverage" be different states without
@@ -38,6 +42,24 @@ All notable changes to Shapoclyack are documented in this file.
   fresh-built seed as a green `fresh`. `usable` is the build's own verdict
   against the floor, and it is `null` rather than `false` when no manifest was
   found.
+- **Three ways the provenance could lie, closed before they shipped.**
+  A refresh run that did not *attempt* a dataset used to overwrite its `origin`
+  with `seed`. That is not a hypothetical path: the API pod's enrichment
+  initContainer runs the same script as the CronJob without the advisory
+  opt-in, so every API rollout demoted a nightly-fetched corpus, and
+  `GET /api/system` answered `{origin: "seed", usable: true, entries: 412000}`
+  while `docs/operations.md` told the operator to go read a build log. A run
+  that never tried now keeps whatever the last run that did try recorded.
+  A refresh that *succeeded* and came back under the floor was the quietest
+  outcome of the three — `origin: fetch` is neither `stale` nor `missing`, and
+  the advisory datasets are not required, so `verdict()` returned `0` over a
+  dataset that had just been replaced by twelve entries. It now exits `1`.
+  And `scripts/fetch-enrichment.sh` parsed the opt-in flag with `tr` alone
+  where `fetch_enabled()` uses `.strip().lower()`, so `" true"` was on for the
+  service and off for the script: a skip printed at an operator who had opted
+  in, and a seed that never updated. The shell helper is now a sourceable
+  function and a table test drives it and `fetch_enabled()` over the same 29
+  spellings.
 
 ### Fixed
 

@@ -75,14 +75,18 @@ spec:
                   memory: 512Mi
                 limits:
                   cpu: "1"
-                  # 2Gi rather than 1Gi because of the advisory refresh above:
-                  # the Debian tracker document is read whole, parsed whole and
-                  # re-serialized whole (api/services/advisories/fetch.py), and
-                  # a ~50 MB JSON of nested per-release objects is several
-                  # hundred MB once it is Python. An OOMKill here would take the
-                  # GeoIP/CVSS4/EPSS/KEV refreshes down with it, so the ceiling
-                  # is set for the largest source in the job, not the median.
-                  memory: 2Gi
+                  # Sized for GeoIP/CVSS4/EPSS/KEV, which is what this job does
+                  # unless a cluster opts into the advisory feeds above. That
+                  # opt-in needs 2Gi -- the Debian tracker document is read,
+                  # parsed and re-serialized whole and a ~50 MB JSON of nested
+                  # per-release objects is several hundred MB once it is Python
+                  # -- and it raises the ceiling itself, through
+                  # examples/enrichment-advisories-patch.yaml applied beside the
+                  # ConfigMap. Kept out of the base because a namespace under a
+                  # LimitRange of max.memory: 1Gi would have this pod rejected
+                  # at admission and lose the daily refresh of every feed, for a
+                  # dataset it never asked for.
+                  memory: 1Gi
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:

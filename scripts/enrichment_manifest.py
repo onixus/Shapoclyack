@@ -147,6 +147,28 @@ def inspect_binary_dataset(path: Path, source: str | None) -> dict:
     return {"present": True, "usable": size > 0, "source": source, "size_bytes": size}
 
 
+def previous_origins(data_dir: Path) -> dict[str, str]:
+    """What the last run recorded, per dataset, or nothing if there was none.
+
+    Read back so a run that did not *attempt* a dataset can leave its origin
+    alone — see ``build_manifest``. A manifest that is absent, unreadable or not
+    JSON is simply no previous run: this is provenance, and guessing at it is
+    the thing the module exists to stop.
+    """
+    try:
+        payload = json.loads((data_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    datasets = payload.get("datasets") if isinstance(payload, dict) else None
+    if not isinstance(datasets, dict):
+        return {}
+    return {
+        name: record["origin"]
+        for name, record in datasets.items()
+        if isinstance(record, dict) and isinstance(record.get("origin"), str)
+    }
+
+
 def build_manifest(
     data_dir: Path,
     *,
@@ -160,8 +182,18 @@ def build_manifest(
     is the only place that knows whether a file is the feed's current content or
     whatever was left behind — the bytes on disk look identical either way.
     ``origin`` is the field that carries that distinction outward.
+
+    A dataset in neither set is a third case: this run never tried. The advisory
+    opt-in being off is the only way that happens today, and it happens on every
+    API rollout, because the API pod's initContainer runs the same refresh
+    script as the CronJob without the flag. Whatever the *last* run recorded is
+    therefore still true of the bytes on disk and is carried forward — calling
+    it ``seed`` would demote a fetched corpus on every restart and make
+    ``GET /api/system`` contradict itself (``origin: seed`` over four hundred
+    thousand entries), sending an operator to a build log with nothing in it.
     """
     sources = sources or {}
+    carried = previous_origins(data_dir)
     datasets: dict[str, dict] = {}
     for name, (relative, min_entries, required) in _JSON_DATASETS.items():
         record = inspect_json_dataset(data_dir / relative, min_entries)
@@ -184,8 +216,15 @@ def build_manifest(
             # seed or the last good refresh — precisely the case the build log
             # used to swallow.
             record["origin"] = "stale" if record["present"] else "missing"
+        elif not record["present"]:
+            record["origin"] = "missing"
+        elif carried.get(name) in ("fetch", "stale", "seed"):
+            # This run did not try; the last one did. ``missing`` is not carried
+            # forward — the seed floor in fetch-enrichment.sh may have put the
+            # file there since, and it would be a seed now.
+            record["origin"] = carried[name]
         else:
-            record["origin"] = "seed" if record["present"] else "missing"
+            record["origin"] = "seed"
 
     # An absent optional dataset is a supported configuration, not a degraded
     # build: the matcher answers "unknown" without an advisory dataset, which is
@@ -217,6 +256,17 @@ def verdict(manifest: dict) -> int:
         return EXIT_NO_DATA
     if any(
         rec.get("origin") in ("stale", "missing") and rec.get("degrades", True)
+        for rec in datasets.values()
+    ):
+        return EXIT_DEGRADED
+    # A refresh that *succeeded* and still landed under the floor is the quietest
+    # of the failures and the one this used to miss entirely: the feed answered,
+    # so the origin is ``fetch``, which is neither ``stale`` nor ``missing``, and
+    # for a not-required dataset nothing else looked at ``usable``. That is a
+    # truncated document published over a corpus, and a green job over it is the
+    # exact silence #246 exists to break.
+    if any(
+        rec.get("origin") == "fetch" and rec.get("usable") is False
         for rec in datasets.values()
     ):
         return EXIT_DEGRADED

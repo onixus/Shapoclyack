@@ -7,20 +7,32 @@ rather than here so no caller can skip it.
 
 This is a thin wrapper. Everything that decides *what* is fetched, *how* it is
 normalized and *where* it is written is in the service module; the script's own
-job is argument parsing, an exit code a shell can branch on, and one guard the
-service deliberately does not have: a feed that answers with an empty document
+job is argument parsing, an exit code a caller can branch on, and one guard the
+service deliberately does not have: a feed that answers with a *short* document
 must not replace a dataset that has content. The download therefore lands on a
 staging path next to the destination and is promoted only once it is big enough
 to be real — the same shape as ``scripts/fetch-cvss4-db.py``'s refusal to
 publish an empty rebuild over a populated database.
 
-Exit codes (``scripts/fetch-enrichment.sh`` reads them):
+"Big enough" defaults to the same floor ``scripts/enrichment_manifest.py`` keeps
+for the dataset, because that is already the number this project uses to tell a
+corpus from a stub, and there is no reason for a second opinion. A floor of one
+would only catch the literally empty document; a tracker answering 200 with a
+truncated one normalizes to a dozen statements, clears it, and replaces four
+hundred thousand.
+
+Exit codes:
 
   0  the dataset was refreshed
   1  the fetch failed, or came back too small to publish; whatever was on disk
      is still there
   3  fetching is disabled (``OCTO_ADVISORY_FETCH_ENABLED`` unset). Kept distinct
      from a failure because "off by default" is not a broken feed.
+
+``scripts/fetch-enrichment.sh`` branches on zero versus non-zero and never sees
+3: it tests the same flag itself, before calling this, so that a run nobody
+opted into is recorded as neither a refresh nor a failure rather than as one of
+them. 3 is for a direct invocation — the by-hand form in docs/configuration.md.
 
 Usage:
   python3 scripts/fetch-advisories.py debian
@@ -36,13 +48,38 @@ from pathlib import Path
 
 # Run as a script, sys.path[0] is scripts/ — not the repo root — so `api` beside
 # it is not importable. Same fix, and the same reason, as fetch-cvss4-db.py.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# scripts/ goes on explicitly too: sys.path[0] carries it only when this file is
+# the entry point, and it is also loaded by path from tests.
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent))
+sys.path.insert(0, str(_HERE))
 
 from api.services.advisories import fetch  # noqa: E402 - needs the path above
+
+# The manifest module beside this one owns the per-dataset floors; see the
+# module docstring for why this script does not keep a second opinion.
+import enrichment_manifest  # noqa: E402 - needs the path above
 
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_DISABLED = 3
+
+#: CLI dataset name → the key it is filed under in the manifest.
+_MANIFEST_KEYS = {name: f"advisories_{name}" for name in fetch.SOURCES}
+
+
+def default_min_entries(dataset: str) -> int:
+    """The floor below which publishing ``dataset`` would overwrite a corpus.
+
+    Straight out of ``enrichment_manifest._JSON_DATASETS`` so the number the
+    fetch refuses at and the number the manifest reports ``usable`` against are
+    one number. Falls back to 1 for a dataset the manifest does not track, which
+    is the old behaviour and the most this script can say about a feed nothing
+    has sized.
+    """
+    key = _MANIFEST_KEYS.get(dataset, "")
+    record = enrichment_manifest._JSON_DATASETS.get(key)
+    return record[1] if record else 1
 
 
 def main() -> int:
@@ -71,12 +108,13 @@ def main() -> int:
     parser.add_argument(
         "--min-entries",
         type=int,
-        default=1,
-        help="Refuse to publish a dataset with fewer entries than this (default 1). "
-        "A feed that answers 200 with an empty document is an outage, not a day "
-        "with no advisories",
+        default=None,
+        help="Refuse to publish a dataset with fewer entries than this (default: the "
+        "dataset's floor in scripts/enrichment_manifest.py). A feed that answers 200 "
+        "with an empty or truncated document is an outage, not a day with no advisories",
     )
     args = parser.parse_args()
+    min_entries = args.min_entries if args.min_entries is not None else default_min_entries(args.dataset)
 
     url, _, default_path, _ = fetch.SOURCES[args.dataset]
     output = args.output or Path(default_path)
@@ -100,11 +138,11 @@ def main() -> int:
         print(f"error: {args.dataset} fetch failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
-    if written < args.min_entries:
+    if written < min_entries:
         staging.unlink(missing_ok=True)
         print(
             f"error: {args.dataset} normalized to {written} entries "
-            f"(expected at least {args.min_entries}) — refusing to publish over {output}",
+            f"(expected at least {min_entries}) — refusing to publish over {output}",
             file=sys.stderr,
         )
         return EXIT_FAILED

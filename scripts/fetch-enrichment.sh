@@ -47,6 +47,35 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${OCTO_ENRICHMENT_DIR:-scanner/data}"
 
+# Whether this run refreshes the vendor advisory datasets. A function, and
+# defined before anything else happens, so tests/test_advisory_providers.py can
+# source this script and drive it against the same table of spellings as
+# fetch_enabled() in api/services/advisories/fetch.py. The two parse one
+# variable and there is nowhere else to reconcile them: a value the service
+# accepts and this script does not becomes "advisories: skipped" printed at an
+# operator who did opt in, and a seed that never updates.
+#
+# Trim, then lower-case, because that is `.strip().lower()`. The trim is the
+# part that was missing: a value carrying a space or a tab -- `" true"` out of a
+# quoted ConfigMap entry, a tab out of a hand-edited manifest -- is on for the
+# service and, without it, off here. (A trailing newline happens to survive
+# either way: command substitution eats it. Spaces and tabs do not.)
+advisory_fetch_enabled() {
+  local raw="${OCTO_ADVISORY_FETCH_ENABLED:-false}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Sourced rather than executed: hand over the helper above and stop. Without
+# this a test that wants to ask one question would start downloading GeoIP.
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  return 0
+fi
+
 # Datasets this run actually refreshed vs. the ones whose fetch failed. The
 # bytes on disk look the same either way, so this is the only place that knows
 # the difference -- it is handed to scripts/enrichment_manifest.py, which
@@ -145,22 +174,22 @@ run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
 # recording it as one would mark every daily run of every offline deployment
 # degraded. The dataset names match the manifest's keys so the origin lands on
 # the right record.
-# Lower-cased so the shell accepts exactly what fetch_enabled() in
-# api/services/advisories/fetch.py accepts; a flag that turns the fetch on for
-# the script but off for the service would just log a skip nobody asked for.
-case "$(printf '%s' "${OCTO_ADVISORY_FETCH_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
-  1|true|yes|on)
-    run advisories_debian "advisories (debian tracker)" \
-      python3 "$ROOT/scripts/fetch-advisories.py" debian \
-      -o "$DEST/advisories/debian-advisories.json"
-    run advisories_ubuntu "advisories (ubuntu usn)" \
-      python3 "$ROOT/scripts/fetch-advisories.py" ubuntu \
-      -o "$DEST/advisories/ubuntu-advisories.json"
-    ;;
-  *)
-    echo "==> advisories: skipped (opt-in; set OCTO_ADVISORY_FETCH_ENABLED=true to refresh)"
-    ;;
-esac
+# The flag is parsed by advisory_fetch_enabled() at the top of this file, which
+# accepts exactly what fetch_enabled() accepts.
+#
+# Neither dataset lands in `refreshed` or `failed` when this is off, which is
+# the point: "this run did not try" is a third thing, and enrichment_manifest.py
+# leaves the origin such a dataset already had rather than calling it a seed.
+if advisory_fetch_enabled; then
+  run advisories_debian "advisories (debian tracker)" \
+    python3 "$ROOT/scripts/fetch-advisories.py" debian \
+    -o "$DEST/advisories/debian-advisories.json"
+  run advisories_ubuntu "advisories (ubuntu usn)" \
+    python3 "$ROOT/scripts/fetch-advisories.py" ubuntu \
+    -o "$DEST/advisories/ubuntu-advisories.json"
+else
+  echo "==> advisories: skipped (opt-in; set OCTO_ADVISORY_FETCH_ENABLED=true to refresh)"
+fi
 
 # Record what is actually on disk now, and let the manifest decide the exit
 # code. The three outcomes are deliberately not the same thing:

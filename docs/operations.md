@@ -857,6 +857,13 @@ look at the build log or run the refresh CronJob by hand
 (`k8s/shapoclyack/base/enrichment/cronjob.yaml`) — the data is usable, but it is
 not what the release intended to ship.
 
+`seed` means the last run that *attempted* this dataset found the committed
+baseline, not merely that today's run did not fetch it. A run that never tried —
+the advisory opt-in being off, which is also the case on every API rollout,
+since the API's enrichment initContainer runs the same script without the flag —
+leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
+last night survives a rollout, and `seed` stays a statement worth acting on.
+
 ## Upgrade and rollback
 
 ### One supported path to the current schema

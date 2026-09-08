@@ -1,0 +1,16 @@
+# Read by the enrichment CronJob through an `optional: true` configMapKeyRef
+# (k8s/shapoclyack/base/enrichment/cronjob.yaml), so the absence of this
+# ConfigMap is the default and leaves the job doing exactly what it did before.
+#
+# Parsed by scripts/fetch-enrichment.sh's advisory_fetch_enabled() and by
+# fetch_enabled() in api/services/advisories/fetch.py, which accept the same
+# spellings -- 1/true/yes/on, any case, surrounding whitespace trimmed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shapoclyack-enrichment
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: enrichment-cronjob
+data:
+  advisory_fetch_enabled: "true"
