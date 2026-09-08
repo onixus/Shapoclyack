@@ -78,10 +78,11 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
-- **Three ways a software finding was closed as `patched` without anybody
-  patching anything.** Every one of them wrote `machine_verified = true` and a
-  `verification_passed` event by `system:inventory`, which is the strongest
-  claim this platform makes about a closure.
+- **Two ways the closure gate closed a software finding as `patched` without
+  anybody patching anything** (the asset merge below was a third). Each wrote
+  `machine_verified = true` and a `verification_passed` event by
+  `system:inventory`, which is the strongest claim this platform makes about a
+  closure.
 
   *The closure gate asked the wrong question.* It read `packages_assessed > 0`
   — "how many packages we could have asked about" — which is counted **before**
