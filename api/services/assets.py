@@ -63,7 +63,15 @@ class AssetUpsertStats:
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    """Naive UTC, matching the ``DateTime`` columns this module writes.
+
+    ``assets.first_seen``/``last_seen`` and the three coverage columns are all
+    naive, so handing Postgres an aware value means the driver converts it by
+    the session's TimeZone — which nothing in this repo pins — and the row ends
+    up hours away from the timestamps it is compared against. Same rule and
+    same reason as ``api/services/vulnerabilities.py::_now``.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -1000,7 +1008,7 @@ def update_asset(
     if "status" in updates and updates["status"] not in (None, _MANUAL_STATUS):
         raise ValueError(f"status may only be manually set to {_MANUAL_STATUS!r}")
     source = updates.get("context_source") or "operator"
-    now = _now().replace(tzinfo=None)
+    now = _now()
     with get_session(settings.postgres_url) as session:
         # Locked for the read-modify-write: two concurrent decommission PATCHes
         # would otherwise both read "active" and both count as the transition,

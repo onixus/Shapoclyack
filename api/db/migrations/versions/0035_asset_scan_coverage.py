@@ -30,17 +30,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "assets", sa.Column("last_scanned_at", sa.DateTime(timezone=True), nullable=True)
-    )
+    # Naive UTC, matching `assets.first_seen`/`last_seen` beside them and the
+    # `Mapped[datetime | None]` in api/db/models.py. A `timestamptz` written
+    # with a naive UTC value is reinterpreted by the session's TimeZone, which
+    # nothing in this repo pins, so on an installation not running UTC these
+    # would sit hours away from the columns they are compared against.
+    op.add_column("assets", sa.Column("last_scanned_at", sa.DateTime(), nullable=True))
     op.add_column("assets", sa.Column("last_scan_run_id", sa.String(length=64), nullable=True))
     # Separate from last_scanned_at: a discovery run that only enumerated hosts
     # covers the asset for inventory but says nothing about its vulnerabilities.
     # Written only when the run really assessed them — the presence of
     # vulnerabilities.json is not that, since report.py exports it every time.
-    op.add_column(
-        "assets", sa.Column("last_vuln_scan_at", sa.DateTime(timezone=True), nullable=True)
-    )
+    op.add_column("assets", sa.Column("last_vuln_scan_at", sa.DateTime(), nullable=True))
 
 
 def downgrade() -> None:

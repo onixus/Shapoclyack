@@ -34,9 +34,14 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column("vulnerabilities", sa.Column("fp_reason", sa.String(length=2000), nullable=True))
     op.add_column("vulnerabilities", sa.Column("fp_marked_by", sa.String(length=320), nullable=True))
-    op.add_column(
-        "vulnerabilities", sa.Column("fp_marked_at", sa.DateTime(timezone=True), nullable=True)
-    )
+    # Naive UTC, like every other lifecycle column on this table
+    # (`0015_vuln_lifecycle`) and like `api/services/vulnerabilities.py::_now`,
+    # which writes them. A `timestamptz` here would be filled with a naive UTC
+    # value that Postgres reinterprets by the session's TimeZone, so on any
+    # installation not running UTC this column would drift against
+    # `first_seen_at` beside it — and adoption's "median hours to a verdict",
+    # which subtracts one from the other, would go negative on a fast verdict.
+    op.add_column("vulnerabilities", sa.Column("fp_marked_at", sa.DateTime(), nullable=True))
     # Why the finding is not real: the run it was judged on, the port, an
     # excerpt of the output. A verdict nobody can re-check is an assertion.
     op.add_column(
@@ -46,9 +51,7 @@ def upgrade() -> None:
     # Mandatory when the verdict is set, for the same reason `exception_until`
     # is: an indefinite suppression is a decision nobody revisits. Nullable in
     # the schema because every pre-existing row has no verdict at all.
-    op.add_column(
-        "vulnerabilities", sa.Column("fp_suppress_until", sa.DateTime(timezone=True), nullable=True)
-    )
+    op.add_column("vulnerabilities", sa.Column("fp_suppress_until", sa.DateTime(), nullable=True))
     op.add_column(
         "vulnerabilities",
         sa.Column("fp_observations", sa.Integer(), nullable=False, server_default="0"),

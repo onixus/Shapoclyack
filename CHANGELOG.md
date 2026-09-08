@@ -137,7 +137,23 @@ All notable changes to Shapoclyack are documented in this file.
   changed nothing; the console's Withdraw button reads the closure rather than
   the leftover columns, so it no longer appears on an open finding at all.
   Migration `0034_vuln_false_positive`; its downgrade is destructive and is
-  listed as such in [docs/operations.md](docs/operations.md).
+  listed as such in [docs/operations.md](docs/operations.md), as is
+  `0035_asset_scan_coverage`'s, for the same reason its own docstring gives:
+  there is no backfill and there cannot be one, so an operator who rolls back
+  and forward again loses the whole Coverage block until every asset has been
+  reached by a new run.
+  `fp_marked_at` and `fp_suppress_until` are `timestamp without time zone`, like
+  every other lifecycle column on the table and like the naive UTC the services
+  write. Declared as `timestamptz`, they were filled with naive UTC that
+  Postgres reinterprets by the session `TimeZone` — which nothing here pins — so
+  on an installation not running UTC the verdict's timestamp sat hours from the
+  `first_seen_at` it is subtracted from, and "median hours to a verdict" read
+  `-9.0` for a verdict made the same minute the finding appeared. The same
+  correction applies to `0035_asset_scan_coverage`'s three columns, and
+  `api/services/assets.py` now writes naive UTC as `vulnerabilities.py` does.
+  Both revisions are unreleased, so the types are corrected in place rather than
+  by a follow-up `ALTER`; an installation that already ran them off this branch
+  should `downgrade 0033` and upgrade again.
 
 - **Adoption's noise and coverage blocks, and the metrics they had to correct
   first** (ROADMAP Track E). Two shares on that page were wrong in the

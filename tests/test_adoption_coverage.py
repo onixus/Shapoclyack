@@ -209,6 +209,129 @@ def test_noise_is_split_by_observer_and_the_quiet_one_is_listed_too(tmp_path):
     assert all(row["false_positive_share"] is None for row in origins)
 
 
+def _closures(settings, tenant_id: str, *, script_id: str, closed: int, noise: int) -> None:
+    """``closed`` closures for one detector inside the window, ``noise`` of them verdicts.
+
+    Written straight to the table because the point is the arithmetic at the
+    threshold, and driving twenty findings through the run path to reach it
+    would test the run path instead.
+    """
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        asset_id = session.scalars(
+            select(models.Asset.asset_id).where(models.Asset.tenant_id == tenant_id)
+        ).first()
+        for index in range(closed):
+            is_noise = index < noise
+            session.add(
+                models.Vulnerability(
+                    vuln_id=f"vln_{script_id}_{index}",
+                    tenant_id=tenant_id,
+                    asset_id=asset_id,
+                    finding_key=f"{script_id}-{index}",
+                    source="scan",
+                    script_id=script_id,
+                    cve=f"CVE-2024-9{index:03d}",
+                    severity="medium",
+                    state=vuln_states.CLOSED,
+                    state_changed_at=now,
+                    first_seen_at=now - timedelta(days=2),
+                    last_seen_at=now - timedelta(days=1),
+                    sla_started_at=now - timedelta(days=2),
+                    closed_at=now,
+                    closure_reason=vulns.FALSE_POSITIVE if is_noise else "manual",
+                    fp_marked_at=now if is_noise else None,
+                    fp_reason="noise" if is_noise else None,
+                    fp_suppress_until=now + timedelta(days=30) if is_noise else None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+
+def test_a_detector_rate_appears_at_the_threshold_and_not_below_it(tmp_path):
+    """The threshold itself, exercised — no backend test ever reached it.
+
+    Every assertion about ``false_positive_share`` in this file was ``is None``
+    with at most two closures in the window behind it, so the branch that
+    computes a share had never run: the guard was pinned by the console's
+    rendering test on mocked numbers and by nothing that computed it.
+    """
+    settings, tenant_id = _seed(tmp_path)
+    _closures(settings, tenant_id, script_id="ssl-dh-params", closed=20, noise=5)
+    _closures(settings, tenant_id, script_id="http-title", closed=19, noise=4)
+
+    rows = {
+        row["source"]: row
+        for row in adoption.metrics(settings, tenant_id=tenant_id)["false_positives"]["by_source"]
+    }
+
+    assert rows["ssl-dh-params"]["closed"] == adoption.MIN_SOURCE_OBSERVATIONS
+    assert rows["ssl-dh-params"]["false_positive"] == 5
+    assert rows["ssl-dh-params"]["false_positive_share"] == 25.0
+    # One closure short of the threshold: the counts are the honest answer, a
+    # rate computed from them is not.
+    assert rows["http-title"]["closed"] == adoption.MIN_SOURCE_OBSERVATIONS - 1
+    assert rows["http-title"]["false_positive"] == 4
+    assert rows["http-title"]["false_positive_share"] is None
+
+
+def test_a_verdict_is_not_dated_by_the_database_session_timezone(tmp_path):
+    """``fp_marked_at`` has to be the same kind of timestamp as ``first_seen_at``.
+
+    Nothing in this repo pins the Postgres session ``TimeZone``, and the
+    services write naive UTC. A ``timestamptz`` column filled that way is
+    reinterpreted as local time, so on an installation running anything but UTC
+    the verdict's timestamp lands hours away from the ``timestamp`` column
+    beside it — and "median hours to a verdict", which subtracts one from the
+    other, reads **-9.0** for a verdict made the same minute the finding
+    appeared. The columns are naive to match ``0015_vuln_lifecycle``, and this
+    test drives the whole path through a session that is not on UTC so the
+    mismatch would show rather than being hidden by a test box in UTC.
+    """
+    from api.services import assets as assets_service
+    from api.services import tenants as tenants_service
+    from api.settings import Settings
+    from tests.conftest import POSTGRES_URL
+
+    separator = "&" if "?" in POSTGRES_URL else "?"
+    settings = Settings(
+        output_dir=tmp_path / "output",
+        state_dir=tmp_path / "state",
+        postgres_url=f"{POSTGRES_URL}{separator}options=-c%20timezone%3DAsia/Tokyo",
+    )
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    settings.state_dir.mkdir(parents=True, exist_ok=True)
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+    tenant_id = tenants_service.DEFAULT_TENANT_ID
+    _write_run(settings.output_dir, "run-tz", _HOSTS, _FINDINGS)
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-tz")
+    vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-tz")
+    vuln_id = _ids(settings, tenant_id)["CVE-2024-0001"]
+    vulns.mark_false_positive(
+        settings, tenant_id=tenant_id, vuln_id=vuln_id, reason="noise", actor="admin"
+    )
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Vulnerability, vuln_id)
+        marked, first_seen = row.fp_marked_at, row.first_seen_at
+        scanned = session.scalars(
+            select(models.Asset.last_scanned_at).where(models.Asset.tenant_id == tenant_id)
+        ).first()
+
+    # One kind of timestamp, here and on the asset's coverage columns.
+    assert marked.tzinfo is None and first_seen.tzinfo is None
+    assert scanned.tzinfo is None
+    assert marked >= first_seen
+
+    report = adoption.metrics(settings, tenant_id=tenant_id)
+    hours_to_verdict = report["false_positives"]["median_hours_to_verdict"]
+    assert hours_to_verdict is not None
+    assert hours_to_verdict >= 0.0
+
+
 # --------------------------------------------------------------------------
 # Coverage: the column an agent cannot move
 # --------------------------------------------------------------------------
@@ -399,15 +522,15 @@ def test_an_endpoint_check_in_does_not_make_an_asset_look_scanned(tmp_path, monk
         asset = session.scalars(
             select(models.Asset).where(models.Asset.tenant_id == tenant_id)
         ).first()
-    # The columns are `timestamptz`, so Postgres hands them back aware.
-    def _naive(value):
-        return value.replace(tzinfo=None)
-
+    # Naive UTC, like `last_seen` beside them and like every lifecycle column
+    # in the schema — so they compare with each other and with the values this
+    # test wrote, without a conversion in the middle.
+    assert asset.last_scanned_at.tzinfo is None
     # The check-in is an observation, so `last_seen` moves...
-    assert _naive(asset.last_seen) > stale
+    assert asset.last_seen > stale
     # ...but it is not a scan, so coverage does not.
-    assert _naive(asset.last_scanned_at) == stale
-    assert _naive(asset.last_vuln_scan_at) == stale
+    assert asset.last_scanned_at == stale
+    assert asset.last_vuln_scan_at == stale
 
     report = adoption.metrics(settings, tenant_id=tenant_id)
     assert report["coverage"]["scanned_share"] == 0.0
