@@ -128,10 +128,15 @@ def sweep_tenant(
         )
     stats = software_findings.SoftwareFindingStats()
     batches = 0
+    # A device the fold neither marks nor holds off would come back at the head
+    # of the next batch and spin this loop for the whole budget. There is no
+    # such path today, and this is what keeps it from being introduced by one.
+    seen: set[str] = set()
     while True:
         device_ids = pending_device_ids(settings, tenant_id=tenant_id, limit=batch_size)
-        if not device_ids:
+        if not device_ids or seen.issuperset(device_ids):
             break
+        seen.update(device_ids)
         stats.add(
             software_findings.ingest_devices(
                 settings, tenant_id=tenant_id, device_ids=device_ids
