@@ -4,7 +4,87 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
-_Nothing yet._
+### Added
+
+- **The advisory datasets behind software→CVE matching now have a way to get
+  onto an installation.** The providers, the normalizers and the opt-in fetcher
+  all existed, but `api/services/advisories/fetch.py` was called from nothing
+  except its own tests: every deployment ran the matcher against the committed
+  seed — 8 Debian and 10 Ubuntu statements — and nothing said so, because
+  `scripts/enrichment_manifest.py` held both datasets optional with a floor of
+  one entry. So the seed passed for coverage in the one place built to catch
+  exactly that.
+  `scripts/fetch-advisories.py` is the missing CLI, a thin wrapper over
+  `refresh()` in the shape of `scripts/fetch-cvss4-db.py`: it stages the
+  download beside the destination and promotes it only once it clears the
+  dataset's floor — the same number `scripts/enrichment_manifest.py` reports
+  `usable` against, so the fetch and the report use one number and not two — so
+  a feed answering `200` with an empty or truncated document cannot wipe a
+  populated dataset, and it exits `3` for "nobody opted in" rather than
+  reporting a failure. `scripts/fetch-enrichment.sh` runs both feeds beside
+  cvss4/epss/kev when `OCTO_ADVISORY_FETCH_ENABLED` is set, and floors both
+  paths from the committed seed so a freshly provisioned enrichment volume is
+  never simply empty. In Kubernetes this rides the enrichment CronJob that
+  already exists; the opt-in is one overlay,
+  `k8s/shapoclyack/overlays/enrichment-advisories`, which layers the
+  `base/enrichment-advisories` component on: the ConfigMap the job reads the
+  flag from and the `2Gi` memory limit the Debian tracker parse needs, in one
+  place, because taking either without the other is a defect. The base CronJob
+  stays at `1Gi`. The Dockerfiles are untouched: a ~50 MB feed that changes
+  daily does not belong in an image layer.
+  Both datasets now carry a real feed's floor in the manifest — 100k Debian,
+  10k Ubuntu — while staying **not required**, which is what lets "this build
+  ships a seed" and "this build ships coverage" be different states without
+  making an offline build fail. `GET /api/system` carries the difference
+  outward in a new `usable` field on every enrichment entry: `entries`, `age`
+  and `origin` together still describe a seed and a real corpus identically,
+  since the seed's mtime is the build's, and the console was rendering a
+  fresh-built seed as a green `fresh`. `usable` is the build's own verdict
+  against the floor, and it is `null` rather than `false` when no manifest was
+  found. The System page reads it: a dataset the build called unusable is
+  badged `stub` and never `fresh`, and a `null` — no manifest, nothing recorded
+  — is left to the age check exactly as before.
+
+### Fixed
+
+- **Three ways the provenance could lie, closed before they shipped.**
+  A refresh run that did not *attempt* a dataset used to overwrite its `origin`
+  with `seed`. That is not a hypothetical path: the API pod's enrichment
+  initContainer runs the same script as the CronJob without the advisory
+  opt-in, so every API rollout demoted a nightly-fetched corpus, and
+  `GET /api/system` answered `{origin: "seed", usable: true, entries: 412000}`
+  while `docs/operations.md` told the operator to go read a build log. A run
+  that never tried now keeps whatever the last run that did try recorded.
+  A refresh that *succeeded* and came back under the floor was the quietest
+  outcome of the three — `origin: fetch` is neither `stale` nor `missing`, and
+  the advisory datasets are not required, so `verdict()` returned `0` over a
+  dataset that had just been replaced by twelve entries. It now exits `1`.
+  And `scripts/fetch-enrichment.sh` parsed the opt-in flag with `tr` alone
+  where `fetch_enabled()` uses `.strip().lower()`, so `" true"` was on for the
+  service and off for the script: a skip printed at an operator who had opted
+  in, and a seed that never updated. The shell helper is now a sourceable
+  function and a table test drives it and `fetch_enabled()` over the same 29
+  spellings.
+- **Ubuntu USN normalization emitted every same-named package twice.** A USN
+  lists a package in both `sources` and `binaries` whenever the source builds a
+  binary of its own name — `curl`, and most of the feed — so each of those
+  produced two byte-identical records, doubling a tens-of-thousands-entry
+  dataset and putting two copies in the lookup bucket for that package. Found
+  by normalizing fragments of the real published dumps, which is also new here:
+  the fixtures under `tests/fixtures/advisories/` now carry the shapes the
+  feeds actually publish (Debian's `undetermined`, its `fixed_version: "0"`
+  sentinel, `nodsa`, `removed`, `high**` urgencies and `TEMP-…` ids; USN's bare
+  `5051-2` keys, versionless ESM rows and Launchpad URLs mixed in with the
+  CVEs) rather than only the shapes the normalizers were written against.
+- **Two normalizer defects the real dumps exposed.** The published USN database
+  keys advisories bare — `"5051-2"` — while every human-facing reference, this
+  project's seed included, says `USN-5051-2`; a fetched dataset and the
+  committed seed were therefore talking about the same advisory under two ids,
+  and the generated `ubuntu.com` links were 404s. And the Debian tracker keys
+  issues it has no CVE for by an internal `TEMP-0841847-1E6784` id, which the
+  normalizer carried straight through — a string that is not a CVE, headed for
+  `software_cve_matches` and the console as though it were one, with nothing to
+  look it up against. It is now dropped like `undetermined`.
 
 ## [0.44-0907] — 2026-09-07
 

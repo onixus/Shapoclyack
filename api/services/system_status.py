@@ -112,17 +112,26 @@ def _load_config(settings: Settings) -> dict[str, Any]:
 def _provenance(record: dict[str, Any] | None) -> dict[str, Any]:
     """Origin fields for one dataset, from its manifest record.
 
-    Always the same four keys so the payload shape does not depend on whether a
+    Always the same five keys so the payload shape does not depend on whether a
     manifest was found — a missing one reports ``None`` everywhere, exactly like
     an image built before #246.
+
+    ``usable`` is the manifest's own verdict on whether the file holds a corpus
+    or a placeholder, and it is here because ``entries`` alone does not carry
+    it: the vendor advisory datasets ship as an eight-record seed whose mtime is
+    the build's, so on a fresh offline install they are *present*, *current* and
+    *not coverage*. Age and size cannot say that; the floor the build already
+    checked can.
     """
     record = record if isinstance(record, dict) else {}
     entries = record.get("entries")
+    usable = record.get("usable")
     return {
         "source": record.get("source") or None,
         "origin": record.get("origin") or None,
         "updated": str(record.get("updated")) if record.get("updated") else None,
         "entries": entries if isinstance(entries, int) else None,
+        "usable": usable if isinstance(usable, bool) else None,
     }
 
 

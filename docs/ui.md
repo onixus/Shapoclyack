@@ -412,6 +412,31 @@ Run findings may include both confirmed vulnerabilities and lower-confidence exp
 
 Do not equate every row with a confirmed CVE. `finding_class`, `confidence`, `requires_confirmation`, and evidence fields are part of the finding contract and should remain visible enough for an analyst to understand why an item was prioritized.
 
+## Enrichment freshness on `/system`
+
+The Enrichment Databases table badges each dataset one of four ways, in that
+order of precedence:
+
+| Badge | Meaning |
+|---|---|
+| `missing` | No file at the path |
+| `stale` | Older than 30 days, or the API said so |
+| `stub` | Present and loadable, but under the size a real feed publishes |
+| `fresh` | Present, current, and above that floor |
+
+`stub` reads `usable` from `GET /api/system` — the build's own verdict against
+the per-dataset floor in `scripts/enrichment_manifest.py`. It is there because
+the other three columns cannot produce it: the committed advisory seed is
+present, has the build's own mtime and a non-zero entry count whether it holds
+eight advisories or four hundred thousand, so a fresh offline install rendered
+green while matching answered `unknown` for everything outside the seed. Hover
+gives the reason.
+
+A `usable` of `null` — no manifest beside the data, which is every image built
+before the manifest existed — is left to the age check and badges as it did
+before. "Nothing recorded" is not "the data is bad". See
+[configuration.md](configuration.md#provenance-what-the-image-actually-shipped).
+
 ## Not in the console yet
 
 A tenant's **approved scanning scope** (#226) has no console surface: it is

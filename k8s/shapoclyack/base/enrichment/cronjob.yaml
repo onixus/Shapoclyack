@@ -55,12 +55,37 @@ spec:
                       name: shapoclyack-nvd
                       key: nvd_api_key
                       optional: true
+                # Opt-in vendor advisory refresh (Debian tracker / Ubuntu USN)
+                # for software->CVE matching. Off unless the ConfigMap exists
+                # and says otherwise, because the Debian tracker JSON is ~50 MB
+                # and an installation has to ask for that request before this
+                # job makes it daily. Without this entry the flag could only be
+                # set by editing the manifest, so the datasets would stay at
+                # the committed seed forever — which the System page would
+                # report honestly, and nobody could act on.
+                - name: OCTO_ADVISORY_FETCH_ENABLED
+                  valueFrom:
+                    configMapKeyRef:
+                      name: shapoclyack-enrichment
+                      key: advisory_fetch_enabled
+                      optional: true
               resources:
                 requests:
                   cpu: "250m"
                   memory: 512Mi
                 limits:
                   cpu: "1"
+                  # Sized for GeoIP/CVSS4/EPSS/KEV, which is what this job does
+                  # unless a cluster opts into the advisory feeds above. That
+                  # opt-in needs 2Gi -- the Debian tracker document is read,
+                  # parsed and re-serialized whole and a ~50 MB JSON of nested
+                  # per-release objects is several hundred MB once it is Python
+                  # -- and it raises the ceiling itself, through
+                  # examples/enrichment-advisories-patch.yaml applied beside the
+                  # ConfigMap. Kept out of the base because a namespace under a
+                  # LimitRange of max.memory: 1Gi would have this pod rejected
+                  # at admission and lose the daily refresh of every feed, for a
+                  # dataset it never asked for.
                   memory: 1Gi
               securityContext:
                 allowPrivilegeEscalation: false

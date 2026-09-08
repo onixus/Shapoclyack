@@ -191,6 +191,8 @@ file, so a `wordlist_id` on an agent-mode scan is rejected. Caps:
 | EPSS | Exploit probability | Daily |
 | CISA KEV | Known exploitation | Daily |
 | CVSS v4 overlay | Score/vector enrichment | With source updates |
+| Debian Security Tracker | Vendor advisories for software→CVE matching | Daily, **opt-in** |
+| Ubuntu USN | Vendor advisories for software→CVE matching | Daily, **opt-in** |
 
 The Kubernetes enrichment overlay provides a shared PVC and scheduled refresh.
 Placeholder fixture data is suitable only for tests.
@@ -255,12 +257,69 @@ looks more defensive than a paging loop ought to.
   About 1,900 entries do come from CVEs published before 2024, added
   retroactively by CNAs, which is why `--full` does not skip the older corpus.
 
+### Vendor advisory datasets
+
+The two advisory feeds behind [software→CVE matching](software-cve-matching.md)
+sit in the same directory, the same envelope and the same manifest as the
+overlays above, and differ in exactly one way: nothing fetches them unless the
+installation says so.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_ADVISORY_FETCH_ENABLED` | `false` | Gate on every outbound request for advisory data. With it unset, `api/services/advisories/fetch.py` refuses and `scripts/fetch-enrichment.sh` prints a skip rather than a failure |
+| `OCTO_DEBIAN_ADVISORY_DATABASE` | `scanner/data/advisories/debian-advisories.json` | Where the Debian dataset is read from |
+| `OCTO_UBUNTU_ADVISORY_DATABASE` | `scanner/data/advisories/ubuntu-advisories.json` | Where the Ubuntu dataset is read from |
+
+```bash
+# One dataset, by hand. Exits 3 if the flag is unset — distinct from a failure.
+OCTO_ADVISORY_FETCH_ENABLED=true python3 scripts/fetch-advisories.py debian
+
+# Both, as part of the usual refresh (this is what the CronJob runs).
+OCTO_ADVISORY_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
+```
+
+In Kubernetes the opt-in is one overlay:
+
+```bash
+kubectl apply -k k8s/shapoclyack/overlays/enrichment-advisories
+```
+
+That is `overlays/enrichment` plus the `base/enrichment-advisories` component,
+which carries two things that belong together: the ConfigMap the CronJob reads
+the flag from (through an `optional: true` `configMapKeyRef`, so not applying it
+is the default) and the `2Gi` memory limit the Debian tracker parse needs. The
+base CronJob stays at `1Gi`, which is what GeoIP/CVSS4/EPSS/KEV need — a cluster
+that never took the opt-in must not have its pod rejected by a namespace
+`LimitRange` for a dataset it does not fetch.
+
+The API pod's enrichment initContainer deliberately does **not** get the flag.
+It would turn a daily download into one per pod start, per replica, per rollout,
+and the datasets are on the shared volume the CronJob already refreshes.
+
+The Debian tracker document is around 50 MB, which is why this is a decision
+rather than a default: an installation with no egress to
+`security-tracker.debian.org` is a supported configuration, and the matcher
+answers `unknown` instead of guessing.
+
+The image ships a small committed **seed** of real advisories at both paths.
+It is a seed, not a feed: it proves the path works and covers a handful of
+packages. The manifest floors (`100000` Debian, `10000` Ubuntu) are sized for
+the real feeds, so a build carrying only the seed is recorded `usable: false`
+— reported, never fatal, because these datasets are not required.
+
+Those same floors are what `scripts/fetch-advisories.py` refuses to publish
+below. A feed answering `200` with a truncated document normalizes to a dozen
+statements, and a floor of one would let that replace a corpus; refusing at the
+number the manifest already keeps means the fetch and the report use one number.
+A refresh that succeeds and still lands under the floor is not silent either —
+`origin: fetch` with `usable: false` exits `1` (degraded).
+
 ### Provenance: what the image actually shipped
 
 Every refresh writes `enrichment-manifest.json` next to the data, recording per
 dataset where the bytes came from (`source`), the date the feed itself stamped
-on them (`updated`), how many entries they hold, and — the field that matters —
-`origin`:
+on them (`updated`), how many entries they hold, whether that count clears the
+dataset's floor (`usable`), and — the field that matters — `origin`:
 
 | `origin` | Meaning |
 |---|---|
@@ -269,10 +328,24 @@ on them (`updated`), how many entries they hold, and — the field that matters 
 | `stale` | A fetch was attempted and failed; the previous data is still in place |
 | `missing` | No data at this path at all |
 
+A run that did not *attempt* a dataset — the advisory opt-in being off is the
+only way that happens — is a fourth case, and it writes none of these: it keeps
+whatever the previous run recorded. That matters because the API pod's
+enrichment initContainer runs the same script without the opt-in, so every API
+rollout re-inspects datasets the nightly CronJob filled. Rewriting them to
+`seed` would make `GET /api/system` report `origin: seed` over four hundred
+thousand fetched entries and send an operator to a build log with nothing in it.
+
 `GET /api/system` reports these alongside `age_days` on every enrichment entry
 (`null` for an image built before the manifest existed, or a volume without
 one). Set `OCTO_ENRICHMENT_MANIFEST` when the enrichment volume is mounted
 somewhere other than `scanner/data/`.
+
+`usable` answers the question `entries` leaves open. A dataset that ships with
+a seed is present, has a build-time mtime and a non-zero entry count whether it
+holds eight advisories or four hundred thousand; only the floor separates them,
+and the build is the one that checked it. It reports `null`, not `false`, when
+no manifest was found.
 
 This exists because age alone cannot answer the question operators actually
 have. A build whose EPSS fetch returned `403` ships the committed baseline and

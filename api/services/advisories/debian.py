@@ -69,6 +69,13 @@ def normalize_tracker_json(payload: Any) -> Iterator[dict[str, Any]]:
         for cve_id, detail in cves.items():
             if not isinstance(detail, dict):
                 continue
+            if not str(cve_id).upper().startswith("CVE-"):
+                # The tracker also keys issues it has no CVE for by an internal
+                # ``TEMP-0841847-1E6784`` id. Carrying one through would put a
+                # string that is not a CVE into ``software_cve_matches`` and
+                # onto the console as though it were one; there is nothing to
+                # look it up against, so it is dropped like ``undetermined``.
+                continue
             releases = detail.get("releases")
             if not isinstance(releases, dict):
                 continue
