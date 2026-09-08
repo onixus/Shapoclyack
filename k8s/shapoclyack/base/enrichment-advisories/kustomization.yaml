@@ -1,0 +1,35 @@
+# Opt-in for the vendor advisory refresh (Debian tracker / Ubuntu USN) behind
+# software->CVE matching -- see docs/software-cve-matching.md.
+#
+# Layer it on top of base/enrichment, which already runs the refresh script:
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/enrichment-advisories
+#
+# A Component, not a plain resource directory, for two reasons. It has to carry
+# a patch as well as the ConfigMap -- and those two belong to each other: the
+# flag makes the CronJob pull the ~50 MB Debian tracker document, and the memory
+# ceiling that download needs is not something a cluster that never took the
+# opt-in should be paying. A namespace under a LimitRange of `max.memory: 1Gi`
+# would have the pod rejected at admission and lose the daily refresh of every
+# feed. And a component's patch paths resolve relative to this directory, which
+# is what lets more than one overlay reuse it.
+#
+# Same namespace transformer as base/enrichment, and for the same reason: the
+# ConfigMap has to land where the CronJob that reads it does.
+#
+# What this costs: one ~50 MB download from security-tracker.debian.org and one
+# smaller one from usn.ubuntu.com, daily, from the CronJob's pod. Egress to both
+# must be allowed. Without it the datasets stay at the committed seed -- a few
+# dozen real advisories, enough to prove the matcher works and not enough to be
+# coverage -- which GET /api/system reports as `usable: false`, and which is the
+# state a fresh offline install is supposed to be in.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+namespace: network-scan
+
+resources:
+  - configmap.yaml
+
+patches:
+  - path: cronjob-memory-patch.yaml

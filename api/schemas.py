@@ -862,6 +862,11 @@ class EnrichmentDb(BaseModel):
     # The date the feed itself stamped on the data, not the file's mtime.
     updated: str | None = None
     entries: int | None = None
+    # The build's verdict on whether this file is a corpus or a placeholder,
+    # against the per-dataset floor in scripts/enrichment_manifest.py. Needed
+    # because "present, fresh mtime, non-zero entries" describes both a real
+    # feed and the committed advisory seed a fresh offline install ships.
+    usable: bool | None = None
 
 
 class ScanConfigSummary(BaseModel):
@@ -1065,6 +1070,10 @@ class SoftwareCveMatchInfo(BaseModel):
 
     device_id: str
     hostname: str | None = None
+    # The tracked finding this match produced (Track E, M3), or null. Only a
+    # ``vulnerable`` match with a published fix becomes one, so most rows carry
+    # no link and that is the answer rather than a gap.
+    vuln_id: str | None = None
     snapshot_id: str | None = None
     # "" on an ``unknown`` row, which is about a package set rather than a CVE.
     cve_id: str = ""
@@ -1103,6 +1112,8 @@ class SoftwareCveMatchRunSummary(BaseModel):
     packages_unassessed: int = 0
     matches: int = 0
     by_status: dict[str, int] = Field(default_factory=dict)
+    # See SoftwareCveMatchTenantRunSummary.lifecycle.
+    lifecycle: dict[str, int] = Field(default_factory=dict)
 
 
 class SoftwareCveMatchTenantRunSummary(BaseModel):
@@ -1113,6 +1124,10 @@ class SoftwareCveMatchTenantRunSummary(BaseModel):
     matches: int = 0
     by_status: dict[str, int] = Field(default_factory=dict)
     results: list[SoftwareCveMatchRunSummary] = Field(default_factory=list)
+    # What the same run did to the tracked-finding lifecycle (Track E, M3): a
+    # refresh that produced matches but created nothing is a real answer (no
+    # match had a published fix) and has to be visible as one.
+    lifecycle: dict[str, int] = Field(default_factory=dict)
 
 
 class AdvisoryProviderStatus(BaseModel):
@@ -1213,6 +1228,11 @@ class VulnerabilityInfo(BaseModel):
     tenant_id: str
     asset_id: str
     finding_key: str
+    # Which observer produced it: "scan" or "endpoint_software". The console
+    # branches on this — a software finding has a package where a scan finding
+    # has a port, and it is not verifiable by a re-scan.
+    source: str = "scan"
+    device_id: str | None = None
     cve: str | None = None
     cwe: list[str] = Field(default_factory=list)
     script_id: str | None = None
@@ -1256,6 +1276,16 @@ class VulnerabilityInfo(BaseModel):
     verification_job_id: str | None = None
     last_verified_at: str | None = None
     closure_reason: str | None = None
+    # False-positive verdict, expiring. ``fp_suppressed`` is derived on read —
+    # it is the verdict *and* an unexpired ``fp_suppress_until``, which is what
+    # decides whether a re-observation re-opens the finding.
+    fp_reason: str | None = None
+    fp_marked_by: str | None = None
+    fp_marked_at: str | None = None
+    fp_evidence: dict[str, Any] = Field(default_factory=dict)
+    fp_suppress_until: str | None = None
+    fp_observations: int = 0
+    fp_suppressed: bool = False
 
 
 class VulnerabilityEventInfo(BaseModel):
@@ -1303,6 +1333,30 @@ class VulnerabilityExceptionRequest(BaseModel):
 
     until: datetime
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityFalsePositiveRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/false-positive``.
+
+    ``reason`` and an expiry are mandatory for the same reason they are on an
+    exception, even though the two decisions are opposites: a suppression with
+    no end date is a finding that leaves the picture and never returns to it.
+    ``suppress_days`` is bounded rather than free so that "forever" cannot be
+    spelled at all.
+
+    ``evidence`` is free-form on purpose — the run, the port, an excerpt of the
+    output, links to artefacts. It is what makes the verdict re-checkable by
+    the person who inherits it, and no fixed shape would fit every detector.
+    """
+
+    reason: str = Field(min_length=1, max_length=2000)
+    suppress_days: int = Field(
+        default=90,
+        ge=1,
+        le=365,
+        description="Days the verdict stops a re-observation from re-opening the finding.",
+    )
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class VulnerabilityCommentRequest(BaseModel):
@@ -1623,6 +1677,11 @@ class CompliancePosture(BaseModel):
     generated_at: str
     asset_count: int = 0
     open_findings: int = 0
+    #: Findings an unexpired false-positive verdict is holding out of the active
+    #: population this posture was assessed from. Reported, never subtracted:
+    #: the score is not docked for honest triage, but a reader has to be able to
+    #: see how much of the estate the score did not look at.
+    suppressed_findings: int = 0
     controls_total: int = 0
     controls_assessed: int = 0
     controls_passed: int = 0
@@ -1770,7 +1829,11 @@ class AdoptionFindings(BaseModel):
 
     open: int
     accepted_open: int = 0
+    # Remediation closures only — false-positive verdicts are the sibling key
+    # and are excluded from every metric below, so honest triage of noise
+    # cannot move the numbers a team is judged on in either direction.
     closed_in_window: int
+    false_positive_in_window: int = 0
     machine_verified_closed: int = 0
     machine_verified_share: float | None = None
     closed_within_sla_share: float | None = None
@@ -1789,6 +1852,76 @@ class AdoptionAssets(BaseModel):
     dual_source_share: float | None = None
     coverage_days: int
     unowned: int = 0
+
+
+class AdoptionFalsePositiveSource(BaseModel):
+    """One detector's noise, as counts plus a share only when it is earned."""
+
+    source: str
+    closed: int
+    false_positive: int
+    # ``None`` below ``source_threshold`` closures: one verdict out of one
+    # closure is a data point, not a 100% error rate.
+    false_positive_share: float | None = None
+
+
+class AdoptionFalsePositives(BaseModel):
+    """How much of what was closed was noise, and how the verdicts are ageing."""
+
+    in_window: int = 0
+    share_of_closures: float | None = None
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    by_source: list[AdoptionFalsePositiveSource] = Field(default_factory=list)
+    # ``scan`` against ``endpoint_software``: which observer was wrong, which
+    # is a different and coarser question from which detector was. Unlike
+    # ``by_source`` the quiet origin is listed too — it is the comparison that
+    # makes the noisy one mean anything.
+    by_origin: list[AdoptionFalsePositiveSource] = Field(default_factory=list)
+    source_threshold: int = 20
+    suppressions_active: int = 0
+    # Expired verdicts nothing has re-observed since: the review queue the
+    # mandatory expiry exists to create.
+    suppressions_lapsed: int = 0
+    # Suppressions the scanner broke early because the assessment got worse.
+    # On the page deliberately: it is the number that says whether a verdict
+    # was hiding something.
+    overridden_in_window: int = 0
+    median_hours_to_verdict: float | None = None
+
+
+class AdoptionCoverage(BaseModel):
+    """Is the scanner looking at the whole of what it was allowed to look at?
+
+    Every share is ``None`` rather than zero when its denominator is not real.
+    ``scan_history_reason`` is why the two scan shares are withheld —
+    ``no_scan_history`` or ``partial_scan_history``, since migration 0035 has no
+    backfill and the columns fill one run at a time. ``scope_unbounded_reason``
+    is why scope coverage is: ``no_scope`` (nothing approved),
+    ``no_measurable_scope`` (every approval is a wildcard or a domain suffix,
+    neither of which is an address space), or the scan-history reason, because
+    a scope share taken off columns that have not filled is the same withheld
+    number wearing another tile's clothes.
+
+    Scope coverage counts **approvals reached**, not addresses: a share of an
+    address space reported 2.9% for a fully scanned /22 and could not tell an
+    empty subnet from an unscanned one. ``scope_uncovered_entries`` names the
+    approved ranges no scan has reached, which is the part an operator acts on.
+    """
+
+    coverage_days: int
+    assets_with_scan_history: int = 0
+    scan_history_share: float | None = None
+    scan_history_reason: str | None = None
+    scanned_share: float | None = None
+    vuln_scanned_share: float | None = None
+    approved_entries: int = 0
+    denied_entries: int = 0
+    measurable_entries: int = 0
+    unmeasurable_entries: list[str] = Field(default_factory=list)
+    scope_covered_entries: int | None = None
+    scope_covered_share: float | None = None
+    scope_uncovered_entries: list[str] = Field(default_factory=list)
+    scope_unbounded_reason: str | None = None
 
 
 class AdoptionAnalyst(BaseModel):
@@ -1817,7 +1950,11 @@ class AdoptionMetrics(BaseModel):
     window_days: int
     generated_at: str
     findings: AdoptionFindings
+    # Additive: the pre-existing console reads `findings`/`assets` and keeps
+    # working without knowing these two exist.
+    false_positives: AdoptionFalsePositives = Field(default_factory=AdoptionFalsePositives)
     assets: AdoptionAssets
+    coverage: AdoptionCoverage | None = None
     analysts: list[AdoptionAnalyst] = Field(default_factory=list)
     onboarding: AdoptionOnboarding
     enrichment: list[AdoptionEnrichmentDataset] = Field(default_factory=list)

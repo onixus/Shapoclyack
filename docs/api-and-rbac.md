@@ -224,13 +224,13 @@ not an authorization control.
 | `/api/agent/deploy` | Operator-driven SSH push installation of an agent onto a Linux host |
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
-| `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
+| `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher **and fold the result into the vulnerability lifecycle** are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
 | `/api/tenants` | Tenant lifecycle, provisioning keys, and the approved scanning scope (`/api/tenants/{id}/scan-scope`, admin). A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
 | `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
 | `/api/wordlists` | Tenant-uploaded subdomain wordlists: list, upload, fetch and delete. Reads are `viewer`, writes `operator` — the same bar as starting a scan, since a wordlist is scan input. Selected per scan via `wordlist_id`; caps and normalization are in [configuration.md](configuration.md#tenant-uploaded-wordlists) |
-| `/api/adoption` | Adoption metrics for this tenant over `window_days` (7–365, default 90): closures, share confirmed by a scan, share closed within SLA, median time to fix overall and by severity, reopen share, open findings per asset; active assets with an owner / business context / a scan in the last 30 days / an endpoint inventory too; closed-and-verified per analyst; time to first successful scan and first tracked finding; enrichment overlay age. Read-only, `viewer`, one tenant — a cross-tenant MTTR would be true of nobody. Shares are `null` when there is nothing to divide by |
+| `/api/adoption` | Adoption metrics for this tenant over `window_days` (7–365, default 90): closures, share confirmed by a scan, share closed within SLA, median time to fix overall and by severity, reopen share, open findings per asset; active assets with an owner / business context / a scan in the last 30 days / an endpoint inventory too; closed-and-verified per analyst; time to first successful scan and first tracked finding; enrichment overlay age. Two additive blocks: `false_positives` (verdicts in the window, their share of all closures, by severity, by detector and by observer, suppressions active and lapsed, overrides, median hours to a verdict) and `coverage` (assets with any scan history, scanned and vulnerability-assessed shares, and how many of the tenant's approved ranges contain an asset a scan reached — with the unreached ones named in `scope_uncovered_entries`). **False-positive closures are excluded from `closed_in_window`, `machine_verified_share`, `closed_within_sla_share` and every `mttr_hours*`** and reported as `false_positive_in_window` instead, so the quarterly control question cannot be answered by relabelling noise. Read-only, `viewer`, one tenant — a cross-tenant MTTR would be true of nobody. Shares are `null` when there is nothing to divide by — including while the coverage columns are still filling after the upgrade that added them (`scan_history_reason`) — and a per-detector rate is additionally `null` below 20 closures |
 | `/api/compliance` | PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory. Read-only, `viewer`. A platform admin gets no cross-tenant view here: a control status is a statement about one organisation — see [reports-and-compliance.md](reports-and-compliance.md) |
 | `/api/reports` | Report factory: branding (`admin`), templates (`operator`), scheduled delivery (`admin` — it sends this tenant's findings outside the installation), on-demand generation (`operator`) and downloads (`viewer`) |
 | `/api/system` | Non-secret installation status |
@@ -280,13 +280,32 @@ filter.
 ### Vulnerabilities
 
 Reading takes `viewer`; moving a finding through its lifecycle or reassigning it
-takes `operator`; **accepting risk and editing SLA policy take tenant `admin`**,
-because each commits the tenant to something rather than progressing one
-person's work. `POST /{id}/transition` answers `409` on an illegal move (the
+takes `operator`; **accepting risk, marking a false positive and editing SLA
+policy take tenant `admin`**, because each commits the tenant to something
+rather than progressing one person's work. `POST /{id}/transition` answers `409` on an illegal move (the
 request is well-formed; the refusal is about the finding's current state) and
 `422` on a state that is not in the model. A finding in another tenant answers
 `404`. The states, the SLA resolution order and the exception rules are in
 [vulnerability-lifecycle.md](vulnerability-lifecycle.md).
+
+**Two sources.** `GET /api/vulnerabilities?source=` narrows to `scan` (the
+network scanner) or `endpoint_software` (a software→CVE match on a managed
+endpoint); an unknown value is `422`. `POST /{id}/verify` answers `409` for
+every `endpoint_software` finding: a port scan does not observe an installed
+package, so a "machine verified" closure from one would be false. Those
+findings are verified by their device's next accepted inventory snapshot — see
+[software-cve-matching.md](software-cve-matching.md#lifecycle-tracked-findings).
+**False positives.** `POST /api/vulnerabilities/{id}/false-positive` (admin)
+closes a finding as never having been real and suppresses its re-opening for
+`suppress_days` (1–365, default 90); `reason` is required and `evidence` is a
+free-form object recording what the verdict was made on. It answers `409` when
+the finding is already closed — the same illegal-move refusal as any other
+transition — and `422` without a reason or with an out-of-range expiry.
+`DELETE` on the same path takes only `operator`: withdrawing a suppression can
+only put work back on the queue, and a control that is harder to release than
+to apply is one people stop applying. It answers `409` when the finding carries
+no verdict to withdraw, rather than a `200` for a call that changed nothing. See
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#false-positives).
 
 **Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
 tenant's persisted risk snapshots — `recorded_at`, estate risk level, open and

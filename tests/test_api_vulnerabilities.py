@@ -352,3 +352,97 @@ def test_sla_policy_crud_is_admin_only(tmp_path, monkeypatch):
         client.delete(f"/api/vulnerabilities/sla-policies/{policy_id}", headers=admin).status_code
         == 404
     )
+
+
+def _retag_as_software(settings, cve: str) -> str:
+    """Flip one seeded finding to ``source="endpoint_software"``.
+
+    The real path that writes those rows has its own two files
+    (``tests/test_software_findings.py``); what is under test here is the HTTP
+    surface's behaviour once such a row exists, so the row is made directly
+    rather than by standing up an endpoint agent.
+    """
+    from sqlalchemy import select
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(settings.postgres_url) as session:
+        row = session.scalars(
+            select(models.Vulnerability).where(models.Vulnerability.cve == cve)
+        ).one()
+        row.source = "endpoint_software"
+        return row.vuln_id
+
+
+def test_source_filter_separates_the_two_observers(tmp_path, monkeypatch):
+    """``GET /api/vulnerabilities?source=`` (Track E, M3).
+
+    The Vulnerability Center holds both kinds of finding now, and "what did the
+    endpoint inventory find" and "what did the scanner find" are different
+    questions with different remediation paths.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    settings, _ = _seed(tmp_path)
+    viewer = auth_headers(client, "viewer")
+
+    # Everything a run registers is `scan`, with no backfill: the column's
+    # server default is what makes migration 0032 need none.
+    assert (
+        client.get("/api/vulnerabilities", params={"source": "scan"}, headers=viewer).json()[
+            "total"
+        ]
+        == 2
+    )
+    assert (
+        client.get(
+            "/api/vulnerabilities", params={"source": "endpoint_software"}, headers=viewer
+        ).json()["total"]
+        == 0
+    )
+
+    _retag_as_software(settings, "CVE-2024-0002")
+
+    assert (
+        client.get(
+            "/api/vulnerabilities", params={"source": "endpoint_software"}, headers=viewer
+        ).json()["total"]
+        == 1
+    )
+    assert (
+        client.get("/api/vulnerabilities", params={"source": "scan"}, headers=viewer).json()[
+            "total"
+        ]
+        == 1
+    )
+    assert (
+        client.get(
+            "/api/vulnerabilities", params={"source": "telepathy"}, headers=viewer
+        ).status_code
+        == 422
+    )
+
+
+def test_verifying_a_software_finding_is_refused(tmp_path, monkeypatch):
+    """A network re-scan cannot observe an installed package.
+
+    ``_verification_target`` would happily return the asset's address and a
+    scan would happily run, and the finding would then be closed as
+    ``machine_verified`` on the strength of a scan that never looked at it —
+    the exact thing the verification loop exists to prevent. Its verification
+    is the device's next accepted inventory snapshot.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    settings, _ = _seed(tmp_path)
+    operator = auth_headers(client, "operator")
+    vuln_id = _retag_as_software(settings, "CVE-2024-0001")
+
+    response = client.post(f"/api/vulnerabilities/{vuln_id}/verify", headers=operator)
+    assert response.status_code == 409
+    assert "inventory" in response.json()["detail"]
+    # And it stays where it was rather than parking in VERIFYING with nothing
+    # looking at it.
+    assert (
+        client.get(f"/api/vulnerabilities/{vuln_id}", headers=operator).json()["state"]
+        == vuln_states.OPEN
+    )

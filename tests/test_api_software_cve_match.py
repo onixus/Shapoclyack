@@ -331,13 +331,20 @@ def test_matches_are_confined_to_their_tenant(client: TestClient) -> None:
     other_run = client.post(
         "/api/endpoint/cve-matches/refresh?tenant_id=ten_other", headers=admin
     ).json()
-    assert other_run == {
-        "tenant_id": "ten_other",
-        "devices": 0,
-        "matches": 0,
-        "by_status": {"vulnerable": 0, "fixed": 0, "not_applicable": 0, "unknown": 0},
-        "results": [],
+    assert other_run["tenant_id"] == "ten_other"
+    assert other_run["devices"] == 0
+    assert other_run["matches"] == 0
+    assert other_run["by_status"] == {
+        "vulnerable": 0,
+        "fixed": 0,
+        "not_applicable": 0,
+        "unknown": 0,
     }
+    assert other_run["results"] == []
+    # The same run folds into the lifecycle (Track E, M3) and, with no devices
+    # in this tenant, has nothing to fold.
+    assert other_run["lifecycle"]["created"] == 0
+    assert other_run["lifecycle"]["devices"] == 0
     assert len(client.get("/api/endpoint/cve-matches", headers=admin).json()) == 4
 
 
@@ -357,3 +364,49 @@ def test_tenant_wide_refresh_covers_every_device(client: TestClient) -> None:
     assert run["devices"] == 2
     assert run["by_status"]["vulnerable"] == 2
     assert len(run["results"]) == 2
+
+
+def test_the_tenant_listing_pages_in_sql_rather_than_in_memory(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    """``limit`` has to reach the database.
+
+    Every match row in the tenant was loaded, sorted in Python and sliced
+    afterwards, and the device ids of *all* of them were then passed to
+    ``_tracked_finding_ids`` as an ``IN (...)`` list. Past roughly 65k
+    parameters psycopg refuses the statement outright, so
+    ``GET /api/endpoint/cve-matches`` becomes a 500 for the whole tenant at
+    exactly the estate size it is most needed at — and long before that it is
+    a full table read per request.
+    """
+    from api.services import software_cve_match
+    from api.settings import load_settings
+
+    _seed(client)
+    _submit(
+        client,
+        _snapshot(
+            snapshot_id="snap_cve_page_2",
+            agent_id="lariska-agent-0002",
+            hostname="workstation-02.example.internal",
+        ),
+    )
+    operator = auth_headers(client, "operator")
+    assert client.post("/api/endpoint/cve-matches/refresh", headers=operator).status_code == 200
+
+    seen: list[list[str]] = []
+    real = software_cve_match._tracked_finding_ids  # noqa: SLF001
+
+    def spy(session, *, tenant_id, device_ids):
+        seen.append(list(device_ids))
+        return real(session, tenant_id=tenant_id, device_ids=device_ids)
+
+    monkeypatch.setattr(software_cve_match, "_tracked_finding_ids", spy)
+    items = software_cve_match.list_for_tenant(
+        load_settings(), tenant_id="default", limit=1
+    )
+
+    assert len(items) == 1
+    assert seen and all(len(batch) <= 1 for batch in seen), (
+        "the tracked-finding lookup was given every device in the tenant"
+    )

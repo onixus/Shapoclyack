@@ -1,0 +1,18 @@
+# overlays/enrichment plus the opt-in vendor advisory refresh.
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/enrichment-advisories
+#
+# Everything in overlays/enrichment's prerequisites applies here too (RWX
+# StorageClass; optional shapoclyack-geoip / shapoclyack-nvd Secrets). The one
+# thing this adds is egress from the CronJob's pod to
+# security-tracker.debian.org and usn.ubuntu.com, and the memory to parse what
+# comes back -- see base/enrichment-advisories/ for both.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../base/enrichment
+  - ../../base/enrichment-advisories

@@ -818,6 +818,14 @@ Two outcomes, deliberately not the same thing:
   `exploit` feed the risk model; with a handful of CVEs in them it keeps issuing
   confident verdicts while knowing almost nothing. The script exits `2`.
 
+The vendor advisory datasets (`advisories_debian`, `advisories_ubuntu`) are in
+the manifest under the same rules but are **not required**, so neither outcome
+above fails a build on their account. They are also the only source the refresh
+does not fetch by default: see
+[software→CVE matching](software-cve-matching.md#getting-a-real-dataset-onto-an-installation)
+for why, and for how to turn it on. A release image therefore ships them as
+`origin: seed`, `usable: false` — present, loadable, and not coverage.
+
 The second one fails a **release** build and warns on a dev build. The switch is
 the `ENRICHMENT_STRICT` build argument, which defaults to `0`; the publish
 pipeline (`Jenkinsfile.publish`) passes `1` for every image in the matrix. That
@@ -834,13 +842,27 @@ docker run --rm shapo-aio:strict cat /app/scanner/data/enrichment-manifest.json
 
 # …or on a running install, which also covers a mounted enrichment volume.
 curl -sH "Authorization: Bearer $TOKEN" http://localhost:8000/api/system \
-  | jq '.enrichment[] | {name, origin, source, updated, entries, age_days}'
+  | jq '.enrichment[] | {name, origin, source, updated, entries, usable, age_days}'
 ```
+
+`usable` is there because age and entry count together still cannot answer the
+question for a dataset that ships with a seed: eight advisories written into the
+image an hour ago are present, current and worthless. It is the build's own
+verdict against the per-dataset floor in `scripts/enrichment_manifest.py`, and
+it is `null` when no manifest was found rather than `false` — "nothing recorded"
+is not "the data is bad".
 
 An `origin` of `stale` or `seed` on a freshly deployed release is the signal to
 look at the build log or run the refresh CronJob by hand
 (`k8s/shapoclyack/base/enrichment/cronjob.yaml`) — the data is usable, but it is
 not what the release intended to ship.
+
+`seed` means the last run that *attempted* this dataset found the committed
+baseline, not merely that today's run did not fetch it. A run that never tried —
+the advisory opt-in being off, which is also the case on every API rollout,
+since the API's enrichment initContainer runs the same script without the flag —
+leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
+last night survives a rollout, and `seed` stays a statement worth acting on.
 
 ## Upgrade and rollback
 
@@ -974,6 +996,19 @@ Two consequences worth stating plainly:
 Verify a rollback the same way as an upgrade, and confirm that jobs claimed by
 the newer replicas are still progressing — a lease expiring during the rollout
 is requeued by the reaper (P1.4), which is expected and not a failure.
+
+#### Revisions whose downgrade destroys data
+
+A rollback normally does not touch the schema at all, which is what makes it
+short. If you nevertheless run `alembic downgrade`, this list is the one to
+read first.
+
+| Revision | What its downgrade destroys |
+|---|---|
+| `0032_endpoint_software_findings` | **Every software finding** (`source = 'endpoint_software'`) and its `vulnerability_events`, tickets and SLA history. The two columns it drops are the only thing telling a software finding from a scan one, so leaving the rows behind is worse than deleting them: after a subsequent upgrade they would read as `source = 'scan'` with `device_id IS NULL`, stop being a `409` on `/verify`, fall out of the inventory fold's lookup and be duplicated wholesale by the next snapshot. The matcher re-creates the findings from the current snapshots on its next run, with new ids and a fresh SLA clock — the work is not lost, the history of it is |
+| `0033_software_match_queue_marker` | Only the matcher's queue marker. Every device becomes due at once, so the first tick after the downgrade re-folds the estate. The fold is idempotent, so this is a load spike and not a correctness problem |
+| `0035_asset_scan_coverage` | **Every asset's scan-coverage history**: when it was last actually scanned, by which run, and when it was last assessed for vulnerabilities. There is no backfill and there cannot be one — nothing else in the schema records which past run covered which asset — so a downgrade followed by a re-upgrade does not restore them: the whole Coverage block on `/adoption` reads `n/a` again until every asset has been reached by a *new* run, which on a monthly scan cadence is a month of no coverage reading. Nothing else breaks; the findings and the assets themselves are untouched. |
+| `0034_vuln_false_positive` | Every false-positive verdict on `vulnerabilities`: the reason, who made it, its evidence, when the suppression expires, and how many times the finding was seen while suppressed. Nothing else in the schema holds them, so they cannot be reconstructed. The affected findings stay `CLOSED`; the downgrade rewrites their `closure_reason` to `manual`, because the older code does not know the `false_positive` value. The `vulnerability_events` trail (`false_positive_set`, `fp_reobserved`, `fp_overridden`) survives, so *that a verdict existed* is still auditable — only the live suppression is gone, and the next scan re-opens the finding. |
 
 ### Legacy JSON state import
 

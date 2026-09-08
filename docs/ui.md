@@ -40,7 +40,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
-| `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age | Viewer |
+| `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age; plus **Noise** (false-positive verdicts, suppressions in force and lapsed, overrides, noisiest detectors and observers) and **Coverage** (scanned share, vulnerability-assessed share, and how many approved ranges a scan has reached) | Viewer |
 | `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
@@ -118,9 +118,15 @@ and an SLA reading. Default view is everything not `CLOSED`, worst (contextual
 score) first.
 
 Header counts come from `GET /api/vulnerabilities/summary` so they agree with
-the filtered table. Filters (`state`, severity, SLA, stale days, search) are
-server-side. An asset's Vulnerabilities tab links here when that asset has
-open tracked findings (`?assetId=`).
+the filtered table. Filters (`state`, severity, **source**, SLA, stale days,
+search) are server-side. An asset's Vulnerabilities tab links here when that
+asset has open tracked findings (`?assetId=`); `?source=` is a deep link too.
+
+A **Source** badge distinguishes a network-scan finding from one the endpoint
+software inventory produced. A software finding has no port by construction, so
+its row shows the installed package and the version that closes it
+(`curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20`) where a scan finding shows
+`port 443`.
 
 `/vulnerabilities/view?vulnId=…` is the remediation card:
 
@@ -133,6 +139,13 @@ open tracked findings (`?assetId=`).
   on disk;
 - the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
   `exception_set`, `exception_cleared`).
+
+For an endpoint-software finding the **Verify** button is not shown at all: the
+API refuses the dispatch (`409`) because a re-scan does not observe an installed
+package, and offering a button that cannot work is worse than offering none. In
+its place the card says the finding is verified by the endpoint's next
+inventory snapshot and when it was last observed. The Finding card shows the
+`device_id` where a scan finding shows the port.
 
 CWE comes from NVD (the cvss4 overlay) or nuclei's template classification
 on the last observation. Missing is shown as empty, never inferred from
@@ -304,6 +317,56 @@ computed inside the installation from the tenant's own tables; nothing is sent
 anywhere, which is what makes it usable as the precondition ROADMAP Track E
 names for judging its own features.
 
+Two sections were added with the false-positive loop, and both are there to stop
+a number reading better than the estate.
+
+**Noise** counts what was closed as never having been real, apart from what was
+remediated. The Closed tile says so in as many words, because the two used to be
+one number: a quarter spent marking findings as noise would have read as a
+quarter spent fixing them. The section carries the suppressions in force, the
+ones that have lapsed and are waiting for a second look, the verdicts the
+scanner **broke by evidence** — the number that says whether one was hiding
+something — and the median time to a verdict, which is triage speed and is
+deliberately not part of MTTR. Two tables split the noise by detector and by
+observer (`scan` against `endpoint_software`); a rate needs at least 20 closures
+behind it and is shown as `n/a` below that, with the raw counts still on the
+row, because one verdict out of one closure is not a 100% error rate. The quiet
+observer is listed even with no verdicts — it is the comparison that makes the
+other row mean anything.
+
+**Coverage** answers the question underneath every other number on the page: is
+the scanner looking at the whole of what it was allowed to look at? The scanned
+share is read from a column only the scan-ingest path writes, never from
+`last_seen`, which an endpoint agent's inventory check-in also moves — a fleet
+of agents reporting on schedule used to make an unscanned estate look fully
+covered. There is no backfill, so the columns fill one run at a time after an
+upgrade, and both scan shares read `n/a` until enough of the estate has any scan
+history for a share to be about the estate rather than about the rollout: no
+coverage *data*, which is not the same as no coverage. **Assessed for
+vulnerabilities** is a separate reading, because a discovery sweep covers an
+asset for inventory and says nothing about its vulnerabilities; it counts a run
+only when the run's own stage manifest shows a vulnerability stage that actually
+ran, since `vulnerabilities.json` is exported by every run whether or not
+anything looked.
+
+**Approved ranges reached** counts approvals, not addresses. A share of the
+approved *address space* answered 2.9% for a fully scanned /22 with thirty live
+hosts — a statement about how empty IPv4 subnets are — and could not tell an
+empty range from one nobody had ever scanned. The unit is now the approval
+somebody wrote down: how many approved ranges contain an asset a scan reached
+inside the window, with the ranges that contain none listed by name underneath,
+which is the part an operator acts on. Deny rows are not approvals and are
+counted separately; a wildcard or a domain suffix is no address space at all,
+so those entries are named apart rather than counted as missed.
+
+On `/vulnerabilities/view`, an admin gets a **False positive** card beside
+Accepted risk: a reason and a suppression length between 1 and 365 days, both
+required. A finding under an unexpired verdict wears a `Suppressed until …`
+badge in the header next to its closure reason — the badge tracks the
+*suppression*, not the verdict, because a lapsed verdict leaves the closure
+reason in place and stops holding the finding down, which is the whole point of
+the expiry.
+
 `/compliance` reads `GET /api/compliance/frameworks` and
 `GET /api/compliance/{framework_id}`, and shows one framework's control table
 for the selected tenant. Each row carries its status, the failing and accepted
@@ -312,6 +375,12 @@ counts, and expands to the evidence behind it.
 Three things on the page are deliberate rather than decorative, and should stay
 that way if it is restyled:
 
+- the evidence base says how many findings an unexpired **false-positive
+  verdict** is holding out of the assessment. A control can pass because the
+  estate was fixed or because the findings behind it were marked as never real,
+  and the score is the same number either way; it is not docked for a verdict,
+  but the reader of a compliance page is the reader who has to be able to tell
+  the two apart;
 - a control with no evidence in this tenant is **`not_assessed`**, shown with
   its reason, and excluded from the score — an empty estate scores nothing, not
   100%;
@@ -385,6 +454,17 @@ same per-device card with a copyable command.
 A vulnerable package with no published fix is counted separately and carries no
 command. See [software-cve-matching.md](software-cve-matching.md).
 
+The **Matched CVEs** panel links each row to the tracked finding it produced, so
+the panel and the Vulnerability Center are not two unconnected places talking
+about the same CVE on the same host. A row with no finding says **why** rather
+than showing a dead link, and the four reasons are four different facts: the
+release is already fixed on this host, the release is not affected, the vendor
+has published no fix, or the match is below the severity floor (or has not been
+folded in yet). Only a `vulnerable` match with a published fix becomes a
+tracked finding ([why](software-cve-matching.md#lifecycle-tracked-findings)).
+One string covered all four until 2026-09-08, so an operator could read "no
+published fix" on a row with the fix printed in the next column.
+
 ## Wordlists and service tokens
 
 `/wordlists` uploads tenant-scoped subdomain and bucket dictionaries
@@ -411,6 +491,31 @@ Run findings may include both confirmed vulnerabilities and lower-confidence exp
 - unconfirmed/confirmation-required state.
 
 Do not equate every row with a confirmed CVE. `finding_class`, `confidence`, `requires_confirmation`, and evidence fields are part of the finding contract and should remain visible enough for an analyst to understand why an item was prioritized.
+
+## Enrichment freshness on `/system`
+
+The Enrichment Databases table badges each dataset one of four ways, in that
+order of precedence:
+
+| Badge | Meaning |
+|---|---|
+| `missing` | No file at the path |
+| `stale` | Older than 30 days, or the API said so |
+| `stub` | Present and loadable, but under the size a real feed publishes |
+| `fresh` | Present, current, and above that floor |
+
+`stub` reads `usable` from `GET /api/system` — the build's own verdict against
+the per-dataset floor in `scripts/enrichment_manifest.py`. It is there because
+the other three columns cannot produce it: the committed advisory seed is
+present, has the build's own mtime and a non-zero entry count whether it holds
+eight advisories or four hundred thousand, so a fresh offline install rendered
+green while matching answered `unknown` for everything outside the seed. Hover
+gives the reason.
+
+A `usable` of `null` — no manifest beside the data, which is every image built
+before the manifest existed — is left to the age check and badges as it did
+before. "Nothing recorded" is not "the data is bad". See
+[configuration.md](configuration.md#provenance-what-the-image-actually-shipped).
 
 ## Not in the console yet
 

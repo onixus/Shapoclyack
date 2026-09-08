@@ -229,7 +229,22 @@ class Asset(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
     status: Mapped[str] = mapped_column(default="active")  # active | stale | decommissioned
     first_seen: Mapped[datetime]
+    # Moved by *anything* that observes the host, an endpoint agent's inventory
+    # check-in included. It is not a coverage signal, which is what the three
+    # columns below are for: they are written only by the scan-ingest path in
+    # api/services/assets.py, so "scanned recently" cannot be satisfied by an
+    # agent phoning home. Nullable with no backfill — nothing records which
+    # past run covered which asset, so coverage reads as unknown until real
+    # runs fill them.
     last_seen: Mapped[datetime]
+    last_scanned_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_scan_run_id: Mapped[str | None] = mapped_column(default=None)
+    # A discovery run covers the asset for inventory but says nothing about its
+    # vulnerabilities. Set only when the run actually assessed them — findings
+    # in vulnerabilities.json, or a vulnerability stage recorded as run in
+    # stage_timings.json. The file's *existence* means nothing: report.py writes
+    # it on every run (see api/services/assets.py::_assessed_vulnerabilities).
+    last_vuln_scan_at: Mapped[datetime | None] = mapped_column(default=None)
     # "Ownership" (roadmap Phase 7.1) as plain nullable columns rather than a
     # join table — nothing in the scan pipeline produces multi-owner data yet;
     # a real ownership graph is Phase 11 territory.
@@ -381,9 +396,26 @@ class EndpointDevice(Base):
     last_seen: Mapped[datetime]
     last_inventory_at: Mapped[datetime | None] = mapped_column(default=None)
     latest_snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    # The software→CVE matcher's queue marker (migration 0033). The queue used
+    # to be "``latest_snapshot_id`` differs from the ``snapshot_id`` on this
+    # device's ``software_cve_matches`` rows", which cannot tell "matched, and
+    # there was nothing to report" from "never matched": a host with no
+    # matches has no rows. Those devices were due forever and, at
+    # ``batch_size`` a tick with no ordering, crowded out the ones that had
+    # actually changed. This column records the snapshot the fold last ran
+    # over, whatever the fold's verdict was.
+    last_matched_snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    # Consecutive failures folding this device, and when it may be tried
+    # again. One device that raises must not be re-read at the head of every
+    # batch for the rest of the installation's life.
+    match_failure_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    match_retry_after: Mapped[datetime | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "agent_id", name="uq_endpoint_device_tenant_agent"),
+        # The worker's due-devices read, which is a tenant-scoped comparison of
+        # the two snapshot columns.
+        Index("ix_endpoint_devices_match_queue", "tenant_id", "last_matched_snapshot_id"),
     )
 
 
@@ -652,6 +684,12 @@ class Vulnerability(Base):
     the asset registry (Phase 7) is what lets a host keep its remediation
     history when its address changes.
 
+    **Two sources, one identity space.** ``source="endpoint_software"`` rows
+    are keyed by ``api/services/software_findings.py``'s own hash, which
+    includes ``device_id`` and its own namespace element. The scan path's
+    ``finding_key`` is deliberately untouched: adding anything to that hash
+    would rename every existing finding and reopen the whole backlog.
+
     **Denormalised finding fields** (``severity``, ``contextual_score``,
     ``risk_level``, …) are the values from the *latest* observation. They are
     copied here rather than joined from the run artifacts because the queries
@@ -679,6 +717,20 @@ class Vulnerability(Base):
         ForeignKey("assets.asset_id", ondelete="CASCADE"), index=True
     )
     finding_key: Mapped[str]
+    # Which observer produced this row: "scan" (a run's vulnerabilities.json,
+    # register_findings_from_run) or "endpoint_software" (a software→CVE match
+    # folded in by api/services/software_findings.py). The two share the table
+    # because they share everything an operator does with a finding — an owner,
+    # a deadline, a ticket, an audit trail — and differ only in who is allowed
+    # to say it is gone.
+    source: Mapped[str] = mapped_column(default="scan", server_default="scan")
+    # The endpoint the software finding was observed on. NULL for every scan
+    # finding. SET NULL rather than CASCADE, exactly as EndpointDevice.asset_id
+    # is: retiring a device must not delete the remediation history of what was
+    # found on it, which stays attached to the asset.
+    device_id: Mapped[str | None] = mapped_column(
+        ForeignKey("endpoint_devices.device_id", ondelete="SET NULL"), default=None
+    )
     # What was found. `cve` is NULL for exposure/nuclei findings, which is why
     # `script_id` is part of the identity too.
     cve: Mapped[str | None] = mapped_column(default=None)
@@ -749,8 +801,24 @@ class Vulnerability(Base):
     # never close a finding as verified.
     verification_job_id: Mapped[str | None] = mapped_column(default=None)
     last_verified_at: Mapped[datetime | None] = mapped_column(default=None)
-    # verified_remediated | manual | ticket_resolved.
+    # verified_remediated | manual | ticket_resolved | patched |
+    # false_positive. See CLOSURE_REASONS in
+    # api/services/vulnerabilities.py. ``patched`` is the software path's
+    # own: the next accepted inventory snapshot no longer matches the CVE,
+    # which is a machine observation but not a re-scan.
     closure_reason: Mapped[str | None] = mapped_column(default=None)
+    # False-positive verdict, expiring — an attribute for the same reason
+    # accepted risk is one (see the vuln_states docstring). `fp_suppress_until`
+    # is mandatory whenever the verdict is set: a suppression with no end date
+    # is a finding nobody looks at again. `fp_observations` counts how often the
+    # scanner still saw it while suppressed, which is the number that says
+    # whether the verdict was wrong.
+    fp_reason: Mapped[str | None] = mapped_column(default=None)
+    fp_marked_by: Mapped[str | None] = mapped_column(default=None)
+    fp_marked_at: Mapped[datetime | None] = mapped_column(default=None)
+    fp_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    fp_suppress_until: Mapped[datetime | None] = mapped_column(default=None)
+    fp_observations: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -766,6 +834,12 @@ class Vulnerability(Base):
         Index("ix_vulnerabilities_risk", "tenant_id", "state", "contextual_score"),
         Index("ix_vulnerabilities_asset", "tenant_id", "asset_id"),
         Index("ix_vulnerabilities_assignee", "tenant_id", "assignee"),
+        # The source filter, and the software worker's "what is still open from
+        # the endpoint inventory" read.
+        Index("ix_vulnerabilities_source", "tenant_id", "source", "state"),
+        # Adoption: one tenant's closures inside a window, by reason.
+        Index("ix_vulnerabilities_fp", "tenant_id", "closure_reason", "closed_at"),
+        Index("ix_vulnerabilities_closed", "tenant_id", "state", "closed_at"),
     )
 
 

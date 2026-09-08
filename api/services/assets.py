@@ -63,7 +63,15 @@ class AssetUpsertStats:
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    """Naive UTC, matching the ``DateTime`` columns this module writes.
+
+    ``assets.first_seen``/``last_seen`` and the three coverage columns are all
+    naive, so handing Postgres an aware value means the driver converts it by
+    the session's TimeZone — which nothing in this repo pins — and the row ends
+    up hours away from the timestamps it is compared against. Same rule and
+    same reason as ``api/services/vulnerabilities.py::_now``.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -81,6 +89,68 @@ def _host_records(run_dir: Path) -> list[dict]:
         return [row for row in alive if isinstance(row, dict) and row.get("host")]
     # Fallback: flat IP list (older / minimal output, no hostnames).
     return [{"host": ip} for ip in runs_service._read_lines(run_dir / "alive_ips.txt")]  # noqa: SLF001
+
+
+#: Pipeline stages that can put a row in ``vulnerabilities.json``. A run that
+#: executed none of them enumerated hosts and nothing else.
+VULN_STAGES = ("nuclei", "pulse", "nse")
+
+
+def _assessed_vulnerabilities(run_dir: Path) -> bool:
+    """Did this run look for vulnerabilities, or did it only enumerate hosts?
+
+    Not ``(run_dir / "vulnerabilities.json").exists()``: ``report.py`` writes
+    that file unconditionally — "OS and vulnerability findings are core
+    deliverables and always exported" — and the ``report`` stage runs in every
+    pipeline. Its existence is therefore equally true of a discovery-only
+    sweep, of an installation running with ``nuclei.enabled: false`` and no
+    nmap-vulners, and of a run that assessed everything and found nothing. Read
+    as coverage it stamped ``last_vuln_scan_at`` on every host of every run and
+    made "Assessed for vulnerabilities" read 100% for an estate nothing had
+    assessed — the same lie ``assets.last_seen`` told, in the column that was
+    added to replace it.
+
+    Two answers count, in order:
+
+    * the file has findings in it — something assessed this estate, whatever
+      produced them;
+    * otherwise ``stage_timings.json`` has to show a vulnerability-producing
+      stage that actually ran. ``status`` is ``skipped`` for a stage the run
+      never entered (``skip_nse``, a ``--resume`` checkpoint) and ``error`` for
+      one that fell over, and neither is an assessment. ``nuclei`` is the
+      exception that needs its own artifact: the stage is invoked
+      unconditionally and degrades to a clean ``skipped_reason`` when it is
+      disabled, has no binary or has no templates, so an ``ok`` timing alone
+      does not mean it looked.
+
+    A run with neither findings nor a manifest reads ``False``. A run whose
+    shape cannot be established did not establish coverage either, and the
+    column is nullable precisely so "we do not know" has a spelling.
+
+    What it deliberately does not try to settle is whether a stage that *did*
+    run was configured to produce CVEs at all — ``pulse`` without ``--cve``,
+    an NSE profile without ``vulners``. Both are on by default, neither leaves
+    a marker in the run directory, and guessing would put the tile back in the
+    business of asserting things it cannot see.
+    """
+    findings = runs_service._load_json(run_dir / "vulnerabilities.json")  # noqa: SLF001
+    if isinstance(findings, list) and findings:
+        return True
+    timings = runs_service._load_json(run_dir / "stage_timings.json")  # noqa: SLF001
+    stages = timings.get("stages") if isinstance(timings, dict) else None
+    if not isinstance(stages, list):
+        return False
+    ran = {
+        str(stage.get("name"))
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("status") == "ok"
+    }
+    if not ran & set(VULN_STAGES):
+        return False
+    if ran & {"pulse", "nse"}:
+        return True
+    nuclei = runs_service._load_json(run_dir / "nuclei.json")  # noqa: SLF001
+    return isinstance(nuclei, dict) and not nuclei.get("skipped_reason")
 
 
 def _find_existing_asset_id(
@@ -150,6 +220,21 @@ def _pick_survivor(session, left_id: str, right_id: str) -> tuple[models.Asset, 
 
 
 def _repoint_findings(session, *, tenant_id: str, absorbed_id: str, survivor_id: str) -> None:
+    """Move the absorbed asset's findings onto the survivor, re-keyed.
+
+    Branching on ``source`` is not a nicety. ``vulnerabilities.finding_key`` is
+    the *scan* namespace — ``sha256(asset|cve-or-script|port)`` — and a
+    software finding is identified by
+    ``software_findings.software_finding_key`` over ``(asset, device, CVE)``
+    instead, precisely so the two can never collide. Recomputing every row with
+    the scan function gave a software row a key nothing would look up again:
+    either it collided with a real scan finding for the same CVE and the
+    software row was deleted with its ticket, SLA and audit trail, or it
+    survived under a key the next inventory fold cannot find, which opened a
+    duplicate beside it and closed the original as ``patched``.
+    """
+    from api.services.software_findings import SOURCE as SOFTWARE_SOURCE
+    from api.services.software_findings import software_finding_key
     from api.services.vulnerabilities import finding_key
 
     rows = session.execute(
@@ -159,9 +244,21 @@ def _repoint_findings(session, *, tenant_id: str, absorbed_id: str, survivor_id:
         )
     ).scalars().all()
     for row in rows:
-        new_key = finding_key(
-            asset_id=survivor_id, cve=row.cve, script_id=row.script_id, port=row.port
-        )
+        if row.source == SOFTWARE_SOURCE:
+            if not (row.device_id and row.cve):
+                # A software row with no device or no CVE cannot be re-keyed,
+                # and guessing at a key would either collide or orphan it. It
+                # moves with the asset and keeps the key it has; the fold will
+                # not match it, which is visible, unlike a wrong key.
+                row.asset_id = survivor_id
+                continue
+            new_key = software_finding_key(
+                asset_id=survivor_id, device_id=row.device_id, cve=row.cve
+            )
+        else:
+            new_key = finding_key(
+                asset_id=survivor_id, cve=row.cve, script_id=row.script_id, port=row.port
+            )
         clash = session.execute(
             select(models.Vulnerability).where(
                 models.Vulnerability.tenant_id == tenant_id,
@@ -343,6 +440,10 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
 
     hosts = _host_records(run_dir)
     now = _now()
+    # Whether this run assessed vulnerabilities at all, as opposed to only
+    # enumerating hosts. Read once per run: it is a property of the run, and a
+    # discovery-only sweep must not be allowed to claim vulnerability coverage.
+    vuln_scanned = _assessed_vulnerabilities(run_dir)
     created = 0
     updated = 0
     quota_skipped = 0
@@ -403,6 +504,13 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
                 asset.last_seen = now
                 asset.status = "active"
                 updated += 1
+            # Coverage, as distinct from `last_seen`. Only this path writes it,
+            # so an endpoint agent's inventory check-in cannot make an asset
+            # nobody has scanned look covered (see the model).
+            asset.last_scanned_at = now
+            asset.last_scan_run_id = run_id
+            if vuln_scanned:
+                asset.last_vuln_scan_at = now
 
             for candidate in candidates:
                 exists = session.execute(
@@ -900,7 +1008,7 @@ def update_asset(
     if "status" in updates and updates["status"] not in (None, _MANUAL_STATUS):
         raise ValueError(f"status may only be manually set to {_MANUAL_STATUS!r}")
     source = updates.get("context_source") or "operator"
-    now = _now().replace(tzinfo=None)
+    now = _now()
     with get_session(settings.postgres_url) as session:
         # Locked for the read-modify-write: two concurrent decommission PATCHes
         # would otherwise both read "active" and both count as the transition,

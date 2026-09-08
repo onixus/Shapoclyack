@@ -4,7 +4,402 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
-_Nothing yet._
+### Added
+
+- **The advisory datasets behind software→CVE matching now have a way to get
+  onto an installation.** The providers, the normalizers and the opt-in fetcher
+  all existed, but `api/services/advisories/fetch.py` was called from nothing
+  except its own tests: every deployment ran the matcher against the committed
+  seed — 8 Debian and 10 Ubuntu statements — and nothing said so, because
+  `scripts/enrichment_manifest.py` held both datasets optional with a floor of
+  one entry. So the seed passed for coverage in the one place built to catch
+  exactly that.
+  `scripts/fetch-advisories.py` is the missing CLI, a thin wrapper over
+  `refresh()` in the shape of `scripts/fetch-cvss4-db.py`: it stages the
+  download beside the destination and promotes it only once it clears the
+  dataset's floor — the same number `scripts/enrichment_manifest.py` reports
+  `usable` against, so the fetch and the report use one number and not two — so
+  a feed answering `200` with an empty or truncated document cannot wipe a
+  populated dataset, and it exits `3` for "nobody opted in" rather than
+  reporting a failure. `scripts/fetch-enrichment.sh` runs both feeds beside
+  cvss4/epss/kev when `OCTO_ADVISORY_FETCH_ENABLED` is set, and floors both
+  paths from the committed seed so a freshly provisioned enrichment volume is
+  never simply empty. In Kubernetes this rides the enrichment CronJob that
+  already exists; the opt-in is one overlay,
+  `k8s/shapoclyack/overlays/enrichment-advisories`, which layers the
+  `base/enrichment-advisories` component on: the ConfigMap the job reads the
+  flag from and the `2Gi` memory limit the Debian tracker parse needs, in one
+  place, because taking either without the other is a defect. The base CronJob
+  stays at `1Gi`. The Dockerfiles are untouched: a ~50 MB feed that changes
+  daily does not belong in an image layer.
+  Both datasets now carry a real feed's floor in the manifest — 100k Debian,
+  10k Ubuntu — while staying **not required**, which is what lets "this build
+  ships a seed" and "this build ships coverage" be different states without
+  making an offline build fail. `GET /api/system` carries the difference
+  outward in a new `usable` field on every enrichment entry: `entries`, `age`
+  and `origin` together still describe a seed and a real corpus identically,
+  since the seed's mtime is the build's, and the console was rendering a
+  fresh-built seed as a green `fresh`. `usable` is the build's own verdict
+  against the floor, and it is `null` rather than `false` when no manifest was
+  found. The System page reads it: a dataset the build called unusable is
+  badged `stub` and never `fresh`, and a `null` — no manifest, nothing recorded
+  — is left to the age check exactly as before.
+
+- **Software→CVE matches are tracked findings** (ROADMAP Track E, M3;
+  migration `0032`) — a match lived in `software_cve_matches`, keyed on
+  `device_id` and replaced wholesale on every run, so an authenticated finding
+  had no `finding_key`, no SLA, no owner, no ticket, no NIST risk and no line
+  in `vulnerability_events`; it was absent from the Vulnerability Center,
+  every report and the remediation board, and it vanished at the next run.
+  Matches now fold into the same `vulnerabilities` table the scanner writes,
+  carrying `source = "endpoint_software"` and the `device_id` they were seen
+  on. `GET /api/vulnerabilities?source=` narrows to either observer.
+
+  Four decisions are worth naming.
+
+  *The scan `finding_key` is untouched.* Widening that hash to tell the two
+  sources apart would have renamed every finding already in the table — every
+  open one would look new and every closed one would come back. Software
+  findings get their own namespaced key over `(asset, device, CVE)`; `device_id`
+  is in it because one asset can carry several endpoints and which host a
+  package is behind on is part of what the finding is.
+
+  *Only a `vulnerable` match with a published fix becomes a finding.* `fixed`
+  and `not_applicable` are the evidence that the matcher looked and answered,
+  and `unknown` is the honest "we could not tell" — a deadline attached to "we
+  do not know this endpoint's OS" puts the SLA report behind a non-statement.
+  The published-fix rule is not an optimisation: a full feed across a large
+  estate produces millions of `vulnerable` matches, and an SLA dashboard with
+  a million breaches is unreadable on its first day.
+  `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` adds a floor on top.
+
+  *Closure requires an observation, not an absence.* A software finding closes
+  as `closure_reason = patched`, `machine_verified = true`, only when the match
+  is gone or has become `fixed` **and** the device sent a newer accepted
+  snapshot **and** the advisory question could still be put at all — the
+  distribution resolved and its provider still has a dataset covering that
+  release. A device that went quiet produces exactly the same "no match" as a
+  device that was patched, and so does a feed volume that stopped mounting;
+  when the finding is not closed its `last_seen_at` does not move either, so
+  `?stale_days=` still surfaces it. A match that is still `vulnerable` but no
+  longer tracked — the vendor withdrew the fix, or the severity floor was
+  raised — leaves the finding open rather than closing it.
+
+  *`POST /api/vulnerabilities/{id}/verify` is `409` for a software finding.*
+  The asset has a scannable address and a scan would happily run — and prove
+  nothing, because a port scan does not observe an installed package. The
+  console hides the button and says what does verify it instead.
+
+  New worker `api/services/software_match_worker.py` keeps the lifecycle
+  current: leader-locked, batched, and due-when a device's
+  `latest_snapshot_id` differs from the one its matches were written from —
+  a durable queue that needs no column and is the same answer in every replica.
+  An accepted submission wakes it rather than re-matching inline, which would
+  have put a fleet-wide advisory walk on the agent's rate-limited ingest path.
+  Both `cve-matches/refresh` routes now fold synchronously and report what they
+  did in a `lifecycle` object. `OCTO_SOFTWARE_MATCH_ENABLED`,
+  `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`, `OCTO_SOFTWARE_MATCH_BATCH_SIZE`.
+
+  A livepatched kernel still reads as `vulnerable` and now gets a deadline —
+  there is no signal in the inventory to correct it, and the supported path is
+  a risk acceptance with a reason and an expiry rather than a guess.
+
+- **False-positive verdicts, and a suppression that survives the next scan**
+  (ROADMAP Track E) — a finding could be closed as noise, but
+  `register_findings_from_run` re-opened *any* closed row it saw again, so an
+  honest verdict cost a reopen, a restarted SLA clock and a permanent place in
+  the breach report. Marking noise correctly was the expensive option, which is
+  the wrong incentive to put on triage.
+  `POST /api/vulnerabilities/{id}/false-positive` (admin) now records the
+  verdict as an expiring attribute of the row — reason, evidence, who, and a
+  mandatory `suppress_days` between 1 and 365 (default 90), so "forever" cannot
+  be spelled. While it holds, a re-observation leaves the finding `CLOSED` and
+  moves `observation_count` and `fp_observations` without touching
+  `reopen_count` or the SLA clock. `DELETE` on the same path takes only
+  `operator`: releasing a suppression can only put work back on the queue.
+  The verdict is overruled by evidence rather than only by time — a higher
+  severity, `in_kev` turning true, `network_exposure` becoming `external` or a
+  higher `exploit_maturity` re-opens the finding at once and records an
+  `fp_overridden` event naming what changed. The finding never disappears: it
+  stays in the Vulnerability Center as `CLOSED`, keeps its audit trail, and does
+  not touch run artifacts, ClickHouse or `vulnerabilities.json`.
+  The rule is one shared entry point rather than a copy per observer. Findings
+  are re-observed by two paths — the scan run and the endpoint-software fold,
+  which the matcher re-runs on a timer — and only the first knew verdicts
+  existed, so a suppressed `endpoint_software` finding came back `OPEN` on the
+  next inventory snapshot, with `reopen_count` incremented and the SLA clock
+  restarted, while the console still rendered the suppression on it. Both paths
+  now weigh a re-observation through `weigh_fp_verdict`, escalation override
+  included, and all four re-open paths — run, snapshot, operator transition and
+  a resolved ticket coming back — drop the `fp_*` columns as they go, so an open
+  finding can no longer advertise a verdict that stopped holding. Withdrawing a
+  verdict that is not there answers `409` instead of a `200` for a call that
+  changed nothing; the console's Withdraw button reads the closure rather than
+  the leftover columns, so it no longer appears on an open finding at all.
+  Compliance says what its score was built on. A false-positive closure leaves
+  the active population, so it can turn a failing control green — intended, and
+  the score is *not* docked for it, because penalising a tenant for correcting
+  its own evidence restores the incentive to leave noise open. But every
+  guardrail on the verdict constrains who may make one, and none of them is
+  visible where the score is read, so each framework's posture now carries
+  `suppressed_findings`: how many findings an unexpired verdict is holding out
+  of the assessment. It is on the console beside the evidence base and in every
+  generated report.
+  Migration `0034_vuln_false_positive`; its downgrade is destructive and is
+  listed as such in [docs/operations.md](docs/operations.md), as is
+  `0035_asset_scan_coverage`'s, for the same reason its own docstring gives:
+  there is no backfill and there cannot be one, so an operator who rolls back
+  and forward again loses the whole Coverage block until every asset has been
+  reached by a new run.
+  `fp_marked_at` and `fp_suppress_until` are `timestamp without time zone`, like
+  every other lifecycle column on the table and like the naive UTC the services
+  write. Declared as `timestamptz`, they were filled with naive UTC that
+  Postgres reinterprets by the session `TimeZone` — which nothing here pins — so
+  on an installation not running UTC the verdict's timestamp sat hours from the
+  `first_seen_at` it is subtracted from, and "median hours to a verdict" read
+  `-9.0` for a verdict made the same minute the finding appeared. The same
+  correction applies to `0035_asset_scan_coverage`'s three columns, and
+  `api/services/assets.py` now writes naive UTC as `vulnerabilities.py` does.
+  Both revisions are unreleased, so the types are corrected in place rather than
+  by a follow-up `ALTER`; an installation that already ran them off this branch
+  should `downgrade 0033` and upgrade again.
+
+- **Adoption's noise and coverage blocks, and the metrics they had to correct
+  first** (ROADMAP Track E). Two shares on that page were wrong in the
+  direction that flatters the installation.
+  `scanned_recently_share` read `assets.last_seen`, which
+  `api/services/endpoint_inventory.py` moves whenever an agent checks in with a
+  software inventory — so a fleet of endpoint agents reporting on schedule made
+  an estate nobody had scanned in months report full coverage, the metric saying
+  the opposite of the truth in exactly the case it exists to catch. Migration
+  `0035_asset_scan_coverage` adds `assets.last_scanned_at`, `last_scan_run_id`
+  and `last_vuln_scan_at`, written **only** by the scan-ingest path in
+  `api/services/assets.py`. There is no backfill and there cannot be one —
+  nothing in the schema records which past run covered which asset — so coverage
+  reads `null` until real runs fill the columns, which is the honest answer
+  rather than a zero that reads as an alarm about the upgrade. Because they fill
+  one run at a time, the withholding is a floor on the estate's scan history and
+  not a check for a clean zero: 50,000 assets with one 500-host subnet scanned
+  would otherwise read "Scanned in 30 days: 1%", indistinguishable from scanning
+  having collapsed and a statement about the rollout either way.
+  `last_vuln_scan_at` is set from what the run actually did, not from the
+  presence of `vulnerabilities.json`: `report.py` exports that file
+  unconditionally and the `report` stage runs in every pipeline, so an
+  installation with `nuclei.enabled: false` and no nmap-vulners — a supported
+  opt-out — stamped vulnerability coverage on every host of every run and the
+  tile read 100% for an estate nothing had assessed. It now takes findings in
+  the file, or a vulnerability stage recorded as `ok` in the run's own
+  `stage_timings.json` (with `nuclei.json`'s `skipped_reason` consulted, since
+  that stage is invoked even when it is switched off).
+  And every remediation metric counted a false-positive closure as a fix:
+  `closed_in_window`, `machine_verified_share`, `closed_within_sla_share` and
+  the `mttr_hours*` medians now count real closures only, with
+  `false_positive_in_window` beside them, so the quarterly control question
+  ROADMAP asks cannot be answered by relabelling noise — and honest triage no
+  longer drags the verification rate down while doing it.
+  On top of that, `false_positives` reports the verdicts' share of all closures,
+  their severities, the suppressions in force and lapsed, the ones the scanner
+  broke by evidence, the median hours to a verdict, and per-detector and
+  per-observer rates. A rate is withheld below 20 closures — one verdict out of
+  one closure is not a 100% error rate — and advisory matches, which have no
+  `script_id`, go to their own `unknown` bucket instead of being blamed on a
+  script. `coverage` adds reach against `tenant_scan_scopes`, counted in
+  **approved ranges reached rather than in addresses**: a share of the approved
+  address space answered 2.9% for a fully scanned /22 with thirty live hosts,
+  could not tell an empty range from one nobody had ever scanned, and
+  double-counted overlapping approvals (`10.0.0.0/24` plus `10.0.0.128/25` was
+  384 addresses). A range counts as reached when it contains an *active* asset a
+  scan touched inside the window — not merely one that was discovered once,
+  which is exactly the tenant the block exists to catch — and the ranges nothing
+  has reached are listed by name, which is the half an operator can act on. Deny
+  rows are counted apart instead of being folded into "approved entries", and
+  wildcard and domain approvals are named as unmeasurable rather than counted as
+  missed.
+  Both blocks are additive on `GET /api/adoption`, and the console grows a
+  **Noise** and a **Coverage** section plus a **False positive** card on the
+  finding page.
+
+- **`metrics()` stopped reading the tenant's whole history into Python.** It
+  issued two unwindowed `select`s — every finding and every asset the tenant had
+  ever had — and counted them in a loop, which on a 50k-asset estate was the
+  worst read in the product. The point-in-time counts are now SQL aggregates and
+  the closure pass is bounded by the window and served by the index
+  `0034_vuln_false_positive` adds; only the rows the medians genuinely need are
+  materialised. The two new blocks were built on that shape rather than added
+  in front of the old one — with one exception worth naming rather than
+  implying: scope coverage still does its CIDR membership test in Python, over
+  the IP identifiers of active assets a scan reached inside the window. That is
+  a bounded fraction of the identifier table rather than the whole of it, but it
+  is not SQL, and `inet <<=` would do it better on Postgres; the repo has no
+  `inet` usage yet and casting an identifier column that is a plain string is
+  its own risk, so it is left as a known read and not claimed as an aggregate.
+
+### Changed
+
+- **The tenant-wide matcher run is batched** — `run_for_tenant` opened a
+  session per device and issued a `DELETE` plus one `INSERT` per row, so its
+  cost scaled with the device count rather than the row count. It now walks
+  devices in batches, one `DELETE … IN` and one executemany `INSERT` per batch.
+- **Endpoint CVE-match rows carry `vuln_id`** — the tracked finding a match
+  produced, or null. Without it the console had two unconnected places talking
+  about the same CVE on the same host; the Matched CVEs panel now links to the
+  finding, and says why there is none where there is none.
+
+### Fixed
+
+- **Three ways the provenance could lie, closed before they shipped.**
+  A refresh run that did not *attempt* a dataset used to overwrite its `origin`
+  with `seed`. That is not a hypothetical path: the API pod's enrichment
+  initContainer runs the same script as the CronJob without the advisory
+  opt-in, so every API rollout demoted a nightly-fetched corpus, and
+  `GET /api/system` answered `{origin: "seed", usable: true, entries: 412000}`
+  while `docs/operations.md` told the operator to go read a build log. A run
+  that never tried now keeps whatever the last run that did try recorded.
+  A refresh that *succeeded* and came back under the floor was the quietest
+  outcome of the three — `origin: fetch` is neither `stale` nor `missing`, and
+  the advisory datasets are not required, so `verdict()` returned `0` over a
+  dataset that had just been replaced by twelve entries. It now exits `1`.
+  And `scripts/fetch-enrichment.sh` parsed the opt-in flag with `tr` alone
+  where `fetch_enabled()` uses `.strip().lower()`, so `" true"` was on for the
+  service and off for the script: a skip printed at an operator who had opted
+  in, and a seed that never updated. The shell helper is now a sourceable
+  function and a table test drives it and `fetch_enabled()` over the same 29
+  spellings.
+- **Ubuntu USN normalization emitted every same-named package twice.** A USN
+  lists a package in both `sources` and `binaries` whenever the source builds a
+  binary of its own name — `curl`, and most of the feed — so each of those
+  produced two byte-identical records, doubling a tens-of-thousands-entry
+  dataset and putting two copies in the lookup bucket for that package. Found
+  by normalizing fragments of the real published dumps, which is also new here:
+  the fixtures under `tests/fixtures/advisories/` now carry the shapes the
+  feeds actually publish (Debian's `undetermined`, its `fixed_version: "0"`
+  sentinel, `nodsa`, `removed`, `high**` urgencies and `TEMP-…` ids; USN's bare
+  `5051-2` keys, versionless ESM rows and Launchpad URLs mixed in with the
+  CVEs) rather than only the shapes the normalizers were written against.
+- **Two normalizer defects the real dumps exposed.** The published USN database
+  keys advisories bare — `"5051-2"` — while every human-facing reference, this
+  project's seed included, says `USN-5051-2`; a fetched dataset and the
+  committed seed were therefore talking about the same advisory under two ids,
+  and the generated `ubuntu.com` links were 404s. And the Debian tracker keys
+  issues it has no CVE for by an internal `TEMP-0841847-1E6784` id, which the
+  normalizer carried straight through — a string that is not a CVE, headed for
+  `software_cve_matches` and the console as though it were one, with nothing to
+  look it up against. It is now dropped like `undetermined`.
+
+- **Two ways the closure gate closed a software finding as `patched` without
+  anybody patching anything** (the asset merge below was a third). Each wrote
+  `machine_verified = true` and a `verification_passed` event by
+  `system:inventory`, which is the strongest claim this platform makes about a
+  closure.
+
+  *The closure gate asked the wrong question.* It read `packages_assessed > 0`
+  — "how many packages we could have asked about" — which is counted **before**
+  the advisory provider is consulted and stays comfortably positive on a host
+  whose feed has gone. An unmounted advisory volume, a `fetch` that wrote an
+  empty file or a release dropped from the vendor's export therefore produced
+  "assessed, no matches", and the next snapshot from any one device closed that
+  tenant's entire software backlog. The gate is now
+  `software_findings.assessment_possible`: distribution resolved, provider
+  loaded, release present in the dataset. The two fold paths
+  (`run_matcher=True` from the worker, `False` from the refresh routes) used to
+  compute this gate from different material and answer it opposite ways for the
+  same device; they now evaluate the same function.
+
+  *"The match is gone" and "we stopped tracking the match" were one condition.*
+  A vendor reissuing a USN as "affected, no fix yet" empties `fixed_version`,
+  and raising `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` moves the floor — in both
+  cases the match is still `vulnerable` and the host has not moved. Both closed
+  the finding as patched; raising the floor closed every software finding below
+  it across the tenant. A still-`vulnerable` match now holds its finding open,
+  counted separately as `held_open_untracked_match`.
+
+- **An asset merge no longer destroys or orphans a software finding.**
+  `_repoint_findings` recomputed every absorbed row's `finding_key` with the
+  *scan* key function, which is a different namespace from the software one.
+  A software row either collided with a scan finding for the same CVE and was
+  deleted along with its ticket, its SLA and its `vulnerability_events`, or it
+  survived under a key the next inventory fold cannot look up — so the fold
+  created a duplicate and closed the original as `patched`, machine-verified.
+  The function now branches on `source` and re-keys a software finding with
+  `software_findings.software_finding_key`.
+
+- **The Ubuntu USN converter reads `allbinaries`, not just `binaries`.**
+  `binaries` is the headline subset Canonical shows on the notice page;
+  `allbinaries` is what the USN actually covers. An inventory reporting
+  `libssl-dev` therefore found no advisory for a USN that names it, fell
+  through to the binary-name heuristic, derived a source package no dataset
+  has, and answered `unknown` — a false negative on a package with a published
+  fix. Entries are deduplicated per release, since the groups overlap.
+
+- **The Matched CVEs panel says which reason a row has no tracked finding.**
+  "not tracked — no published fix" was printed for every non-`unknown` row
+  without a `vuln_id`: for a `fixed` row with the fix in the very next column,
+  for a `not_applicable` row about a release the vendor says is not affected,
+  and for a match the severity floor filtered out. Four reasons, four strings.
+
+- **The software match queue drains, and can be left** (migration `0033`).
+  Three faults, one queue.
+
+  *A host with nothing to report never left it.* The queue was derived from
+  the match rows — due when `latest_snapshot_id` differs from the `snapshot_id`
+  those rows were written from — and a host where every package is matchable
+  and no advisory hits writes no rows at all, not even an `unknown`
+  placeholder. It was due on every tick for ever, and with `LIMIT batch_size`
+  and no `ORDER BY` a few hundred such hosts permanently starve the devices
+  that actually changed. `endpoint_devices.last_matched_snapshot_id` now
+  records the snapshot the fold ran over, whatever it concluded; the migration
+  backfills it from the existing match rows so nothing re-folds on deploy.
+
+  *One device stopped its whole tenant.* The fold ran a batch in one session
+  and the sweep caught at tenant level, so a device that raised failed its
+  batch and was re-read at the head of the same batch on the next tick, and
+  the next. Each device now folds in its own SAVEPOINT and a failure is held
+  off with a capped backoff (60s → 6h) rather than blocking the queue.
+
+  *A tick took one batch.* `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS` is
+  documented as a ceiling on how stale a software finding may be; the real
+  ceiling was `due / batch_size × interval`, which for 50k due devices at the
+  defaults is nearly five days. A tick now drains until the tenant has nothing
+  due or `OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS` (new, default 60) is spent,
+  shared across tenants, oldest inventory first.
+
+- **`GET /api/endpoint/cve-matches` pages in SQL.** It read every match row in
+  the tenant, sorted them in Python and sliced afterwards, then handed the
+  device id of every one of them to the tracked-finding lookup as an
+  `IN (...)` list. Past roughly 65k parameters psycopg refuses the statement,
+  so the endpoint returned 500 for the whole tenant at the estate size it is
+  most needed at. The ordering and the limit are now the database's.
+
+- **`0032`'s downgrade no longer turns software findings into scan findings.**
+  It dropped `source` and `device_id`, which are the only two things telling
+  the two apart, so a down-then-up left every software finding reading as
+  `source = 'scan'`, `device_id IS NULL`: no longer a `409` on `/verify`,
+  invisible to the inventory fold's lookup, and duplicated wholesale by the
+  next snapshot. The downgrade now deletes the rows it cannot label — which is
+  destructive and is now stated as such in the revision docstring and in
+  `docs/operations.md`, alongside a list of the revisions whose downgrade
+  destroys data.
+
+- **Upgrade note for `0032`: the estate's numbers step on the first matcher
+  run.** Every consumer of `vulnerabilities` filters on `state` and not on
+  `source`, so the moment software findings land they are counted by the
+  compliance evidence pass, the cross-tenant posture list, the per-asset
+  counters on the assets page, `estate_risk` and the risk-history snapshots.
+  That is intended — a finding found by looking inside a host is the same kind
+  of object as one found from outside — but the jump is a change in what is
+  measured, not an event in the estate, and the risk-history chart will draw
+  it as a step. It was intended only in a commit message until now;
+  `tests/test_software_findings_consumers.py` is the statement a future
+  `source`-aware filter has to argue with.
+
+- **A finding the scanner re-opened kept claiming it had been verified** — the
+  operator reopen in `transition()` cleared `machine_verified` and
+  `closure_reason`, but the observer's own reopen path in
+  `register_findings_from_run` cleared neither. A machine-verified closure that
+  came back stayed `machine_verified=True` while `OPEN`, still asserting that a
+  verification run had confirmed a fix for something visibly still there — the
+  one claim that column exists to make un-fakeable. Found while auditing the
+  reopen path for the false-positive work.
 
 ## [0.44-0907] — 2026-09-07
 

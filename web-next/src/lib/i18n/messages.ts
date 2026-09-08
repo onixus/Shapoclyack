@@ -286,6 +286,8 @@ export const en = {
   "page.reports.subtitle": "PDF and artifact discovery from completed runs.",
   "page.system.title": "System Telemetry & Config",
   "page.system.subtitle": "Versions, dependencies, stage timings and runtime. Edits need admin.",
+  "page.system.enrichment.stub":
+    "Present and loadable, but below the size a real feed publishes — the build shipped a seed, or a refresh came back truncated. Matching answers \"unknown\" outside what it covers.",
   "page.exposure.alert": "Drawing an internet-facing count from public addresses would launder a heuristic as a fact. Mark exposure on the asset card; this list is that decision.",
   "page.threats.alert": "KEV membership is copied from the last observation onto the tracked finding, so it survives run pruning. Attack-path chaining is not modelled.",
   "page.jobs.denied": "Operator or admin role privileges required to launch and monitor scan jobs.",
@@ -361,6 +363,40 @@ export const en = {
   "vuln.reason.ticketResolved": "Resolved in tracker",
   "vuln.verificationRate": "Machine verification rate",
   "vuln.verifiedClosedCount": "{count} verified closures",
+
+  // Endpoint software findings (Track E, M3).
+  "vuln.reason.patched": "Patched on the endpoint",
+  "vuln.source": "Source",
+  "vuln.source.any": "Any source",
+  "vuln.source.scan": "Network scan",
+  "vuln.source.endpointSoftware": "Endpoint software",
+  "vuln.software.noVerify":
+    "Verified by the next inventory snapshot from this endpoint, not by a re-scan: a scan does not observe an installed package.",
+  "vuln.software.lastSnapshot": "Last observed",
+  "vuln.software.device": "Endpoint",
+
+  // False-positive verdicts (Track E). The verdict is an expiring attribute of
+  // the finding, so every string here names the expiry as well as the verdict.
+  "vuln.reason.falsePositive": "Not a real finding",
+  "vuln.fp.title": "False positive",
+  "vuln.fp.hint":
+    "Closes the finding as never having been real and stops the scanner re-opening it. A reason and an end date are both required — a suppression nobody revisits is how a real finding disappears.",
+  "vuln.fp.reason": "Why this is not a real finding",
+  "vuln.fp.suppressDays": "Suppress for (days, 1-365)",
+  "vuln.fp.markBtn": "Mark false positive",
+  "vuln.fp.clearBtn": "Withdraw verdict",
+  "vuln.fp.saving": "Saving…",
+  "vuln.fp.suppressedUntil": "Suppressed until {when}",
+  "vuln.fp.lapsed": "The verdict has expired — the next observation re-opens this finding",
+  "vuln.fp.observations": "seen {count}× while suppressed",
+  "softwareCve.trackedFinding": "Tracked finding",
+  // One string per reason. A single "no published fix" was printed for every
+  // row without a finding, including rows with the fix in the next column.
+  "softwareCve.noTrackedFinding.noFix": "not tracked — no published fix",
+  "softwareCve.noTrackedFinding.fixed": "not tracked — already fixed on this host",
+  "softwareCve.noTrackedFinding.notApplicable": "not tracked — this release is not affected",
+  "softwareCve.noTrackedFinding.filtered":
+    "not tracked — below the severity floor, or not folded in yet",
 
   // Per-tenant usage metering and quotas.
   "nav.usage": "Usage",
@@ -698,6 +734,8 @@ export const ru: Record<MsgKey, string> = {
   "page.reports.subtitle": "PDF и артефакты завершённых прогонов.",
   "page.system.title": "Телеметрия и конфигурация",
   "page.system.subtitle": "Версии, зависимости, тайминги стадий и runtime. Правки — администратор.",
+  "page.system.enrichment.stub":
+    "Файл на месте и читается, но меньше того, что публикует настоящий фид: в сборке сид либо обновление вернуло обрезанный документ. Вне покрытия сопоставление отвечает «неизвестно».",
   "page.exposure.alert": "Считать интернет-facing по публичным адресам — выдать эвристику за факт. Отметьте экспозицию на карточке актива; этот список — то решение.",
   "page.threats.alert": "Членство в KEV копируется с последнего наблюдения на отслеживаемую находку и переживает обрезку прогонов. Цепочки атаки не моделируются.",
   "page.jobs.denied": "Запускать и смотреть задания сканирования могут оператор или администратор.",
@@ -771,6 +809,37 @@ export const ru: Record<MsgKey, string> = {
   "vuln.reason.ticketResolved": "Решено в трекере",
   "vuln.verificationRate": "Доля закрытий, подтверждённых сканом",
   "vuln.verifiedClosedCount": "{count} подтверждено сканом",
+
+  // Находки из инвентаря ПО на хостах (Track E, M3).
+  "vuln.reason.patched": "Обновлено на хосте",
+  "vuln.source": "Источник",
+  "vuln.source.any": "Любой источник",
+  "vuln.source.scan": "Сетевой скан",
+  "vuln.source.endpointSoftware": "Инвентарь ПО",
+  "vuln.software.noVerify":
+    "Проверяется следующим инвентарём с этого хоста, а не пересканом: скан не видит установленный пакет.",
+  "vuln.software.lastSnapshot": "Последнее наблюдение",
+  "vuln.software.device": "Хост",
+
+  // Вердикт «ложное срабатывание» (Track E).
+  "vuln.reason.falsePositive": "Ложное срабатывание",
+  "vuln.fp.title": "Ложное срабатывание",
+  "vuln.fp.hint":
+    "Закрывает находку как никогда не существовавшую и запрещает сканеру открывать её заново. Причина и срок обязательны: бессрочное подавление — это то, как исчезает настоящая находка.",
+  "vuln.fp.reason": "Почему находка не настоящая",
+  "vuln.fp.suppressDays": "Подавить на (дней, 1-365)",
+  "vuln.fp.markBtn": "Пометить ложным",
+  "vuln.fp.clearBtn": "Снять вердикт",
+  "vuln.fp.saving": "Сохранение…",
+  "vuln.fp.suppressedUntil": "Подавлено до {when}",
+  "vuln.fp.lapsed": "Срок вердикта истёк — следующее наблюдение переоткроет находку",
+  "vuln.fp.observations": "наблюдалась {count}× под подавлением",
+  "softwareCve.trackedFinding": "Находка",
+  "softwareCve.noTrackedFinding.noFix": "не отслеживается — нет опубликованного фикса",
+  "softwareCve.noTrackedFinding.fixed": "не отслеживается — на этом хосте уже исправлено",
+  "softwareCve.noTrackedFinding.notApplicable": "не отслеживается — релиз не затронут",
+  "softwareCve.noTrackedFinding.filtered":
+    "не отслеживается — ниже порога критичности либо ещё не свёрнуто в находку",
 
   // Per-tenant usage metering and quotas.
   "nav.usage": "Потребление",
@@ -881,6 +950,7 @@ export const STATUS_EN: Record<string, string> = {
   "no findings": "no findings",
   missing: "missing",
   fresh: "fresh",
+  stub: "stub",
   ok: "ok",
   weak: "weak",
   fail: "fail",
@@ -949,6 +1019,7 @@ export const STATUS_RU: Record<string, string> = {
   "no findings": "без находок",
   missing: "нет",
   fresh: "актуально",
+  stub: "заглушка",
   ok: "в норме",
   weak: "слабо",
   fail: "не пройден",

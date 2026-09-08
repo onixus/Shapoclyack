@@ -14,6 +14,20 @@ verified would train operators to ignore the page. Accepted risk
 documented decision the framework's own risk-acceptance process covers — but it
 is reported separately per control so an auditor can see what was accepted
 rather than fixed.
+
+**A false-positive verdict also removes a finding from this pass**, because it
+closes it, and that is intended: a verdict says the finding was never real, so
+the evidence it represented was never evidence. It does mean a control can pass
+because noise was marked rather than because the estate was fixed, and the score
+is identical either way. The score is deliberately *not* adjusted for it —
+docking a tenant for correcting its own evidence would put the incentive back on
+leaving noise open, which is the incentive the verdict exists to remove — but
+``suppressed_findings`` travels beside the score so the pass can be read
+together with what it was built on. Every other guardrail on the verdict (tenant
+``admin``, a mandatory reason and expiry, the audit trail, the escalation
+override) constrains who may make one and for how long; none of them is visible
+at the point somebody reads a compliance page, and that reader is the one who
+most needs to be able to tell the two kinds of pass apart.
 """
 
 from __future__ import annotations
@@ -132,6 +146,29 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
             ).scalar()
             or 0
         )
+        # Findings a false-positive verdict is currently holding out of the
+        # active population — which is to say, out of the read above and out of
+        # every control assessed from it. The score is deliberately *not*
+        # adjusted for them: a verdict that a finding was never real is a
+        # correction to the evidence, and docking the score for making it would
+        # put the incentive back where this feature exists to take it from.
+        # But a control that passes because noise was marked and one that
+        # passes because the estate was fixed are the same number here, and the
+        # person reading a compliance page is the person who most needs to be
+        # able to tell them apart. So the count travels beside the score.
+        suppressed_findings = (
+            session.execute(
+                select(func.count())
+                .select_from(models.Vulnerability)
+                .where(
+                    *vuln_filters,
+                    models.Vulnerability.state == vuln_states.CLOSED,
+                    models.Vulnerability.closure_reason == vulns_service.FALSE_POSITIVE,
+                    models.Vulnerability.fp_suppress_until > sla_now,
+                )
+            ).scalar()
+            or 0
+        )
 
         assets = session.execute(
             select(
@@ -246,6 +283,7 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
         "available_sources": available,
         "asset_count": len(assets),
         "open_findings": open_findings,
+        "suppressed_findings": suppressed_findings,
         "generated_at": now,
     }
 
@@ -329,6 +367,10 @@ def _fold(framework: catalog.Framework, collected: dict[str, Any]) -> dict[str, 
         "generated_at": collected["generated_at"].isoformat(),
         "asset_count": collected["asset_count"],
         "open_findings": collected["open_findings"],
+        # Not subtracted from anything, and not a judgement: the number of
+        # findings held out of this assessment by a false-positive verdict, so
+        # the score can be read together with what it was built on.
+        "suppressed_findings": collected["suppressed_findings"],
         "controls_total": len(controls),
         "controls_assessed": len(assessed),
         "controls_passed": len(passed),

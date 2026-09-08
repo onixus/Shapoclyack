@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "source": "ubuntu-usn-lifecycle-fixture",
+  "origin_url": "https://usn.ubuntu.com/usn-db/database.json",
+  "updated": "2026-09-01",
+  "entries": [
+    {
+      "advisory_id": "USN-6408-1",
+      "cve_ids": ["CVE-2023-38545"],
+      "release": "focal",
+      "source_package": "curl",
+      "fixed_version": "7.68.0-1ubuntu2.20",
+      "severity": "critical",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-6408-1"
+    },
+    {
+      "advisory_id": "USN-5051-2",
+      "cve_ids": ["CVE-2021-3711"],
+      "release": "focal",
+      "source_package": "openssl",
+      "fixed_version": "1.1.1f-1ubuntu2.8",
+      "severity": "high",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-5051-2"
+    },
+    {
+      "advisory_id": "USN-OPEN-1",
+      "cve_ids": ["CVE-2026-11111"],
+      "release": "focal",
+      "source_package": "nginx",
+      "fixed_version": null,
+      "severity": "high",
+      "state": "open",
+      "url": "https://ubuntu.com/security/notices/USN-OPEN-1"
+    },
+    {
+      "advisory_id": "USN-LOW-1",
+      "cve_ids": ["CVE-2026-22222"],
+      "release": "focal",
+      "source_package": "zlib1g",
+      "fixed_version": "1:1.2.11.dfsg-2ubuntu9",
+      "severity": "low",
+      "state": "resolved",
+      "url": "https://ubuntu.com/security/notices/USN-LOW-1"
+    }
+  ]
+}

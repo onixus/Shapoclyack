@@ -32,31 +32,34 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Datasets the risk model reads, with the path each one lives at under the
-# enrichment directory and the floor that separates a real corpus from the
-# handful-of-CVEs demo stub this repo used to ship.
+# Datasets the risk model and the software->CVE matcher read, with the path each
+# one lives at under the enrichment directory, the floor that separates a real
+# corpus from the handful-of-entries demo stub this repo ships as a seed, and
+# whether a build may ship without it.
 #
 # The floors are deliberately an order of magnitude below the real feeds
-# (EPSS ~365k, KEV ~1.7k, CVSS4 ~32k, exploit ~26k as of 2026-08): they are
-# there to catch "this is a placeholder", not to police day-to-day drift, which
-# is what ``stale``/``age_days`` in the system status already covers.
-_JSON_DATASETS: dict[str, tuple[str, int]] = {
-    "cvss4": ("cvss4/cvss4.json", 1000),
-    "epss": ("epss/epss-overlay.json", 1000),
-    "kev": ("kev/kev-overlay.json", 100),
-    "exploit": ("exploit/exploit-overlay.json", 1000),
-}
-
-# Vendor advisory datasets for software→CVE matching (ROADMAP Track E M1).
-# Same JSON envelope and the same provenance question as the overlays above, but
-# **not required**: the image ships a committed seed of a few dozen real
-# advisories, not a feed dump, so a floor in the thousands would fail every
-# build. An installation that wants real coverage refreshes them with the
-# opt-in fetcher (api/services/advisories/fetch.py) — see
-# docs/software-cve-matching.md.
-_OPTIONAL_JSON_DATASETS: dict[str, tuple[str, int]] = {
-    "advisories_debian": ("advisories/debian-advisories.json", 1),
-    "advisories_ubuntu": ("advisories/ubuntu-advisories.json", 1),
+# (EPSS ~365k, KEV ~1.7k, CVSS4 ~32k, exploit ~26k, Debian tracker hundreds of
+# thousands of per-release statements, Ubuntu USN tens of thousands as of
+# 2026-09): they are there to catch "this is a placeholder", not to police
+# day-to-day drift, which is what ``stale``/``age_days`` in the system status
+# already covers.
+#
+# The advisory datasets are **not required**, and that is the whole difference
+# between them and the overlays above. They carry a real feed's floor, so a
+# build that ships only the committed seed is reported as a stub instead of
+# passing for coverage it does not have — but an installation with a seed, or
+# with no advisory data at all, is a supported configuration: the matcher
+# answers ``unknown`` rather than a wrong answer, and the refresh that fills
+# them is opt-in (``OCTO_ADVISORY_FETCH_ENABLED``, see
+# docs/software-cve-matching.md). Same treatment as the .mmdb blobs below,
+# which are also reported and never required.
+_JSON_DATASETS: dict[str, tuple[str, int, bool]] = {
+    "cvss4": ("cvss4/cvss4.json", 1000, True),
+    "epss": ("epss/epss-overlay.json", 1000, True),
+    "kev": ("kev/kev-overlay.json", 100, True),
+    "exploit": ("exploit/exploit-overlay.json", 1000, True),
+    "advisories_debian": ("advisories/debian-advisories.json", 100_000, False),
+    "advisories_ubuntu": ("advisories/ubuntu-advisories.json", 10_000, False),
 }
 
 # GeoIP/ASN are MaxMind-format .mmdb blobs, not JSON overlays: there is no
@@ -144,6 +147,28 @@ def inspect_binary_dataset(path: Path, source: str | None) -> dict:
     return {"present": True, "usable": size > 0, "source": source, "size_bytes": size}
 
 
+def previous_origins(data_dir: Path) -> dict[str, str]:
+    """What the last run recorded, per dataset, or nothing if there was none.
+
+    Read back so a run that did not *attempt* a dataset can leave its origin
+    alone — see ``build_manifest``. A manifest that is absent, unreadable or not
+    JSON is simply no previous run: this is provenance, and guessing at it is
+    the thing the module exists to stop.
+    """
+    try:
+        payload = json.loads((data_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    datasets = payload.get("datasets") if isinstance(payload, dict) else None
+    if not isinstance(datasets, dict):
+        return {}
+    return {
+        name: record["origin"]
+        for name, record in datasets.items()
+        if isinstance(record, dict) and isinstance(record.get("origin"), str)
+    }
+
+
 def build_manifest(
     data_dir: Path,
     *,
@@ -157,17 +182,22 @@ def build_manifest(
     is the only place that knows whether a file is the feed's current content or
     whatever was left behind — the bytes on disk look identical either way.
     ``origin`` is the field that carries that distinction outward.
+
+    A dataset in neither set is a third case: this run never tried. The advisory
+    opt-in being off is the only way that happens today, and it happens on every
+    API rollout, because the API pod's initContainer runs the same refresh
+    script as the CronJob without the flag. Whatever the *last* run recorded is
+    therefore still true of the bytes on disk and is carried forward — calling
+    it ``seed`` would demote a fetched corpus on every restart and make
+    ``GET /api/system`` contradict itself (``origin: seed`` over four hundred
+    thousand entries), sending an operator to a build log with nothing in it.
     """
     sources = sources or {}
+    carried = previous_origins(data_dir)
     datasets: dict[str, dict] = {}
-    for name, (relative, min_entries) in _JSON_DATASETS.items():
+    for name, (relative, min_entries, required) in _JSON_DATASETS.items():
         record = inspect_json_dataset(data_dir / relative, min_entries)
-        record["required"] = True
-        record["path"] = str(data_dir / relative)
-        datasets[name] = record
-    for name, (relative, min_entries) in _OPTIONAL_JSON_DATASETS.items():
-        record = inspect_json_dataset(data_dir / relative, min_entries)
-        record["required"] = False
+        record["required"] = required
         record["path"] = str(data_dir / relative)
         datasets[name] = record
     for name, relative in _BINARY_DATASETS.items():
@@ -186,14 +216,24 @@ def build_manifest(
             # seed or the last good refresh — precisely the case the build log
             # used to swallow.
             record["origin"] = "stale" if record["present"] else "missing"
+        elif not record["present"]:
+            record["origin"] = "missing"
+        elif carried.get(name) in ("fetch", "stale", "seed"):
+            # This run did not try; the last one did. ``missing`` is not carried
+            # forward — the seed floor in fetch-enrichment.sh may have put the
+            # file there since, and it would be a seed now.
+            record["origin"] = carried[name]
         else:
-            record["origin"] = "seed" if record["present"] else "missing"
+            record["origin"] = "seed"
 
-    # An absent advisory dataset is a supported configuration, not a degraded
-    # build: the matcher answers "unknown" without one, which is the honest
-    # result, and no seed for it existed before Track E. A *failed refresh* of
-    # one still degrades, because that is the case #246 exists to make visible.
-    for name in _OPTIONAL_JSON_DATASETS:
+    # An absent optional dataset is a supported configuration, not a degraded
+    # build: the matcher answers "unknown" without an advisory dataset, which is
+    # the honest result, and an offline build has no way to produce one. A
+    # *failed refresh* of one still degrades, because that is the case #246
+    # exists to make visible.
+    for name, (_, _, required) in _JSON_DATASETS.items():
+        if required:
+            continue
         record = datasets.get(name) or {}
         if record.get("origin") == "missing":
             record["degrades"] = False
@@ -216,6 +256,17 @@ def verdict(manifest: dict) -> int:
         return EXIT_NO_DATA
     if any(
         rec.get("origin") in ("stale", "missing") and rec.get("degrades", True)
+        for rec in datasets.values()
+    ):
+        return EXIT_DEGRADED
+    # A refresh that *succeeded* and still landed under the floor is the quietest
+    # of the failures and the one this used to miss entirely: the feed answered,
+    # so the origin is ``fetch``, which is neither ``stale`` nor ``missing``, and
+    # for a not-required dataset nothing else looked at ``usable``. That is a
+    # truncated document published over a corpus, and a green job over it is the
+    # exact silence #246 exists to break.
+    if any(
+        rec.get("origin") == "fetch" and rec.get("usable") is False
         for rec in datasets.values()
     ):
         return EXIT_DEGRADED

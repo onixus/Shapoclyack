@@ -38,6 +38,18 @@ spec:
                   name: shapoclyack-nvd
                   key: nvd_api_key
                   optional: true
+            # OCTO_ADVISORY_FETCH_ENABLED is deliberately NOT here. The opt-in
+            # buys a ~50 MB Debian tracker download *daily*, from the CronJob,
+            # which is what base/enrichment-advisories/ and its ConfigMap
+            # promise; wiring it here would buy one more on every API pod start,
+            # per replica, per rollout. The datasets share the volume, so the
+            # CronJob's refresh is already what this pod reads.
+            #
+            # This container therefore runs the script without the flag, and
+            # scripts/fetch-enrichment.sh reports the advisory datasets as
+            # neither refreshed nor failed. scripts/enrichment_manifest.py keeps
+            # the origin they already had for exactly that case -- it must not
+            # rewrite a CronJob-fetched corpus to `seed` on every rollout.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

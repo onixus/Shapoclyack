@@ -6,7 +6,11 @@ needs ``operator``. Two things need tenant ``admin``:
 * **accepting risk** (``POST /{id}/exception``) — it suspends an SLA the
   organisation set, which is a decision about what this tenant is willing to
   live with rather than a step in someone's remediation work;
-* **editing SLA policy** — it changes every future deadline in the tenant.
+* **editing SLA policy** — it changes every future deadline in the tenant;
+* **marking a false positive** (``POST /{id}/false-positive``) — it closes the
+  finding *and* stops the scanner re-opening it, which is strictly stronger
+  than accepting the risk. Withdrawing one is ``operator``: it only ever puts
+  work back on the queue.
 
 Same reasoning as ``webhooks.py`` requiring ``admin`` to create a subscription:
 the role follows what the action can commit the tenant to, not how hard it is.
@@ -30,6 +34,7 @@ from api.schemas import (
     VulnerabilityCommentRequest,
     VulnerabilityEventInfo,
     VulnerabilityExceptionRequest,
+    VulnerabilityFalsePositiveRequest,
     VulnerabilityInfo,
     VulnerabilitySummary,
     VulnerabilityTicketRequest,
@@ -190,6 +195,14 @@ def list_vulnerabilities(
     ] = False,
     severity: Annotated[str | None, Query(description="critical | high | medium | low | unknown")] = None,
     asset_id: str | None = None,
+    source: Annotated[
+        str | None,
+        Query(
+            description="scan | endpoint_software — which observer found it. "
+            "Software findings come from the endpoint inventory and are "
+            "verified by the next snapshot, not by a re-scan."
+        ),
+    ] = None,
     assignee: str | None = None,
     unassigned: Annotated[
         bool, Query(description="Open findings with no assignee — the dashboard's unowned work")
@@ -218,6 +231,7 @@ def list_vulnerabilities(
             states=sorted(vuln_states.ACTIVE) if open_only else None,
             severity=severity,
             asset_id=asset_id,
+            source=source,
             assignee=assignee,
             unassigned=unassigned,
             sla=sla,
@@ -361,6 +375,70 @@ def clear_exception(
     )
 
 
+@router.post("/{vuln_id}/false-positive", response_model=VulnerabilityInfo)
+def mark_false_positive(
+    vuln_id: str,
+    body: VulnerabilityFalsePositiveRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Close a finding as never having been real, suppressing its re-opening.
+
+    ``admin``, one notch above closing a finding by hand and the same as
+    accepting risk. Suppression is strictly the stronger of the two: an
+    acceptance leaves the finding open with a visible deadline, while this
+    closes it and keeps the scanner from bringing it back, so the bar cannot be
+    lower.
+    """
+    try:
+        return _found(
+            vulns_service.mark_false_positive(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                reason=body.reason,
+                suppress_days=body.suppress_days,
+                evidence=body.evidence,
+                actor=principal.username,
+            )
+        )
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.delete("/{vuln_id}/false-positive", response_model=VulnerabilityInfo)
+def clear_false_positive(
+    vuln_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Withdraw the verdict and put the finding back on the queue as ``OPEN``.
+
+    ``operator``, deliberately cheaper than setting it: releasing a suppression
+    can only add work back, and a control that is harder to undo than to apply
+    is one people stop applying.
+
+    A finding with no verdict on it is a 409, not a 200: answering "withdrawn"
+    to a request that withdrew nothing is what made the console's button report
+    a success it had not had.
+    """
+    try:
+        return _found(
+            vulns_service.clear_false_positive(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.post("/{vuln_id}/comment", response_model=VulnerabilityInfo)
 def add_comment(
     vuln_id: str,
@@ -439,7 +517,10 @@ def verify(
     409 when the move is not legal from the finding's current state, and also
     when the scan could not be dispatched: a finding parked in ``VERIFYING``
     with no scan behind it would later be closed as machine-verified by a run
-    that never looked at it, so the request fails instead.
+    that never looked at it, so the request fails instead. A finding from the
+    endpoint software inventory is 409 for the same reason — a port scan does
+    not observe an installed package — and is verified by its device's next
+    accepted snapshot.
     """
     try:
         return _found(

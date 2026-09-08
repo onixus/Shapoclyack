@@ -436,6 +436,19 @@ def ingest_snapshot(
         }
         snapshot.response = response
 
+    # The device's ``latest_snapshot_id`` has moved, which is what makes it due
+    # for re-matching (api/services/software_match_worker.py). Re-matching here
+    # would put a fleet-wide advisory walk on the agent's rate-limited ingest
+    # path, so this only shortens the worker's wait; the queue itself is the
+    # snapshot comparison, which survives a restart and this process not
+    # holding the leader lock.
+    try:
+        from api.services import software_match_worker
+
+        software_match_worker.notify()
+    except Exception:  # noqa: BLE001 - a nudge is not worth failing a submission
+        _log.warning("Could not notify the software match worker", exc_info=True)
+
     metrics_service.ENDPOINT_SOFTWARE_ITEMS.observe(len(request.software))
     for event_type, count in changes.items():
         if count:

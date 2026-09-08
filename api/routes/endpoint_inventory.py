@@ -33,6 +33,7 @@ from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import metrics as metrics_service
 from api.services import patch_gap as patch_gap_service
 from api.services import software_cve_match as cve_match_service
+from api.services import software_findings
 from api.settings import Settings
 
 router = APIRouter(prefix="/endpoint", tags=["endpoint-inventory"])
@@ -180,8 +181,19 @@ def refresh_tenant_cve_matches(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: SettingsDep,
 ) -> dict:
-    """Re-run the matcher over every device in the tenant."""
-    return cve_match_service.run_for_tenant(settings, tenant_id=principal.tenant_id)
+    """Re-run the matcher over every device in the tenant, then fold the result
+    into the vulnerability lifecycle.
+
+    Synchronous on purpose, unlike the background worker: an operator who
+    pressed this wants the tracked findings to reflect it when the response
+    comes back, not at the end of the worker's interval. The matcher has
+    already been re-run, so the fold reads the rows rather than re-matching.
+    """
+    result = cve_match_service.run_for_tenant(settings, tenant_id=principal.tenant_id)
+    stats = software_findings.ingest_tenant(
+        settings, tenant_id=principal.tenant_id, run_matcher=False
+    )
+    return {**result, "lifecycle": stats.as_dict()}
 
 
 @router.get(
@@ -215,13 +227,17 @@ def refresh_device_cve_matches(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: SettingsDep,
 ) -> dict:
-    """Re-run the matcher for one device against the advisory data on disk."""
+    """Re-run the matcher for one device, then fold the result into the
+    vulnerability lifecycle (see the tenant-wide route for why synchronously)."""
     result = cve_match_service.run_for_device(
         settings, tenant_id=principal.tenant_id, device_id=device_id
     )
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
-    return result
+    stats = software_findings.ingest_device(
+        settings, tenant_id=principal.tenant_id, device_id=device_id, run_matcher=False
+    )
+    return {**result, "lifecycle": stats.as_dict()}
 
 
 @router.get("/patch-gaps", response_model=TenantPatchGap)

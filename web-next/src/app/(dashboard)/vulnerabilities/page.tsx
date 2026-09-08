@@ -21,8 +21,17 @@ import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { usePagination } from "@/hooks/use-pagination";
 import { useTrackedVulnerabilities, useVulnerabilitySummary } from "@/hooks/use-vulnerabilities";
-import type { SlaState, TrackedVulnerability, VulnLifecycleState } from "@/lib/api";
-import { SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
+import type {
+  SlaState,
+  TrackedVulnerability,
+  VulnerabilitySource,
+  VulnLifecycleState,
+} from "@/lib/api";
+import {
+  SEVERITY_STATUS,
+  VULN_LIFECYCLE_STATUS,
+  VULN_SOURCE_STATUS,
+} from "@/lib/config/statuses";
 import { normalizeSeverity, SEVERITIES } from "@/lib/run-data";
 import {
   assetDetailHref,
@@ -51,6 +60,7 @@ function VulnerabilitiesInner() {
   const initialState = (searchParams.get("state") || "") as VulnLifecycleState | "";
   const initialSeverity = (searchParams.get("severity") || "").trim();
   const initialUnassigned = searchParams.get("unassigned") === "1";
+  const initialSource = (searchParams.get("source") || "") as VulnerabilitySource | "";
 
   const [scope, setScope] = useState<"open" | "all">(initialState ? "all" : OPEN_WORKING_SET);
   const [state, setState] = useState<VulnLifecycleState | "">(initialState);
@@ -58,6 +68,7 @@ function VulnerabilitiesInner() {
   const [sla, setSla] = useState<SlaState | "">(initialSla);
   const [staleDays, setStaleDays] = useState("");
   const [unassigned, setUnassigned] = useState(initialUnassigned);
+  const [source, setSource] = useState<VulnerabilitySource | "">(initialSource);
   const assetId = initialAssetId;
 
   const pagination = usePagination({ sort: "contextual_score", order: "desc" });
@@ -66,6 +77,7 @@ function VulnerabilitiesInner() {
     open_only: scope === "open" && !state,
     severity,
     asset_id: assetId || undefined,
+    source,
     unassigned: unassigned || undefined,
     sla,
     stale_days: staleDays ? Number(staleDays) : undefined,
@@ -92,7 +104,13 @@ function VulnerabilitiesInner() {
               <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
             </div>
             <span className="block text-[11px] text-slate-400">
-              {row.original.port ? `port ${row.original.port}` : "no port"}
+              {/* A software finding has no port by construction: its locator is
+                  the installed package and the version that closes it. */}
+              {row.original.source === "endpoint_software"
+                ? row.original.title || "installed package"
+                : row.original.port
+                  ? `port ${row.original.port}`
+                  : "no port"}
               {row.original.script_id && row.original.cve ? ` · ${row.original.script_id}` : ""}
             </span>
           </Link>
@@ -103,6 +121,15 @@ function VulnerabilitiesInner() {
         header: t("col.severity"),
         cell: ({ row }) => (
           <StatusBadge value={normalizeSeverity(row.original.severity)} map={SEVERITY_STATUS} />
+        ),
+      },
+      {
+        id: "source",
+        accessorKey: "source",
+        header: t("vuln.source"),
+        enableSorting: false,
+        cell: ({ row }) => (
+          <StatusBadge value={row.original.source} map={VULN_SOURCE_STATUS} />
         ),
       },
       {
@@ -283,6 +310,24 @@ function VulnerabilitiesInner() {
                     {VULN_LIFECYCLE_STATUS[item].label}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={source || FILTER_ALL}
+              onValueChange={(value) => {
+                setSource(value === FILTER_ALL ? "" : (value as VulnerabilitySource));
+                pagination.reset();
+              }}
+            >
+              <SelectTrigger className="w-44 bg-slate-900 border-slate-800 text-slate-200">
+                <SelectValue placeholder={t("vuln.source")} />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value={FILTER_ALL}>{t("vuln.source.any")}</SelectItem>
+                <SelectItem value="scan">{t("vuln.source.scan")}</SelectItem>
+                <SelectItem value="endpoint_software">
+                  {t("vuln.source.endpointSoftware")}
+                </SelectItem>
               </SelectContent>
             </Select>
             <Select

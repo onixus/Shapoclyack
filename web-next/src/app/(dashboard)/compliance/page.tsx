@@ -169,6 +169,20 @@ export default function CompliancePage() {
               <p className="mt-1 text-sm text-foreground">
                 {posture.open_findings} open findings · {posture.asset_count} assets
               </p>
+              {/* A control can pass because the estate was fixed or because the
+                  findings behind it were marked as never real, and the score is
+                  the same number either way. It is not docked for that — a
+                  verdict is a correction to the evidence, and penalising it
+                  would put the incentive back on leaving noise open — but the
+                  reader of a compliance page is exactly the reader who has to
+                  be able to tell the two apart. */}
+              {posture.suppressed_findings > 0 ? (
+                <p className="mt-1 text-xs text-amber-500">
+                  {posture.suppressed_findings} finding
+                  {posture.suppressed_findings === 1 ? "" : "s"} held out by a false-positive
+                  verdict
+                </p>
+              ) : null}
             </div>
           </div>
 

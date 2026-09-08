@@ -80,6 +80,19 @@ process is what covers it, and hiding the acceptance would be worse than either.
 percentage of the standard, and the API returns the framework's `scope_note`
 alongside it so a console or a report cannot present it as one.
 
+Only **open** findings are assessed, so a finding closed as a false positive
+leaves the evidence base and can turn a failing control green. That is intended
+— a verdict says the finding was never real, and the evidence it stood for was
+never evidence — and the score is **not** docked for it, because penalising a
+tenant for correcting its own evidence is exactly the incentive the verdict
+exists to remove. What travels with the posture instead is
+`suppressed_findings`: how many findings an unexpired verdict is currently
+holding out of the assessment. It is on the console beside the evidence base and
+in every generated report, so a pass earned by fixing and a pass earned by
+marking can be told apart by the person reading the page. The verdicts
+themselves — who made them, on what evidence, and when they expire — are in
+`vulnerability_events` and on the adoption page's Noise block.
+
 ### API
 
 | Route | Role | Purpose |

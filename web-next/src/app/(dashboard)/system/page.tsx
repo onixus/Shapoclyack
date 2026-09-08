@@ -23,10 +23,17 @@ function EnabledBadge({ on }: { on: boolean }) {
   );
 }
 
+// Age and size describe a seed and a real corpus identically — the seed's mtime
+// is the build's — so `present && !stale` used to render a fresh-built
+// eight-advisory placeholder as a green `fresh`. `usable` is the one field that
+// separates them: the build's own verdict against the dataset's floor. `null`
+// is not `false`: it means no manifest was found, which is a statement about
+// the image, not about the data.
 function freshness(db: EnrichmentDb): { label: string; className: string } {
   if (!db.present) return { label: "missing", className: "bg-rose-500/20 text-rose-300 border-rose-500/30" };
   const stale = db.stale ?? (db.age_days != null && db.age_days > STALE_AFTER_DAYS);
   if (stale) return { label: "stale", className: "bg-amber-500/20 text-amber-300 border-amber-500/30" };
+  if (db.usable === false) return { label: "stub", className: "bg-amber-500/20 text-amber-300 border-amber-500/30" };
   return { label: "fresh", className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" };
 }
 
@@ -136,8 +143,12 @@ export default function SystemPage() {
                             : ""}
                         </td>
                         <td className="py-2.5 px-2 text-right">
-                          <span className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold uppercase border ${badge.className}`}>
-                            {badge.label}
+                          <span
+                            data-testid="enrichment-freshness"
+                            title={db.usable === false ? t("page.system.enrichment.stub") : undefined}
+                            className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold uppercase border ${badge.className}`}
+                          >
+                            {t.label(badge.label)}
                           </span>
                         </td>
                       </tr>
