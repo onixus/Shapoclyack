@@ -44,6 +44,9 @@ All notable changes to Shapoclyack are documented in this file.
   found. The System page reads it: a dataset the build called unusable is
   badged `stub` and never `fresh`, and a `null` — no manifest, nothing recorded
   — is left to the age check exactly as before.
+
+### Fixed
+
 - **Three ways the provenance could lie, closed before they shipped.**
   A refresh run that did not *attempt* a dataset used to overwrite its `origin`
   with `seed`. That is not a hypothetical path: the API pod's enrichment
@@ -62,9 +65,6 @@ All notable changes to Shapoclyack are documented in this file.
   in, and a seed that never updated. The shell helper is now a sourceable
   function and a table test drives it and `fetch_enabled()` over the same 29
   spellings.
-
-### Fixed
-
 - **Ubuntu USN normalization emitted every same-named package twice.** A USN
   lists a package in both `sources` and `binaries` whenever the source builds a
   binary of its own name — `curl`, and most of the feed — so each of those
