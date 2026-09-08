@@ -52,16 +52,34 @@ is not something we can aim — so the observation that closes a software findin
 is *the next accepted snapshot*. All three of these must hold, or the finding
 stays open:
 
-1. the match is gone, or has become ``fixed``;
+1. the match is gone, or has become ``fixed``/``not_applicable`` — a match
+   that is still ``vulnerable`` never closes the finding, however far below
+   :func:`is_trackable` it has fallen;
 2. the device has submitted a newer accepted snapshot than the finding's
    ``last_seen_at``;
-3. the distribution and provider still resolved (``packages_assessed > 0``).
+3. the question could still be *put*: the distribution resolved, its provider
+   has a dataset loaded, and that dataset covers this release
+   (:func:`assessment_possible`).
 
 Condition 2 is the whole point. A device that went quiet produces exactly the
 same "no match" as a device that was patched, and closing on it would mean the
 platform forgives findings whenever the agent stops reporting — the failure
 mode ``docs/vulnerability-lifecycle.md`` refuses for the scan path. Condition 3
-covers the same absence produced by a release we stopped being able to resolve.
+is the same absence arriving from our side: an advisory volume that stopped
+mounting, a ``fetch`` that wrote an empty file, or a release dropped from the
+vendor's export. It is deliberately **not** "how many packages we could have
+asked about" — that number is counted before the provider is consulted, so it
+stays comfortably positive on a host whose feed has gone, and it made a missing
+feed read as an estate patched overnight.
+
+Condition 1 is the same distinction in the other direction. ``seen_keys`` used
+to hold only the matches that passed :func:`is_trackable`, so two things that
+are not remediation closed a finding as ``patched``: a vendor withdrawing a fix
+(the USN reissued as "affected, no fix yet", which empties ``fixed_version``)
+and an operator raising ``OCTO_SOFTWARE_FINDING_MIN_SEVERITY``. Neither moved
+the host. A ``vulnerable`` match that is no longer tracked keeps its finding
+**open** and counts in ``held_open_untracked_match``; nothing is closed on a
+change of our own configuration, and certainly not as ``machine_verified``.
 When a finding is not closed, ``last_seen_at`` is **not** moved either: absence
 of observation is not observation.
 
@@ -87,6 +105,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import advisories, package_identity
 from api.services import software_cve_match as match_service
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
@@ -234,6 +253,42 @@ def is_trackable(match: models.SoftwareCveMatch, *, min_severity: str = "") -> b
 
 
 # --------------------------------------------------------------------------
+# The closure gate
+# --------------------------------------------------------------------------
+
+
+def assessment_possible(device: models.EndpointDevice) -> bool:
+    """Could the matcher put the advisory question for this device at all?
+
+    Three ways it could not, and every one of them produces the same "no
+    match" a patched host produces:
+
+    * the distribution or release did not resolve from the reported OS
+      strings (someone changed an ``os_name``, or it is Windows);
+    * no provider covers that distribution, or its dataset is not loaded —
+      the volume stopped mounting, or an opt-in ``fetch`` wrote an empty file;
+    * the dataset is loaded but has no record for this release, which is what
+      a release falling out of the vendor's export looks like.
+
+    Asked of the device rather than of a run summary on purpose: the fold has
+    two callers, one that has just run the matcher and one that has not, and
+    the two used to answer this gate from different material and therefore
+    differently. There is one rule and one place it is evaluated.
+    """
+    ctx = package_identity.resolve_distro(
+        os_family=device.os_family,
+        os_name=device.os_name,
+        os_version=device.os_version,
+    )
+    if not ctx.supported:
+        return False
+    provider = advisories.get_provider(ctx.distro)
+    if provider is None or not provider.available():
+        return False
+    return (ctx.release or "").strip().lower() in provider.releases()
+
+
+# --------------------------------------------------------------------------
 # Ingest
 # --------------------------------------------------------------------------
 
@@ -256,6 +311,11 @@ class SoftwareFindingStats:
     #: Open findings whose match is gone but which the rules above refuse to
     #: close, kept as a counter so "why is this still open" has an answer.
     held_open_stale_snapshot: int = 0
+    #: Open findings whose match is still ``vulnerable`` but no longer passes
+    #: :func:`is_trackable` — the vendor withdrew the fix, or the severity
+    #: floor moved. Held open, and counted apart from the above so the two
+    #: reasons are not one number.
+    held_open_untracked_match: int = 0
 
     def add(self, other: SoftwareFindingStats) -> None:
         for name in self.__dataclass_fields__:
@@ -272,7 +332,9 @@ class _DeviceContext:
     device: models.EndpointDevice
     asset: models.Asset
     observed_at: datetime
-    packages_assessed: int
+    #: Whether the advisory question could be put for this device at all —
+    #: the third closure gate. See :func:`assessment_possible`.
+    assessment_possible: bool
     matches: list[models.SoftwareCveMatch] = field(default_factory=list)
 
 
@@ -312,8 +374,21 @@ def _fold_device(
         ).all()
     }
 
+    # Two sets, because "we are still tracking this" and "the host is still
+    # vulnerable" stopped being the same question the moment a threshold or a
+    # withdrawn fix could take a match out of the first without touching the
+    # second. Only the second may hold a closure back.
     seen_keys: set[str] = set()
+    still_vulnerable: set[str] = set()
     for match in context.matches:
+        if match.status == match_service.VULNERABLE and (match.cve_id or "").strip():
+            still_vulnerable.add(
+                software_finding_key(
+                    asset_id=asset.asset_id,
+                    device_id=device.device_id,
+                    cve=str(match.cve_id).strip().upper(),
+                )
+            )
         if not is_trackable(match, min_severity=min_severity):
             continue
         stats.trackable += 1
@@ -480,8 +555,15 @@ def _fold_device(
     for key, row in existing.items():
         if key in seen_keys or row.state == vuln_states.CLOSED:
             continue
+        if key in still_vulnerable:
+            # The match is there and still says ``vulnerable``; it simply is
+            # not tracked any more. The host was not patched, so the finding
+            # is not closed — and ``last_seen_at`` does not move either, since
+            # what stopped is our tracking and not the observation.
+            stats.held_open_untracked_match += 1
+            continue
         fresh_snapshot = observed_at > (row.last_seen_at or observed_at)
-        if not (fresh_snapshot and context.packages_assessed > 0):
+        if not (fresh_snapshot and context.assessment_possible):
             # Not observed is not fixed. ``last_seen_at`` deliberately does not
             # move either, so ``?stale_days=`` still surfaces this row.
             stats.held_open_stale_snapshot += 1
@@ -517,7 +599,7 @@ def _fold_device(
                 "source": SOURCE,
                 "device_id": device.device_id,
                 "snapshot_id": device.latest_snapshot_id,
-                "packages_assessed": context.packages_assessed,
+                "assessment_possible": True,
                 "machine_verified": True,
                 "closure_reason": "patched",
             },
@@ -535,20 +617,19 @@ def ingest_devices(
     """Re-match a batch of devices and fold the result into the lifecycle.
 
     ``run_matcher=False`` folds the rows already in ``software_cve_matches``,
-    which is what a caller that has just run the matcher itself wants.
-    ``packages_assessed`` then has to be recovered from the rows rather than
-    from the run summary — see :func:`_assessed_from_rows`.
+    which is what a caller that has just run the matcher itself wants. The
+    closure gate does not depend on which of the two ran: it is
+    :func:`assessment_possible`, read from the device, so both paths reach the
+    same verdict about the same device and the same snapshot.
     """
     stats = SoftwareFindingStats()
     if not device_ids:
         return stats
 
-    assessed: dict[str, int] = {}
     if run_matcher:
-        for summary in match_service.run_for_devices(
+        match_service.run_for_devices(
             settings, tenant_id=tenant_id, device_ids=device_ids
-        ):
-            assessed[summary["device_id"]] = int(summary["packages_assessed"])
+        )
 
     min_severity = _min_severity(settings)
     now = _now()
@@ -586,9 +667,7 @@ def ingest_devices(
                         device=device,
                         asset=asset,
                         observed_at=observed_at,
-                        packages_assessed=assessed.get(
-                            device_id, _assessed_from_rows(matches)
-                        ),
+                        assessment_possible=assessment_possible(device),
                         matches=matches,
                     ),
                     min_severity=min_severity,
@@ -596,17 +675,6 @@ def ingest_devices(
                 )
             )
     return stats
-
-
-def _assessed_from_rows(matches: list[models.SoftwareCveMatch]) -> int:
-    """A lower bound on ``packages_assessed``, read back from the match rows.
-
-    The matcher reports the real number, but a caller that did not run it has
-    only the rows. Any row that is not an ``unknown`` placeholder is a package
-    the provider actually answered about, so a non-zero count here means the
-    distribution and provider resolved — which is all the closure rule asks.
-    """
-    return sum(1 for row in matches if row.status != match_service.UNKNOWN)
 
 
 def ingest_device(

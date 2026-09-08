@@ -36,10 +36,15 @@ All notable changes to Shapoclyack are documented in this file.
 
   *Closure requires an observation, not an absence.* A software finding closes
   as `closure_reason = patched`, `machine_verified = true`, only when the match
-  is gone **and** the device sent a newer accepted snapshot **and** the
-  distribution still resolved. A device that went quiet produces exactly the
-  same "no match" as a device that was patched; when the finding is not closed
-  its `last_seen_at` does not move either, so `?stale_days=` still surfaces it.
+  is gone or has become `fixed` **and** the device sent a newer accepted
+  snapshot **and** the advisory question could still be put at all — the
+  distribution resolved and its provider still has a dataset covering that
+  release. A device that went quiet produces exactly the same "no match" as a
+  device that was patched, and so does a feed volume that stopped mounting;
+  when the finding is not closed its `last_seen_at` does not move either, so
+  `?stale_days=` still surfaces it. A match that is still `vulnerable` but no
+  longer tracked — the vendor withdrew the fix, or the severity floor was
+  raised — leaves the finding open rather than closing it.
 
   *`POST /api/vulnerabilities/{id}/verify` is `409` for a software finding.*
   The asset has a scannable address and a scan would happily run — and prove
@@ -69,7 +74,35 @@ All notable changes to Shapoclyack are documented in this file.
 - **Endpoint CVE-match rows carry `vuln_id`** — the tracked finding a match
   produced, or null. Without it the console had two unconnected places talking
   about the same CVE on the same host; the Matched CVEs panel now links to the
-  finding, and says "not tracked — no published fix" where there is none.
+  finding, and says why there is none where there is none.
+
+### Fixed
+
+- **Three ways a software finding was closed as `patched` without anybody
+  patching anything.** Every one of them wrote `machine_verified = true` and a
+  `verification_passed` event by `system:inventory`, which is the strongest
+  claim this platform makes about a closure.
+
+  *The closure gate asked the wrong question.* It read `packages_assessed > 0`
+  — "how many packages we could have asked about" — which is counted **before**
+  the advisory provider is consulted and stays comfortably positive on a host
+  whose feed has gone. An unmounted advisory volume, a `fetch` that wrote an
+  empty file or a release dropped from the vendor's export therefore produced
+  "assessed, no matches", and the next snapshot from any one device closed that
+  tenant's entire software backlog. The gate is now
+  `software_findings.assessment_possible`: distribution resolved, provider
+  loaded, release present in the dataset. The two fold paths
+  (`run_matcher=True` from the worker, `False` from the refresh routes) used to
+  compute this gate from different material and answer it opposite ways for the
+  same device; they now evaluate the same function.
+
+  *"The match is gone" and "we stopped tracking the match" were one condition.*
+  A vendor reissuing a USN as "affected, no fix yet" empties `fixed_version`,
+  and raising `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` moves the floor — in both
+  cases the match is still `vulnerable` and the host has not moved. Both closed
+  the finding as patched; raising the floor closed every software finding below
+  it across the tenant. A still-`vulnerable` match now holds its finding open,
+  counted separately as `held_open_untracked_match`.
 
 ## [0.44-0907] — 2026-09-07
 
