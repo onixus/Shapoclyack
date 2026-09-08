@@ -15,18 +15,34 @@ when it lands.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import requires_postgres
-from tests.test_software_findings import (  # noqa: F401 - `client`/`settings` fixtures
-    client,
-    seed,
-    settings,
-    software_findings_of,
-)
+from tests.conftest import configured_client, make_settings, requires_postgres
+from tests.test_software_findings import ADVISORIES, seed, software_findings_of
 
 pytestmark = requires_postgres
+
+
+@pytest.fixture()
+def settings(tmp_path: Path):
+    return make_settings(tmp_path)
+
+
+@pytest.fixture()
+def client(tmp_path: Path, monkeypatch, settings) -> TestClient:
+    monkeypatch.setenv("OCTO_UBUNTU_ADVISORY_DATABASE", str(ADVISORIES / "ubuntu-lifecycle.json"))
+    monkeypatch.setenv("OCTO_CVSS4_DATABASE", str(tmp_path / "no-cvss4.json"))
+    from api.services import advisories, software_findings
+
+    advisories.reload_providers()
+    software_findings.reset_cvss4_cache_for_tests()
+    built = configured_client(tmp_path, monkeypatch, settings=settings)
+    yield built
+    advisories.reload_providers()
+    software_findings.reset_cvss4_cache_for_tests()
 
 
 @pytest.fixture()
