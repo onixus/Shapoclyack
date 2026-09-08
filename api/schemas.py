@@ -1276,6 +1276,16 @@ class VulnerabilityInfo(BaseModel):
     verification_job_id: str | None = None
     last_verified_at: str | None = None
     closure_reason: str | None = None
+    # False-positive verdict, expiring. ``fp_suppressed`` is derived on read —
+    # it is the verdict *and* an unexpired ``fp_suppress_until``, which is what
+    # decides whether a re-observation re-opens the finding.
+    fp_reason: str | None = None
+    fp_marked_by: str | None = None
+    fp_marked_at: str | None = None
+    fp_evidence: dict[str, Any] = Field(default_factory=dict)
+    fp_suppress_until: str | None = None
+    fp_observations: int = 0
+    fp_suppressed: bool = False
 
 
 class VulnerabilityEventInfo(BaseModel):
@@ -1323,6 +1333,30 @@ class VulnerabilityExceptionRequest(BaseModel):
 
     until: datetime
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityFalsePositiveRequest(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/false-positive``.
+
+    ``reason`` and an expiry are mandatory for the same reason they are on an
+    exception, even though the two decisions are opposites: a suppression with
+    no end date is a finding that leaves the picture and never returns to it.
+    ``suppress_days`` is bounded rather than free so that "forever" cannot be
+    spelled at all.
+
+    ``evidence`` is free-form on purpose — the run, the port, an excerpt of the
+    output, links to artefacts. It is what makes the verdict re-checkable by
+    the person who inherits it, and no fixed shape would fit every detector.
+    """
+
+    reason: str = Field(min_length=1, max_length=2000)
+    suppress_days: int = Field(
+        default=90,
+        ge=1,
+        le=365,
+        description="Days the verdict stops a re-observation from re-opening the finding.",
+    )
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class VulnerabilityCommentRequest(BaseModel):

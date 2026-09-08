@@ -280,9 +280,9 @@ filter.
 ### Vulnerabilities
 
 Reading takes `viewer`; moving a finding through its lifecycle or reassigning it
-takes `operator`; **accepting risk and editing SLA policy take tenant `admin`**,
-because each commits the tenant to something rather than progressing one
-person's work. `POST /{id}/transition` answers `409` on an illegal move (the
+takes `operator`; **accepting risk, marking a false positive and editing SLA
+policy take tenant `admin`**, because each commits the tenant to something
+rather than progressing one person's work. `POST /{id}/transition` answers `409` on an illegal move (the
 request is well-formed; the refusal is about the finding's current state) and
 `422` on a state that is not in the model. A finding in another tenant answers
 `404`. The states, the SLA resolution order and the exception rules are in
@@ -295,6 +295,16 @@ every `endpoint_software` finding: a port scan does not observe an installed
 package, so a "machine verified" closure from one would be false. Those
 findings are verified by their device's next accepted inventory snapshot — see
 [software-cve-matching.md](software-cve-matching.md#lifecycle-tracked-findings).
+**False positives.** `POST /api/vulnerabilities/{id}/false-positive` (admin)
+closes a finding as never having been real and suppresses its re-opening for
+`suppress_days` (1–365, default 90); `reason` is required and `evidence` is a
+free-form object recording what the verdict was made on. It answers `409` when
+the finding is already closed — the same illegal-move refusal as any other
+transition — and `422` without a reason or with an out-of-range expiry.
+`DELETE` on the same path takes only `operator`: withdrawing a suppression can
+only put work back on the queue, and a control that is harder to release than
+to apply is one people stop applying. See
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#false-positives).
 
 **Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
 tenant's persisted risk snapshots — `recorded_at`, estate risk level, open and

@@ -46,6 +46,7 @@ from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import exploit_evidence
 from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
@@ -96,7 +97,34 @@ VULN_EVENT_KINDS = (
     "verification_passed",
     "verification_failed",
     "ticket_synced",
+    # False-positive verdicts (Track E).
+    "false_positive_set",
+    "false_positive_cleared",
+    "fp_reobserved",
+    "fp_overridden",
 )
+
+#: Why a finding is closed. ``false_positive`` is the only one an operator
+#: chooses; the other three are what the platform observed happening — a
+#: verification run stopped seeing it, someone closed it by hand, or the ticket
+#: it was linked to was resolved.
+#:
+#: A false positive is *not* a fourth flavour of "fixed". It is a statement
+#: about the evidence — the finding was never real — so it is carried by the
+#: expiring ``fp_*`` attributes next to it rather than by this string alone,
+#: and it is excluded from every metric that measures remediation work
+#: (see api/services/adoption.py). Marking noise honestly must not be able to
+#: move the numbers a team is judged on, in either direction.
+CLOSURE_REASONS = ("verified_remediated", "manual", "ticket_resolved", "false_positive")
+
+FALSE_POSITIVE = "false_positive"
+
+#: Bounds on how long a false-positive verdict suppresses re-opening. Both ends
+#: are deliberate: no indefinite suppression, and no verdict so short it is
+#: pure ceremony.
+MIN_FP_SUPPRESS_DAYS = 1
+MAX_FP_SUPPRESS_DAYS = 365
+DEFAULT_FP_SUPPRESS_DAYS = 90
 
 TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
 
@@ -125,6 +153,10 @@ class RegisterStats:
     # any run that was not a verification run.
     verification_passed: int = 0
     verification_failed: int = 0
+    # Findings seen again while a false-positive verdict suppressed them, and
+    # verdicts this run broke early because the assessment got worse.
+    fp_suppressed: int = 0
+    fp_overridden: int = 0
 
 
 def _now() -> datetime:
@@ -174,6 +206,68 @@ def finding_key(*, asset_id: str, cve: str | None, script_id: str | None, port: 
 def _severity_of(entry: dict[str, Any]) -> str:
     severity = str(entry.get("severity") or "").strip().lower()
     return severity if severity in SEVERITY_ORDER else "unknown"
+
+
+def _maturity_rank(value: str | None) -> int:
+    """Rank an exploit maturity level, with ``unknown`` and junk at the floor.
+
+    ``unknown`` is an admission that nothing was asked, not a level, so it can
+    never *out*rank a real one — see api/services/exploit_evidence.py.
+    """
+    try:
+        return exploit_evidence.MATURITY_ORDER.index(str(value or "").strip().lower())
+    except ValueError:
+        return -1
+
+
+def _fp_suppressed(row: models.Vulnerability, now: datetime) -> bool:
+    """Is a false-positive verdict still holding this finding closed?
+
+    All three conditions are required. A row that was reopened by hand keeps
+    none of them, and one whose ``fp_suppress_until`` has passed is back under
+    the ordinary re-open rule — which is the entire point of making the expiry
+    mandatory.
+    """
+    return (
+        row.state == vuln_states.CLOSED
+        and row.closure_reason == FALSE_POSITIVE
+        and row.fp_suppress_until is not None
+        # Both sides through _naive: callers pass either kind of ``now``, and a
+        # mixed comparison is a TypeError on one driver and silently wrong on
+        # the other (see the _now docstring).
+        and _naive(row.fp_suppress_until) > _naive(now)
+    )
+
+
+def _clear_fp(row: models.Vulnerability) -> None:
+    """Drop the verdict from a row. Not the audit trail — that is in the events."""
+    row.fp_reason = None
+    row.fp_marked_by = None
+    row.fp_marked_at = None
+    row.fp_evidence = {}
+    row.fp_suppress_until = None
+    row.fp_observations = 0
+
+
+def _fp_escalations(row: models.Vulnerability, latest: dict[str, Any]) -> list[str]:
+    """Which parts of a suppressed finding's assessment got materially worse.
+
+    A false-positive verdict is a statement about the evidence *as it stood*.
+    New intelligence is new evidence, so a suppression that outlived it is not
+    a decision anyone made — it is one nobody revisited. Only these four moves
+    count: they are the ones that change whether the finding would be worth
+    looking at again, as opposed to a score drifting inside the same band.
+    """
+    changed: list[str] = []
+    if SEVERITY_ORDER.get(str(latest.get("severity")), 0) > SEVERITY_ORDER.get(str(row.severity), 0):
+        changed.append("severity")
+    if bool(latest.get("in_kev")) and not bool(row.in_kev):
+        changed.append("in_kev")
+    if latest.get("network_exposure") == "external" and row.network_exposure != "external":
+        changed.append("network_exposure")
+    if _maturity_rank(latest.get("exploit_maturity")) > _maturity_rank(row.exploit_maturity):
+        changed.append("exploit_maturity")
+    return changed
 
 
 # --------------------------------------------------------------------------
@@ -492,6 +586,7 @@ def register_findings_from_run(
     now = _now()
     created = reobserved = reopened = skipped = 0
     verification_passed = verification_failed = 0
+    fp_suppressed_observations = fp_overridden = 0
 
     with get_session(settings.postgres_url) as session:
         resolved: list[tuple[dict[str, Any], Any]] = []
@@ -603,6 +698,15 @@ def register_findings_from_run(
                 )
                 continue
 
+            # Compared before ``latest`` is written over the row: an escalation
+            # is a difference between what the verdict was made on and what
+            # this run says.
+            suppressed = _fp_suppressed(row, now)
+            escalations = _fp_escalations(row, latest) if suppressed else []
+            assessment_changed = suppressed and any(
+                getattr(row, field) != value for field, value in latest.items()
+            )
+
             for field, value in latest.items():
                 setattr(row, field, value)
             row.last_seen_at = now
@@ -610,6 +714,59 @@ def register_findings_from_run(
             row.observation_count += 1
             row.updated_at = now
             reobserved += 1
+
+            if suppressed and not escalations:
+                # The verdict stands: the finding is still not real, so seeing
+                # it again is not a regression. It stays CLOSED, the SLA clock
+                # stays stopped and ``reopen_count`` stays put — otherwise
+                # marking noise honestly would be punished by every metric.
+                row.fp_observations += 1
+                fp_suppressed_observations += 1
+                # One event per verdict, not one per scan: ``observed`` rows
+                # are already the high-volume kind and have no retention sweep
+                # behind them (see the VulnerabilityEvent docstring). The first
+                # sighting under the verdict, and any later change in the
+                # assessment, are the two things worth a row.
+                if row.fp_observations == 1 or assessment_changed:
+                    _record_event(
+                        session,
+                        vuln_id=row.vuln_id,
+                        tenant_id=tenant_id,
+                        kind="fp_reobserved",
+                        occurred_at=now,
+                        to_state=row.state,
+                        note="Still observed while suppressed as a false positive",
+                        detail={
+                            "run_id": run_id,
+                            "severity": severity,
+                            "fp_observations": row.fp_observations,
+                            "fp_suppress_until": _iso(row.fp_suppress_until),
+                        },
+                    )
+                continue
+
+            if escalations:
+                # New intelligence breaks the suppression early. The verdict is
+                # cleared rather than kept alongside an open finding: leaving it
+                # on the row would make a later reader think the finding is
+                # still considered noise.
+                _record_event(
+                    session,
+                    vuln_id=row.vuln_id,
+                    tenant_id=tenant_id,
+                    kind="fp_overridden",
+                    occurred_at=now,
+                    from_state=row.state,
+                    note="False-positive suppression overridden by a worse assessment",
+                    detail={
+                        "run_id": run_id,
+                        "changed": escalations,
+                        "fp_observations": row.fp_observations,
+                        "fp_suppress_until": _iso(row.fp_suppress_until),
+                        "fp_marked_by": row.fp_marked_by,
+                    },
+                )
+                fp_overridden += 1
 
             if row.state == vuln_states.CLOSED:
                 # A regression: it was closed and it is back. The SLA clock
@@ -627,12 +784,28 @@ def register_findings_from_run(
                 row.state_changed_at = now
                 row.state_changed_by = None
                 row.closed_at = None
+                # Same reset the operator reopen in ``transition`` does. Without
+                # it a finding that came back kept asserting it had been
+                # machine-verified as fixed, which is the one claim this column
+                # exists to make un-fakeable.
+                row.machine_verified = False
                 row.sla_started_at = now
                 row.due_at = now + timedelta(days=days)
                 row.sla_days = days
                 row.sla_source = source
                 row.reopen_count += 1
                 reopened += 1
+                detail: dict[str, Any] = {"run_id": run_id, "reopen_count": row.reopen_count}
+                if row.closure_reason == FALSE_POSITIVE:
+                    # Either the suppression ran out or an escalation broke it.
+                    # Both mean the verdict no longer holds, so it is cleared
+                    # here rather than left on an open row where the next
+                    # reader would take it for a current judgement.
+                    detail["after_fp_suppression"] = True
+                    if escalations:
+                        detail["fp_overridden"] = escalations
+                    _clear_fp(row)
+                row.closure_reason = None
                 _record_event(
                     session,
                     vuln_id=row.vuln_id,
@@ -642,7 +815,7 @@ def register_findings_from_run(
                     from_state=previous,
                     to_state=vuln_states.OPEN,
                     note="Re-observed after being closed",
-                    detail={"run_id": run_id, "reopen_count": row.reopen_count},
+                    detail=detail,
                 )
             else:
                 _record_event(
@@ -734,6 +907,8 @@ def register_findings_from_run(
         skipped_unknown_asset=skipped,
         verification_passed=verification_passed,
         verification_failed=verification_failed,
+        fp_suppressed=fp_suppressed_observations,
+        fp_overridden=fp_overridden,
     )
     LOG.info(
         "Vulnerability tracker: run=%s tenant=%s seen=%s created=%s reobserved=%s "
@@ -816,6 +991,13 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "verification_job_id": row.verification_job_id,
         "last_verified_at": _iso(row.last_verified_at),
         "closure_reason": row.closure_reason,
+        "fp_reason": row.fp_reason,
+        "fp_marked_by": row.fp_marked_by,
+        "fp_marked_at": _iso(row.fp_marked_at),
+        "fp_evidence": dict(row.fp_evidence or {}),
+        "fp_suppress_until": _iso(row.fp_suppress_until),
+        "fp_observations": row.fp_observations,
+        "fp_suppressed": _fp_suppressed(row, now),
     }
 
 
@@ -901,6 +1083,9 @@ def transition(
             kind = "reopened"
             row.closed_at = None
             row.machine_verified = False
+            if row.closure_reason == FALSE_POSITIVE:
+                detail["after_fp_suppression"] = True
+                _clear_fp(row)
             row.closure_reason = None
             row.sla_started_at = now
             days = row.sla_days or DEFAULT_SLA_DAYS.get(row.severity, DEFAULT_SLA_DAYS["unknown"])
@@ -1387,6 +1572,163 @@ def clear_exception(
             actor=actor,
             note=note,
             detail={"was_until": _iso(was_until), "due_at": _iso(row.due_at)},
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
+def mark_false_positive(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    reason: str,
+    suppress_days: int = DEFAULT_FP_SUPPRESS_DAYS,
+    evidence: dict[str, Any] | None = None,
+    actor: str | None = None,
+) -> dict[str, Any] | None:
+    """Close a finding as never having been real, and stop it re-opening.
+
+    A reason and an expiry are both mandatory, as they are for accepted risk
+    and for the same reason: an indefinite suppression with no justification is
+    a finding that leaves the estate's picture and never comes back into it.
+    The two decisions are opposites — an exception says the risk is real and
+    accepted, this says there is no risk — but they carry the same obligation.
+
+    The move goes through ``vuln_states.check_transition``, so marking an
+    already-closed finding is the same 409 as any other illegal move rather
+    than a silent second verdict. ``machine_verified`` is forced false: nothing
+    was remediated, so nothing was verified, and letting this path set it would
+    make the one un-self-attestable metric self-attestable.
+
+    While the verdict holds, ``register_findings_from_run`` keeps the row closed
+    instead of re-opening it — except when the assessment materially worsens,
+    which breaks the suppression early (see ``_fp_escalations``).
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("a false-positive verdict needs a reason")
+    suppress_days = int(suppress_days)
+    if not MIN_FP_SUPPRESS_DAYS <= suppress_days <= MAX_FP_SUPPRESS_DAYS:
+        raise ValueError(
+            f"suppress_days must be between {MIN_FP_SUPPRESS_DAYS} and {MAX_FP_SUPPRESS_DAYS}"
+        )
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        previous = row.state
+        vuln_states.check_transition(vuln_id, previous, vuln_states.CLOSED)
+
+        row.state = vuln_states.CLOSED
+        row.state_changed_at = now
+        row.state_changed_by = actor
+        row.closed_at = now
+        row.machine_verified = False
+        row.closure_reason = FALSE_POSITIVE
+        row.fp_reason = reason[:2000]
+        row.fp_marked_by = actor
+        row.fp_marked_at = now
+        row.fp_evidence = dict(evidence or {})
+        row.fp_suppress_until = now + timedelta(days=suppress_days)
+        row.fp_observations = 0
+        row.updated_at = now
+        detail: dict[str, Any] = {
+            "closure_reason": FALSE_POSITIVE,
+            "fp_suppress_until": _iso(row.fp_suppress_until),
+            "suppress_days": suppress_days,
+        }
+        if row.exception_until is not None:
+            # As with any other closure: an acceptance of a risk that turns out
+            # not to exist has nothing left to accept.
+            detail["cleared_exception_until"] = _iso(row.exception_until)
+            row.exception_until = None
+            row.exception_reason = None
+            row.exception_by = None
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="false_positive_set",
+            occurred_at=now,
+            from_state=previous,
+            to_state=vuln_states.CLOSED,
+            actor=actor,
+            note=reason,
+            detail=detail,
+        )
+        session.flush()
+        return _to_dict(row, now=now)
+
+
+def clear_false_positive(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    """Withdraw a false-positive verdict and re-open the finding.
+
+    Cheaper than setting one on purpose (``operator``, not ``admin``): undoing
+    a suppression can only put work back on the queue, and a control that is
+    harder to release than to apply is one people stop applying.
+
+    The finding comes back as ``OPEN`` with a fresh SLA clock, exactly as a
+    re-observation after a lapsed suppression would leave it — there is one
+    rule for "this is a real finding again", not two. ``reopen_count`` is
+    deliberately *not* touched: that counter answers "how often does this come
+    back", and a verdict someone withdrew is a correction to the record, not a
+    regression in the estate.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        if row.state != vuln_states.CLOSED or row.closure_reason != FALSE_POSITIVE:
+            # Nothing to withdraw. Not an error: the caller's intent — "this is
+            # not marked as a false positive" — already holds.
+            return _to_dict(row, now=now)
+        previous = row.state
+        was_until = row.fp_suppress_until
+        observations = row.fp_observations
+        asset = session.get(models.Asset, row.asset_id)
+        days, source = _resolve_sla_days(
+            session,
+            tenant_id=row.tenant_id,
+            severity=row.severity,
+            criticality=asset.asset_criticality if asset else None,
+        )
+        row.state = vuln_states.OPEN
+        row.state_changed_at = now
+        row.state_changed_by = actor
+        row.closed_at = None
+        row.closure_reason = None
+        row.machine_verified = False
+        row.sla_started_at = now
+        row.sla_days = days
+        row.sla_source = source
+        row.due_at = now + timedelta(days=days)
+        _clear_fp(row)
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="false_positive_cleared",
+            occurred_at=now,
+            from_state=previous,
+            to_state=vuln_states.OPEN,
+            actor=actor,
+            note=note,
+            detail={
+                "was_suppressed_until": _iso(was_until),
+                "fp_observations": observations,
+                "due_at": _iso(row.due_at),
+            },
         )
         session.flush()
         return _to_dict(row, now=now)

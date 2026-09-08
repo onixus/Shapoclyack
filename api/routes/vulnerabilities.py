@@ -6,7 +6,11 @@ needs ``operator``. Two things need tenant ``admin``:
 * **accepting risk** (``POST /{id}/exception``) — it suspends an SLA the
   organisation set, which is a decision about what this tenant is willing to
   live with rather than a step in someone's remediation work;
-* **editing SLA policy** — it changes every future deadline in the tenant.
+* **editing SLA policy** — it changes every future deadline in the tenant;
+* **marking a false positive** (``POST /{id}/false-positive``) — it closes the
+  finding *and* stops the scanner re-opening it, which is strictly stronger
+  than accepting the risk. Withdrawing one is ``operator``: it only ever puts
+  work back on the queue.
 
 Same reasoning as ``webhooks.py`` requiring ``admin`` to create a subscription:
 the role follows what the action can commit the tenant to, not how hard it is.
@@ -30,6 +34,7 @@ from api.schemas import (
     VulnerabilityCommentRequest,
     VulnerabilityEventInfo,
     VulnerabilityExceptionRequest,
+    VulnerabilityFalsePositiveRequest,
     VulnerabilityInfo,
     VulnerabilitySummary,
     VulnerabilityTicketRequest,
@@ -362,6 +367,63 @@ def clear_exception(
     clock started, not from now — the risk was accepted, not restarted."""
     return _found(
         vulns_service.clear_exception(
+            settings,
+            tenant_id=_write_scope(principal),
+            vuln_id=vuln_id,
+            actor=principal.username,
+        )
+    )
+
+
+@router.post("/{vuln_id}/false-positive", response_model=VulnerabilityInfo)
+def mark_false_positive(
+    vuln_id: str,
+    body: VulnerabilityFalsePositiveRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Close a finding as never having been real, suppressing its re-opening.
+
+    ``admin``, one notch above closing a finding by hand and the same as
+    accepting risk. Suppression is strictly the stronger of the two: an
+    acceptance leaves the finding open with a visible deadline, while this
+    closes it and keeps the scanner from bringing it back, so the bar cannot be
+    lower.
+    """
+    try:
+        return _found(
+            vulns_service.mark_false_positive(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                reason=body.reason,
+                suppress_days=body.suppress_days,
+                evidence=body.evidence,
+                actor=principal.username,
+            )
+        )
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.delete("/{vuln_id}/false-positive", response_model=VulnerabilityInfo)
+def clear_false_positive(
+    vuln_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Withdraw the verdict and put the finding back on the queue as ``OPEN``.
+
+    ``operator``, deliberately cheaper than setting it: releasing a suppression
+    can only add work back, and a control that is harder to undo than to apply
+    is one people stop applying.
+    """
+    return _found(
+        vulns_service.clear_false_positive(
             settings,
             tenant_id=_write_scope(principal),
             vuln_id=vuln_id,

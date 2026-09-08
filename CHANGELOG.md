@@ -262,6 +262,38 @@ All notable changes to Shapoclyack are documented in this file.
   `tests/test_software_findings_consumers.py` is the statement a future
   `source`-aware filter has to argue with.
 
+- **False-positive verdicts, and a suppression that survives the next scan**
+  (ROADMAP Track E) — a finding could be closed as noise, but
+  `register_findings_from_run` re-opened *any* closed row it saw again, so an
+  honest verdict cost a reopen, a restarted SLA clock and a permanent place in
+  the breach report. Marking noise correctly was the expensive option, which is
+  the wrong incentive to put on triage.
+  `POST /api/vulnerabilities/{id}/false-positive` (admin) now records the
+  verdict as an expiring attribute of the row — reason, evidence, who, and a
+  mandatory `suppress_days` between 1 and 365 (default 90), so "forever" cannot
+  be spelled. While it holds, a re-observation leaves the finding `CLOSED` and
+  moves `observation_count` and `fp_observations` without touching
+  `reopen_count` or the SLA clock. `DELETE` on the same path takes only
+  `operator`: releasing a suppression can only put work back on the queue.
+  The verdict is overruled by evidence rather than only by time — a higher
+  severity, `in_kev` turning true, `network_exposure` becoming `external` or a
+  higher `exploit_maturity` re-opens the finding at once and records an
+  `fp_overridden` event naming what changed. The finding never disappears: it
+  stays in the Vulnerability Center as `CLOSED`, keeps its audit trail, and does
+  not touch run artifacts, ClickHouse or `vulnerabilities.json`. Migration
+  `0034_vuln_false_positive`; its downgrade is destructive and is listed as such
+  in [docs/operations.md](docs/operations.md).
+
+### Fixed
+
+- **A finding the scanner re-opened kept claiming it had been verified** — the
+  operator reopen in `transition()` cleared `machine_verified` and
+  `closure_reason`, but the observer's own reopen path in
+  `register_findings_from_run` cleared neither. A machine-verified closure that
+  came back stayed `machine_verified=True` while `OPEN`, still asserting that a
+  verification run had confirmed a fix for something visibly still there — the
+  one claim that column exists to make un-fakeable. Found while auditing the
+  reopen path for the false-positive work.
 
 ## [0.44-0907] — 2026-09-07
 
