@@ -400,10 +400,14 @@ command. See [software-cve-matching.md](software-cve-matching.md).
 
 The **Matched CVEs** panel links each row to the tracked finding it produced, so
 the panel and the Vulnerability Center are not two unconnected places talking
-about the same CVE on the same host. A row with no finding says so — "not
-tracked — no published fix" — rather than showing a dead link: only a
-`vulnerable` match with a published fix becomes a tracked finding
-([why](software-cve-matching.md#lifecycle-tracked-findings)).
+about the same CVE on the same host. A row with no finding says **why** rather
+than showing a dead link, and the four reasons are four different facts: the
+release is already fixed on this host, the release is not affected, the vendor
+has published no fix, or the match is below the severity floor (or has not been
+folded in yet). Only a `vulnerable` match with a published fix becomes a
+tracked finding ([why](software-cve-matching.md#lifecycle-tracked-findings)).
+One string covered all four until 2026-09-08, so an operator could read "no
+published fix" on a row with the fix printed in the next column.
 
 ## Wordlists and service tokens
 

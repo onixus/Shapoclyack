@@ -122,6 +122,12 @@ All notable changes to Shapoclyack are documented in this file.
   has, and answered `unknown` — a false negative on a package with a published
   fix. Entries are deduplicated per release, since the groups overlap.
 
+- **The Matched CVEs panel says which reason a row has no tracked finding.**
+  "not tracked — no published fix" was printed for every non-`unknown` row
+  without a `vuln_id`: for a `fixed` row with the fix in the very next column,
+  for a `not_applicable` row about a release the vendor says is not affected,
+  and for a match the severity floor filtered out. Four reasons, four strings.
+
 ## [0.44-0907] — 2026-09-07
 
 ### Added

@@ -373,7 +373,13 @@ export const en = {
   "vuln.software.lastSnapshot": "Last observed",
   "vuln.software.device": "Endpoint",
   "softwareCve.trackedFinding": "Tracked finding",
-  "softwareCve.noTrackedFinding": "not tracked — no published fix",
+  // One string per reason. A single "no published fix" was printed for every
+  // row without a finding, including rows with the fix in the next column.
+  "softwareCve.noTrackedFinding.noFix": "not tracked — no published fix",
+  "softwareCve.noTrackedFinding.fixed": "not tracked — already fixed on this host",
+  "softwareCve.noTrackedFinding.notApplicable": "not tracked — this release is not affected",
+  "softwareCve.noTrackedFinding.filtered":
+    "not tracked — below the severity floor, or not folded in yet",
 
   // Per-tenant usage metering and quotas.
   "nav.usage": "Usage",
@@ -796,7 +802,11 @@ export const ru: Record<MsgKey, string> = {
   "vuln.software.lastSnapshot": "Последнее наблюдение",
   "vuln.software.device": "Хост",
   "softwareCve.trackedFinding": "Находка",
-  "softwareCve.noTrackedFinding": "не отслеживается — нет опубликованного фикса",
+  "softwareCve.noTrackedFinding.noFix": "не отслеживается — нет опубликованного фикса",
+  "softwareCve.noTrackedFinding.fixed": "не отслеживается — на этом хосте уже исправлено",
+  "softwareCve.noTrackedFinding.notApplicable": "не отслеживается — релиз не затронут",
+  "softwareCve.noTrackedFinding.filtered":
+    "не отслеживается — ниже порога критичности либо ещё не свёрнуто в находку",
 
   // Per-tenant usage metering and quotas.
   "nav.usage": "Потребление",
