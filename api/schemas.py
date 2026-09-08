@@ -1824,7 +1824,11 @@ class AdoptionFindings(BaseModel):
 
     open: int
     accepted_open: int = 0
+    # Remediation closures only — false-positive verdicts are the sibling key
+    # and are excluded from every metric below, so honest triage of noise
+    # cannot move the numbers a team is judged on in either direction.
     closed_in_window: int
+    false_positive_in_window: int = 0
     machine_verified_closed: int = 0
     machine_verified_share: float | None = None
     closed_within_sla_share: float | None = None
@@ -1843,6 +1847,62 @@ class AdoptionAssets(BaseModel):
     dual_source_share: float | None = None
     coverage_days: int
     unowned: int = 0
+
+
+class AdoptionFalsePositiveSource(BaseModel):
+    """One detector's noise, as counts plus a share only when it is earned."""
+
+    source: str
+    closed: int
+    false_positive: int
+    # ``None`` below ``source_threshold`` closures: one verdict out of one
+    # closure is a data point, not a 100% error rate.
+    false_positive_share: float | None = None
+
+
+class AdoptionFalsePositives(BaseModel):
+    """How much of what was closed was noise, and how the verdicts are ageing."""
+
+    in_window: int = 0
+    share_of_closures: float | None = None
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    by_source: list[AdoptionFalsePositiveSource] = Field(default_factory=list)
+    # ``scan`` against ``endpoint_software``: which observer was wrong, which
+    # is a different and coarser question from which detector was. Unlike
+    # ``by_source`` the quiet origin is listed too — it is the comparison that
+    # makes the noisy one mean anything.
+    by_origin: list[AdoptionFalsePositiveSource] = Field(default_factory=list)
+    source_threshold: int = 20
+    suppressions_active: int = 0
+    # Expired verdicts nothing has re-observed since: the review queue the
+    # mandatory expiry exists to create.
+    suppressions_lapsed: int = 0
+    # Suppressions the scanner broke early because the assessment got worse.
+    # On the page deliberately: it is the number that says whether a verdict
+    # was hiding something.
+    overridden_in_window: int = 0
+    median_hours_to_verdict: float | None = None
+
+
+class AdoptionCoverage(BaseModel):
+    """Is the scanner looking at the whole of what it was allowed to look at?
+
+    Every share is ``None`` rather than zero when its denominator is not real:
+    before ``assets.last_scanned_at`` has data (migration 0035 has no backfill),
+    and when the approved scope has no finite address space —
+    ``scope_unbounded_reason`` says which of ``wildcard``, ``domain``,
+    ``no_scope`` or ``too_large`` applies.
+    """
+
+    coverage_days: int
+    assets_with_scan_history: int = 0
+    scanned_share: float | None = None
+    vuln_scanned_share: float | None = None
+    approved_entries: int = 0
+    approved_addresses: int | None = None
+    assets_in_scope: int | None = None
+    scope_covered_share: float | None = None
+    scope_unbounded_reason: str | None = None
 
 
 class AdoptionAnalyst(BaseModel):
@@ -1871,7 +1931,11 @@ class AdoptionMetrics(BaseModel):
     window_days: int
     generated_at: str
     findings: AdoptionFindings
+    # Additive: the pre-existing console reads `findings`/`assets` and keeps
+    # working without knowing these two exist.
+    false_positives: AdoptionFalsePositives = Field(default_factory=AdoptionFalsePositives)
     assets: AdoptionAssets
+    coverage: AdoptionCoverage | None = None
     analysts: list[AdoptionAnalyst] = Field(default_factory=list)
     onboarding: AdoptionOnboarding
     enrichment: list[AdoptionEnrichmentDataset] = Field(default_factory=list)

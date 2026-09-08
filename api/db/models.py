@@ -229,7 +229,19 @@ class Asset(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
     status: Mapped[str] = mapped_column(default="active")  # active | stale | decommissioned
     first_seen: Mapped[datetime]
+    # Moved by *anything* that observes the host, an endpoint agent's inventory
+    # check-in included. It is not a coverage signal, which is what the three
+    # columns below are for: they are written only by the scan-ingest path in
+    # api/services/assets.py, so "scanned recently" cannot be satisfied by an
+    # agent phoning home. Nullable with no backfill — nothing records which
+    # past run covered which asset, so coverage reads as unknown until real
+    # runs fill them.
     last_seen: Mapped[datetime]
+    last_scanned_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_scan_run_id: Mapped[str | None] = mapped_column(default=None)
+    # A discovery run covers the asset for inventory but says nothing about its
+    # vulnerabilities; only a run that produced findings data sets this.
+    last_vuln_scan_at: Mapped[datetime | None] = mapped_column(default=None)
     # "Ownership" (roadmap Phase 7.1) as plain nullable columns rather than a
     # join table — nothing in the scan pipeline produces multi-owner data yet;
     # a real ownership graph is Phase 11 territory.

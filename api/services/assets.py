@@ -370,6 +370,10 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
 
     hosts = _host_records(run_dir)
     now = _now()
+    # Whether this run assessed vulnerabilities at all, as opposed to only
+    # enumerating hosts. Read once per run: it is a property of the run, and a
+    # discovery-only sweep must not be allowed to claim vulnerability coverage.
+    vuln_scanned = (run_dir / "vulnerabilities.json").exists()
     created = 0
     updated = 0
     quota_skipped = 0
@@ -430,6 +434,13 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
                 asset.last_seen = now
                 asset.status = "active"
                 updated += 1
+            # Coverage, as distinct from `last_seen`. Only this path writes it,
+            # so an endpoint agent's inventory check-in cannot make an asset
+            # nobody has scanned look covered (see the model).
+            asset.last_scanned_at = now
+            asset.last_scan_run_id = run_id
+            if vuln_scanned:
+                asset.last_vuln_scan_at = now
 
             for candidate in candidates:
                 exists = session.execute(

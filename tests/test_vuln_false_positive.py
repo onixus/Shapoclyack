@@ -300,6 +300,57 @@ def test_a_suppressed_finding_leaves_the_active_population(tmp_path):
     assert total == 1 and closed[0]["vuln_id"] == vuln_id
 
 
+def test_every_active_state_consumer_drops_the_verdict_together(tmp_path):
+    """Compliance, posture and the report factory must not disagree with the page.
+
+    All four consumers filter on ``vuln_states.ACTIVE`` and none of them knows
+    what a false-positive verdict is, so a verdict removes the finding from all
+    of them at once — the compliance score rises with no change in the estate's
+    actual assessment. That is the intended consequence of calling something
+    noise, and it is pinned here so it stays a decision rather than a surprise:
+    if a consumer ever starts reading closed findings, this breaks first.
+    """
+    from api.services import assets as assets_service
+    from api.services import compliance as compliance_service
+    from api.services import tenant_posture
+
+    settings, tenant_id = _seed(tmp_path)
+    vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    vuln_id = _ids(settings, tenant_id)["CVE-2024-0001"]
+
+    def _readings() -> tuple[int, int, int]:
+        # A.8.8 is "management of technical vulnerabilities" — the control whose
+        # evidence *is* the open findings, so it moves if anything does.
+        posture = compliance_service.assess(
+            settings, framework_id="iso-27001-2022", tenant_id=tenant_id
+        )
+        control = next(row for row in posture["controls"] if row["control_id"] == "A.8.8")
+        estate = next(
+            row for row in tenant_posture.list_posture(settings) if row["tenant_id"] == tenant_id
+        )
+        inventory, _ = assets_service.list_assets(settings, tenant_id=tenant_id)
+        return (
+            control["failing_count"],
+            estate["open_total"],
+            sum(item["open_findings"] for item in inventory),
+        )
+
+    before = _readings()
+    vulns.mark_false_positive(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=vuln_id,
+        reason="the TLS banner is the load balancer's, not the origin's",
+        actor="admin",
+    )
+    after = _readings()
+
+    # The critical finding leaves every active-state reading in one step —
+    # including the compliance evidence, which is the reading that turns
+    # "we called this noise" into "we look more compliant".
+    assert after == (before[0] - 1, before[1] - 1, before[2] - 1)
+
+
 def test_the_observers_reopen_drops_a_stale_verified_closure(tmp_path):
     """Adjacent defect: only the *operator* reopen reset these two columns.
 

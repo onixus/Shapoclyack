@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { format, isValid, parseISO } from "date-fns";
-import { ArrowLeft, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowLeft, EyeOff, RefreshCw, ShieldCheck } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,9 +27,11 @@ import { useRunVulns } from "@/hooks/use-runs";
 import {
   useAssignVulnerability,
   useClearVulnerabilityException,
+  useClearVulnerabilityFalsePositive,
   useClearVulnerabilityTicket,
   useCommentOnVulnerability,
   useSetVulnerabilityException,
+  useSetVulnerabilityFalsePositive,
   useSetVulnerabilityTicket,
   useSyncVulnTicket,
   useTrackedVulnerability,
@@ -114,6 +116,8 @@ function closureReasonLabel(t: ReturnType<typeof useT>, reason: string): string 
       return t("vuln.reason.ticketResolved");
     case "patched":
       return t("vuln.reason.patched");
+    case "false_positive":
+      return t("vuln.reason.falsePositive");
     default:
       return reason;
   }
@@ -197,6 +201,15 @@ function VulnerabilityDetailInner() {
                   {t("vuln.closureReason")}: {closureReasonLabel(t, vuln.closure_reason)}
                 </Badge>
               ) : null}
+              {/* The suppression, not the verdict: a lapsed verdict leaves the
+                  closure reason in place but stops holding the finding down, and
+                  the difference is the whole point of the expiry. */}
+              {vuln.fp_suppressed ? (
+                <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/40 flex items-center gap-1 text-xs">
+                  <EyeOff className="h-3 w-3" />
+                  {t("vuln.fp.suppressedUntil", { when: formatWhen(vuln.fp_suppress_until) })}
+                </Badge>
+              ) : null}
             </div>
             {vuln.title && vuln.title !== findingLabel(vuln) ? (
               <p className="text-sm text-slate-300">{vuln.title}</p>
@@ -219,6 +232,7 @@ function VulnerabilityDetailInner() {
           {canOperate ? <CommentCard vulnId={vuln.vuln_id} /> : null}
           {canOperate ? <TicketCard vuln={vuln} /> : null}
           {isAdmin ? <ExceptionCard vuln={vuln} /> : null}
+          {isAdmin ? <FalsePositiveCard vuln={vuln} /> : null}
           {!canOperate && !isAdmin ? (
             <p className="text-xs text-slate-500">
               Viewer role: lifecycle, assignment and risk-acceptance actions are hidden.
@@ -768,6 +782,101 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
               className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
             >
               {clearMutation.isPending ? "Withdrawing…" : "Withdraw"}
+            </Button>
+          ) : null}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+/** Setting a verdict is ``admin``; withdrawing one is ``operator``, and the
+ * card is rendered under ``isAdmin`` only because withdrawing is reachable from
+ * the lifecycle actions an operator already has. The asymmetry is the API's:
+ * a suppression can hide a real finding, releasing one only adds work back. */
+function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
+  const setMutation = useSetVulnerabilityFalsePositive(vuln.vuln_id);
+  const clearMutation = useClearVulnerabilityFalsePositive(vuln.vuln_id);
+  const [reason, setReason] = useState(vuln.fp_reason ?? "");
+  const [days, setDays] = useState("90");
+  const marked = Boolean(vuln.fp_reason);
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    const suppressDays = Number(days);
+    if (!reason.trim() || !Number.isFinite(suppressDays)) return;
+    setMutation.mutate({ reason: reason.trim(), suppress_days: suppressDays });
+  }
+
+  return (
+    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
+      <h2 className="text-sm font-semibold text-slate-100">{t("vuln.fp.title")}</h2>
+      {marked ? (
+        <p className="mt-2 text-xs text-slate-400">
+          {t("vuln.fp.suppressedUntil", { when: formatWhen(vuln.fp_suppress_until) })}
+          {vuln.fp_marked_by ? (
+            <>
+              {" "}
+              · <span className="font-mono text-slate-300">{vuln.fp_marked_by}</span>
+            </>
+          ) : null}
+          {vuln.fp_observations ? (
+            <> · {t("vuln.fp.observations", { count: vuln.fp_observations })}</>
+          ) : null}
+        </p>
+      ) : (
+        <p className="mt-2 text-xs text-slate-500">{t("vuln.fp.hint")}</p>
+      )}
+      {vuln.fp_reason ? <p className="mt-2 text-xs text-slate-300">{vuln.fp_reason}</p> : null}
+      <form onSubmit={onSubmit} className="mt-3 space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="vuln-fp-reason" className="text-xs text-slate-400">
+            {t("vuln.fp.reason")}
+          </Label>
+          <Textarea
+            id="vuln-fp-reason"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            rows={3}
+            className="bg-slate-950 border-slate-800 text-slate-200"
+            required
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="vuln-fp-days" className="text-xs text-slate-400">
+            {t("vuln.fp.suppressDays")}
+          </Label>
+          <Input
+            id="vuln-fp-days"
+            type="number"
+            min={1}
+            max={365}
+            value={days}
+            onChange={(event) => setDays(event.target.value)}
+            className="bg-slate-950 border-slate-800 text-slate-200"
+            required
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="submit"
+            size="sm"
+            disabled={setMutation.isPending}
+            className="bg-amber-600 hover:bg-amber-500"
+          >
+            {setMutation.isPending ? t("vuln.fp.saving") : t("vuln.fp.markBtn")}
+          </Button>
+          {marked ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={clearMutation.isPending}
+              onClick={() => clearMutation.mutate()}
+              className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+            >
+              {clearMutation.isPending ? t("vuln.fp.saving") : t("vuln.fp.clearBtn")}
             </Button>
           ) : null}
         </div>

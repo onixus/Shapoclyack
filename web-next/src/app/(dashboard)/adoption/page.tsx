@@ -11,10 +11,55 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAdoption } from "@/hooks/use-adoption";
-import type { AdoptionMetrics } from "@/lib/api";
-import { hours, share } from "@/lib/adoption-format";
+import type { AdoptionMetrics, AdoptionNoiseSource } from "@/lib/api";
+import { hours, scopeReason, share } from "@/lib/adoption-format";
 
 const WINDOWS = [30, 90, 180, 365] as const;
+
+function NoiseTable({
+  rows,
+  threshold,
+  caption,
+}: {
+  rows: AdoptionNoiseSource[];
+  threshold: number;
+  caption: string;
+}) {
+  if (rows.length === 0) {
+    return <p className="text-sm text-muted-foreground">{caption}</p>;
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+        <tr>
+          <th className="py-1.5 font-semibold">Source</th>
+          <th className="py-1.5 text-right font-semibold">Closed</th>
+          <th className="py-1.5 text-right font-semibold">False</th>
+          <th className="py-1.5 text-right font-semibold">Rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.source} className="border-t border-border/60">
+            <td className="py-1.5 font-mono text-foreground">{row.source}</td>
+            <td className="py-1.5 text-right text-foreground">{row.closed}</td>
+            <td className="py-1.5 text-right text-foreground">{row.false_positive}</td>
+            <td
+              className="py-1.5 text-right font-mono text-foreground"
+              title={
+                row.false_positive_share === null
+                  ? `Fewer than ${threshold} closures: the counts are the honest answer, a rate computed from them is not.`
+                  : undefined
+              }
+            >
+              {share(row.false_positive_share)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 function SeverityRow({ label, value }: { label: string; value: number | null }) {
   return (
@@ -104,7 +149,7 @@ export default function AdoptionPage() {
               <KpiCard
                 label="Closed"
                 value={data.findings.closed_in_window}
-                hint={`${data.findings.open} still open (${data.findings.accepted_open} risk-accepted)`}
+                hint={`${data.findings.open} still open (${data.findings.accepted_open} risk-accepted). Remediation only — ${data.findings.false_positive_in_window} closed as noise are counted under Noise, not here`}
                 href="/vulnerabilities"
                 decorationColor="blue"
               />
@@ -134,6 +179,124 @@ export default function AdoptionPage() {
               />
             </div>
           </section>
+
+          {data.false_positives ? (
+            <section>
+              <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                Noise, last {data.window_days} days
+              </h2>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <KpiCard
+                  label="Closed as noise"
+                  value={data.false_positives.in_window}
+                  hint={`Of everything closed in the window, ${share(
+                    data.false_positives.share_of_closures,
+                  )} was never a real finding`}
+                  decorationColor="amber"
+                />
+                <KpiCard
+                  label="Suppressions in force"
+                  value={data.false_positives.suppressions_active}
+                  hint={`${data.false_positives.suppressions_lapsed} have expired and are waiting for a second look`}
+                  decorationColor={
+                    data.false_positives.suppressions_lapsed > 0 ? "amber" : "slate"
+                  }
+                />
+                <KpiCard
+                  label="Broken by evidence"
+                  value={data.false_positives.overridden_in_window}
+                  hint="Verdicts the scanner overrode because the assessment got worse — the number that says whether one was hiding something"
+                  decorationColor={
+                    data.false_positives.overridden_in_window > 0 ? "rose" : "slate"
+                  }
+                />
+                <KpiCard
+                  label="Median time to a verdict"
+                  value={hours(data.false_positives.median_hours_to_verdict)}
+                  hint="How long noise sat in the queue before someone ruled on it. Triage speed, not fix speed — it is deliberately not part of MTTR"
+                  decorationColor="sky"
+                />
+              </div>
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="rounded-xl border border-border bg-card p-5">
+                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    Noisiest detectors
+                  </h3>
+                  <NoiseTable
+                    rows={data.false_positives.by_source}
+                    threshold={data.false_positives.source_threshold}
+                    caption="Nothing was closed as noise in this window."
+                  />
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    A rate needs at least {data.false_positives.source_threshold} closures behind
+                    it; below that the counts are shown and the rate is not, because one verdict
+                    out of one closure is not a 100% error rate. Findings matched from an advisory
+                    have no detector and are counted as <span className="font-mono">unknown</span>
+                    {" "}rather than blamed on a script.
+                  </p>
+                </div>
+                <div className="rounded-xl border border-border bg-card p-5">
+                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    By observer
+                  </h3>
+                  <NoiseTable
+                    rows={data.false_positives.by_origin}
+                    threshold={data.false_positives.source_threshold}
+                    caption="Nothing was closed in this window."
+                  />
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    The network scanner against the endpoint software matcher. The two are wrong
+                    for unrelated reasons and are tuned in unrelated places, so the quiet one is
+                    listed as well — it is what makes the other number mean something.
+                  </p>
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          {data.coverage ? (
+            <section>
+              <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                Coverage
+              </h2>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <KpiCard
+                  label={`Scanned in ${data.coverage.coverage_days} days`}
+                  value={share(data.coverage.scanned_share)}
+                  hint={`${data.coverage.assets_with_scan_history} active assets have ever been reached by a scan since the column existed`}
+                  decorationColor={data.coverage.scanned_share === null ? "slate" : "blue"}
+                />
+                <KpiCard
+                  label="Assessed for vulnerabilities"
+                  value={share(data.coverage.vuln_scanned_share)}
+                  hint="A discovery sweep covers an asset for inventory and says nothing about its vulnerabilities; only a run that produced findings counts here"
+                  decorationColor={data.coverage.vuln_scanned_share === null ? "slate" : "sky"}
+                />
+                <KpiCard
+                  label="Approved scope covered"
+                  value={share(data.coverage.scope_covered_share)}
+                  hint={
+                    scopeReason(data.coverage.scope_unbounded_reason) ??
+                    `${data.coverage.assets_in_scope} known addresses inside ${data.coverage.approved_addresses} approved ones`
+                  }
+                  decorationColor={data.coverage.scope_covered_share === null ? "slate" : "emerald"}
+                />
+                <KpiCard
+                  label="Approved entries"
+                  value={data.coverage.approved_entries}
+                  hint="Rows in this tenant's scan scope. The denominator comes from the approval, not from what was discovered — which is how a subnet nobody ever pointed the scanner at shows up"
+                  decorationColor="slate"
+                />
+              </div>
+              <p className="mt-3 max-w-3xl text-xs text-muted-foreground">
+                Read from a column only the scan-ingest path writes, never from{" "}
+                <span className="font-mono">last_seen</span>, which an endpoint agent checking in
+                also moves. There is no backfill, so an installation that has not scanned since
+                upgrading reads <span className="font-mono">n/a</span> — no coverage data, which
+                is not the same as no coverage.
+              </p>
+            </section>
+          ) : null}
 
           <section>
             <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">

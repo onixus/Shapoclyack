@@ -40,7 +40,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
-| `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age | Viewer |
+| `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age; plus **Noise** (false-positive verdicts, suppressions in force and lapsed, overrides, noisiest detectors and observers) and **Coverage** (scanned share and approved-scope reach) | Viewer |
 | `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
@@ -316,6 +316,42 @@ denominator is not a verdict in either direction. Everything on the page is
 computed inside the installation from the tenant's own tables; nothing is sent
 anywhere, which is what makes it usable as the precondition ROADMAP Track E
 names for judging its own features.
+
+Two sections were added with the false-positive loop, and both are there to stop
+a number reading better than the estate.
+
+**Noise** counts what was closed as never having been real, apart from what was
+remediated. The Closed tile says so in as many words, because the two used to be
+one number: a quarter spent marking findings as noise would have read as a
+quarter spent fixing them. The section carries the suppressions in force, the
+ones that have lapsed and are waiting for a second look, the verdicts the
+scanner **broke by evidence** — the number that says whether one was hiding
+something — and the median time to a verdict, which is triage speed and is
+deliberately not part of MTTR. Two tables split the noise by detector and by
+observer (`scan` against `endpoint_software`); a rate needs at least 20 closures
+behind it and is shown as `n/a` below that, with the raw counts still on the
+row, because one verdict out of one closure is not a 100% error rate. The quiet
+observer is listed even with no verdicts — it is the comparison that makes the
+other row mean anything.
+
+**Coverage** answers the question underneath every other number on the page: is
+the scanner looking at the whole of what it was allowed to look at? The scanned
+share is read from a column only the scan-ingest path writes, never from
+`last_seen`, which an endpoint agent's inventory check-in also moves — a fleet
+of agents reporting on schedule used to make an unscanned estate look fully
+covered. There is no backfill, so an installation that has not scanned since
+upgrading reads `n/a`: no coverage *data*, which is not the same as no coverage.
+The approved-scope tile has no share to report at all when the approval has no
+finite address space (a wildcard or a domain suffix) or is too large to be a
+target list, and prints the reason rather than a dash.
+
+On `/vulnerabilities/view`, an admin gets a **False positive** card beside
+Accepted risk: a reason and a suppression length between 1 and 365 days, both
+required. A finding under an unexpired verdict wears a `Suppressed until …`
+badge in the header next to its closure reason — the badge tracks the
+*suppression*, not the verdict, because a lapsed verdict leaves the closure
+reason in place and stops holding the finding down, which is the whole point of
+the expiry.
 
 `/compliance` reads `GET /api/compliance/frameworks` and
 `GET /api/compliance/{framework_id}`, and shows one framework's control table

@@ -104,6 +104,70 @@ All notable changes to Shapoclyack are documented in this file.
   there is no signal in the inventory to correct it, and the supported path is
   a risk acceptance with a reason and an expiry rather than a guess.
 
+- **False-positive verdicts, and a suppression that survives the next scan**
+  (ROADMAP Track E) — a finding could be closed as noise, but
+  `register_findings_from_run` re-opened *any* closed row it saw again, so an
+  honest verdict cost a reopen, a restarted SLA clock and a permanent place in
+  the breach report. Marking noise correctly was the expensive option, which is
+  the wrong incentive to put on triage.
+  `POST /api/vulnerabilities/{id}/false-positive` (admin) now records the
+  verdict as an expiring attribute of the row — reason, evidence, who, and a
+  mandatory `suppress_days` between 1 and 365 (default 90), so "forever" cannot
+  be spelled. While it holds, a re-observation leaves the finding `CLOSED` and
+  moves `observation_count` and `fp_observations` without touching
+  `reopen_count` or the SLA clock. `DELETE` on the same path takes only
+  `operator`: releasing a suppression can only put work back on the queue.
+  The verdict is overruled by evidence rather than only by time — a higher
+  severity, `in_kev` turning true, `network_exposure` becoming `external` or a
+  higher `exploit_maturity` re-opens the finding at once and records an
+  `fp_overridden` event naming what changed. The finding never disappears: it
+  stays in the Vulnerability Center as `CLOSED`, keeps its audit trail, and does
+  not touch run artifacts, ClickHouse or `vulnerabilities.json`. Migration
+  `0034_vuln_false_positive`; its downgrade is destructive and is listed as such
+  in [docs/operations.md](docs/operations.md).
+
+- **Adoption's noise and coverage blocks, and the metrics they had to correct
+  first** (ROADMAP Track E). Two shares on that page were wrong in the
+  direction that flatters the installation.
+  `scanned_recently_share` read `assets.last_seen`, which
+  `api/services/endpoint_inventory.py` moves whenever an agent checks in with a
+  software inventory — so a fleet of endpoint agents reporting on schedule made
+  an estate nobody had scanned in months report full coverage, the metric saying
+  the opposite of the truth in exactly the case it exists to catch. Migration
+  `0035_asset_scan_coverage` adds `assets.last_scanned_at`, `last_scan_run_id`
+  and `last_vuln_scan_at`, written **only** by the scan-ingest path in
+  `api/services/assets.py`. There is no backfill and there cannot be one —
+  nothing in the schema records which past run covered which asset — so coverage
+  reads `null` until real runs fill the columns, which is the honest answer
+  rather than a zero that reads as an alarm about the upgrade.
+  And every remediation metric counted a false-positive closure as a fix:
+  `closed_in_window`, `machine_verified_share`, `closed_within_sla_share` and
+  the `mttr_hours*` medians now count real closures only, with
+  `false_positive_in_window` beside them, so the quarterly control question
+  ROADMAP asks cannot be answered by relabelling noise — and honest triage no
+  longer drags the verification rate down while doing it.
+  On top of that, `false_positives` reports the verdicts' share of all closures,
+  their severities, the suppressions in force and lapsed, the ones the scanner
+  broke by evidence, the median hours to a verdict, and per-detector and
+  per-observer rates. A rate is withheld below 20 closures — one verdict out of
+  one closure is not a 100% error rate — and advisory matches, which have no
+  `script_id`, go to their own `unknown` bucket instead of being blamed on a
+  script. `coverage` adds reach against `tenant_scan_scopes`, and reports no
+  share at all when the approval has no finite address space (a wildcard or a
+  domain suffix) or is too large to be a target list.
+  Both blocks are additive on `GET /api/adoption`, and the console grows a
+  **Noise** and a **Coverage** section plus a **False positive** card on the
+  finding page.
+
+- **`metrics()` stopped reading the tenant's whole history into Python.** It
+  issued two unwindowed `select`s — every finding and every asset the tenant had
+  ever had — and counted them in a loop, which on a 50k-asset estate was the
+  worst read in the product. The point-in-time counts are now SQL aggregates and
+  the closure pass is bounded by the window and served by the index
+  `0034_vuln_false_positive` adds; only the rows the medians genuinely need are
+  materialised. The two new blocks were built on that shape rather than added
+  in front of the old one.
+
 ### Changed
 
 - **The tenant-wide matcher run is batched** — `run_for_tenant` opened a
@@ -261,30 +325,6 @@ All notable changes to Shapoclyack are documented in this file.
   it as a step. It was intended only in a commit message until now;
   `tests/test_software_findings_consumers.py` is the statement a future
   `source`-aware filter has to argue with.
-
-- **False-positive verdicts, and a suppression that survives the next scan**
-  (ROADMAP Track E) — a finding could be closed as noise, but
-  `register_findings_from_run` re-opened *any* closed row it saw again, so an
-  honest verdict cost a reopen, a restarted SLA clock and a permanent place in
-  the breach report. Marking noise correctly was the expensive option, which is
-  the wrong incentive to put on triage.
-  `POST /api/vulnerabilities/{id}/false-positive` (admin) now records the
-  verdict as an expiring attribute of the row — reason, evidence, who, and a
-  mandatory `suppress_days` between 1 and 365 (default 90), so "forever" cannot
-  be spelled. While it holds, a re-observation leaves the finding `CLOSED` and
-  moves `observation_count` and `fp_observations` without touching
-  `reopen_count` or the SLA clock. `DELETE` on the same path takes only
-  `operator`: releasing a suppression can only put work back on the queue.
-  The verdict is overruled by evidence rather than only by time — a higher
-  severity, `in_kev` turning true, `network_exposure` becoming `external` or a
-  higher `exploit_maturity` re-opens the finding at once and records an
-  `fp_overridden` event naming what changed. The finding never disappears: it
-  stays in the Vulnerability Center as `CLOSED`, keeps its audit trail, and does
-  not touch run artifacts, ClickHouse or `vulnerabilities.json`. Migration
-  `0034_vuln_false_positive`; its downgrade is destructive and is listed as such
-  in [docs/operations.md](docs/operations.md).
-
-### Fixed
 
 - **A finding the scanner re-opened kept claiming it had been verified** — the
   operator reopen in `transition()` cleared `machine_verified` and

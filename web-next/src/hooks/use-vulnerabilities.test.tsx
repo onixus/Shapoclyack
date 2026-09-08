@@ -17,16 +17,22 @@ vi.mock("@/lib/api", () => ({
   assignVulnerability: vi.fn(),
   setVulnerabilityException: vi.fn(),
   clearVulnerabilityException: vi.fn(),
+  setVulnerabilityFalsePositive: vi.fn(),
+  clearVulnerabilityFalsePositive: vi.fn(),
 }));
 
 import {
   assignVulnerability,
+  clearVulnerabilityFalsePositive,
   fetchTrackedVulnerabilities,
   fetchVulnerabilitySummary,
+  setVulnerabilityFalsePositive,
   transitionVulnerability,
 } from "@/lib/api";
 import {
   useAssignVulnerability,
+  useClearVulnerabilityFalsePositive,
+  useSetVulnerabilityFalsePositive,
   useTrackedVulnerabilities,
   useTransitionVulnerability,
   useVulnerabilitySummary,
@@ -157,5 +163,46 @@ describe("useAssignVulnerability", () => {
       assignee: "ada",
       owner_team: null,
     });
+  });
+});
+
+describe("useSetVulnerabilityFalsePositive", () => {
+  it("sends the reason and a bounded expiry, and surfaces the suppression", async () => {
+    vi.mocked(setVulnerabilityFalsePositive).mockResolvedValueOnce({
+      ...VULN,
+      state: "CLOSED",
+      closure_reason: "false_positive",
+      fp_reason: "the banner is the load balancer's",
+      fp_suppress_until: "2026-12-01T00:00:00Z",
+      fp_suppressed: true,
+    });
+    const { result } = renderHook(() => useSetVulnerabilityFalsePositive("vuln_1"), { wrapper });
+    result.current.mutate({ reason: "the banner is the load balancer's", suppress_days: 90 });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(setVulnerabilityFalsePositive).toHaveBeenCalledWith("vuln_1", {
+      reason: "the banner is the load balancer's",
+      suppress_days: 90,
+    });
+    // `fp_suppressed` is the server's answer, never recomputed from a clock
+    // the console does not share with the API.
+    expect(result.current.data?.fp_suppressed).toBe(true);
+  });
+});
+
+describe("useClearVulnerabilityFalsePositive", () => {
+  it("withdraws with no body and puts the finding back on the queue", async () => {
+    vi.mocked(clearVulnerabilityFalsePositive).mockResolvedValueOnce({
+      ...VULN,
+      state: "OPEN",
+      closure_reason: null,
+      fp_suppressed: false,
+    });
+    const { result } = renderHook(() => useClearVulnerabilityFalsePositive("vuln_1"), { wrapper });
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(clearVulnerabilityFalsePositive).toHaveBeenCalledWith("vuln_1");
+    expect(result.current.data?.state).toBe("OPEN");
   });
 });
