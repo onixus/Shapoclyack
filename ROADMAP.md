@@ -22,7 +22,7 @@ yet production-ready.
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
 | **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged; extended by the Track E assessment layer (software→CVE M1, patch gap M2) recorded in the same file |
-| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M2, enterprise IAM (OIDC + service tokens), closed-loop remediation (#183) and the Sprint 4 report factory / compliance mapping merged |
+| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M3, enterprise IAM (OIDC + service tokens), closed-loop remediation (#183) and the Sprint 4 report factory / compliance mapping merged |
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
@@ -609,7 +609,7 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 
 | Gap | Why it blocks |
 |-----|---------------|
-| No authenticated assessment | **Partly closed (M1).** Endpoint software is now matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). What is still missing is the rest of the estate: language ecosystems, Windows, non-distribution software, and every distribution other than those two |
+| No authenticated assessment | **Partly closed (M1–M3).** Endpoint software is matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). M3 made the matches *work* rather than data: a `vulnerable` match with a published fix folds into `vulnerabilities` (migration `0032`, `source = "endpoint_software"`), so it carries SLA, owner, ticket and NIST risk, and it closes on an observation — the next inventory after the upgrade, which is verification a re-scan cannot perform for an installed package. The advisory feeds also have a delivery path now; before it the matcher ran against an 18-statement seed on every install. What is still missing is the rest of the estate: language ecosystems, Windows, non-distribution software, and every distribution other than those two |
 | No SSO | **Partly closed.** OIDC single sign-on (authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with scopes have landed — see [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc). SAML, LDAP and a role model finer than the three built-in roles have not |
 | No report factory | **Closed (Sprint 4).** Executive / technical / compliance templates, per-tenant branding, cron-scheduled delivery over SMTP and webhook with a per-recipient delivery trail, and PDF / HTML / JSON off one report body — see [docs/reports-and-compliance.md](docs/reports-and-compliance.md). What is still missing is signed point-in-time evidence packages and per-control ownership |
 | No compliance mapping | **Closed (Sprint 4).** PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory, with `not_assessed` for anything the platform cannot observe and a score that is explicitly the share of *assessed* controls rather than compliance with the standard. Custom frameworks and archivable evidence packages are not in scope |
@@ -625,13 +625,21 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 scopes have landed**; SAML and LDAP have not, and are the remainder of this item —
 software→CVE matching over the endpoint inventory (5–7 sprints, starting with
 vendor advisories for two distributions, because naive version matching on backports produces a
-false-positive storm — **M1 landed**: Debian + Ubuntu providers, offline-first advisory datasets
-reported on the System page, dpkg/rpm EVR comparison, per-endpoint matches with a first-class
-`unknown`, and an endpoint panel in the console; remaining milestones are more distributions,
-language ecosystems and Windows, and folding matches into the tracked-finding lifecycle);
-`org_profile` M1–M3 (2–3 sprints, already designed in
-[docs/org-profile-module.ru.md](docs/org-profile-module.ru.md) — the best value per unit of
-effort on this list, and it gives sales a demo artifact while the matcher is still being built).
+false-positive storm — **M1–M3 landed**: Debian + Ubuntu providers, offline-first advisory
+datasets reported on the System page, dpkg/rpm EVR comparison, per-endpoint matches with a
+first-class `unknown`, an endpoint panel in the console, patch gap (M2), and matches folded into
+the tracked-finding lifecycle (M3, migration `0032`). M3 was chosen over more distributions
+because another provider multiplies rows in a table that led nowhere: until a match carried SLA,
+an owner and a ticket, it was not work. Two things landed with it that the milestone did not
+name — the advisory feeds had no delivery path at all (`fetch.py` was called from nothing but
+its own tests, so every install matched against an 18-statement seed), and closure now has a
+machine verification the network path cannot do, because an inventory genuinely observes a
+package's absence. **Remaining milestones:** more distributions, language ecosystems, Windows.
+Two limits of M3 are recorded rather than implied: behaviour at 50k hosts against a full feed
+was never run, and a source package that drops out of a vendor's dump still reads as
+"patched" — there is no narrower signal in the data);
+~~`org_profile` M1–M3~~ — **merged**, M1–M5 in fact
+([docs/org-profile-module.ru.md](docs/org-profile-module.ru.md)).
 
 **Now** — the report factory, **merged in Sprint 4**:
 
