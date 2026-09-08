@@ -122,9 +122,22 @@ All notable changes to Shapoclyack are documented in this file.
   higher `exploit_maturity` re-opens the finding at once and records an
   `fp_overridden` event naming what changed. The finding never disappears: it
   stays in the Vulnerability Center as `CLOSED`, keeps its audit trail, and does
-  not touch run artifacts, ClickHouse or `vulnerabilities.json`. Migration
-  `0034_vuln_false_positive`; its downgrade is destructive and is listed as such
-  in [docs/operations.md](docs/operations.md).
+  not touch run artifacts, ClickHouse or `vulnerabilities.json`.
+  The rule is one shared entry point rather than a copy per observer. Findings
+  are re-observed by two paths — the scan run and the endpoint-software fold,
+  which the matcher re-runs on a timer — and only the first knew verdicts
+  existed, so a suppressed `endpoint_software` finding came back `OPEN` on the
+  next inventory snapshot, with `reopen_count` incremented and the SLA clock
+  restarted, while the console still rendered the suppression on it. Both paths
+  now weigh a re-observation through `weigh_fp_verdict`, escalation override
+  included, and all four re-open paths — run, snapshot, operator transition and
+  a resolved ticket coming back — drop the `fp_*` columns as they go, so an open
+  finding can no longer advertise a verdict that stopped holding. Withdrawing a
+  verdict that is not there answers `409` instead of a `200` for a call that
+  changed nothing; the console's Withdraw button reads the closure rather than
+  the leftover columns, so it no longer appears on an open finding at all.
+  Migration `0034_vuln_false_positive`; its downgrade is destructive and is
+  listed as such in [docs/operations.md](docs/operations.md).
 
 - **Adoption's noise and coverage blocks, and the metrics they had to correct
   first** (ROADMAP Track E). Two shares on that page were wrong in the

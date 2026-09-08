@@ -261,15 +261,68 @@ def test_clearing_puts_the_finding_back_on_the_queue(tmp_path):
     assert _kinds(settings, tenant_id, vuln_id)[0] == "false_positive_cleared"
 
 
-def test_clearing_a_finding_that_has_no_verdict_is_a_no_op(tmp_path):
+def test_clearing_a_finding_that_has_no_verdict_is_refused_not_reported_as_done(tmp_path):
+    """A withdrawal that withdrew nothing must not answer "withdrawn".
+
+    The console offers the button whenever the finding looks marked, so a
+    silent success there tells an operator the finding is back on the queue
+    when it never left it.
+    """
     settings, tenant_id = _seed(tmp_path)
     vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
     vuln_id = _ids(settings, tenant_id)["CVE-2024-0001"]
 
-    after = vulns.clear_false_positive(settings, tenant_id=tenant_id, vuln_id=vuln_id, actor="op")
+    with pytest.raises(ValueError):
+        vulns.clear_false_positive(settings, tenant_id=tenant_id, vuln_id=vuln_id, actor="op")
+
+    assert "false_positive_cleared" not in _kinds(settings, tenant_id, vuln_id)
+
+
+def test_withdrawing_a_verdict_that_is_not_there_is_a_conflict(tmp_path, monkeypatch):
+    client, _, _, vuln_id = _seeded_client(tmp_path, monkeypatch)
+    url = f"/api/vulnerabilities/{vuln_id}/false-positive"
+    operator = auth_headers(client, "operator")
+
+    assert client.delete(url, headers=operator).status_code == 409
+
+    assert (
+        client.post(url, json={"reason": "noise"}, headers=auth_headers(client, "admin")).status_code
+        == 200
+    )
+    assert client.delete(url, headers=operator).status_code == 200
+    # ...and a second withdrawal is the conflict again rather than a second 200.
+    assert client.delete(url, headers=operator).status_code == 409
+
+
+def test_a_ticket_reopening_a_finding_drops_the_verdict(tmp_path, monkeypatch):
+    """The fourth re-open path. There is one rule for "this is real again".
+
+    ``sync_ticket_status`` cleared ``closure_reason`` and left the ``fp_*``
+    columns behind, so an *open* finding kept advertising a suppression that
+    was no longer suppressing anything — and the console's Withdraw button
+    followed the columns.
+    """
+    from api.services.integrations import ticket_sync
+
+    settings, tenant_id, vuln_id, _ = _marked(tmp_path, suppress_days=365)
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Vulnerability, vuln_id)
+        row.ticket_system = "jira"
+        row.ticket_key = "SEC-1"
+    monkeypatch.setattr(
+        vulns, "_ticket_endpoint", lambda *args, **kwargs: ("https://jira.example.com", None, {})
+    )
+    monkeypatch.setattr(
+        ticket_sync, "fetch_ticket_status", lambda **kwargs: (vuln_states.OPEN, "Reopened", {})
+    )
+
+    after = vulns.sync_ticket_status(settings, tenant_id=tenant_id, vuln_id=vuln_id, actor="op")
 
     assert after["state"] == vuln_states.OPEN
-    assert "false_positive_cleared" not in _kinds(settings, tenant_id, vuln_id)
+    assert after["closure_reason"] is None
+    assert after["fp_reason"] is None and after["fp_suppress_until"] is None
+    assert after["fp_suppressed"] is False
+    assert _event(settings, tenant_id, vuln_id, "ticket_synced")["detail"]["after_fp_suppression"]
 
 
 # --------------------------------------------------------------------------

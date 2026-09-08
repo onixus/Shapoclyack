@@ -421,15 +421,22 @@ def clear_false_positive(
     ``operator``, deliberately cheaper than setting it: releasing a suppression
     can only add work back, and a control that is harder to undo than to apply
     is one people stop applying.
+
+    A finding with no verdict on it is a 409, not a 200: answering "withdrawn"
+    to a request that withdrew nothing is what made the console's button report
+    a success it had not had.
     """
-    return _found(
-        vulns_service.clear_false_positive(
-            settings,
-            tenant_id=_write_scope(principal),
-            vuln_id=vuln_id,
-            actor=principal.username,
+    try:
+        return _found(
+            vulns_service.clear_false_positive(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+            )
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/{vuln_id}/comment", response_model=VulnerabilityInfo)

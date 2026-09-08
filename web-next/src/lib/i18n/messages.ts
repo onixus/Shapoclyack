@@ -387,6 +387,7 @@ export const en = {
   "vuln.fp.clearBtn": "Withdraw verdict",
   "vuln.fp.saving": "Saving…",
   "vuln.fp.suppressedUntil": "Suppressed until {when}",
+  "vuln.fp.lapsed": "The verdict has expired — the next observation re-opens this finding",
   "vuln.fp.observations": "seen {count}× while suppressed",
   "softwareCve.trackedFinding": "Tracked finding",
   // One string per reason. A single "no published fix" was printed for every
@@ -831,6 +832,7 @@ export const ru: Record<MsgKey, string> = {
   "vuln.fp.clearBtn": "Снять вердикт",
   "vuln.fp.saving": "Сохранение…",
   "vuln.fp.suppressedUntil": "Подавлено до {when}",
+  "vuln.fp.lapsed": "Срок вердикта истёк — следующее наблюдение переоткроет находку",
   "vuln.fp.observations": "наблюдалась {count}× под подавлением",
   "softwareCve.trackedFinding": "Находка",
   "softwareCve.noTrackedFinding.noFix": "не отслеживается — нет опубликованного фикса",

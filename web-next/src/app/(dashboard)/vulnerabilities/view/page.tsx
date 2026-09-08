@@ -800,7 +800,13 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
   const clearMutation = useClearVulnerabilityFalsePositive(vuln.vuln_id);
   const [reason, setReason] = useState(vuln.fp_reason ?? "");
   const [days, setDays] = useState("90");
-  const marked = Boolean(vuln.fp_reason);
+  // The closure, not the leftover columns. `fp_reason` is dropped when a
+  // finding is re-opened, but reading it was how an *open* finding came to
+  // render "Suppressed until 2027" with a Withdraw button behind it — and the
+  // API answered that button with a 200 that changed nothing. A lapsed verdict
+  // is still a verdict on a closed finding, so the expiry is deliberately not
+  // part of this test; `fp_suppressed` says whether it is still holding.
+  const marked = vuln.state === "CLOSED" && vuln.closure_reason === "false_positive";
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -814,7 +820,9 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
       <h2 className="text-sm font-semibold text-slate-100">{t("vuln.fp.title")}</h2>
       {marked ? (
         <p className="mt-2 text-xs text-slate-400">
-          {t("vuln.fp.suppressedUntil", { when: formatWhen(vuln.fp_suppress_until) })}
+          {vuln.fp_suppressed
+            ? t("vuln.fp.suppressedUntil", { when: formatWhen(vuln.fp_suppress_until) })
+            : t("vuln.fp.lapsed")}
           {vuln.fp_marked_by ? (
             <>
               {" "}
@@ -828,7 +836,9 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
       ) : (
         <p className="mt-2 text-xs text-slate-500">{t("vuln.fp.hint")}</p>
       )}
-      {vuln.fp_reason ? <p className="mt-2 text-xs text-slate-300">{vuln.fp_reason}</p> : null}
+      {marked && vuln.fp_reason ? (
+        <p className="mt-2 text-xs text-slate-300">{vuln.fp_reason}</p>
+      ) : null}
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
           <Label htmlFor="vuln-fp-reason" className="text-xs text-slate-400">

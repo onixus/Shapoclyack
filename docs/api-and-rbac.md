@@ -303,7 +303,8 @@ the finding is already closed — the same illegal-move refusal as any other
 transition — and `422` without a reason or with an out-of-range expiry.
 `DELETE` on the same path takes only `operator`: withdrawing a suppression can
 only put work back on the queue, and a control that is harder to release than
-to apply is one people stop applying. See
+to apply is one people stop applying. It answers `409` when the finding carries
+no verdict to withdraw, rather than a `200` for a call that changed nothing. See
 [vulnerability-lifecycle.md](vulnerability-lifecycle.md#false-positives).
 
 **Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
