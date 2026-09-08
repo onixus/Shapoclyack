@@ -32,31 +32,34 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Datasets the risk model reads, with the path each one lives at under the
-# enrichment directory and the floor that separates a real corpus from the
-# handful-of-CVEs demo stub this repo used to ship.
+# Datasets the risk model and the software->CVE matcher read, with the path each
+# one lives at under the enrichment directory, the floor that separates a real
+# corpus from the handful-of-entries demo stub this repo ships as a seed, and
+# whether a build may ship without it.
 #
 # The floors are deliberately an order of magnitude below the real feeds
-# (EPSS ~365k, KEV ~1.7k, CVSS4 ~32k, exploit ~26k as of 2026-08): they are
-# there to catch "this is a placeholder", not to police day-to-day drift, which
-# is what ``stale``/``age_days`` in the system status already covers.
-_JSON_DATASETS: dict[str, tuple[str, int]] = {
-    "cvss4": ("cvss4/cvss4.json", 1000),
-    "epss": ("epss/epss-overlay.json", 1000),
-    "kev": ("kev/kev-overlay.json", 100),
-    "exploit": ("exploit/exploit-overlay.json", 1000),
-}
-
-# Vendor advisory datasets for software→CVE matching (ROADMAP Track E M1).
-# Same JSON envelope and the same provenance question as the overlays above, but
-# **not required**: the image ships a committed seed of a few dozen real
-# advisories, not a feed dump, so a floor in the thousands would fail every
-# build. An installation that wants real coverage refreshes them with the
-# opt-in fetcher (api/services/advisories/fetch.py) — see
-# docs/software-cve-matching.md.
-_OPTIONAL_JSON_DATASETS: dict[str, tuple[str, int]] = {
-    "advisories_debian": ("advisories/debian-advisories.json", 1),
-    "advisories_ubuntu": ("advisories/ubuntu-advisories.json", 1),
+# (EPSS ~365k, KEV ~1.7k, CVSS4 ~32k, exploit ~26k, Debian tracker hundreds of
+# thousands of per-release statements, Ubuntu USN tens of thousands as of
+# 2026-09): they are there to catch "this is a placeholder", not to police
+# day-to-day drift, which is what ``stale``/``age_days`` in the system status
+# already covers.
+#
+# The advisory datasets are **not required**, and that is the whole difference
+# between them and the overlays above. They carry a real feed's floor, so a
+# build that ships only the committed seed is reported as a stub instead of
+# passing for coverage it does not have — but an installation with a seed, or
+# with no advisory data at all, is a supported configuration: the matcher
+# answers ``unknown`` rather than a wrong answer, and the refresh that fills
+# them is opt-in (``OCTO_ADVISORY_FETCH_ENABLED``, see
+# docs/software-cve-matching.md). Same treatment as the .mmdb blobs below,
+# which are also reported and never required.
+_JSON_DATASETS: dict[str, tuple[str, int, bool]] = {
+    "cvss4": ("cvss4/cvss4.json", 1000, True),
+    "epss": ("epss/epss-overlay.json", 1000, True),
+    "kev": ("kev/kev-overlay.json", 100, True),
+    "exploit": ("exploit/exploit-overlay.json", 1000, True),
+    "advisories_debian": ("advisories/debian-advisories.json", 100_000, False),
+    "advisories_ubuntu": ("advisories/ubuntu-advisories.json", 10_000, False),
 }
 
 # GeoIP/ASN are MaxMind-format .mmdb blobs, not JSON overlays: there is no
@@ -160,14 +163,9 @@ def build_manifest(
     """
     sources = sources or {}
     datasets: dict[str, dict] = {}
-    for name, (relative, min_entries) in _JSON_DATASETS.items():
+    for name, (relative, min_entries, required) in _JSON_DATASETS.items():
         record = inspect_json_dataset(data_dir / relative, min_entries)
-        record["required"] = True
-        record["path"] = str(data_dir / relative)
-        datasets[name] = record
-    for name, (relative, min_entries) in _OPTIONAL_JSON_DATASETS.items():
-        record = inspect_json_dataset(data_dir / relative, min_entries)
-        record["required"] = False
+        record["required"] = required
         record["path"] = str(data_dir / relative)
         datasets[name] = record
     for name, relative in _BINARY_DATASETS.items():
@@ -189,11 +187,14 @@ def build_manifest(
         else:
             record["origin"] = "seed" if record["present"] else "missing"
 
-    # An absent advisory dataset is a supported configuration, not a degraded
-    # build: the matcher answers "unknown" without one, which is the honest
-    # result, and no seed for it existed before Track E. A *failed refresh* of
-    # one still degrades, because that is the case #246 exists to make visible.
-    for name in _OPTIONAL_JSON_DATASETS:
+    # An absent optional dataset is a supported configuration, not a degraded
+    # build: the matcher answers "unknown" without an advisory dataset, which is
+    # the honest result, and an offline build has no way to produce one. A
+    # *failed refresh* of one still degrades, because that is the case #246
+    # exists to make visible.
+    for name, (_, _, required) in _JSON_DATASETS.items():
+        if required:
+            continue
         record = datasets.get(name) or {}
         if record.get("origin") == "missing":
             record["degrades"] = False

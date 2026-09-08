@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Refresh all enrichment data (GeoIP, CVSS4, EPSS, KEV) into one directory.
+# Refresh all enrichment data (GeoIP, CVSS4, EPSS, KEV, vendor advisories)
+# into one directory.
 #
 # Designed to run as a Kubernetes CronJob / initContainer or a compose
 # one-shot service, writing onto a shared volume that API + scanner replicas
@@ -18,6 +19,12 @@
 #     successful fetch, public-IP lookups just return empty (identical to
 #     today's behavior when no database is configured) — RFC1918/loopback
 #     labeling in scanner/pipeline/geoip.py::_private_geo works regardless.
+#   - Vendor advisory datasets (Debian tracker / Ubuntu USN) are the one
+#     opt-in source here: they are only fetched when
+#     OCTO_ADVISORY_FETCH_ENABLED=true, because the Debian tracker JSON is
+#     ~50 MB and an installation must say so before this makes that request.
+#     With the flag off the seed floor still applies, so the datasets reach a
+#     mounted volume as the committed seed rather than not at all.
 #   - Each source is independent and non-fatal: a failing fetch is logged and
 #     skipped rather than aborting the others, so e.g. no MAXMIND_LICENSE_KEY
 #     or a transient network blip on one feed doesn't block the rest.
@@ -34,6 +41,7 @@
 #   ./scripts/fetch-enrichment.sh                    # → scanner/data/
 #   OCTO_ENRICHMENT_DIR=/data ./scripts/fetch-enrichment.sh
 #   MAXMIND_LICENSE_KEY=xxxx ./scripts/fetch-enrichment.sh
+#   OCTO_ADVISORY_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -58,7 +66,8 @@ run() {
   fi
 }
 
-mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev" "$DEST/exploit"
+mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev" "$DEST/exploit" \
+  "$DEST/advisories"
 
 # Floor: copy any missing seed file to DEST so scoring never runs with zero
 # data even if every fetch below fails (e.g. no network egress). GeoIP is
@@ -82,7 +91,9 @@ for pair in \
   "cvss4/cvss4.json" \
   "epss/epss-overlay.json" \
   "kev/kev-overlay.json" \
-  "exploit/exploit-overlay.json"; do
+  "exploit/exploit-overlay.json" \
+  "advisories/debian-advisories.json" \
+  "advisories/ubuntu-advisories.json"; do
   src="$SEED_DIR/$pair"
   dst="$DEST/$pair"
   # Same file (source checkout with no volume mounted): nothing to floor.
@@ -127,6 +138,29 @@ run cvss4 "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
   --seed "$SEED_DIR/cvss4/cvss4.json" -o "$DEST/cvss4/cvss4.json"
 run epss "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
 run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
+
+# Vendor advisories for software->CVE matching (docs/software-cve-matching.md).
+# The opt-in flag is tested here rather than letting fetch-advisories.py exit 3
+# into run(): "this installation never opted in" is not a failed refresh, and
+# recording it as one would mark every daily run of every offline deployment
+# degraded. The dataset names match the manifest's keys so the origin lands on
+# the right record.
+# Lower-cased so the shell accepts exactly what fetch_enabled() in
+# api/services/advisories/fetch.py accepts; a flag that turns the fetch on for
+# the script but off for the service would just log a skip nobody asked for.
+case "$(printf '%s' "${OCTO_ADVISORY_FETCH_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on)
+    run advisories_debian "advisories (debian tracker)" \
+      python3 "$ROOT/scripts/fetch-advisories.py" debian \
+      -o "$DEST/advisories/debian-advisories.json"
+    run advisories_ubuntu "advisories (ubuntu usn)" \
+      python3 "$ROOT/scripts/fetch-advisories.py" ubuntu \
+      -o "$DEST/advisories/ubuntu-advisories.json"
+    ;;
+  *)
+    echo "==> advisories: skipped (opt-in; set OCTO_ADVISORY_FETCH_ENABLED=true to refresh)"
+    ;;
+esac
 
 # Record what is actually on disk now, and let the manifest decide the exit
 # code. The three outcomes are deliberately not the same thing:

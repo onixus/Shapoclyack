@@ -55,13 +55,34 @@ spec:
                       name: shapoclyack-nvd
                       key: nvd_api_key
                       optional: true
+                # Opt-in vendor advisory refresh (Debian tracker / Ubuntu USN)
+                # for software->CVE matching. Off unless the ConfigMap exists
+                # and says otherwise, because the Debian tracker JSON is ~50 MB
+                # and an installation has to ask for that request before this
+                # job makes it daily. Without this entry the flag could only be
+                # set by editing the manifest, so the datasets would stay at
+                # the committed seed forever — which the System page would
+                # report honestly, and nobody could act on.
+                - name: OCTO_ADVISORY_FETCH_ENABLED
+                  valueFrom:
+                    configMapKeyRef:
+                      name: shapoclyack-enrichment
+                      key: advisory_fetch_enabled
+                      optional: true
               resources:
                 requests:
                   cpu: "250m"
                   memory: 512Mi
                 limits:
                   cpu: "1"
-                  memory: 1Gi
+                  # 2Gi rather than 1Gi because of the advisory refresh above:
+                  # the Debian tracker document is read whole, parsed whole and
+                  # re-serialized whole (api/services/advisories/fetch.py), and
+                  # a ~50 MB JSON of nested per-release objects is several
+                  # hundred MB once it is Python. An OOMKill here would take the
+                  # GeoIP/CVSS4/EPSS/KEV refreshes down with it, so the ceiling
+                  # is set for the largest source in the job, not the median.
+                  memory: 2Gi
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:

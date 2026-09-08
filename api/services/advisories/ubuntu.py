@@ -59,19 +59,34 @@ def normalize_usn_json(payload: Any) -> Iterator[dict[str, Any]]:
         releases = advisory.get("releases")
         if not isinstance(releases, dict):
             continue
+        # The published database keys advisories bare — ``"5051-2"``, not
+        # ``"USN-5051-2"`` — while every human-facing reference, this project's
+        # own seed included, uses the prefixed form, and it is the prefixed form
+        # ubuntu.com serves. Normalizing here keeps a fetched dataset and the
+        # committed seed talking about the same advisory.
+        usn_id = str(usn_id)
+        if not usn_id.upper().startswith("USN-"):
+            usn_id = f"USN-{usn_id}"
         url = f"https://ubuntu.com/security/notices/{usn_id}"
         severity = str(advisory.get("severity") or "unknown").strip().lower() or "unknown"
         for release, detail in releases.items():
             if not isinstance(detail, dict):
                 continue
+            # ``sources`` and ``binaries`` overlap whenever a source package
+            # builds a binary of its own name — ``curl`` is in both lists of
+            # every curl USN — so the same statement is published twice. Emitted
+            # twice it would double a tens-of-thousands-entry dataset, and every
+            # lookup for that package would walk two identical records.
+            emitted: set[str] = set()
             for group in ("sources", "binaries"):
                 packages = detail.get(group)
                 if not isinstance(packages, dict):
                     continue
                 for package, info in packages.items():
                     version = info.get("version") if isinstance(info, dict) else None
-                    if not version:
+                    if not version or str(package) in emitted:
                         continue
+                    emitted.add(str(package))
                     yield {
                         "advisory_id": str(usn_id),
                         "cve_ids": cve_ids,

@@ -4,7 +4,63 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
-_Nothing yet._
+### Added
+
+- **The advisory datasets behind software→CVE matching now have a way to get
+  onto an installation.** The providers, the normalizers and the opt-in fetcher
+  all existed, but `api/services/advisories/fetch.py` was called from nothing
+  except its own tests: every deployment ran the matcher against the committed
+  seed — 8 Debian and 10 Ubuntu statements — and nothing said so, because
+  `scripts/enrichment_manifest.py` held both datasets optional with a floor of
+  one entry. So the seed passed for coverage in the one place built to catch
+  exactly that.
+  `scripts/fetch-advisories.py` is the missing CLI, a thin wrapper over
+  `refresh()` in the shape of `scripts/fetch-cvss4-db.py`: it stages the
+  download beside the destination and promotes it only once it has entries, so
+  a feed answering `200` with an empty document cannot wipe a populated
+  dataset, and it exits `3` for "nobody opted in" rather than reporting a
+  failure. `scripts/fetch-enrichment.sh` runs both feeds beside cvss4/epss/kev
+  when `OCTO_ADVISORY_FETCH_ENABLED` is set, and floors both paths from the
+  committed seed so a freshly provisioned enrichment volume is never simply
+  empty. In Kubernetes this rides the enrichment CronJob that already exists;
+  the opt-in reaches it through an optional ConfigMap
+  (`k8s/shapoclyack/examples/enrichment-configmap.example.yaml`), and the job's
+  memory ceiling went to 2Gi because the Debian tracker document is read,
+  parsed and re-serialized whole. The Dockerfiles are untouched: a ~50 MB feed
+  that changes daily does not belong in an image layer.
+  Both datasets now carry a real feed's floor in the manifest — 100k Debian,
+  10k Ubuntu — while staying **not required**, which is what lets "this build
+  ships a seed" and "this build ships coverage" be different states without
+  making an offline build fail. `GET /api/system` carries the difference
+  outward in a new `usable` field on every enrichment entry: `entries`, `age`
+  and `origin` together still describe a seed and a real corpus identically,
+  since the seed's mtime is the build's, and the console was rendering a
+  fresh-built seed as a green `fresh`. `usable` is the build's own verdict
+  against the floor, and it is `null` rather than `false` when no manifest was
+  found.
+
+### Fixed
+
+- **Ubuntu USN normalization emitted every same-named package twice.** A USN
+  lists a package in both `sources` and `binaries` whenever the source builds a
+  binary of its own name — `curl`, and most of the feed — so each of those
+  produced two byte-identical records, doubling a tens-of-thousands-entry
+  dataset and putting two copies in the lookup bucket for that package. Found
+  by normalizing fragments of the real published dumps, which is also new here:
+  the fixtures under `tests/fixtures/advisories/` now carry the shapes the
+  feeds actually publish (Debian's `undetermined`, its `fixed_version: "0"`
+  sentinel, `nodsa`, `removed`, `high**` urgencies and `TEMP-…` ids; USN's bare
+  `5051-2` keys, versionless ESM rows and Launchpad URLs mixed in with the
+  CVEs) rather than only the shapes the normalizers were written against.
+- **Two normalizer defects the real dumps exposed.** The published USN database
+  keys advisories bare — `"5051-2"` — while every human-facing reference, this
+  project's seed included, says `USN-5051-2`; a fetched dataset and the
+  committed seed were therefore talking about the same advisory under two ids,
+  and the generated `ubuntu.com` links were 404s. And the Debian tracker keys
+  issues it has no CVE for by an internal `TEMP-0841847-1E6784` id, which the
+  normalizer carried straight through — a string that is not a CVE, headed for
+  `software_cve_matches` and the console as though it were one, with nothing to
+  look it up against. It is now dropped like `undetermined`.
 
 ## [0.44-0907] — 2026-09-07
 

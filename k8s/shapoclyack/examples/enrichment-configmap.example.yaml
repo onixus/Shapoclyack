@@ -1,0 +1,26 @@
+# Opt-in for the vendor advisory refresh in the enrichment CronJob
+# (k8s/shapoclyack/base/enrichment/cronjob.yaml), which reads this key through
+# an `optional: true` configMapKeyRef — so not applying this file at all is the
+# default and leaves the job doing exactly what it did before.
+#
+# Without it the Debian tracker / Ubuntu USN datasets stay at the committed
+# seed: a few dozen real advisories, enough to prove the matcher works and not
+# enough to be coverage. `GET /api/system` reports that honestly (`origin:
+# seed`, `usable: false`), which is the state a fresh offline install is
+# supposed to be in — see docs/software-cve-matching.md.
+#
+# What applying it costs: one ~50 MB download from
+# security-tracker.debian.org and one smaller one from usn.ubuntu.com, daily,
+# from the CronJob's pod. Egress to both must be allowed.
+#
+#   kubectl apply -f k8s/shapoclyack/examples/enrichment-configmap.example.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shapoclyack-enrichment
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: enrichment-cronjob
+data:
+  advisory_fetch_enabled: "true"

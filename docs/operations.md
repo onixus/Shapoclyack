@@ -818,6 +818,14 @@ Two outcomes, deliberately not the same thing:
   `exploit` feed the risk model; with a handful of CVEs in them it keeps issuing
   confident verdicts while knowing almost nothing. The script exits `2`.
 
+The vendor advisory datasets (`advisories_debian`, `advisories_ubuntu`) are in
+the manifest under the same rules but are **not required**, so neither outcome
+above fails a build on their account. They are also the only source the refresh
+does not fetch by default: see
+[software→CVE matching](software-cve-matching.md#getting-a-real-dataset-onto-an-installation)
+for why, and for how to turn it on. A release image therefore ships them as
+`origin: seed`, `usable: false` — present, loadable, and not coverage.
+
 The second one fails a **release** build and warns on a dev build. The switch is
 the `ENRICHMENT_STRICT` build argument, which defaults to `0`; the publish
 pipeline (`Jenkinsfile.publish`) passes `1` for every image in the matrix. That
@@ -834,8 +842,15 @@ docker run --rm shapo-aio:strict cat /app/scanner/data/enrichment-manifest.json
 
 # …or on a running install, which also covers a mounted enrichment volume.
 curl -sH "Authorization: Bearer $TOKEN" http://localhost:8000/api/system \
-  | jq '.enrichment[] | {name, origin, source, updated, entries, age_days}'
+  | jq '.enrichment[] | {name, origin, source, updated, entries, usable, age_days}'
 ```
+
+`usable` is there because age and entry count together still cannot answer the
+question for a dataset that ships with a seed: eight advisories written into the
+image an hour ago are present, current and worthless. It is the build's own
+verdict against the per-dataset floor in `scripts/enrichment_manifest.py`, and
+it is `null` when no manifest was found rather than `false` — "nothing recorded"
+is not "the data is bad".
 
 An `origin` of `stale` or `seed` on a freshly deployed release is the signal to
 look at the build log or run the refresh CronJob by hand

@@ -1,0 +1,85 @@
+{
+  "5051-2": {
+    "id": "5051-2",
+    "title": "OpenSSL vulnerability",
+    "summary": "OpenSSL could be made to crash if it received specially crafted input.",
+    "description": "USN-5051-1 fixed a vulnerability in OpenSSL.",
+    "action": "In general, a standard system update will make all the necessary changes.",
+    "isummary": "OpenSSL could be made to crash.",
+    "timestamp": 1629826705.130649,
+    "cves": [
+      "CVE-2021-3711",
+      "https://launchpad.net/bugs/1941067"
+    ],
+    "releases": {
+      "focal": {
+        "sources": {
+          "openssl": {
+            "version": "1.1.1f-1ubuntu2.8",
+            "description": "Secure Sockets Layer toolkit"
+          }
+        },
+        "binaries": {
+          "libssl1.1": {"version": "1.1.1f-1ubuntu2.8"}
+        },
+        "allbinaries": {
+          "libssl1.1": {"version": "1.1.1f-1ubuntu2.8"},
+          "libssl-dev": {"version": "1.1.1f-1ubuntu2.8"},
+          "openssl": {"version": "1.1.1f-1ubuntu2.8"}
+        },
+        "archs": {
+          "source": {"urls": {}}
+        }
+      },
+      "bionic": {
+        "sources": {
+          "openssl": {
+            "version": "1.1.1-1ubuntu2.1~18.04.13",
+            "description": "Secure Sockets Layer toolkit"
+          }
+        },
+        "binaries": {
+          "libssl1.1": {"version": "1.1.1-1ubuntu2.1~18.04.13"}
+        }
+      }
+    }
+  },
+  "USN-6408-1": {
+    "id": "USN-6408-1",
+    "title": "curl vulnerabilities",
+    "timestamp": 1696982400.0,
+    "cves": ["CVE-2023-38545", "CVE-2023-38546"],
+    "releases": {
+      "jammy": {
+        "sources": {
+          "curl": {"version": "7.81.0-1ubuntu1.14", "description": "HTTP client"}
+        },
+        "binaries": {
+          "curl": {"version": "7.81.0-1ubuntu1.14"},
+          "libcurl4": {"version": "7.81.0-1ubuntu1.14"}
+        }
+      }
+    }
+  },
+  "4796-1": {
+    "id": "4796-1",
+    "title": "A regression fix with no CVE",
+    "cves": [],
+    "releases": {
+      "focal": {
+        "sources": {"gnome-shell": {"version": "3.36.4-1ubuntu1~20.04.2"}}
+      }
+    }
+  },
+  "5101-1": {
+    "id": "5101-1",
+    "title": "An advisory whose release entry carries no version",
+    "cves": ["CVE-2021-4034"],
+    "releases": {
+      "trusty": {
+        "sources": {"policykit-1": {"description": "no version, ESM only"}},
+        "binaries": {}
+      }
+    }
+  }
+}

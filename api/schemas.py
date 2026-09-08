@@ -862,6 +862,11 @@ class EnrichmentDb(BaseModel):
     # The date the feed itself stamped on the data, not the file's mtime.
     updated: str | None = None
     entries: int | None = None
+    # The build's verdict on whether this file is a corpus or a placeholder,
+    # against the per-dataset floor in scripts/enrichment_manifest.py. Needed
+    # because "present, fresh mtime, non-zero entries" describes both a real
+    # feed and the committed advisory seed a fresh offline install ships.
+    usable: bool | None = None
 
 
 class ScanConfigSummary(BaseModel):
