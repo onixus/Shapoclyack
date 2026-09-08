@@ -171,6 +171,18 @@ All notable changes to Shapoclyack are documented in this file.
   `docs/operations.md`, alongside a list of the revisions whose downgrade
   destroys data.
 
+- **Upgrade note for `0032`: the estate's numbers step on the first matcher
+  run.** Every consumer of `vulnerabilities` filters on `state` and not on
+  `source`, so the moment software findings land they are counted by the
+  compliance evidence pass, the cross-tenant posture list, the per-asset
+  counters on the assets page, `estate_risk` and the risk-history snapshots.
+  That is intended — a finding found by looking inside a host is the same kind
+  of object as one found from outside — but the jump is a change in what is
+  measured, not an event in the estate, and the risk-history chart will draw
+  it as a step. It was intended only in a commit message until now;
+  `tests/test_software_findings_consumers.py` is the statement a future
+  `source`-aware filter has to argue with.
+
 ## [0.44-0907] — 2026-09-07
 
 ### Added
