@@ -975,6 +975,17 @@ Verify a rollback the same way as an upgrade, and confirm that jobs claimed by
 the newer replicas are still progressing — a lease expiring during the rollout
 is requeued by the reaper (P1.4), which is expected and not a failure.
 
+#### Revisions whose downgrade destroys data
+
+A rollback normally does not touch the schema at all, which is what makes it
+short. If you nevertheless run `alembic downgrade`, this list is the one to
+read first.
+
+| Revision | What its downgrade destroys |
+|---|---|
+| `0032_endpoint_software_findings` | **Every software finding** (`source = 'endpoint_software'`) and its `vulnerability_events`, tickets and SLA history. The two columns it drops are the only thing telling a software finding from a scan one, so leaving the rows behind is worse than deleting them: after a subsequent upgrade they would read as `source = 'scan'` with `device_id IS NULL`, stop being a `409` on `/verify`, fall out of the inventory fold's lookup and be duplicated wholesale by the next snapshot. The matcher re-creates the findings from the current snapshots on its next run, with new ids and a fresh SLA clock — the work is not lost, the history of it is |
+| `0033_software_match_queue_marker` | Only the matcher's queue marker. Every device becomes due at once, so the first tick after the downgrade re-folds the estate. The fold is idempotent, so this is a load spike and not a correctness problem |
+
 ### Legacy JSON state import
 
 `api/services/{jobs,agents}.py` still import pre-P1.2 `state/api_{jobs,agents}.json`

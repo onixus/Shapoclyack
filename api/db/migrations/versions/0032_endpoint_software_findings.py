@@ -23,6 +23,26 @@ the same reason: deleting a device must not delete the remediation history of
 what was found on it. The finding stays attached to its asset, which is what
 the SLA and the ownership were ever about.
 
+**The downgrade destroys software findings, and cannot not.** ``source`` and
+``device_id`` are the only two things that tell a software finding from a scan
+one. Dropping them and upgrading again re-adds ``source`` with its ``scan``
+server default and ``device_id`` as NULL, so every software finding comes back
+wearing a scan finding's clothes: it stops being a ``409`` on
+``POST /vulnerabilities/{id}/verify``, it falls out of ``existing`` in
+``software_findings._fold_device`` (which reads a device's findings by
+``device_id``), and the next inventory snapshot therefore creates a complete
+duplicate set beside it while the originals stay open for ever under keys
+nothing will look up again. A closure the scan path then performs on one of
+those rows would be a machine-verified closure of a package nobody rescanned.
+
+There is no way to keep the distinction in a database with no column for it,
+so the downgrade **deletes** the rows it can no longer label — with their
+``vulnerability_events``, by cascade. That loses remediation history, which is
+why this revision is named in ``docs/operations.md`` as one to plan a rollback
+around; the alternative is a table that silently mislabels its own contents.
+The next matcher run re-creates the findings from the current snapshots, with
+new ids, new ``first_seen_at`` and a fresh SLA clock.
+
 ``closure_reason`` gains ``patched`` — a software finding is closed when the
 next accepted inventory snapshot no longer matches it, which is neither a
 verification re-scan (``verified_remediated``) nor a person's assertion
@@ -75,6 +95,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Destructive on purpose — see the "The downgrade destroys software
+    # findings" paragraph above. Leaving these rows behind is worse: without
+    # ``source`` they are indistinguishable from scan findings, and they would
+    # be duplicated by the next fold and closed by the wrong observer.
+    op.execute("DELETE FROM vulnerabilities WHERE source = 'endpoint_software'")
     op.drop_index("ix_vulnerabilities_source", table_name="vulnerabilities")
     op.drop_constraint("fk_vulnerabilities_device", "vulnerabilities", type_="foreignkey")
     op.drop_column("vulnerabilities", "device_id")

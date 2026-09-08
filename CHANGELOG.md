@@ -161,6 +161,16 @@ All notable changes to Shapoclyack are documented in this file.
   so the endpoint returned 500 for the whole tenant at the estate size it is
   most needed at. The ordering and the limit are now the database's.
 
+- **`0032`'s downgrade no longer turns software findings into scan findings.**
+  It dropped `source` and `device_id`, which are the only two things telling
+  the two apart, so a down-then-up left every software finding reading as
+  `source = 'scan'`, `device_id IS NULL`: no longer a `409` on `/verify`,
+  invisible to the inventory fold's lookup, and duplicated wholesale by the
+  next snapshot. The downgrade now deletes the rows it cannot label — which is
+  destructive and is now stated as such in the revision docstring and in
+  `docs/operations.md`, alongside a list of the revisions whose downgrade
+  destroys data.
+
 ## [0.44-0907] — 2026-09-07
 
 ### Added
