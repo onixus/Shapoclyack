@@ -383,3 +383,72 @@ def test_an_unlinked_device_is_skipped_rather_than_tracked_against_nothing(
     assert stats.skipped_unlinked == 1
     assert stats.created == 0
     assert software_findings_of(client) == []
+
+
+# --------------------------------------------------------------------------
+# Asset merges
+# --------------------------------------------------------------------------
+
+
+def test_merging_an_asset_repoints_a_software_finding_with_its_own_key(
+    client: TestClient, settings
+) -> None:
+    """``_repoint_findings`` used to recompute *every* absorbed row's key with
+    ``vulnerabilities.finding_key``, which is the scan namespace.
+
+    For a software row that produced a key nothing would ever look up again.
+    Either the recomputed scan key already existed — and the software finding
+    was deleted with its ticket, its SLA and its whole audit trail — or it did
+    not, and the row survived under a key the next fold cannot find, so the
+    fold created a duplicate and closed the original as ``patched``.
+    """
+    from datetime import UTC, datetime
+
+    from api.db import models
+    from api.db.engine import get_session
+    from api.services import assets as assets_service
+    from api.services import software_findings
+
+    device_id = seed(client)
+    finding = next(
+        item for item in software_findings_of(client) if item["cve"] == "CVE-2023-38545"
+    )
+
+    with get_session(settings.postgres_url) as session:
+        device = session.get(models.EndpointDevice, device_id)
+        absorbed_id = device.asset_id
+        now = datetime.now(UTC).replace(tzinfo=None)
+        session.add(
+            models.Asset(
+                asset_id="ast_survivor_0001",
+                tenant_id="default",
+                status="active",
+                first_seen=now,
+                last_seen=now,
+            )
+        )
+        session.flush()
+        assets_service._repoint_findings(  # noqa: SLF001
+            session,
+            tenant_id="default",
+            absorbed_id=absorbed_id,
+            survivor_id="ast_survivor_0001",
+        )
+        device.asset_id = "ast_survivor_0001"
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Vulnerability, finding["vuln_id"])
+        assert row is not None, "the software finding was deleted by the merge"
+        assert row.asset_id == "ast_survivor_0001"
+        assert row.device_id == device_id
+        assert row.finding_key == software_findings.software_finding_key(
+            asset_id="ast_survivor_0001", device_id=device_id, cve="CVE-2023-38545"
+        )
+
+    # And the next fold recognises it rather than opening a second one beside
+    # it and closing this one as patched.
+    submit(client, snapshot_body(snapshot_id="snap_merge_0002"))
+    refresh(client, device_id)
+    curl = [item for item in software_findings_of(client) if item["cve"] == "CVE-2023-38545"]
+    assert [item["vuln_id"] for item in curl] == [finding["vuln_id"]]
+    assert curl[0]["state"] == "OPEN"

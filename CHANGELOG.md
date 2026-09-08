@@ -104,6 +104,16 @@ All notable changes to Shapoclyack are documented in this file.
   it across the tenant. A still-`vulnerable` match now holds its finding open,
   counted separately as `held_open_untracked_match`.
 
+- **An asset merge no longer destroys or orphans a software finding.**
+  `_repoint_findings` recomputed every absorbed row's `finding_key` with the
+  *scan* key function, which is a different namespace from the software one.
+  A software row either collided with a scan finding for the same CVE and was
+  deleted along with its ticket, its SLA and its `vulnerability_events`, or it
+  survived under a key the next inventory fold cannot look up — so the fold
+  created a duplicate and closed the original as `patched`, machine-verified.
+  The function now branches on `source` and re-keys a software finding with
+  `software_findings.software_finding_key`.
+
 ## [0.44-0907] — 2026-09-07
 
 ### Added
