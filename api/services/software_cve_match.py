@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, insert, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -359,88 +359,145 @@ def _load_device_software(session, device: models.EndpointDevice) -> list[dict[s
     ]
 
 
-def _write_matches(
-    session, *, tenant_id: str, device: models.EndpointDevice, result: DeviceMatchResult
+def _match_payloads(
+    *, tenant_id: str, device_id: str, result: DeviceMatchResult, matched_at: datetime
+) -> list[dict[str, Any]]:
+    """This device's rows as plain dicts, ready for an executemany insert."""
+    return [
+        {
+            "tenant_id": tenant_id,
+            "device_id": device_id,
+            "snapshot_id": result.snapshot_id,
+            "match_key": candidate.match_key,
+            "cve_id": candidate.cve_id,
+            "status": candidate.status,
+            "severity": candidate.severity,
+            "source_package": candidate.source_package,
+            "installed_package": candidate.installed_package,
+            "installed_version": candidate.installed_version,
+            "fixed_version": candidate.fixed_version,
+            "advisory_id": candidate.advisory_id,
+            "advisory_url": candidate.advisory_url,
+            "provider": candidate.provider,
+            "distro": candidate.distro,
+            "distro_release": candidate.distro_release,
+            "purl": candidate.purl,
+            "cpe23": candidate.cpe23,
+            "unknown_reason": candidate.unknown_reason,
+            "feed_date": candidate.feed_date,
+            "evidence": candidate.evidence,
+            "matched_at": matched_at,
+        }
+        for candidate in result.candidates
+    ]
+
+
+def _replace_matches(
+    session, *, tenant_id: str, device_ids: list[str], payloads: list[dict[str, Any]]
 ) -> None:
-    """Replace this device's rows. Whole-set replacement rather than an upsert:
-    a match is a statement about the current snapshot, and a CVE that no longer
-    matches must disappear rather than linger as a stale ``vulnerable``."""
+    """Replace the rows of every device in ``device_ids`` in two statements.
+
+    Whole-set replacement rather than an upsert: a match is a statement about
+    the current snapshot, and a CVE that no longer matches must disappear
+    rather than linger as a stale ``vulnerable``. One ``DELETE ... IN`` and one
+    executemany ``INSERT`` per batch rather than per device — at estate scale
+    the previous per-device pair was the dominant cost of a tenant-wide run.
+    """
+    if not device_ids:
+        return
     session.execute(
         delete(models.SoftwareCveMatch).where(
             models.SoftwareCveMatch.tenant_id == tenant_id,
-            models.SoftwareCveMatch.device_id == device.device_id,
+            models.SoftwareCveMatch.device_id.in_(device_ids),
         )
     )
-    matched_at = _now()
-    for candidate in result.candidates:
-        session.add(
-            models.SoftwareCveMatch(
-                tenant_id=tenant_id,
-                device_id=device.device_id,
-                snapshot_id=result.snapshot_id,
-                match_key=candidate.match_key,
-                cve_id=candidate.cve_id,
-                status=candidate.status,
-                severity=candidate.severity,
-                source_package=candidate.source_package,
-                installed_package=candidate.installed_package,
-                installed_version=candidate.installed_version,
-                fixed_version=candidate.fixed_version,
-                advisory_id=candidate.advisory_id,
-                advisory_url=candidate.advisory_url,
-                provider=candidate.provider,
-                distro=candidate.distro,
-                distro_release=candidate.distro_release,
-                purl=candidate.purl,
-                cpe23=candidate.cpe23,
-                unknown_reason=candidate.unknown_reason,
-                feed_date=candidate.feed_date,
-                evidence=candidate.evidence,
-                matched_at=matched_at,
-            )
-        )
+    if payloads:
+        session.execute(insert(models.SoftwareCveMatch), payloads)
 
 
 def run_for_device(settings: Settings, *, tenant_id: str, device_id: str) -> dict[str, Any] | None:
     """(Re-)run the matcher for one device. ``None`` when it is not this tenant's."""
+    summaries = run_for_devices(settings, tenant_id=tenant_id, device_ids=[device_id])
+    if not summaries:
+        return None
+    return summaries[0]
+
+
+def run_for_devices(
+    settings: Settings, *, tenant_id: str, device_ids: list[str]
+) -> list[dict[str, Any]]:
+    """(Re-)run the matcher for a batch of devices in one session.
+
+    Devices that are not this tenant's are dropped rather than raising: the
+    caller is either a tenant-scoped route or the worker walking its own
+    tenant's device ids, and neither has anything to do with a stale id.
+    """
+    if not device_ids:
+        return []
+    matched_at = _now()
+    summaries: list[dict[str, Any]] = []
+    payloads: list[dict[str, Any]] = []
+    written: list[str] = []
     with get_session(settings.postgres_url) as session:
-        device = session.get(models.EndpointDevice, device_id)
-        if device is None or device.tenant_id != tenant_id:
-            return None
-        software = _load_device_software(session, device)
-        result = match_software(
-            device={
-                "device_id": device.device_id,
-                "os_family": device.os_family,
-                "os_name": device.os_name,
-                "os_version": device.os_version,
-                "latest_snapshot_id": device.latest_snapshot_id,
-            },
-            software=software,
+        for device_id in device_ids:
+            device = session.get(models.EndpointDevice, device_id)
+            if device is None or device.tenant_id != tenant_id:
+                continue
+            software = _load_device_software(session, device)
+            result = match_software(
+                device={
+                    "device_id": device.device_id,
+                    "os_family": device.os_family,
+                    "os_name": device.os_name,
+                    "os_version": device.os_version,
+                    "latest_snapshot_id": device.latest_snapshot_id,
+                },
+                software=software,
+            )
+            written.append(device.device_id)
+            payloads.extend(
+                _match_payloads(
+                    tenant_id=tenant_id,
+                    device_id=device.device_id,
+                    result=result,
+                    matched_at=matched_at,
+                )
+            )
+            summaries.append(
+                {
+                    "device_id": device.device_id,
+                    "snapshot_id": result.snapshot_id,
+                    "distro": result.distro,
+                    "distro_release": result.distro_release,
+                    "packages_total": result.packages_total,
+                    "packages_assessed": result.packages_assessed,
+                    "packages_unassessed": result.packages_unassessed,
+                    "matches": len(result.candidates),
+                    "by_status": result.counts(),
+                }
+            )
+        _replace_matches(
+            session, tenant_id=tenant_id, device_ids=written, payloads=payloads
         )
-        _write_matches(session, tenant_id=tenant_id, device=device, result=result)
-        summary = {
-            "device_id": device.device_id,
-            "snapshot_id": result.snapshot_id,
-            "distro": result.distro,
-            "distro_release": result.distro_release,
-            "packages_total": result.packages_total,
-            "packages_assessed": result.packages_assessed,
-            "packages_unassessed": result.packages_unassessed,
-            "matches": len(result.candidates),
-            "by_status": result.counts(),
-        }
     _log.info(
-        "software-cve-match: device=%s distro=%s matches=%d",
-        summary["device_id"],
-        summary["distro"],
-        summary["matches"],
+        "software-cve-match: tenant=%s devices=%d matches=%d",
+        tenant_id,
+        len(summaries),
+        len(payloads),
     )
-    return summary
+    return summaries
 
 
-def run_for_tenant(settings: Settings, *, tenant_id: str) -> dict[str, Any]:
-    """(Re-)run the matcher for every device in a tenant."""
+def run_for_tenant(
+    settings: Settings, *, tenant_id: str, batch_size: int = 100
+) -> dict[str, Any]:
+    """(Re-)run the matcher for every device in a tenant, in batches.
+
+    Batched rather than one session per device: a tenant-wide run over a large
+    estate is the workload this route exists to do, and a session and a
+    DELETE/INSERT pair per device made it scale with the device count rather
+    than with the row count.
+    """
     with get_session(settings.postgres_url) as session:
         device_ids = list(
             session.execute(
@@ -451,11 +508,16 @@ def run_for_tenant(settings: Settings, *, tenant_id: str) -> dict[str, Any]:
             .scalars()
             .all()
         )
+    batch_size = max(1, batch_size)
     devices: list[dict[str, Any]] = []
-    for device_id in device_ids:
-        summary = run_for_device(settings, tenant_id=tenant_id, device_id=device_id)
-        if summary is not None:
-            devices.append(summary)
+    for start in range(0, len(device_ids), batch_size):
+        devices.extend(
+            run_for_devices(
+                settings,
+                tenant_id=tenant_id,
+                device_ids=device_ids[start : start + batch_size],
+            )
+        )
     totals = dict.fromkeys(STATUSES, 0)
     for summary in devices:
         for status, count in summary["by_status"].items():
@@ -476,10 +538,51 @@ def run_for_tenant(settings: Settings, *, tenant_id: str) -> dict[str, Any]:
 _MAX_LIMIT = 500
 
 
-def _row_to_dict(row: models.SoftwareCveMatch, hostname: str | None = None) -> dict[str, Any]:
+def _tracked_finding_ids(session, *, tenant_id: str, device_ids: list[str]) -> dict[tuple[str, str], str]:
+    """``(device_id, cve) → vuln_id`` for the software findings of these devices.
+
+    A match row and its tracked finding are the same fact seen from two sides,
+    and a panel that shows one without a way to reach the other produces two
+    unconnected places that talk about the same CVE on the same host. Read as a
+    second small query rather than an outer join so the match list keeps
+    working unchanged when a match has no finding — which is the normal case,
+    since only matches with a published fix become one.
+
+    ``device_ids`` is the devices *on the page*, never the tenant's. The
+    ``IN (...)`` list is a bound parameter each, and psycopg refuses a
+    statement past roughly 65k of them — which is a 500 for the whole tenant
+    on exactly the estate that needs this endpoint most.
+    """
+    if not device_ids:
+        return {}
+    rows = session.execute(
+        select(
+            models.Vulnerability.device_id,
+            models.Vulnerability.cve,
+            models.Vulnerability.vuln_id,
+        ).where(
+            models.Vulnerability.tenant_id == tenant_id,
+            models.Vulnerability.source == "endpoint_software",
+            models.Vulnerability.device_id.in_(device_ids),
+        )
+    ).all()
+    return {
+        (device_id, str(cve or "").upper()): vuln_id
+        for device_id, cve, vuln_id in rows
+        if device_id and cve
+    }
+
+
+def _row_to_dict(
+    row: models.SoftwareCveMatch,
+    hostname: str | None = None,
+    vuln_id: str | None = None,
+) -> dict[str, Any]:
     return {
         "device_id": row.device_id,
         "hostname": hostname,
+        # The tracked finding this match produced, when it produced one.
+        "vuln_id": vuln_id,
         "snapshot_id": row.snapshot_id,
         "cve_id": row.cve_id,
         "status": row.status,
@@ -510,6 +613,24 @@ def _sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
     )
 
 
+def _order_by() -> tuple[Any, ...]:
+    """:func:`_sort_key`, expressed for the database.
+
+    The tenant listing has to order *before* it limits, or the page it returns
+    is an arbitrary one; ordering in Python meant reading the tenant's entire
+    match table into the process on every request, and then handing every
+    device id in it to :func:`_tracked_finding_ids` as an ``IN (...)`` list —
+    which psycopg refuses outright past about 65k parameters. Kept beside
+    ``_sort_key`` so the two cannot drift: the in-memory sort still runs over
+    the page, and must agree with this.
+    """
+    return (
+        case(_STATUS_RANK, value=models.SoftwareCveMatch.status, else_=0).desc(),
+        case(_SEVERITY_RANK, value=models.SoftwareCveMatch.severity, else_=5).asc(),
+        models.SoftwareCveMatch.cve_id.asc(),
+    )
+
+
 def list_for_device(
     settings: Settings,
     *,
@@ -531,7 +652,15 @@ def list_for_device(
         if severity:
             stmt = stmt.where(models.SoftwareCveMatch.severity == severity)
         rows = session.execute(stmt).scalars().all()
-        items = [_row_to_dict(row, device.hostname) for row in rows]
+        tracked = _tracked_finding_ids(session, tenant_id=tenant_id, device_ids=[device_id])
+        items = [
+            _row_to_dict(
+                row,
+                device.hostname,
+                tracked.get((row.device_id, str(row.cve_id or "").upper())),
+            )
+            for row in rows
+        ]
     items.sort(key=_sort_key)
     return items
 
@@ -561,10 +690,20 @@ def list_for_tenant(
             stmt = stmt.where(models.SoftwareCveMatch.severity == severity)
         if cve_id:
             stmt = stmt.where(models.SoftwareCveMatch.cve_id == cve_id.strip().upper())
-        rows = session.execute(stmt).all()
-        items = [_row_to_dict(row, hostname) for row, hostname in rows]
+        rows = session.execute(stmt.order_by(*_order_by()).limit(limit)).all()
+        tracked = _tracked_finding_ids(
+            session,
+            tenant_id=tenant_id,
+            device_ids=sorted({row.device_id for row, _ in rows}),
+        )
+        items = [
+            _row_to_dict(
+                row, hostname, tracked.get((row.device_id, str(row.cve_id or "").upper()))
+            )
+            for row, hostname in rows
+        ]
     items.sort(key=_sort_key)
-    return items[:limit]
+    return items
 
 
 def summary(settings: Settings, *, tenant_id: str) -> dict[str, Any]:

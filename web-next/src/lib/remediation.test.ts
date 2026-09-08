@@ -8,6 +8,8 @@ function stub(overrides: Partial<TrackedVulnerability>): TrackedVulnerability {
     tenant_id: "default",
     asset_id: "a1",
     finding_key: "k",
+    source: "scan",
+    device_id: null,
     cve: "CVE-1",
     cwe: [],
     script_id: null,

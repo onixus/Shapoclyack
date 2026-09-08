@@ -150,6 +150,21 @@ def _pick_survivor(session, left_id: str, right_id: str) -> tuple[models.Asset, 
 
 
 def _repoint_findings(session, *, tenant_id: str, absorbed_id: str, survivor_id: str) -> None:
+    """Move the absorbed asset's findings onto the survivor, re-keyed.
+
+    Branching on ``source`` is not a nicety. ``vulnerabilities.finding_key`` is
+    the *scan* namespace — ``sha256(asset|cve-or-script|port)`` — and a
+    software finding is identified by
+    ``software_findings.software_finding_key`` over ``(asset, device, CVE)``
+    instead, precisely so the two can never collide. Recomputing every row with
+    the scan function gave a software row a key nothing would look up again:
+    either it collided with a real scan finding for the same CVE and the
+    software row was deleted with its ticket, SLA and audit trail, or it
+    survived under a key the next inventory fold cannot find, which opened a
+    duplicate beside it and closed the original as ``patched``.
+    """
+    from api.services.software_findings import SOURCE as SOFTWARE_SOURCE
+    from api.services.software_findings import software_finding_key
     from api.services.vulnerabilities import finding_key
 
     rows = session.execute(
@@ -159,9 +174,21 @@ def _repoint_findings(session, *, tenant_id: str, absorbed_id: str, survivor_id:
         )
     ).scalars().all()
     for row in rows:
-        new_key = finding_key(
-            asset_id=survivor_id, cve=row.cve, script_id=row.script_id, port=row.port
-        )
+        if row.source == SOFTWARE_SOURCE:
+            if not (row.device_id and row.cve):
+                # A software row with no device or no CVE cannot be re-keyed,
+                # and guessing at a key would either collide or orphan it. It
+                # moves with the asset and keeps the key it has; the fold will
+                # not match it, which is visible, unlike a wrong key.
+                row.asset_id = survivor_id
+                continue
+            new_key = software_finding_key(
+                asset_id=survivor_id, device_id=row.device_id, cve=row.cve
+            )
+        else:
+            new_key = finding_key(
+                asset_id=survivor_id, cve=row.cve, script_id=row.script_id, port=row.port
+            )
         clash = session.execute(
             select(models.Vulnerability).where(
                 models.Vulnerability.tenant_id == tenant_id,

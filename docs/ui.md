@@ -118,9 +118,15 @@ and an SLA reading. Default view is everything not `CLOSED`, worst (contextual
 score) first.
 
 Header counts come from `GET /api/vulnerabilities/summary` so they agree with
-the filtered table. Filters (`state`, severity, SLA, stale days, search) are
-server-side. An asset's Vulnerabilities tab links here when that asset has
-open tracked findings (`?assetId=`).
+the filtered table. Filters (`state`, severity, **source**, SLA, stale days,
+search) are server-side. An asset's Vulnerabilities tab links here when that
+asset has open tracked findings (`?assetId=`); `?source=` is a deep link too.
+
+A **Source** badge distinguishes a network-scan finding from one the endpoint
+software inventory produced. A software finding has no port by construction, so
+its row shows the installed package and the version that closes it
+(`curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20`) where a scan finding shows
+`port 443`.
 
 `/vulnerabilities/view?vulnId=…` is the remediation card:
 
@@ -133,6 +139,13 @@ open tracked findings (`?assetId=`).
   on disk;
 - the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
   `exception_set`, `exception_cleared`).
+
+For an endpoint-software finding the **Verify** button is not shown at all: the
+API refuses the dispatch (`409`) because a re-scan does not observe an installed
+package, and offering a button that cannot work is worse than offering none. In
+its place the card says the finding is verified by the endpoint's next
+inventory snapshot and when it was last observed. The Finding card shows the
+`device_id` where a scan finding shows the port.
 
 CWE comes from NVD (the cvss4 overlay) or nuclei's template classification
 on the last observation. Missing is shown as empty, never inferred from
@@ -384,6 +397,17 @@ same per-device card with a copyable command.
 
 A vulnerable package with no published fix is counted separately and carries no
 command. See [software-cve-matching.md](software-cve-matching.md).
+
+The **Matched CVEs** panel links each row to the tracked finding it produced, so
+the panel and the Vulnerability Center are not two unconnected places talking
+about the same CVE on the same host. A row with no finding says **why** rather
+than showing a dead link, and the four reasons are four different facts: the
+release is already fixed on this host, the release is not affected, the vendor
+has published no fix, or the match is below the severity floor (or has not been
+folded in yet). Only a `vulnerable` match with a published fix becomes a
+tracked finding ([why](software-cve-matching.md#lifecycle-tracked-findings)).
+One string covered all four until 2026-09-08, so an operator could read "no
+published fix" on a row with the fix printed in the next column.
 
 ## Wordlists and service tokens
 

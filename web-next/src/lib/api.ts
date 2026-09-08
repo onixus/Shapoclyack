@@ -643,6 +643,9 @@ export type SoftwareCveMatchStatus = "vulnerable" | "fixed" | "not_applicable" |
 export type SoftwareCveMatchInfo = {
   device_id: string;
   hostname: string | null;
+  /** The tracked finding this match produced, or null. Only a `vulnerable`
+   * match with a published fix becomes one. */
+  vuln_id: string | null;
   snapshot_id: string | null;
   /** Empty on an ``unknown`` row, which is about a package set, not a CVE. */
   cve_id: string;
@@ -1552,11 +1555,19 @@ export type VulnLifecycleState =
 
 export type SlaState = "on_track" | "due_soon" | "breached" | "accepted" | "none";
 
+/** Which observer found it. A software finding comes from the endpoint
+ * inventory: it has an installed package where a scan finding has a port, and
+ * a network re-scan cannot verify it. */
+export type VulnerabilitySource = "scan" | "endpoint_software";
+
 export type TrackedVulnerability = {
   vuln_id: string;
   tenant_id: string;
   asset_id: string;
   finding_key: string;
+  source: VulnerabilitySource;
+  /** The endpoint it was observed on. Null for every scan finding. */
+  device_id: string | null;
   cve: string | null;
   cwe: string[];
   script_id: string | null;
@@ -1598,7 +1609,7 @@ export type TrackedVulnerability = {
   machine_verified?: boolean;
   verification_job_id?: string | null;
   last_verified_at?: string | null;
-  /** verified_remediated | manual | ticket_resolved. */
+  /** verified_remediated | patched | manual | ticket_resolved. */
   closure_reason?: string | null;
 };
 
@@ -1659,6 +1670,7 @@ export type VulnerabilityListFilters = {
   open_only?: boolean;
   severity?: string;
   asset_id?: string;
+  source?: VulnerabilitySource | "";
   assignee?: string;
   unassigned?: boolean;
   sla?: SlaState | "";
@@ -1694,6 +1706,7 @@ export async function fetchTrackedVulnerabilities(
     if (filters?.open_only) params.set("open_only", "true");
     if (filters?.severity) params.set("severity", filters.severity);
     if (filters?.asset_id) params.set("asset_id", filters.asset_id);
+    if (filters?.source) params.set("source", filters.source);
     if (filters?.assignee) params.set("assignee", filters.assignee);
     if (filters?.unassigned) params.set("unassigned", "true");
     if (filters?.sla) params.set("sla", filters.sla);

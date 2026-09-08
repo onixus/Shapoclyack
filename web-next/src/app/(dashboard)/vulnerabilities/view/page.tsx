@@ -112,6 +112,8 @@ function closureReasonLabel(t: ReturnType<typeof useT>, reason: string): string 
       return t("vuln.reason.manual");
     case "ticket_resolved":
       return t("vuln.reason.ticketResolved");
+    case "patched":
+      return t("vuln.reason.patched");
     default:
       return reason;
   }
@@ -239,7 +241,26 @@ function VulnerabilityDetailInner() {
                 }
               />
               <Field label="Detection source" value={vuln.script_id || "—"} mono />
-              <Field label="Port" value={vuln.port || "—"} mono />
+              <Field
+                label={t("vuln.source")}
+                value={
+                  vuln.source === "endpoint_software"
+                    ? t("vuln.source.endpointSoftware")
+                    : t("vuln.source.scan")
+                }
+                hint={
+                  vuln.source === "endpoint_software"
+                    ? t("vuln.software.noVerify")
+                    : undefined
+                }
+              />
+              {/* A software finding has no port by construction — its locator
+                  is the endpoint and the package named in the title. */}
+              {vuln.source === "endpoint_software" ? (
+                <Field label={t("vuln.software.device")} value={vuln.device_id || "—"} mono />
+              ) : (
+                <Field label="Port" value={vuln.port || "—"} mono />
+              )}
               <Field label="CVSS" value={vuln.cvss != null ? String(vuln.cvss) : "—"} />
               <Field
                 label="EPSS"
@@ -468,7 +489,19 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
         </form>
       </div>
 
-      {(vuln.state === "FIXING" || vuln.state === "VERIFYING") && (
+      {/* A software finding is verified by its endpoint's next inventory
+          snapshot: a re-scan does not observe an installed package, and the API
+          refuses the dispatch with a 409 for exactly that reason. Offering a
+          button that cannot work is worse than offering none. */}
+      {vuln.source === "endpoint_software" ? (
+        <div className="border-t border-slate-800/80 pt-3 space-y-1">
+          <h3 className="text-xs font-semibold text-slate-300">Automated verification</h3>
+          <p className="text-[11px] text-slate-400">{t("vuln.software.noVerify")}</p>
+          <p className="text-[11px] text-slate-500">
+            {t("vuln.software.lastSnapshot")}: {formatWhen(vuln.last_seen_at)}
+          </p>
+        </div>
+      ) : (vuln.state === "FIXING" || vuln.state === "VERIFYING") ? (
         <div className="border-t border-slate-800/80 pt-3 space-y-2">
           <h3 className="text-xs font-semibold text-slate-300">Automated verification</h3>
           <p className="text-[11px] text-slate-400">
@@ -488,7 +521,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
               : t("vuln.verifyBtn")}
           </Button>
         </div>
-      )}
+      ) : null}
     </section>
   );
 }

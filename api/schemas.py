@@ -1070,6 +1070,10 @@ class SoftwareCveMatchInfo(BaseModel):
 
     device_id: str
     hostname: str | None = None
+    # The tracked finding this match produced (Track E, M3), or null. Only a
+    # ``vulnerable`` match with a published fix becomes one, so most rows carry
+    # no link and that is the answer rather than a gap.
+    vuln_id: str | None = None
     snapshot_id: str | None = None
     # "" on an ``unknown`` row, which is about a package set rather than a CVE.
     cve_id: str = ""
@@ -1108,6 +1112,8 @@ class SoftwareCveMatchRunSummary(BaseModel):
     packages_unassessed: int = 0
     matches: int = 0
     by_status: dict[str, int] = Field(default_factory=dict)
+    # See SoftwareCveMatchTenantRunSummary.lifecycle.
+    lifecycle: dict[str, int] = Field(default_factory=dict)
 
 
 class SoftwareCveMatchTenantRunSummary(BaseModel):
@@ -1118,6 +1124,10 @@ class SoftwareCveMatchTenantRunSummary(BaseModel):
     matches: int = 0
     by_status: dict[str, int] = Field(default_factory=dict)
     results: list[SoftwareCveMatchRunSummary] = Field(default_factory=list)
+    # What the same run did to the tracked-finding lifecycle (Track E, M3): a
+    # refresh that produced matches but created nothing is a real answer (no
+    # match had a published fix) and has to be visible as one.
+    lifecycle: dict[str, int] = Field(default_factory=dict)
 
 
 class AdvisoryProviderStatus(BaseModel):
@@ -1218,6 +1228,11 @@ class VulnerabilityInfo(BaseModel):
     tenant_id: str
     asset_id: str
     finding_key: str
+    # Which observer produced it: "scan" or "endpoint_software". The console
+    # branches on this — a software finding has a package where a scan finding
+    # has a port, and it is not verifiable by a re-scan.
+    source: str = "scan"
+    device_id: str | None = None
     cve: str | None = None
     cwe: list[str] = Field(default_factory=list)
     script_id: str | None = None

@@ -218,7 +218,16 @@ def test_normalize_debian_tracker_json() -> None:
     assert not any(release == "bookworm" for release, _ in entries)
 
 
-def test_normalize_usn_json_emits_source_and_binary_packages() -> None:
+def test_normalize_usn_json_emits_source_and_every_binary_package() -> None:
+    """``binaries`` is a subset; ``allbinaries`` is the list.
+
+    Canonical puts the headline binaries in ``binaries`` and everything the USN
+    actually covers in ``allbinaries``. Reading only the first meant an
+    inventory reporting ``libssl-dev`` found no advisory, fell through to the
+    ``_BINARY_SUFFIXES`` heuristic, derived ``libssl`` — a name in no dataset —
+    and reported ``unknown`` for a package the USN names outright. A false
+    negative, which is the one answer this matcher must not produce.
+    """
     payload = {
         "USN-5051-2": {
             "cves": ["CVE-2021-3711", "not-a-cve"],
@@ -227,16 +236,24 @@ def test_normalize_usn_json_emits_source_and_binary_packages() -> None:
                 "focal": {
                     "sources": {"openssl": {"version": "1.1.1f-1ubuntu2.8"}},
                     "binaries": {"libssl1.1": {"version": "1.1.1f-1ubuntu2.8"}},
+                    "allbinaries": {
+                        "libssl1.1": {"version": "1.1.1f-1ubuntu2.8"},
+                        "libssl-dev": {"version": "1.1.1f-1ubuntu2.8"},
+                        "openssl": {"version": "1.1.1f-1ubuntu2.8"},
+                    },
                 }
             },
         },
         "USN-NO-CVE-1": {"cves": [], "releases": {"focal": {"sources": {"x": {"version": "1"}}}}},
     }
     entries = list(ubuntu.normalize_usn_json(payload))
-    packages = {entry["source_package"] for entry in entries}
-    # Both names are emitted so an inventory that reports the binary package —
+    packages = [entry["source_package"] for entry in entries]
+    # Every name is emitted so an inventory that reports any of the binaries —
     # which is what dpkg reports — still hits the USN.
-    assert packages == {"openssl", "libssl1.1"}
+    assert set(packages) == {"openssl", "libssl1.1", "libssl-dev"}
+    # And each exactly once: the three groups overlap by construction, and a
+    # duplicated entry would double every match the package produces.
+    assert len(packages) == len(set(packages))
     assert all(entry["cve_ids"] == ["CVE-2021-3711"] for entry in entries)
     assert all(entry["severity"] == "high" for entry in entries)
 
@@ -560,8 +577,11 @@ def test_usn_dump_keeps_only_actionable_statements() -> None:
     by_advisory: dict[str, set[str]] = {}
     for entry in entries:
         by_advisory.setdefault(entry["advisory_id"], set()).add(entry["source_package"])
-    # Source and binary names both, so an inventory reporting either one hits.
-    assert by_advisory["USN-5051-2"] == {"openssl", "libssl1.1"}
+    # Source and binary names both, so an inventory reporting any one of them
+    # hits. ``libssl-dev`` is in the notice's ``allbinaries`` and not in its
+    # ``binaries``, which is why that group is read too: dpkg reports it, and a
+    # notice that covers it must not answer ``unknown``.
+    assert by_advisory["USN-5051-2"] == {"openssl", "libssl1.1", "libssl-dev"}
     # A regression fix with no CVE has nothing to match against.
     assert "USN-4796-1" not in by_advisory
     # A release entry with no version cannot be compared against an installed

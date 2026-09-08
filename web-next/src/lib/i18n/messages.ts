@@ -364,6 +364,25 @@ export const en = {
   "vuln.verificationRate": "Machine verification rate",
   "vuln.verifiedClosedCount": "{count} verified closures",
 
+  // Endpoint software findings (Track E, M3).
+  "vuln.reason.patched": "Patched on the endpoint",
+  "vuln.source": "Source",
+  "vuln.source.any": "Any source",
+  "vuln.source.scan": "Network scan",
+  "vuln.source.endpointSoftware": "Endpoint software",
+  "vuln.software.noVerify":
+    "Verified by the next inventory snapshot from this endpoint, not by a re-scan: a scan does not observe an installed package.",
+  "vuln.software.lastSnapshot": "Last observed",
+  "vuln.software.device": "Endpoint",
+  "softwareCve.trackedFinding": "Tracked finding",
+  // One string per reason. A single "no published fix" was printed for every
+  // row without a finding, including rows with the fix in the next column.
+  "softwareCve.noTrackedFinding.noFix": "not tracked — no published fix",
+  "softwareCve.noTrackedFinding.fixed": "not tracked — already fixed on this host",
+  "softwareCve.noTrackedFinding.notApplicable": "not tracked — this release is not affected",
+  "softwareCve.noTrackedFinding.filtered":
+    "not tracked — below the severity floor, or not folded in yet",
+
   // Per-tenant usage metering and quotas.
   "nav.usage": "Usage",
   "page.usage.title": "Usage",
@@ -775,6 +794,23 @@ export const ru: Record<MsgKey, string> = {
   "vuln.reason.ticketResolved": "Решено в трекере",
   "vuln.verificationRate": "Доля закрытий, подтверждённых сканом",
   "vuln.verifiedClosedCount": "{count} подтверждено сканом",
+
+  // Находки из инвентаря ПО на хостах (Track E, M3).
+  "vuln.reason.patched": "Обновлено на хосте",
+  "vuln.source": "Источник",
+  "vuln.source.any": "Любой источник",
+  "vuln.source.scan": "Сетевой скан",
+  "vuln.source.endpointSoftware": "Инвентарь ПО",
+  "vuln.software.noVerify":
+    "Проверяется следующим инвентарём с этого хоста, а не пересканом: скан не видит установленный пакет.",
+  "vuln.software.lastSnapshot": "Последнее наблюдение",
+  "vuln.software.device": "Хост",
+  "softwareCve.trackedFinding": "Находка",
+  "softwareCve.noTrackedFinding.noFix": "не отслеживается — нет опубликованного фикса",
+  "softwareCve.noTrackedFinding.fixed": "не отслеживается — на этом хосте уже исправлено",
+  "softwareCve.noTrackedFinding.notApplicable": "не отслеживается — релиз не затронут",
+  "softwareCve.noTrackedFinding.filtered":
+    "не отслеживается — ниже порога критичности либо ещё не свёрнуто в находку",
 
   // Per-tenant usage metering and quotas.
   "nav.usage": "Потребление",

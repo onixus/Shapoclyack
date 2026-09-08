@@ -14,6 +14,7 @@ import {
   SLA_STATUS,
   TENANT_STATUS,
   VULN_LIFECYCLE_STATUS,
+  VULN_SOURCE_STATUS,
   agentEffectiveStatus,
 } from "@/lib/config/statuses";
 import {
@@ -62,6 +63,7 @@ describe("status maps", () => {
     );
     expect(Object.keys(ASSET_EXPOSURE).sort()).toEqual([...ASSET_EXPOSURE_LEVELS].sort());
     expect(Object.keys(ASSET_CONTEXT_SOURCE).sort()).toEqual(["ad", "cmdb", "operator", "other"]);
+    expect(Object.keys(VULN_SOURCE_STATUS).sort()).toEqual(["endpoint_software", "scan"]);
   });
 
   it("give every entry a label and either a variant or a color class", () => {
@@ -78,6 +80,7 @@ describe("status maps", () => {
       ASSET_DATA_CLASSIFICATION,
       ASSET_EXPOSURE,
       ASSET_CONTEXT_SOURCE,
+      VULN_SOURCE_STATUS,
     ]) {
       for (const style of Object.values(map)) {
         expect(style.label).toBeTruthy();

@@ -41,6 +41,7 @@ from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
 from api.services import screenshot_retention
+from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
 from api.services.integrations import webhook_worker
@@ -78,6 +79,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     screenshot_retention.start_worker(settings)
     run_retention.start_worker(settings)
     risk_snapshots.start_worker(settings)
+    # Leader-locked, unlike the retention sweeps above: it takes no
+    # per-row claim, so a second replica would re-match the same devices
+    # and write the same lifecycle events twice.
+    software_match_worker.start_worker(settings)
     # Leader-locked like the scan dispatcher above, and for a stronger
     # reason: a duplicate scan is wasted work, a duplicate report is a
     # second PDF in a customer's inbox.
@@ -95,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
         report_dispatcher.stop_worker()
+        software_match_worker.stop_worker()
         risk_snapshots.stop_worker()
         run_retention.stop_worker()
         screenshot_retention.stop_worker()

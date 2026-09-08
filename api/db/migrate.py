@@ -71,6 +71,14 @@ def _upgrade(revision: str) -> None:
     command.upgrade(config, revision)
 
 
+def _downgrade(revision: str) -> None:
+    """Roll the schema back. Not reachable from :func:`main` on purpose — a
+    downgrade is an operator decision taken with the release notes open (see
+    ``docs/operations.md``), not something a container entrypoint may do."""
+    config = Config(str(_ALEMBIC_INI))
+    command.downgrade(config, revision)
+
+
 def run_upgrade(
     url: str,
     *,

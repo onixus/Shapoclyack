@@ -35,9 +35,18 @@ def normalize_usn_json(payload: Any) -> Iterator[dict[str, Any]]:
 
     The USN shape is ``{usn_id: {"cves": [...], "releases": {codename:
     {"sources": {pkg: {"version": …, "description": …}},
-     "binaries": {pkg: {"version": …}}}}}}``. Entries are emitted for the source
-    package and for every binary built from it, all pointing at the same fixed
-    version, since that is what the USN itself states.
+     "binaries": {pkg: {"version": …}},
+     "allbinaries": {pkg: {"version": …}}}}}}``. Entries are emitted for the
+    source package and for every binary built from it, all pointing at the same
+    fixed version, since that is what the USN itself states.
+
+    ``binaries`` is the headline subset Canonical shows on the notice page;
+    ``allbinaries`` is the full list. Reading only the first is a false
+    negative on every binary it leaves out — an inventory reporting
+    ``libssl-dev`` found nothing for a USN that names it, fell through to the
+    ``_BINARY_SUFFIXES`` heuristic and answered ``unknown``. The three groups
+    overlap by construction, so a package already emitted for this release is
+    skipped rather than yielded twice.
     """
     if not isinstance(payload, dict):
         return
@@ -72,13 +81,17 @@ def normalize_usn_json(payload: Any) -> Iterator[dict[str, Any]]:
         for release, detail in releases.items():
             if not isinstance(detail, dict):
                 continue
-            # ``sources`` and ``binaries`` overlap whenever a source package
-            # builds a binary of its own name — ``curl`` is in both lists of
-            # every curl USN — so the same statement is published twice. Emitted
-            # twice it would double a tens-of-thousands-entry dataset, and every
-            # lookup for that package would walk two identical records.
+            # ``sources``, ``binaries`` and ``allbinaries`` overlap whenever a
+            # source package builds a binary of its own name — ``curl`` is in
+            # every list of every curl USN — so the same statement arrives
+            # several times. Emitted several times it would inflate a
+            # tens-of-thousands-entry dataset, and every lookup for that package
+            # would walk identical records. ``allbinaries`` is read because
+            # ``binaries`` carries only a subset: USN-5051-2 lists ``libssl1.1``
+            # there and ``libssl-dev`` only in ``allbinaries``, and an inventory
+            # reporting ``libssl-dev`` must not miss a notice that covers it.
             emitted: set[str] = set()
-            for group in ("sources", "binaries"):
+            for group in ("sources", "binaries", "allbinaries"):
                 packages = detail.get(group)
                 if not isinstance(packages, dict):
                     continue

@@ -48,6 +48,7 @@ _log = logging.getLogger(__name__)
 LOCK_CLASS_ID = 0x53484150
 SCHEDULE_DISPATCHER_LOCK_ID = 1
 REPORT_DISPATCHER_LOCK_ID = 2
+SOFTWARE_MATCH_LOCK_ID = 3
 
 
 class LeaderLock:

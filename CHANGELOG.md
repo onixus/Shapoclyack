@@ -45,6 +45,76 @@ All notable changes to Shapoclyack are documented in this file.
   badged `stub` and never `fresh`, and a `null` — no manifest, nothing recorded
   — is left to the age check exactly as before.
 
+- **Software→CVE matches are tracked findings** (ROADMAP Track E, M3;
+  migration `0032`) — a match lived in `software_cve_matches`, keyed on
+  `device_id` and replaced wholesale on every run, so an authenticated finding
+  had no `finding_key`, no SLA, no owner, no ticket, no NIST risk and no line
+  in `vulnerability_events`; it was absent from the Vulnerability Center,
+  every report and the remediation board, and it vanished at the next run.
+  Matches now fold into the same `vulnerabilities` table the scanner writes,
+  carrying `source = "endpoint_software"` and the `device_id` they were seen
+  on. `GET /api/vulnerabilities?source=` narrows to either observer.
+
+  Four decisions are worth naming.
+
+  *The scan `finding_key` is untouched.* Widening that hash to tell the two
+  sources apart would have renamed every finding already in the table — every
+  open one would look new and every closed one would come back. Software
+  findings get their own namespaced key over `(asset, device, CVE)`; `device_id`
+  is in it because one asset can carry several endpoints and which host a
+  package is behind on is part of what the finding is.
+
+  *Only a `vulnerable` match with a published fix becomes a finding.* `fixed`
+  and `not_applicable` are the evidence that the matcher looked and answered,
+  and `unknown` is the honest "we could not tell" — a deadline attached to "we
+  do not know this endpoint's OS" puts the SLA report behind a non-statement.
+  The published-fix rule is not an optimisation: a full feed across a large
+  estate produces millions of `vulnerable` matches, and an SLA dashboard with
+  a million breaches is unreadable on its first day.
+  `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` adds a floor on top.
+
+  *Closure requires an observation, not an absence.* A software finding closes
+  as `closure_reason = patched`, `machine_verified = true`, only when the match
+  is gone or has become `fixed` **and** the device sent a newer accepted
+  snapshot **and** the advisory question could still be put at all — the
+  distribution resolved and its provider still has a dataset covering that
+  release. A device that went quiet produces exactly the same "no match" as a
+  device that was patched, and so does a feed volume that stopped mounting;
+  when the finding is not closed its `last_seen_at` does not move either, so
+  `?stale_days=` still surfaces it. A match that is still `vulnerable` but no
+  longer tracked — the vendor withdrew the fix, or the severity floor was
+  raised — leaves the finding open rather than closing it.
+
+  *`POST /api/vulnerabilities/{id}/verify` is `409` for a software finding.*
+  The asset has a scannable address and a scan would happily run — and prove
+  nothing, because a port scan does not observe an installed package. The
+  console hides the button and says what does verify it instead.
+
+  New worker `api/services/software_match_worker.py` keeps the lifecycle
+  current: leader-locked, batched, and due-when a device's
+  `latest_snapshot_id` differs from the one its matches were written from —
+  a durable queue that needs no column and is the same answer in every replica.
+  An accepted submission wakes it rather than re-matching inline, which would
+  have put a fleet-wide advisory walk on the agent's rate-limited ingest path.
+  Both `cve-matches/refresh` routes now fold synchronously and report what they
+  did in a `lifecycle` object. `OCTO_SOFTWARE_MATCH_ENABLED`,
+  `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`, `OCTO_SOFTWARE_MATCH_BATCH_SIZE`.
+
+  A livepatched kernel still reads as `vulnerable` and now gets a deadline —
+  there is no signal in the inventory to correct it, and the supported path is
+  a risk acceptance with a reason and an expiry rather than a guess.
+
+### Changed
+
+- **The tenant-wide matcher run is batched** — `run_for_tenant` opened a
+  session per device and issued a `DELETE` plus one `INSERT` per row, so its
+  cost scaled with the device count rather than the row count. It now walks
+  devices in batches, one `DELETE … IN` and one executemany `INSERT` per batch.
+- **Endpoint CVE-match rows carry `vuln_id`** — the tracked finding a match
+  produced, or null. Without it the console had two unconnected places talking
+  about the same CVE on the same host; the Matched CVEs panel now links to the
+  finding, and says why there is none where there is none.
+
 ### Fixed
 
 - **Three ways the provenance could lie, closed before they shipped.**
@@ -85,6 +155,113 @@ All notable changes to Shapoclyack are documented in this file.
   normalizer carried straight through — a string that is not a CVE, headed for
   `software_cve_matches` and the console as though it were one, with nothing to
   look it up against. It is now dropped like `undetermined`.
+
+- **Two ways the closure gate closed a software finding as `patched` without
+  anybody patching anything** (the asset merge below was a third). Each wrote
+  `machine_verified = true` and a `verification_passed` event by
+  `system:inventory`, which is the strongest claim this platform makes about a
+  closure.
+
+  *The closure gate asked the wrong question.* It read `packages_assessed > 0`
+  — "how many packages we could have asked about" — which is counted **before**
+  the advisory provider is consulted and stays comfortably positive on a host
+  whose feed has gone. An unmounted advisory volume, a `fetch` that wrote an
+  empty file or a release dropped from the vendor's export therefore produced
+  "assessed, no matches", and the next snapshot from any one device closed that
+  tenant's entire software backlog. The gate is now
+  `software_findings.assessment_possible`: distribution resolved, provider
+  loaded, release present in the dataset. The two fold paths
+  (`run_matcher=True` from the worker, `False` from the refresh routes) used to
+  compute this gate from different material and answer it opposite ways for the
+  same device; they now evaluate the same function.
+
+  *"The match is gone" and "we stopped tracking the match" were one condition.*
+  A vendor reissuing a USN as "affected, no fix yet" empties `fixed_version`,
+  and raising `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` moves the floor — in both
+  cases the match is still `vulnerable` and the host has not moved. Both closed
+  the finding as patched; raising the floor closed every software finding below
+  it across the tenant. A still-`vulnerable` match now holds its finding open,
+  counted separately as `held_open_untracked_match`.
+
+- **An asset merge no longer destroys or orphans a software finding.**
+  `_repoint_findings` recomputed every absorbed row's `finding_key` with the
+  *scan* key function, which is a different namespace from the software one.
+  A software row either collided with a scan finding for the same CVE and was
+  deleted along with its ticket, its SLA and its `vulnerability_events`, or it
+  survived under a key the next inventory fold cannot look up — so the fold
+  created a duplicate and closed the original as `patched`, machine-verified.
+  The function now branches on `source` and re-keys a software finding with
+  `software_findings.software_finding_key`.
+
+- **The Ubuntu USN converter reads `allbinaries`, not just `binaries`.**
+  `binaries` is the headline subset Canonical shows on the notice page;
+  `allbinaries` is what the USN actually covers. An inventory reporting
+  `libssl-dev` therefore found no advisory for a USN that names it, fell
+  through to the binary-name heuristic, derived a source package no dataset
+  has, and answered `unknown` — a false negative on a package with a published
+  fix. Entries are deduplicated per release, since the groups overlap.
+
+- **The Matched CVEs panel says which reason a row has no tracked finding.**
+  "not tracked — no published fix" was printed for every non-`unknown` row
+  without a `vuln_id`: for a `fixed` row with the fix in the very next column,
+  for a `not_applicable` row about a release the vendor says is not affected,
+  and for a match the severity floor filtered out. Four reasons, four strings.
+
+- **The software match queue drains, and can be left** (migration `0033`).
+  Three faults, one queue.
+
+  *A host with nothing to report never left it.* The queue was derived from
+  the match rows — due when `latest_snapshot_id` differs from the `snapshot_id`
+  those rows were written from — and a host where every package is matchable
+  and no advisory hits writes no rows at all, not even an `unknown`
+  placeholder. It was due on every tick for ever, and with `LIMIT batch_size`
+  and no `ORDER BY` a few hundred such hosts permanently starve the devices
+  that actually changed. `endpoint_devices.last_matched_snapshot_id` now
+  records the snapshot the fold ran over, whatever it concluded; the migration
+  backfills it from the existing match rows so nothing re-folds on deploy.
+
+  *One device stopped its whole tenant.* The fold ran a batch in one session
+  and the sweep caught at tenant level, so a device that raised failed its
+  batch and was re-read at the head of the same batch on the next tick, and
+  the next. Each device now folds in its own SAVEPOINT and a failure is held
+  off with a capped backoff (60s → 6h) rather than blocking the queue.
+
+  *A tick took one batch.* `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS` is
+  documented as a ceiling on how stale a software finding may be; the real
+  ceiling was `due / batch_size × interval`, which for 50k due devices at the
+  defaults is nearly five days. A tick now drains until the tenant has nothing
+  due or `OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS` (new, default 60) is spent,
+  shared across tenants, oldest inventory first.
+
+- **`GET /api/endpoint/cve-matches` pages in SQL.** It read every match row in
+  the tenant, sorted them in Python and sliced afterwards, then handed the
+  device id of every one of them to the tracked-finding lookup as an
+  `IN (...)` list. Past roughly 65k parameters psycopg refuses the statement,
+  so the endpoint returned 500 for the whole tenant at the estate size it is
+  most needed at. The ordering and the limit are now the database's.
+
+- **`0032`'s downgrade no longer turns software findings into scan findings.**
+  It dropped `source` and `device_id`, which are the only two things telling
+  the two apart, so a down-then-up left every software finding reading as
+  `source = 'scan'`, `device_id IS NULL`: no longer a `409` on `/verify`,
+  invisible to the inventory fold's lookup, and duplicated wholesale by the
+  next snapshot. The downgrade now deletes the rows it cannot label — which is
+  destructive and is now stated as such in the revision docstring and in
+  `docs/operations.md`, alongside a list of the revisions whose downgrade
+  destroys data.
+
+- **Upgrade note for `0032`: the estate's numbers step on the first matcher
+  run.** Every consumer of `vulnerabilities` filters on `state` and not on
+  `source`, so the moment software findings land they are counted by the
+  compliance evidence pass, the cross-tenant posture list, the per-asset
+  counters on the assets page, `estate_risk` and the risk-history snapshots.
+  That is intended — a finding found by looking inside a host is the same kind
+  of object as one found from outside — but the jump is a change in what is
+  measured, not an event in the estate, and the risk-history chart will draw
+  it as a step. It was intended only in a commit message until now;
+  `tests/test_software_findings_consumers.py` is the statement a future
+  `source`-aware filter has to argue with.
+
 
 ## [0.44-0907] — 2026-09-07
 
