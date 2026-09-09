@@ -3,6 +3,21 @@
 The API is served under `/api`. The Web UI uses the same API and stores the
 access token in browser local storage.
 
+## Request correlation
+
+Every response carries an **`X-Request-Id`** header
+([#330](https://github.com/onixus/Shapoclyack/issues/330)). Send one and it is
+echoed back, provided it is at most 128 characters of `[A-Za-z0-9._:@=+/-]` —
+a uuid, a ULID, a W3C `traceparent` or nginx's `$request_id` all qualify. Send
+anything else, or nothing, and the API mints a uuid4 and returns that instead:
+an id it had to rewrite would not correlate anyway.
+
+The same value appears in the `request_id` field of every log line the request
+produces and, when tracing is enabled, on the span as
+`shapoclyack.request_id` — so an id from a user's bug report is enough to find
+the request in the logs. See
+[operations.md](operations.md#logs-and-observability).
+
 ## Authentication
 
 User login:

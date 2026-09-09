@@ -2,7 +2,9 @@
 
 Kept as raw ASGI (not ``BaseHTTPMiddleware``) precisely because the body cap
 below has to be decided from the request headers, before Starlette/FastAPI
-buffers and JSON-parses the payload.
+buffers and JSON-parses the payload. The request-id layer at the bottom is raw
+ASGI for the neighbouring reason: it has to bind the correlation id before any
+other layer can log, the body-cap rejections that never reach a route included.
 """
 
 from __future__ import annotations
@@ -13,6 +15,13 @@ from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from api.request_context import (
+    REQUEST_ID_HEADER,
+    new_request_id,
+    reset_request_id,
+    sanitize_request_id,
+    set_request_id,
+)
 from api.services import metrics as metrics_service
 
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
@@ -188,3 +197,78 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, _send_with_headers)
+
+
+class RequestIdMiddleware:
+    """Bind a correlation id to the request and echo it back (#330).
+
+    Reads ``X-Request-Id`` from the caller when it is a value we are willing to
+    put in a log line and a response header (see
+    :func:`api.request_context.sanitize_request_id`), and mints a uuid4 hex
+    otherwise. An id that fails validation is *replaced*, not escaped: a client
+    whose id we had to rewrite cannot correlate on it anyway.
+
+    Raw ASGI rather than ``BaseHTTPMiddleware``, like the two classes above, and
+    added outermost so that the id is set before any other layer can log —
+    including the body-size rejections, which never reach a route.
+
+    The OTel span attribute is set from the ``http.response.start`` hook rather
+    than on the way in: ``FastAPIInstrumentor`` is installed *inside* this
+    middleware (``tracing.configure`` runs before ``create_app`` adds this one),
+    so on the way in there is no server span yet, while the response-start
+    message is sent from within it.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        supplied: str | None = None
+        wanted = REQUEST_ID_HEADER.lower().encode("ascii")
+        for name, value in scope.get("headers", []):
+            if name.lower() == wanted:
+                supplied = value.decode("latin-1", "replace")
+                break
+        request_id = sanitize_request_id(supplied) or new_request_id()
+
+        async def _send_with_id(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                _annotate_span(request_id)
+                raw_headers: list[tuple[bytes, bytes]] = list(message.get("headers", []))
+                header_name = REQUEST_ID_HEADER.encode("ascii")
+                if not any(k.lower() == wanted for k, _ in raw_headers):
+                    raw_headers.append((header_name, request_id.encode("ascii")))
+                message["headers"] = raw_headers
+            await send(message)
+
+        token = set_request_id(request_id)
+        try:
+            await self.app(scope, receive, _send_with_id)
+        finally:
+            reset_request_id(token)
+
+
+# Resolved once, not per response: OpenTelemetry is an optional dependency of
+# this install (``api/services/tracing.py`` degrades to a warning without it),
+# and a missing package must not turn every response into a 500 — nor an
+# ImportError into per-request work.
+try:  # pragma: no cover - depends on the install's extras
+    from opentelemetry import trace as _otel_trace
+except ImportError:  # pragma: no cover - depends on the install's extras
+    _otel_trace = None  # type: ignore[assignment]
+
+
+def _annotate_span(request_id: str) -> None:
+    """Put the correlation id on the active span, when tracing is on.
+
+    With tracing off but the package present, ``get_current_span()`` answers the
+    non-recording span and ``set_attribute`` is a no-op, so this costs one
+    attribute lookup on an installation that exports nothing.
+    """
+    if _otel_trace is None:  # pragma: no cover - depends on the install's extras
+        return
+    _otel_trace.get_current_span().set_attribute("shapoclyack.request_id", request_id)

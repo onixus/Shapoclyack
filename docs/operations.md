@@ -606,8 +606,72 @@ first, otherwise the next heartbeat registers it again.
 
 ## Logs and observability
 
-Use structured application logs and correlate by tenant, `job_id`, `run_id`,
-and `agent_id`. Do not log secrets or full authorization headers.
+### Log format, level, and the request id
+
+`OCTO_LOG_FORMAT=json` puts the API and the agent on one line-per-object
+format; `text` (the default) keeps them readable in a terminal.
+`OCTO_LOG_LEVEL` sets the level for both — see
+[configuration.md](configuration.md#environment-variables). The API hands the
+same formatter to uvicorn, so `uvicorn.access` is in the chosen format too
+instead of uvicorn's own colourised one.
+
+```json
+{"ts":"2026-09-09T11:04:21.318452Z","level":"INFO","logger":"uvicorn.access","msg":"10.42.0.7:53114 - \"GET /api/runs?token=*** HTTP/1.1\" 200","request_id":"3f9c1a7be0d4472f8a1e6b2c5d8e0f11"}
+```
+
+Every request carries a correlation id. `X-Request-Id` is taken from the
+caller when it is safe to echo and to log — at most 128 characters of
+`[A-Za-z0-9._:@=+/-]`, so a uuid, a ULID, a W3C `traceparent` or nginx's
+`$request_id` all pass — and a fresh uuid4 is minted otherwise. An id that
+fails that check is *replaced*, not escaped: a client whose id we had to
+rewrite cannot correlate on it anyway. The value comes back in the response's
+`X-Request-Id`, appears in the `request_id` field of every log line the request
+produces, and is set on the OpenTelemetry span as `shapoclyack.request_id` when
+tracing is on.
+
+Following one request from a user report:
+
+```bash
+# the id the console (or your ingress) reported
+kubectl -n network-scan logs deployment/shapoclyack-api --tail=-1 \
+  | grep '"request_id":"3f9c1a7be0d4472f8a1e6b2c5d8e0f11"'
+
+# text format: the id is the bracketed field after the logger name
+kubectl -n network-scan logs deployment/shapoclyack-api | grep '\[3f9c1a7b'
+```
+
+Beyond the request id, correlate by tenant, `job_id`, `run_id`, and `agent_id`
+— a scan outlives the request that started it, and those are the keys that
+follow it into the agent's own logs.
+
+### Secret redaction, and what it does not cover
+
+A `logging.Filter` on the process's handler rewrites each record's **rendered**
+message before it is formatted, on both the API and the agent. It renders the
+record first (so a secret passed as a `%s` argument is masked exactly like one
+written into the format string) and masks four shapes:
+
+| Shape | Example in, example out |
+|---|---|
+| Keyed pairs — `password`, `passwd`, `pwd`, `token`, `secret`, `api_key`, `authorization`, with `=` or `:` | `token=abc123` → `token=***` |
+| `Bearer` credentials, header or JSON | `Authorization: Bearer abc.def` → `Authorization: ***` |
+| Credentials in a URL | `postgresql://octo:s3cret@db/octo` → `postgresql://octo:***@db/octo` |
+| JWTs in compact serialization | `eyJhbGciOi….payload.sig` → `eyJ***` |
+
+A separator is *required* for the keyed pairs, so "the token is invalid"
+survives intact — a redaction that eats the only line saying what went wrong
+protects nothing.
+
+This is a backstop, not a licence to log credentials. Its limits, stated
+plainly:
+
+- It masks the log **message** and a formatted traceback. Anything written to
+  stdout by something other than the `logging` module — a subprocess the
+  scanner runs, a library printing directly — never passes through it.
+- It is syntactic. A secret logged with no key, no scheme and no recognisable
+  shape (`LOG.info(value)`) looks like ordinary text and is emitted as it is.
+- It runs on the handlers this process installs. A sidecar or an operator that
+  adds its own handler to the root logger gets unfiltered records.
 
 Useful checks:
 

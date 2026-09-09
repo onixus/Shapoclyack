@@ -43,6 +43,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Structured logging, a request id, and secret redaction**
+  ([#330](https://github.com/onixus/Shapoclyack/issues/330)). `OCTO_LOG_FORMAT`
+  (`text` by default, `json` for a shipper) and `OCTO_LOG_LEVEL` configure the
+  API and the agent alike; the API hands the same formatter to uvicorn, so
+  `uvicorn.access` stops being the one stream in a different shape. JSON lines
+  carry `ts`, `level`, `logger`, `msg`, `request_id`, and `exc` on a traceback,
+  and the formatter is built on the standard library — no new dependency.
+  `RequestIdMiddleware` binds a correlation id per request: `X-Request-Id` from
+  the caller when it is safe to echo and to log (128 characters of a narrow
+  set, so a uuid, a ULID or a `traceparent` passes and a CRLF injection does
+  not), a fresh uuid4 otherwise. It comes back in the response header, appears
+  in every log line the request produces, and is set on the OpenTelemetry span
+  as `shapoclyack.request_id`. A `logging.Filter` on both processes masks
+  keyed `password=`/`token=`/`secret=` pairs, `Bearer` credentials, passwords
+  inside `scheme://user:pass@host` URLs, and JWTs — including secrets that
+  arrive as `%s` arguments, which is how this repository logs. `docs/operations.md`
+  now describes the filter and its limits instead of instructing operators not
+  to log secrets. Head trace sampling is configurable with
+  `OCTO_OTEL_TRACES_SAMPLER_RATIO` (default `1.0`, parent-based).
+
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426

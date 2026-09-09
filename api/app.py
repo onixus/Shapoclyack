@@ -13,7 +13,11 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
-from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
+from api.middleware import (
+    BodySizeLimitMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+)
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
@@ -210,6 +214,11 @@ def create_app() -> FastAPI:
         metrics_service.HTTP_REQUESTS_TOTAL.labels(request.method, path, str(response.status_code)).inc()
         metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(request.method, path).observe(duration)
         return response
+
+    # Added last, which in Starlette means outermost: the correlation id has to
+    # be bound before anything else can log, including the body-size rejections
+    # that never reach a route and the CORS preflight answers (#330).
+    app.add_middleware(RequestIdMiddleware)
 
     @app.get("/metrics", include_in_schema=False)
     def metrics_endpoint(request: Request) -> Response:
