@@ -48,17 +48,22 @@ All notable changes to Shapoclyack are documented in this file.
   ran one API replica pinned to a scanner node, the in-cluster single-pod
   PostgreSQL, and neither NATS nor ClickHouse; there was no second overlay to
   point at. The new one sets API `replicas: 2` with `podAntiAffinity` and
-  `topologySpreadConstraints`, an HPA (CPU 70%, 2–6) and a PDB
-  `minAvailable: 1`; scales NATS JetStream to three nodes with
+  `topologySpreadConstraints` (with `nodeTaintsPolicy: Honor`, so a cordoned
+  node stops counting as a domain and a drain does not strand the replacement
+  pod), and an HPA (CPU 70%, 2–6); scales NATS JetStream to three nodes with
   `OCTO_NATS_STREAM_REPLICAS=3` (the `nats-ha` patches moved out of `examples/`,
   where nothing referenced them, into the overlay — kustomize refuses to load a
   patch file from outside its root); fills in `OCTO_NATS_URL` and
   `OCTO_CLICKHOUSE_URL`; and replaces the in-cluster PostgreSQL — StatefulSet,
   Services, NetworkPolicy, `pg_dump` CronJob and dev Secret — with a
   Secret-supplied `?sslmode=verify-full` URL to a managed one. It also opens the
-  NATS route port 6222 between broker pods, which base's NetworkPolicy denied:
-  without that rule a 3-node cluster silently never forms under an enforcing
-  CNI. `k8s/scripts/validate-kustomize.sh` renders the overlay in CI.
+  NATS route port 6222 between broker pods, which base's NetworkPolicy denied
+  (without that rule a 3-node cluster silently never forms under an enforcing
+  CNI), spreads the three broker pods across nodes, and gives them a PDB —
+  three pods the scheduler may stack on one node are one failure domain, and a
+  parallel drain of two nodes costs the JetStream quorum. The API keeps base's
+  `maxUnavailable: 1` budget rather than patching it to `minAvailable: 1`,
+  which at six replicas would permit five simultaneous evictions. `k8s/scripts/validate-kustomize.sh` renders the overlay in CI.
   **It is deliberately not appliable as rendered** — the RWX storage class, the
   NATS route password and the external-PostgreSQL Secret are placeholders that
   fail loudly. Requirements, the manual drill, and what the profile does *not*
@@ -752,8 +757,10 @@ All notable changes to Shapoclyack are documented in this file.
   means no voluntary disruption is ever permitted: `kubectl drain` on that node
   waited forever, so a node upgrade needed the PDB deleted by hand. Base now
   says `maxUnavailable: 1`, which is the honest statement for one replica — the
-  rollout strategy is what limits the gap — and `overlays/prod-ha` patches it
-  back to `minAvailable: 1`, where there are at least two replicas to protect.
+  rollout strategy is what limits the gap — and `overlays/prod-ha` inherits it
+  unchanged: the same rule is correct at one replica (it permits the drain that
+  `minAvailable: 1` blocked) and at six (it keeps five available), because its
+  meaning scales with the replica count.
 
 ## [0.44-0907] — 2026-09-07
 

@@ -11,7 +11,8 @@
 # placeholders (RWX storage class, NATS route password, external Postgres
 # Secret) that fail loudly rather than defaults that fail quietly.
 #
-#   1. API: >= 2 replicas, spread across nodes, HPA to 6, PDB minAvailable: 1.
+#   1. API: >= 2 replicas, spread across nodes, HPA to 6, and base's PDB
+#      finally has something to protect.
 #      Requires ReadWriteMany artifact storage — until #336 moves artifacts to
 #      object storage, two API pods on two nodes both mount `scanner-data`, and
 #      an RWO volume can only be attached to one node at a time.
@@ -21,17 +22,55 @@
 #
 # ClickHouse stays a single StatefulSet pod here — see docs/high-availability.md
 # § What this overlay does not give you.
+#
+# This is NOT a superset of overlays/prod. It deliberately does not carry that
+# overlay's `hostNetwork: true` + `workload=scanner` patches for the scan Job
+# and CronJob: those are a scanning-topology choice, orthogonal to availability,
+# and pinning the API to one node pool is the opposite of what this overlay is
+# for. An installation migrating from `prod` that needs them copies
+# ../prod/job-hostnetwork-patch.yaml and ../prod/cronjob-hostnetwork-patch.yaml
+# into this directory and adds them below — kustomize will not load a patch from
+# outside its own root.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
+# Repeated from base/kustomization.yaml, and not redundant: the namespace and
+# label transformers there apply to base's own resources, so an object added by
+# THIS kustomization (api-hpa.yaml) would render with no namespace at all. A
+# namespace-less HPA applied from a kubeconfig pointing at `default` is created
+# in `default`, never finds `Deployment/shapoclyack-api`, and sits in
+# FailedGetScale forever — reporting `<unknown>` exactly the way a cluster with
+# no metrics-server does.
+namespace: network-scan
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: shapoclyack
+    includeSelectors: false
 
 resources:
   - ../../base
   - api-hpa.yaml
+  - nats-pdb.yaml
 
+# No PDB patch here on purpose. base/api-pdb.yaml says `maxUnavailable: 1`,
+# and that is already the right rule for this overlay: with N >= 2 replicas it
+# keeps N-1 available and serialises drains, which is strictly stronger than
+# `minAvailable: 1` — the latter would let five of six replicas be evicted at
+# once during a parallel node upgrade. The same object is correct at one
+# replica (where it permits the drain that `minAvailable: 1` used to block) and
+# at six, because its meaning scales with the replica count.
 patches:
   - path: api-ha-patch.yaml
-  - path: api-pdb-patch.yaml
   - path: pvc-rwx-patch.yaml
+  # Uncomment when the external database's certificate does not chain to a
+  # public root — which is the usual case. Left off by default because it makes
+  # the `shapoclyack-postgres-ca` Secret a hard prerequisite, and an
+  # installation whose provider uses a public CA has nothing to mount. Left OUT
+  # of the default render means CI does not exercise it: re-run
+  # `k8s/scripts/validate-kustomize.sh` after uncommenting.
+  # - path: postgres-ca-patch.yaml
   # NATS 3-node cluster. Both halves are required: the first scales the
   # StatefulSet, the second replaces nats.conf with the clustered one. See the
   # header of each file — the route password in the ConfigMap is a placeholder

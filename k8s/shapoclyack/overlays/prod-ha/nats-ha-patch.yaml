@@ -40,3 +40,23 @@ metadata:
 spec:
   replicas: 3
   podManagementPolicy: Parallel
+  template:
+    spec:
+      # Three pods that the scheduler is free to put on one node are not a
+      # cluster, they are one failure domain with three PVCs — and losing that
+      # node loses the JetStream quorum along with every queued job offer,
+      # which is the exact failure a 3-node cluster is bought to prevent.
+      # Nothing in base spreads them, because base runs one pod.
+      #
+      # Hard requirement here, unlike the API's: the replica count is fixed at
+      # 3 and a JetStream quorum of 2 is only meaningful across three nodes, so
+      # a cluster with fewer nodes should leave the third pod Pending and say
+      # why rather than pretend.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: shapoclyack
+                  app.kubernetes.io/component: nats

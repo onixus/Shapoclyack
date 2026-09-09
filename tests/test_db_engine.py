@@ -10,7 +10,11 @@ from api.db.engine import get_session, insert_if_absent
 from api.services import tenants as tenants_service
 from tests.conftest import make_settings, requires_postgres
 
-pytestmark = requires_postgres
+# Per test rather than per module: the pool-sizing tests below never open a
+# connection (create_engine is lazy), so skipping them without a Postgres would
+# mean the whole feature goes unexercised on a developer's laptop -- silently,
+# the way a skip does.
+UNCONNECTED_POSTGRES_URL = "postgresql+psycopg://u:p@127.0.0.1:5432/shapoclyack"
 
 
 def _agent(agent_id: str) -> models.Agent:
@@ -27,6 +31,7 @@ def _agent(agent_id: str) -> models.Agent:
     )
 
 
+@requires_postgres
 def test_insert_if_absent_keeps_a_duplicate_from_aborting_the_transaction(tmp_path):
     """The P1.2 startup imports run in every replica at once, so a
     check-then-insert can lose the race. Without the SAVEPOINT the resulting
@@ -59,7 +64,14 @@ def test_configure_sizes_the_connection_pool(tmp_path):
     `max_connections` at the same moment (#335). Before configure() reached the
     engine the values were whatever the library chose."""
     settings = make_settings(
-        tmp_path, db_pool_size=3, db_max_overflow=1, db_pool_timeout=7
+        tmp_path,
+        # An explicit URL, not conftest's: nothing here connects (create_engine
+        # is lazy and the schema helper skips non-SQLite), so the test must not
+        # depend on a Postgres being configured to run at all.
+        postgres_url=UNCONNECTED_POSTGRES_URL,
+        db_pool_size=3,
+        db_max_overflow=1,
+        db_pool_timeout=7,
     )
     db_engine.reset_for_tests()
     try:
@@ -77,7 +89,7 @@ def test_configure_after_the_engine_exists_rebuilds_it(tmp_path):
     the numbers would leave the live pool on the old sizing -- and nothing would
     say so. Ordering in create_app() makes this a test-only path; it is asserted
     because a silent no-op here reads exactly like a working knob."""
-    settings = make_settings(tmp_path)
+    settings = make_settings(tmp_path, postgres_url=UNCONNECTED_POSTGRES_URL)
     db_engine.reset_for_tests()
     try:
         first = db_engine.get_engine(settings.postgres_url)
@@ -91,13 +103,24 @@ def test_configure_after_the_engine_exists_rebuilds_it(tmp_path):
 
 
 def test_sqlite_fallback_ignores_pool_sizing(tmp_path):
-    """The dev/test SQLite fallback gets a pool class that accepts neither
-    pool_size nor max_overflow; passing them anyway is a TypeError at engine
-    construction, i.e. an API that will not start."""
-    settings = make_settings(tmp_path, postgres_url=f"sqlite:///{tmp_path / 'dev.db'}")
+    """An in-memory SQLite URL gets a SingletonThreadPool, which accepts neither
+    pool_size nor max_overflow -- passing them is a TypeError at engine
+    construction, i.e. an API that will not start. `sqlite:///file` happens to
+    get a QueuePool and would tolerate them, so asserting on the engine rather
+    than on the kwargs would pass with the guard removed."""
+    settings = make_settings(tmp_path, db_pool_size=3)
     db_engine.reset_for_tests()
     try:
         db_engine.configure(settings)
-        assert db_engine.get_engine(settings.postgres_url) is not None
+        assert db_engine._pool_kwargs("sqlite://") == {}
+        assert db_engine._pool_kwargs(f"sqlite:///{tmp_path / 'dev.db'}") == {}
+        assert db_engine.get_engine("sqlite://") is not None
     finally:
         db_engine.reset_for_tests()
+
+
+def test_pool_kwargs_are_empty_until_configured():
+    """Tools and most of the suite never call configure(); they must keep
+    SQLAlchemy's own defaults rather than get a half-built options dict."""
+    db_engine.reset_for_tests()
+    assert db_engine._pool_kwargs("postgresql+psycopg://u:p@h/d") == {}

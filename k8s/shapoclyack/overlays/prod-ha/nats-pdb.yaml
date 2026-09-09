@@ -1,0 +1,22 @@
+# JetStream keeps quorum with 2 of 3 servers, so exactly one NATS pod may be
+# unavailable at a time (#335). Base ships no PDB for NATS because base runs a
+# single pod, where a budget would only block drains.
+#
+# Without this, a node upgrade that drains two nodes in parallel takes two of
+# the three servers down together: the meta group loses quorum, R3 streams stop
+# accepting writes, and job dispatch stalls until a server comes back. The
+# eviction API is the only place that can refuse it — the anti-affinity rule in
+# nats-ha-patch.yaml decides placement, not disruption.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shapoclyack-nats
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: nats
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: nats

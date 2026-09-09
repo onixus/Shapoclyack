@@ -1,0 +1,49 @@
+# Mount a private CA bundle so `sslmode=verify-full` has something to verify
+# against (#335). NOT applied by default — add it to `patches:` in
+# kustomization.yaml when your database's certificate does not chain to the
+# image's system trust store.
+#
+# Which is most of the time: AWS RDS, Cloud SQL and Yandex Managed publish CA
+# bundles you download, and a CloudNativePG or Patroni cluster mints its own.
+# The failure without this is not subtle but it is late — the `migrate` init
+# container exits with `root certificate file "/etc/ssl/postgres-ca/ca.crt"
+# does not exist` and the pod sits in Init:CrashLoopBackOff.
+#
+# Create the Secret first:
+#
+#   kubectl -n network-scan create secret generic shapoclyack-postgres-ca \
+#     --from-file=ca.crt=/path/to/provider-ca.crt
+#
+# and keep `sslrootcert=/etc/ssl/postgres-ca/ca.crt` in the URL held by
+# `shapoclyack-postgres-external`. If your provider's certificate DOES chain to
+# a public root, drop `sslrootcert=` from the URL instead of applying this —
+# `verify-full` then uses the system store and there is nothing to mount.
+#
+# Both containers need it: the init container connects before the API does.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: migrate
+          volumeMounts:
+            - name: postgres-ca
+              mountPath: /etc/ssl/postgres-ca
+              readOnly: true
+      containers:
+        - name: api
+          volumeMounts:
+            - name: postgres-ca
+              mountPath: /etc/ssl/postgres-ca
+              readOnly: true
+      volumes:
+        - name: postgres-ca
+          secret:
+            secretName: shapoclyack-postgres-ca
+            # Not `optional: true`: a missing CA with verify-full in the URL is
+            # a connection that fails anyway, and failing at mount time names
+            # the Secret instead of hiding it in a libpq error.
+            defaultMode: 0444

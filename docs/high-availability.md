@@ -18,7 +18,8 @@ half-works is worse than a value that fails with the name of the thing it needs.
 |---|---|---|
 | API `replicas: 2`, HPA to 6 at 70% CPU | `api-ha-patch.yaml`, `api-hpa.yaml` | One replica means every node drain, rollout and eviction is an outage |
 | `podAntiAffinity` + `topologySpreadConstraints` | `api-ha-patch.yaml` | Two replicas on one node survive a pod failure but not a node failure |
-| PDB `minAvailable: 1` | `api-pdb-patch.yaml` | Serialises voluntary disruptions so two nodes cannot be drained at once |
+| API PDB `maxUnavailable: 1` (inherited from base) | `base/api-pdb.yaml` | Serialises voluntary disruptions: at N replicas it keeps N-1 available, which `minAvailable: 1` would not — that would let five of six be evicted at once |
+| NATS PDB `maxUnavailable: 1`, NATS anti-affinity | `nats-pdb.yaml`, `nats-ha-patch.yaml` | Three broker pods the scheduler may stack on one node are one failure domain, and a parallel drain of two nodes costs the JetStream quorum |
 | NATS 3-node JetStream cluster, streams `R3` | `nats-ha-patch.yaml`, `nats-ha-configmap-patch.yaml`, `OCTO_NATS_STREAM_REPLICAS=3` | A single broker pod loses every queued job offer with its node |
 | Route port 6222 opened between NATS pods | `nats-cluster-networkpolicy-patch.yaml` | Base's NetworkPolicy denies it, so the cluster silently never forms |
 | `OCTO_NATS_URL` and `OCTO_CLICKHOUSE_URL` filled in | `api-ha-patch.yaml` | Base leaves both empty — they are opt-in sidecars there |
@@ -30,6 +31,15 @@ Apply order is the usual one:
 ```bash
 kubectl apply -k k8s/shapoclyack/overlays/prod-ha
 ```
+
+### Kubernetes 1.27+
+
+The API's hostname spread constraint sets `nodeTaintsPolicy: Honor` and
+`nodeAffinityPolicy: Honor`. Both default to `Ignore`, under which a node that
+`kubectl drain` has cordoned still counts as a topology domain — so the evicted
+pod's replacement has nowhere to go without pushing the skew past 1 and stays
+`Pending` for the whole maintenance window. The fields are silently pruned by
+older API servers, which puts that behaviour back.
 
 ## Prerequisites
 
@@ -80,6 +90,17 @@ ExternalSecrets (`examples/externalsecret.example.yaml`) so the password does
 not pass through shell history. The Secret is a prerequisite, not part of the
 overlay: applying without it leaves the pods in `CreateContainerConfigError`
 naming `shapoclyack-postgres-external`.
+
+If your provider's certificate does not chain to a public root — RDS, Cloud
+SQL and CloudNativePG all mint or publish their own — you also need the CA
+inside the pod. `postgres-ca-patch.yaml` in the overlay mounts it; it is
+commented out of `kustomization.yaml` by default, because an installation whose
+database uses a public CA has nothing to mount and would only gain a Secret it
+must create. Uncomment it, create `shapoclyack-postgres-ca` from the bundle, and
+keep `sslrootcert=/etc/ssl/postgres-ca/ca.crt` in the URL. Without one of those
+two the `migrate` init container exits with
+`root certificate file "/etc/ssl/postgres-ca/ca.crt" does not exist` and the pod
+sits in `Init:CrashLoopBackOff`.
 
 `?sslmode=verify-full` is not decoration — without any `sslmode=` libpq
 negotiates TLS opportunistically and accepts whatever certificate it is handed,
@@ -207,8 +228,17 @@ Naming these is the point of the page.
   [#309](https://github.com/onixus/Shapoclyack/issues/309) /
   [#359](https://github.com/onixus/Shapoclyack/issues/359); a 3-node cluster
   does not change it. Keep `:4222` and `:6222` on the cluster network.
-* **The scan Job and CronJob are unchanged.** They are batch work with their own
-  retry semantics; running two of them is not availability.
+* **The scan Job and CronJob are unchanged, relative to `base`.** They are batch
+  work with their own retry semantics; running two of them is not availability.
+  Note that this overlay is **not** a superset of `overlays/prod`: it does not
+  carry that overlay's `hostNetwork: true` + `workload=scanner` patches for the
+  Job and CronJob. An installation moving from `prod` to `prod-ha` that scans
+  from the host network must copy `overlays/prod/job-hostnetwork-patch.yaml` and
+  `overlays/prod/cronjob-hostnetwork-patch.yaml` into `overlays/prod-ha/` and add
+  them to `patches:` — kustomize will not load a patch file from outside its
+  own root. Left out silently, the scan Jobs move to the pod network and return
+  quieter results with no error.
+* **ClickHouse and the scan workload have no HPA.** Only the API scales.
 
 ## Verifying the profile
 

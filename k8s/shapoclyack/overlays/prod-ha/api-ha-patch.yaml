@@ -5,9 +5,16 @@ kind: Deployment
 metadata:
   name: shapoclyack-api
 spec:
-  # Two is the floor, not the target: the HPA in api-hpa.yaml owns the number
-  # from here on (minReplicas: 2). Kustomize still has to set it, because a
-  # first apply creates the Deployment before the HPA has observed anything.
+  # Two is the floor, not the target — the HPA in api-hpa.yaml moves it between
+  # 2 and 6. It is still set here because a first apply creates the Deployment
+  # before any HPA has observed anything.
+  #
+  # Known friction, and not something an overlay can fix: `kubectl apply -k`
+  # writes this field back, so re-applying while the HPA holds 5 replicas
+  # briefly drops the Deployment to 2 before the HPA raises it again. Use
+  # `kubectl diff -k` first if that matters, or drop the field once the HPA is
+  # established (GitOps tools generally have a "ignore spec.replicas" setting
+  # for exactly this).
   replicas: 2
   template:
     spec:
@@ -31,13 +38,26 @@ spec:
                     app.kubernetes.io/name: shapoclyack
                     app.kubernetes.io/component: api
       topologySpreadConstraints:
-        # One pod per node until every node has one, then a second round.
-        # DoNotSchedule is deliberate: two API pods on one node is not high
-        # availability, and a cluster too small to honour it should say so at
-        # schedule time rather than at the first node failure.
+        # Even distribution, enforced: one pod per node until every node has
+        # one, then a second round. DoNotSchedule is deliberate — two API pods
+        # on one node while another node sits empty is not high availability,
+        # and the scheduler should refuse it rather than discover it at the
+        # first node failure. maxSkew: 1 still allows growth past the node
+        # count, so the HPA's ceiling of 6 is not capped by it.
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: DoNotSchedule
+          # Both default to Ignore, which is the trap: a node that `kubectl
+          # drain` has cordoned (taint node.kubernetes.io/unschedulable) or that
+          # went NotReady still counts as a topology domain, so the evicted
+          # pod's replacement cannot go anywhere without pushing the skew to 2
+          # and stays Pending with "didn't satisfy pod topology spread
+          # constraints" for the whole maintenance window. Honor drops those
+          # nodes from the domain set, which is what makes a drain finish
+          # instead of costing half the capacity. Needs Kubernetes >= 1.27 (the
+          # fields are pruned, silently, on older API servers).
+          nodeTaintsPolicy: Honor
+          nodeAffinityPolicy: Honor
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: shapoclyack

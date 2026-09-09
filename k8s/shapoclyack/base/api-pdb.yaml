@@ -14,8 +14,10 @@ spec:
   # install: there is nothing here to keep available, the rollout strategy
   # (maxUnavailable: 0 / maxSurge: 1) is what limits the gap.
   #
-  # overlays/prod-ha, where there are at least two replicas to protect, patches
-  # this back to `minAvailable: 1`.
+  # overlays/prod-ha inherits this unchanged rather than patching it: at N >= 2
+  # replicas the same rule keeps N-1 available and serialises drains, which is
+  # strictly stronger than `minAvailable: 1` — that would let five of six
+  # replicas be evicted at once during a parallel node upgrade.
   maxUnavailable: 1
   selector:
     matchLabels:

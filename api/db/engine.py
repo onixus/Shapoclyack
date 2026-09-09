@@ -82,9 +82,23 @@ def get_engine(url: str) -> Engine:
 
 def get_session_factory(url: str) -> sessionmaker[Session]:
     """Return a sessionmaker factory configured for ``url``."""
+    return _ensure_session_factory(url)
+
+
+def _ensure_session_factory(url: str) -> sessionmaker[Session]:
+    """Build the engine if needed and hand back the factory it was built with.
+
+    Reading the ``_SessionLocal`` global *after* ``get_engine`` released the
+    lock is a race with anything that resets it — ``configure()`` on a pool
+    change, ``reset_for_tests()`` between tests — and the loser gets an
+    ``AssertionError`` with no message, or a ``TypeError: 'NoneType' object is
+    not callable`` under ``python -O``. Taking the same lock for the read keeps
+    the caller with a usable factory even if the next caller gets a new one.
+    """
     get_engine(url)
-    assert _SessionLocal is not None
-    return _SessionLocal
+    with _lock:
+        assert _SessionLocal is not None
+        return _SessionLocal
 
 
 def _create_schema_if_unmanaged(engine: Engine) -> None:
@@ -170,9 +184,7 @@ def _sqlite_add_column_spec(engine: Engine, column: Column) -> str:
 
 @contextmanager
 def get_session(url: str) -> Iterator[Session]:
-    get_engine(url)
-    assert _SessionLocal is not None
-    session = _SessionLocal()
+    session = _ensure_session_factory(url)()
     try:
         yield session
         session.commit()
