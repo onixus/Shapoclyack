@@ -147,6 +147,39 @@ def _is_online(last_seen: datetime | None) -> bool:
     return age <= _require_settings().agent_stale_seconds
 
 
+# The operator-set lifecycle states an agent row can be in (#308). Kept apart
+# from the reported ``status`` column (idle/busy/error, "stale" derived on
+# read): one is what an operator decided, the other is what the agent said.
+LIFECYCLE_ACTIVE = "active"
+LIFECYCLE_STATES = (LIFECYCLE_ACTIVE, "disabled", "quarantined")
+
+_LIFECYCLE_MESSAGES = {
+    "disabled": (
+        "This agent is disabled by an operator; job claims and result uploads "
+        "are refused until it is re-enabled."
+    ),
+    "quarantined": (
+        "This agent is quarantined by an operator; job claims and result "
+        "uploads are refused until the quarantine is lifted."
+    ),
+}
+
+
+def lifecycle_message(lifecycle_status: str, reason: str | None = None) -> str | None:
+    """The sentence a non-active agent is told, reason appended when there is one.
+
+    Built here rather than at each call site so the heartbeat response, the
+    refused claim and the refused upload all say the same thing — the agent
+    logs whichever one it meets first, and an operator comparing the API's
+    answer with the agent's journal should not have to match two wordings.
+    """
+    base = _LIFECYCLE_MESSAGES.get(lifecycle_status)
+    if base is None:
+        return None
+    reason = (reason or "").strip()
+    return f"{base} Reason: {reason}" if reason else base
+
+
 class AgentVersionTooOld(RuntimeError):
     """An agent reported a version below ``OCTO_AGENT_MIN_VERSION``.
 
@@ -251,6 +284,7 @@ def _pack_detail(
 
 def _to_info(row: models.Agent) -> AgentInfo:
     online = _is_online(row.last_seen_at)
+    lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
     human_detail, metrics, capabilities, upgrade_requested = _extract_detail(row.detail)
     version = row.version or ""
     is_outdated = bool(version and version != LATEST_AGENT_VERSION)
@@ -284,6 +318,9 @@ def _to_info(row: models.Agent) -> AgentInfo:
         )
         if upgrade_required
         else None,
+        lifecycle_status=lifecycle_status,  # type: ignore[arg-type]
+        lifecycle_reason=row.lifecycle_reason,
+        lifecycle_message=lifecycle_message(lifecycle_status, row.lifecycle_reason),
     )
 
 
@@ -291,6 +328,148 @@ def reset_for_tests() -> None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         session.query(models.Agent).delete()
+
+
+class AgentCredentialRevoked(RuntimeError):
+    """The credential behind an agent JWT is no longer good.
+
+    Its own class rather than ``PermissionError`` because the route answers
+    ``401``, not ``403``: nothing is wrong with what the agent is asking for,
+    the credential itself has stopped being one. It is also what tells the
+    agent's run loop to re-exchange its provisioning key instead of backing
+    off — and when the key is what was revoked, that exchange fails too, which
+    is the intended end state.
+    """
+
+
+def check_credential(
+    *,
+    agent_id: str | None,
+    tenant_id: str,
+    key_id: str | None,
+) -> None:
+    """Re-check an authenticated agent's credential against the database (#308).
+
+    An agent JWT is valid for two hours and, until now, nothing between minting
+    and expiry could stop it: revoking the provisioning key it came from,
+    deleting the agent, or disabling it all left the token working. This runs
+    on every agent request, so those acts take effect at once.
+
+    Two checks, and deliberately only two:
+
+    * the provisioning key still exists, is not revoked and is not expired
+      (:class:`AgentCredentialRevoked` → 401);
+    * the agent row, **if there is one**, belongs to the token's tenant
+      (``PermissionError`` → 403).
+
+    A *missing* row is not refused, because the very first request an agent
+    makes is the registration that creates it — and because a deleted agent and
+    a never-registered one are the same absence. Making a delete stick is what
+    ``?revoke_key=true`` is for: it takes away the key, which the first check
+    above then catches. Lifecycle state is not checked here either; the routes
+    apply it, so a heartbeat from a disabled agent can still be answered with
+    the reason it is disabled.
+    """
+    settings = _require_settings()
+    if key_id:
+        state = tenants_service.provisioning_key_state(key_id)
+        if state != "active":
+            raise AgentCredentialRevoked(
+                f"The provisioning key behind this agent token is {state}; "
+                "re-provision the agent with a current key"
+            )
+    if not agent_id:
+        return
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id)
+        if row is not None and row.tenant_id != tenant_id:
+            raise PermissionError("Cross-tenant agent access denied")
+
+
+def require_identity_match(token_agent_id: str | None, requested_agent_id: str | None) -> None:
+    """Refuse a request that acts as an agent other than the credential's own (#308).
+
+    The agent JWT carries the ``agent_id`` it was minted for, and until now
+    nothing compared it with the id in the body, the form or the query string:
+    a token for one agent could heartbeat as, claim for, and upload results as
+    any other agent in the same tenant, which is the whole fleet of an MSSP
+    customer.
+
+    **A legacy shared-token agent (``OCTO_AGENT_TOKEN``) has no identity to
+    bind to**, so it keeps working exactly as before — the shared token is one
+    credential for every agent in the ``default`` tenant by construction, and
+    the tenant check is still the only boundary it has. That is why the legacy
+    mode is documented as lab-only; this function cannot improve it, only
+    decline to pretend otherwise.
+    """
+    if not token_agent_id:
+        return
+    requested = (requested_agent_id or "").strip()
+    if requested and requested != token_agent_id:
+        raise PermissionError(
+            "Agent token is bound to a different agent_id; a token may only act as itself"
+        )
+
+
+def require_active(agent_id: str) -> None:
+    """Raise :class:`PermissionError` unless the agent row is ``active``.
+
+    An unregistered id passes: this gates the work an agent asks *for*, and the
+    routes that need the row to exist already answer 404 for a missing one.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id)
+        if row is None:
+            return
+        lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
+        if lifecycle_status == LIFECYCLE_ACTIVE:
+            return
+        raise PermissionError(lifecycle_message(lifecycle_status, row.lifecycle_reason))
+
+
+def set_lifecycle_status(
+    agent_id: str,
+    *,
+    lifecycle_status: str,
+    reason: str = "",
+    tenant_id: str | None = None,
+    actor: str = "",
+) -> AgentInfo:
+    """Move one agent between lifecycle states.
+
+    Returning to ``active`` clears the reason: the sentence explained a state
+    the agent is no longer in, and keeping it would leave the console showing a
+    stale accusation against a working agent.
+    """
+    if lifecycle_status not in LIFECYCLE_STATES:
+        raise ValueError(f"status must be one of {', '.join(LIFECYCLE_STATES)}")
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id)
+        if row is None or (tenant_id and row.tenant_id != tenant_id):
+            # Same LookupError either way — see get_agent on the id oracle.
+            raise LookupError("Agent not found")
+        previous = row.lifecycle_status or LIFECYCLE_ACTIVE
+        row.lifecycle_status = lifecycle_status
+        row.lifecycle_reason = (
+            None if lifecycle_status == LIFECYCLE_ACTIVE else (reason or "").strip()[:512] or None
+        )
+        session.flush()
+        info = _to_info(row)
+        recorded_reason = row.lifecycle_reason or ""
+    # #327 replaces this with an audit_events row; until it lands the log line
+    # is the only durable record that an operator changed an agent's state.
+    _log.info(
+        "agent lifecycle change agent_id=%s tenant_id=%s from=%s to=%s actor=%s reason=%s",
+        agent_id,
+        info.tenant_id,
+        previous,
+        lifecycle_status,
+        actor or "unknown",
+        recorded_reason,
+    )
+    return info
 
 
 def register_agent(
@@ -302,6 +481,7 @@ def register_agent(
     tenant_id: str = "default",
     metrics: dict[str, Any] | None = None,
     capabilities: list[str] | None = None,
+    provisioning_key_id: str | None = None,
 ) -> AgentInfo:
     settings = _require_settings()
     now = _now()
@@ -331,6 +511,19 @@ def register_agent(
             )
             if row.status == "stale":
                 row.status = "idle"
+            # Re-registering does not launder a disabled or quarantined agent
+            # back into service: without this, an agent refused on claim would
+            # simply restart and come back as a fresh "active" row, which is
+            # the pause that #308 is about. Only an operator moves it back.
+            if (row.lifecycle_status or LIFECYCLE_ACTIVE) != LIFECYCLE_ACTIVE:
+                raise PermissionError(
+                    lifecycle_message(row.lifecycle_status, row.lifecycle_reason)
+                )
+            # Rewritten on every registration, so an agent that re-registers
+            # with a newer key is deletable-with-revoke against *that* key
+            # rather than one that is already gone.
+            if provisioning_key_id:
+                row.provisioning_key_id = provisioning_key_id
             session.flush()
             return _to_info(row)
 
@@ -341,6 +534,8 @@ def register_agent(
             version=version or "",
             labels=dict(labels or {}),
             status="idle",
+            lifecycle_status=LIFECYCLE_ACTIVE,
+            provisioning_key_id=provisioning_key_id,
             current_job_id=None,
             detail=_pack_detail(metrics=metrics, capabilities=capabilities),
             registered_at=now,
@@ -348,7 +543,19 @@ def register_agent(
         )
         session.add(row)
         session.flush()
-        return _to_info(row)
+        info = _to_info(row)
+    # #327 replaces this with an audit_events row. Until then it is the only
+    # record that a key was exchanged for a place in the fleet, which is the
+    # event an operator reconstructs an intrusion from.
+    _log.info(
+        "agent registered agent_id=%s tenant_id=%s hostname=%s version=%s key_id=%s",
+        info.agent_id,
+        info.tenant_id,
+        info.hostname,
+        info.version,
+        provisioning_key_id or "",
+    )
+    return info
 
 
 def heartbeat(
@@ -534,22 +741,62 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
     )
 
 
-def delete_agent(agent_id: str, tenant_id: str | None = None) -> bool:
-    """Delete and report whether anything was deleted.
+def delete_agent(
+    agent_id: str,
+    tenant_id: str | None = None,
+    *,
+    revoke_key: bool = False,
+    actor: str = "",
+) -> dict[str, Any] | None:
+    """Delete the agent, optionally revoking the key it registered with.
 
-    An agent in another tenant is reported as absent, for the reason in
-    :func:`get_agent`.
+    Returns ``None`` when there was nothing to delete — an agent in another
+    tenant is reported as absent, for the reason in :func:`get_agent`.
+
+    Deleting the row alone is not a revocation: the host still holds the
+    provisioning key it registered with and a valid JWT minted from it, so it
+    re-registers on its next poll and the "delete" was a pause (#308).
+    ``revoke_key`` is what makes it permanent, and the answer says which of the
+    two happened rather than implying the stronger one.
+
+    ``key_revoked`` is ``False`` with ``provisioning_key_id`` ``None`` for an
+    agent registered before this column existed, and for a legacy
+    shared-token agent: neither has a key on record, and ``OCTO_AGENT_TOKEN``
+    is not a per-agent credential this could revoke at all.
     """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id)
         if row is None:
-            return False
+            return None
         if tenant_id and row.tenant_id != tenant_id:
-            return False
+            return None
+        key_id = row.provisioning_key_id
+        agent_tenant_id = row.tenant_id
         session.delete(row)
         session.flush()
-        return True
+
+    key_revoked = False
+    if revoke_key and key_id:
+        # After the delete, and in its own session: revoking first would leave
+        # a revoked key behind if the delete then failed, and the FK from
+        # agents.provisioning_key_id has to be gone before the key row is
+        # touched by anything that might remove it later.
+        key_revoked = tenants_service.revoke_provisioning_key(key_id) is not None
+    # #327 replaces this with an audit_events row.
+    _log.info(
+        "agent deleted agent_id=%s tenant_id=%s actor=%s key_id=%s key_revoked=%s",
+        agent_id,
+        agent_tenant_id,
+        actor or "unknown",
+        key_id or "",
+        key_revoked,
+    )
+    return {
+        "agent_id": agent_id,
+        "provisioning_key_id": key_id,
+        "key_revoked": key_revoked,
+    }
 
 
 def request_upgrade(agent_id: str, tenant_id: str | None = None) -> dict[str, Any]:

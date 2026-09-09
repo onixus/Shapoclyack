@@ -6,6 +6,48 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **An agent token can only act as the agent it was minted for**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). The `agent_id` in
+  an agent JWT was never compared with the one in the request — body, form or
+  query string — only the tenant was, so a token lifted off one worker could
+  heartbeat as, claim jobs for and upload results as every other agent in that
+  tenant, which for an MSSP customer is its whole fleet. All four agent routes
+  now answer `403` for a mismatch, and registering without an `agent_id` uses
+  the token's own rather than minting a random one. A legacy `OCTO_AGENT_TOKEN`
+  agent has no identity to bind to and is unchanged — one more reason that
+  variable is deprecated.
+- **Agents can be disabled or quarantined, and it survives a restart**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). New
+  `PATCH /api/agents/{id}` (tenant **admin**) moves an agent between `active`,
+  `disabled` and `quarantined`, with a reason that reaches the agent itself.
+  A non-`active` agent is refused job claims and result uploads with `403` and
+  cannot re-register its way back to `active`; its heartbeat is still answered,
+  so it learns why and backs off to one poll every five minutes instead of one
+  per second. The state is a new column and does not disturb the reported
+  `idle`/`busy`/`error` status. Shown, and settable, in the agent drawer on
+  `/agents`.
+- **Deleting an agent can now revoke its credential**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)).
+  `DELETE /api/agents/{id}` removed the row and nothing else: the host kept its
+  provisioning key and a JWT valid for up to two hours, and re-registered on
+  its next poll, so "delete" was a pause. `?revoke_key=true` revokes the key the
+  agent registered with — a link that is now recorded — and the response reports
+  whether anything was revoked rather than implying it. Every authenticated
+  agent request re-checks its provisioning key against the database, so
+  revoking a key (by this route or the tenant one) stops the JWTs already
+  minted from it at once instead of after their remaining lifetime.
+- **Provisioning keys expire** ([#308](https://github.com/onixus/Shapoclyack/issues/308)).
+  New `OCTO_PROVISIONING_KEY_TTL_DAYS` (default `90`, `0` = perpetual) stamps
+  `expires_at` at mint time; an exchange after it answers `401`, and the key
+  list carries `expires_at` and an `expires_soon` flag. **Keys minted before
+  this stay perpetual** — nothing back-dates them, because a deadline nobody was
+  told about would strand whichever fleets are already past it; the list is how
+  they are found and rotated.
+  Migration `0039_agent_status_key_expiry` (expand only, nothing backfilled).
+  Registration, lifecycle changes, deletion and key revocation are logged with
+  their fields today; the audit trail
+  ([#327](https://github.com/onixus/Shapoclyack/issues/327)) will pick them up.
+
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
   form and preferred it over the value the server minted at `start_scan` or

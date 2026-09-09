@@ -18,7 +18,11 @@ import { Button } from "@/components/ui/button";
 import { useAgents, useAgentSummary } from "@/hooks/use-agents";
 import { usePagination } from "@/hooks/use-pagination";
 import { type AgentInfo } from "@/lib/api";
-import { AGENT_STATUS, agentEffectiveStatus } from "@/lib/config/statuses";
+import {
+  AGENT_LIFECYCLE_STATUS,
+  AGENT_STATUS,
+  agentEffectiveStatus,
+} from "@/lib/config/statuses";
 import { useT } from "@/lib/i18n";
 
 export default function AgentsPage() {
@@ -54,7 +58,20 @@ export default function AgentsPage() {
         accessorFn: (agent) => agentEffectiveStatus(agent),
         header: t("col.status"),
         cell: ({ row }) => (
-          <StatusBadge value={agentEffectiveStatus(row.original)} map={AGENT_STATUS} />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusBadge value={agentEffectiveStatus(row.original)} map={AGENT_STATUS} />
+            {/* The operator's verdict, alongside the reported status rather
+                than instead of it (#308): a quarantined agent that still
+                heartbeats is idle *and* quarantined, and an operator scanning
+                the fleet needs to see which one it is. Shown only when it is
+                not `active`, which is every healthy agent. */}
+            {row.original.lifecycle_status && row.original.lifecycle_status !== "active" && (
+              <StatusBadge
+                value={row.original.lifecycle_status}
+                map={AGENT_LIFECYCLE_STATUS}
+              />
+            )}
+          </div>
         ),
       },
       {

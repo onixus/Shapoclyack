@@ -368,6 +368,21 @@ and the button then reads as requested; it does not push anything to the host.
 The host is upgraded there — see
 [operations.md](operations.md#agent-installation-and-upgrade).
 
+**Agent State** in the drawer is the operator's verdict on the agent, and it
+sits apart from the status badge because the two say different things
+([#308](https://github.com/onixus/Shapoclyack/issues/308)): the badge is what
+the agent reports about itself, the state is what an operator decided. The
+**Disable** and **Quarantine** buttons take a reason, which is shown to the
+agent itself and to whoever opens the drawer next; **Re-activate** clears it.
+Both take tenant `admin` and answer `403` for an operator. A non-`active`
+agent carries a second badge in the table and in the drawer header — only when
+it is not active, since a badge on every healthy agent would say nothing.
+
+**Deregister** now offers *Also revoke its provisioning key*, off by default
+because one key commonly provisions a whole fleet. Left off, the deregistration
+is a pause: the host still holds the key and re-registers on its next poll, and
+the toast says so rather than letting the operator assume otherwise.
+
 The **Deploy Agent** dialog has four tabs. **Remote SSH Push** installs onto a
 host the platform connects to itself: host, port, username, either a password or
 a private key, an expected SSH host key fingerprint, and optionally Docker. The

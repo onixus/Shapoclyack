@@ -235,6 +235,126 @@ def test_the_server_side_refusals_get_their_own_exception_types(monkeypatch):
         client._request("GET", "/api/ping", max_retries=0)  # noqa: SLF001
 
 
+def test_a_disabled_agents_403_is_its_own_exception_and_a_plain_403_is_not(monkeypatch):
+    """Only the two lifecycle refusals become AgentDisabled (#308).
+
+    A 403 also covers a cross-tenant request and the agent-id binding, and
+    those two are misconfiguration to fail loudly on — backing off for five
+    minutes would hide a token pointed at the wrong fleet.
+    """
+    import io
+    import urllib.error
+
+    import pytest
+
+    bodies = iter(
+        [
+            b'{"detail":"This agent is disabled by an operator; job claims ..."}',
+            b'{"detail":"This agent is quarantined by an operator; job claims ..."}',
+            b'{"detail":"Cross-tenant agent access denied"}',
+        ]
+    )
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=403,
+            msg="refused",
+            hdrs={},
+            fp=io.BytesIO(next(bodies)),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+
+    for _ in range(2):
+        with pytest.raises(worker.AgentDisabled):
+            client._request("POST", "/api/agent/jobs/claim", max_retries=0)  # noqa: SLF001
+    with pytest.raises(RuntimeError) as excinfo:
+        client._request("POST", "/api/agent/jobs/claim", max_retries=0)  # noqa: SLF001
+    assert not isinstance(excinfo.value, worker.AgentDisabled)
+
+
+def test_a_disabled_agent_backs_off_instead_of_polling_every_second(monkeypatch, caplog):
+    """A disabled agent keeps heartbeating but stops hammering the claim.
+
+    The state is changed by a person in the console, so at the normal poll
+    interval the agent would spend however long that takes writing one refusal
+    per second into its journal and onto the API.
+    """
+    import argparse
+    import logging
+
+    waits: list[float] = []
+    beats = 0
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def register(self, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": "a1", "hostname": "edge-1", "tenant_id": "t1"}
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            nonlocal beats
+            beats += 1
+            if beats > 3:
+                raise KeyboardInterrupt
+            # Answered even while disabled, and this is where the agent finds
+            # out why — before the claim below is refused.
+            return {
+                "agent_id": "a1",
+                "lifecycle_status": "disabled",
+                "lifecycle_message": "This agent is disabled by an operator; Reason: rack retired",
+            }
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            raise worker.AgentDisabled(
+                "POST /api/agent/jobs/claim -> 403: This agent is disabled by an operator;"
+            )
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    # The backoff is an interruptible wait on the shutdown event, so SIGTERM
+    # still stops the agent promptly; record it instead of waiting it out.
+    original_wait = threading.Event.wait
+
+    def fake_wait(self, timeout=None):
+        if timeout is not None:
+            waits.append(timeout)
+            return False
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", fake_wait)
+    args = argparse.Namespace(
+        api_url="http://127.0.0.1:8080",
+        token="static-token",
+        timeout=1.0,
+        provisioning_key="",
+        jwt_refresh_seconds=1800,
+        agent_id="a1",
+        hostname="edge-1",
+        label=None,
+        nats_url="",
+        poll_interval=0.01,
+        config="scanner/config/default.yaml",
+        output_dir="out",
+        scan_timeout=1.0,
+    )
+
+    with caplog.at_level(logging.ERROR, logger=worker.LOG.name):
+        assert worker.run_loop(args) == 0
+
+    assert waits and all(w == worker.DISABLED_BACKOFF_SECONDS for w in waits)
+    # The operator's reason reaches the agent's journal, and once — three
+    # identical polls must not be three identical lines.
+    reason_lines = [r for r in caplog.records if "rack retired" in r.getMessage()]
+    assert len(reason_lines) == 1
+
+
 def test_the_loop_re_exchanges_the_provisioning_key_after_a_401(monkeypatch):
     """Rotating the agent signing key invalidates every token in the fleet at
     once (#312). Waiting out --jwt-refresh-seconds would idle every agent for

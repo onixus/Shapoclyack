@@ -257,6 +257,11 @@ class ProvisioningKey(Base):
     created_at: Mapped[datetime]
     revoked_at: Mapped[datetime | None] = mapped_column(default=None)
     last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    # When the key stops being exchangeable, from OCTO_PROVISIONING_KEY_TTL_DAYS
+    # at mint time (#308). NULL means "never", which is what every key minted
+    # before this column has and what a TTL of 0 mints — the column adds an
+    # expiry to new keys, it does not retroactively expire old ones.
+    expires_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class Asset(Base):
@@ -998,6 +1003,24 @@ class Agent(Base):
     version: Mapped[str] = mapped_column(default="")
     labels: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(default="idle")
+    # What an *operator* decided about this agent (active | disabled |
+    # quarantined), as distinct from ``status`` above, which is what the agent
+    # last said about itself. Two columns rather than one because the two
+    # answer different questions and are written by different parties: an
+    # agent reporting "busy" must not overwrite an operator's "quarantined",
+    # and the fleet view needs both at once (#308).
+    lifecycle_status: Mapped[str] = mapped_column(default="active", server_default="active")
+    # Free text from the operator who moved it out of ``active`` — it is what
+    # the refused agent is told and what the next operator reads.
+    lifecycle_reason: Mapped[str | None] = mapped_column(default=None)
+    # The provisioning key this agent registered with, so deleting the agent
+    # can also revoke the credential that would let the same host register
+    # itself straight back (#308). Nullable: legacy shared-token agents were
+    # never minted from a key, and rows that predate this column have no
+    # record of which key they used.
+    provisioning_key_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provisioning_keys.key_id"), default=None, index=True
+    )
     current_job_id: Mapped[str | None] = mapped_column(default=None)
     detail: Mapped[str | None] = mapped_column(default=None)
     registered_at: Mapped[datetime]

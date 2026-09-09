@@ -379,7 +379,8 @@ only source the Risk Overview trend chart reads
 | `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin, as for `/jobs` |
 | `GET /api/agents/summary` | viewer | Fleet rollup: total / online / busy / stale / error / outdated, `latest_version`, and a per-tenant count |
 | `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities and `upgrade_requested`; `404` outside the tenant |
-| `DELETE /api/agents/{id}` | operator | Forgets the registration. It does **not** stop the remote process — an agent that is still running re-registers on its next heartbeat |
+| `PATCH /api/agents/{id}` | **admin** | Moves the agent between `active`, `disabled` and `quarantined` (`{"status": …, "reason": …}`), and answers the agent as it now stands. A non-`active` agent is refused job claims and result uploads with `403`; its heartbeat is still accepted so the reason reaches it. The state survives re-registration — a restart is not an appeal ([#308](https://github.com/onixus/Shapoclyack/issues/308)) |
+| `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the agent registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (an agent registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
 | `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
@@ -396,6 +397,36 @@ for the former and `404` for the latter told a caller which ids are real
 elsewhere in the installation, which is the only thing an opaque id is worth. A
 platform admin without a requested tenant sees the whole fleet, the same rule
 as `/api/jobs`.
+
+**An agent token may only act as itself**
+([#308](https://github.com/onixus/Shapoclyack/issues/308)). The JWT a
+provisioning key is exchanged for carries an `agent_id`, and every agent route
+that takes one from the caller — `agent_id` in the body of
+`/api/agent/register` and `/api/agent/heartbeat`, in the query string of
+`/api/agent/jobs/claim`, in the form of `/api/agent/jobs/{id}/results` — now
+requires it to be the token's own, or answers `403`. Before this the id was
+checked only against the tenant, so one compromised agent could heartbeat as,
+claim for and upload results as every other agent in the tenant, which for an
+MSSP customer is its whole fleet. Registering with no `agent_id` uses the
+token's rather than minting a random one, so a restarted agent comes back as
+itself.
+
+**The boundary this does not fix.** A legacy `OCTO_AGENT_TOKEN` agent has *no*
+identity to bind to — the shared token is one credential for every agent in the
+`default` tenant by construction — so it keeps behaving exactly as before, and
+the tenant check remains the only boundary it has. That is another reason the
+variable is deprecated and refused in `prod` from 2027-03-01
+(see [configuration.md](configuration.md)).
+
+**A verified signature is not the whole check.** Every authenticated agent
+request re-reads two things from the database, so revocation lands at once
+instead of after the token's remaining lifetime: the provisioning key behind
+the token must still exist, be unrevoked and be unexpired (`401` otherwise),
+and the agent row, when there is one, must belong to the token's tenant
+(`403`). A *missing* row is not refused — the first request an agent ever makes
+is the registration that creates it, and a deleted agent is indistinguishable
+from a never-registered one. Making a delete permanent is therefore
+`?revoke_key=true`, not the delete alone.
 
 **Who may mint a provisioning key** ([#231](https://github.com/onixus/Shapoclyack/issues/231)).
 A provisioning key registers agents into the tenant, which makes handing one
@@ -428,6 +459,21 @@ returned exactly once, so an existing key cannot be re-embedded in a snippet —
 a fresh mint is the only way to fill the placeholder in, and the operator asks
 for it explicitly rather than getting one per dialog open. Revoke unused keys
 via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
+
+**Keys expire** ([#308](https://github.com/onixus/Shapoclyack/issues/308)). A
+key minted from now on carries an `expires_at`, set at mint time from
+`OCTO_PROVISIONING_KEY_TTL_DAYS` (90 days by default; `0` mints perpetual
+keys). An exchange after that time answers `401`, with the same message as an
+unknown or revoked key — presenting a guessed key learns nothing about which
+half was wrong. The key list reports `expires_at` and an `expires_soon` flag,
+`true` within 14 days of the expiry and `false` once the key is already expired
+or revoked: those are conclusions, not deadlines.
+
+**Keys minted before this are perpetual and stay perpetual** — `expires_at` is
+`null` on every one of them and nothing back-dates it. Stamping a TTL onto keys
+an operator was never told had one would strand whichever fleets are already
+past it; expiring an old key is a deliberate revoke, and the list is what finds
+the ones still carrying no expiry.
 
 **Agent version, and the floor** ([#363](https://github.com/onixus/Shapoclyack/issues/363)).
 The agent ships in the same release as the API and carries the same version, so

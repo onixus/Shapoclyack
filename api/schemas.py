@@ -399,6 +399,24 @@ class AgentInfo(BaseModel):
     min_version: str = ""
     upgrade_required: bool = False
     upgrade_message: str | None = None
+    # The operator's verdict on this agent, separate from ``status`` above,
+    # which is what the agent reports about itself (#308). ``lifecycle_message``
+    # is the same sentence the agent meets on a refused claim, carried on the
+    # heartbeat response so it lands in the agent's own journal.
+    lifecycle_status: Literal["active", "disabled", "quarantined"] = "active"
+    lifecycle_reason: str | None = None
+    lifecycle_message: str | None = None
+
+
+class UpdateAgentStatusRequest(BaseModel):
+    """Move one agent between lifecycle states (#308).
+
+    ``reason`` is optional but is what the refused agent is told and what the
+    next operator reads, so the console asks for it.
+    """
+
+    status: Literal["active", "disabled", "quarantined"]
+    reason: str = Field(default="", max_length=512)
 
 
 class AgentFleetSummary(BaseModel):
@@ -841,6 +859,13 @@ class ProvisioningKeyInfo(BaseModel):
     created_at: str | None = None
     revoked_at: str | None = None
     last_used_at: str | None = None
+    # ``None`` means the key never expires — the state of every key minted
+    # before #308 and of every key minted with OCTO_PROVISIONING_KEY_TTL_DAYS=0.
+    # ``expires_soon`` is derived on read, and is false once the key is already
+    # expired or revoked: "soon" is a warning, and neither of those is a
+    # warning any more.
+    expires_at: str | None = None
+    expires_soon: bool = False
     # Present only on create (one-time plaintext).
     key: str | None = None
 

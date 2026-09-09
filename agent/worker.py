@@ -150,6 +150,31 @@ class AgentTokenRejected(RuntimeError):
     """
 
 
+class AgentDisabled(RuntimeError):
+    """An operator disabled or quarantined this agent server-side (#308).
+
+    Distinguished from every other 403 because the answer is to wait, not to
+    retry: the state is changed by a person in the console, so polling at the
+    normal interval would fill the journal with one refusal per second and put
+    a pointless request per second on the API for however long the agent stays
+    disabled. The loop backs off to
+    ``DISABLED_BACKOFF_SECONDS`` and keeps heartbeating, which is what keeps it
+    visible in the fleet view — and what lets it notice being re-enabled.
+    """
+
+
+# Five minutes: long enough that a quarantined fleet is not a load source,
+# short enough that re-enabling an agent from the console is felt while the
+# operator is still looking at the page.
+DISABLED_BACKOFF_SECONDS = 300.0
+
+# Substrings of the API's own refusal (api/services/agents.py::lifecycle_message).
+# Matched on the message because a 403 also covers cross-tenant access and the
+# agent-id binding, and those two are misconfiguration to be logged loudly, not
+# a state to wait out.
+_DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operator")
+
+
 class AgentUpgradeRequired(RuntimeError):
     """The API refused the claim because this agent is below its version floor.
 
@@ -219,6 +244,8 @@ class AgentClient:
                     raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
                 if exc.code == 426:
                     raise AgentUpgradeRequired(f"{method} {path} -> 426: {detail}") from exc
+                if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
+                    raise AgentDisabled(f"{method} {path} -> 403: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 if attempt < max_retries:
@@ -832,6 +859,8 @@ def run_loop(args: argparse.Namespace) -> int:
 
     shutdown_event = threading.Event()
     last_upgrade_message = ""
+    last_lifecycle_message = ""
+    last_backoff_message = ""
 
     def _sig_handler(signum: int, frame: Any) -> None:
         LOG.info("Received signal %s, initiating graceful shutdown", signum)
@@ -862,6 +891,13 @@ def run_loop(args: argparse.Namespace) -> int:
                     # otherwise fill its journal with one line per poll.
                     LOG.error("%s", message)
                 last_upgrade_message = message
+                # The heartbeat is answered even while an agent is disabled or
+                # quarantined (#308), so this is where it finds out — before
+                # the claim below is refused, and with the operator's reason.
+                lifecycle_message = str((beat or {}).get("lifecycle_message") or "")
+                if lifecycle_message and lifecycle_message != last_lifecycle_message:
+                    LOG.error("%s", lifecycle_message)
+                last_lifecycle_message = lifecycle_message
                 job: dict[str, Any] | None = None
                 if nats_session is not None:
                     job = nats_session.pull_and_claim(
@@ -899,6 +935,22 @@ def run_loop(args: argparse.Namespace) -> int:
             except AgentUpgradeRequired as exc:
                 LOG.error("Job claim refused: %s", exc)
                 time.sleep(args.poll_interval)
+            except AgentDisabled as exc:
+                # Logged on change only, for the reason upgrade_message is: the
+                # API repeats the refusal on every poll, and at the normal
+                # interval that is one journal line per second for as long as
+                # an operator leaves the agent disabled.
+                message = str(exc)
+                if message != last_backoff_message:
+                    LOG.error(
+                        "Refused by the control plane; backing off %.0fs: %s",
+                        DISABLED_BACKOFF_SECONDS,
+                        message,
+                    )
+                last_backoff_message = message
+                # Interruptible, so SIGTERM still stops the agent promptly
+                # instead of after however much of the backoff is left.
+                shutdown_event.wait(DISABLED_BACKOFF_SECONDS)
             except Exception:  # noqa: BLE001
                 LOG.exception("Agent loop error")
                 time.sleep(args.poll_interval)

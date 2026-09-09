@@ -475,6 +475,56 @@ there now, so both `python -m agent` and `python -m agent.worker` run the
 agent, but the flags in an old unit are still wrong: **an agent installed by an
 older installer needs a re-run of this one.**
 
+### Agent lifecycle: disable, quarantine, deregister
+
+An agent has two states at once, and they answer different questions
+([#308](https://github.com/onixus/Shapoclyack/issues/308)):
+
+- **What it reports** — `idle` / `busy` / `error`, with `stale` derived from
+  `last_seen_at` against `OCTO_AGENT_STALE_SECONDS`. Written by the agent.
+- **What you decided** — `lifecycle_status`: `active`, `disabled` or
+  `quarantined`. Written only by a tenant **admin**, through
+  `PATCH /api/agents/{id}` or the **Agent State** controls in the agent's
+  drawer on `/agents`.
+
+A `disabled` or `quarantined` agent is refused job claims and result uploads
+with `403` and the reason you typed. Its **heartbeat is still accepted**: the
+heartbeat response is the only channel that reaches a running agent, so it is
+where the agent learns why it is being refused, and refusing it too would drop
+the agent out of the fleet view at the moment you are watching it. The agent
+logs the reason once and backs off to one poll every five minutes rather than
+one per second.
+
+The state survives re-registration — restarting the agent is not an appeal.
+Only `PATCH … {"status": "active"}` puts it back, and that clears the reason.
+
+**Deregistering is weaker than it looks.** `DELETE /api/agents/{id}` removes
+the row; it does not stop the remote process, and it does not revoke anything.
+The host still holds its provisioning key and a JWT valid for up to
+`OCTO_AGENT_JWT_EXPIRE_MINUTES`, so it re-registers on its next poll and the
+delete was a pause. Two ways to make it stick, depending on what you mean:
+
+| You want | Do this |
+|---|---|
+| This host must stop working, the rest of the fleet must not | `PATCH /api/agents/{id}` → `quarantined`. Survives restarts; the host keeps its credential but can claim nothing |
+| This host is gone and its credential must die with it | `DELETE /api/agents/{id}?revoke_key=true` — revokes the key it registered with, which also invalidates the JWTs already minted from it, at once |
+| The key itself is compromised | `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke` — every agent that registered with it is refused on its next request |
+
+The delete response says which of these happened. `provisioning_key_id: null,
+key_revoked: false` means there was no key on record to revoke: an agent that
+registered before this was tracked, or a legacy `OCTO_AGENT_TOKEN` one, which
+has no per-agent credential at all. Those agents record a key the first time
+they re-register.
+
+**Rotating provisioning keys.** Keys minted from now on expire after
+`OCTO_PROVISIONING_KEY_TTL_DAYS` (90 by default). `GET
+/api/tenants/{tenant_id}/provisioning-keys` reports `expires_at` and
+`expires_soon` (within 14 days), which is the list to work from. **Keys minted
+before this feature have `expires_at: null` and never expire** — nothing
+back-dates them, because stranding a fleet on a deadline nobody was told about
+is worse than a key that outlives its usefulness. Find them in that list,
+re-install the agents against a fresh key, then revoke the old one.
+
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
