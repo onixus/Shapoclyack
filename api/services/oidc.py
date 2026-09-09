@@ -26,14 +26,13 @@ described by its ``.well-known/openid-configuration``. Choices worth stating:
   has not been answered already. The nonce and the PKCE verifier live only in
   that server-side record, so the browser never carries either.
 
-The one-time record is process-local. That is deliberate rather than a
-shortcut: the record lives for ``oidc_state_ttl_seconds`` (10 minutes by
-default) between one browser redirect and its callback, and making it a table
-would put a write on the unauthenticated login path. With more than one API
-replica an authorization request must therefore come back to the replica that
-issued it — see docs/configuration.md; installations behind a load balancer
-enable session affinity for ``/api/auth/oidc/*``, exactly as they already do
-for nothing else.
+The one-time record is a row in ``oidc_pending_states`` (#321), keyed on a
+hash of the state's id. It used to be a dict in the API process, on the
+argument that a write on the unauthenticated login path was worse than the
+constraint it bought; the constraint was that a callback had to come back to
+the replica that issued it, which no amount of session affinity delivers
+across a rollout. Consumption is a single ``DELETE … RETURNING``, so two
+replicas answering the same callback cannot both go on to exchange the code.
 """
 
 from __future__ import annotations
@@ -53,7 +52,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
+from sqlalchemy import delete, select
 
+from api.db import models
+from api.db.engine import get_session
 from api.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -96,14 +98,18 @@ class AuthorizationRequest:
     expires_in: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class _StateRecord:
-    """The server's half of one in-flight authorization request."""
+    """The server's half of one in-flight authorization request.
+
+    Read back from ``oidc_pending_states`` by the row's own deletion, so it is
+    frozen: by the time a caller holds one, the record it came from is gone.
+    """
 
     nonce: str
     code_verifier: str
     redirect_uri: str
-    expires_at: float
+    expires_at: datetime
     next_url: str = ""
 
 
@@ -116,12 +122,13 @@ class _CacheEntry:
 _lock = threading.Lock()
 _metadata_cache: dict[str, _CacheEntry] = {}
 _jwks_cache: dict[str, _CacheEntry] = {}
-_states: dict[str, _StateRecord] = {}
 
-# Hard ceiling on pending (issued but unanswered) authorization requests. The
-# login route is unauthenticated, so this is what stops it being a memory
-# exhaustion primitive; see :func:`_prune_states`.
-MAX_PENDING_STATES = 10_000
+# Expired pending states are swept opportunistically, at most this often per
+# process — the shape auth_audit._maybe_prune already uses for auth_events.
+# Shorter than that table's hour because these rows live for minutes.
+_prune_lock = threading.Lock()
+_last_prune: datetime | None = None
+_PRUNE_INTERVAL = timedelta(minutes=5)
 
 
 # --------------------------------------------------------------------------- #
@@ -418,28 +425,56 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _prune_states(now: float) -> None:
-    """Drop expired records, then cap what is left. Called under ``_lock``.
+def _now() -> datetime:
+    # Naive UTC, matching every other timestamp column in this schema.
+    return datetime.now(UTC).replace(tzinfo=None)
 
-    Expiry alone is not a bound: ``/api/auth/oidc/login`` is unauthenticated, so
-    anyone able to reach it can mint records faster than they age out and grow
-    this dict until the replica dies. The cap makes the store cost a fixed
-    amount of memory; the price of hitting it is that the oldest pending logins
-    are forgotten, and a login whose record is gone fails closed at
-    :func:`consume_state` and can simply be retried.
+
+def _state_key(jti: str) -> str:
+    """What ``oidc_pending_states`` is keyed on: a hash of the state's id.
+
+    With the platform's JWT secret the ``jti`` alone is enough to mint a valid
+    state, so a dump of this table must not contain it — the same reason
+    ``provisioning_keys`` stores a hash and a lookup prefix rather than a key.
     """
-    for jti in [jti for jti, record in _states.items() if record.expires_at <= now]:
-        _states.pop(jti, None)
-    overflow = len(_states) - MAX_PENDING_STATES
-    if overflow > 0:
-        oldest = sorted(_states.items(), key=lambda item: item[1].expires_at)[:overflow]
-        for jti, _record in oldest:
-            _states.pop(jti, None)
-        logger.warning(
-            "OIDC pending-login store hit its %d-record cap; dropped %d of the oldest.",
-            MAX_PENDING_STATES,
-            overflow,
-        )
+    return hashlib.sha256(jti.encode("utf-8")).hexdigest()
+
+
+def _maybe_prune(settings: Settings) -> None:
+    """Delete states past their TTL, at most once per interval per process.
+
+    This replaces the 10,000-record ceiling the in-process store needed. That
+    cap was not only a memory bound: hitting it evicted the *oldest* pending
+    logins, so anyone able to reach the unauthenticated login route could push
+    real users' in-flight logins out of the store and refuse them. Expiry is
+    the honest bound — a row lives for ``oidc_state_ttl_seconds`` and costs a
+    couple of hundred bytes of disk, and a flood now buys disk rather than
+    other people's logins.
+
+    Opportunistic rather than a worker thread, like auth_audit's sweep: the
+    table only grows when someone starts a login, so the delete rides along
+    with the writes that cause the growth. Every replica prunes; the delete is
+    idempotent.
+    """
+    global _last_prune
+    now = _now()
+    with _prune_lock:
+        if _last_prune is not None and now - _last_prune < _PRUNE_INTERVAL:
+            return
+        _last_prune = now
+    try:
+        with get_session(settings.postgres_url) as session:
+            session.execute(
+                delete(models.OidcPendingState).where(
+                    models.OidcPendingState.expires_at <= now
+                )
+            )
+    except Exception:  # pragma: no cover - defensive
+        # Fail soft: the sweep is housekeeping, and every row it would have
+        # removed is already refused on expiry by consume_state. Failing the
+        # login that happened to trigger it would trade a bounded amount of
+        # dead data for an outage of the login route.
+        logger.exception("Failed to prune oidc_pending_states")
 
 
 def build_authorization_request(
@@ -461,18 +496,22 @@ def build_authorization_request(
     code_verifier = secrets.token_urlsafe(48)
     challenge = _b64url(hashlib.sha256(code_verifier.encode("ascii")).digest())
 
-    now = time.monotonic()
-    with _lock:
-        _states[jti] = _StateRecord(
-            nonce=nonce,
-            code_verifier=code_verifier,
-            redirect_uri=uri,
-            expires_at=now + ttl,
-            next_url=next_url,
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.OidcPendingState(
+                state_hash=_state_key(jti),
+                nonce=nonce,
+                code_verifier=code_verifier,
+                redirect_uri=uri,
+                next_url=next_url,
+                created_at=now,
+                expires_at=now + timedelta(seconds=ttl),
+            )
         )
-        # After the insert, so the cap bounds what the store actually holds
-        # rather than what it held one request ago.
-        _prune_states(now)
+    # After the insert commits, and outside its transaction: the sweep is
+    # unrelated to this login and must not be able to fail it.
+    _maybe_prune(settings)
 
     state = jwt.encode(
         {
@@ -526,11 +565,35 @@ def consume_state(settings: Settings, state: str) -> _StateRecord:
         raise OidcError("Invalid or expired login state")
 
     jti = str(payload.get("jti") or "")
-    now = time.monotonic()
-    with _lock:
-        _prune_states(now)
-        record = _states.pop(jti, None)
-    if record is None or record.expires_at <= now:
+    with get_session(settings.postgres_url) as session:
+        # Read and spend in one statement. A `SELECT` followed by a `DELETE`
+        # would let two replicas answering the same callback both read the row
+        # and both exchange the code; `DELETE … RETURNING` hands the row to
+        # exactly one of them and the other sees nothing to return.
+        row = session.execute(
+            delete(models.OidcPendingState)
+            .where(models.OidcPendingState.state_hash == _state_key(jti))
+            .returning(
+                models.OidcPendingState.nonce,
+                models.OidcPendingState.code_verifier,
+                models.OidcPendingState.redirect_uri,
+                models.OidcPendingState.next_url,
+                models.OidcPendingState.expires_at,
+            )
+        ).first()
+    if row is None:
+        raise OidcError("Invalid or expired login state")
+    record = _StateRecord(
+        nonce=row.nonce,
+        code_verifier=row.code_verifier,
+        redirect_uri=row.redirect_uri,
+        next_url=row.next_url,
+        expires_at=row.expires_at,
+    )
+    # Expiry is checked here as well as by the sweep: the row is deleted either
+    # way, so a state that outlived its TTL is spent rather than left for a
+    # second attempt.
+    if record.expires_at <= _now():
         raise OidcError("Invalid or expired login state")
     return record
 
@@ -644,9 +707,49 @@ def tenant_from_claims(settings: Settings, claims: dict[str, Any]) -> str:
     return settings.oidc_default_tenant
 
 
-def reset_for_tests() -> None:
-    """Drop the discovery/JWKS caches and every in-flight authorization request."""
+def pending_states_for_tests(settings: Settings) -> list[_StateRecord]:
+    """Every in-flight authorization request, oldest first. A test seam.
+
+    The nonce and the PKCE verifier are deliberately unreachable from anything
+    the browser holds, so a test that has to assert on them has to read the
+    row. Nothing in ``api/`` calls this.
+    """
+    with get_session(settings.postgres_url) as session:
+        rows = (
+            session.execute(
+                select(models.OidcPendingState).order_by(
+                    models.OidcPendingState.created_at, models.OidcPendingState.state_hash
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        _StateRecord(
+            nonce=row.nonce,
+            code_verifier=row.code_verifier,
+            redirect_uri=row.redirect_uri,
+            next_url=row.next_url,
+            expires_at=row.expires_at,
+        )
+        for row in rows
+    ]
+
+
+def reset_for_tests(settings: Settings | None = None) -> None:
+    """Drop the discovery/JWKS caches and every in-flight authorization request.
+
+    ``settings`` is optional because the caches are process-global and a caller
+    that only wants those (a test with no database) should not have to name a
+    database to clear them. The pending states are rows, so clearing them needs
+    one.
+    """
+    global _last_prune
     with _lock:
         _metadata_cache.clear()
         _jwks_cache.clear()
-        _states.clear()
+    _last_prune = None
+    if settings is None:
+        return
+    with get_session(settings.postgres_url) as session:
+        session.execute(delete(models.OidcPendingState))

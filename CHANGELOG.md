@@ -365,6 +365,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **SSO needed session affinity to work behind more than one replica (#321).**
+  The nonce and the PKCE verifier of an in-flight authorization request lived
+  in a dict in the API process, so a callback that reached a replica other than
+  the one that issued the state was refused — and a rollout moved the browser
+  to such a replica whatever the load balancer had been told. They are now rows
+  in `oidc_pending_states` (migration `0036`), keyed on a hash of the state's id
+  rather than the id itself, and spent by a single `DELETE … RETURNING`: two
+  replicas answering the same callback cannot both go on to exchange the code.
+  The 10,000-record per-replica cap is gone with the dict — it did not only
+  bound memory, it evicted the *oldest* pending logins, so anyone able to reach
+  the unauthenticated login route could push real users' logins out of the
+  store; the TTL is now the whole bound, and expired rows are swept
+  opportunistically the way `auth_events` are.
 - **`Idempotency-Key` on `POST /api/jobs` guarded the key, not the request.**
   A key an earlier call had used replayed that job whatever the body said, so a
   client that reused one — a fixed key per nightly schedule, a retry the caller

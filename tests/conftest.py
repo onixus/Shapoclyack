@@ -144,7 +144,9 @@ def reset_service_state(settings: "Settings") -> None:
     # authorization request from a previous test would otherwise leak into this
     # one (ROADMAP Track E).
     service_tokens_service.configure(settings)
-    oidc_service.reset_for_tests()
+    # Since #321 the in-flight authorization requests are rows rather than a
+    # process dict, so clearing them needs the settings that name the database.
+    oidc_service.reset_for_tests(settings)
 
 
 def approve_scan_scope(

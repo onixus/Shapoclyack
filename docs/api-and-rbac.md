@@ -123,9 +123,11 @@ State is signed *and* single-use: the signed half (an HS256 JWT over the
 platform's own secret) proves this installation issued the request and bounds
 its lifetime; a server-side record proves it has not been answered yet. The
 nonce and the PKCE verifier live only in that record, so the browser carries
-neither. **The record is process-local.** With more than one API replica,
-enable session affinity for `/api/auth/oidc/*` so a callback reaches the
-replica that issued it.
+neither. **The record is a row in `oidc_pending_states`**, keyed on a hash of
+the state's id and spent by a single `DELETE … RETURNING` — so a callback may
+land on any replica, and two replicas answering the same callback cannot both
+exchange the code. It expires after `OCTO_OIDC_STATE_TTL_SECONDS`; no session
+affinity is required.
 
 ### Which account a login resolves to
 
