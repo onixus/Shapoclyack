@@ -1,6 +1,6 @@
 # Shapoclyack
 
-**Self-hosted платформа обнаружения внешней поверхности атаки и управления уязвимостями.**
+**Self-hosted платформа непрерывного обнаружения внешней поверхности атаки (EASM), инвентаризации киберактивов (CAASM) и риск-ориентированного управления уязвимостями (RBVM).**
 
 [![Release](https://img.shields.io/github/v/release/onixus/Shapoclyack?label=release&color=2b7489)](https://github.com/onixus/Shapoclyack/releases/latest)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://github.com/onixus/Shapoclyack/blob/main/requirements.txt)
@@ -8,150 +8,328 @@
 [![Images](https://img.shields.io/badge/images-ghcr.io-181717)](https://github.com/onixus?tab=packages&repo_name=Shapoclyack)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
-Сетевой сканер со стадийным конвейером, FastAPI control plane, распределённые
-агенты, инвентарь активов, переживающий отдельные прогоны, обогащение и
-аналитика, операторская консоль на Next.js — разворачивается как одно
-Kubernetes-приложение или как единый all-in-one контейнер.
+Стадийный распределенный сетевой сканер, FastAPI control plane, защищенные удаленные агенты (remote agents), долговечный инвентарь активов, обогащение контекстом угроз (EPSS, CISA KEV) и бюллетенями вендоров, аналитика на ClickHouse и операторская консоль на Next.js 14 — разворачивается как единый All-in-One контейнер или масштабируемый отказоустойчивый кластер Kubernetes.
 
-**[English](README.md)** · [Быстрый старт](docs/getting-started.md) ·
+**[English](README.md)** ·
+[Быстрый старт](docs/getting-started.md) ·
 [База знаний (Wiki)](docs/wiki/README.md) ·
-[Карта документации](docs/README.md) · [Kubernetes](k8s/README.md) ·
-[Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) ·
-[Security](.github/SECURITY.md)
+[Карта документации](docs/README.md) ·
+[Kubernetes](k8s/README.md) ·
+[Changelog](CHANGELOG.md) ·
+[Roadmap](ROADMAP.md) ·
+[Политика безопасности](.github/SECURITY.md)
 
 > [!WARNING]
-> Сканирование затрагивает чужие машины. Используйте платформу только для
-> систем, владельцем которых вы являетесь или на тестирование которых у вас
-> есть явное разрешение. Свежая установка намеренно не сканирует ничего, пока
-> админ не одобрит область сканирования для тенанта.
+> Сканирование затрагивает сетевую инфраструктуру. Используйте платформу только для систем, владельцем которых вы являетесь или на аудит которых у вас есть явное письменное разрешение. Свежая установка намеренно не сканирует ничего, пока администратор явно не утвердит область сканирования (scope) для тенанта.
 
-## Возможности
+---
 
-| Область | Что реализовано |
+## 💎 5 фундаментальных преимуществ платформы
+
+Shapoclyack спроектирован для преодоления ключевых пороков традиционных сканеров уязвимостей: лавинообразного «слепого шума», формального закрытия тикетов без подтверждения и оторванности скоринга от реальной угрозы и бизнес-контекста.
+
+### 1. Asset-Centric модель (Актив первичнее IP-адреса)
+В динамической инфраструктуре (облака, Kubernetes, балансировщики, CDN, DHCP) IP-адрес является временным атрибутом. В Shapoclyack история обнаружения и устранения уязвимостей, назначенные владельцы и контекст привязаны к долговечной сущности **Asset** (вычисляемой на основе FQDN, постоянных хостовых идентификаторов и сертификатов). Плановая или аварийная смена сетевой адресации не сбрасывает историю находок и не порождает дубликатов. Подробнее: [docs/asset-identity.md](docs/asset-identity.md) и [docs/asset-context.md](docs/asset-context.md).
+
+### 2. Двухосевая оценка риска по стандарту NIST SP 800-30 Rev. 1
+Платформа исключает принятие решений на основе одномерного базового балла CVSS v3/v4. Совокупный риск вычисляется строго как функция вероятности и ущерба:
+$$\text{Risk} = f(\text{Likelihood}, \text{Impact})$$
+
+* **Likelihood (Вероятность эксплуатации):** учитывает сетевую доступность вектора (`AV`/`AC`), вероятность EPSS, возраст уязвимости, наличие компенсирующих мер (WAF/CDN) и **зрелость эксплойта (Exploit Maturity)** с жесткими потолками:
+  - `attacked` (CISA KEV — эксплуатируется в активных атаках: жесткий пол вероятности 96–100);
+  - `weaponized` (эксплойты включены в Metasploit и боевые фреймворки);
+  - `proof_of_concept` (публичный PoC);
+  - `theoretical` (эксплойта нет: жесткий потолок вероятности 20, исключающий раздувание паники).
+* **Impact (Ущерб):** определяется бизнес-критичностью актива (`asset_criticality` от 0 до 4), назначенной владельцем системы или импортированной из CMDB.
+Подробнее: [docs/risk-scoring.md](docs/risk-scoring.md).
+
+### 3. Инструментальная верификация закрытия (Mechanical Re-verification)
+Уязвимость не может быть закрыта «на честное слово» оператором или простой сделкой в таск-трекере.
+* Для сетевых уязвимостей перевод в статус `CLOSED` требует успешного прохождения таргетированного пересканирования (`POST /api/vulnerabilities/{id}/verify`), запускающего проверку целевого хоста, порта и детектора NSE/Nuclei. Статус фиксируется с признаком `machine_verified = true`.
+* Если уязвимость обнаружена повторно — статус автоматически возвращается в `FIXING` с сохранением инцидента в аудит-логе.
+* Для уязвимостей ПО хостов закрытие подтверждается следующим сеансом инвентаризации агента Lariska.
+* Ручное закрытие без проверки маркируется как `manual` (`machine_verified = false`) и явно отображается на дашборде качества работы ИБ.
+Подробнее: [docs/vulnerability-lifecycle.md](docs/vulnerability-lifecycle.md).
+
+### 4. Анализ ПО конечных точек (Lariska agent) с учетом бэкпортов вендоров
+При анализе установленного на серверах ПО Shapoclyack сопоставляет пакеты не с абстрактными диапазонами NVD CPE (дающими массовые ложные срабатывания из-за бэкпортов патчей безопасности в стабильные дистрибутивы), а с официальными бюллетенями безопасности вендоров (Ubuntu USN, Debian Security Tracker). Платформа формирует **Patch Gaps** — конкретные пакеты и готовые консольные команды обновления (`apt-get install --only-upgrade <pkg>=<fixed_version>`), минимизируя трудозатраты системных инженеров. Подробнее: [docs/software-cve-matching.md](docs/software-cve-matching.md).
+
+### 5. Автоматизированный аудит соответствия стандартам (Compliance)
+Непрерывная автоматическая оценка статуса контролей PCI DSS 4.0, CIS Controls v8 и ISO/IEC 27001:2022 на базе фактических свидетельств (evidence) сканирования и инвентаря конкретного тенанта. Готовые объективные отчеты для внутренних аудиторов, топ-менеджмента и регуляторов. Подробнее: [docs/reports-and-compliance.md](docs/reports-and-compliance.md).
+
+---
+
+## 📚 Корпоративная база знаний (Wiki)
+
+В репозитории развернута полноценная корпоративная база знаний — [docs/wiki/README.md](docs/wiki/README.md), объединяющая ролевые сценарии, формализованные регламенты и план внедрения:
+
+| Раздел Wiki | Ключевые темы |
 |---|---|
-| Discovery | CIDR/IP/FQDN, DNS, CT-логи, ASN, облачные ресурсы, мониторинг доменов |
-| Сканирование | TCP/UDP, сервисы и ОС, NSE, Nuclei |
-| Обогащение | CVSS v4, EPSS, CISA KEV, GeoIP, ASN, TLS posture, fingerprinting |
-| Инвентарь | Активы между прогонами, идентификаторы, владелец, критичность, lifecycle, ПО endpoints |
-| Управление уязвимостями | Отслеживаемые находки со статусами, SLA и исключениями; риск по NIST SP 800-30; доска ремедиации с механической верификацией и двусторонней синхронизацией тикетов |
-| Патчинг endpoints | Установленное ПО сопоставляется с advisories вендоров и группируется в patch gap по пакету — с командой обновления |
-| Отчётность | Брендированная фабрика отчётов на тенант (executive, technical, compliance) в PDF, HTML или JSON, с доставкой по расписанию |
-| Compliance | Статус контролей PCI DSS 4.0, CIS Controls v8 и ISO/IEC 27001:2022 по данным самого тенанта |
-| Adoption | Метрики результата по тенанту — подтверждённые закрытия, соблюдение SLA, время до исправления, покрытие владельцами и сканами, время до первой ценности, возраст overlay-данных обогащения |
-| Эксплуатация | Jobs, schedules, diff, alerts, reports, remote agents, resume |
-| Платформа | JWT RBAC, OIDC SSO, service tokens, multi-tenancy, PostgreSQL, ClickHouse, NATS JetStream |
-| Развёртывание | Kubernetes/Kustomize (kind для локальной разработки) |
+| 🧑‍💻 [**Сценарии для Инженера ИБ**](docs/wiki/scenarios-security-engineer.md) | Операционная деятельность: запуск и профилирование сканов, триаж находок с доказательствами, канбан-доска ремедиации, инструментальная верификация закрытия, устранение Patch Gaps, подавление шума. |
+| 🏛️ [**Сценарии для Архитектора ИБ**](docs/wiki/scenarios-architect.md) | Системный уровень: инвентаризация периметра (EASM), выявление Shadow IT, интеграция с CMDB/AD, CI/CD DevSecOps, SIEM/SOAR, распределенная топология remote agents (DMZ/VPC), контроль сегментации, комплаенс. |
+| 👔 [**Сценарии для CISO / Руководства ИБ**](docs/wiki/scenarios-ciso.md) | Стратегическое управление: Risk Overview, метрика совокупного риска (Estate Risk по NIST SP 800-30), контроль атак в дикой природе (CISA KEV), соблюдение SLA и MTTR, метрики Adoption, брендированная отчетность для правления. |
+| 📋 [**Регламенты и процессы ИБ**](docs/wiki/security-processes.md) | Сквозные процессы: жизненный цикл уязвимостей, EASM и теневые активы, экстренное реагирование на 0-day (Emergency Response), SLA взаимодействия ИБ и IT/DevOps, согласование исключений (Risk Acceptance). |
+| 🚀 [**План внедрения и матрица RACI**](docs/wiki/implementation-plan.md) | Пошаговый 12-недельный план внедрения от пилота до промышленной эксплуатации, 4 фазы (M1–M4), типовые топологии развертывания, матрица ответственности RACI и целевые KPI. |
 
-Конвейер сканирования:
+---
 
-```text
-цели → resolve → discovery → hostnames → ports → NSE/Nuclei → enrich → report
-```
+## ⚡ Быстрый старт
 
-## Быстрый старт
-
-Требуются Docker (для сборки/загрузки образов), [kind](https://kind.sigs.k8s.io/)
-и `kubectl`, не менее 4 ГБ свободной памяти.
+Требования: Docker (для сборки и загрузки образов), [kind](https://kind.sigs.k8s.io/) и `kubectl`, не менее 4 ГБ свободной оперативной памяти.
 
 ```bash
 git clone https://github.com/onixus/Shapoclyack.git
 cd Shapoclyack
+
 scripts/dev-up.sh
 ```
 
-Скрипт поднимает локальный кластер kind, собирает all-in-one образ, загружает
-его в кластер и применяет `k8s/shapoclyack/overlays/kind-dev` (API, PostgreSQL,
-NATS, ClickHouse, Job/CronJob сканера).
+Скрипт автоматически:
+1. Создает локальный кластер `kind`;
+2. Собирает all-in-one образ `shapoclyack-aio` и загружает его в кластер;
+3. Применяет Kustomize-оверлей `k8s/shapoclyack/overlays/kind-dev` (FastAPI, PostgreSQL, NATS JetStream, ClickHouse, Web UI, Job/CronJob сканера).
 
-Откройте <http://127.0.0.1:8080>:
-
+Откройте веб-консоль по адресу <http://127.0.0.1:8080> и войдите под учетной записью оператора:
 ```text
 operator / operator-change-me
 ```
 
-Используйте `127.0.0.1`, а не `localhost`: kind публикует NodePort только по
-IPv4, а на macOS `localhost` сначала резолвится в `::1`, и соединение
-отвергается.
+> [!IMPORTANT]
+> Обращайтесь строго по адресу `127.0.0.1`, а не `localhost`: `kind` публикует порты NodePort только по протоколу IPv4, тогда как на macOS `localhost` сначала разрешается в IPv6 (`::1`), что приведет к отказу в соединении.
 
-Свежая установка не сканирует ничего, пока администратор не утвердит область
-сканирования для тенанта — см. [шаг 6 в Getting started](docs/getting-started.md#6-approve-a-scanning-scope).
+> [!NOTE]
+> Свежая установка намеренно ничего не сканирует, пока администратор не утвердит область сканирования (scope) для тенанта — см. [шаг 6 в Getting started](docs/getting-started.md#6-approve-a-scanning-scope).
 
-Перед публикацией сервиса за пределами тестового контура замените demo-пароли и
-JWT secret (`k8s/shapoclyack/examples/api-secrets.example.yaml`).
+Перед развертыванием за пределами изолированной тестовой лаборатории обязательно замените демонстрационные пароли и JWT-секреты (см. `k8s/shapoclyack/examples/api-secrets.example.yaml`).
 
-Остановить кластер:
-
+Для полной остановки и удаления тестового кластера:
 ```bash
 scripts/dev-down.sh
 ```
 
-Подготовка целей, выбор профиля и проверка первого прогона описаны в
-[Getting started](docs/getting-started.md).
+Подробное руководство по настройке профилей, выбору целей и проведению первого сканирования доступно в [Getting started](docs/getting-started.md).
 
-## Интерфейс
+---
 
-Web UI включает:
+## 🧭 Возможности платформы
 
-- обзор риска, дашборд экспозиции и исторический trend;
-- центр уязвимостей и доску ремедиации;
-- постоянный инвентарь и карточку актива;
-- инвентарь endpoints, сопоставление ПО с CVE и patch gaps;
-- граф поверхности атаки и карту гео;
-- jobs, runs, findings, отчёты и фабрику отчётов;
-- статус compliance по выбранному фреймворку;
-- метрики adoption: находки закрываются и проверяются — или только производятся;
-- потребление относительно квоты по тенанту и сводка по всем тенантам для провайдера;
-- tenants и парк удалённых агентов;
-- wordlists, service tokens, статус компонентов и безопасные overrides
-  конфигурации.
-
-Актуальные снимки и воспроизводимая процедура их обновления находятся в
-[docs/ui.md](docs/ui.md).
-
-## Что читать дальше
-
-| Задача | Документ |
+| Направление | Функциональность |
 |---|---|
-| Быстрый старт и первый скан | [Getting started](docs/getting-started.md) |
-| База знаний: роли, процессы, план внедрения | [Корпоративная Wiki](docs/wiki/README.md) |
-| Архитектура и потоки данных | [Architecture](docs/architecture.md) |
-| Профили и параметры | [Configuration](docs/configuration.md) |
-| API, JWT и роли | [API and RBAC](docs/api-and-rbac.md) |
-| Эксплуатация, resume, артефакты | [Operations](docs/operations.md) |
-| Отчёты и compliance | [Reports and compliance](docs/reports-and-compliance.md) |
-| Жизненный цикл уязвимости | [Vulnerability lifecycle](docs/vulnerability-lifecycle.md) |
-| Kubernetes | [k8s/README.md](k8s/README.md) |
-| Разработка и тесты | [Development](docs/development.md) |
-| Диагностика | [Troubleshooting](docs/troubleshooting.md) |
+| **Discovery** | Диапазоны CIDR, одиночные IP, домены FQDN; пассивный и активный DNS, логи Certificate Transparency (CT), ASN, облачные ресурсы, регулярный мониторинг доменов |
+| **Сканирование** | TCP/UDP discovery, определение сервисов и ОС, высокоскоростной движок Pulse, проверка шаблонов Nuclei |
+| **Обогащение** | CVSS v4, вероятность EPSS, CISA KEV (эксплуатация в дикой природе), GeoIP (MaxMind), BGP ASN, оценка конфигурации TLS/SSL, отпечатки сервисов |
+| **Инвентарь (CAASM)** | Долговечные активы между запусками, FQDN/hash/cert-идентификаторы, владение, критичность, жизненный цикл, инвентаризация ПО хостов через Lariska agent |
+| **Управление уязвимостями (RBVM)** | Учет находок со статусами (`DETECTED`, `IN_REVIEW`, `FIXING`, `CLOSED`), SLA по критичности, исключения; двухосевой риск NIST SP 800-30; канбан-доска ремедиации с инструментальной верификацией и двусторонней синхронизацией тикетов |
+| **Патчинг endpoints** | Сопоставление установленного ПО с бюллетенями вендоров (Ubuntu USN, Debian Security Tracker) с учетом бэкпортов; группировка в Patch Gaps с готовыми командами обновления |
+| **Фабрика отчетов** | Брендированные отчеты на тенант (Executive, Technical, Compliance) в форматах PDF, HTML, JSON; расписание и вебхуки доставки |
+| **Аудит комплаенса** | Автоматическая оценка статуса контролей PCI DSS 4.0, CIS Controls v8 и ISO/IEC 27001:2022 на основе фактических свидетельств тенанта |
+| **Метрики Adoption** | Контроль реальной эффективности ИБ: подтвержденные машиной закрытия, соблюдение SLA, MTTR, покрытие активами и сканами, контроль ложных срабатываний и шумных сигнатур |
+| **Эксплуатация** | Управление заданиями (Jobs) и расписаниями (Cron), сравнение прогонов (diff), алерты в мессенджеры/почту, распределенные агенты, продолжение прерванных сканов (resume) |
+| **Архитектура и ядро** | JWT RBAC, SSO (OIDC), сервисные токены, мультитенантность, PostgreSQL, аналитическая СУБД ClickHouse, шина сообщений NATS JetStream |
+| **Развертывание** | Kubernetes / Kustomize (base, dev, prod HA), All-in-One контейнер, CLI сканера |
 
-## Структура репозитория
+Конвейер выполнения сканирования:
+```text
+цели (CIDR/FQDN) → resolve → discovery → hostnames → ports → probes (Pulse) → Nuclei/NSE → enrich → report & ingest
+```
 
-| Путь | Назначение |
+---
+
+## 🏛️ Архитектура и топология сети
+
+Shapoclyack разделен на уровень управления (Control Plane) и распределенный уровень исполнения (Data Plane):
+
+```mermaid
+graph TB
+    subgraph Users ["Пользователи и Интеграции"]
+        UI["Web UI (Next.js 14)"]
+        CLI["Shapoclyack CLI / API"]
+        Ext["Jira / DefectDojo / SIEM"]
+    end
+
+    subgraph ControlPlane ["Control Plane (Kubernetes / AIO)"]
+        API["FastAPI Control Plane"]
+        PG[("PostgreSQL<br/>Тенанты, RBAC, Активы, Тикеты")]
+        CH[("ClickHouse<br/>События, Телеметрия, Временные ряды")]
+        NATS["NATS JetStream<br/>Шина задач и телеметрии"]
+    end
+
+    subgraph DataPlane ["Data Plane (Сканнеры и Агенты)"]
+        LocalScanner["Локальный сканнер (Job/Pod)"]
+        RemoteAgent1["Remote Agent (DMZ Контур)"]
+        RemoteAgent2["Remote Agent (Изолированный VPC)"]
+        Lariska["Lariska Agent (ПО Endpoints)"]
+    end
+
+    UI -->|REST / OpenAPI| API
+    CLI -->|REST / JWT| API
+    Ext <-->|Webhooks / REST| API
+
+    API -->|CRUD & Metadata| PG
+    API -->|Analytics & History| CH
+    API -->|Publish Tasks / Ingest| NATS
+
+    NATS <-->|mTLS / Token| LocalScanner
+    NATS <-->|mTLS / Token (Outbound)| RemoteAgent1
+    NATS <-->|mTLS / Token (Outbound)| RemoteAgent2
+    Lariska -.->|Inventory Ingest| API
+```
+
+* **FastAPI Control Plane:** центральный шлюз API, аутентификация, авторизация RBAC, изоляция тенантов, валидация скоупов и оркестрация.
+* **PostgreSQL:** хранение конфигурации, пользователей, тенантов, инвентаря активов и состояний жизненного цикла уязвимостей.
+* **ClickHouse:** сбор и агрегация миллионов сырых событий сканирования, временных рядов находок, истории обнаружений и аналитических срезов.
+* **NATS JetStream:** распределенная отказоустойчивая шина обмена сообщениями. Задания сканирования буферизуются и доставляются агентам с гарантией доставки.
+* **Next.js 14 Console:** веб-интерфейс оператора со статическим экспортом, не требующий Node.js сервера в production.
+* **Remote Agents (Удаленные агенты):** автономные воркеры в демилитаризованных зонах (DMZ) и изолированных облачных сегментах (VPC). Агенты инициируют только исходящее соединение к брокеру NATS, не требуя открытия входящих портов в защищенный сегмент.
+
+Подробнее об архитектуре и границах доверия: [docs/architecture.md](docs/architecture.md).
+
+---
+
+## 🖥️ Веб-интерфейс оператора
+
+Интерфейс платформы предоставляет специализированные экраны для различных задач ИБ:
+
+* **Обзор рисков (Risk Overview & Exposure Dashboard):** интегральный индекс риска инфраструктуры (Estate Risk) по стандарту NIST SP 800-30, тепловая карта уязвимостей, динамика угроз в дикой природе (CISA KEV) и тренд устранения.
+* **Центр уязвимостей и Доска ремедиации (Remediation Kanban):** приоритизированный список находок, фильтрация по вероятности и ущербу, жизненный цикл уязвимостей и запуск инструментальной проверки (`Verify`).
+* **Постоянный инвентарь активов (Asset Inventory):** карточки активов с историей изменения IP-адресов, открытыми сетевыми службами, назначенными владельцами и уровнем критичности.
+* **Инвентарь Endpoints и Patch Gaps:** реестр серверов под контролем Lariska agent, сопоставление установленных пакетов с официальными бюллетенями безопасности и готовые команды обновления.
+* **Граф поверхности атаки и Geo Map:** визуализация связей доменов, IP-адресов и портов, географическая локализация активов (MaxMind GeoIP).
+* **Управление сканированием:** лаунчеры внешних и внутренних проверок, профили сканирования, мониторинг выполнения заданий в реальном времени и история запусков (runs).
+* **Фабрика отчетов и Комплаенс:** генерация брендированных отчетов для руководства и технических специалистов, матрица соответствия контролям PCI DSS 4.0, CIS Controls v8, ISO 27001.
+* **Метрики зрелости процессов (Adoption):** аналитика эффективности ремедиации, процент машинной верификации закрытий, время устранения (MTTR) и контроль шума.
+* **Администрирование:** управление тенантами, квотами, пулом удаленных агентов, интеграциями с таск-трекерами, словарями (wordlists) и безопасными параметрами конфигурации.
+
+Актуальные снимки экранов и инструкция по их фиксации: [docs/ui.md](docs/ui.md).
+
+---
+
+## 📦 Варианты развертывания
+
+| Режим | Оптимален для | Необходимые компоненты |
+|---|---|---|
+| **Scanner CLI** | Разовые экспресс-оценки, CI/CD конвейеры DevSecOps, локальная отладка | Только образ сканера (`shapoclyack-scanner`) |
+| **Kubernetes (`overlays/kind-dev`)** | Локальная демонстрация, лаборатория, оценка функциональности | All-in-one контейнер (`shapoclyack-aio`), PostgreSQL |
+| **Kubernetes (`overlays/prod`)** | Промышленная эксплуатация, высокая доступность (HA), мультиагентность | Отдельные микросервисы: API, NATS кластер, ClickHouse кластер, PostgreSQL HA, пул агентов |
+
+Специализированные руководства:
+* [Развертывание в Kubernetes](k8s/README.md)
+* [Архитектура компонентов и потоки данных](docs/architecture.md)
+* [Конфигурация, профили и параметры](docs/configuration.md)
+* [Эксплуатация, резервное копирование и восстановление](docs/operations.md)
+
+---
+
+## 📂 Входные и выходные данные
+
+Стандартные входные файлы при работе через CLI:
+
+```text
+scanner/inputs/ranges.txt      # Диапазоны CIDR или отдельные IP-адреса (по одному на строку)
+scanner/inputs/domains.txt     # Доменные имена FQDN (по одному на строку)
+scanner/inputs/ports.txt       # Кастомный перечень портов TCP (опционально)
+scanner/inputs/ports_udp.txt   # Кастомный перечень портов UDP (опционально)
+```
+
+Каждый запуск изолирован в собственном каталоге `scanner/output/runs/<run_id>/`. В зависимости от включенных стадий формируются машиночитаемые артефакты JSON/JSONL/CSV, отчеты Markdown/HTML/PDF, журналы сканирования, диффы изменений, результаты обогащения и точки восстановления (checkpoints).
+
+Подробнее о структуре артефактов и восстановлении сканов: [docs/operations.md](docs/operations.md).
+
+---
+
+## 🔐 Управление доступом (API & RBAC)
+
+Интерфейс прикладного программирования (API) доступен по пути `/api`. Интерактивная документация OpenAPI (Swagger UI) доступна по адресу `/docs`.
+
+| Роль | Область доступа |
 |---|---|
-| `scanner/` | Discovery, сканирование, enrichment, diff и отчёты |
-| `api/` | FastAPI, auth, БД, scheduling и ingest |
-| `agent/` | Удалённый worker для выполнения jobs |
-| `web-next/` | Next.js 14 Web UI со static export |
-| `recon/` | Основа Go-worker для discovery |
-| `k8s/shapoclyack/` | Kubernetes base, overlays и examples |
-| `bench/` | Локальный benchmark discovery |
-| `tests/` | Unit, integration, load и e2e тесты |
+| `viewer` | Только чтение: просмотр запусков, находок, инвентаря активов, сгенерированных отчетов и статуса системы |
+| `operator` | Права `viewer` + запуск задач сканирования, триаж уязвимостей, запуск механической верификации, обновление метаданных активов |
+| `admin` | Права `operator` + управление тенантами, пользователями, утверждение скоупов сканирования, управление агентами и конфигурацией |
 
-## Релиз и образы
+Подробнее о схеме авторизации JWT, интеграции OIDC SSO, сервисных токенах и изоляции тенантов: [docs/api-and-rbac.md](docs/api-and-rbac.md).
 
-Документация привязана к релизу
-[`shapoclyack-0.44-0907`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.44-0907).
+---
 
-| Образ | Роль |
+## 🛠️ Разработка и тестирование
+
+```bash
+# Тестирование серверной части и сканера (Python 3.11 / 3.12)
+python -m pytest
+ruff check .
+
+# Сборка и тестирование веб-интерфейса (Next.js 14, Node.js >= 26)
+cd web-next
+npm ci
+npm run typecheck
+npm run test
+npm run build
+```
+
+Поддерживаемая среда сборки Web UI — Node.js 26 или новее (`web-next/package.json` содержит декларацию `engines.node: ">=26"`). Подробные инструкции для разработчиков собраны в [docs/development.md](docs/development.md).
+
+---
+
+## 🏷️ Релизы и поддерживаемые образы
+
+Документация соответствует релизу [`shapoclyack-0.44-0907`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.44-0907).
+
+Публикуемые образы контейнеров:
+
+| Контейнер | Назначение |
 |---|---|
-| `ghcr.io/onixus/shapoclyack-aio` | API, Web UI и scanner |
-| `ghcr.io/onixus/shapoclyack-api` | API и Web UI |
-| `ghcr.io/onixus/shapoclyack-scanner` | Scanner и agent runtime |
+| `ghcr.io/onixus/shapoclyack-aio` | All-in-One: API, встроенная консоль Web UI и движок сканирования |
+| `ghcr.io/onixus/shapoclyack-api` | Control Plane: FastAPI сервер и встроенная консоль Web UI |
+| `ghcr.io/onixus/shapoclyack-scanner` | Data Plane: сканер и среда выполнения удаленного агента |
 
-В production фиксируйте release tag и не используйте `latest`.
+> [!TIP]
+> В производственной среде обязательно фиксируйте конкретный тег релиза (например, `0.44-0907`) и не используйте плавающий тег `latest`.
 
-## Безопасность
+---
 
-Правила disclosure, поддерживаемые версии и рекомендации по hardening:
-[`.github/SECURITY.md`](.github/SECURITY.md). Лицензии встроенных компонентов:
-[docs/third-party.md](docs/third-party.md).
+## ⚖️ Лицензионные особенности: Pulse vs Nmap
+
+Платформа Shapoclyack распространяется под свободной лицензией Apache 2.0. Сторонние инструменты и источники данных используются в рамках их собственных лицензий (см. [docs/third-party.md](docs/third-party.md)).
+
+**Nmap намеренно исключен из стандартных образов платформы.**
+По умолчанию в качестве движка зондирования сервисов (`service_probe.backend`) используется встроенный компонент **Pulse**. Стандартные образы `shapoclyack-scanner` и `shapoclyack-aio` (собираемые с параметром `INSTALL_NMAP=0`) не содержат исполняемого файла Nmap и скриптов NSE. Это исключает лицензионные риски и ограничения на распространение, накладываемые лицензией *Nmap Public Source License (NPSL)*.
+
+Если вашей организации необходимы классические скрипты NSE, используйте специализированный образ с тегом `-nmap` (`INSTALL_NMAP=1`) либо установите пакет Nmap самостоятельно (в этом случае на распространение образов будут распространяться условия лицензии NPSL). Технические подробности описаны в [docs/pulse-backend.md](docs/pulse-backend.md).
+
+---
+
+## 📖 Навигатор документации
+
+| Тематика | Официальное руководство |
+|---|---|
+| Быстрый старт и первый скан | [docs/getting-started.md](docs/getting-started.md) |
+| Корпоративная база знаний (Wiki) | [docs/wiki/README.md](docs/wiki/README.md) |
+| Сценарии: Инженер ИБ | [docs/wiki/scenarios-security-engineer.md](docs/wiki/scenarios-security-engineer.md) |
+| Сценарии: Архитектор ИБ | [docs/wiki/scenarios-architect.md](docs/wiki/scenarios-architect.md) |
+| Сценарии: CISO / Руководство | [docs/wiki/scenarios-ciso.md](docs/wiki/scenarios-ciso.md) |
+| Процессы и регламенты ИБ | [docs/wiki/security-processes.md](docs/wiki/security-processes.md) |
+| 12-недельный план внедрения | [docs/wiki/implementation-plan.md](docs/wiki/implementation-plan.md) |
+| Архитектура платформы и потоки данных | [docs/architecture.md](docs/architecture.md) |
+| Модель расчета рисков по NIST SP 800-30 | [docs/risk-scoring.md](docs/risk-scoring.md) |
+| Жизненный цикл уязвимостей и SLA | [docs/vulnerability-lifecycle.md](docs/vulnerability-lifecycle.md) |
+| Анализ ПО хостов и вендорные бюллетени | [docs/software-cve-matching.md](docs/software-cve-matching.md) |
+| Контекст и инвентарь активов (CAASM) | [docs/asset-context.md](docs/asset-context.md) |
+| Идентификация и дедупликация активов | [docs/asset-identity.md](docs/asset-identity.md) |
+| Фабрика отчетов и аудит комплаенса | [docs/reports-and-compliance.md](docs/reports-and-compliance.md) |
+| Справочник экранных форм Web UI | [docs/ui.md](docs/ui.md) |
+| Конфигурация, профили и переопределения | [docs/configuration.md](docs/configuration.md) |
+| API, JWT токены и модель RBAC | [docs/api-and-rbac.md](docs/api-and-rbac.md) |
+| Развертывание в Kubernetes / Kustomize | [k8s/README.md](k8s/README.md) |
+| Эксплуатация, бэкапы и мониторинг | [docs/operations.md](docs/operations.md) |
+| Цели уровня обслуживания (SLO) | [docs/slo.md](docs/slo.md) |
+| Профиль производительности и масштабирования | [docs/scale-profile.md](docs/scale-profile.md) |
+| Инструкция для разработчиков | [docs/development.md](docs/development.md) |
+| Диагностика и устранение неполадок | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Политика безопасности и disclosure | [.github/SECURITY.md](.github/SECURITY.md) |
+| Лицензии сторонних компонентов | [docs/third-party.md](docs/third-party.md) |
+
+---
+
+## 🔒 Безопасность и раскрытие уязвимостей
+
+Правила ответственного раскрытия уязвимостей (Responsible Disclosure), перечень поддерживаемых релизов и базовые требования по харденингу платформы приведены в [`.github/SECURITY.md`](.github/SECURITY.md).
