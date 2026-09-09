@@ -9,6 +9,16 @@ metadata:
     app.kubernetes.io/component: api
   annotations:
     # nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    #
+    # The `/` rule below publishes the whole API, the unauthenticated
+    # operational endpoints included: `/metrics` names every route, the queue
+    # depth and login outcomes, and `/livez` / `/readyz` are for the kubelet,
+    # not the internet (#319). An Ingress cannot exclude a path, so refuse them
+    # at the edge — uncomment this (ingress-nginx must be running with
+    # `allow-snippet-annotations: "true"`), or set `OCTO_METRICS_TOKEN` on the
+    # API, or publish the console through a vhost that is not this Service.
+    # nginx.ingress.kubernetes.io/server-snippet: |
+    #   location ~ ^/(metrics|livez|readyz)$ { return 404; }
 spec:
   ingressClassName: nginx
   rules:

@@ -48,6 +48,53 @@ def test_hsts_header_absent_when_disabled(tmp_path, monkeypatch):
     assert "strict-transport-security" not in client.get("/api/health").headers
 
 
+@requires_postgres
+def test_interactive_schema_is_not_served_in_prod_configuration(tmp_path, monkeypatch):
+    """#319: the app was built with FastAPI's defaults, so `/docs` and
+    `/openapi.json` handed the full map of the API — every route, parameter and
+    response field — to anyone who could reach an installation."""
+    client = configured_client(tmp_path, monkeypatch, api_docs_enabled=False)
+
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404, path
+
+
+@requires_postgres
+def test_interactive_schema_is_served_when_enabled(tmp_path, monkeypatch):
+    """The default under `OCTO_ENV=dev`: turning it off must be a setting, not
+    the removal of the feature."""
+    client = configured_client(tmp_path, monkeypatch, api_docs_enabled=True)
+
+    assert client.get("/docs").status_code == 200
+    assert "/api/health" in client.get("/openapi.json").json()["paths"]
+
+
+@requires_postgres
+def test_metrics_require_the_configured_bearer_token(tmp_path, monkeypatch):
+    """#319: with `OCTO_METRICS_TOKEN` set, the series — every route, the queue
+    depth and login outcomes — stop being readable by an unauthenticated
+    caller. A wrong token is refused the same way a missing one is."""
+    client = configured_client(tmp_path, monkeypatch, metrics_token="metrics-secret")
+
+    unauthenticated = client.get("/metrics")
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.headers.get("www-authenticate") == "Bearer"
+    assert client.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/metrics", headers={"Authorization": "metrics-secret"}).status_code == 401
+
+    authorized = client.get("/metrics", headers={"Authorization": "Bearer metrics-secret"})
+    assert authorized.status_code == 200
+    assert "octo_http_requests_total" in authorized.text
+
+
+@requires_postgres
+def test_metrics_stay_open_without_a_token(tmp_path, monkeypatch):
+    """Unset keeps the documented Prometheus shape: an upgrade must not break
+    a ServiceMonitor that scrapes from inside the cluster."""
+    client = configured_client(tmp_path, monkeypatch, metrics_token="")
+    assert client.get("/metrics").status_code == 200
+
+
 def test_jwt_algorithm_whitelist_enforcement():
     """Verify that insecure algorithms like 'none' are rejected."""
     claims = {"sub": "testuser", "role": "admin"}

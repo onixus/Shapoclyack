@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import hmac
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import __version__
@@ -37,9 +38,9 @@ from api.services import agent_deployer
 from api.services import agents as agents_service
 from api.services import auth_audit
 from api.services import ch_ingest_worker
-from api.services import clickhouse_client
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
+from api.services import health as health_service
 from api.services import screenshot_retention
 from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
@@ -111,6 +112,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nats_bus.shutdown_bus()
 
 
+def _bearer_matches(request: Request, expected: str) -> bool:
+    """Constant-time check of an ``Authorization: Bearer`` header.
+
+    ``hmac.compare_digest`` rather than ``==``: the token is a fixed secret an
+    unauthenticated caller may retry without limit, which is exactly the case a
+    byte-by-byte comparison leaks a length-proportional signal in.
+    """
+    scheme, _, presented = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not presented:
+        return False
+    return hmac.compare_digest(presented.strip(), expected)
+
+
+def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
+    """One readiness check as ``HealthResponse``'s tri-state field.
+
+    None means "not configured here", which is what the field meant before the
+    checks became real: False would read as an outage of something this
+    installation does not run.
+    """
+    reported = report.checks.get(name)
+    return None if reported is None else reported == health_service.STATUS_OK
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     tenants_service.load_tenants(settings)
@@ -129,11 +154,20 @@ def create_app() -> FastAPI:
     webhooks_service.configure(settings)
     wordlists_service.configure(settings)
 
+    # Unmounted rather than authenticated when disabled (#319): FastAPI builds
+    # the schema from the mounted routers, so the only way an installation can
+    # be sure the map of its API is not served is for the routes not to exist.
+    # With a console build present the catch-all below answers these paths with
+    # the UI's own 404 page rather than 404 JSON — either way, no schema.
+    docs_enabled = settings.api_docs_enabled
     app = FastAPI(
         title="Shapoclyack API",
         version=__version__,
         description="HTTP API for Shapoclyack scan runs, jobs, remote agents, and RBAC-protected access.",
         lifespan=lifespan,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
     )
     tracing_service.configure(app, settings)
     if settings.endpoint_inventory_enabled:
@@ -178,25 +212,57 @@ def create_app() -> FastAPI:
         return response
 
     @app.get("/metrics", include_in_schema=False)
-    def metrics_endpoint() -> Response:
+    def metrics_endpoint(request: Request) -> Response:
+        # Open unless a token is configured: that is the Prometheus shape most
+        # installations scrape with, and making the token mandatory would break
+        # every existing ServiceMonitor on upgrade. Where it is set, the series
+        # stop being readable by anyone who can reach the API — they name every
+        # route, the queue depth and login outcomes (#319).
+        expected = settings.metrics_token
+        if expected and not _bearer_matches(request, expected):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Metrics require a bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         body, content_type = metrics_service.render()
         return Response(content=body, media_type=content_type)
+
+    @app.get("/livez", include_in_schema=False)
+    def livez() -> dict[str, str]:
+        # Deliberately dependency-free (#331): liveness answers "should the
+        # kubelet restart this process", and restarting every replica is not how
+        # an unreachable Postgres gets fixed — it is how a database outage
+        # becomes a crash loop on top of itself. Readiness is the probe that is
+        # allowed to know about dependencies.
+        return {"status": "ok"}
+
+    @app.get("/readyz", include_in_schema=False)
+    def readyz() -> JSONResponse:
+        report = health_service.check_readiness(get_settings())
+        return JSONResponse(
+            status_code=200 if report.ready else 503,
+            content={
+                "status": "ok" if report.ready else "degraded",
+                "checks": report.checks,
+            },
+        )
 
     @app.get("/api/health", response_model=HealthResponse, tags=["health"])
     def health() -> HealthResponse:
         settings = get_settings()
-        nats_ok = None
-        ch_ok = None
-        if settings.nats_url:
-            bus = nats_bus.get_bus(settings.nats_url)
-            nats_ok = bus is not None and bus._started  # noqa: SLF001
-        if settings.clickhouse_url:
-            ch_ok = clickhouse_client.ping(settings.clickhouse_url)
+        # The same sweep /readyz runs, reported in this endpoint's older shape:
+        # the status used to be the literal "ok" whatever the dependencies were
+        # doing, which made it a check on the process being able to serialize a
+        # response (#331). Still always 200 — callers parse the body, and both
+        # container HEALTHCHECKs are wired to this path.
+        report = health_service.check_readiness(settings)
         return HealthResponse(
-            status="ok",
+            status="ok" if report.ready else "degraded",
             version=__version__,
-            nats=nats_ok,
-            clickhouse=ch_ok,
+            nats=_check_flag(report, "nats"),
+            clickhouse=_check_flag(report, "clickhouse"),
+            checks=report.checks,
             ch_ingest=ch_ingest_worker.worker_stats(),
             # The login form has to know whether to offer an SSO button before
             # anyone is authenticated, and this endpoint is already public.

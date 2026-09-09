@@ -389,6 +389,18 @@ All notable changes to Shapoclyack are documented in this file.
   `inet` usage yet and casting an identifier column that is a plain string is
   its own risk, so it is left as a known read and not claimed as an aggregate.
 
+- **`GET /readyz` and `GET /livez` — two probes that ask different questions**
+  ([#331](https://github.com/onixus/Shapoclyack/issues/331)). `/readyz` runs a
+  real sweep — PostgreSQL `SELECT 1`, a NATS round trip and a ClickHouse query
+  where those are configured — and answers `503
+  {"status":"degraded","checks":{…}}` when one of them is down, so an
+  unservable replica leaves the Service. `/livez` touches nothing: liveness
+  decides whether to restart the process, and restarting every replica is not
+  how an unreachable database gets fixed. The API Deployment now points its
+  readiness probe at `/readyz`, both liveness and a new `startupProbe` at
+  `/livez`, and rolls with `maxUnavailable: 0` / `maxSurge: 1`, a 45s
+  termination grace period and a 5s `preStop` pause.
+
 ### Changed
 
 - **The agent's version is the release's version**
@@ -401,6 +413,14 @@ All notable changes to Shapoclyack are documented in this file.
   `agent/__init__.py` keeps its own literal because neither container image
   ships both packages; `tests/test_agent_version.py` fails on any drift, and the
   agent's version is now a release bump touch-point.
+- **`GET /api/health` tells the truth about its dependencies.** It reported
+  `status: "ok"` unconditionally and never touched PostgreSQL — the check was
+  effectively "can this process serialize a response". It now runs the same
+  sweep as `/readyz`, reports `ok` / `degraded`, and carries a `checks` map
+  naming each configured dependency. Still always `200`, and the `nats` /
+  `clickhouse` / `sso` fields are unchanged, so existing clients and the two
+  container `HEALTHCHECK`s keep working. `nats` is no longer read off a local
+  "we connected once" flag, which stayed true over a broker that had gone away.
 - **The tenant-wide matcher run is batched** — `run_for_tenant` opened a
   session per device and issued a `DELETE` plus one `INSERT` per row, so its
   cost scaled with the device count rather than the row count. It now walks
@@ -409,6 +429,23 @@ All notable changes to Shapoclyack are documented in this file.
   produced, or null. Without it the console had two unconnected places talking
   about the same CVE on the same host; the Matched CVEs panel now links to the
   finding, and says why there is none where there is none.
+
+### Security
+
+- **`/docs`, `/redoc` and `/openapi.json` are no longer served in production**
+  ([#319](https://github.com/onixus/Shapoclyack/issues/319)). The schema names
+  every route, its parameters and every field an answer carries — a map of the
+  installation for anyone who could reach it. `OCTO_API_DOCS` (`enabled` /
+  `disabled`) decides, defaulting to `disabled` under `OCTO_ENV=prod` and
+  `enabled` under `dev`; disabled means the routes are not mounted, so they
+  answer `404` rather than being guarded by something.
+- **`/metrics` can require a bearer token.** `OCTO_METRICS_TOKEN`, compared in
+  constant time; unset keeps the endpoint open, which is the Prometheus shape
+  most installations scrape with and is true only while the scrape path stays
+  inside the cluster — so a `prod` start without it now warns. The Prometheus
+  Operator example gained the matching `bearerTokenSecret`, and the Ingress
+  example now says out loud that its `/` rule publishes `/metrics`, `/livez`
+  and `/readyz` along with the console, and how to refuse them at the edge.
 
 ### Fixed
 

@@ -519,6 +519,25 @@ non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`).
 Credentials stay in `secret` or `Authorization`. Needs NATS, like any other
 asset-event consumer.
 
+## Operational endpoints
+
+Outside `/api`, unauthenticated by default and deliberately outside the
+console's RBAC: a probe runs before anything can log in.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /livez` | none | Liveness. `200 {"status":"ok"}` with no dependency touched at all — it answers "should this process be restarted", and restarting every replica is not how an unreachable database gets fixed |
+| `GET /readyz` | none | Readiness. `200 {"status":"ok","checks":{…}}` while every **configured** dependency answers, `503 {"status":"degraded","checks":{…}}` otherwise. Postgres answers `SELECT 1`, NATS completes a round trip, ClickHouse answers a query; NATS and ClickHouse are named only where their URL is set, since an absent sidecar is not a failing one |
+| `GET /api/health` | none | The console-facing form of the same sweep: `version`, `nats`, `clickhouse`, the ingest worker's counters, `sso`, and since [#331](https://github.com/onixus/Shapoclyack/issues/331) a `checks` map and a `status` of `ok` / `degraded` that reflects it. **Always `200`** — clients parse the body, and both container `HEALTHCHECK`s point here |
+| `GET /metrics` | none, or bearer | Prometheus exposition. Open unless `OCTO_METRICS_TOKEN` is set; with it, anything but `Authorization: Bearer <token>` is `401` and the token is compared in constant time ([#319](https://github.com/onixus/Shapoclyack/issues/319)) |
+| `GET /docs`, `/redoc`, `/openapi.json` | none | The interactive schema, **mounted only when `OCTO_API_DOCS=enabled`** — the default under `OCTO_ENV=dev` and not under `prod`. Disabled, the routes do not exist rather than being guarded |
+
+Neither `/livez`, `/readyz` nor `/metrics` appears in the OpenAPI schema: they
+are how the platform is operated, not API surface a client programs against.
+Keep all of them off the public Ingress. `examples/ingress.example.yaml`
+publishes the API under a `/` prefix and therefore reaches them: the snippet
+documented in that file refuses the three at the edge.
+
 ## Pagination
 
 `GET /api/runs`, `/api/jobs`, `/api/agents`, `/api/assets`,

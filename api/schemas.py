@@ -41,11 +41,18 @@ class SsoStatus(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    # "ok" while every configured dependency answers, "degraded" otherwise
+    # (#331). The endpoint still returns 200 either way — /readyz is the one
+    # that answers with a status code, because that is what a probe reads.
     status: str = "ok"
     version: str
     service: str = "shapoclyack-api"
     nats: bool | None = None
     clickhouse: bool | None = None
+    # Per-dependency outcome of the same sweep, carrying only what this
+    # installation configured; Postgres is here and has no legacy field of its
+    # own, which is how it went unchecked for so long.
+    checks: dict[str, str] | None = None
     ch_ingest: dict[str, int] | None = None
     # Whether single sign-on is configured (Track E). Here rather than on
     # /api/system because the login form has to know before anyone is signed

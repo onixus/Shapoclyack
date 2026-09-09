@@ -38,6 +38,7 @@ _DECIDING_VARS = (
     "OCTO_API_CORS",
     "OCTO_POSTGRES_URL",
     "OCTO_HSTS_ENABLED",
+    "OCTO_API_DOCS",
     "OCTO_PUBLIC_BASE_URL",
     "OCTO_CLICKHOUSE_URL",
     "OCTO_NATS_URL",
@@ -407,6 +408,25 @@ def test_hsts_defaults_to_the_environment(clean_env: pytest.MonkeyPatch) -> None
 
     clean_env.setenv("OCTO_HSTS_ENABLED", "true")
     assert load_settings().hsts_enabled is True
+
+
+def test_interactive_schema_defaults_to_the_environment(clean_env: pytest.MonkeyPatch) -> None:
+    """#319: the schema was mounted unconditionally. Like HSTS above, the
+    default follows OCTO_ENV — off in prod, on where a developer wants it."""
+    _configure_prod(clean_env)
+    assert load_settings().api_docs_enabled is False
+
+    clean_env.setenv("OCTO_API_DOCS", "enabled")
+    assert load_settings().api_docs_enabled is True
+
+    clean_env.setenv("OCTO_ENV", ENV_DEV)
+    clean_env.delenv("OCTO_API_DOCS", raising=False)
+    assert load_settings().api_docs_enabled is True
+
+    # A typo reads as "disabled" and warns; the closed reading is the safe one,
+    # and no installation should fail to boot over how this was spelled.
+    clean_env.setenv("OCTO_API_DOCS", "enbaled")
+    assert load_settings().api_docs_enabled is False
 
 
 # --------------------------------------------------------------------------- #

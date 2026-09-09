@@ -319,6 +319,23 @@ class NatsBus:
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result(timeout=timeout)
 
+    def round_trip(self, *, timeout: float = 2.0) -> bool:
+        """Flush to the server and wait for its reply — a real liveness answer.
+
+        ``_started`` only records that the initial connect returned, so it stays
+        True over a broker that has since gone away; readiness needs the server
+        to actually answer (#331). Short timeout on purpose: this runs inside a
+        probe the kubelet is already timing.
+        """
+        if not self._started or self._nc is None:
+            return False
+        try:
+            self._call(self._nc.flush(timeout=timeout), timeout=timeout + 1)
+            return True
+        except Exception:  # noqa: BLE001
+            LOG.warning("NATS round trip failed", exc_info=True)
+            return False
+
     def close(self) -> None:
         loop = self._loop
 
