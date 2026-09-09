@@ -18,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 import jwt
 import pytest
 
+from api.core.security import derive_agent_jwt_secret, get_api_secret_key
+from api.settings import DEFAULT_JWT_SECRET, InsecureConfigurationError, load_settings
 from tests.conftest import (
     TEST_JWT_SECRET,
     api_client,
@@ -192,7 +194,11 @@ def test_agent_token_without_tenant_is_rejected(tmp_path, monkeypatch):
             "typ": "agent",
             "exp": datetime.now(UTC) + timedelta(minutes=30),
         },
-        TEST_JWT_SECRET,
+        # The agent key, so what is under test is the missing claim. Signed
+        # with TEST_JWT_SECRET this would now be refused for its signature
+        # (#312) and the assertion below would pass without the tenant check
+        # ever running.
+        derive_agent_jwt_secret(TEST_JWT_SECRET),
         algorithm="HS256",
     )
 
@@ -202,6 +208,157 @@ def test_agent_token_without_tenant_is_rejected(tmp_path, monkeypatch):
         json={"agent_id": "agent-1", "status": "idle"},
     )
     assert response.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# Separate signing keys for operator and agent tokens (#312)
+# --------------------------------------------------------------------------
+
+
+def _forge_agent(payload: dict, *, secret: str) -> str:
+    base = {
+        "sub": "agent-1",
+        "typ": "agent",
+        "tenant_id": "default",
+        "agent_id": "agent-1",
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(minutes=30),
+    }
+    base.update(payload)
+    return jwt.encode(base, secret, algorithm="HS256")
+
+
+def test_a_token_signed_with_the_operator_secret_is_not_an_agent_token(tmp_path, monkeypatch):
+    """The regression #312 is about. Both audiences used to share
+    ``jwt_secret``, so anyone holding the console signing key — or any bug that
+    let a ``typ`` claim through unchecked — had a working agent credential for
+    an arbitrary tenant. The signature alone must now refuse it."""
+    client = configured_client(
+        tmp_path, monkeypatch, job_execution_mode="agent", agent_token=""
+    )
+    forged = _forge_agent({"tenant_id": "default"}, secret=TEST_JWT_SECRET)
+
+    response = client.post(
+        "/api/agent/heartbeat",
+        headers=bearer(forged),
+        json={"agent_id": "agent-1", "status": "idle"},
+    )
+    assert response.status_code == 401
+
+
+def test_a_token_signed_with_the_agent_key_is_not_a_console_session(tmp_path, monkeypatch):
+    """The mirror: the agent key is on every scanner host, which is a much
+    larger blast radius than the API's own secret. It must mint nothing an
+    operator route honours."""
+    client = configured_client(tmp_path, monkeypatch)
+    forged = jwt.encode(
+        {
+            "sub": "admin",
+            "role": "admin",
+            "typ": "user",
+            "iat": datetime.now(UTC),
+            "exp": datetime.now(UTC) + timedelta(minutes=30),
+        },
+        derive_agent_jwt_secret(TEST_JWT_SECRET),
+        algorithm="HS256",
+    )
+
+    response = client.get("/api/auth/me", headers=bearer(forged))
+    assert response.status_code == 401
+
+
+def test_derived_agent_key_is_deterministic_and_unlike_the_operator_secret():
+    """Replicas must agree on it without configuring anything (an install that
+    upgrades sets no new variable), and it must not be the operator secret."""
+    first = derive_agent_jwt_secret(TEST_JWT_SECRET)
+    assert first == derive_agent_jwt_secret(TEST_JWT_SECRET)
+    assert first != TEST_JWT_SECRET
+    assert first != derive_agent_jwt_secret(TEST_JWT_SECRET + "x")
+
+
+def test_explicit_agent_secret_replaces_the_derived_one(tmp_path, monkeypatch):
+    """``OCTO_AGENT_JWT_SECRET`` is the rotation path: setting it must retire
+    the derived key, not sit alongside it."""
+    explicit = "agent-secret-0123456789abcdef0123456789abcdef"
+    client = configured_client(
+        tmp_path,
+        monkeypatch,
+        job_execution_mode="agent",
+        agent_token="",
+        agent_jwt_secret=explicit,
+    )
+    client.post(
+        "/api/agent/register",
+        headers=bearer(_forge_agent({}, secret=explicit)),
+        json={"agent_id": "agent-1", "hostname": "edge-1"},
+    )
+
+    accepted = client.post(
+        "/api/agent/heartbeat",
+        headers=bearer(_forge_agent({}, secret=explicit)),
+        json={"agent_id": "agent-1", "status": "idle"},
+    )
+    assert accepted.status_code == 200
+
+    stale = client.post(
+        "/api/agent/heartbeat",
+        headers=bearer(_forge_agent({}, secret=derive_agent_jwt_secret(TEST_JWT_SECRET))),
+        json={"agent_id": "agent-1", "status": "idle"},
+    )
+    assert stale.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# JWT algorithm: one source, one algorithm (#312)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("algorithm", ["HS512", "none", "RS256"])
+def test_configured_jwt_algorithm_outside_the_allowlist_refuses_to_start(monkeypatch, algorithm):
+    """``OCTO_JWT_ALGORITHM`` used to be read by api.core.security alone while
+    ``Settings`` pinned HS256 regardless, so setting it changed what half the
+    codebase signed with and nothing that verified. One source now, and it
+    accepts HS256 only."""
+    monkeypatch.setenv("OCTO_JWT_ALGORITHM", algorithm)
+    with pytest.raises(InsecureConfigurationError):
+        load_settings()
+
+
+def test_a_token_signed_with_hs512_is_rejected(tmp_path, monkeypatch):
+    """The runtime half: the decoder pins one algorithm, so knowing the secret
+    is not enough if the header names a different family."""
+    client = configured_client(tmp_path, monkeypatch)
+    forged = jwt.encode(
+        {
+            "sub": "admin",
+            "role": "admin",
+            "typ": "user",
+            "exp": datetime.now(UTC) + timedelta(minutes=30),
+        },
+        TEST_JWT_SECRET,
+        algorithm="HS512",
+    )
+
+    response = client.get("/api/auth/me", headers=bearer(forged))
+    assert response.status_code == 401
+
+
+def test_api_secret_key_has_no_published_fallback(monkeypatch):
+    """``get_api_secret_key`` used to return the development secret printed in
+    this repository whenever neither variable was set, with no environment
+    check at all — an install that reached it before ``load_settings()`` had
+    refused to start signed real tokens with a public key."""
+    monkeypatch.delenv("API_SECRET_KEY", raising=False)
+    monkeypatch.delenv("OCTO_JWT_SECRET", raising=False)
+
+    monkeypatch.setenv("OCTO_ENV", "prod")
+    with pytest.raises(InsecureConfigurationError):
+        get_api_secret_key()
+
+    # dev keeps working, and lands on exactly what Settings.jwt_secret defaults
+    # to — the two used to disagree about what "unset" means.
+    monkeypatch.setenv("OCTO_ENV", "dev")
+    assert get_api_secret_key() == DEFAULT_JWT_SECRET
 
 
 # --------------------------------------------------------------------------

@@ -96,7 +96,10 @@ def heartbeat(
 @router.post(
     "/agent/jobs/claim",
     response_model=AgentClaimResponse,
-    responses={204: {"description": "No queued agent jobs"}},
+    responses={
+        204: {"description": "No queued agent jobs"},
+        426: {"description": "Agent version is below OCTO_AGENT_MIN_VERSION"},
+    },
 )
 def claim_job(
     agent_id: str,
@@ -109,6 +112,15 @@ def claim_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id; register first")
     if agent.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+    # The version floor is checked here rather than in require_agent: an agent
+    # below it must still register and heartbeat, or the fleet view would lose
+    # the very agents an operator needs to find and upgrade (#363).
+    try:
+        agents_service.require_min_version(agent.version)
+    except agents_service.AgentVersionTooOld as exc:
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED, detail=str(exc)
+        ) from exc
     try:
         claimed = jobs_service.claim_job(
             settings,

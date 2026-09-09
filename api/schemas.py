@@ -386,6 +386,12 @@ class AgentInfo(BaseModel):
     is_outdated: bool = False
     latest_version: str = ""
     upgrade_requested: bool = False
+    # OCTO_AGENT_MIN_VERSION and whether this agent falls below it (#363).
+    # ``upgrade_requested`` is an operator's wish; ``upgrade_required`` is the
+    # installation's floor, and it is what makes job claims answer 426.
+    min_version: str = ""
+    upgrade_required: bool = False
+    upgrade_message: str | None = None
 
 
 class AgentFleetSummary(BaseModel):
@@ -396,6 +402,7 @@ class AgentFleetSummary(BaseModel):
     error_agents: int = 0
     outdated_agents: int = 0
     latest_version: str = ""
+    min_version: str = ""
     by_tenant: dict[str, int] = Field(default_factory=dict)
 
 

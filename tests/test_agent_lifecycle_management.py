@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from api.services import agent_deployer
+from api.services.agents import LATEST_AGENT_VERSION
 from tests.conftest import (
     approve_scan_scope,
     auth_headers,
@@ -120,7 +121,10 @@ def test_agent_telemetry_heartbeat_and_fleet_summary(tmp_path: Path, monkeypatch
         json={
             "agent_id": "agent-alpha",
             "hostname": "srv-scan-01",
-            "version": "0.42.0",
+            # The current release, taken from the constant rather than
+            # retyped: the pair used to drift and made every agent outdated
+            # (#363), so a literal here would hide exactly that regression.
+            "version": LATEST_AGENT_VERSION,
             "labels": {"zone": "eu-west-1", "tier": "production"},
         },
         headers={"Authorization": f"Bearer {settings.agent_token}"},
@@ -175,7 +179,7 @@ def test_agent_telemetry_heartbeat_and_fleet_summary(tmp_path: Path, monkeypatch
     assert summary["online_agents"] == 2
     assert summary["busy_agents"] == 1
     assert summary["outdated_agents"] == 1
-    assert summary["latest_version"] == "0.42.0"
+    assert summary["latest_version"] == LATEST_AGENT_VERSION
 
     # 4. Get Agent Detail API
     detail_resp = client.get("/api/agents/agent-alpha", headers=admin_hdrs)

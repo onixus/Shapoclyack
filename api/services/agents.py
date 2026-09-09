@@ -23,11 +23,13 @@ from typing import Any
 
 from sqlalchemy import case, func, or_, select
 
+from api import __version__
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentFleetSummary, AgentInfo
 from api.services import pagination
 from api.services import tenants as tenants_service
+from api.services import version_compare
 from api.settings import Settings
 
 _settings: Settings | None = None
@@ -145,7 +147,66 @@ def _is_online(last_seen: datetime | None) -> bool:
     return age <= _require_settings().agent_stale_seconds
 
 
-LATEST_AGENT_VERSION = "0.42.0"
+class AgentVersionTooOld(RuntimeError):
+    """An agent reported a version below ``OCTO_AGENT_MIN_VERSION``.
+
+    Its own class rather than ``PermissionError`` because the route answers
+    ``426 Upgrade Required``, not ``403``: the credential is genuine and the
+    tenant is right, the software is what is refused.
+    """
+
+
+# The agent ships in the same release as the API and is versioned with it, so
+# the app version *is* the latest agent version (#363). These used to be two
+# literals -- ``0.42.0`` here against ``0.3.2.1`` in ``agent/__init__.py`` --
+# which made every agent in every installation permanently "outdated" and, worse,
+# meant ``upgrade_requested`` could never clear: register_agent() clears it only
+# when the reported version *changes*, and no upgrade could ever reach a version
+# this constant agreed with.
+#
+# ``agent/__init__.py`` keeps its own literal because the scanner image ships
+# the ``agent`` package without ``api`` and the API image ships ``api`` without
+# ``agent``: neither can import the other. ``tests/test_agent_version.py`` is
+# what holds the two together -- it fails the moment they drift.
+LATEST_AGENT_VERSION = __version__
+
+
+def _min_version() -> str:
+    return (_require_settings().agent_min_version or "").strip()
+
+
+def is_below_min_version(version: str) -> bool:
+    """Whether ``version`` is refused by ``OCTO_AGENT_MIN_VERSION``.
+
+    An unset minimum admits everything, including an agent that reports no
+    version at all: the gate is opt-in, and an installation that has not set a
+    floor has not asked for its fleet to be fenced off. Once a floor *is* set,
+    a blank version is refused -- an agent old enough not to report one is
+    exactly what the floor is for.
+    """
+    minimum = _min_version()
+    if not minimum:
+        return False
+    try:
+        # dpkg ordering rather than PEP 440: releases here look like
+        # ``0.44-0907`` (a date suffix, not a patch level) and agent builds
+        # like ``0.3.2.1``, which ``packaging`` -- not a declared dependency of
+        # this service -- reads as a post-release. The matcher's comparator is
+        # already in this codebase and already tested against dpkg's own
+        # ``t-version`` table, so reusing it beats a third version grammar.
+        return version_compare.compare_dpkg_version(version, minimum) < 0
+    except version_compare.VersionParseError:
+        return True
+
+
+def require_min_version(version: str) -> None:
+    """Raise :class:`AgentVersionTooOld` when the floor refuses ``version``."""
+    if is_below_min_version(version):
+        raise AgentVersionTooOld(
+            f"Agent version {version or 'unknown'} is below the required minimum "
+            f"{_min_version()}; upgrade the agent (see docs/operations.md "
+            "§ Agent installation and upgrade)."
+        )
 
 
 def _extract_detail(
@@ -193,6 +254,7 @@ def _to_info(row: models.Agent) -> AgentInfo:
     human_detail, metrics, capabilities, upgrade_requested = _extract_detail(row.detail)
     version = row.version or ""
     is_outdated = bool(version and version != LATEST_AGENT_VERSION)
+    upgrade_required = is_below_min_version(version)
     return AgentInfo(
         agent_id=row.agent_id,
         hostname=row.hostname or "",
@@ -210,6 +272,18 @@ def _to_info(row: models.Agent) -> AgentInfo:
         is_outdated=is_outdated,
         latest_version=LATEST_AGENT_VERSION,
         upgrade_requested=upgrade_requested,
+        min_version=_min_version(),
+        upgrade_required=upgrade_required,
+        # The heartbeat response is the only channel that reaches a running
+        # agent, so the refusal it is about to meet on claim is spelled out
+        # here rather than left as a bare 426 in its log.
+        upgrade_message=(
+            f"This installation requires agent {_min_version()} or newer; "
+            f"this agent reports {version or 'no version'}. Job claims are refused "
+            "until it is upgraded."
+        )
+        if upgrade_required
+        else None,
     )
 
 
@@ -448,6 +522,7 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
             outdated += 1
 
     return AgentFleetSummary(
+        min_version=_min_version(),
         total_agents=total,
         online_agents=online,
         busy_agents=busy,

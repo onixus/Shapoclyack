@@ -24,6 +24,18 @@ Agents use a separate provisioning flow. A tenant provisioning key is exchanged
 for a short-lived agent JWT; the plaintext provisioning key is returned only
 when it is created.
 
+The two token families are signed with **different keys**
+([#312](https://github.com/onixus/Shapoclyack/issues/312)). A console session is
+signed with `OCTO_JWT_SECRET`; an agent JWT is signed with
+`OCTO_AGENT_JWT_SECRET`, or — when that is unset, which is the default — with a
+key derived from `OCTO_JWT_SECRET` via HKDF-SHA256. Both families still carry a
+`typ` claim and both are still checked, but the signature alone now separates
+them: an operator token does not verify on an agent route and an agent token
+does not verify on `/api/auth/me`, so no single missed `typ` check is enough to
+turn one into the other. The agent key sits on every scanner host, which is a
+much wider blast radius than the API's own secret — see
+[configuration.md](configuration.md#environment-variables) for rotating it.
+
 ## Login rate limiting and the auth audit trail
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
@@ -416,6 +428,27 @@ returned exactly once, so an existing key cannot be re-embedded in a snippet —
 a fresh mint is the only way to fill the placeholder in, and the operator asks
 for it explicitly rather than getting one per dialog open. Revoke unused keys
 via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
+
+**Agent version, and the floor** ([#363](https://github.com/onixus/Shapoclyack/issues/363)).
+The agent ships in the same release as the API and carries the same version, so
+`latest_version` in `GET /api/agents/summary` is the app version and
+`is_outdated` means "not on the current release". It used to be a separate
+constant that no release ever produced, which reported every agent in every
+installation as outdated and made `upgrade_requested` permanent — the flag
+clears when the agent reports a *different* version, and no upgrade could reach
+the version the constant wanted.
+
+`OCTO_AGENT_MIN_VERSION` (empty by default) turns that reporting into a rule.
+An agent below the floor is answered **`426 Upgrade Required`** on
+`POST /api/agent/jobs/claim`, with the required version in the detail.
+`register` and `heartbeat` keep working on purpose: a gated agent that
+disappeared from `GET /api/agents` would be a host nobody can find to upgrade.
+The heartbeat response carries `min_version`, `upgrade_required` and a
+human-readable `upgrade_message`, which is the only channel that reaches a
+running agent — `agent/worker.py` logs it once per change rather than once per
+poll. Note the two are different questions: `upgrade_requested` is an
+operator's wish recorded by `POST /api/agents/{id}/upgrade`, `upgrade_required`
+is the installation's floor and is what refuses work.
 
 Three further properties of this group are worth knowing before it is used:
 
