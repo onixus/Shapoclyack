@@ -79,7 +79,7 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 │  │ FastAPI Control Plane  │ ◄─────► │ NATS JetStream Cluster    │  │
 │  └───────────┬────────────┘         └─────────────▲─────────────┘  │
 │              │                                    │                │
-│  ┌───────────▼────────────┐                       │ (TLS mTLS)     │
+│  ┌───────────▼────────────┐                       │ (см. #309)     │
 │  │ PostgreSQL & ClickHouse│                       │                │
 │  └────────────────────────┘                       │                │
 └───────────────────────────────────────────────────┼────────────────┘
@@ -99,7 +99,8 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 ```
 
 ### 2.1. Сетевые требования и изоляция
-* **Никаких входящих портов на агентах:** Remote Agent инициирует только **исходящие** сессии к центральному NATS JetStream и FastAPI Control Plane по mTLS.
+* **Никаких входящих портов на агентах:** Remote Agent инициирует только **исходящие** сессии — к FastAPI Control Plane по HTTPS и к NATS JetStream. Аутентификация в обоих случаях — агентский JWT, полученный в обмен на пер-тенантный provisioning key; **mTLS в сборке нет**; TLS до NATS включается явно (`tls://`, `OCTO_NATS_TLS_CA/CERT/KEY/HOSTNAME`, пример серверной части — `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`). Без TLS брокер держат внутри доверенного сегмента, а между сегментами пускают только HTTPS-режим claim'а (`OCTO_NATS_URL` пустой).
+* **Транспорт до хранилищ:** Postgres и ClickHouse шифруются только если это настроено явно (`?sslmode=verify-full`, схема `https://`) — см. [operations.md § Transport encryption](../operations.md#transport-encryption).
 * **Изоляция очередей тенантов:** задачи тенанта изолированы в NATS-субъектах (`shapoclyack.jobs.<tenant_id>.*`), агент одного тенанта физически не может перехватить задачи другого заказчика.
 * **Защита от сбоев (Leases & Fencing):** агент получает задачу в аренду на ограниченное время (`claimed_until`). Если агент завис или потерял связь, задача возвращается в очередь без потери статуса. Токен попытки (`attempt`) предотвращает запись устаревших результатов.
 
@@ -107,7 +108,7 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 
 ## Сценарий 3: Интеграция с корпоративной CMDB и Active Directory
 
-Точная оценка рисков невозможна без знания владельца и бизнес-назначения сервера. Архитектор настраивает сквозную синхронизацию с CMDB (ServiceNow, Jira Service Management, внутренние учетные системы).
+Точная оценка рисков невозможна без знания владельца и бизнес-назначения сервера. Shapoclyack дает для этого **REST-контракт бизнес-контекста актива** — модель полей ниже и `PATCH /api/assets/{id}`, — а синхронизацию с CMDB (ServiceNow, Jira Service Management, внутренние учетные системы) архитектор пишет как внешний скрипт по расписанию. Готового импортера из CMDB/AD в платформе **нет**: он в roadmap как [#350](https://github.com/onixus/Shapoclyack/issues/350). Направление одно — из CMDB в Shapoclyack; обратной записи в CMDB платформа не делает.
 
 ### 3.1. Модель данных бизнес-контекста актива
 Поля сущности **Asset** в Shapoclyack:
@@ -124,7 +125,7 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 | `context_source` | `cmdb`, `ad`, `operator` | Источник записи для аудита |
 
 ### 3.2. Автоматизация обогащения через REST API
-Скрипт синхронизации опрашивает CMDB и обновляет данные в Shapoclyack вызовом:
+Скрипт синхронизации (ваш, на стороне CMDB или в CI) опрашивает CMDB и обновляет данные в Shapoclyack вызовом — это и есть весь механизм «интеграции» на сегодня:
 ```bash
 curl -X PATCH https://shapoclyack.company.local/api/assets/asset_prod_srv_42 \
   -H "Authorization: Bearer $CMDB_SERVICE_TOKEN" \

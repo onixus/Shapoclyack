@@ -283,6 +283,10 @@ class Settings:
     report_smtp_username: str = ""
     report_smtp_password: str = ""
     report_smtp_starttls: bool = True
+    # Certificate verification for that STARTTLS session. smtplib's default
+    # context verifies nothing, so this is the switch between "encrypted" and
+    # "encrypted to whoever answered".
+    report_smtp_verify_tls: bool = True
     report_smtp_timeout_seconds: int = 20
     # Lariska endpoint-inventory ingestion (Agent_plan.md S1-S7). Router is
     # only registered when this is true.
@@ -630,7 +634,31 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     misconfiguration, and only the database can tell an installation with a real
     admin from one with none. That check is
     :func:`api.services.users.bootstrap`, which runs once the store is up.
+
+    Transport hardening is *warned* about rather than refused (#309). Unlike a
+    published default credential, an unverified transport is not a value we can
+    tell apart from a deliberate choice — a Postgres reachable only over a Unix
+    socket or an operator-owned encrypted link is a legitimate install — and
+    refusing would break every existing deployment on upgrade.
     """
+    if not _is_sqlite_url(settings.postgres_url) and "sslmode=" not in (
+        settings.postgres_url.lower()
+    ):
+        logger.warning(
+            "OCTO_POSTGRES_URL carries no sslmode=, so libpq negotiates TLS opportunistically "
+            "and accepts an unauthenticated server: the control plane's credentials, tokens and "
+            "scan results are readable by anything on the path. Append ?sslmode=verify-full and "
+            "point sslrootcert= at the cluster CA — see docs/operations.md "
+            "§ Transport encryption."
+        )
+    if settings.report_smtp_host and settings.report_smtp_starttls:
+        if not settings.report_smtp_verify_tls:
+            logger.warning(
+                "OCTO_REPORT_SMTP_VERIFY_TLS=false: report delivery encrypts to the relay "
+                "without verifying its certificate, which stops a passive listener and nobody "
+                "else. Trust the relay's CA system-wide instead of turning this off."
+            )
+
     problems: list[str] = []
 
     if not settings.jwt_secret or settings.jwt_secret == DEFAULT_JWT_SECRET:
@@ -874,6 +902,8 @@ def load_settings() -> Settings:
         report_smtp_username=os.environ.get("OCTO_REPORT_SMTP_USERNAME", "").strip(),
         report_smtp_password=os.environ.get("OCTO_REPORT_SMTP_PASSWORD", ""),
         report_smtp_starttls=os.environ.get("OCTO_REPORT_SMTP_STARTTLS", "true").lower()
+        in {"1", "true", "yes"},
+        report_smtp_verify_tls=os.environ.get("OCTO_REPORT_SMTP_VERIFY_TLS", "true").lower()
         in {"1", "true", "yes"},
         report_smtp_timeout_seconds=max(
             1, int(os.environ.get("OCTO_REPORT_SMTP_TIMEOUT_SECONDS", "20"))

@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import smtplib
+import ssl
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,24 @@ def _entry(recipient: dict[str, Any], status: str, error: str | None = None) -> 
         "status": status,
         "error": error,
     }
+
+
+def _tls_context(settings: Settings) -> ssl.SSLContext:
+    """The SSL context for STARTTLS against the report relay.
+
+    ``smtp.starttls()`` with no context builds one that neither checks the
+    hostname nor verifies the chain (``CERT_NONE``), so the encryption it puts
+    on the wire protects the report from a passive listener and from nobody
+    else. The default here is therefore a verifying context; an installation
+    whose relay presents an internal certificate either puts that CA in the
+    system trust store or sets OCTO_REPORT_SMTP_VERIFY_TLS=false and owns the
+    downgrade.
+    """
+    context = ssl.create_default_context()
+    if not settings.report_smtp_verify_tls:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
 
 
 def _send_email(
@@ -94,7 +113,7 @@ def _send_email(
         ) as smtp:
             if settings.report_smtp_starttls:
                 try:
-                    smtp.starttls()
+                    smtp.starttls(context=_tls_context(settings))
                 except (smtplib.SMTPException, OSError) as exc:
                     # Refused: the message is *not* sent. Continuing would put
                     # the relay password and the customer's whole vulnerability
@@ -104,6 +123,10 @@ def _send_email(
                     # quietly on their behalf. An installation with a relay
                     # that genuinely cannot do TLS sets
                     # OCTO_REPORT_SMTP_STARTTLS=false and owns that choice.
+                    # A certificate that does not verify lands here too
+                    # (ssl.SSLCertVerificationError is an OSError): an
+                    # unauthenticated relay is a relay we cannot tell from the
+                    # attacker sitting in front of it.
                     LOG.warning("SMTP relay %s refused STARTTLS", settings.report_smtp_host)
                     return _entry(
                         recipient,

@@ -1314,6 +1314,44 @@ stops new ones being created but does not remove any that already exist. Audit
 `SELECT name, storage FROM system.users` on an upgraded install and drop
 anything you did not create.
 
+### Transport encryption
+
+Credentials are only half of it: they travel over these links, and so does
+every row of scan data. As of
+[#309](https://github.com/onixus/Shapoclyack/issues/309) the state is:
+
+| Link | Encrypted | How it is configured |
+|---|---|---|
+| Console / API ingress | Yes, when you configure it | `spec.tls` + cert-manager in `examples/ingress.example.yaml`; `force-ssl-redirect` sends bookmarked `http://` links back to HTTPS |
+| Agent → API | Yes | Plain HTTPS to `OCTO_PUBLIC_BASE_URL`; agents are outbound-only, there is no client certificate |
+| API → Postgres | Only if you ask for it | `?sslmode=verify-full` in `OCTO_POSTGRES_URL`; a `prod` start without any `sslmode=` logs a warning |
+| API → ClickHouse | Only if you ask for it | `https://` in `OCTO_CLICKHOUSE_URL`. The scheme decides, not the port |
+| API → SMTP relay | Yes, verified | `OCTO_REPORT_SMTP_STARTTLS` (default on) with certificate verification; `OCTO_REPORT_SMTP_VERIFY_TLS=false` downgrades it deliberately |
+| API / agents ↔ NATS | **No** | Tracked in [#309](https://github.com/onixus/Shapoclyack/issues/309) and [#359](https://github.com/onixus/Shapoclyack/issues/359). Until it lands, keep NATS on the cluster network and do not expose `:4222` across an untrusted segment |
+
+There is no mTLS anywhere yet: nothing in this repository issues or checks a
+client certificate. Where the README once said "mTLS", read "TLS, one-way".
+
+**Postgres with a private CA.** `verify-full` needs the CA in the pod, not in
+the operator's laptop:
+
+```bash
+kubectl -n network-scan create secret generic shapoclyack-postgres-ca \
+  --from-file=ca.crt=/path/to/cluster-ca.crt
+```
+
+Mount it read-only on the API Deployment (and on the backup CronJob, which
+reaches the same server) and point the URL at the mounted path:
+
+```
+OCTO_POSTGRES_URL=postgresql+psycopg://scan:...@postgres:5432/shapoclyack?sslmode=verify-full&sslrootcert=/etc/ssl/postgres-ca/ca.crt
+```
+
+`verify-full` also checks the hostname, so the certificate's SAN has to carry
+the name in the URL — a Service name such as `shapoclyack-postgres.network-scan.svc`,
+not the Pod IP. Managed Postgres (RDS, Cloud SQL, Yandex Managed) publishes its
+CA bundle; use that file instead of minting one.
+
 ### Rotation
 
 Rotating any of these is a rollout, not a Secret edit. `nats-server` reads

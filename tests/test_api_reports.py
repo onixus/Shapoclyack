@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import smtplib
+import ssl
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -567,7 +568,7 @@ def test_a_relay_that_refuses_starttls_does_not_get_the_report(tmp_path, monkeyp
         def __exit__(self, *args):
             return False
 
-        def starttls(self):
+        def starttls(self, *, context=None):
             raise smtplib.SMTPException("STARTTLS not supported")
 
         def send_message(self, message):  # pragma: no cover - must not be reached
@@ -582,6 +583,84 @@ def test_a_relay_that_refuses_starttls_does_not_get_the_report(tmp_path, monkeyp
     )
     assert entries[0]["status"] == "failed"
     assert "STARTTLS" in entries[0]["error"]
+
+
+def test_starttls_gets_a_verifying_context(tmp_path, monkeypatch):
+    """#309: ``starttls()`` with no context verifies neither chain nor hostname."""
+    settings = make_settings(
+        tmp_path,
+        report_smtp_host="relay.example.com",
+        report_smtp_from="reports@example.com",
+    )
+    path = tmp_path / "report.json"
+    path.write_text("{}", encoding="utf-8")
+    seen = {}
+
+    class _Relay:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, *, context=None):
+            seen["context"] = context
+
+        def send_message(self, message):
+            seen["sent"] = True
+
+    monkeypatch.setattr(smtplib, "SMTP", lambda *args, **kwargs: _Relay())
+    entries = report_delivery.deliver(
+        settings,
+        report={"report_id": "rpt_1", "title": "t", "format": "json", "generated_at": "now"},
+        path=path,
+        recipients=[{"transport": "email", "target": "ciso@example.com"}],
+    )
+
+    assert entries[0]["status"] == "delivered"
+    assert seen["sent"] is True
+    context = seen["context"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_smtp_verification_can_be_turned_off_deliberately(tmp_path, monkeypatch):
+    """An internal relay whose CA is not in the trust store still has an out."""
+    settings = make_settings(
+        tmp_path,
+        report_smtp_host="relay.internal",
+        report_smtp_from="reports@example.com",
+        report_smtp_verify_tls=False,
+    )
+    path = tmp_path / "report.json"
+    path.write_text("{}", encoding="utf-8")
+    seen = {}
+
+    class _Relay:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, *, context=None):
+            seen["context"] = context
+
+        def send_message(self, message):
+            seen["sent"] = True
+
+    monkeypatch.setattr(smtplib, "SMTP", lambda *args, **kwargs: _Relay())
+    report_delivery.deliver(
+        settings,
+        report={"report_id": "rpt_1", "title": "t", "format": "json", "generated_at": "now"},
+        path=path,
+        recipients=[{"transport": "email", "target": "ciso@example.com"}],
+    )
+
+    # check_hostname has to go down first, hence both assertions.
+    assert seen["context"].check_hostname is False
+    assert seen["context"].verify_mode == ssl.CERT_NONE
 
 
 def test_delivery_records_one_entry_per_recipient(tmp_path, monkeypatch):

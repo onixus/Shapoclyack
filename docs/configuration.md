@@ -398,6 +398,21 @@ on. Migrate before then: mint a per-tenant provisioning key
 it so they exchange it for a scoped agent JWT
 (`POST /api/auth/agent/token`), then unset the variable.
 
+### Transport encryption: what warns instead of refusing
+
+A `prod` process also **warns** — it does not refuse — about two transports it
+cannot verify ([#309](https://github.com/onixus/Shapoclyack/issues/309)):
+
+| Warning | Fix |
+|---|---|
+| `OCTO_POSTGRES_URL` carries no `sslmode=` | libpq then negotiates TLS opportunistically and accepts whatever certificate it is handed, so credentials, tokens and scan results are readable by anything on the path. Append `?sslmode=verify-full&sslrootcert=/etc/ssl/postgres-ca/ca.crt` — see [operations](operations.md#transport-encryption) for mounting the CA |
+| `OCTO_REPORT_SMTP_VERIFY_TLS=false` while a relay is configured | Report delivery then encrypts to the relay without verifying its certificate — protection against a passive listener and nobody else. Put the relay's CA in the image's trust store instead |
+
+Both are warnings rather than refusals because, unlike a published default
+password, neither value is distinguishable from a deliberate choice: a Postgres
+reached over a Unix socket or an operator-owned encrypted link is a legitimate
+install, and refusing would break every deployment that upgrades.
+
 Everything except the console-account check is decided in `load_settings()`
 from the environment alone. That one needs the database and therefore runs at
 startup (`api/services/users.py:bootstrap`) — only the table can tell an
@@ -431,7 +446,7 @@ Core deployment variables:
 | `OCTO_NATS_TLS_CERT` | Client certificate presented to NATS (mTLS). Requires `verify_and_map: true` server-side, with the certificate CN equal to the NATS username |
 | `OCTO_NATS_TLS_KEY` | Private key for `OCTO_NATS_TLS_CERT` |
 | `OCTO_NATS_TLS_HOSTNAME` | Name the server certificate is verified against, when it differs from the host in `OCTO_NATS_URL` (a broker issued for its in-cluster Service name but dialed by a remote agent at a public address). Never a way to skip verification — hostname checking and certificate verification stay on |
-| `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |
+| `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection; empty disables the client and the ingest worker. TLS follows the **scheme**, not the port — `https://…` connects with certificate verification on any port, anything else is plaintext |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
 | `OCTO_JOB_EXECUTION_MODE` | `local` or `agent` |
 | `OCTO_AGENT_TOKEN` | **Deprecated, refused in `prod` from 2027-03-01.** Legacy shared bearer token for remote agents; every agent holding it is `tenant_id=default`. Use per-tenant provisioning keys instead |
@@ -486,6 +501,7 @@ goes to an operations channel and a report goes to a customer.
 | `OCTO_REPORT_SMTP_USERNAME` | *(empty)* | Relay username; login is attempted only when set |
 | `OCTO_REPORT_SMTP_PASSWORD` | *(empty)* | Relay password |
 | `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than sending the report and the relay password in cleartext; set `false` only for a relay that genuinely cannot do TLS |
+| `OCTO_REPORT_SMTP_VERIFY_TLS` | `true` | Verify the relay's certificate and hostname during STARTTLS. `smtplib`'s own default verifies neither, so `false` buys encryption against a passive listener and nothing against a relay that is not the one you meant. Prefer trusting the internal CA system-wide; a `prod` process warns while this is off |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
 
 Per-tenant usage quotas (ROADMAP Track E, MSSP operations; see
