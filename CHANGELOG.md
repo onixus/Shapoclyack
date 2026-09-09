@@ -4,6 +4,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Security
+
+- **A results upload now confirms the job's `run_id` instead of choosing it.**
+  `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
+  form and preferred it over the value the server minted at `start_scan` or
+  at the claim, then joined it onto `output_dir/runs` unchecked. An upload
+  naming a different run — another tenant's, or a path with `..` in it — was
+  extracted there and rewrote that run's `tenant.json` to the uploader's
+  tenant. The echoed value is now accepted only when it equals the job's own
+  (`422` otherwise, and the job stays the agent's to finish), and every run
+  id — the operator-supplied one on `POST /api/jobs` included — must be a
+  single path segment of `[A-Za-z0-9_-]{1,64}`.
+
 ### Added
 
 - **Three gaps the console's Users and Integrations pages ran into.**
