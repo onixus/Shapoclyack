@@ -85,6 +85,8 @@ export const queryKeys = {
   usage: (historyMonths: number) => ["usage", historyMonths] as const,
   fleetUsage: ["usage", "tenants"] as const,
   tenantQuota: (tenantId: string) => ["tenants", tenantId, "quota"] as const,
+  scanScope: (tenantId: string) => ["tenants", tenantId, "scan-scope"] as const,
+  promotedDomains: (tenantId: string) => ["tenants", tenantId, "promoted-domains"] as const,
   system: ["system"] as const,
   config: ["config"] as const,
 };

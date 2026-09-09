@@ -164,6 +164,8 @@ curl -s -X PUT http://127.0.0.1:8080/api/tenants/default/scan-scope \
       ]}'
 ```
 
+Or from the UI: **Tenants → Scan scope** on the tenant's row (admin only).
+
 `PUT` replaces the whole scope, allow is containment (a range half-inside an
 approved one is not half-approved) and deny wins by overlap. Read it back with
 `GET /api/tenants/default/scan-scope`. The rules, the upgrade path for an

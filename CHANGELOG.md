@@ -6,6 +6,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **A tenant's approved scanning scope can be approved from the console.** The
+  scope has been enforced since #226 and editable only over curl ever since:
+  a fresh installation refused every scan with "tenant default has no approved
+  scan scope: an admin must approve one", and the fix was a `PUT` with a bearer
+  token pasted by hand. `/tenants` now carries a **Scan scope** action per row
+  for a platform admin, over the same admin-only
+  `GET`/`PUT /api/tenants/{id}/scan-scope` — nothing on the API side changed.
+  It shows what is approved now, with the admin and timestamp each entry was
+  written under, and an editor seeded from exactly that: approving sends the
+  whole list, because that is what the endpoint does — a scope is evaluated as
+  a set (deny beats allow), so there is no per-entry update that is safe to
+  enforce halfway, and an editor that started empty would have quietly dropped
+  the rest of the scope on the first correction. The button is inert until
+  something actually changes, an empty list is offered with a warning that the
+  tenant will then not be able to scan anything rather than refused, and the
+  browser-side value checks are warnings under the row rather than gates — only
+  an empty value stops the request, so the API stays the authority on what a
+  value is and its `422` text is what the failure toast says. The scope is
+  re-read at the moment of the write and the approval is refused if another
+  admin changed it in between, since the endpoint replaces the whole list and
+  offers nothing to condition the write on. The tenant's promoted related
+  domains (org_profile M4) are listed read-only beside it: operators add those
+  underneath the scope and every scan carries them, so the admin approving the
+  scope should see them.
+
 - **The advisory datasets behind software→CVE matching now have a way to get
   onto an installation.** The providers, the normalizers and the opt-in fetcher
   all existed, but `api/services/advisories/fetch.py` was called from nothing
@@ -246,6 +271,22 @@ All notable changes to Shapoclyack are documented in this file.
   finding, and says why there is none where there is none.
 
 ### Fixed
+
+- **A rolling update of the API deadlocked on its own migration lock.**
+  `api.db.migrate` serialises schema upgrades with a Postgres advisory lock,
+  and its object id was `2` — the id the report dispatcher's `LeaderLock` had
+  also been given in the same `LOCK_CLASS_ID` namespace. A leader lock is
+  session-scoped and held for the life of the replica, so the running pod held
+  the "migration" lock for as long as it ran, the new pod's `migrate`
+  initContainer waited on it (`Init:0/1`, "Waiting for the migration lock")
+  until its 600 s `lock_timeout`, and the old pod was never terminated because
+  the new one never became ready. Reproduced on a kind stand by rebuilding the
+  image; `pg_locks` showed the idle leader session granted `(SHAP, 2)` and the
+  init container waiting on the same key. The migration id now lives in the
+  same registry as the worker ids (`MIGRATION_LOCK_ID = 4` in
+  `api/services/leader_lock.py`) and `tests/test_lock_ids.py` fails on the
+  next duplicate. An installation stuck this way is unblocked by deleting the
+  old API pod: the session goes with it and the waiting migration proceeds.
 
 - **Three ways the provenance could lie, closed before they shipped.**
   A refresh run that did not *attempt* a dataset used to overwrite its `origin`
