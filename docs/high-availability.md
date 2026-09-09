@@ -23,7 +23,7 @@ half-works is worse than a value that fails with the name of the thing it needs.
 | NATS 3-node JetStream cluster, streams `R3` | `nats-ha-patch.yaml`, `nats-ha-configmap-patch.yaml`, `OCTO_NATS_STREAM_REPLICAS=3` | A single broker pod loses every queued job offer with its node |
 | Route port 6222 opened between NATS pods | `nats-cluster-networkpolicy-patch.yaml` | Base's NetworkPolicy denies it, so the cluster silently never forms |
 | `OCTO_NATS_URL` and `OCTO_CLICKHOUSE_URL` filled in | `api-ha-patch.yaml` | Base leaves both empty — they are opt-in sidecars there |
-| Postgres: in-cluster StatefulSet, Services, NetworkPolicy, backup CronJob and dev Secret removed; URL from a Secret | `postgres-external-patch.yaml` | The in-cluster Postgres is one pod with one PVC and no failover |
+| Postgres: in-cluster StatefulSet, Services, NetworkPolicy, backup CronJob and dev Secret removed; URL from a Secret | `postgres-delete-*.yaml`, `api-ha-patch.yaml` | The in-cluster Postgres is one pod with one PVC and no failover |
 | `OCTO_DB_POOL_SIZE` / `OCTO_DB_MAX_OVERFLOW` / `OCTO_DB_POOL_TIMEOUT` set | `api-ha-patch.yaml` | The pool is per replica; the server's `max_connections` is not |
 
 Apply order is the usual one:

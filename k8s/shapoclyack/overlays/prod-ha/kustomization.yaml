@@ -79,5 +79,16 @@ patches:
   - path: nats-ha-configmap-patch.yaml
   - path: nats-cluster-networkpolicy-patch.yaml
   # External Postgres: removes the in-cluster StatefulSet, its Services, its
-  # NetworkPolicy and the pg_dump CronJob that reached it.
-  - path: postgres-external-patch.yaml
+  # NetworkPolicy, the pg_dump CronJob that reached it and the dev-placeholder
+  # Secret. One file per object rather than one multi-document patch: the
+  # kustomize built into kubectl 1.31 (v5.4.2, which is what CI runs)
+  # SEGFAULTs on a multi-document `$patch: delete` file -- a nil dereference in
+  # PatchTransformer.transformStrategicMerge, not an error message. kubectl
+  # 1.36 (kustomize v5.8.1) renders the same file fine, so this is not
+  # something a local check would have caught.
+  - path: postgres-delete-statefulset.yaml
+  - path: postgres-delete-service.yaml
+  - path: postgres-delete-service-client.yaml
+  - path: postgres-delete-networkpolicy.yaml
+  - path: postgres-delete-backup-cronjob.yaml
+  - path: postgres-delete-secret.yaml

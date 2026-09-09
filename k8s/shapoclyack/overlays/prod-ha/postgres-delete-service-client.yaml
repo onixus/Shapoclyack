@@ -1,0 +1,8 @@
+# Companion to postgres-delete-statefulset.yaml -- read that file's header.
+# The client Service the API and the backup CronJob resolved. Deleting it is
+# what makes a leftover reference fail loudly rather than resolve to nothing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: shapoclyack-postgres-client
+$patch: delete

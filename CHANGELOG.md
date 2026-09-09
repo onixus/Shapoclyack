@@ -56,7 +56,10 @@ All notable changes to Shapoclyack are documented in this file.
   patch file from outside its root); fills in `OCTO_NATS_URL` and
   `OCTO_CLICKHOUSE_URL`; and replaces the in-cluster PostgreSQL — StatefulSet,
   Services, NetworkPolicy, `pg_dump` CronJob and dev Secret — with a
-  Secret-supplied `?sslmode=verify-full` URL to a managed one. It also opens the
+  Secret-supplied `?sslmode=verify-full` URL to a managed one (as five
+  single-object `$patch: delete` files: the kustomize inside kubectl 1.31,
+  which is what CI runs, segfaults on a multi-document delete patch that
+  kubectl 1.36 renders happily). It also opens the
   NATS route port 6222 between broker pods, which base's NetworkPolicy denied
   (without that rule a 3-node cluster silently never forms under an enforcing
   CNI), spreads the three broker pods across nodes, and gives them a PDB —

@@ -148,7 +148,7 @@ spec:
             # The URL above carries its own credentials, so nothing reads the
             # in-cluster Postgres password any more. Deleted rather than left
             # dangling: the Secret it names is removed with the StatefulSet in
-            # postgres-external-patch.yaml, and a secretKeyRef to a Secret that
+            # postgres-delete-secret.yaml, and a secretKeyRef to a Secret that
             # does not exist is a pod that never starts.
             - name: POSTGRES_PASSWORD
               $patch: delete
