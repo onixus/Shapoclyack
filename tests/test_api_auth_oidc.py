@@ -14,6 +14,7 @@ from api.services import auth_audit
 from api.services import oidc
 from api.services import users as users_service
 from tests.conftest import (
+    POSTGRES_URL,
     auth_headers,
     bearer,
     configured_client,
@@ -57,8 +58,20 @@ def start_login(client, *, next_url: str = "") -> str:
     return response.json()["state"]
 
 
+def latest_pending_state():
+    """The record the service just stored, read back from Postgres (#321).
+
+    Only ``postgres_url`` matters: every client in this module runs on the same
+    test database, and since #321 an in-flight authorization request is a row
+    on it rather than a dict in this process.
+    """
+    from api.settings import Settings
+
+    return oidc.pending_states_for_tests(Settings(postgres_url=POSTGRES_URL))[-1]
+
+
 def callback(client, provider, state, **claims):
-    stored = next(iter(oidc._states.values()))  # noqa: SLF001 - the nonce is server-side
+    stored = latest_pending_state()  # the nonce is server-side
     provider.token_response = {"id_token": make_id_token(nonce=stored.nonce, **claims)}
     return client.get(f"/api/auth/oidc/callback?code=code-1&state={state}")
 
@@ -99,7 +112,7 @@ def test_login_refuses_to_carry_an_offsite_next(tmp_path, monkeypatch, provider)
     """An open redirect on an authentication endpoint is a phishing primitive."""
     client = configured_client(tmp_path, monkeypatch, settings=sso_settings(tmp_path))
     client.get("/api/auth/oidc/login?redirect=false&next=//evil.example")
-    stored = next(iter(oidc._states.values()))  # noqa: SLF001
+    stored = latest_pending_state()
     assert stored.next_url == ""
 
 
@@ -310,7 +323,7 @@ def test_a_replayed_state_is_refused(tmp_path, monkeypatch, provider):
     settings = sso_settings(tmp_path, oidc_jit_provisioning=True)
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     state = start_login(client)
-    stored = next(iter(oidc._states.values()))  # noqa: SLF001
+    stored = latest_pending_state()
     provider.token_response = {"id_token": make_id_token(nonce=stored.nonce, sub="s")}
 
     assert client.get(f"/api/auth/oidc/callback?code=c&state={state}").status_code == 200
@@ -403,7 +416,7 @@ def test_the_console_redirect_carries_the_token_in_the_fragment(
     )
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     state = start_login(client)
-    stored = next(iter(oidc._states.values()))  # noqa: SLF001
+    stored = latest_pending_state()
     provider.token_response = {"id_token": make_id_token(nonce=stored.nonce)}
     response = client.get(
         f"/api/auth/oidc/callback?code=c&state={state}", follow_redirects=False
@@ -432,7 +445,7 @@ def test_the_next_path_cannot_inject_extra_fragment_parameters(
     )
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     state = start_login(client, next_url="/runs%26access_token%3Dforged")
-    stored = next(iter(oidc._states.values()))  # noqa: SLF001
+    stored = latest_pending_state()
     provider.token_response = {"id_token": make_id_token(nonce=stored.nonce)}
 
     response = client.get(

@@ -1,15 +1,17 @@
 """OIDC discovery, ID-token validation, state/nonce and claim mapping (Track E).
 
-No Postgres and no HTTP: the provider is a dictionary and the signing key is
-generated in-process, so every property this module is responsible for — which
-tokens it accepts and which it refuses — is asserted directly rather than
-through a route.
+No HTTP: the provider is a dictionary and the signing key is generated
+in-process, so every property this module is responsible for — which tokens it
+accepts and which it refuses — is asserted directly rather than through a
+route. Postgres *is* needed since #321: an in-flight authorization request is a
+row in ``oidc_pending_states`` rather than a dict in the API process, which is
+what lets a callback land on a replica that did not issue the state.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
-import time
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -19,6 +21,9 @@ from jwt.algorithms import RSAAlgorithm
 
 from api.services import oidc
 from api.settings import Settings
+from tests.conftest import POSTGRES_URL, requires_postgres
+
+pytestmark = requires_postgres
 
 ISSUER = "https://idp.example.com"
 CLIENT_ID = "shapoclyack-console"
@@ -52,6 +57,7 @@ def make_settings(**overrides) -> Settings:
     base = Settings(
         env="dev",
         jwt_secret="test-secret",
+        postgres_url=POSTGRES_URL,
         oidc_issuer=ISSUER,
         oidc_client_id=CLIENT_ID,
         oidc_client_secret="client-secret",
@@ -87,9 +93,24 @@ class FakeProvider:
 
 @pytest.fixture(autouse=True)
 def _clean_caches():
-    oidc.reset_for_tests()
+    """Caches *and* pending-state rows: a state left over from a previous test
+    would otherwise be a second answer to this one's callback."""
+    oidc.reset_for_tests(make_settings())
     yield
-    oidc.reset_for_tests()
+    oidc.reset_for_tests(make_settings())
+
+
+def replica():
+    """A second, independent import of the service — another API replica.
+
+    Same database, its own module globals: the discovery cache, the sweep
+    marker, and before #321 the pending-state dict. A state that crosses from
+    one of these to another therefore crosses a load balancer.
+    """
+    spec = importlib.util.find_spec("api.services.oidc")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
@@ -369,9 +390,11 @@ def test_expired_state_is_refused(provider, monkeypatch):
     settings = make_settings()
     request = oidc.build_authorization_request(settings)
     # Past the record's TTL: the signed half may still verify within its
-    # leeway, but the server-side record is gone.
-    later = time.monotonic() + settings.oidc_state_ttl_seconds + 60
-    monkeypatch.setattr(oidc.time, "monotonic", lambda: later)
+    # leeway, but the row is expired and is spent rather than honoured.
+    later = datetime.now(UTC).replace(tzinfo=None) + timedelta(
+        seconds=settings.oidc_state_ttl_seconds + 60
+    )
+    monkeypatch.setattr(oidc, "_now", lambda: later)
     with pytest.raises(oidc.OidcError):
         oidc.consume_state(settings, request.state)
 
@@ -416,8 +439,8 @@ def test_replayed_callback_is_refused_before_the_provider_is_called(provider):
 def test_complete_callback_exchanges_the_code_with_the_pkce_verifier(provider):
     settings = make_settings()
     request = oidc.build_authorization_request(settings)
-    # Peek without spending it: read the record the service stored.
-    stored = next(iter(oidc._states.values()))  # noqa: SLF001 - asserting the seam
+    # Peek without spending it: read the row the service stored.
+    stored = oidc.pending_states_for_tests(settings)[-1]
     provider.token_response = {"id_token": make_id_token(nonce=stored.nonce, email="x@y.z")}
 
     completed = oidc.complete_callback(settings, code="code-1", state=request.state)
@@ -543,14 +566,55 @@ def test_email_verified_is_false_when_the_claim_is_absent():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_pending_state_store_is_capped(provider, monkeypatch):
-    """``/auth/oidc/login`` is unauthenticated, so the store needs a ceiling."""
-    monkeypatch.setattr(oidc, "MAX_PENDING_STATES", 5)
-    settings = make_settings()
-    states = [oidc.build_authorization_request(settings).state for _ in range(20)]
-    assert len(oidc._states) <= 5
-    # The most recent requests survive and still work; the evicted ones fail
-    # closed rather than being honoured from a stale record.
-    oidc.consume_state(settings, states[-1])
+def test_expired_states_are_swept_and_live_ones_are_left_alone(provider, monkeypatch):
+    """The TTL is the bound now, and it evicts only what is already dead.
+
+    The 10,000-record ceiling this replaces evicted the *oldest* pending
+    logins, so anyone able to reach the unauthenticated login route could push
+    real users' in-flight logins out of the store and have them refused.
+    """
+    settings = make_settings(oidc_state_ttl_seconds=30)
+    stale = oidc.build_authorization_request(settings)
+
+    # Past the record's TTL and past the sweep's own interval, so the next
+    # write really does sweep rather than being throttled.
+    later = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=15)
+    monkeypatch.setattr(oidc, "_now", lambda: later)
+    live = oidc.build_authorization_request(settings)
+
+    assert len(oidc.pending_states_for_tests(settings)) == 1
+    assert oidc.consume_state(settings, live.state).nonce
     with pytest.raises(oidc.OidcError):
-        oidc.consume_state(settings, states[0])
+        oidc.consume_state(settings, stale.state)
+
+
+def test_a_state_issued_by_one_replica_is_spent_once_by_another(monkeypatch):
+    """The property #321 exists for: no session affinity, no double exchange.
+
+    Two independent imports of the service stand in for two API replicas over
+    one database. The one that never issued the state completes the login, and
+    the code cannot then be exchanged again — by either of them.
+    """
+    settings = make_settings()
+    issuing, answering = replica(), replica()
+    providers = {}
+    for module in (issuing, answering):
+        fake = FakeProvider()
+        monkeypatch.setattr(module, "_http_get_json", fake.get_json)
+        monkeypatch.setattr(module, "_http_post_form", fake.post_form)
+        providers[id(module)] = fake
+
+    request = issuing.build_authorization_request(settings)
+    pending = issuing.pending_states_for_tests(settings)
+    assert len(pending) == 1
+    providers[id(answering)].token_response = {"id_token": make_id_token(nonce=pending[0].nonce)}
+
+    completed = answering.complete_callback(settings, code="code-1", state=request.state)
+    assert completed["claims"]["sub"] == "idp-subject-1"
+
+    # The replay stops before the provider is called, on the replica that
+    # issued the state and still remembers nothing about it.
+    providers[id(issuing)].form_calls.clear()
+    with pytest.raises(issuing.OidcError):
+        issuing.complete_callback(settings, code="code-1", state=request.state)
+    assert providers[id(issuing)].form_calls == []

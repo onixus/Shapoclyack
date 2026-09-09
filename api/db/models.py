@@ -207,6 +207,43 @@ class AuthEvent(Base):
     )
 
 
+class OidcPendingState(Base):
+    """One in-flight SSO authorization request, between the redirect and the callback (#321).
+
+    This used to be a dict in the API process, which made an SSO login work
+    only if the callback happened to land on the replica that issued it —
+    every ``k8s/`` manifest may run more than one, and which one serves a
+    request is the load balancer's choice. Session affinity for
+    ``/api/auth/oidc/*`` was the documented workaround; it is not one, because
+    a rollout moves the browser to a replica that never held the record.
+
+    Keyed on ``sha256`` of the state's ``jti``, never the ``jti`` itself. The
+    signed state is a bearer value for the remainder of the flow, so a reader
+    of a dump of this table must not come away with the one thing that, with
+    the platform secret, completes somebody else's login — the same reasoning
+    as ``provisioning_keys.key_lookup``.
+
+    ``nonce`` and ``code_verifier`` are the halves the browser never carries.
+    Rows are single-use (``DELETE … RETURNING`` in
+    ``api/services/oidc.py::consume_state``) and expire on ``expires_at``;
+    nothing here outlives ``OCTO_OIDC_STATE_TTL_SECONDS``.
+    """
+
+    __tablename__ = "oidc_pending_states"
+
+    state_hash: Mapped[str] = mapped_column(primary_key=True)
+    nonce: Mapped[str]
+    code_verifier: Mapped[str]
+    # Sent again on the token exchange, where the provider compares it against
+    # the one the authorization request carried. Stored rather than recomputed
+    # so a redirect URI an operator changes mid-flight cannot fail the exchange
+    # of a login that started under the old one.
+    redirect_uri: Mapped[str]
+    next_url: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
 class ProvisioningKey(Base):
     __tablename__ = "provisioning_keys"
 

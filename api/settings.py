@@ -409,7 +409,9 @@ class Settings:
     # unknown ``kid`` forces one refresh before the token is refused.
     oidc_cache_ttl_seconds: int = 3600
     # How long an authorization request stays valid. Short: it only has to
-    # cover a human typing a password at the provider.
+    # cover a human typing a password at the provider. Since #321 it is also
+    # the retention of ``oidc_pending_states``, which holds one row per login
+    # in flight and is swept on expiry.
     oidc_state_ttl_seconds: int = 600
     oidc_http_timeout_seconds: int = 10
     # Where the callback sends the browser once the session exists. Empty makes
