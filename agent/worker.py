@@ -1,8 +1,15 @@
 """Poll the Shapoclyack API for agent jobs and run the local scanner.
 
-When OCTO_NATS_URL is set, jobs are pulled from JetStream subject ``jobs.scan``
-(durable consumer ``octo-agents``) via a long-lived connection instead of HTTP
-claim polling. Register, heartbeat, and results upload remain HTTP.
+When OCTO_NATS_URL is set, jobs are pulled from JetStream subject
+``jobs.scan.{tenant}`` (durable consumer ``octo-agents-{tenant}``) via a
+long-lived connection instead of HTTP claim polling. The tenant comes from the
+API — the provisioning-key exchange, or the registration response for a legacy
+shared token — so an agent never binds a consumer outside its own tenant.
+Register, heartbeat, and results upload remain HTTP.
+
+TLS for the NATS connection is configured with OCTO_NATS_TLS_CA,
+OCTO_NATS_TLS_CERT, OCTO_NATS_TLS_KEY and OCTO_NATS_TLS_HOSTNAME; a ``tls://``
+URL with none of them set verifies against the system trust store.
 """
 
 from __future__ import annotations
@@ -10,11 +17,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import signal
+import re
 import socket
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -36,9 +46,56 @@ LOG = logging.getLogger("octo-agent")
 # to survive a few missed heartbeats, not just one.
 HEARTBEAT_INTERVAL_SECONDS = 60.0
 
-SUBJECT_JOBS_SCAN = "jobs.scan"
+SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"
-CONSUMER_AGENTS = "octo-agents"
+CONSUMER_AGENTS_PREFIX = "octo-agents"
+DEFAULT_TENANT_ID = "default"
+
+# Subject-token encoding, kept byte-for-byte identical to
+# api/services/nats_bus.py. The agent is deployed on its own (no api package on
+# the box), so this is a copy rather than an import; tests assert the two agree,
+# because an agent that encodes a tenant id differently from the API binds a
+# consumer that no offer is ever filtered onto.
+_SUBJECT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_ENCODED_TOKEN_PREFIX = "h_"
+
+
+def _subject_token(value: str, fallback: str = DEFAULT_TENANT_ID) -> str:
+    """Encode one subject token injectively (see api/services/nats_bus.py)."""
+    value = value or ""
+    if _SUBJECT_TOKEN_RE.match(value) and not value.startswith(_ENCODED_TOKEN_PREFIX):
+        return value
+    if not value:
+        return fallback
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+    return f"{_ENCODED_TOKEN_PREFIX}{digest}"
+
+
+def jobs_scan_subject(tenant_id: str) -> str:
+    """NATS subject ``jobs.scan.{tenant_id}`` this agent may consume."""
+    return f"{SUBJECT_JOBS_SCAN_PREFIX}.{_subject_token(tenant_id)}"
+
+
+def jobs_consumer_name(tenant_id: str) -> str:
+    """Durable consumer name ``octo-agents-{tenant_id}`` for this agent's tenant."""
+    return f"{CONSUMER_AGENTS_PREFIX}-{_subject_token(tenant_id)}"
+
+
+def tls_connect_options() -> dict[str, Any]:
+    """``nats.connect`` TLS kwargs from OCTO_NATS_TLS_* (mirrors the API side)."""
+    ca = os.environ.get("OCTO_NATS_TLS_CA", "").strip()
+    cert = os.environ.get("OCTO_NATS_TLS_CERT", "").strip()
+    key = os.environ.get("OCTO_NATS_TLS_KEY", "").strip()
+    hostname = os.environ.get("OCTO_NATS_TLS_HOSTNAME", "").strip()
+    if not (ca or cert or hostname):
+        return {}
+    context = ssl.create_default_context(cafile=ca or None)
+    if cert:
+        context.load_cert_chain(certfile=cert, keyfile=key or None)
+    options: dict[str, Any] = {"tls": context}
+    if hostname:
+        options["tls_hostname"] = hostname
+    return options
 
 
 def _collect_system_metrics() -> dict[str, Any]:
@@ -492,10 +549,24 @@ def _execute_job(
 
 
 class AgentNatsSession:
-    """Long-lived JetStream pull session for ``jobs.scan`` (durable ``octo-agents``)."""
+    """Long-lived JetStream pull session for one tenant's ``jobs.scan.{tenant}``.
 
-    def __init__(self, nats_url: str, *, connect_timeout: float = 5.0) -> None:
+    ``tenant_id`` is the tenant the API told this agent it belongs to, and it
+    decides both the subject and the durable name — the session never sees, and
+    cannot bind to, another tenant's offers.
+    """
+
+    def __init__(
+        self,
+        nats_url: str,
+        *,
+        tenant_id: str = DEFAULT_TENANT_ID,
+        connect_timeout: float = 5.0,
+    ) -> None:
         self._nats_url = nats_url
+        self._tenant_id = tenant_id or DEFAULT_TENANT_ID
+        self._subject = jobs_scan_subject(self._tenant_id)
+        self._durable = jobs_consumer_name(self._tenant_id)
         self._connect_timeout = connect_timeout
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -518,7 +589,12 @@ class AgentNatsSession:
             fut = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
             fut.result(timeout=self._connect_timeout + 10)
             self._started = True
-            LOG.info("NATS agent session connected (%s)", self._nats_url)
+            LOG.info(
+                "NATS agent session connected (%s) subject=%s durable=%s",
+                self._nats_url,
+                self._subject,
+                self._durable,
+            )
 
     async def _connect(self) -> None:
         import nats
@@ -530,27 +606,28 @@ class AgentNatsSession:
             connect_timeout=self._connect_timeout,
             max_reconnect_attempts=-1,
             reconnect_time_wait=1,
+            **tls_connect_options(),
         )
         js = self._nc.jetstream()
         try:
             self._sub = await js.pull_subscribe(
-                SUBJECT_JOBS_SCAN,
-                durable=CONSUMER_AGENTS,
+                self._subject,
+                durable=self._durable,
                 stream=STREAM_JOBS,
             )
         except Exception:
             await js.add_consumer(
                 STREAM_JOBS,
                 ConsumerConfig(
-                    durable_name=CONSUMER_AGENTS,
+                    durable_name=self._durable,
                     ack_policy=AckPolicy.EXPLICIT,
-                    filter_subject=SUBJECT_JOBS_SCAN,
+                    filter_subject=self._subject,
                     max_deliver=5,
                 ),
             )
             self._sub = await js.pull_subscribe(
-                SUBJECT_JOBS_SCAN,
-                durable=CONSUMER_AGENTS,
+                self._subject,
+                durable=self._durable,
                 stream=STREAM_JOBS,
             )
 
@@ -643,6 +720,21 @@ class AgentNatsSession:
             if not isinstance(payload, dict) or not payload.get("job_id"):
                 await msg.term()
                 return None
+            offer_tenant = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+            if _subject_token(offer_tenant) != _subject_token(self._tenant_id):
+                # The consumer's filter_subject should make this unreachable.
+                # If it ever happens, terminate rather than NAK: a NAK puts the
+                # message back for redelivery and burns one of its max_deliver
+                # attempts, so an agent that cannot run this job would be
+                # deciding how many attempts its rightful owner has left.
+                LOG.warning(
+                    "Discarding offer %s for tenant %s on tenant %s subject",
+                    payload.get("job_id"),
+                    offer_tenant,
+                    self._tenant_id,
+                )
+                await msg.term()
+                return None
             job_id = str(payload["job_id"])
             claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
             if claimed is None:
@@ -663,9 +755,11 @@ class AgentNatsSession:
 
 def run_loop(args: argparse.Namespace) -> int:
     client = AgentClient(args.api_url, args.token or "pending", timeout=args.timeout)
+    tenant_id = ""
     if args.provisioning_key:
         exchanged = client.exchange_provisioning_key(args.provisioning_key)
         client.set_token(str(exchanged["access_token"]))
+        tenant_id = str(exchanged.get("tenant_id") or "")
         LOG.info(
             "Exchanged provisioning key for agent JWT (tenant=%s expires_in=%ss)",
             exchanged.get("tenant_id"),
@@ -688,6 +782,10 @@ def run_loop(args: argparse.Namespace) -> int:
         labels=labels,
     )
     agent_id = str(info["agent_id"])
+    # The registration response is authoritative for the legacy shared token,
+    # which is exchanged for nothing and whose tenant the agent cannot know on
+    # its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
+    tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
     LOG.info(
         "Registered agent %s (%s) tenant=%s",
         agent_id,
@@ -697,8 +795,12 @@ def run_loop(args: argparse.Namespace) -> int:
 
     nats_session: AgentNatsSession | None = None
     if args.nats_url:
-        LOG.info("NATS pull enabled (%s) subject=%s", args.nats_url, SUBJECT_JOBS_SCAN)
-        nats_session = AgentNatsSession(args.nats_url)
+        LOG.info(
+            "NATS pull enabled (%s) subject=%s",
+            args.nats_url,
+            jobs_scan_subject(tenant_id),
+        )
+        nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
         nats_session.start()
 
     token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))

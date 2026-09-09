@@ -1,11 +1,17 @@
 """NATS JetStream bus for job dispatch and raw-result ingest (Phase 1).
 
 Subjects (streams created on connect when missing):
-  - jobs.scan                        → stream JOBS
+  - jobs.scan.{tenant}               → stream JOBS
   - ingest.raw_results               → stream INGEST
   - events.asset.{tenant}.{kind}     → stream EVENTS (Phase 10.2)
 
 Set OCTO_NATS_URL to enable. Empty URL keeps legacy HTTP-only agent flow.
+
+TLS (all optional; a ``tls://`` URL alone uses the system trust store):
+  - OCTO_NATS_TLS_CA        PEM bundle used to verify the broker
+  - OCTO_NATS_TLS_CERT      client certificate (mTLS)
+  - OCTO_NATS_TLS_KEY       private key for that certificate
+  - OCTO_NATS_TLS_HOSTNAME  name to verify the certificate against
 
 Retention / HA overrides (all optional, applied on every connect via
 JetStream ``update_stream``, so changing them takes effect on redeploy):
@@ -27,13 +33,18 @@ import json
 import logging
 import os
 import re
+import ssl
 import threading
 from dataclasses import dataclass
 from typing import Any
 
 LOG = logging.getLogger("shapoclyack.nats")
 
-SUBJECT_JOBS_SCAN = "jobs.scan"
+# Job offers are published per tenant: jobs.scan.{tenant_token}. One shared
+# subject meant every agent's consumer saw every tenant's offer — including the
+# offer body, which carries the scan inputs — and sorted them out only after
+# the fact, at HTTP claim time.
+SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 SUBJECT_INGEST_RAW = "ingest.raw_results"  # legacy alias
 # Per-tenant gateway subject (TASK 4): ingest.results.{tenant_id}
 # Per-tenant asset events (Phase 10.2): events.asset.{tenant_id}.{kind}
@@ -42,8 +53,9 @@ STREAM_JOBS = "JOBS"
 STREAM_INGEST = "INGEST"
 STREAM_EVENTS = "EVENTS"
 
-# Durable pull consumer for remote agents (queue group = fair dispatch).
-CONSUMER_AGENTS = "octo-agents"
+# Durable pull consumer for remote agents (queue group = fair dispatch), one
+# per tenant: octo-agents-{tenant_token}, filtered to that tenant's subject.
+CONSUMER_AGENTS_PREFIX = "octo-agents"
 
 # Retention bounds so a stalled consumer / unreachable ClickHouse worker can't
 # grow JetStream storage without limit. Overridable per environment.
@@ -77,6 +89,34 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def tls_connect_options() -> dict[str, Any]:
+    """``nats.connect`` TLS kwargs built from the OCTO_NATS_TLS_* variables.
+
+    Returns an empty mapping when none are set, which leaves nats-py to decide:
+    a ``tls://`` URL still gets a default context against the system trust
+    store, a ``nats://`` URL still connects in the clear. Set them to pin a
+    private CA (the cert-manager case) or to present a client certificate.
+    """
+    ca = os.environ.get("OCTO_NATS_TLS_CA", "").strip()
+    cert = os.environ.get("OCTO_NATS_TLS_CERT", "").strip()
+    key = os.environ.get("OCTO_NATS_TLS_KEY", "").strip()
+    hostname = os.environ.get("OCTO_NATS_TLS_HOSTNAME", "").strip()
+    if not (ca or cert or hostname):
+        return {}
+    # create_default_context keeps hostname checking and certificate
+    # verification on; cafile=None means "system trust store", so naming only a
+    # client certificate does not silently disable verification of the broker.
+    context = ssl.create_default_context(cafile=ca or None)
+    if cert:
+        context.load_cert_chain(certfile=cert, keyfile=key or None)
+    options: dict[str, Any] = {"tls": context}
+    if hostname:
+        # The broker's certificate is usually issued for its in-cluster Service
+        # name, which is not the host a remote agent dials.
+        options["tls_hostname"] = hostname
+    return options
+
+
 @dataclass(frozen=True)
 class NatsConfig:
     url: str
@@ -106,6 +146,11 @@ class NatsBus:
         self._ready = threading.Event()
         self._error: BaseException | None = None
         self._started = False
+        # Tenants whose durable consumer this process has already created.
+        # Consumers are per tenant and tenants are not known at connect time,
+        # so creation happens on the first offer for each — once, not per publish.
+        self._jobs_consumers: set[str] = set()
+        self._jobs_consumers_lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -133,19 +178,14 @@ class NatsBus:
 
     async def _connect(self) -> None:
         import nats
-        from nats.js.api import (
-            AckPolicy,
-            ConsumerConfig,
-            RetentionPolicy,
-            StorageType,
-            StreamConfig,
-        )
+        from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 
         self._nc = await nats.connect(
             self._config.url,
             connect_timeout=self._config.connect_timeout,
             max_reconnect_attempts=5,
             name="shapoclyack-api",
+            **tls_connect_options(),
         )
         self._js = self._nc.jetstream()
 
@@ -161,6 +201,9 @@ class NatsBus:
         await self._ensure_stream(
             StreamConfig(
                 name=STREAM_JOBS,
+                # Already a superset of jobs.scan.{tenant}, so an existing
+                # stream needs no subject change on upgrade; _ensure_stream
+                # pushes the config with update_stream either way.
                 subjects=["jobs.>"],
                 retention=RetentionPolicy.WORK_QUEUE,
                 storage=StorageType.FILE,
@@ -207,20 +250,9 @@ class NatsBus:
                 num_replicas=stream_replicas,
             )
         )
-        # Prefetch pull consumer for agents (created by API so agents can bind).
-        try:
-            await self._js.add_consumer(
-                STREAM_JOBS,
-                ConsumerConfig(
-                    durable_name=CONSUMER_AGENTS,
-                    ack_policy=AckPolicy.EXPLICIT,
-                    filter_subject=SUBJECT_JOBS_SCAN,
-                    max_deliver=5,
-                ),
-            )
-        except Exception:  # noqa: BLE001
-            # Already exists — fine.
-            pass
+        # No shared agent consumer here any more: it is created per tenant by
+        # ensure_jobs_consumer() on the first offer, because the tenant list is
+        # not known to this module at connect time.
 
     async def _ensure_stream(self, config: Any) -> None:
         """Create or reconcile one stream, or refuse to report a working bus.
@@ -375,12 +407,54 @@ class NatsBus:
             LOG.exception("NATS publish failed subject=%s msg_id=%s", subject, msg_id)
             return False
 
+    def ensure_jobs_consumer(self, tenant_id: str) -> None:
+        """Create this tenant's durable pull consumer if it is not there yet.
+
+        Fail-soft on purpose: the agent creates the same consumer when it binds,
+        so a broker that refuses the call here (races with another API replica,
+        a permission the API user lacks in a hardened deployment) must not turn
+        into a failed publish — the offer is still the thing that matters.
+        """
+        with self._jobs_consumers_lock:
+            if tenant_id in self._jobs_consumers:
+                return
+
+        async def _add() -> None:
+            from nats.js.api import AckPolicy, ConsumerConfig
+
+            assert self._js is not None
+            await self._js.add_consumer(
+                STREAM_JOBS,
+                ConsumerConfig(
+                    durable_name=jobs_consumer_name(tenant_id),
+                    ack_policy=AckPolicy.EXPLICIT,
+                    filter_subject=jobs_scan_subject(tenant_id),
+                    max_deliver=5,
+                ),
+            )
+
+        try:
+            self._call(_add())
+        except Exception:  # noqa: BLE001
+            LOG.debug(
+                "Could not create jobs consumer for tenant %s (may already exist)",
+                tenant_id,
+                exc_info=True,
+            )
+        with self._jobs_consumers_lock:
+            self._jobs_consumers.add(tenant_id)
+
     def publish_job_offer(self, payload: dict[str, Any]) -> bool:
         job_id = str(payload.get("job_id") or "")
         msg_id = f"job-{job_id}" if job_id else None
-        tenant_id = str(payload.get("tenant_id") or "")
-        extra = {"tenant_id": tenant_id} if tenant_id else None
-        return self.publish_json(SUBJECT_JOBS_SCAN, payload, msg_id=msg_id, headers=extra)
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_SUBJECT_TENANT)
+        self.ensure_jobs_consumer(tenant_id)
+        return self.publish_json(
+            jobs_scan_subject(tenant_id),
+            payload,
+            msg_id=msg_id,
+            headers={"tenant_id": tenant_id},
+        )
 
     def publish_ingest(self, payload: dict[str, Any], *, msg_id: str) -> bool:
         """Publish to ``ingest.results.{tenant_id}`` (and legacy ``ingest.raw_results``)."""
@@ -442,6 +516,9 @@ _SUBJECT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # directly. `tenants.create_tenant` rejects ids starting with it, so an encoded
 # token can never collide with a literal one.
 _ENCODED_TOKEN_PREFIX = "h_"
+# Tenant of the legacy shared OCTO_AGENT_TOKEN (api.auth.LEGACY_AGENT_TENANT_ID)
+# and of every subject built from an empty tenant id.
+DEFAULT_SUBJECT_TENANT = "default"
 
 
 def is_subject_token(value: str) -> bool:
@@ -476,6 +553,22 @@ def _subject_token(value: str, fallback: str) -> str:
         digest,
     )
     return f"{_ENCODED_TOKEN_PREFIX}{digest}"
+
+
+def jobs_scan_subject(tenant_id: str) -> str:
+    """NATS subject ``jobs.scan.{tenant_id}`` with safe token."""
+    return f"{SUBJECT_JOBS_SCAN_PREFIX}.{_subject_token(tenant_id, DEFAULT_SUBJECT_TENANT)}"
+
+
+def jobs_consumer_name(tenant_id: str) -> str:
+    """Durable consumer name ``octo-agents-{tenant_id}`` with safe token.
+
+    A durable name is not a subject, but it is interpolated into ``$JS.API.*``
+    subjects by JetStream itself, so it goes through the same encoder — a
+    tenant id with a ``.`` in it would otherwise reshape those subjects and
+    slip past a NATS permission written for one consumer token.
+    """
+    return f"{CONSUMER_AGENTS_PREFIX}-{_subject_token(tenant_id, DEFAULT_SUBJECT_TENANT)}"
 
 
 def ingest_results_subject(tenant_id: str) -> str:

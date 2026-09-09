@@ -789,6 +789,71 @@ Never replay a restored stream by republishing every message with new message
 IDs. That defeats the deduplication mechanisms the recovery procedure relies
 on.
 
+### Per-tenant job stream
+
+Job offers are published on `jobs.scan.{tenant}` (stream `JOBS`, unchanged
+subject filter `jobs.>`), and each tenant has its own durable pull consumer
+`octo-agents-{tenant}` filtered to that subject. An agent learns its tenant
+from the API — the `tenant_id` in the `POST /api/auth/agent/token` response,
+or the registration response for an agent still on the legacy shared
+`OCTO_AGENT_TOKEN` (tenant `default`) — and binds only that consumer.
+
+A tenant id that is not a valid NATS subject token (anything outside
+`[A-Za-z0-9_-]`, notably a `.`) is hashed into `h_<sha256[:32]>`, the same
+encoding `ingest.results.{tenant}` and `events.asset.{tenant}.{kind}` use. Both
+the API and the agent compute it, so `nats consumer ls JOBS` on an install with
+older tenant ids shows `octo-agents-h_…` names; map one back with
+`python -c "import hashlib;print(hashlib.sha256(b'<tenant id>').hexdigest()[:32])"`.
+
+Operational consequences:
+
+- **Upgrading.** The API no longer creates the shared `octo-agents` consumer,
+  but does not delete one that exists — an agent on an older build keeps using
+  it during a rolling upgrade. Once the whole fleet is upgraded, remove it and
+  the six legacy tokens in the NATS `agent` permission list
+  (`base/nats/configmap.yaml`):
+
+  ```bash
+  nats consumer rm JOBS octo-agents
+  ```
+
+  Offers already sitting on the bare `jobs.scan` subject are only readable
+  through that consumer, so drain the queue before removing it (or accept that
+  those jobs stay claimable over HTTP, which they always are).
+
+- **A new tenant's first job.** The consumer is created by the API on the first
+  offer for that tenant, and by the agent when it binds — whichever happens
+  first. Neither is a startup step, so `nats consumer ls JOBS` on a fresh
+  install lists nothing until the first agent job.
+
+- **NATS unavailable.** Unchanged: the offer is not published, the job stays
+  queued, and any agent picks it up over HTTP claim
+  (`POST /api/agent/jobs/claim`), which enforces the tenant server-side.
+
+- **Credentials are still shared.** One `agent` NATS user serves every tenant.
+  The permission list bounds it to `octo-agents-*` consumers on `JOBS`, which
+  is what an agent needs, but it does not bind a NATS credential to one tenant.
+  Per-tenant NATS users are a separate change.
+
+### NATS TLS
+
+The client port runs in the clear in `base/` because the kind stand has no CA
+and a `tls {}` block without a key file is a startup error. Apply
+`examples/nats-tls-configmap-patch.yaml` anywhere the port is reachable from
+outside the cluster: remote agents send their NATS password in the connection
+URL, and every job offer — ranges, domains, the approved scope — crosses that
+link. That file carries the cert-manager `Certificate` to copy and the
+StatefulSet mount.
+
+Clients (API and agent) read `OCTO_NATS_TLS_CA`, `OCTO_NATS_TLS_CERT`,
+`OCTO_NATS_TLS_KEY` and `OCTO_NATS_TLS_HOSTNAME`; see
+[configuration.md](configuration.md). A `tls://` URL with none of them set
+verifies against the system trust store, which is all a publicly issued
+certificate needs. `nats-server` reads the certificate files once at boot, so a
+cert-manager renewal takes effect on the next
+`kubectl -n network-scan rollout restart sts/shapoclyack-nats` unless a
+reloader sidecar is in place.
+
 ### Pod disruption and API availability
 
 `k8s/shapoclyack/base/api-pdb.yaml` sets `minAvailable: 1`. With the current base
@@ -1117,11 +1182,13 @@ them with `examples/api-secrets.example.yaml` (or
 that holds real scan data.
 
 NATS has two users rather than one because they are not equally trusted. `api`
-owns the whole subject tree. `agent` may open the `octo-agents` pull consumer
-on the `JOBS` stream, fetch `jobs.scan`, and ack — and nothing else: it cannot
-subscribe to `ingest.>` or `events.>`, cannot publish `jobs.scan`, and cannot
-open a consumer on the `INGEST` stream. A compromised remote agent therefore
-cannot read other tenants' results or inject work. Both users share the global
+owns the whole subject tree. `agent` may open an `octo-agents-*` pull consumer
+on the `JOBS` stream, fetch `jobs.scan.{tenant}`, and ack — and nothing else:
+it cannot subscribe to `ingest.>` or `events.>`, cannot publish `jobs.scan.*`,
+and cannot open a consumer on the `INGEST` stream. A compromised remote agent
+therefore cannot read other tenants' results or inject work. It remains one
+credential for the whole fleet — see
+[Per-tenant job stream](#per-tenant-job-stream). Both users share the global
 account: the streams are common to both, and JetStream cannot share a stream
 across accounts without export/import plumbing on every subject.
 
@@ -1161,7 +1228,7 @@ unauthorized. Neither restarts the other for you.
 
 2. Apply the overlay. Expect a short outage on the ingest path: NATS and
    ClickHouse restart, the API restarts to pick up the new URLs, and in-flight
-   `jobs.scan` messages stay in JetStream (the stream is on the PVC and
+   `jobs.scan.*` messages stay in JetStream (the stream is on the PVC and
    survives).
 
 3. **Update every remote agent** that uses NATS job pull. Their

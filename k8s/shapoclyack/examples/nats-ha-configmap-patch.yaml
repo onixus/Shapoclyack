@@ -29,7 +29,7 @@ data:
     # Authentication. Before this block the server took any anonymous client:
     # NATS listens on a ClusterIP Service, and remote agents reach it from
     # outside the cluster, so "anonymous" meant any pod could subscribe to
-    # ingest.results.* for every tenant and publish forged jobs.scan offers.
+    # ingest.results.* for every tenant and publish forged jobs.scan.* offers.
     #
     # Two users in one account (the global $G) on purpose: JOBS/INGEST/EVENTS
     # are JetStream streams, and streams cannot be shared across accounts
@@ -42,17 +42,22 @@ data:
     # rather than a server that quietly keeps accepting everyone.
     authorization {
       users: [
-        # API: publishes jobs.scan, creates the streams and consumers, and
-        # consumes ingest.> for the ClickHouse worker. No permissions block —
-        # it owns the whole subject tree.
+        # API: publishes jobs.scan.{tenant}, creates the streams and their
+        # per-tenant consumers, and consumes ingest.> for the ClickHouse
+        # worker. No permissions block — it owns the whole subject tree.
         { user: api, password: $NATS_API_PASSWORD }
 
-        # Agents pull jobs.scan and ack it; results travel back over HTTP, not
-        # NATS (agent/worker.py never publishes an application subject), so the
-        # allow-list below is the whole of what the worker needs. Everything
-        # else — subscribing to ingest.> or events.>, publishing jobs.> — is
-        # denied by omission. The JOBS/octo-agents tokens are pinned so this
-        # account cannot open a pull consumer on INGEST instead.
+        # Agents pull their tenant's jobs.scan.{tenant} and ack it; results
+        # travel back over HTTP, not NATS (agent/worker.py never publishes an
+        # application subject), so the allow-list below is the whole of what
+        # the worker needs. Everything else — subscribing to ingest.> or
+        # events.>, publishing jobs.> — is denied by omission. The JOBS stream
+        # and the octo-agents-* consumer tokens are pinned so this account
+        # cannot open a pull consumer on INGEST instead.
+        #
+        # This is still one shared `agent` credential across tenants: it bounds
+        # what an agent may do, not which tenant it may name. Per-tenant NATS
+        # users (one account per tenant, its own subject) are a separate change.
         {
           user: agent
           password: $NATS_AGENT_PASSWORD
@@ -62,6 +67,18 @@ data:
                 "$JS.API.INFO"
                 "$JS.API.STREAM.NAMES"
                 "$JS.API.STREAM.INFO.JOBS"
+                "$JS.API.CONSUMER.INFO.JOBS.octo-agents-*"
+                "$JS.API.CONSUMER.CREATE.JOBS.octo-agents-*"
+                "$JS.API.CONSUMER.CREATE.JOBS.octo-agents-*.>"
+                "$JS.API.CONSUMER.DURABLE.CREATE.JOBS.octo-agents-*"
+                "$JS.API.CONSUMER.MSG.NEXT.JOBS.octo-agents-*"
+                "$JS.ACK.JOBS.octo-agents-*.>"
+                # The pre-per-tenant shared consumer. `*` is a one-token
+                # wildcard, so it does not cover the bare name. Kept only so an
+                # agent that has not been upgraded yet keeps working during a
+                # rolling upgrade; delete these six lines (and the consumer,
+                # `nats consumer rm JOBS octo-agents`) once the fleet is on the
+                # new build.
                 "$JS.API.CONSUMER.INFO.JOBS.octo-agents"
                 "$JS.API.CONSUMER.CREATE.JOBS.octo-agents"
                 "$JS.API.CONSUMER.CREATE.JOBS.octo-agents.>"
