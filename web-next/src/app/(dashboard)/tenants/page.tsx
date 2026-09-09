@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Building, Copy, Plus } from "lucide-react";
+import { Building, Copy, Plus, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 import {
@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DataTable } from "@/components/data-table";
+import { ScanScopePanel } from "@/components/scan-scope-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { useCreateTenantWithKey, useTenantPosture, useTenants } from "@/hooks/use-tenants";
 import { type TenantInfo, type TenantPosture } from "@/lib/api";
@@ -34,6 +35,10 @@ export default function TenantsPage() {
   const [name, setName] = useState("");
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
   const [createdTenantId, setCreatedTenantId] = useState<string | null>(null);
+  // The tenant whose scan scope is being approved, or null for "the dialog is
+  // closed". Held here rather than per row so closing it drops the editor
+  // state with it (#226).
+  const [scopeTenant, setScopeTenant] = useState<TenantInfo | null>(null);
 
   const { data = [], isLoading, error, isFetching } = useTenants(canOperate);
   const postureQuery = useTenantPosture(canOperate);
@@ -150,8 +155,28 @@ export default function TenantsPage() {
             "—"
           ),
       },
+      ...(isAdmin
+        ? [
+            {
+              id: "scan-scope",
+              header: "",
+              enableSorting: false,
+              cell: ({ row }) => (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 border-slate-800 text-xs"
+                  onClick={() => setScopeTenant(row.original)}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  {t("scanScope.action")}
+                </Button>
+              ),
+            } satisfies ColumnDef<TenantInfo>,
+          ]
+        : []),
     ],
-    [t],
+    [isAdmin, t],
   );
 
   if (!canOperate) {
@@ -297,9 +322,29 @@ export default function TenantsPage() {
         emptyMessage="No tenant organizations provisioned."
       />
 
+      <Dialog open={scopeTenant !== null} onOpenChange={(next) => (next ? null : setScopeTenant(null))}>
+        <DialogContent className="max-w-4xl border-slate-800 bg-slate-900 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">
+              {t("scanScope.dialogTitle", { tenant: scopeTenant?.name ?? "" })}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-400">
+              {t("scanScope.dialogDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          {scopeTenant ? (
+            <div className="max-h-[70vh] overflow-y-auto pr-1">
+              <ScanScopePanel tenantId={scopeTenant.tenant_id} />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       {!isAdmin ? (
         <p className="text-xs text-slate-400">
           Provisioning new tenants and issuing security keys requires admin privilege.
+          {" "}
+          {t("scanScope.denied")}
         </p>
       ) : null}
     </div>

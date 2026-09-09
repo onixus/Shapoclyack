@@ -8,6 +8,7 @@ import type {
   EndpointReconciliationStatus,
   JobInfo,
   NistRiskLevel,
+  ScanScopeEffect,
   SlaState,
   SoftwareCveMatchStatus,
   TenantInfo,
@@ -68,6 +69,14 @@ export const SCHEDULE_ENABLED_STATUS: Record<"enabled" | "disabled", StatusStyle
 export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
   active: { label: "active", className: SUCCESS },
   disabled: { label: "disabled", variant: "secondary", className: MUTED },
+};
+
+/** An allow/deny entry of a tenant's approved scanning scope (#226). Deny is
+ * the strong one — it wins over allow by overlap — so it reads as the danger
+ * colour rather than as a muted "off". */
+export const SCAN_SCOPE_EFFECT: Record<ScanScopeEffect, StatusStyle> = {
+  allow: { label: "allow", className: SUCCESS },
+  deny: { label: "deny", variant: "destructive", className: DANGER },
 };
 
 export const ASSET_STATUS: Record<AssetStatus, StatusStyle> = {

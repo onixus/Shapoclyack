@@ -31,7 +31,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/assets/view?assetId=…` | Asset-centric security view: required actions, tracked findings, software, scan evidence, history | Viewer; operator for permitted edits |
 | `/exposure` | Operator-declared exposure inventory (not a scan measurement) | Viewer |
 | `/threats` | Open tracked findings on CISA KEV | Viewer |
-| `/tenants` | MSSP customer posture comparison and provisioning | Operator; admin to create |
+| `/tenants` | MSSP customer posture comparison, provisioning, and per-tenant scan-scope approval | Operator; admin to create and to approve scope |
 | `/attack-surface` | One scan's hostname → IP → port → service graph (not an attack path) | Viewer |
 | `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
 | `/endpoints` | Endpoint device/software inventory, CVE matches and the patch-gap panel | Viewer |
@@ -183,6 +183,28 @@ each customer row is estate risk, open work, SLA breaches, KEV, unowned
 assets, and **declared** internet-facing assets. The same tenant set as
 `GET /api/tenants` — an operator of one customer does not see the others.
 Open switches the console into that tenant.
+
+**Scan scope** on a tenant row (admin only) opens that customer's approved
+scanning scope (#226) — the thing a fresh installation has none of, which is
+why its first scan is refused. The dialog shows what is approved now, with the
+admin and timestamp each entry was written under, and an editor seeded from it:
+per row an effect (`allow`/`deny`), a kind (`cidr`/`domain`), a value and a
+note. Approving `PUT`s the whole list, because the API replaces the scope
+rather than patching it — a scope is evaluated as a set, so there is no
+half-applied state that is safe to enforce. The button stays disabled until
+something changes, an empty list is offered with a warning that the tenant will
+then not be able to scan anything, and the value checks in the browser are
+warnings under the row rather than gates: only an empty value stops the
+request, everything else is sent and the API's `422` is shown with its own
+text. The scope is re-read at the moment of the write and the approval is
+refused if it moved in between — the endpoint replaces the whole list and has
+no ETag, so two admins with the dialog open would otherwise silently undo each
+other; the editor then starts again from what is approved now. Beneath the
+editor the tenant's **promoted related domains** (org_profile M4) are listed
+read-only — operators add those underneath the scope and every scan they start
+carries them, so the admin approving the scope can see them. An operator never
+reaches the dialog: the **Scan scope** action is only on the row for an admin,
+and the hint at the foot of the page says who approves a scope.
 
 `/exposure` lists assets by operator-set `exposure_level`. It is explicitly
 not "what the scanner saw on the internet" ([#171](https://github.com/onixus/Shapoclyack/issues/171)).
@@ -517,16 +539,15 @@ before the manifest existed — is left to the age check and badges as it did
 before. "Nothing recorded" is not "the data is bad". See
 [configuration.md](configuration.md#provenance-what-the-image-actually-shipped).
 
-## Not in the console yet
+## Scan scope refusals elsewhere
 
-A tenant's **approved scanning scope** (#226) has no console surface: it is
-managed over `GET`/`PUT /api/tenants/{id}/scan-scope` by a platform admin, and
-`/tenants` neither shows nor edits it. What the console does show is the
-consequence — starting a scan outside the scope answers `403` on `/jobs`, with
-the offending targets in the error text, and a tenant whose scope was never
-approved cannot start one at all. Since #244 saving a **schedule** outside the
-scope answers the same `403` on `/schedules` instead of silently never firing,
-so the schedule form surfaces the refusal where the operator is standing. See
+A tenant's **approved scanning scope** (#226) is edited on `/tenants` (above).
+The rest of the console shows its consequence: starting a scan outside the
+scope answers `403` on `/jobs`, with the offending targets in the error text,
+and a tenant whose scope was never approved cannot start one at all. Since #244
+saving a **schedule** outside the scope answers the same `403` on `/schedules`
+instead of silently never firing, so the schedule form surfaces the refusal
+where the operator is standing. See
 [api-and-rbac.md](api-and-rbac.md#approved-scanning-scope).
 
 ## Current versus planned UI

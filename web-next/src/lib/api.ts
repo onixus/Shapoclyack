@@ -79,10 +79,46 @@ api.interceptors.response.use(
   },
 );
 
+/** The field a pydantic error points at, spelled the way the sender wrote the
+ * payload: `["body", "entries", 0, "value"]` reads back as `entries[0].value`.
+ * "body" is where the payload is, not a field anybody named. */
+function errorLocation(loc: unknown[]): string {
+  return loc
+    .filter((part) => part !== "body")
+    .reduce<string>(
+      (path, part) =>
+        typeof part === "number" ? `${path}[${part}]` : path ? `${path}.${part}` : String(part),
+      "",
+    );
+}
+
+/** A schema violation arrives as a list of `{loc, msg}` rather than as the
+ * string a handler raises — a scan-scope value over 255 characters or a scope
+ * of more than 1000 entries (#226) is refused that way. Stringified as JSON it
+ * reaches the toast as unreadable machinery, so flatten it into the lines it
+ * was already made of. Returns null for a shape that is not that, which is
+ * then left to the caller to render as it did before. */
+function pydanticErrorMessage(detail: unknown[]): string | null {
+  if (detail.length === 0) return null;
+  const lines: string[] = [];
+  for (const item of detail) {
+    if (!item || typeof item !== "object") return null;
+    const { loc, msg } = item as { loc?: unknown; msg?: unknown };
+    if (typeof msg !== "string") return null;
+    const where = Array.isArray(loc) ? errorLocation(loc) : "";
+    lines.push(where ? `${where}: ${msg}` : msg);
+  }
+  return lines.join("; ");
+}
+
 function apiErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const detail = error.response?.data?.detail;
     if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const flattened = pydanticErrorMessage(detail);
+      if (flattened) return flattened;
+    }
     if (detail != null) return JSON.stringify(detail);
     return error.message;
   }
@@ -2034,6 +2070,85 @@ export async function revokeServiceToken(tenantId: string, tokenId: string) {
   try {
     const { data } = await api.post<ServiceTokenInfo>(
       `/tenants/${encodeURIComponent(tenantId)}/service-tokens/${encodeURIComponent(tokenId)}/revoke`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+// --------------------------------------------------------------------------
+// Approved scanning scope per tenant (#226)
+// --------------------------------------------------------------------------
+
+export type ScanScopeEffect = "allow" | "deny";
+export type ScanScopeKind = "cidr" | "domain";
+
+/** One stored allow/deny entry of a tenant's approved scanning scope (#226),
+ * with the approval it was written under. `value` is a CIDR, a domain suffix
+ * covering itself and its subdomains, or the literal `*` wildcard. */
+export type ScanScopeEntry = {
+  id: number;
+  tenant_id: string;
+  effect: ScanScopeEffect;
+  kind: ScanScopeKind;
+  value: string;
+  note: string;
+  approved_by: string;
+  approved_at: string | null;
+};
+
+/** What a caller sends. The API stamps the rest: a scope is approved by
+ * somebody, and that somebody is the authenticated admin, not a form field. */
+export type ScanScopeEntryInput = {
+  effect: ScanScopeEffect;
+  kind: ScanScopeKind;
+  value: string;
+  note?: string;
+};
+
+export async function fetchScanScope(tenantId: string) {
+  try {
+    const { data } = await api.get<ScanScopeEntry[]>(
+      `/tenants/${encodeURIComponent(tenantId)}/scan-scope`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Replaces the whole scope, which is what the API offers: a scope is
+ * evaluated as a set (deny beats allow), so there is no partial update that is
+ * safe to enforce halfway. An empty list is accepted and means "scans
+ * nothing". */
+export async function replaceScanScope(tenantId: string, entries: ScanScopeEntryInput[]) {
+  try {
+    const { data } = await api.put<ScanScopeEntry[]>(
+      `/tenants/${encodeURIComponent(tenantId)}/scan-scope`,
+      { entries },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Related domains this tenant's operators promoted into scope (org_profile
+ * M4). Read-only here: it is the admin's cross-check on the scope above, since
+ * every scan carries these in addition to its own targets. */
+export type PromotedDomainInfo = {
+  tenant_id: string;
+  domain: string;
+  source_run_id: string;
+  promoted_by: string;
+  promoted_at: string;
+};
+
+export async function fetchPromotedDomains(tenantId: string) {
+  try {
+    const { data } = await api.get<PromotedDomainInfo[]>(
+      `/tenants/${encodeURIComponent(tenantId)}/promoted-domains`,
     );
     return data;
   } catch (error) {

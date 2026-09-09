@@ -1,6 +1,6 @@
-import type { InternalAxiosRequestConfig } from "axios";
-import { beforeEach, describe, expect, it } from "vitest";
-import { api, getActiveTenant, setActiveTenant } from "@/lib/api";
+import type { AxiosResponse, InternalAxiosRequestConfig } from "axios";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { api, fetchScanScope, getActiveTenant, setActiveTenant } from "@/lib/api";
 
 /** The request interceptor registered in api.ts — invoked directly so the
  * tenant-scoping rule (ROADMAP P0) can be asserted without a live server. */
@@ -74,5 +74,63 @@ describe("active tenant", () => {
     expect((applyInterceptor({ params: explicit }).params as URLSearchParams).get("tenant_id")).toBe(
       "ten_b",
     );
+  });
+});
+
+describe("error messages", () => {
+  let originalAdapter: typeof api.defaults.adapter;
+
+  beforeEach(() => {
+    installLocalStorage();
+    originalAdapter = api.defaults.adapter;
+  });
+
+  afterEach(() => {
+    api.defaults.adapter = originalAdapter;
+  });
+
+  /** Answers every request with one failure, the way axios reports it. */
+  function failWith(status: number, data: unknown) {
+    api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+      throw Object.assign(new Error(`Request failed with status code ${status}`), {
+        isAxiosError: true,
+        config,
+        response: { data, status, statusText: "", headers: {}, config } as AxiosResponse,
+      });
+    };
+  }
+
+  it("names the field a pydantic error points at instead of showing its JSON", async () => {
+    // What FastAPI answers when the request violates the schema rather than a
+    // handler's own rule: a list, one item per offending field.
+    failWith(422, {
+      detail: [
+        {
+          type: "string_too_long",
+          loc: ["body", "entries", 0, "value"],
+          msg: "String should have at most 255 characters",
+        },
+        {
+          type: "too_long",
+          loc: ["body", "entries"],
+          msg: "List should have at most 1000 items after validation, not 1001",
+        },
+      ],
+    });
+
+    await expect(fetchScanScope("default")).rejects.toThrow(
+      "entries[0].value: String should have at most 255 characters; " +
+        "entries: List should have at most 1000 items after validation, not 1001",
+    );
+  });
+
+  it("passes a handler's own detail through as it stands", async () => {
+    failWith(422, { detail: "not an IP or CIDR: '10.0.0'" });
+    await expect(fetchScanScope("default")).rejects.toThrow("not an IP or CIDR: '10.0.0'");
+  });
+
+  it("falls back to the raw body for a detail that is neither", async () => {
+    failWith(500, { detail: { code: 17 } });
+    await expect(fetchScanScope("default")).rejects.toThrow('{"code":17}');
   });
 });
