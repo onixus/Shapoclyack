@@ -423,7 +423,7 @@ All notable changes to Shapoclyack are documented in this file.
 - **README and Wiki now say what the build does** (#343). "mTLS" is gone from
   the README, the architecture diagrams and the architect playbook — nothing in
   this repository issues or checks a client certificate; agents connect
-  outbound over HTTPS to the API and over NATS, and NATS TLS is #309/#359. The
+  outbound over HTTPS to the API and over NATS (TLS options landed in #372). The
   "CMDB/Active Directory integration" is named for what it is, the asset
   business-context REST contract (`PATCH /api/assets/{id}`) that an external
   sync script drives, with the packaged importer as #350, and "bi-directional"
@@ -436,10 +436,8 @@ All notable changes to Shapoclyack are documented in this file.
   link to a file or a test, or it moves to the roadmap column.
 - **`docs/operations.md` gained a "Transport encryption" section** — a per-link
   table of what is encrypted and how it is configured, plus mounting a private
-  CA for Postgres `verify-full`. Its NATS permission note no longer reads as
-  broader than it is: an agent cannot read `ingest.>`/`events.>` or publish
-  work, but `jobs.scan` is one shared subject and per-tenant separation there
-  is still open work.
+  CA for Postgres `verify-full`. Its NATS permission note now describes the
+  per-tenant job stream that #372 introduced.
 
 ### Changed
 

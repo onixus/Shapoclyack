@@ -267,7 +267,7 @@ For UI screenshots and walkthroughs, see [Web Interface Documentation](docs/ui.m
 |---|---|---|
 | **All-in-One Local (`kind-dev`)** | Local evaluation, testing, CI | Single pod or container with embedded API, Web UI, and scanner engine; includes PostgreSQL, NATS, and ClickHouse. |
 | **Production Kubernetes (`overlays/prod`)** | Enterprise production deployments | Scaled FastAPI replicas, persistent PostgreSQL cluster, clustered NATS JetStream, ClickHouse analytics, and ingress controllers. |
-| **Distributed Remote Agents** | Segmented networks, DMZs, multi-VPC, multi-cloud | Outbound-only agent workers, pulling from NATS JetStream or claiming over HTTPS; zero inbound open ports required on agents. NATS runs without TLS today ([#309](https://github.com/onixus/Shapoclyack/issues/309)) — keep it off untrusted segments. |
+| **Distributed Remote Agents** | Segmented networks, DMZs, multi-VPC, multi-cloud | Outbound-only agent workers, pulling from NATS JetStream or claiming over HTTPS; zero inbound open ports required on agents. NATS TLS is opt-in (`tls://` plus `OCTO_NATS_TLS_*`, see [configuration.md](docs/configuration.md)); enable it before crossing an untrusted segment. Client certificates for agents (mTLS) are not implemented. |
 | **Standalone Scanner CLI** | Ad-hoc audits, single-shot scans, pipeline automation | Headless container execution outputting structured JSON, CSV, and PDF artifacts directly to local disk. |
 
 Detailed guides:
