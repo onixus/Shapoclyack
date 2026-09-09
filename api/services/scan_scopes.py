@@ -55,6 +55,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit as audit_service
 from api.services import auth_audit
 from api.services import tenants as tenants_service
 from api.services.targets import split_target_lines
@@ -329,6 +330,7 @@ def replace_scope(
     tenant_id: str,
     entries: list[dict[str, Any]],
     approved_by: str,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> list[dict[str, Any]]:
     """Replace a tenant's scope with ``entries``, in one transaction.
 
@@ -353,6 +355,10 @@ def replace_scope(
 
     approved_at = _now()
     with get_session(settings.postgres_url) as session:
+        # Read before the delete below: a scope is replaced wholesale, so
+        # without this snapshot the widening of a scope and its narrowing are
+        # the same row (#327).
+        previous = [_to_dict(row) for row in _rows(session, tenant_id)]
         session.query(models.TenantScanScope).filter(
             models.TenantScanScope.tenant_id == tenant_id
         ).delete()
@@ -370,7 +376,18 @@ def replace_scope(
                 )
             )
         session.flush()
-        return [_to_dict(row) for row in _rows(session, tenant_id)]
+        current = [_to_dict(row) for row in _rows(session, tenant_id)]
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_SCAN_SCOPE_REPLACE,
+            resource_type="scan_scope",
+            resource_id=tenant_id,
+            tenant_id=tenant_id,
+            before={"entries": previous},
+            after={"entries": current},
+        )
+        return current
 
 
 def _resolve(host: str) -> list[str]:

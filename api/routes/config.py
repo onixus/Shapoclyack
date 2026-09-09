@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.auth import Role, TokenUser, get_settings, require_role
+from api.routes._audit import AuditDep
 from api.schemas import ConfigResponse, ConfigUpdateRequest
 from api.services import config_override as config_service
 from api.settings import Settings
@@ -27,13 +28,14 @@ def update_config(
     body: ConfigUpdateRequest,
     user: Annotated[TokenUser, Depends(require_role(Role.admin))],
     settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
 ) -> ConfigResponse:
     """Replace the installation-wide config overrides (admin only). Overrides
     are validated against the editable whitelist AND the full merged schema;
     an invalid payload is rejected (422) and nothing is persisted."""
     try:
         nested = config_service.unflatten(body.overrides)
-        config_service.set_overrides(settings, nested, username=user.username)
+        config_service.set_overrides(settings, nested, username=user.username, audit=audit)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return ConfigResponse.model_validate(config_service.editable_snapshot(settings))

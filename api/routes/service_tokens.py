@@ -19,6 +19,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.auth import Role, TokenUser, get_settings, require_role
+from api.routes._audit import AuditDep
 from api.schemas import CreateServiceTokenRequest, ServiceTokenInfo
 from api.services import service_tokens as service_tokens_service
 from api.services import tenants as tenants_service
@@ -42,6 +43,7 @@ def create_service_token(
     body: CreateServiceTokenRequest,
     admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
     settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
 ) -> ServiceTokenInfo:
     """Issue one token. The response is the only place its plaintext ever exists."""
     try:
@@ -53,6 +55,7 @@ def create_service_token(
             role=body.role,
             created_by=admin.username,
             expires_in_days=body.expires_in_days,
+            audit=audit,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -91,10 +94,11 @@ def revoke_service_token(
     token_id: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
     settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
 ) -> ServiceTokenInfo:
     """Kill a token immediately, without waiting for its expiry. Idempotent."""
     revoked = service_tokens_service.revoke_token(
-        settings, token_id=token_id, tenant_id=tenant_id
+        settings, token_id=token_id, tenant_id=tenant_id, audit=audit
     )
     if revoked is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="token not found")

@@ -47,6 +47,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
 | `/users` | Users & access: accounts and roles, tenant membership, provisioning-key revocation, sign-in audit; every role gets **My account** (own password) | Admin; any role for own password |
+| `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | Admin in the tenant |
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | Admin |
 | `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog and on-request provisioning keys | Operator |
@@ -569,6 +570,28 @@ key is *created* on `/agents`), **Sign-in audit** (`GET /api/auth/events`,
 paged, filter by outcome) and **My account** (own password), which is the
 only tab a non-admin sees. The Users table shows each account's tenant
 memberships from `UserInfo.tenants`.
+
+## Audit trail
+
+`/audit` reads `GET /api/audit` — the administrative trail (#327), which is a
+different question from the **Sign-in audit** tab on `/users`: that one is who
+signed in, this one is what they changed. One row per change, newest first, with
+`before → after` rendered in the row rather than behind a dialog — that document
+*is* the answer the page exists for, and it arrives already redacted, since the
+API replaces every credential-shaped field before storing it.
+
+Filters are exact matches (action from a fixed list, actor, resource id) plus a
+time window; the two export buttons stream **every** matching event as CSV or
+NDJSON, not the page on screen. The export goes through axios like the run
+artifacts do, because a plain `<a href>` would not carry the bearer token.
+
+The tenant switcher scopes the page: naming a tenant narrows the trail, and a
+platform admin with none selected reads every tenant plus the platform-level
+rows (account creation, config changes) that belong to no tenant. The query is
+fired regardless of the account's global role — "admin" on this endpoint means
+admin *in the tenant*, which the console cannot tell from the JWT, so a tenant
+admin signed in as a global viewer gets their own trail instead of an empty
+page.
 
 ## Integrations
 

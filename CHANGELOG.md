@@ -6,6 +6,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **An administrative audit trail, and one the application cannot edit**
+  ([#327](https://github.com/onixus/Shapoclyack/issues/327),
+  [#329](https://github.com/onixus/Shapoclyack/issues/329)). Creating,
+  promoting, disabling and deleting an account; granting and revoking a
+  membership; minting and revoking a service token or a provisioning key; an
+  agent's first registration; a report download; a scan scope replaced; a config
+  override changed — each is now a row in `audit_events` with the actor, what
+  kind of principal it is, the resolved client address, the user agent, the
+  request's `X-Request-Id`, and the resource before and after the change. The
+  row is written **in the transaction that makes the change**, so a change
+  without a record and a record without a change are both impossible, and every
+  credential-shaped field (`password`, `*_hash`, `token`, `*_secret`, `*_key`)
+  is replaced by `[redacted]` before storage. `GET /api/audit` reads it back —
+  admin *in the tenant*, filters on actor/action/resource and a time window,
+  and `?format=csv|ndjson` streams every matching event rather than the page.
+  Migration `0037_audit_events` makes the table append-only in Postgres: a
+  trigger refuses every `UPDATE` and `DELETE`, and the only way past it is
+  `audit_events_prune`, a `SECURITY DEFINER` function the recommended `GRANT`
+  layout in `docs/operations.md` withholds from the API's role. Retention is
+  therefore a separate privileged job, `python -m api.services.audit_retention
+  --days 365` (`OCTO_AUDIT_EVENT_RETENTION_DAYS`), not something the API can do
+  to its own trail. The console gets `/audit` — the same list with the filters
+  and the two export buttons. Login attempts stay in `auth_events` and are not
+  mirrored: they are the same fact in two tables, and that one is also the rate
+  limiter's counter.
+
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
   form and preferred it over the value the server minted at `start_scan` or

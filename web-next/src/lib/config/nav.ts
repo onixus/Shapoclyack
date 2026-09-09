@@ -14,6 +14,7 @@ import {
   Network,
   Play,
   Radar,
+  ScrollText,
   Server,
   Share2,
   ShieldAlert,
@@ -194,6 +195,13 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: UserCog,
         minRole: "admin",
         hintKey: "nav.hint.users",
+      },
+      {
+        href: "/audit",
+        labelKey: "nav.audit",
+        icon: ScrollText,
+        minRole: "admin",
+        hintKey: "nav.hint.audit",
       },
       {
         href: "/integrations",

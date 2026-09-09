@@ -22,6 +22,7 @@ import yaml
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit as audit_service
 from api.settings import Settings
 from scanner.pipeline.config_schema import NaabuTopPorts, ValidationError, load_config
 
@@ -253,10 +254,17 @@ def _restore_masked_secrets(stored: dict[str, Any], incoming: dict[str, Any]) ->
     return unflatten(incoming_flat) if changed else incoming
 
 
-def set_overrides(settings: Settings, data: dict[str, Any], *, username: str | None = None) -> dict[str, Any]:
+def set_overrides(
+    settings: Settings,
+    data: dict[str, Any],
+    *,
+    username: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
+) -> dict[str, Any]:
     """Validate against the whitelist AND the full merged schema, then persist.
     Raises ValueError on any validation failure (nothing is written)."""
-    data = _restore_masked_secrets(get_overrides(settings), data)
+    previous = get_overrides(settings)
+    data = _restore_masked_secrets(previous, data)
     validate_overrides(data)
     merged = _deep_merge(base_config_dict(settings), data)
     try:
@@ -272,6 +280,19 @@ def set_overrides(settings: Settings, data: dict[str, Any], *, username: str | N
             row.data = data
             row.updated_at = datetime.now(UTC)
             row.updated_by = username
+        # In the same transaction as the row it describes. Values whose path
+        # names a secret (``enrichment.cvss4.nvd_api_key``) are replaced by
+        # audit's own redaction, which keys on the field name — the same name
+        # ``SECRET_PATHS`` masks for the console (#327).
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_CONFIG_UPDATE,
+            resource_type="config_override",
+            resource_id=_SCOPE,
+            before=previous,
+            after=data,
+        )
     return data
 
 

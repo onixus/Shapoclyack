@@ -402,6 +402,11 @@ class Settings:
     # Audit-trail retention. Pruned opportunistically on login (auth_audit);
     # 0 keeps events forever.
     auth_event_retention_days: int = 90
+    # Administrative audit trail (#327). Longer than the login trail above,
+    # because it is what a compliance review reads a year later, and pruned by
+    # a privileged job rather than by the API — see
+    # api/services/audit_retention.py. 0 keeps events forever.
+    audit_event_retention_days: int = 365
 
     # --- Enterprise IAM: OIDC single sign-on (ROADMAP Track E) ----------------
     # SSO is off unless issuer, client id *and* client secret are all set; see
@@ -1026,6 +1031,9 @@ def load_settings() -> Settings:
         ],
         auth_event_retention_days=max(
             0, int(os.environ.get("OCTO_AUTH_EVENT_RETENTION_DAYS", "90"))
+        ),
+        audit_event_retention_days=max(
+            0, int(os.environ.get("OCTO_AUDIT_EVENT_RETENTION_DAYS", "365"))
         ),
         oidc_issuer=os.environ.get("OCTO_OIDC_ISSUER", "").strip().rstrip("/"),
         oidc_client_id=os.environ.get("OCTO_OIDC_CLIENT_ID", "").strip(),

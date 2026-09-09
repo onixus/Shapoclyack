@@ -241,7 +241,7 @@ Retention must cover all stateful layers:
 | Layer | Retain/backup |
 |---|---|
 | Run filesystem/PVC | Raw artifacts, reports, checkpoints |
-| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots |
+| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail |
 | ClickHouse | Analytical vulnerability and port history |
 | NATS | Pending jobs and ingest messages |
 
@@ -277,6 +277,84 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 - Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
 - `0` days disables the reaper.
 - Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+
+### Audit-trail immutability and retention (#327, #329)
+
+`audit_events` is the administrative trail: what was changed, by whom, with the
+value before and after. Unlike every other table here, **the application cannot
+edit or delete it.** Migration `0037_audit_events` installs a trigger that
+refuses every `UPDATE` and `DELETE`:
+
+```
+ERROR:  audit_events is append-only: DELETE refused (#329)
+```
+
+The one way past it is `audit_events_prune(cutoff timestamp)`, a `SECURITY
+DEFINER` function. It sets a transaction-local GUC that the trigger honours, and
+the trigger *also* requires the effective user to be the table's owner — true
+inside the definer function, false for anyone who merely sets the GUC
+themselves. So the escape hatch is the function, and **`EXECUTE` on the function
+is the privilege to guard**. (The alternative, `ALTER TABLE … DISABLE TRIGGER`
+around the delete, was rejected: it needs ownership anyway, takes an ACCESS
+EXCLUSIVE lock for the length of the sweep, and opens the table to *every*
+session while it is off.)
+
+Retention is therefore a **separate job with its own credentials**, not the API:
+
+```
+python -m api.services.audit_retention --days 365
+```
+
+`--days` defaults to `OCTO_AUDIT_EVENT_RETENTION_DAYS` (365). `0` is refused
+rather than read as "delete everything" — the value that means "keep forever" in
+the configuration must not become "keep nothing" because a variable was unset in
+the job's environment. Run it from a `CronJob` (weekly is plenty; the sweep is
+idempotent) using the migration role, not the API role.
+
+#### Recommended GRANT layout
+
+The migration does not create roles — it does not know what this installation
+calls them, and a migration that invents them fails on every installation whose
+names differ. Apply this once, substituting your own role names:
+
+```sql
+-- The API may append to the trail and read it back. Nothing else.
+REVOKE ALL ON TABLE audit_events FROM shapoclyack_api;
+GRANT SELECT, INSERT ON TABLE audit_events TO shapoclyack_api;
+GRANT USAGE, SELECT ON SEQUENCE audit_events_id_seq TO shapoclyack_api;
+
+-- And it may not reach the escape hatch. (REVOKE … FROM PUBLIC is already done
+-- by the migration; this is the explicit statement of the same thing.)
+REVOKE EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
+  FROM shapoclyack_api;
+
+-- The retention job, and only it, may prune.
+GRANT EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
+  TO shapoclyack_audit_retention;
+```
+
+Two things this layout does **not** claim. `audit_events` must be owned by a
+role the API does not hold — an owner can drop its own triggers, so an API
+running as the table's owner is protected by the trigger only against its own
+bugs, not against its own credentials. And a superuser can do anything at all;
+what this buys is that the credential in the API's Secret is not enough. To
+verify the property after a deploy, as the API's role:
+
+```sql
+DELETE FROM audit_events WHERE id = (SELECT min(id) FROM audit_events);
+-- expected: ERROR ... audit_events is append-only
+```
+
+Proof of immutability for an auditor is that error, the `GRANT` output of
+`\dp audit_events`, and the function's ACL in `\df+ audit_events_prune`.
+
+**Not done here, deliberately:** a hash chain over the rows (`prev_hash`/`hash`).
+It only detects tampering by someone who could bypass the trigger *and* the
+grants — i.e. the database's owner or a superuser — and to be a chain at all it
+would have to serialise every audit write behind one lock, which is a
+throughput cost paid on every administrative request. If an installation needs
+tamper-evidence against its own DBA, ship the rows off-box (the NDJSON export
+into a WORM bucket or a log pipeline) rather than hashing them in place.
 
 ### ClickHouse ingest consumer subjects (#230)
 

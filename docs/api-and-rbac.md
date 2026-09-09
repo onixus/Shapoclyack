@@ -103,6 +103,64 @@ A locked-out client keeps retrying, and recording each retry would make the
 audit trail an amplifier for unauthenticated writes — so one `locked` row is
 written per window and the rest are counted only in `/metrics`.
 
+## Administrative audit trail
+
+`auth_events` above answers "who signed in and what was refused". `audit_events`
+answers the other half — **what was changed** ([#327](https://github.com/onixus/Shapoclyack/issues/327)).
+One row per administrative change, with the resource before and after it:
+
+| Action | Recorded on |
+|---|---|
+| `user.create`, `user.role_change`, `user.disable`, `user.delete` | `POST /api/users`, `PUT /api/users/{u}/role`, `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` |
+| `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
+| `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
+| `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
+| `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
+| `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
+| `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`, with both scopes in `before`/`after` |
+| `config.update` | `PUT /api/config` |
+
+Every row carries the actor and what kind of principal it is (`user`,
+`service_token`, `agent`, `system`), the client address resolved the same way
+the login limiter resolves it, the user agent, and the `X-Request-Id` of the
+request when it carried one — nothing invents one, so the value in a row always
+matches a value that was on the wire.
+
+**The row is written in the transaction that makes the change.** A membership
+granted but not recorded is a silent change; a membership recorded but not
+granted is a trail that lies. Both are impossible here.
+
+**Secrets never reach `before`/`after`.** Every field whose name reads like a
+credential — `password`, `*_hash`, `token`, `*_secret`, `*_key` — is replaced by
+`[redacted]` before storage, so a table every tenant admin can read cannot be
+mined for one. Login attempts stay in `auth_events` and are not mirrored here:
+they are the same fact in two tables, and the login trail is the one the rate
+limiter counts.
+
+```http
+GET /api/audit?action=user.role_change&resource_id=amy&from=2026-09-01T00:00:00Z
+GET /api/audit?tenant_id=acme&format=csv
+```
+
+| Parameter | Meaning |
+|---|---|
+| `tenant_id` | Narrows to one tenant. A tenant admin may only name their own (403 otherwise); a platform admin who names none reads every tenant |
+| `actor`, `action`, `resource_type`, `resource_id` | Exact matches — "every change to *this* token" is the question, and a substring match is how the wrong row gets read as the right one |
+| `from`, `to` | ISO instants, inclusive; an offset is honoured and converted to UTC |
+| `offset`, `limit` | `Page` envelope like the other lists. Always newest first: this is a log, so there is no `sort`/`order` |
+| `format=csv\|ndjson` | Streams **every** matching event rather than the current page, as an attachment. An export bounded by `limit` would be a page with a filename |
+
+Reading requires **admin in the tenant**: the people who administer a customer
+are the ones who have to review its changes. Rows with no tenant at all —
+creating a console account, editing the installation-wide scanner config — are
+platform-level acts and appear only in the platform admin's answer.
+
+The rows are **append-only in the database itself**
+([#329](https://github.com/onixus/Shapoclyack/issues/329)): a trigger refuses
+every `UPDATE` and `DELETE`, so neither a bug in the API nor an operator holding
+the API's credentials can rewrite history. Retention is a separate privileged
+job — see [operations.md](operations.md#audit-trail-immutability-and-retention).
+
 ## Single sign-on (OIDC)
 
 Authorization code with PKCE against a generic OpenID Connect provider
@@ -232,6 +290,7 @@ not an authorization control.
 | Prefix | Purpose |
 |---|---|
 | `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
+| `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (admin in the tenant; CSV/NDJSON export) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |
