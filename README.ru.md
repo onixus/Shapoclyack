@@ -14,6 +14,7 @@
 Kubernetes-приложение или как единый all-in-one контейнер.
 
 **[English](README.md)** · [Быстрый старт](docs/getting-started.md) ·
+[База знаний (Wiki)](docs/wiki/README.md) ·
 [Карта документации](docs/README.md) · [Kubernetes](k8s/README.md) ·
 [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) ·
 [Security](.github/SECURITY.md)
@@ -111,7 +112,8 @@ Web UI включает:
 
 | Задача | Документ |
 |---|---|
-| Установка и первый скан | [Getting started](docs/getting-started.md) |
+| Быстрый старт и первый скан | [Getting started](docs/getting-started.md) |
+| База знаний: роли, процессы, план внедрения | [Корпоративная Wiki](docs/wiki/README.md) |
 | Архитектура и потоки данных | [Architecture](docs/architecture.md) |
 | Профили и параметры | [Configuration](docs/configuration.md) |
 | API, JWT и роли | [API and RBAC](docs/api-and-rbac.md) |

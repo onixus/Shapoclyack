@@ -9,6 +9,7 @@ Commands assume the repository root unless a guide explicitly says otherwise.
 | Goal | Authoritative guide |
 |---|---|
 | Evaluate the platform and run a first scan | [Getting started](getting-started.md) |
+| Read the Enterprise Wiki & role scenarios | [Enterprise Wiki (База знаний)](wiki/README.md) 🇷🇺 |
 | Understand components, trust boundaries, and data flow | [Architecture](architecture.md) |
 | Configure scanning, enrichment, and runtime settings | [Configuration](configuration.md) |
 | Deploy or upgrade Kubernetes workloads | [Kubernetes deployment](../k8s/README.md) |
@@ -23,6 +24,19 @@ Commands assume the repository root unless a guide explicitly says otherwise.
 Shapoclyack is evolving from a scanner-oriented console into a vulnerability and exposure management platform. The implementation plan for that transition lives in [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md) and is tracked by GitHub issues linked from that document.
 
 The roadmap is **planned product behavior**, not documentation of already-delivered UI. For current routes and capabilities, use [Web interface](ui.md).
+
+## Enterprise Wiki and role guides 🇷🇺
+
+Enterprise knowledge base with role-based usage scenarios, security processes, and implementation roadmap (in Russian):
+
+| Guide | Scope |
+|---|---|
+| [Wiki Portal](wiki/README.md) | Central portal: concept, data model, NIST SP 800-30, mechanical verification, index |
+| [Security Engineer Scenarios](wiki/scenarios-security-engineer.md) | Day-to-day operations: scanning, triage, remediation kanban, mechanical re-verification, patch gaps, noise reduction |
+| [Architect Scenarios](wiki/scenarios-architect.md) | Architecture: EASM, CMDB/AD integration, remote agents in DMZ/VPC, CI/CD DevSecOps, compliance controls |
+| [CISO Scenarios](wiki/scenarios-ciso.md) | Executive view: Risk Overview (NIST SP 800-30), CISA KEV threats, SLA & adoption metrics, board reporting |
+| [Security Processes](wiki/security-processes.md) | Formal VM lifecycle, EASM, emergency 0-day response, IT/DevOps SLA collaboration |
+| [Implementation Plan](wiki/implementation-plan.md) | 12-week enterprise rollout roadmap, milestones M1–M4, RACI matrix, deployment models, KPIs |
 
 ## Operator documentation
 
