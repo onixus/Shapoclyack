@@ -128,16 +128,23 @@ def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.Webhoo
 def _subscription_snapshot(
     subscription_id: str,
 ) -> tuple[str, str | None, dict[str, Any], str, dict[str, Any]] | None:
-    """Load the latest enabled target immediately before a wire attempt."""
+    """Load the latest enabled target immediately before a wire attempt.
+
+    The one place the stored secrets are turned back into credentials (#310):
+    they exist as plaintext for the length of one POST, in the frame that signs
+    it or sets the header, and nowhere else. A row whose key is missing raises
+    here rather than sending an unsigned or unauthenticated request.
+    """
     settings = _base._require_settings()
     with get_session(settings.postgres_url) as session:
         subscription = session.get(models.WebhookSubscription, subscription_id)
         if subscription is None or not subscription.enabled:
             return None
+        secret, headers = _base.endpoint_credentials(subscription)
         return (
             subscription.url,
-            subscription.secret,
-            dict(subscription.headers or {}),
+            secret,
+            headers,
             subscription.transport or "webhook",
             dict(subscription.transport_config or {}),
         )

@@ -45,6 +45,7 @@ from api.services import screenshot_retention
 from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
+from api.services.crypto import startup as crypto_startup
 from api.services.integrations import webhook_worker
 from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
@@ -143,6 +144,10 @@ def create_app() -> FastAPI:
     # router is mounted: a prod install with no console account refuses here
     # rather than serving a login form nobody can get through (#156).
     users_service.bootstrap(settings)
+    # Same shape as the check above and for the same reason: only the database
+    # can tell an installation that stores integration secrets — and so needs
+    # OCTO_MASTER_KEY — from one that has none (#310).
+    crypto_startup.bootstrap(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
     agent_deployer.configure(settings)

@@ -571,11 +571,15 @@ class WebhookSubscription(Base):
     API without touching the broker, and what makes the per-tenant scoping the
     same scoping every other table here uses.
 
-    ``secret`` is the HMAC key the receiver verifies with; it is stored in
-    plaintext because a signature has to be *computed*, not compared — a hash
-    would make it unusable — and it is redacted on every read path (see
-    ``api/services/integrations/webhooks.py``). It is a shared secret for a
-    URL the operator controls, not a credential for this system.
+    ``secret`` is the HMAC key the receiver verifies with — for a ticket
+    transport, the tracker's API token. It cannot be hashed: a signature is
+    *computed*, not compared, and a token has to be replayed to Jira as issued.
+    So since #310 it is encrypted at rest instead, as are the ``headers``
+    values, which is where an ``Authorization`` header for the same tracker
+    lives. ``api/services/crypto`` holds the envelope; redaction on the read
+    paths (``secure_webhooks.py``) is unchanged and still the answer to a
+    different question — what an API *caller* may see, rather than what a dump
+    of this table yields.
     """
 
     __tablename__ = "webhook_subscriptions"
@@ -599,6 +603,14 @@ class WebhookSubscription(Base):
     # Adapter knobs that are not credentials: Jira project_key / issue_type,
     # ServiceNow table, DefectDojo test_id. Tokens stay in secret/headers.
     transport_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    # KEK id every encrypted value in this row is wrapped with; NULL means the
+    # row predates #310 and is still plaintext. Each ciphertext already names
+    # its own key, so this is a queryable mirror rather than the authority: it
+    # is what lets the startup check and `reencrypt_secrets --rotate` find the
+    # rows that need work without parsing every column. Keeping it true is why
+    # a write re-encrypts all of the row's secret material, not only the fields
+    # the request touched (api/services/integrations/webhooks.py).
+    key_id: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
     updated_at: Mapped[datetime | None] = mapped_column(default=None)

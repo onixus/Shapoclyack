@@ -34,6 +34,7 @@ from api.db.engine import get_session, insert_if_absent
 from api.services import asset_events, metrics, pagination
 from api.services import tenants as tenants_service
 from api.services import vulnerabilities as vulns_service
+from api.services.crypto import envelope as crypto
 from api.services.integrations import delivery as delivery_transport
 from api.services.integrations import tickets as ticket_transport
 from api.settings import Settings
@@ -82,6 +83,79 @@ def reset_for_tests() -> None:
 
 
 # --------------------------------------------------------------------------
+# Secrets at rest (#310)
+# --------------------------------------------------------------------------
+
+# One context per column, bound into the AEAD: a ciphertext moved from `secret`
+# to a header value — or the other way — fails its tag instead of decrypting.
+SECRET_CONTEXT = "webhook_subscriptions.secret"
+HEADERS_CONTEXT = "webhook_subscriptions.headers"
+
+
+def _rewrap(value: str | None, *, context: str) -> str | None:
+    """Bring one value to the current KEK: encrypt plaintext, rewrap stale keys.
+
+    A value already under the current key is returned untouched, so editing a
+    subscription's name does no cryptography at all. The rewrap branch has to
+    decrypt first, which needs the old key in ``OCTO_MASTER_KEY_PREVIOUS`` — a
+    row it cannot open is a row no delivery could have used either, so failing
+    the write is the same answer, said earlier.
+    """
+    if not value:
+        return value
+    if crypto.encryption_enabled() and crypto.key_id_of(value) == crypto.current_key_id():
+        return value
+    return crypto.encrypt_secret(
+        crypto.decrypt_secret(value, context=context) or "", context=context
+    )
+
+
+def _encrypt_row_secrets(row: models.WebhookSubscription) -> None:
+    """Encrypt everything secret in ``row`` and record the key that opens it.
+
+    Every write goes through this, not only the writes that touched ``secret``:
+    ``key_id`` is one label for the whole row, so a PATCH of the headers must
+    leave the signing secret under the same key it claims. That also means an
+    ordinary edit opportunistically finishes a rotation the operator started.
+    """
+    row.secret = _rewrap(row.secret, context=SECRET_CONTEXT)
+    row.headers = {
+        name: _rewrap(value, context=HEADERS_CONTEXT)
+        for name, value in (row.headers or {}).items()
+    }
+    # NULL when the row carries nothing secret: the startup check reads a
+    # non-NULL key_id as "this installation has secrets at rest", and a webhook
+    # with neither a secret nor a header is not one.
+    has_secrets = bool(row.secret) or bool(row.headers)
+    row.key_id = crypto.current_key_id() if has_secrets else None
+
+
+def _decrypt_headers(row: models.WebhookSubscription) -> dict[str, str]:
+    """The configured header values as they were entered."""
+    return {
+        str(name): crypto.decrypt_secret(str(value), context=HEADERS_CONTEXT) or ""
+        for name, value in (row.headers or {}).items()
+    }
+
+
+def endpoint_credentials(
+    row: models.WebhookSubscription,
+) -> tuple[str | None, dict[str, str]]:
+    """``(secret, headers)`` of a subscription, decrypted for one outbound call.
+
+    The single named way to turn stored envelopes back into credentials, used
+    by the delivery loop and by the ticket reflection in
+    ``api/services/vulnerabilities.py``. A row whose key is not configured
+    raises here rather than producing an unsigned POST or a request with a
+    ciphertext where the tracker token should be.
+    """
+    return (
+        crypto.decrypt_secret(row.secret, context=SECRET_CONTEXT),
+        _decrypt_headers(row),
+    )
+
+
+# --------------------------------------------------------------------------
 # Subscriptions
 # --------------------------------------------------------------------------
 
@@ -92,6 +166,12 @@ def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
     Only ``has_secret`` is exposed: the value is write-only, as with any shared
     secret an operator pastes into a form. It is shown exactly once, in the
     response to the request that set it (see ``create_subscription``).
+
+    ``headers`` is decrypted here so the field keeps meaning "the values that
+    were configured" — ``secure_webhooks`` redacts it to ``***`` before it can
+    reach a caller, and a field that sometimes held ciphertext instead would be
+    a trap for the next reader of it. ``has_secret`` needs no key: whether a
+    column is NULL is the same question either way (#310).
     """
     return {
         "subscription_id": row.subscription_id,
@@ -102,7 +182,7 @@ def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
         "event_kinds": list(row.event_kinds or []),
         "min_severity": row.min_severity,
         "has_secret": bool(row.secret),
-        "headers": dict(row.headers or {}),
+        "headers": _decrypt_headers(row),
         "transport": row.transport or "webhook",
         "transport_config": dict(row.transport_config or {}),
         "created_at": _iso(row.created_at),
@@ -202,6 +282,7 @@ def create_subscription(
         created_by=created_by,
         updated_at=now,
     )
+    _encrypt_row_secrets(row)
     with get_session(settings.postgres_url) as session:
         # The cap is enforced by count-then-insert, which two concurrent
         # requests can both pass at N-1 (#153). Serialising creates on the
@@ -323,6 +404,7 @@ def update_subscription(subscription_id: str, **fields: Any) -> dict[str, Any] |
             rotated = str(fields["secret"] or "")
             row.secret = rotated or None
         row.updated_at = _now()
+        _encrypt_row_secrets(row)
         session.flush()
         result = _subscription_to_dict(row)
     if rotated:

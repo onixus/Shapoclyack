@@ -1368,3 +1368,127 @@ ExternalSecrets' `refreshInterval` rewrites the Secret and restarts nothing.
 There is no overlap window: between steps 2 and 3 the old clients are rejected.
 Schedule it like a short maintenance window rather than expecting a seamless
 rotation.
+
+## Secrets at rest
+
+The credentials this installation holds *for other systems* — a webhook's HMAC
+signing key, and the header values that carry a Jira / ServiceNow / DefectDojo
+API token — are stored in `webhook_subscriptions`. Until
+[#310](https://github.com/onixus/Shapoclyack/issues/310) they were stored as
+typed, so a dump, a base backup, a read replica or a shell in the API pod
+yielded every tenant's tracker tokens at once. The API-level redaction that was
+already there answers a different question: what an API *caller* may read.
+
+They are now envelope-encrypted. Each write mints a 256-bit data key, encrypts
+the value with it under AES-256-GCM, and stores that key wrapped by the
+key-encryption key (KEK) from `OCTO_MASTER_KEY`:
+
+```
+v1:<kek_id>:<b64 wrapped dek>:<b64 nonce>:<b64 ciphertext>
+```
+
+`kek_id` is a non-secret label derived from the key, so a row states which key
+opens it — which is what makes a rotation resumable and a half-rotated table a
+working one.
+
+### What is and is not covered
+
+| Value | Where it lives | At rest |
+|-------|----------------|---------|
+| Webhook HMAC secret, ticket API token (`webhook_subscriptions.secret`) | Postgres | Encrypted (#310) |
+| Configured header values, e.g. `Authorization` (`webhook_subscriptions.headers`) | Postgres | Encrypted (#310) |
+| Console passwords, service tokens, agent provisioning keys | Postgres | bcrypt / SHA-256 hashes — never reversible, so nothing to encrypt |
+| SSH host keys pinned for agent deployment | Postgres | Public keys; not secret |
+| `OCTO_OIDC_CLIENT_SECRET`, `OCTO_REPORT_SMTP_PASSWORD`, `OCTO_JWT_SECRET`, the data-plane URLs | Environment (Secret / ExternalSecret) | Not in the database at all — protected by Kubernetes Secret handling, not by this |
+
+The last row is the deliberate boundary: encrypting a value the process reads
+from its own environment with a key it reads from the same environment adds
+nothing. If one of those ever moves into Postgres, it moves through
+`api/services/crypto` on the way.
+
+Encryption protects a *reader* of the database — a dump, a backup, a replica.
+It does not protect against someone who can write to it or who can read the
+API pod's environment: both have the key.
+
+### Generating the key
+
+```
+openssl rand -base64 32     # or: openssl rand -hex 32
+```
+
+Put it in `OCTO_MASTER_KEY` in the `shapoclyack-api-users` Secret (see
+`k8s/shapoclyack/examples/api-secrets.example.yaml`) or in the matching
+ExternalSecret, and roll the API. Every replica must carry the same value.
+
+Under `OCTO_ENV=prod` the API **refuses to start** without it if any
+subscription already holds a secret or a configured header — either those rows
+are plaintext, which is the problem, or they are encrypted and unreadable. An
+installation with no integrations starts with a warning instead, so this does
+not demand a key of a deployment that has nothing to protect. Under
+`OCTO_ENV=dev` it is always a warning and the values stay plaintext.
+
+### Encrypting an existing installation
+
+The read path accepts both forms, so this is an online step with no maintenance
+window and no migration hook. Deploy the key first, then:
+
+```
+kubectl -n network-scan exec deploy/shapoclyack-api -- \
+  python -m api.db.reencrypt_secrets --dry-run
+kubectl -n network-scan exec deploy/shapoclyack-api -- \
+  python -m api.db.reencrypt_secrets
+```
+
+Each row is rewritten in its own short transaction under `SELECT … FOR UPDATE`,
+so a concurrent edit from the console is serialised rather than lost, and an
+interrupted pass is resumed by running it again.
+
+### Rotating the KEK
+
+Unlike the data-plane credentials above, this one *does* have an overlap
+window — that is what `OCTO_MASTER_KEY_PREVIOUS` is for.
+
+1. Put the new key in `OCTO_MASTER_KEY` and move the current one to
+   `OCTO_MASTER_KEY_PREVIOUS` (comma-separated; more than one is allowed).
+2. Roll the API. Rows on the old key still decrypt; new writes use the new key.
+3. Rewrap what is already stored:
+   `python -m api.db.reencrypt_secrets --rotate`.
+4. Confirm nothing is left behind, then remove `OCTO_MASTER_KEY_PREVIOUS` and
+   roll again:
+
+   ```sql
+   SELECT key_id, count(*) FROM webhook_subscriptions
+    WHERE secret IS NOT NULL OR headers::text <> '{}' GROUP BY key_id;
+   ```
+
+   One row, with the current `kek_id`, means the rotation is complete. A `NULL`
+   `key_id` means those rows are still plaintext — run the pass without
+   `--rotate` first.
+
+Skipping step 1 and simply replacing the key makes every stored secret
+unreadable: deliveries fail and the console cannot list webhooks. Recovery is
+putting the old key back into `OCTO_MASTER_KEY_PREVIOUS`.
+
+### Rolling back to a pre-#310 image
+
+Older code reads `secret` and the header values as opaque strings and would
+sign with — or send — the ciphertext. Decrypt first, while the key is still
+configured:
+
+```
+python -m api.db.reencrypt_secrets --decrypt
+```
+
+then roll back and apply `alembic downgrade 0036_oidc_pending_states`, which
+drops only the `key_id` column.
+
+### Vault Transit and cloud KMS
+
+`OCTO_MASTER_KEY_PROVIDER` selects where the KEK lives. Only `local` (the
+default, `OCTO_MASTER_KEY`) is implemented; `vault-transit`, `aws-kms` and
+`gcp-kms` are **named but not built** — setting one refuses at startup with a
+message saying so, rather than silently falling back to a local key. What
+exists is the interface (`KeyProvider` in `api/services/crypto/envelope.py`):
+two methods, wrap and unwrap, which a Transit or KMS client fills in without
+any call site changing. Do not plan a deployment around them until an issue
+says they ship.

@@ -112,8 +112,13 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import tenants as tenants_service
     from api.services import users as users_service
     from api.services import wordlists as wordlists_service
+    from api.services.crypto import envelope as crypto_envelope
     from api.services.integrations import webhooks as webhooks_service
 
+    # The KEK provider is process-global (#310). Clearing it here means a test
+    # that configures a master key cannot leave later tests writing ciphertext
+    # they never asked for — create_app() re-resolves it from the environment.
+    crypto_envelope.reset_for_tests()
     agents_service.configure(settings)
     # Before anything is truncated: a deployment worker left running by the
     # previous test writes stage rows and re-seeds nothing, so it races both
