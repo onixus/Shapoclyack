@@ -333,3 +333,98 @@ def test_claim_endpoint_is_not_capped_by_the_results_limit(tmp_path, monkeypatch
         headers=_agent_headers(),
     )
     assert claimed.status_code == 204
+
+
+def _results_archive() -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in (("findings.json", b'{"ok": true}\n'), ("summary.json", b'{"alive_hosts": 1}\n')):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _claimed_agent_job(client: TestClient) -> tuple[str, str, str]:
+    reg = client.post("/api/agent/register", headers=_agent_headers(), json={"hostname": "worker"})
+    agent_id = reg.json()["agent_id"]
+    token = login(client, "operator")
+    job = client.post(
+        "/api/jobs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"mode": "safe", "skip_nse": True, "ranges": "127.0.0.1\n", "domains": "\n", "ports": "80\n"},
+    )
+    assert job.status_code == 202
+    claimed = client.post(f"/api/agent/jobs/claim?agent_id={agent_id}", headers=_agent_headers())
+    assert claimed.status_code == 200
+    return agent_id, job.json()["job_id"], job.json()["run_id"]
+
+
+def test_results_upload_refuses_a_run_id_that_is_not_the_jobs(tmp_path, monkeypatch):
+    """The run id names a directory under ``runs/``; the agent may only confirm it.
+
+    Before the check an upload could name another run — a different tenant's,
+    or a path outside ``runs/`` — and have its archive extracted there and the
+    run's ``tenant.json`` rewritten to the uploader's tenant.
+    """
+    client = _client(tmp_path, monkeypatch)
+    agent_id, job_id, run_id = _claimed_agent_job(client)
+    settings = _settings(tmp_path)
+
+    for offered in ("../../escaped", "someone-elses-run", f"{run_id}x"):
+        done = client.post(
+            f"/api/agent/jobs/{job_id}/results",
+            headers=_agent_headers(),
+            data={"agent_id": agent_id, "exit_code": "0", "run_id": offered},
+            files={"archive": ("run.tar.gz", _results_archive(), "application/gzip")},
+        )
+        assert done.status_code == 422, offered
+        assert "run_id" in done.json()["detail"]
+
+    assert not list(tmp_path.rglob("escaped"))
+    assert not (settings.output_dir / "runs" / "someone-elses-run").exists()
+    assert not (settings.output_dir / "runs" / f"{run_id}x").exists()
+    # A refused upload is not a completion: the job is still the agent's to finish.
+    assert client.get(f"/api/jobs/{job_id}", headers={"Authorization": f"Bearer {login(client, 'operator')}"}).json()["status"] in ("claimed", "running")
+
+    done = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={"agent_id": agent_id, "exit_code": "0", "run_id": run_id},
+        files={"archive": ("run.tar.gz", _results_archive(), "application/gzip")},
+    )
+    assert done.status_code == 200
+    assert (settings.output_dir / "runs" / run_id / "findings.json").is_file()
+
+
+def test_results_upload_without_run_id_lands_in_the_jobs_run(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    agent_id, job_id, run_id = _claimed_agent_job(client)
+    done = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={"agent_id": agent_id, "exit_code": "0"},
+        files={"archive": ("run.tar.gz", _results_archive(), "application/gzip")},
+    )
+    assert done.status_code == 200
+    assert done.json()["run_id"] == run_id
+    assert (_settings(tmp_path).output_dir / "runs" / run_id / "findings.json").is_file()
+
+
+def test_start_scan_refuses_a_run_id_that_is_not_a_path_segment(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    token = login(client, "operator")
+    for run_id in ("../escape", "a/b", "x" * 65, ".hidden", "a b"):
+        job = client.post(
+            "/api/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"mode": "safe", "skip_nse": True, "ranges": "127.0.0.1\n", "domains": "\n", "ports": "80\n", "run_id": run_id},
+        )
+        assert job.status_code == 422, run_id
+    ok = client.post(
+        "/api/jobs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"mode": "safe", "skip_nse": True, "ranges": "127.0.0.1\n", "domains": "\n", "ports": "80\n", "run_id": "nightly_2026-09-09"},
+    )
+    assert ok.status_code == 202
+    assert ok.json()["run_id"] == "nightly_2026-09-09"

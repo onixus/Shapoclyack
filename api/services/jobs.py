@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -1187,6 +1188,38 @@ def find_by_idempotency_key(
     return info
 
 
+# A run id names one directory under ``output_dir/runs``. The scanner mints
+# them as ``%Y%m%dT%H%M%SZ``; operators may supply their own for a local run.
+# Either way it must stay a single path segment: it is joined onto the output
+# directory unescaped, so anything with a separator or ``..`` in it would name
+# a directory the caller was never given.
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def validate_run_id(value: str) -> str:
+    """Refuse a run id that is not one safe path segment."""
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError("run_id must be 1-64 characters of [A-Za-z0-9_-]")
+    return value
+
+
+def _confirm_run_id(expected: str | None, offered: str | None) -> str | None:
+    """Resolve the run id an upload lands in.
+
+    The server decided the run id at ``start_scan`` or at the claim, and the
+    agent only echoes it back. The echo is accepted as confirmation, never as
+    a choice: before this check an agent could name any directory — another
+    tenant's run, or a path outside ``runs/`` — and have its archive extracted
+    there and the run's ``tenant.json`` rewritten to its own tenant.
+    """
+    if expected and offered and offered != expected:
+        raise ValueError("run_id does not match the job")
+    resolved = expected or offered
+    if resolved:
+        validate_run_id(str(resolved))
+    return resolved
+
+
 def start_scan(
     settings: Settings,
     request: StartScanRequest,
@@ -1229,6 +1262,8 @@ def start_scan(
     job_id = uuid.uuid4().hex[:12]
     execution = "agent" if settings.job_execution_mode == "agent" else "local"
     run_id = request.run_id
+    if run_id:
+        validate_run_id(run_id)
     if execution == "agent" and not run_id:
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
@@ -1758,7 +1793,7 @@ def complete_job(
         # and re-publish to NATS before being rejected.
         if replay_result is None:
             job_states.check_transition(job_id, row.status, status)
-        resolved_run_id = run_id or row.run_id
+        resolved_run_id = _confirm_run_id(row.run_id, run_id)
         # Read here rather than re-fetched at the write below: the row is
         # already loaded and locked, and the surface was decided at start_scan.
         job_surface = (row.scan_options or {}).get("surface")
