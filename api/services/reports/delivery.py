@@ -28,6 +28,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
+from api.services import egress
 from api.services.integrations import delivery as wire
 from api.settings import Settings
 
@@ -61,11 +62,15 @@ def _tls_context(settings: Settings) -> ssl.SSLContext:
     hostname nor verifies the chain (``CERT_NONE``), so the encryption it puts
     on the wire protects the report from a passive listener and from nobody
     else. The default here is therefore a verifying context; an installation
-    whose relay presents an internal certificate either puts that CA in the
-    system trust store or sets OCTO_REPORT_SMTP_VERIFY_TLS=false and owns the
-    downgrade.
+    whose relay presents an internal certificate names its CA in
+    ``OCTO_CA_BUNDLE`` (#359, added to the system store rather than replacing
+    it), puts it in the image's trust store, or sets
+    OCTO_REPORT_SMTP_VERIFY_TLS=false and owns the downgrade.
+
+    SMTP takes the CA from ``egress`` and nothing else from it: a relay is
+    dialed directly, because an HTTP proxy does not carry SMTP.
     """
-    context = ssl.create_default_context()
+    context = egress.ssl_context()
     if not settings.report_smtp_verify_tls:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
