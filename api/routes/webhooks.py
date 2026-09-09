@@ -169,6 +169,10 @@ def update_webhook(
         ) from exc
     if subscription is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook not found")
+    # The service echoes a written secret back so ``rotate-secret`` can show
+    # the value it generated. Here the caller supplied it, so returning it
+    # would only widen where it can be logged.
+    subscription.pop("secret", None)
     return subscription
 
 
@@ -187,9 +191,18 @@ def rotate_webhook_secret(
     subscription_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
 ) -> dict:
-    """Issue a new signing secret. Returned once, as at creation."""
+    """Issue a new signing secret. Returned once, as at creation.
+
+    ``409`` on a ticket transport: there ``secret`` is the tracker's API
+    token, and a random replacement would not be a rotated key but a broken
+    integration. That is a conflict with the subscription's state, not a
+    malformed request, and PATCH ``secret`` is the way through.
+    """
     _require_own_webhook(subscription_id, principal)
-    subscription = webhooks.rotate_secret(subscription_id)
+    try:
+        subscription = webhooks.rotate_secret(subscription_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if subscription is None:  # pragma: no cover - deleted between the two reads
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook not found")
     return subscription

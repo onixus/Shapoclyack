@@ -21,6 +21,7 @@ slices (ROADMAP P1.4-P1.5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import shutil
@@ -56,6 +57,7 @@ from api.services import runs as runs_service
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services import scan_intents
+from api.services import scan_surface
 from api.services import vulnerabilities as vulns_service
 from api.services import wordlists as wordlists_service
 from api.services.targets import parse_target_payload
@@ -123,6 +125,8 @@ def _to_info(row: models.Job) -> JobInfo:
         asset_upsert_error=row.asset_upsert_error,
         attempts=row.attempts or 0,
         scan_options=dict(row.scan_options) if row.scan_options else None,
+        surface=(row.scan_options or {}).get("surface"),
+        surface_source=(row.scan_options or {}).get("surface_source"),
     )
 
 
@@ -261,12 +265,19 @@ def list_jobs(
     sort: str | None = None,
     order: str | None = None,
     tenant_id: str | None = None,
+    surface: str | None = None,
 ) -> tuple[list[JobInfo], int]:
     """Return ``(page, total_after_filtering)`` — see api/services/pagination.py.
 
     Filtered, counted, and sliced in SQL. ``NULLS LAST`` keeps the documented
     ordering rule that a job which never started does not outrank one that
     did, in both directions.
+
+    ``surface`` filters on ``scan_options->>'surface'`` (see
+    api.services.scan_surface). ``"unknown"`` selects the rows where the key is
+    absent or null — jobs started before this shipped, and scans of the
+    server's default input files — so the three surfaces plus ``unknown``
+    partition the list and no job is invisible under every filter.
     """
     column = JOB_SORT_COLUMNS.get(sort or "", models.Job.started_at)
     ascending = (order or "").lower() == "asc"
@@ -276,6 +287,9 @@ def list_jobs(
         filters = []
         if tenant_id:
             filters.append(models.Job.tenant_id == tenant_id)
+        if surface:
+            stored = models.Job.scan_options["surface"].as_string()
+            filters.append(stored.is_(None) if surface == "unknown" else stored == surface)
         if q and q.strip():
             needle = f"%{q.strip().lower()}%"
             filters.append(
@@ -300,6 +314,58 @@ def list_jobs(
             .limit(limit)
         ).scalars().all()
         return [_to_info(row) for row in rows], total
+
+
+#: The surface buckets ``summary`` reports, in the order a console renders
+#: them. ``unknown`` is the NULL bucket, exactly as in ``list_jobs``.
+SUMMARY_SURFACES = (*scan_surface.SURFACES, "unknown")
+
+
+def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, Any]:
+    """Queue depth by status and by surface, in one grouped query.
+
+    The counts a scan console shows above the job list. ``tenant_id`` of
+    ``None`` counts the whole fleet, which only an unscoped platform admin
+    reaches — the same rule as ``list_jobs``.
+
+    ``queued`` here is queued *plus* claimed: the question the number answers
+    is "how much work is waiting to be done", and a job an agent has taken but
+    not started is still waiting. Note this differs from the ``octo_jobs_*``
+    gauges in docs/slo.md, which count ``claimed`` as running because they are
+    measuring executor occupancy instead.
+    """
+    by_status = dict.fromkeys(sorted(job_states.ALL), 0)
+    by_surface = {
+        surface: {"running": 0, "queued": 0, "total": 0} for surface in SUMMARY_SURFACES
+    }
+    stored_surface = models.Job.scan_options["surface"].as_string()
+
+    with get_session(settings.postgres_url) as session:
+        filters = [models.Job.tenant_id == tenant_id] if tenant_id else []
+        rows = session.execute(
+            select(models.Job.status, stored_surface, func.count())
+            .where(*filters)
+            .group_by(models.Job.status, stored_surface)
+        ).all()
+
+    for status, surface, count in rows:
+        # A status outside the lifecycle cannot be produced by job_states, but
+        # a hand-edited row must not make the whole summary disappear.
+        by_status[str(status)] = by_status.get(str(status), 0) + count
+        bucket = by_surface[surface if surface in by_surface else "unknown"]
+        bucket["total"] += count
+        if status == job_states.RUNNING:
+            bucket["running"] += count
+        elif status in (job_states.QUEUED, job_states.CLAIMED):
+            bucket["queued"] += count
+
+    return {
+        "by_status": by_status,
+        "running": by_status.get(job_states.RUNNING, 0),
+        "queued": by_status.get(job_states.QUEUED, 0) + by_status.get(job_states.CLAIMED, 0),
+        "by_surface": by_surface,
+        "generated_at": _iso(_now()),
+    }
 
 
 def get_job(settings: Settings, job_id: str) -> JobInfo | None:
@@ -960,7 +1026,13 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             # Tag the run before the asset upsert: an untagged run reads back as
             # the default tenant, which would leak it to every tenant's run list.
             if run_id:
-                runs_service.write_run_tenant(settings, str(run_id), tenant_id, job_id=job_id)
+                runs_service.write_run_tenant(
+                    settings,
+                    str(run_id),
+                    tenant_id,
+                    job_id=job_id,
+                    surface=(job.scan_options or {}).get("surface") if job else None,
+                )
             _upsert_assets_best_effort(
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
@@ -992,6 +1064,78 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
         _discard_job_inputs(settings, job_id)
 
 
+#: Request fields that define *which scan* a start asks for. ``tenant_id`` is
+#: decided by the route rather than the caller, and ``run_id`` only names the
+#: output directory, so neither makes two calls a different request.
+_IDEMPOTENCY_FIELDS = (
+    "mode",
+    "intent",
+    "delta",
+    "skip_nse",
+    "notify",
+    "export_defectdojo",
+    "surface",
+    "wordlist_id",
+)
+
+#: Target fields, compared line by line rather than character by character.
+_IDEMPOTENCY_TARGET_FIELDS = ("ranges", "domains", "ports", "ports_udp")
+
+
+def _normalised_target_text(text: str | None) -> str | None:
+    """The same target list typed with different whitespace, spelled one way.
+
+    Not ``split_target_lines``: that also drops comments and splits on commas,
+    which are edits to the request rather than formatting of it. A retry is a
+    resend of the same body, so trimming each line and dropping blank ones is
+    as far as this may go without calling two different requests the same.
+    """
+    if text is None:
+        return None
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def _idempotency_digest(request: StartScanRequest) -> str:
+    """A fingerprint of the scan a start request asks for (ROADMAP P1.5).
+
+    A key on its own only says "the client called this request X"; it cannot
+    say whether the second call is the retry it claims to be. The digest is
+    what lets the second call be answered with the first job only when it is
+    in fact the same scan — see ``IdempotencyMismatch``.
+    """
+    payload: dict[str, Any] = {
+        field: getattr(request, field) for field in _IDEMPOTENCY_FIELDS
+    }
+    payload.update(
+        {
+            field: _normalised_target_text(getattr(request, field))
+            for field in _IDEMPOTENCY_TARGET_FIELDS
+        }
+    )
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class IdempotencyMismatch(Exception):
+    """A key an earlier request used, sent with a *different* scan request.
+
+    Deliberately not a replay: answering with the earlier job would report a
+    scan of targets this caller never asked for, and starting a second one
+    would break the promise the key was given for. Neither is right, so the
+    caller is told the key is taken (409) and picks another.
+
+    Not a ``ValueError``: the body is well-formed, and the route maps
+    ``ValueError`` to 422.
+    """
+
+    def __init__(self, job: JobInfo) -> None:
+        super().__init__(
+            "Idempotency-Key already used for a different scan request "
+            f"(job {job.job_id})"
+        )
+        self.job = job
+
+
 class IdempotentReplay(Exception):
     """A scan start whose key already created a job. Carries that job.
 
@@ -1009,8 +1153,21 @@ def note_start_replay() -> None:
     metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(operation="start").inc()
 
 
-def find_by_idempotency_key(settings: Settings, *, tenant_id: str, key: str) -> JobInfo | None:
-    """The job a previous request with this key created, if any (P1.5)."""
+def find_by_idempotency_key(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    key: str,
+    request: StartScanRequest | None = None,
+) -> JobInfo | None:
+    """The job a previous request with this key created, if any (P1.5).
+
+    With ``request``, the hit is also checked against what this caller is
+    asking for and a key reused for a different scan raises
+    ``IdempotencyMismatch`` instead of replaying. A job stored before the
+    digest shipped carries none and is treated as a match: the alternative is
+    to start 409-ing keys that worked yesterday.
+    """
     if not key:
         return None
     with get_session(settings.postgres_url) as session:
@@ -1020,7 +1177,14 @@ def find_by_idempotency_key(settings: Settings, *, tenant_id: str, key: str) -> 
                 models.Job.idempotency_key == key,
             )
         ).scalars().first()
-        return _to_info(row) if row else None
+        if row is None:
+            return None
+        info = _to_info(row)
+    if request is not None:
+        stored = (row.scan_options or {}).get("idempotency_digest")
+        if stored and stored != _idempotency_digest(request):
+            raise IdempotencyMismatch(info)
+    return info
 
 
 def start_scan(
@@ -1159,6 +1323,10 @@ def start_scan(
                 resolved.skip_nse,
             )
         config_path = str(settings.config_path)
+    # Derived from the targets as the operator entered them, not from the
+    # widened set: a promoted related domain rides along with every scan and
+    # would turn an internal sweep into a "mixed" one it was never asked to be.
+    surface = scan_surface.resolve(request.surface, request.ranges, request.domains)
     command = _build_command(
         settings,
         mode=resolved.mode,
@@ -1189,8 +1357,26 @@ def start_scan(
             **({"promoted_domains": promoted_admitted} if promoted_admitted else {}),
             **({"promoted_domains_refused": promoted_refused} if promoted_refused else {}),
             "skip_nse": resolved.skip_nse,
+            # External / internal / mixed, or None when the scan runs the
+            # server's default input files and nothing here can tell (see
+            # api.services.scan_surface).
+            "surface": surface,
+            # Whether that value is the operator's declaration or the server's
+            # reading of the targets. Risk scoring treats only a declared
+            # external scan as network-exposure evidence, and without this the
+            # two are indistinguishable once stored.
+            "surface_source": (
+                "operator" if request.surface else ("derived" if surface else None)
+            ),
             "notify": request.notify,
             "export_defectdojo": request.export_defectdojo,
+            # Only alongside a key: it exists to tell this request apart from
+            # the next one carrying the same key, and nothing else reads it.
+            **(
+                {"idempotency_digest": _idempotency_digest(request)}
+                if idempotency_key
+                else {}
+            ),
             **wordlist_options,
         },
         target_counts=target_counts,
@@ -1212,16 +1398,20 @@ def start_scan(
         # Lost the race on (tenant_id, idempotency_key): another replica — or
         # this one, serving the client's retry concurrently — already created
         # the job. The caller wanted one scan for this key and there is one.
+        # This job_id never became a row, so its materialized wordlist (and the
+        # merged config beside it) and its input files would be read by nobody
+        # — discarded first, so the mismatch below does not leak them either.
+        _discard_job_wordlist(settings, job_id)
+        _discard_job_inputs(settings, job_id)
+        # ``request=`` here too: the racing pair may not be the same scan, and
+        # the loser of the race must hear that rather than be handed a job for
+        # targets it never asked about.
         existing = find_by_idempotency_key(
-            settings, tenant_id=tenant_id, key=idempotency_key or ""
+            settings, tenant_id=tenant_id, key=idempotency_key or "", request=request
         )
         if existing is None:
             raise
         _log.info("Idempotent scan start: key already created job %s", existing.job_id)
-        # This job_id never became a row, so its materialized wordlist (and the
-        # merged config beside it) and its input files would be read by nobody.
-        _discard_job_wordlist(settings, job_id)
-        _discard_job_inputs(settings, job_id)
         # Raised rather than returned so the caller can answer 200 here too:
         # this request accepted nothing, exactly like the sequential replay the
         # route detects before calling in.
@@ -1569,6 +1759,9 @@ def complete_job(
         if replay_result is None:
             job_states.check_transition(job_id, row.status, status)
         resolved_run_id = run_id or row.run_id
+        # Read here rather than re-fetched at the write below: the row is
+        # already loaded and locked, and the surface was decided at start_scan.
+        job_surface = (row.scan_options or {}).get("surface")
 
     if replay_result is not None:
         # Reached only for a job that is already terminal, so the agent is not
@@ -1603,7 +1796,11 @@ def complete_job(
                 results_ingest.extract_run_archive(archive_bytes, dest)
                 results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
                 runs_service.write_run_tenant(
-                    settings, str(resolved_run_id), job_tenant, job_id=job_id
+                    settings,
+                    str(resolved_run_id),
+                    job_tenant,
+                    job_id=job_id,
+                    surface=job_surface,
                 )
             except results_ingest.IngestError as exc:
                 raise ValueError(str(exc)) from exc

@@ -71,6 +71,10 @@ class RunSummary(BaseModel):
     # None for runs written before the scanner recorded it.
     unconfirmed_findings: int | None = None
     vulnerable_hosts: int | None = None
+    # External / internal / mixed, from the run's tenant.json marker (see
+    # api.services.scan_surface). None for runs written before this shipped and
+    # for scans of the server's default input files.
+    surface: str | None = None
     has_diff: bool = False
     has_summary: bool = False
     path: str
@@ -273,6 +277,11 @@ class StartScanRequest(BaseModel):
     domains: str | None = None
     ports: str | None = None
     ports_udp: str | None = None
+    # The surface the operator declares this scan faces (see
+    # api.services.scan_surface). Omitted, it is derived from the targets —
+    # and stays None for a scan of the server's default input files, whose
+    # contents the API never reads.
+    surface: Literal["external", "internal", "mixed"] | None = None
     # A tenant-uploaded brute-force wordlist to run this scan with (Phase 8.2).
     # Local execution only: it enables ct.brute_force with the uploaded list.
     # Rejected in agent mode, where the scanner runs its own mounted config.
@@ -307,6 +316,41 @@ class JobInfo(BaseModel):
     attempts: int = 0
     # Persisted start options (intent, mode, delta, wordlist provenance, …).
     scan_options: dict[str, Any] | None = None
+    # Mirror of scan_options["surface"], lifted to the top level so a job list
+    # can be split into external and internal without every client learning the
+    # shape of the options blob. None for jobs started before this shipped.
+    surface: Literal["external", "internal", "mixed"] | None = None
+    # Where that value came from: the operator declared it on the request, or
+    # the server derived it from the targets. Risk scoring only treats the
+    # declared kind as network-exposure evidence, so the two must not be
+    # indistinguishable once stored. None alongside a null `surface`, and for
+    # jobs started before this shipped.
+    surface_source: Literal["operator", "derived"] | None = None
+
+
+class JobSurfaceCounts(BaseModel):
+    """One surface's slice of the queue — see JobSummary."""
+
+    running: int = 0
+    queued: int = 0
+    total: int = 0
+
+
+class JobSummary(BaseModel):
+    """Queue depth for a scan console's header (`GET /api/jobs/summary`).
+
+    `by_status` carries all six lifecycle states, zero-filled, and `by_surface`
+    all four buckets including `unknown`, so a console renders a stable set of
+    tiles instead of one that appears as jobs happen to exist. `queued` is
+    queued plus claimed: a job an agent has taken but not started is still
+    waiting to be done.
+    """
+
+    by_status: dict[str, int] = Field(default_factory=dict)
+    running: int = 0
+    queued: int = 0
+    by_surface: dict[str, JobSurfaceCounts] = Field(default_factory=dict)
+    generated_at: str
 
 
 class AgentRegisterRequest(BaseModel):
@@ -471,6 +515,7 @@ class CreateScheduleRequest(BaseModel):
     domains: str | None = None
     ports: str | None = None
     ports_udp: str | None = None
+    surface: Literal["external", "internal", "mixed"] | None = None
 
 
 class UpdateScheduleRequest(BaseModel):
@@ -488,6 +533,7 @@ class UpdateScheduleRequest(BaseModel):
     domains: str | None = None
     ports: str | None = None
     ports_udp: str | None = None
+    surface: Literal["external", "internal", "mixed"] | None = None
 
 
 class ScheduleInfo(BaseModel):
@@ -532,6 +578,11 @@ class UpdateWebhookRequest(BaseModel):
     enabled: bool | None = None
     event_kinds: list[str] | None = None
     min_severity: Literal["low", "medium", "high", "critical"] | None = None
+    # The only way to rotate a ticket transport's credential: ``rotate-secret``
+    # mints a random HMAC key, which is exactly what a tracker API token must
+    # not be. Write-only — the response never echoes it back, because the
+    # caller is the one who supplied it. An empty string clears signing.
+    secret: str | None = Field(default=None, max_length=512)
     headers: dict[str, str] | None = None
     transport: Literal["webhook", "jira", "servicenow", "defectdojo"] | None = None
     transport_config: dict[str, Any] | None = None
@@ -656,6 +707,12 @@ class UserInfo(BaseModel):
     email: str | None = None
     email_verified: bool = False
     sso_linked: bool = False
+    # Tenant ids this account holds an explicit membership row in, sorted.
+    # Empty means "no membership row", never "no access": a platform admin
+    # acts in every tenant without one, and a user with none is confined to
+    # the default tenant (see api/services/memberships.py).
+    tenants: list[str] = Field(default_factory=list)
+    is_platform_admin: bool = False
 
 
 class SetUserEmailRequest(BaseModel):
@@ -724,6 +781,10 @@ class CreateUserRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = _PASSWORD
     role: Literal["viewer", "operator", "admin"] = "viewer"
+    # Stored unverified. Marking an address verified is the administrative
+    # assertion that makes an account linkable to an SSO identity by email,
+    # and it stays its own deliberate call: PUT /users/{username}/email.
+    email: str | None = Field(default=None, max_length=320)
 
 
 class SetUserPasswordRequest(BaseModel):
@@ -1409,6 +1470,9 @@ class VulnerabilitySummary(BaseModel):
     estate_risk: str | None = None
     by_state: dict[str, int] = Field(default_factory=dict)
     by_severity_open: dict[str, int] = Field(default_factory=dict)
+    # external | internal | unknown; a finding scored without the signal counts
+    # as unknown, so the three keys always add up to ``open_total``.
+    by_network_exposure_open: dict[str, int] = Field(default_factory=dict)
     by_risk_level_open: dict[str, int] = Field(default_factory=dict)
     by_sla: dict[str, int] = Field(default_factory=dict)
     breached: int

@@ -336,9 +336,14 @@ Focus:
 
 ## Navigation
 
-- redesign application shell;
-- introduce role based menus;
-- separate operations and security workflows.
+- ~~redesign application shell~~ — done: grouped sidebar, `Ctrl/⌘-K`
+  search-and-jump, live operations strip (see [ui.md](ui.md), "Application
+  shell");
+- ~~introduce role based menus~~ — done: entries below the signed-in role are
+  hidden (presentation only, the API enforces);
+- ~~separate operations and security workflows~~ — done: risk workflows first,
+  then the external and internal scanning surfaces (`/scans/external`,
+  `/scans/internal`), then shared operations and administration.
 
 ## Components
 

@@ -700,6 +700,60 @@ def test_api_rotate_secret(tmp_path, monkeypatch):
     assert rotated.json()["secret"] not in (None, created["secret"])
 
 
+def _jira_subscription(client, headers) -> dict:
+    return client.post(
+        "/api/webhooks",
+        json={
+            "name": "jira-soc",
+            "url": "https://jira.example",
+            "transport": "jira",
+            "transport_config": {"project_key": "SEC"},
+            "secret": "old-token",
+        },
+        headers=headers,
+    ).json()
+
+
+def test_api_patch_replaces_a_tracker_token_without_echoing_it(tmp_path, monkeypatch):
+    """The only way to rotate a ticket transport's credential (rotate-secret
+    would mint a random HMAC key and break the integration)."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    created = _jira_subscription(client, admin)
+
+    patched = client.patch(
+        f"/api/webhooks/{created['subscription_id']}",
+        json={"secret": "new-token"},
+        headers=admin,
+    )
+
+    assert patched.status_code == 200, patched.text
+    # The caller supplied it; echoing it back only widens where it can be logged.
+    assert patched.json()["secret"] is None
+    assert patched.json()["has_secret"] is True
+    with get_session(webhooks._require_settings().postgres_url) as session:
+        row = session.get(models.WebhookSubscription, created["subscription_id"])
+        assert row.secret == "new-token"
+
+
+def test_api_rotate_secret_refuses_a_ticket_transport(tmp_path, monkeypatch):
+    """409, not the 500 the escaping ValueError used to produce: the refusal is
+    about the subscription's transport, not about a malformed request."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    created = _jira_subscription(client, admin)
+
+    refused = client.post(
+        f"/api/webhooks/{created['subscription_id']}/rotate-secret", headers=admin
+    )
+
+    assert refused.status_code == 409
+    assert "PATCH secret" in refused.json()["detail"]
+    with get_session(webhooks._require_settings().postgres_url) as session:
+        row = session.get(models.WebhookSubscription, created["subscription_id"])
+        assert row.secret == "old-token"
+
+
 def test_the_subscription_cap_holds_under_concurrent_creates(settings: Settings, monkeypatch):
     """#153: count-then-insert let two requests both pass at N-1. With the
     tenant row locked for the transaction, exactly ``limit`` rows exist

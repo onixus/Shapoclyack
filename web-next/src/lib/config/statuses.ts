@@ -5,9 +5,11 @@ import type {
   AssetEnvironment,
   AssetExposureLevel,
   AssetStatus,
+  AuthEventOutcome,
   EndpointReconciliationStatus,
   JobInfo,
   NistRiskLevel,
+  Role,
   ScanScopeEffect,
   SlaState,
   SoftwareCveMatchStatus,
@@ -212,3 +214,44 @@ export const RISK_LEVEL_STATUS: Record<NistRiskLevel, StatusStyle & { tremorColo
   },
 };
 
+
+/** Webhook delivery queue state. `dead` is the dead-letter queue — the retry
+ * budget is spent or the receiver answered with something a retry cannot fix,
+ * so it is a failure an admin has to act on rather than a transient one. */
+export const WEBHOOK_DELIVERY_STATUS: Record<"pending" | "delivered" | "dead", StatusStyle> = {
+  delivered: { label: "delivered", className: SUCCESS },
+  pending: { label: "pending", className: IN_PROGRESS },
+  dead: { label: "dead", variant: "destructive", className: DANGER },
+};
+
+/** The account's global role (#156). It is the fallback authority: a user's
+ * role *inside* a tenant comes from their membership row and can differ. */
+export const USER_ROLE_STATUS: Record<Role, StatusStyle> = {
+  admin: { label: "admin", className: INFO_VIOLET },
+  operator: { label: "operator", className: INFO_SKY },
+  viewer: { label: "viewer", variant: "secondary", className: MUTED },
+};
+
+/** Whether the account can sign in. Disabling beats deleting — the memberships
+ * and the history survive it — so it reads as muted rather than as a failure. */
+export const ACCOUNT_STATUS: Record<"active" | "disabled", StatusStyle> = {
+  active: { label: "active", className: SUCCESS },
+  disabled: { label: "disabled", variant: "secondary", className: MUTED },
+};
+
+/** One decision in the auth trail (#157, #226, #241). `locked` is the rate
+ * limiter refusing before the credentials were even checked, `denied` an
+ * authenticated principal refused an action, `trust_change` an SSH host-key
+ * pin an admin set or removed — neither an attempt nor a refusal. */
+export const AUTH_EVENT_OUTCOME: Record<AuthEventOutcome, StatusStyle> = {
+  success: { label: "success", className: SUCCESS },
+  failure: { label: "failure", variant: "destructive", className: DANGER },
+  locked: { label: "locked", className: INFO_ORANGE },
+  denied: { label: "denied", variant: "destructive", className: DANGER },
+  trust_change: { label: "trust change", className: INFO_INDIGO },
+};
+
+export const PROVISIONING_KEY_STATUS: Record<"active" | "revoked", StatusStyle> = {
+  active: { label: "active", className: SUCCESS },
+  revoked: { label: "revoked", variant: "secondary", className: MUTED },
+};

@@ -9,16 +9,21 @@ import {
   fetchScreenshots,
   fetchVulns,
   type PageParams,
+  type ScanListFilters,
 } from "@/lib/api";
 import { POLL_INTERVALS, VULN_FETCH_LIMIT } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
 /** Paginated run list (ROADMAP P3.3). Callers that only need the newest runs
  * (latest-run pickers, trends) can leave `page` unset and read `data.items`. */
-export function useRuns(refetchInterval: number = POLL_INTERVALS.runs, page?: PageParams) {
+export function useRuns(
+  refetchInterval: number = POLL_INTERVALS.runs,
+  page?: PageParams,
+  filters?: ScanListFilters,
+) {
   return useQuery({
-    queryKey: queryKeys.runsPage(page),
-    queryFn: () => fetchRuns(page),
+    queryKey: queryKeys.runsPage(page, filters),
+    queryFn: () => fetchRuns(page, filters),
     refetchInterval,
   });
 }

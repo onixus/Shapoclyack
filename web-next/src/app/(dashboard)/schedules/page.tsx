@@ -4,6 +4,8 @@ import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { Pencil, Plus, Timer, Trash2 } from "lucide-react";
+import { SurfaceBadge } from "@/components/scans/surface-badge";
+import { scheduleSurface, type ScanSurface } from "@/lib/scan-surface";
 import { useT } from "@/lib/i18n";
 import {
   AlertDialog,
@@ -59,6 +61,8 @@ const EMPTY_FORM = {
   intervalSeconds: "3600",
   mode: "balanced" as CreateScheduleBody["mode"],
   intent: "inventory" as NonNullable<CreateScheduleBody["intent"]> | "",
+  // "" lets the server derive the surface from the targets.
+  surface: "" as ScanSurface | "",
   delta: true,
   skipNse: false,
   notify: false,
@@ -118,6 +122,7 @@ export default function SchedulesPage() {
       intervalSeconds: String(schedule.interval_seconds ?? 3600),
       mode: schedule.scan_options.mode,
       intent: (schedule.scan_options.intent as CreateScheduleBody["intent"]) || "",
+      surface: scheduleSurface(schedule) ?? "",
       delta: schedule.scan_options.delta,
       skipNse: schedule.scan_options.skip_nse,
       notify: schedule.scan_options.notify,
@@ -139,6 +144,7 @@ export default function SchedulesPage() {
       interval_seconds: form.cadenceKind === "interval" ? Number(form.intervalSeconds) || null : null,
       mode: form.mode,
       intent: form.intent || null,
+      surface: form.surface || null,
       delta: form.delta,
       skip_nse: form.intent ? false : form.skipNse,
       notify: form.notify,
@@ -179,6 +185,12 @@ export default function SchedulesPage() {
         header: t("col.status"),
         accessorFn: (schedule) => (schedule.enabled ? "enabled" : "disabled"),
         cell: ({ row }) => <StatusBadge value={row.original.enabled ? "enabled" : "disabled"} map={SCHEDULE_ENABLED_STATUS} />,
+      },
+      {
+        id: "surface",
+        header: t("col.surface"),
+        enableSorting: false,
+        cell: ({ row }) => <SurfaceBadge surface={scheduleSurface(row.original)} link />,
       },
       {
         id: "cadence",
@@ -371,6 +383,24 @@ export default function SchedulesPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid gap-2 md:col-span-2">
+                  <Label className="text-xs font-semibold text-slate-300">{t("surface.filterLabel")}</Label>
+                  <Select
+                    value={form.surface || "__auto__"}
+                    onValueChange={(value) =>
+                      setForm((f) => ({ ...f, surface: value === "__auto__" ? "" : (value as ScanSurface) }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__auto__">{t("schedules.surfaceAuto")}</SelectItem>
+                      <SelectItem value="external">{t("surface.external")} — {t("surface.hint.external")}</SelectItem>
+                      <SelectItem value="internal">{t("surface.internal")} — {t("surface.hint.internal")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="grid gap-2">
                   <Label className="text-xs font-semibold text-slate-300">Scan Intent</Label>
                   <Select

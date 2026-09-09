@@ -109,6 +109,60 @@ def test_filters_and_summary(tmp_path, monkeypatch):
     )
 
 
+def _set_exposure(settings, exposures: dict[str, str | None]) -> None:
+    """Force the finding-level exposure signal, keyed by CVE.
+
+    Includes the NULL a finding scored before the signal existed carries: it is
+    the case the ``unknown`` filter has to cover, and no seed produces it.
+    """
+    from sqlalchemy import select
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(settings.postgres_url) as session:
+        for cve, exposure in exposures.items():
+            row = session.execute(
+                select(models.Vulnerability).where(models.Vulnerability.cve == cve)
+            ).scalar_one()
+            row.network_exposure = exposure
+
+
+def test_network_exposure_filter_and_summary(tmp_path, monkeypatch):
+    """#173's external/internal signal is filterable, and NULL reads as unknown."""
+    client = configured_client(tmp_path, monkeypatch)
+    settings, _ = _seed(tmp_path)
+    viewer = auth_headers(client, "viewer")
+    _set_exposure(settings, {"CVE-2024-0001": "external", "CVE-2024-0002": None})
+
+    def _cves(**params) -> list[str]:
+        listed = client.get("/api/vulnerabilities", params=params, headers=viewer)
+        assert listed.status_code == 200
+        return [item["cve"] for item in listed.json()["items"]]
+
+    assert _cves(network_exposure="external") == ["CVE-2024-0001"]
+    # NULL is unknown, not a fourth bucket — the old rows are the ones an
+    # operator most needs to see.
+    assert _cves(network_exposure="unknown") == ["CVE-2024-0002"]
+    assert _cves(network_exposure="internal") == []
+
+    _set_exposure(settings, {"CVE-2024-0002": "internal"})
+    assert _cves(network_exposure="internal") == ["CVE-2024-0002"]
+    assert _cves(network_exposure="unknown") == []
+
+    assert (
+        client.get(
+            "/api/vulnerabilities", params={"network_exposure": "dmz"}, headers=viewer
+        ).status_code
+        == 422
+    )
+
+    _set_exposure(settings, {"CVE-2024-0002": None})
+    body = client.get("/api/vulnerabilities/summary", headers=viewer).json()
+    assert body["by_network_exposure_open"] == {"external": 1, "internal": 0, "unknown": 1}
+    assert sum(body["by_network_exposure_open"].values()) == body["open_total"]
+
+
 def test_viewer_cannot_transition_operator_can_and_illegal_moves_are_409(tmp_path, monkeypatch):
     client = configured_client(tmp_path, monkeypatch)
     _seed(tmp_path)

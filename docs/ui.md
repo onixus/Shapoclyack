@@ -35,8 +35,10 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/attack-surface` | One scan's hostname → IP → port → service graph (not an attack path) | Viewer |
 | `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
 | `/endpoints` | Endpoint device/software inventory, CVE matches and the patch-gap panel | Viewer |
-| `/jobs` | Start and monitor scan jobs | Operator |
-| `/runs` | Tenant-scoped run history | Viewer |
+| `/scans` | Scan operations across both surfaces: KPIs, launcher, job list with cancel and per-job record, recent runs. `/jobs` redirects here | Operator |
+| `/scans/external` | External scans: internet-facing launcher (domains, public ranges, org profile, wordlists) and the jobs/runs classified `external` | Operator |
+| `/scans/internal` | Internal scans: private-range launcher, agent/endpoint context and the jobs/runs classified `internal` | Operator |
+| `/runs` | Tenant-scoped run history, filterable by surface (`?surface=external|internal|mixed|unknown`) | Viewer |
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
@@ -44,9 +46,77 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
 | `/schedules` | Tenant-scoped recurring scan schedules | Operator |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
+| `/users` | Users & access: accounts and roles, tenant membership, provisioning-key revocation, sign-in audit; every role gets **My account** (own password) | Admin; any role for own password |
+| `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | Admin |
 | `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog and on-request provisioning keys | Operator |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
+
+## Application shell
+
+The sidebar is grouped, not flat: **Overview**, **Risk & remediation**,
+**External surface** (external scans, exposure, attack surface, org profile,
+geo), **Internal surface** (internal scans, endpoints, agents), **Operations**
+(all jobs, runs, schedules, reports, wordlists), **Insights**, and
+**Administration**. Groups collapse and remember it per browser
+(`shapoclyack.nav.collapsed`); a collapsed group still shows the current page.
+Entries below the signed-in role are hidden — presentation only, the API
+enforces every request (`src/lib/config/nav.ts`).
+
+The header carries **Search & jump** (`Ctrl`/`⌘` + `K`): pages the role may
+see, "start an external / internal scan", and typed ids — a run id opens the
+run report, a 12-hex job id opens that job's record on `/scans`, a
+`vuln_…` / `asset_…` id opens the detail page, anything else becomes a search
+on the Vulnerability Center or the asset inventory (`?q=`). For operators the
+header also shows the live count of running and queued jobs (from
+`GET /api/jobs/summary`, one grouped count every 15 s) and agents online, in
+place of the former decorative "Live System" pill. The sidebar
+footer shows the API version and the execution mode (local / agent) from
+`GET /api/system`.
+
+## Scan operations: external and internal
+
+Every job and run carries a **surface** — `external` (domains, public address
+space), `internal` (RFC 1918 / loopback / link-local / CGNAT / IPv6 ULA),
+`mixed`, or none (started before the field existed, or on the server's
+default input files). The server derives it from the targets at start time;
+the surfaced launchers send it explicitly, and the explicit value wins
+([api-and-rbac.md](api-and-rbac.md), "Scan surface"). The console never
+renders an absent value as internal: it shows **Unclassified**.
+
+`/scans/external` and `/scans/internal` share one page body
+(`src/components/scans/scan-operations.tsx`):
+
+- KPI row — running / queued (`/api/jobs/summary`, per surface), last
+  completed run and success rate over the last 50 started jobs, and one
+  surface-specific tile: open findings whose network exposure matches the
+  surface (`by_network_exposure_open`; a scan launched from the external page
+  declares its surface, and that declaration is exposure evidence — see
+  [risk-scoring.md](risk-scoring.md)), agents online (internal), approved
+  domains and promoted related domains (external, admin);
+- the launcher, shaped by the surface: external leads with domains and offers
+  `org_profile` and wordlists; internal leads with private ranges and hides
+  both. A live hint classifies what was typed and warns when it contradicts
+  the launcher; the confirm dialog names the surface, intent and mode. The
+  request carries an `Idempotency-Key` that changes with the form's content,
+  so a retry of the same form after a timeout replays instead of queueing
+  twice, while an edited form is a new request (the API also compares a
+  digest of the body and answers 409 when a key is reused for a different
+  scan);
+- the job table with a **Cancel** action on queued/claimed jobs (the API
+  answers 409 once a job runs) and a per-job drawer: timeline and duration,
+  attempts, exit code, error, intent summary, target counts, promoted domains
+  admitted and dropped, wordlist, agent, command line, links to the run and
+  its findings. `/scans?job=<id>` opens the drawer directly;
+- recent runs on that surface, linking to `/runs?surface=`.
+
+The dashboard's **Scan operations** block shows, per surface, the last run's
+age (flagged after 30 days — an unobserved surface is not a clean one), what
+is running, findings in that run, and a launch button; beside it the open
+findings split by observed network exposure. `/schedules` has a surface
+selector (or "derive from targets") and column; the Vulnerability Center has
+a **Network exposure** filter (`?exposure=`). The Remediation card shows an
+unknown exposure as `unknown`, no longer as `internal`.
 
 ## Risk Overview
 
@@ -456,7 +526,7 @@ operator who could raise their own quota is the control removing itself.
 
 The consequences of a quota show up elsewhere in the console rather than here.
 A scan refused because the month's entitlement is spent answers `429` on
-`/jobs`, with the limit, the count and the reset date in the error text — the
+`POST /api/jobs` (the launcher on `/scans/*`), with the limit, the count and the reset date in the error text — the
 operator sees the refusal where they started the scan. An **asset** limit never
 fails a scan and produces no console message at all: the run succeeds, the
 assets already in the inventory get its data, and only newly discovered hosts
@@ -486,6 +556,30 @@ folded in yet). Only a `vulnerable` match with a published fix becomes a
 tracked finding ([why](software-cve-matching.md#lifecycle-tracked-findings)).
 One string covered all four until 2026-09-08, so an operator could read "no
 published fix" on a row with the fix printed in the next column.
+
+## Users & access
+
+`/users` is where an installation stops needing curl for onboarding. Tabs:
+**Users** (create with role, initial password and optional email — set in the
+same transaction, so a refused address leaves no half-created account; change
+role, set email, disable, reset password, delete — never offered for the
+signed-in account), **Tenant membership** (grant, change, revoke per tenant;
+a platform admin needs no rows), **Provisioning keys** (list and revoke; the
+key is *created* on `/agents`), **Sign-in audit** (`GET /api/auth/events`,
+paged, filter by outcome) and **My account** (own password), which is the
+only tab a non-admin sees. The Users table shows each account's tenant
+memberships from `UserInfo.tenants`.
+
+## Integrations
+
+`/integrations` exposes the webhook subsystem (`OCTO_WEBHOOKS_ENABLED`; when it
+is off the page says so instead of listing nothing). **Subscriptions**: plain
+webhooks and the Jira / ServiceNow / DefectDojo transports that open tickets
+from the Remediation board and sync status back; per row Test, Rotate secret
+(HMAC transports — the new value is shown once), Edit (including a new
+tracker token via `secret`, left empty to keep the current one) and Delete.
+**Deliveries**: the paged delivery log with Retry on dead deliveries.
+Operators read, admins change.
 
 ## Wordlists and service tokens
 
@@ -543,7 +637,8 @@ before. "Nothing recorded" is not "the data is bad". See
 
 A tenant's **approved scanning scope** (#226) is edited on `/tenants` (above).
 The rest of the console shows its consequence: starting a scan outside the
-scope answers `403` on `/jobs`, with the offending targets in the error text,
+scope answers `403` on `POST /api/jobs` (the launcher on `/scans/*`), with the
+offending targets in the error text,
 and a tenant whose scope was never approved cannot start one at all. Since #244
 saving a **schedule** outside the scope answers the same `403` on `/schedules`
 instead of silently never firing, so the schedule form surfaces the refusal
@@ -552,7 +647,7 @@ where the operator is standing. See
 
 ## Current versus planned UI
 
-The current console still contains scanner- and operations-oriented surfaces such as jobs, runs, agents, and schedules. The target product UX moves toward risk, asset, vulnerability-lifecycle, remediation, and MSSP views. That target is intentionally documented in [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md), not mixed into this current-state guide.
+The shell now follows the roadmap's information architecture: risk workflows first, then the two scanning surfaces, then the operations that serve both (runs, schedules, agents, reports) and administration. What is still planned — attack paths, ticket views beyond the link, role-specific dashboards — is documented in the [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md), not mixed into this current-state guide.
 
 ## UI development
 

@@ -32,10 +32,12 @@ export function usePagination(options?: {
   limit?: number;
   sort?: string;
   order?: "asc" | "desc";
+  /** Initial search text, e.g. from a `?q=` deep link. */
+  search?: string;
 }): PaginationState {
   const limit = options?.limit ?? DEFAULT_PAGE_SIZE;
   const [offset, setOffset] = useState(0);
-  const [search, setSearchValue] = useState("");
+  const [search, setSearchValue] = useState(options?.search ?? "");
   const [sort, setSortValue] = useState<string | undefined>(options?.sort);
   const [order, setOrder] = useState<"asc" | "desc">(options?.order ?? "desc");
 

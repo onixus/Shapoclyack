@@ -287,3 +287,88 @@ def test_a_failed_upload_releases_its_reservation(settings):
 
     with get_session(settings.postgres_url) as session:
         assert session.get(models.Job, job.job_id).results_idempotency_key is None
+
+
+def test_a_key_reused_for_a_different_scan_is_refused(settings):
+    """A key names one request. Replaying the first job for a second, different
+    body would report a scan of targets this caller never asked about, and
+    starting a second scan would break the promise the key was given for."""
+    first = jobs_service.start_scan(
+        settings,
+        StartScanRequest(mode="balanced", ranges="10.0.0.0/24"),
+        username="admin",
+        idempotency_key="req-1",
+    )
+
+    with pytest.raises(jobs_service.IdempotencyMismatch) as mismatch:
+        jobs_service.start_scan(
+            settings,
+            StartScanRequest(mode="balanced", ranges="10.0.1.0/24"),
+            username="admin",
+            idempotency_key="req-1",
+        )
+    assert mismatch.value.job.job_id == first.job_id
+
+    _, total = jobs_service.list_jobs(settings)
+    assert total == 1
+
+
+def test_the_same_targets_typed_differently_still_replay(settings):
+    """The digest is over the request's meaning, not its bytes: a client that
+    re-serialises its target list must not be told the key is taken."""
+    jobs_service.start_scan(
+        settings,
+        StartScanRequest(ranges="10.0.0.0/24\n10.0.1.0/24"),
+        username="admin",
+        idempotency_key="req-1",
+    )
+
+    with pytest.raises(jobs_service.IdempotentReplay):
+        jobs_service.start_scan(
+            settings,
+            StartScanRequest(ranges="  10.0.0.0/24  \n\n10.0.1.0/24\n"),
+            username="admin",
+            idempotency_key="req-1",
+        )
+
+
+def test_a_job_stored_before_the_digest_shipped_still_replays(settings):
+    """Otherwise the upgrade would start 409-ing keys that worked yesterday."""
+    from api.db import models
+    from api.db.engine import get_session
+
+    first = jobs_service.start_scan(
+        settings, StartScanRequest(ranges="10.0.0.0/24"), username="admin", idempotency_key="old"
+    )
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, first.job_id)
+        options = dict(row.scan_options)
+        options.pop("idempotency_digest")
+        row.scan_options = options
+
+    replayed = jobs_service.find_by_idempotency_key(
+        settings,
+        tenant_id="default",
+        key="old",
+        request=StartScanRequest(ranges="192.168.5.0/24"),
+    )
+    assert replayed.job_id == first.job_id
+
+
+def test_a_key_reused_for_a_different_scan_over_http_conflicts(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch, job_execution_mode="agent")
+    auth = {"Authorization": f"Bearer {login(client, 'operator')}", "Idempotency-Key": "retry-me"}
+
+    first = client.post("/api/jobs", headers=auth, json={"mode": "safe", "ranges": "10.0.0.0/24"})
+    assert first.status_code == 202
+
+    same = client.post("/api/jobs", headers=auth, json={"mode": "safe", "ranges": "10.0.0.0/24"})
+    assert same.status_code == 200
+    assert same.json()["job_id"] == first.json()["job_id"]
+
+    other = client.post("/api/jobs", headers=auth, json={"mode": "safe", "ranges": "10.0.9.0/24"})
+    # 409, not 422: the body is well-formed, the key is taken.
+    assert other.status_code == 409
+    assert first.json()["job_id"] in other.json()["detail"]
+
+    assert client.get("/api/jobs", headers=auth).json()["total"] == 1

@@ -383,6 +383,40 @@ def test_resolve_network_exposure_does_not_treat_a_public_ip_as_internet():
     assert resolve_network_exposure(host="10.0.0.5", explicit=EXTERNAL) == (EXTERNAL, "finding")
 
 
+def test_operator_declared_scan_surface_decides_exposure_when_nothing_better_does():
+    """A declared surface is a decision, and ranks below the two stronger ones."""
+    assert resolve_network_exposure(host="8.8.8.8", declared_surface="external") == (
+        EXTERNAL,
+        "scan-surface",
+    )
+    assert resolve_network_exposure(host="8.8.8.8", declared_surface="internal") == (
+        INTERNAL,
+        "scan-surface",
+    )
+    # The finding's own value and the address space both outrank it.
+    assert resolve_network_exposure(host="10.0.0.5", declared_surface="external") == (
+        INTERNAL,
+        "address-space",
+    )
+    assert resolve_network_exposure(
+        host="8.8.8.8", explicit=INTERNAL, declared_surface="external"
+    ) == (INTERNAL, "finding")
+    # So does the operator's decision about this asset, which is narrower.
+    assert resolve_network_exposure(
+        host="8.8.8.8", operator_exposure="internal", declared_surface="external"
+    ) == (INTERNAL, "operator-set")
+
+
+def test_declared_surface_reaches_the_scorer_and_is_named_in_the_explanation():
+    scorer = _scorer()
+    item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST, "host": "8.8.8.8"}
+    scored = scorer.score_vulnerability(item, declared_surface="external")
+    assert scored["network_exposure"] == EXTERNAL
+    assert scored["network_exposure_source"] == "scan-surface"
+    assert "operator-declared scan surface" in scored["risk_explanation"]
+    assert scored["likelihood_score"] > scorer.score_vulnerability(item)["likelihood_score"]
+
+
 def test_same_finding_scores_differently_on_external_and_internal_hosts():
     scorer = _scorer()
     item = {"cve": "CVE-1", "cvss4": 7.0, "cvss4_vector": V4_WORST}

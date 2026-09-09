@@ -53,7 +53,7 @@ claim.
 | EPSS | per-finding, else the EPSS overlay | Population-level probability over the next 30 days |
 | **Exploit maturity** | see below | Floor **and** ceiling |
 | Scanner confidence | `finding_class` / `confidence` | Discount for hypotheses |
-| **Network exposure** | this host: RFC1918 / operator-set / explicit | ±20 on likelihood after bounds. `unknown` is a no-op |
+| **Network exposure** | this host: RFC1918 / operator-set / operator-declared scan surface / explicit | ±20 on likelihood after bounds. `unknown` is a no-op |
 | **CVE age** | NVD `published`, else CVE-ID year | Raise-only, weak. Never a decay |
 | **Compensating control** | fingerprint `cdn_waf` on the same host:port | −6, named. Not proof the vuln is blocked |
 | **Same-asset path** | local finding + network foothold on one P4.2 asset | +8, named. Not a modelled exploit chain |
@@ -109,12 +109,27 @@ mean this machine is on the internet. Likelihood now takes a separate
 | RFC1918 / loopback / link-local | `address-space` | `internal` −20 |
 | Operator `exposure_level=internet` | `operator-set` | `external` +20 |
 | Operator `exposure_level=internal` | `operator-set` | `internal` −20 |
+| Operator-declared scan surface `external` | `scan-surface` | `external` +20 |
+| Operator-declared scan surface `internal` | `scan-surface` | `internal` −20 |
 | Public IP, partner, unset | `none` | `unknown` 0 |
 
 A public address is **not** `external`. That would treat "this IP is routable"
 as "we observed it from outside". `unknown` scores as the model did before
 #171, so missing data cannot be read as "nothing is exposed". The
 `risk_explanation` names the source.
+
+The scan surface counts only when the **operator declared it** on the scan
+request (`StartScanRequest.surface`, stored on the job as
+`scan_options.surface` with `scan_options.surface_source = "operator"`). That
+is the same class of evidence as `exposure_level` on the asset — a person
+saying which network this scan faces — and it ranks just below it, because it
+describes the whole scan rather than this one host. The surface the server
+*derives* from the targets (`surface_source = "derived"`) is ignored here: it
+is the address-space rule wearing a different hat, and feeding it back would
+launder a routing fact into an observation. `mixed` names both answers at once,
+so it is no evidence either. Only the tracked findings a run produces read the
+job (`api/services/vulnerabilities.py`); the inventory-driven endpoint software
+findings have no job behind them and are unaffected.
 
 ### Compensating controls are observed, not assumed
 
@@ -225,7 +240,8 @@ Each of these is a real gap with its own issue, not a silent approximation.
   ([#171](https://github.com/onixus/Shapoclyack/issues/171)): `external` /
   `internal` / `unknown`. A public IP is **not** `external`. RFC1918 is
   `internal` (`address-space`). Operator `exposure_level=internet` is
-  `external` (`operator-set`). `unknown` does not shift the score.
+  `external` (`operator-set`), and an operator-declared scan surface is
+  `scan-surface`; a derived one is nothing. `unknown` does not shift the score.
 - **Finding-open age is still not a risk input.** How long *we* have had the
   finding is SLA ([#145](https://github.com/onixus/Shapoclyack/issues/145)).
   CVE *publication* age is now a weak raise-only likelihood bump

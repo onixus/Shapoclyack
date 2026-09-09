@@ -1,8 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { LogOut, UserRound, Shield, Activity } from "lucide-react";
+import { LogOut, UserRound, Shield, Search } from "lucide-react";
 import { AppearanceControls } from "@/components/appearance-controls";
+import { CommandPalette, useCommandPalette } from "@/components/command-palette";
+import { OpsPulse } from "@/components/layout/ops-pulse";
 import { TenantSwitcher } from "@/components/layout/TenantSwitcher";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +23,7 @@ export function TopHeader() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
   const t = useT();
+  const palette = useCommandPalette();
 
   function onLogout() {
     logout();
@@ -35,21 +38,34 @@ export function TopHeader() {
         : "bg-muted text-muted-foreground border-border font-medium";
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border/80 bg-background/85 px-4 backdrop-blur-md md:px-6">
-      <div className="flex items-center gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-bold tracking-tight text-foreground">{t("header.consoleTitle")}</h2>
-            <span className="hidden items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 md:flex">
-              <Activity className="h-3 w-3 animate-pulse text-emerald-500" />
-              {t("header.live")}
-            </span>
-          </div>
-          <p className="text-[11px] text-muted-foreground">{t("header.subtitle")}</p>
+    <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-3 border-b border-border/80 bg-background/85 px-4 backdrop-blur-md md:px-6">
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-bold tracking-tight text-foreground">
+            {t("header.consoleTitle")}
+          </h2>
+          <p className="hidden truncate text-[11px] text-muted-foreground sm:block">
+            {t("header.subtitle")}
+          </p>
         </div>
+        <OpsPulse />
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 md:gap-3">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-9 gap-2 border-border bg-card px-2.5 text-muted-foreground shadow-sm hover:text-foreground md:px-3"
+          aria-label={t("header.commandPalette")}
+          title={`${t("header.commandPalette")} (${t("header.commandHint")})`}
+          onClick={() => palette.setOpen(true)}
+        >
+          <Search className="h-4 w-4" />
+          <span className="hidden text-xs font-medium lg:inline">{t("header.commandPalette")}</span>
+          <kbd className="hidden rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] lg:inline">
+            {t("header.commandHint")}
+          </kbd>
+        </Button>
         <AppearanceControls />
         <TenantSwitcher />
 
@@ -57,18 +73,25 @@ export function TopHeader() {
           <DropdownMenuTrigger asChild>
             <Button
               variant="outline"
-              className="gap-2.5 border-border bg-card text-foreground hover:bg-muted shadow-sm"
+              className="gap-2.5 border-border bg-card text-foreground shadow-sm hover:bg-muted"
             >
               <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-muted-foreground">
                 <UserRound className="h-3.5 w-3.5" />
               </div>
-              <span className="hidden font-medium text-xs sm:inline">{user?.username || t("header.signedOut")}</span>
+              <span className="hidden text-xs font-medium sm:inline">
+                {user?.username || t("header.signedOut")}
+              </span>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56 border-border bg-popover text-popover-foreground shadow-xl">
-            <DropdownMenuLabel className="flex items-center justify-between text-xs text-muted-foreground font-normal">
+          <DropdownMenuContent
+            align="end"
+            className="w-56 border-border bg-popover text-popover-foreground shadow-xl"
+          >
+            <DropdownMenuLabel className="flex items-center justify-between text-xs font-normal text-muted-foreground">
               <span>{t("header.signedInAs")}</span>
-              <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] uppercase border", roleColor)}>
+              <span
+                className={cn("rounded-md border px-1.5 py-0.5 text-[10px] uppercase", roleColor)}
+              >
                 {user?.role || "viewer"}
               </span>
             </DropdownMenuLabel>
@@ -76,18 +99,26 @@ export function TopHeader() {
               {user?.username || t("header.operator")}
             </div>
             <DropdownMenuSeparator className="bg-border" />
-            <DropdownMenuItem className="text-xs text-foreground focus:bg-muted">
+            <DropdownMenuItem
+              className="text-xs text-foreground focus:bg-muted"
+              onClick={() => router.push("/users")}
+            >
               <Shield className="mr-2 h-3.5 w-3.5 text-sky-500" />
               {t("header.role", { role: user?.role || "—" })}
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-border" />
-            <DropdownMenuItem onClick={onLogout} className="text-xs text-rose-600 dark:text-rose-400 focus:bg-rose-500/10 cursor-pointer font-medium">
+            <DropdownMenuItem
+              onClick={onLogout}
+              className="cursor-pointer text-xs font-medium text-rose-600 focus:bg-rose-500/10 dark:text-rose-400"
+            >
               <LogOut className="mr-2 h-3.5 w-3.5" />
               {t("header.signOut")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <CommandPalette open={palette.open} onOpenChange={palette.setOpen} />
     </header>
   );
 }

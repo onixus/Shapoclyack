@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._pagination import PageParams, build_page
-from api.schemas import JobInfo, Page, StartScanRequest
+from api.schemas import JobInfo, JobSummary, Page, StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import quotas
@@ -21,7 +21,13 @@ def list_jobs(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     page: PageParams,
     settings: Annotated[Settings, Depends(get_settings)],
+    surface: Annotated[
+        Literal["external", "internal", "mixed", "unknown"] | None, Query()
+    ] = None,
 ) -> Page[JobInfo]:
+    """``surface`` splits the queue into internet-facing and internal scans;
+    ``unknown`` selects the jobs carrying no classification (see
+    api/services/scan_surface.py)."""
     items, total = jobs_service.list_jobs(
         settings,
         offset=page.offset,
@@ -29,6 +35,7 @@ def list_jobs(
         q=page.q,
         sort=page.sort,
         order=page.order,
+        surface=surface,
         # A platform admin who named no tenant keeps the pre-P0 fleet-wide
         # view; everyone else is pinned to their own tenant.
         tenant_id=None
@@ -36,6 +43,22 @@ def list_jobs(
         else principal.tenant_id,
     )
     return build_page(items, total, page)
+
+
+def _scope(principal: TenantPrincipal) -> str | None:
+    """Tenant a read is confined to. A platform admin who named no tenant keeps
+    the pre-P0 fleet-wide view; everyone else is pinned to their own."""
+    return None if principal.is_platform_admin and not principal.tenant_requested else principal.tenant_id
+
+
+# Declared before /{job_id} so "summary" is not read as a job id.
+@router.get("/summary", response_model=JobSummary)
+def get_job_summary(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    """Queue depth by status and by surface, for a scan console's header."""
+    return jobs_service.summary(settings, tenant_id=_scope(principal))
 
 
 @router.get("/{job_id}", response_model=JobInfo)
@@ -99,19 +122,26 @@ def start_job(
     tenant_id = requested if (requested and principal.is_platform_admin) else principal.tenant_id
     body = body.model_copy(update={"tenant_id": tenant_id})
     key = (idempotency_key or "").strip()[:200]
-    if key:
-        # A retry after a timeout must not queue a second scan of the same
-        # targets (ROADMAP P1.5). 200 rather than 202 says "this already
-        # existed" — the scan was accepted by the earlier call, not this one.
-        existing = jobs_service.find_by_idempotency_key(settings, tenant_id=tenant_id, key=key)
-        if existing is not None:
-            jobs_service.note_start_replay()
-            response.status_code = status.HTTP_200_OK
-            return existing
     try:
+        if key:
+            # A retry after a timeout must not queue a second scan of the same
+            # targets (ROADMAP P1.5). 200 rather than 202 says "this already
+            # existed" — the scan was accepted by the earlier call, not this one.
+            existing = jobs_service.find_by_idempotency_key(
+                settings, tenant_id=tenant_id, key=key, request=body
+            )
+            if existing is not None:
+                jobs_service.note_start_replay()
+                response.status_code = status.HTTP_200_OK
+                return existing
         return jobs_service.start_scan(
             settings, body, username=principal.username, idempotency_key=key or None
         )
+    except jobs_service.IdempotencyMismatch as exc:
+        # 409, not 422: the body is fine, the *key* is taken by another
+        # request. Replaying the earlier job here would report a scan of
+        # targets this caller never asked for.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except jobs_service.IdempotentReplay as replay:
         # Two requests with one key raced past the lookup above; the database
         # picked a winner and this one accepted nothing either.

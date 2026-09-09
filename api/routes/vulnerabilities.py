@@ -19,7 +19,7 @@ the role follows what the action can commit the tenant to, not how hard it is.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -203,6 +203,14 @@ def list_vulnerabilities(
             "verified by the next snapshot, not by a re-scan."
         ),
     ] = None,
+    network_exposure: Annotated[
+        Literal["external", "internal", "unknown"] | None,
+        Query(
+            description="external | internal | unknown — where the finding sits "
+            "relative to the perimeter. 'unknown' also matches findings scored "
+            "before the signal existed."
+        ),
+    ] = None,
     assignee: str | None = None,
     unassigned: Annotated[
         bool, Query(description="Open findings with no assignee — the dashboard's unowned work")
@@ -232,6 +240,7 @@ def list_vulnerabilities(
             severity=severity,
             asset_id=asset_id,
             source=source,
+            network_exposure=network_exposure,
             assignee=assignee,
             unassigned=unassigned,
             sla=sla,

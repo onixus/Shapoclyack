@@ -25,6 +25,7 @@ import type {
   SlaState,
   TrackedVulnerability,
   VulnerabilitySource,
+  NetworkExposure,
   VulnLifecycleState,
 } from "@/lib/api";
 import {
@@ -61,6 +62,7 @@ function VulnerabilitiesInner() {
   const initialSeverity = (searchParams.get("severity") || "").trim();
   const initialUnassigned = searchParams.get("unassigned") === "1";
   const initialSource = (searchParams.get("source") || "") as VulnerabilitySource | "";
+  const initialExposure = (searchParams.get("exposure") || "") as NetworkExposure | "";
 
   const [scope, setScope] = useState<"open" | "all">(initialState ? "all" : OPEN_WORKING_SET);
   const [state, setState] = useState<VulnLifecycleState | "">(initialState);
@@ -69,15 +71,21 @@ function VulnerabilitiesInner() {
   const [staleDays, setStaleDays] = useState("");
   const [unassigned, setUnassigned] = useState(initialUnassigned);
   const [source, setSource] = useState<VulnerabilitySource | "">(initialSource);
+  const [exposure, setExposure] = useState<NetworkExposure | "">(initialExposure);
   const assetId = initialAssetId;
 
-  const pagination = usePagination({ sort: "contextual_score", order: "desc" });
+  const pagination = usePagination({
+    sort: "contextual_score",
+    order: "desc",
+    search: (searchParams.get("q") || "").trim(),
+  });
   const filters = {
     state,
     open_only: scope === "open" && !state,
     severity,
     asset_id: assetId || undefined,
     source,
+    network_exposure: exposure,
     unassigned: unassigned || undefined,
     sla,
     stale_days: staleDays ? Number(staleDays) : undefined,
@@ -328,6 +336,23 @@ function VulnerabilitiesInner() {
                 <SelectItem value="endpoint_software">
                   {t("vuln.source.endpointSoftware")}
                 </SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={exposure || FILTER_ALL}
+              onValueChange={(value) => {
+                setExposure(value === FILTER_ALL ? "" : (value as NetworkExposure));
+                pagination.reset();
+              }}
+            >
+              <SelectTrigger className="w-44 bg-slate-900 border-slate-800 text-slate-200" aria-label={t("vuln.exposure")}>
+                <SelectValue placeholder={t("vuln.exposure")} />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                <SelectItem value={FILTER_ALL}>{t("vuln.exposure.any")}</SelectItem>
+                <SelectItem value="external">{t("vuln.exposure.external")}</SelectItem>
+                <SelectItem value="internal">{t("vuln.exposure.internal")}</SelectItem>
+                <SelectItem value="unknown">{t("vuln.exposure.unknown")}</SelectItem>
               </SelectContent>
             </Select>
             <Select

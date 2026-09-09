@@ -6,6 +6,86 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Three gaps the console's Users and Integrations pages ran into.**
+  `POST /api/users` now accepts an optional `email`, written in the same
+  transaction as the account (always unverified — marking an address verified,
+  which is what makes it linkable to an SSO identity, stays
+  `PUT /api/users/{username}/email`); `UserInfo` carries `tenants` (the tenant
+  ids the account holds an explicit membership in, sorted) and
+  `is_platform_admin`, filled for the whole list in one query; and
+  `PATCH /api/webhooks/{id}` takes `secret`, the only way to rotate a
+  Jira/ServiceNow/DefectDojo API token — it is stored the same way create
+  stores it and never echoed back, while `POST /api/webhooks/{id}/rotate-secret`
+  now answers `409` on a ticket transport instead of letting the refusal escape
+  as a `500`.
+- **`GET /api/jobs/summary` — queue depth in one query.** `by_status` over all
+  six lifecycle states, `running`, `queued` (queued plus claimed: a job an
+  agent holds but has not started is still work waiting) and `by_surface` with
+  `running` / `queued` / `total` for `external`, `internal`, `mixed` and
+  `unknown`, all zero-filled so a console renders a stable set of tiles.
+  Operator, tenant-scoped exactly like `GET /api/jobs`. Jobs also record
+  whether their surface was declared by the operator or derived from the
+  targets (`JobInfo.surface_source`), which is what lets the scorer treat a
+  declared external scan as network-exposure evidence without scoring the
+  address-space rule read back to itself. No migration: both ride the job's
+  existing `scan_options`.
+- **A scan surface the operator declared now counts as evidence of network
+  exposure.** The scorer refuses to read a public address as "internet-facing",
+  which left nearly every finding at `network_exposure=unknown` and the
+  console's external-surface counters at zero. A surface an operator *declared*
+  on the scan request is a named decision, like `exposure_level` on an asset,
+  so findings from such a run now resolve to `external` / `internal` with
+  source `scan-surface` — ranked below the finding's own value, the RFC1918
+  rule and the asset's operator-set level. A surface the server *derived* from
+  the targets still counts for nothing, and neither does `mixed`. See
+  [docs/risk-scoring.md](docs/risk-scoring.md).
+- **The console separates external and internal scans and exposes what the
+  API already could do.** The flat 22-entry sidebar is now grouped (risk,
+  external surface, internal surface, operations, insights, administration)
+  and role-aware; `/scans/external` and `/scans/internal` each get a launcher
+  shaped for their side of the perimeter, surface KPIs, the job list with
+  **cancel** and a per-job record drawer, and recent runs; `/jobs` redirects
+  to `/scans`. New `Ctrl/⌘-K` search-and-jump, a live running/queued/agents
+  strip in the header, a **Scan operations** block on the dashboard, a surface
+  filter on `/runs`, a surface selector on schedules, and a **Network
+  exposure** filter on the Vulnerability Center. Two admin pages that had no
+  UI at all: **Users & access** (accounts, roles, tenant membership,
+  provisioning-key revocation, sign-in audit, own password) and
+  **Integrations** (webhooks and Jira / ServiceNow / DefectDojo transports,
+  test, secret rotation, delivery log with retry; a tracker token is rotated
+  from the edit form). Scan starts now send an `Idempotency-Key` that changes
+  with the form's content; the header pulse and surface KPIs read one grouped
+  `GET /api/jobs/summary` instead of paging the job list. Fixed: the Remediation card rendered an unknown network
+  exposure as `internal`; switching the Source filter in the Vulnerability
+  Center served the previous filter's page from cache.
+- **Scans are classified as external or internal, and both lists can be
+  filtered by it.** An internet-facing scan and a scan of the tenant's own
+  network answer different questions — what a stranger sees, versus what an
+  intruder already inside would — and until now the two sat in one undivided
+  list of jobs and runs. Every job is now classified from its targets at the
+  moment it is created: domains and public address space are `external`,
+  RFC1918 / loopback / link-local / RFC6598 shared space / IPv6 ULA are
+  `internal`, both together are `mixed`. `POST /api/jobs` and the schedule
+  endpoints also take an explicit `surface`, which wins over the derived value:
+  a tenant whose internal estate is a block of public addresses is not wrong,
+  and no address-based rule can know that. `GET /api/jobs` and `GET /api/runs`
+  gained a `surface` query parameter, and `JobInfo` / `RunSummary` carry the
+  value. No column and no migration — the classification is a property of the
+  request, so it rides on the job's existing `scan_options` and on the run's
+  `tenant.json` marker. `surface=unknown` selects what carries no
+  classification: everything started before this shipped, and any scan of the
+  server's default input files, whose contents the API never reads. That value
+  is offered rather than hidden, so the four filters partition the list and no
+  job or run is invisible under all of them. The private ranges are spelled out
+  in `api/services/scan_surface.py` rather than deferred to
+  `ipaddress.is_private`, whose membership has moved between CPython releases —
+  a base-image bump must not silently reclassify jobs.
+- **Findings can be filtered and counted by network exposure.** `GET
+  /api/vulnerabilities` takes `network_exposure=external|internal|unknown` and
+  `/summary` returns `by_network_exposure_open`; the signal was already scored
+  per finding and only unreadable. `unknown` includes the findings scored before
+  it existed, which carry `NULL` — asking for what is not yet known must not
+  hide them.
 - **A tenant's approved scanning scope can be approved from the console.** The
   scope has been enforced since #226 and editable only over curl ever since:
   a fresh installation refused every scan with "tenant default has no approved
@@ -272,6 +352,17 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **`Idempotency-Key` on `POST /api/jobs` guarded the key, not the request.**
+  A key an earlier call had used replayed that job whatever the body said, so a
+  client that reused one — a fixed key per nightly schedule, a retry the caller
+  edited before resending — was answered `200` with a job that had scanned
+  something else, and the scan it actually asked for was never queued. The
+  fields that define a scan are now digested into the job's `scan_options` and
+  compared on every key hit, on both the pre-check and the race path: the same
+  request still replays (including one whose target list was re-serialised),
+  and a different one answers `409` instead. Jobs created before this shipped
+  carry no digest and keep replaying on the key alone, so an upgrade does not
+  start refusing keys that worked yesterday.
 - **A rolling update of the API deadlocked on its own migration lock.**
   `api.db.migrate` serialises schema upgrades with a Postgres advisory lock,
   and its object id was `2` — the id the report dispatcher's `LeaderLock` had
