@@ -884,6 +884,32 @@ export async function login(username: string, password: string) {
   }
 }
 
+/** End this session on the server, then forget the token locally (#314).
+ *
+ * Best-effort on purpose: signing out must not be blocked by a server that is
+ * unreachable, and the local token is dropped either way. What the call buys
+ * is that a token copied out of localStorage before the sign-out stops working
+ * — without it, "log out" only ever meant "forget it in this browser". */
+export async function logout() {
+  try {
+    await api.post("/auth/logout");
+  } catch {
+    // A 401 here means the session was already gone, which is the outcome the
+    // caller wanted; anything else is a server the user cannot wait for.
+  }
+  setAccessToken(null);
+}
+
+/** Sign out of every session of this account, this one included (#314). */
+export async function revokeAllSessions() {
+  try {
+    await api.post("/auth/sessions/revoke-all");
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+  setAccessToken(null);
+}
+
 export async function fetchMe() {
   try {
     const { data } = await api.get<Me>("/auth/me");

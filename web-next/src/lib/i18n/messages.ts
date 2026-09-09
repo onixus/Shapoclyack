@@ -60,6 +60,8 @@ export const en = {
 
   "auth.loading": "Loading session…",
   "auth.redirecting": "Redirecting to login…",
+  "session.expiringSoon": "Your session ends in {minutes} min. Sign in again to keep working.",
+  "session.signInAgain": "Sign in again",
 
   "tenant.label": "Tenant:",
   "tenant.actIn": "Act in tenant",
@@ -956,6 +958,8 @@ export const ru: Record<MsgKey, string> = {
 
   "auth.loading": "Загрузка сессии…",
   "auth.redirecting": "Переход на страницу входа…",
+  "session.expiringSoon": "Сессия завершится через {minutes} мин. Войдите заново, чтобы продолжить.",
+  "session.signInAgain": "Войти заново",
 
   "tenant.label": "Арендатор:",
   "tenant.actIn": "Работать от имени",

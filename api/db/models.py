@@ -78,6 +78,14 @@ class User(Base):
     email_verified: Mapped[bool] = mapped_column(default=False)
     oidc_issuer: Mapped[str | None] = mapped_column(default=None)
     oidc_subject: Mapped[str | None] = mapped_column(default=None)
+    # Session generation (migration 0038, #314). Every console JWT carries the
+    # value this column held when it was issued, and a token whose ``ver`` no
+    # longer matches is refused at decode. Bumped by every change that should
+    # end the sessions issued before it -- password, role, disable/enable --
+    # and by the explicit "sign me out everywhere". A row that predates the
+    # migration starts at 0, which is also what a token minted before the
+    # upgrade implicitly claims, so an upgrade does not sign the console out.
+    token_version: Mapped[int] = mapped_column(default=0)
 
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
@@ -157,6 +165,37 @@ class UserTenant(Base):
     __table_args__ = (
         UniqueConstraint("username", "tenant_id", name="uq_user_tenant"),
     )
+
+
+class RevokedToken(Base):
+    """One console token refused before its own ``exp`` -- the logout denylist (#314).
+
+    ``User.token_version`` ends *every* session of an account at once; this
+    table ends exactly one, which is what a logout is: signing out on a laptop
+    should not sign the same person out of the phone next to it.
+
+    A row is never longer-lived than the token it refuses, so the table is
+    bounded by "sessions logged out while still valid" rather than by history.
+    ``api/services/sessions.py`` deletes the expired rows on every write, and
+    the index on ``expires_at`` is what that sweep reads.
+
+    ``username`` is a real FK with ``ON DELETE CASCADE``, unlike
+    :class:`AuthEvent`'s: a deleted account's tokens are already refused for
+    the missing user row, so there is nothing left for the denylist to guard.
+    """
+
+    __tablename__ = "revoked_tokens"
+
+    # The token's own ``jti``. Primary key, so revoking twice is idempotent
+    # rather than a second row.
+    jti: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    revoked_at: Mapped[datetime]
+    # The ``exp`` of the token this row refuses. Naive UTC like every other
+    # timestamp in this schema.
+    expires_at: Mapped[datetime] = mapped_column(index=True)
 
 
 class AuthEvent(Base):

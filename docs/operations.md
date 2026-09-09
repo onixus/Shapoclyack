@@ -604,6 +604,71 @@ with `--docker` (or roll the Kubernetes deployment).
 registration. Stop `shapoclyack-agent.service` (or the container) on the host
 first, otherwise the next heartbeat registers it again.
 
+## Sessions and revocation
+
+Since [#314](https://github.com/onixus/Shapoclyack/issues/314) a console token
+is checked against the account row on every request, so revocation is
+immediate rather than "when it expires":
+
+| You want | Do |
+|---|---|
+| One person out of everything, now | `PUT /api/users/{username}/disabled {"disabled": true}` |
+| One person's sessions ended, account untouched | `POST /api/users/{username}/sessions/revoke-all` (admin) |
+| Your own sessions ended everywhere | `POST /api/auth/sessions/revoke-all` |
+| This browser signed out | `POST /api/auth/logout` — the console does it for you |
+
+Disabling, deleting, demoting and a password change already end that account's
+sessions on their own. The route list is in
+[api-and-rbac.md](api-and-rbac.md#sessions-logout-and-revocation).
+
+**After the upgrade to #314.** Tokens minted before it carry no version claim
+and keep working until they expire (up to `OCTO_JWT_EXPIRE_MINUTES`, 8 hours by
+default) — the migration deliberately does not sign everyone out mid-rollout.
+If your threat model does not allow that, run `revoke-all` for every account
+once the rollout is complete:
+
+```bash
+# every account, from a platform-admin token
+for u in $(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/users \
+             | python3 -c 'import json,sys; print(" ".join(u["username"] for u in json.load(sys.stdin)))'); do
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8080/api/users/$u/sessions/revoke-all"
+done
+```
+
+Run it from an account you are willing to be signed out of — the loop reaches
+your own account too.
+
+### Rotating the JWT signing key
+
+`OCTO_JWT_SECRET` used to be unrotatable in practice: changing it invalidated
+every console session at the moment of the rollout, and (while
+`OCTO_AGENT_JWT_SECRET` is unset, which is the default) every agent token with
+them. `OCTO_JWT_SECRET_PREVIOUS` makes it a window instead.
+
+1. **Generate the new key** — `openssl rand -hex 32`.
+2. **Deploy both.** Set `OCTO_JWT_SECRET` to the new value and
+   `OCTO_JWT_SECRET_PREVIOUS` to the old one (comma-separated if you are
+   retiring more than one). From this deploy on, new tokens are signed with the
+   new key and old ones still verify.
+3. **Wait out the window.** `OCTO_JWT_EXPIRE_MINUTES` for console sessions
+   (default 8 hours) and `OCTO_AGENT_JWT_EXPIRE_MINUTES` for agents (default 2
+   hours). Every replica must carry the same pair throughout — a replica
+   missing the previous key refuses the tokens its neighbours accept.
+4. **Deploy again with `OCTO_JWT_SECRET_PREVIOUS` removed.** The old key stops
+   being trusted. To end the window early instead of waiting, revoke every
+   account's sessions as above and then remove the variable.
+
+Both `OCTO_JWT_SECRET_PREVIOUS` entries and the current key are checked at
+startup: a `prod` API refuses to start if the list carries the shipped
+development secret or repeats the current key.
+
+Rolling back to a pre-#314 image mid-window costs the sessions signed with the
+retired key: that build knows only `OCTO_JWT_SECRET`, which by then holds the
+new value, so the tokens signed with it keep working and the older ones do not.
+Nobody is locked out — they log in again — but plan the rollback for the same
+reason you planned the rotation.
+
 ## Logs and observability
 
 Use structured application logs and correlate by tenant, `job_id`, `run_id`,

@@ -246,7 +246,25 @@ def create_user(
         return _with_tenants(session, row)
 
 
+def _end_sessions(row: models.User) -> None:
+    """Move the account to the next session generation (#314).
+
+    Called from inside the transaction that makes the change, so "the password
+    is new" and "the tokens issued under the old one are dead" commit together
+    or not at all. Every console JWT carries the version it was minted at and
+    ``api/services/sessions.py`` refuses one that no longer matches, so this
+    single ``+= 1`` is the whole of "and sign them out".
+    """
+    row.token_version = int(row.token_version or 0) + 1
+
+
 def set_password(username: str, password: str) -> dict[str, Any] | None:
+    """Set a password and end every session that was opened with the old one.
+
+    A rotation is either "I think somebody has my password" or an admin reset
+    of an account that is in trouble; in both readings a session that survives
+    the change is the one that mattered (#314).
+    """
     password = _validate_password(password)
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
@@ -256,6 +274,7 @@ def set_password(username: str, password: str) -> dict[str, Any] | None:
         row.password_hash = hash_password(password)
         row.password_changed_at = _now()
         row.updated_at = _now()
+        _end_sessions(row)
         session.flush()
         return _with_tenants(session, row)
 
@@ -281,6 +300,12 @@ def set_role(username: str, role: str) -> dict[str, Any] | None:
             return None
         row.role = role
         row.updated_at = _now()
+        # A demotion that leaves the old role live in an already-issued token
+        # is not a demotion (#314). The decoder reads the role from this row
+        # too, so the bump is belt-and-braces — it also ends the sessions of a
+        # *promoted* account, which is the conservative reading of "their
+        # authority changed".
+        _end_sessions(row)
         session.flush()
         return _with_tenants(session, row)
 
@@ -293,6 +318,11 @@ def set_disabled(username: str, disabled: bool) -> dict[str, Any] | None:
             return None
         row.disabled_at = _now() if disabled else None
         row.updated_at = _now()
+        # Both directions. Disabling must end the sessions — that is the whole
+        # point of the operation — and re-enabling ends whatever was still in
+        # flight when the account was locked, so "disabled and enabled again"
+        # is a clean start rather than a resumed one.
+        _end_sessions(row)
         session.flush()
         return _with_tenants(session, row)
 

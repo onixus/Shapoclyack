@@ -25,8 +25,10 @@ export function TopHeader() {
   const t = useT();
   const palette = useCommandPalette();
 
-  function onLogout() {
-    logout();
+  async function onLogout() {
+    // Awaited so the server has ended the session before the console forgets
+    // it (#314); the store clears the local token even if that call fails.
+    await logout();
     router.replace("/login");
   }
 
@@ -108,7 +110,7 @@ export function TopHeader() {
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-border" />
             <DropdownMenuItem
-              onClick={onLogout}
+              onClick={() => void onLogout()}
               className="cursor-pointer text-xs font-medium text-rose-600 focus:bg-rose-500/10 dark:text-rose-400"
             >
               <LogOut className="mr-2 h-3.5 w-3.5" />

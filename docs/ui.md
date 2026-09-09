@@ -74,6 +74,26 @@ place of the former decorative "Live System" pill. The sidebar
 footer shows the API version and the execution mode (local / agent) from
 `GET /api/system`.
 
+### Sessions
+
+**Sign out** ends the session on the server as well as in the browser
+([#314](https://github.com/onixus/Shapoclyack/issues/314)): it calls
+`POST /api/auth/logout`, which denylists that token's `jti` until it expires,
+and then forgets the token locally whether or not the API answered. Before
+this, "sign out" only meant "forget it in this browser", so a token copied out
+of `localStorage` kept working.
+
+Five minutes before the session ends, a banner above the header says how long
+is left and offers **Sign in again**. The countdown is read from the token's own
+`exp` (`src/lib/session.ts`) and decides nothing — the API verifies signature,
+account, generation and denylist on every request. There is no silent renewal
+yet: refresh tokens are still open on #314, so the banner says what will happen
+rather than quietly preventing it. An expired token still ends in the hard
+redirect to `/login` that `src/lib/api.ts` has always done on a `401`.
+
+Changing your own password on **My account** ends every session of the account,
+this one included, so the console lands on the login form.
+
 ## Scan operations: external and internal
 
 Every job and run carries a **surface** — `external` (domains, public address

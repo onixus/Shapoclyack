@@ -6,6 +6,38 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Console sessions can be revoked** ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
+  A JWT was believed on its own for its whole eight-hour life: the role came
+  out of the claims and the database was never asked, so disabling, deleting or
+  demoting an account changed nothing for the token already in that person's
+  browser. Every request now verifies the signature and then reads the account
+  row — the role comes from the table, and the session ends the moment the
+  account is disabled, deleted, demoted or has its password changed. Migration
+  `0038` adds `users.token_version` (the generation every token quotes in a new
+  `ver` claim) and `revoked_tokens` (one `jti` denied until its own `exp`).
+  New routes: `POST /api/auth/logout` (this session), `POST /api/auth/sessions/revoke-all`
+  (your account, everywhere) and `POST /api/users/{username}/sessions/revoke-all`
+  (platform admin). Service tokens and agent tokens are unchanged — a service
+  token was never a session and is still revoked as a credential.
+  **On upgrade, tokens minted before this keep working until they expire.**
+  They carry no `ver` and the migration backfills every account at generation
+  0, which is what those tokens implicitly claim; the alternative — signing the
+  whole console out mid-rollout — was the worse default. An operator who wants
+  that runs `revoke-all` for every account once the rollout is done
+  ([operations.md](docs/operations.md#sessions-and-revocation) has the loop).
+- **The JWT signing key can be rotated without a fleet-wide logout**
+  ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
+  `OCTO_JWT_SECRET_PREVIOUS` is a comma-separated list of retired keys that are
+  still verified while the tokens they signed expire; nothing is ever signed
+  with one. Every token now carries a `kid` header (a domain-separated `sha256`
+  prefix of the key), so the verifier tries the named key rather than each in
+  turn — and a token naming one key of the window but signed with another is
+  refused. While `OCTO_AGENT_JWT_SECRET` is unset the agent key is derived from
+  the operator key, so one list rotates both audiences;
+  `OCTO_AGENT_JWT_SECRET_PREVIOUS` covers the case where it is set explicitly.
+  A `prod` start refuses a list that carries the shipped development secret or
+  repeats the current key. Procedure in
+  [operations.md](docs/operations.md#rotating-the-jwt-signing-key).
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
   form and preferred it over the value the server minted at `start_scan` or
@@ -43,6 +75,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **The console warns before a session ends, and signing out ends it on the
+  server** ([#314](https://github.com/onixus/Shapoclyack/issues/314)). Five
+  minutes out, a banner above the header says how long is left and offers "Sign
+  in again"; the countdown is read from the token's own `exp` and decides
+  nothing. **Sign out** now calls `POST /api/auth/logout` before forgetting the
+  token locally, so a copied token stops working rather than outliving the
+  sign-out. There is still no silent renewal — refresh tokens remain open on
+  #314 — so an expired session still ends in the redirect to `/login`.
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426

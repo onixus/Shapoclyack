@@ -6,6 +6,7 @@ import {
   getAccessToken,
   getActiveTenant,
   login as apiLogin,
+  logout as apiLogout,
   setAccessToken,
   setActiveTenant,
   type Me,
@@ -22,7 +23,10 @@ type AuthState = {
   activeTenant: string | null;
   hydrate: () => Promise<void>;
   login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  /** Ends the session on the server as well as in this browser (#314), which
+   * is why it is a promise now: forgetting the token locally left it working
+   * for anyone who had copied it. */
+  logout: () => Promise<void>;
   selectTenant: (tenantId: string | null) => void;
 };
 
@@ -95,8 +99,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       activeTenant: reconcileTenant(user),
     });
   },
-  logout() {
-    setAccessToken(null);
+  async logout() {
+    // apiLogout clears the stored token whether or not the server answered, so
+    // an unreachable API still signs the console out of this browser.
+    await apiLogout();
     setActiveTenant(null);
     set({ user: null, loading: false, hydrated: true, canOperate: false, activeTenant: null });
   },

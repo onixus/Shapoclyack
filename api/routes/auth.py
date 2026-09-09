@@ -52,6 +52,7 @@ from api.services import oidc as oidc_service
 from api.services import promoted_domains
 from api.services import quotas
 from api.services import scan_scopes
+from api.services import sessions as sessions_service
 from api.services import tenant_posture
 from api.services import tenants as tenants_service
 from api.services import users as users_service
@@ -105,8 +106,74 @@ def login(
     user = outcome.user
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    token = create_access_token(settings, user)
+    try:
+        token = create_access_token(settings, user)
+    except LookupError as exc:
+        # The account was deleted between the credential check and here. The
+        # same refusal as a wrong password: a race with a deletion is not a
+        # server fault, and the answer must not distinguish the two.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        ) from exc
     return TokenResponse(access_token=token, role=user.role, username=user.username)
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(
+    user: Annotated[TokenUser, Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """End *this* session and no other (#314).
+
+    The presented token's ``jti`` goes on the denylist until its own ``exp``,
+    so signing out on a laptop leaves the phone signed in. "Everywhere" is the
+    next endpoint down.
+
+    Refused rather than answered with a 204 that did nothing when the presented
+    credential has no ``jti`` to deny. In practice that is a console token
+    minted before #314: those hold their authority until they expire, and
+    saying so is more use than pretending. A service token never reaches this
+    branch at all — ``auth`` is a resource no service token may touch
+    (``FORBIDDEN_RESOURCES``), so the scope layer answers 403 first, which is
+    right: a service token is a credential, revoked with
+    ``DELETE /api/service-tokens/{token_id}``, not a session.
+    """
+    if user.jti is None or user.expires_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This session carries no token id and cannot be ended one at a "
+                "time. End every session of the account with "
+                "POST /api/auth/sessions/revoke-all."
+            ),
+        )
+    sessions_service.revoke_token(
+        settings, jti=user.jti, username=user.username, expires_at=user.expires_at
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/auth/sessions/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_own_sessions(
+    user: Annotated[TokenUser, Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """Sign out of every session of the caller's own account, this one included.
+
+    The "I left it logged in somewhere" button, and the only way to end a
+    session whose token predates #314 and therefore carries no ``jti``: the
+    account's token generation moves on and every token quoting the old one
+    stops verifying at once.
+
+    Unlike logout it accepts a token with no ``jti``, because the generation
+    bump does not need one — which is what makes it the answer for a session
+    that predates #314.
+    """
+    try:
+        sessions_service.revoke_all(settings, user.username)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/auth/events", response_model=Page[AuthEventInfo])
@@ -296,7 +363,12 @@ def oidc_callback(
     auth_audit.record_sso_login(
         username=token_user.username, client_ip=client_ip, action=action
     )
-    token = create_access_token(settings, token_user)
+    try:
+        token = create_access_token(settings, token_user)
+    except LookupError as exc:  # the account was deleted mid-callback
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed"
+        ) from exc
 
     destination = settings.oidc_post_login_redirect.strip()
     if destination:
