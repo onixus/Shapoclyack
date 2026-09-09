@@ -612,13 +612,17 @@ and `agent_id`. Do not log secrets or full authorization headers.
 Useful checks:
 
 ```bash
-curl --fail http://localhost:8080/api/health
+curl --fail http://localhost:8080/api/health   # console-facing status, always 200
+curl --fail http://localhost:8080/readyz       # 503 when a dependency is down
 kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
 
 `GET /metrics` exposes the Prometheus series used by the dashboards and alerts
-referenced above. Objectives, PromQL, and the error-budget policy built on these
+referenced above. It answers anyone who can reach the API unless
+`OCTO_METRICS_TOKEN` is set, in which case the scraper sends
+`Authorization: Bearer <token>` — for the Prometheus Operator that is
+`bearerTokenSecret` in `k8s/shapoclyack/examples/servicemonitor.example.yaml`. Objectives, PromQL, and the error-budget policy built on these
 series are in [slo.md](slo.md); scrape wiring for Kubernetes is in
 [k8s/README.md](../k8s/README.md). Endpoint-inventory series (all labels are low-cardinality —
 no agent, device, asset, tenant, or product names):
@@ -930,6 +934,38 @@ leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
 last night survives a rollout, and `seed` stays a statement worth acting on.
 
 ## Upgrade and rollback
+
+### Probes, and what a rollout costs
+
+Three probes on the API pod, with three different questions (#331):
+
+| Probe | Path | Asks |
+|---|---|---|
+| `startupProbe` | `/livez` | Has the process finished booting? `create_app()` loads the tenant store and bootstraps accounts, so a cold start against a busy PostgreSQL takes a while; 5s × 30 attempts before the pod is failed, and neither probe below runs until this one passes |
+| `livenessProbe` | `/livez` | Is this process wedged? Dependency-free on purpose — a database outage must not restart every replica and put a crash loop on top of the outage |
+| `readinessProbe` | `/readyz` | Can this replica serve? PostgreSQL `SELECT 1`, plus a NATS round trip and a ClickHouse query where those URLs are set. Failing it removes the pod from the Service instead of killing it |
+
+`/api/health` is neither probe any more. It stays the console- and
+`HEALTHCHECK`-facing endpoint, always `200`, and its `status` now reads `ok` or
+`degraded` from the same sweep `/readyz` runs.
+
+The rollout itself: `maxUnavailable: 0, maxSurge: 1`, so the replacement pod is
+ready before the old one goes away — with `replicas: 1` the default would have
+taken the only API pod down first and made every upgrade a short outage. On the
+way out, `terminationGracePeriodSeconds: 45` and a `preStop` sleep of 5s:
+endpoint removal and `SIGTERM` are dispatched concurrently, so without the pause
+the process starts shutting down while proxies still route to it.
+
+A rollout that stalls at `Init:0/1` is the migration lock, not a probe — see
+below. A pod that starts and never becomes ready is `/readyz` answering `503`:
+
+```bash
+kubectl -n network-scan exec deploy/shapoclyack-api -- \
+  python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/readyz').read())"
+```
+
+The `checks` map in the body names which dependency failed; a `503` with
+`{"postgres":"error"}` is a database problem, not an API one.
 
 ### One supported path to the current schema
 

@@ -280,7 +280,7 @@ Detailed guides:
 
 ## API, RBAC & Integrations
 
-The FastAPI control plane exposes a REST API rooted at `/api`, with interactive OpenAPI documentation available at `/docs`.
+The FastAPI control plane exposes a REST API rooted at `/api`. Interactive OpenAPI documentation is served at `/docs` only where `OCTO_API_DOCS=enabled` — the default for `OCTO_ENV=dev`, and off in production, where the schema would be a map of the installation for anyone who can reach it.
 
 ### Role-Based Access Control (RBAC)
 Every request is scoped to a verified tenant context using JWT bearer tokens:

@@ -11,9 +11,19 @@
 # `release: <helm-release-name>`. Without a matching label the object applies
 # cleanly and is silently ignored.
 #
-# `/metrics` is unauthenticated by design (standard Prometheus practice — see
-# api/services/metrics.py). Keep it off the public Ingress and restrict access
-# at the network layer; `examples/ingress.example.yaml` does not expose it.
+# `/metrics` is unauthenticated unless `OCTO_METRICS_TOKEN` is set on the API
+# (#319). Keep it off the public Ingress and restrict access at the network
+# layer either way — `examples/ingress.example.yaml` publishes the API under a
+# `/` prefix, so it *does* reach `/metrics` unless the snippet documented there
+# is applied. With the token set, create the Secret the endpoint below reads and
+# give it the same value the API has:
+#
+#   kubectl -n network-scan create secret generic shapoclyack-metrics \
+#     --from-literal=token="$OCTO_METRICS_TOKEN"
+#
+# then uncomment `bearerTokenSecret`. The Secret must live in the namespace the
+# ServiceMonitor is in — Prometheus reads it from there, not from the scraped
+# pod's namespace.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -35,3 +45,6 @@ spec:
       path: /metrics
       interval: 30s
       scrapeTimeout: 10s
+      # bearerTokenSecret:
+      #   name: shapoclyack-metrics
+      #   key: token

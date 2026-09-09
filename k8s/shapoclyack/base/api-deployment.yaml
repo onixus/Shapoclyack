@@ -7,6 +7,15 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   replicas: 1
+  # maxUnavailable: 0 — with replicas: 1 the default (25%, rounded down to 1)
+  # takes the only API pod down *before* its replacement is ready, so every
+  # rollout is a full outage rather than a rolling one. Surging by one instead
+  # costs one pod's resources for the length of the rollout (#331).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: shapoclyack
@@ -25,6 +34,11 @@ spec:
         prometheus.io/path: /metrics
     spec:
       serviceAccountName: api
+      # Longer than the default 30s and paired with the preStop sleep below: the
+      # API runs in-process scan work and background workers, and SIGTERM while
+      # kube-proxy still lists the pod as an endpoint drops requests that were
+      # already on their way (#331).
+      terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -123,18 +137,43 @@ spec:
             - secretRef:
                 name: shapoclyack-api-users
                 optional: true
+          # Three probes with three different questions (#331), where all of
+          # them used to be one always-200 endpoint:
+          #   startup   — has the process finished booting? create_app() loads
+          #               the tenant store and bootstraps accounts, so a cold
+          #               start against a busy Postgres can take a while; up to
+          #               5 * 30 = 150s here, and neither probe below runs until
+          #               it passes.
+          #   liveness  — is this process wedged? Dependency-free on purpose: a
+          #               Postgres outage must not restart every replica.
+          #   readiness — can this replica serve? Postgres, and NATS/ClickHouse
+          #               where configured. Failing it takes the pod out of the
+          #               Service instead of killing it.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /readyz
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
-              path: /api/health
+              path: /livez
               port: http
-            initialDelaySeconds: 15
             periodSeconds: 20
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal and SIGTERM are dispatched concurrently, so
+                # without this pause the process starts shutting down while
+                # proxies still route to it. Comfortably inside the 45s grace
+                # period above.
+                command: ["sleep", "5"]
           resources:
             requests:
               cpu: "500m"

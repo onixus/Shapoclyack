@@ -117,6 +117,19 @@ class Settings:
     # developer who picks it up from http://localhost cannot clear it the way a
     # cookie is cleared (#224).
     hsts_enabled: bool = True
+    # Mount the interactive schema (/docs, /redoc, /openapi.json) —
+    # OCTO_API_DOCS. Off in prod, on in dev, for the same asymmetry as the
+    # OCTO_ENV default itself: the schema names every route, its parameters and
+    # every field an answer carries, which is a map of the installation handed
+    # to anyone who can reach it, while a developer who wants it back sets one
+    # variable (#319).
+    api_docs_enabled: bool = False
+    # Bearer token GET /metrics demands when set (OCTO_METRICS_TOKEN). Empty
+    # leaves the endpoint open — standard Prometheus practice, and true only
+    # while the scrape path stays inside the cluster; a prod start without it
+    # warns rather than refuses, since a ServiceMonitor usually does scrape from
+    # inside and breaking that on upgrade would be the worse outcome (#319).
+    metrics_token: str = ""
     users: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_USERS))
     allow_scan_start: bool = True
     # Resolve requested scan domains at admission and refuse the ones whose
@@ -494,6 +507,28 @@ def _resolve_env() -> str:
     return raw
 
 
+VALID_API_DOCS = ("enabled", "disabled")
+
+
+def _api_docs_enabled(env: str) -> bool:
+    """Whether ``OCTO_API_DOCS`` asks for the interactive schema to be mounted.
+
+    An unrecognised value warns and reads as "disabled" instead of refusing the
+    start, for the same reason :func:`_oidc_default_role` refuses to raise: the
+    safe reading of a typo is the closed one, and no installation should be
+    unable to boot over how its documentation was spelled.
+    """
+    default = "disabled" if env == ENV_PROD else "enabled"
+    raw = os.environ.get("OCTO_API_DOCS", default).strip().lower() or default
+    if raw not in VALID_API_DOCS:
+        logger.warning(
+            "OCTO_API_DOCS must be one of %s; keeping the interactive schema disabled.",
+            ", ".join(VALID_API_DOCS),
+        )
+        return False
+    return raw == "enabled"
+
+
 VALID_CONSOLE_ROLES = ("viewer", "operator", "admin")
 
 
@@ -749,6 +784,8 @@ def load_settings() -> Settings:
         public_base_url=os.environ.get("OCTO_PUBLIC_BASE_URL", "").strip().rstrip("/"),
         hsts_enabled=os.environ.get("OCTO_HSTS_ENABLED", "true" if env == ENV_PROD else "false").lower()
         in {"1", "true", "yes"},
+        api_docs_enabled=_api_docs_enabled(env),
+        metrics_token=os.environ.get("OCTO_METRICS_TOKEN", "").strip(),
         users=users,
         allow_scan_start=os.environ.get("OCTO_ALLOW_SCAN_START", "true").lower()
         in {"1", "true", "yes"},
@@ -995,6 +1032,17 @@ def load_settings() -> Settings:
 
     if settings.env == ENV_PROD:
         _validate_production(settings, postgres_url_env=postgres_url_env)
+        if not settings.metrics_token:
+            # Not a refusal: most installations scrape /metrics from inside the
+            # cluster, where the endpoint being open is the documented
+            # Prometheus shape — but nothing here can tell that apart from a
+            # /metrics reachable through the public Ingress, so it says so once.
+            logger.warning(
+                "OCTO_METRICS_TOKEN is not set: GET /metrics answers anyone who can "
+                "reach the API, and it names every route, tenant-level queue depth "
+                "and login outcome. Keep /metrics off the public Ingress, or set the "
+                "token and give the scraper a bearerTokenSecret."
+            )
         if settings.agent_token:
             # Still only a warning *before* the sunset date — after it,
             # _validate_production above has already refused the start. Breaking

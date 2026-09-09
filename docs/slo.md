@@ -45,9 +45,12 @@ target before you page anyone on it if your stand is slower than this lab.
 ```
 
 4xx is excluded: an expired JWT or a bad filter is the client's outcome, not an
-outage. `/metrics` and `/api/health` are included in the denominator — they are
-cheap and always-succeeding, so they inflate the ratio slightly; exclude them
-with `path!~"/metrics|/api/health"` if you want a stricter reading.
+outage. `/metrics`, `/api/health`, `/livez` and `/readyz` are included in the
+denominator; the first two are cheap and always-succeeding, so they inflate the
+ratio slightly, while `/readyz` answers `503` for real and pulls it the other
+way whenever a dependency is down (#331). Exclude all four with
+`path!~"/metrics|/api/health|/livez|/readyz"` if you want a stricter reading —
+probe traffic is the kubelet's, not a user's.
 
 ### 2. API latency
 
