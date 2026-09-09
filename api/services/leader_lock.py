@@ -49,6 +49,13 @@ LOCK_CLASS_ID = 0x53484150
 SCHEDULE_DISPATCHER_LOCK_ID = 1
 REPORT_DISPATCHER_LOCK_ID = 2
 SOFTWARE_MATCH_LOCK_ID = 3
+# Held by ``api.db.migrate`` for the duration of a schema upgrade, not by a
+# worker — but it lives in this registry so the next worker id cannot collide
+# with it. It once did: the migration used 2 while the report dispatcher also
+# took 2, so the running replica's leader session held the "migration" lock
+# for its whole life and every rolling update waited on it until the new pod's
+# init container timed out (``tests/test_lock_ids.py``).
+MIGRATION_LOCK_ID = 4
 
 
 class LeaderLock:

@@ -42,14 +42,15 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from api.services.leader_lock import LOCK_CLASS_ID
+from api.services.leader_lock import LOCK_CLASS_ID, MIGRATION_LOCK_ID
 
 
 _log = logging.getLogger("api.db.migrate")
 
-# Distinct from SCHEDULE_DISPATCHER_LOCK_ID (1) in the same class namespace:
-# a migration and the schedule dispatcher must never exclude each other.
-MIGRATION_LOCK_ID = 2
+# MIGRATION_LOCK_ID is registered next to the worker leader locks in
+# ``api.services.leader_lock`` so that a migration and a worker can never
+# exclude each other: they share the class namespace, and a worker holds its
+# lock for the life of the replica.
 
 DEFAULT_LOCK_TIMEOUT_SECONDS = 600
 
@@ -137,23 +138,35 @@ def run_upgrade(
                         {"class_id": LOCK_CLASS_ID, "object_id": MIGRATION_LOCK_ID},
                     )
                 except SQLAlchemyError:  # pragma: no cover - teardown is best-effort
-                    _log.debug("Could not release the migration lock cleanly", exc_info=True)
+                    _log.debug(
+                        "Could not release the migration lock cleanly", exc_info=True
+                    )
     finally:
         engine.dispose()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run Alembic migrations under an advisory lock.")
-    parser.add_argument("--revision", default="head", help="Target revision (default: head)")
+    parser = argparse.ArgumentParser(
+        description="Run Alembic migrations under an advisory lock."
+    )
+    parser.add_argument(
+        "--revision", default="head", help="Target revision (default: head)"
+    )
     parser.add_argument(
         "--lock-timeout-seconds",
         type=int,
-        default=int(os.environ.get("OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS", DEFAULT_LOCK_TIMEOUT_SECONDS)),
+        default=int(
+            os.environ.get(
+                "OCTO_MIGRATION_LOCK_TIMEOUT_SECONDS", DEFAULT_LOCK_TIMEOUT_SECONDS
+            )
+        ),
         help="How long to wait for the migration lock before failing",
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
     try:
         run_upgrade(
             _database_url(),

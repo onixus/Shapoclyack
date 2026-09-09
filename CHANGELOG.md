@@ -272,6 +272,22 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **A rolling update of the API deadlocked on its own migration lock.**
+  `api.db.migrate` serialises schema upgrades with a Postgres advisory lock,
+  and its object id was `2` — the id the report dispatcher's `LeaderLock` had
+  also been given in the same `LOCK_CLASS_ID` namespace. A leader lock is
+  session-scoped and held for the life of the replica, so the running pod held
+  the "migration" lock for as long as it ran, the new pod's `migrate`
+  initContainer waited on it (`Init:0/1`, "Waiting for the migration lock")
+  until its 600 s `lock_timeout`, and the old pod was never terminated because
+  the new one never became ready. Reproduced on a kind stand by rebuilding the
+  image; `pg_locks` showed the idle leader session granted `(SHAP, 2)` and the
+  init container waiting on the same key. The migration id now lives in the
+  same registry as the worker ids (`MIGRATION_LOCK_ID = 4` in
+  `api/services/leader_lock.py`) and `tests/test_lock_ids.py` fails on the
+  next duplicate. An installation stuck this way is unblocked by deleting the
+  old API pod: the session goes with it and the waiting migration proceeds.
+
 - **Three ways the provenance could lie, closed before they shipped.**
   A refresh run that did not *attempt* a dataset used to overwrite its `origin`
   with `seed`. That is not a hypothetical path: the API pod's enrichment
