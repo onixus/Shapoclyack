@@ -34,8 +34,8 @@ gantt
 
 ### Задачи этапа:
 1. **Выбор архитектуры развертывания:**
-   * **Вариант А (PoC / Тестовый стенд):** развертывание All-in-One контейнера через Docker Compose или `scripts/dev-up.sh` (kind). Минимальные требования: 4 vCPU, 8 GB RAM, 50 GB SSD.
-   * **Вариант Б (Production):** промышленный кластер Kubernetes (`k8s/shapoclyack/overlays/prod`), включающий реплики FastAPI Control Plane, отказоустойчивый PostgreSQL, кластер NATS JetStream и ClickHouse для долговременной аналитики.
+   * **Вариант А (PoC / Тестовый стенд):** локальный кластер kind через `scripts/dev-up.sh` (`k8s/kind-config.yaml`; Docker Compose из репозитория удален, kind его заменил). Ориентир по ресурсам: 4 vCPU, 8 GB RAM, 50 GB SSD.
+   * **Вариант Б (Production):** кластер Kubernetes, оверлей `k8s/shapoclyack/overlays/prod`. Что он разворачивает сегодня: FastAPI Control Plane **в одной реплике** (`overlays/prod/api-replicas-patch.yaml`), PostgreSQL и артефакты на PVC. NATS и ClickHouse в этом оверлее **выключены** пустыми `OCTO_NATS_URL` / `OCTO_CLICKHOUSE_URL` (`base/api-deployment.yaml:100-105`) — включаются вручную, значениями из комментариев рядом. Отказоустойчивый профиль (несколько реплик API, HA-Postgres, кластер NATS) — [#335](https://github.com/onixus/Shapoclyack/issues/335); RWX/S3 под артефакты — [#336](https://github.com/onixus/Shapoclyack/issues/336).
 2. **Настройка базовой безопасности и аутентификации:**
    * Генерация криптографических секретов (JWT secret, мастер-ключи шифрования) согласно `k8s/shapoclyack/examples/api-secrets.example.yaml`;
    * Подключение корпоративного OIDC SSO (Keycloak, Okta, Microsoft Entra ID, ADFS);
@@ -45,7 +45,7 @@ gantt
    * Внесение и юридическое утверждение администратором скоупа внешних IP-адресов и доменов (`scope_approval`). Без явного утверждения платформа блокирует любые сетевые воздействия.
 
 > **🎯 Контрольная точка M1 (Конец 3-й недели):**  
-> Кластер развернут и доступен по безопасному HTTPS-адресу. Инженеры авторизуются через единый SSO. Выполнен первый валидационный скан внешнего периметра, артефакты прогона успешно сохранены в ClickHouse и S3/дисковом хранилище.
+> Кластер развернут и доступен по HTTPS (Ingress с `spec.tls`, см. `k8s/shapoclyack/examples/ingress.example.yaml`). Инженеры авторизуются через единый SSO. Выполнен первый валидационный скан внешнего периметра, артефакты прогона сохранены на PVC (объектное хранилище — [#336](https://github.com/onixus/Shapoclyack/issues/336)); если ClickHouse был включен вручную, аналитический срез виден и в нем.
 
 ---
 

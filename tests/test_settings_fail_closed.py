@@ -9,6 +9,7 @@ point is what the process does with what the deployment actually hands it.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 
 import pytest
@@ -44,6 +45,8 @@ _DECIDING_VARS = (
     "OCTO_NATS_URL",
     "OCTO_AGENT_TOKEN",
     "OCTO_OIDC_ROLE_MAP",
+    "OCTO_REPORT_SMTP_HOST",
+    "OCTO_REPORT_SMTP_VERIFY_TLS",
 )
 
 
@@ -463,3 +466,48 @@ def test_a_well_formed_role_map_is_still_read(clean_env: pytest.MonkeyPatch) -> 
 
     # The unknown role is dropped rather than downgraded to viewer.
     assert settings.oidc_role_map == {"platform-admins": "admin"}
+
+
+def test_prod_warns_about_a_postgres_url_without_sslmode(
+    clean_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#309 — a warning, not a refusal.
+
+    Unlike a shipped default password, "no sslmode=" is not distinguishable
+    from a deliberate choice (a Unix socket, an operator-owned encrypted link),
+    and refusing would break every install that upgrades.
+    """
+    _configure_prod(clean_env)
+    assert "sslmode" not in CONFIGURED_POSTGRES
+
+    with caplog.at_level(logging.WARNING, logger="api.settings"):
+        settings = load_settings()
+
+    assert settings.postgres_url == CONFIGURED_POSTGRES
+    assert any("sslmode" in record.getMessage() for record in caplog.records)
+
+
+def test_a_verifying_postgres_url_is_not_warned_about(
+    clean_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_POSTGRES_URL", f"{CONFIGURED_POSTGRES}?sslmode=verify-full")
+
+    with caplog.at_level(logging.WARNING, logger="api.settings"):
+        load_settings()
+
+    assert not any("sslmode" in record.getMessage() for record in caplog.records)
+
+
+def test_prod_warns_when_smtp_certificate_verification_is_off(
+    clean_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_REPORT_SMTP_HOST", "relay.internal")
+    clean_env.setenv("OCTO_REPORT_SMTP_VERIFY_TLS", "false")
+
+    with caplog.at_level(logging.WARNING, logger="api.settings"):
+        settings = load_settings()
+
+    assert settings.report_smtp_verify_tls is False
+    assert any("OCTO_REPORT_SMTP_VERIFY_TLS" in record.getMessage() for record in caplog.records)

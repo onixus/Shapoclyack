@@ -224,7 +224,7 @@ def test_tenant_uuid_stable():
 
 
 def test_parse_clickhouse_url():
-    host, port, db, user, password = _parse_url(
+    host, port, db, user, password, secure = _parse_url(
         "http://ch:8123/shapoclyack",
         default_db="default",
     )
@@ -232,6 +232,28 @@ def test_parse_clickhouse_url():
     assert port == 8123
     assert db == "shapoclyack"
     assert user == "default"
+    assert secure is False
+
+
+def test_https_clickhouse_url_is_secure_on_the_plain_http_port():
+    """#309: TLS follows the scheme, not the port.
+
+    ``https://host:8123`` is what a TLS-terminating proxy in front of
+    ClickHouse looks like. Inferring TLS from the port made this URL connect in
+    cleartext — with the password in it — and say nothing.
+    """
+    host, port, _db, _user, password, secure = _parse_url(
+        "https://reader:s3cret@ch.example.com:8123/shapoclyack",
+        default_db="default",
+    )
+    assert (host, port) == ("ch.example.com", 8123)
+    assert password == "s3cret"
+    assert secure is True
+
+
+def test_scheme_less_clickhouse_url_stays_plaintext():
+    *_, secure = _parse_url("ch:8123", default_db="default")
+    assert secure is False
 
 
 def test_skip_when_archive_not_inlined():

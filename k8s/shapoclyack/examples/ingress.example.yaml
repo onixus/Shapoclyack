@@ -1,4 +1,14 @@
 # Optional Ingress for the dashboard/API. Adjust className and host for your cluster.
+#
+# TLS is not optional (#309): the console posts credentials and the API carries
+# operator JWTs, agent provisioning keys and whole vulnerability reports. The
+# annotations below assume ingress-nginx + cert-manager; on another controller
+# keep `spec.tls` and use that controller's equivalent of the redirect.
+#
+#   kubectl apply -f ingress.example.yaml
+#
+# Without cert-manager, drop the cluster-issuer annotation and create the
+# `shapoclyack-api-tls` Secret yourself (kubectl create secret tls).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -8,6 +18,11 @@ metadata:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: api
   annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # A plaintext request has already put the password or the bearer token on
+    # the wire, so the redirect is damage control, not protection — it is here
+    # so a bookmarked http:// link does not silently keep working.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     # nginx.ingress.kubernetes.io/proxy-body-size: "8m"
     #
     # The `/` rule below publishes the whole API, the unauthenticated
@@ -21,6 +36,10 @@ metadata:
     #   location ~ ^/(metrics|livez|readyz)$ { return 404; }
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - shapoclyack.example.com
+      secretName: shapoclyack-api-tls
   rules:
     - host: shapoclyack.example.com
       http:

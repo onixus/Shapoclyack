@@ -66,12 +66,18 @@ def get_client(url: str, *, database: str = "shapoclyack"):
 
     Accepted forms:
       - ``http://host:8123``
+      - ``https://host:8443``
       - ``clickhouse://host:8123/shapoclyack``
       - ``host:8123``
+
+    ``secure`` is passed explicitly, from the scheme (#309). Left unset,
+    clickhouse-connect infers TLS from the port, so ``https://host:8123`` —
+    a perfectly ordinary URL for a TLS-terminating proxy — sent the password
+    and every row of scan data in cleartext without a word.
     """
     import clickhouse_connect
 
-    host, port, db, username, password = _parse_url(url, default_db=database)
+    host, port, db, username, password, secure = _parse_url(url, default_db=database)
     try:
         return clickhouse_connect.get_client(
             host=host,
@@ -79,6 +85,7 @@ def get_client(url: str, *, database: str = "shapoclyack"):
             database=db,
             username=username,
             password=password,
+            secure=secure,
         )
     except Exception as exc:  # noqa: BLE001
         raise ClickHouseError(f"ClickHouse connect failed: {exc}") from exc
@@ -88,7 +95,7 @@ def _parse_url(
     url: str,
     *,
     default_db: str,
-) -> tuple[str, int, str, str, str]:
+) -> tuple[str, int, str, str, str, bool]:
     raw = (url or "").strip()
     if not raw:
         raise ClickHouseError("ClickHouse URL is empty")
@@ -97,11 +104,15 @@ def _parse_url(
     database = default_db
     host = "localhost"
     port = 8123
+    # No scheme at all (``host:8123``) keeps the historical plaintext default;
+    # only ``https://`` asks for TLS, and it asks for it whatever the port.
+    secure = False
 
     remainder = raw
     if "://" in remainder:
         scheme, remainder = remainder.split("://", 1)
-        if scheme in {"https"}:
+        if scheme.lower() in {"https", "clickhouses"}:
+            secure = True
             port = 8443
     if "@" in remainder:
         creds, remainder = remainder.rsplit("@", 1)
@@ -119,7 +130,7 @@ def _parse_url(
         port = int(port_s)
     else:
         host = remainder or host
-    return host, port, database, username, password
+    return host, port, database, username, password, secure
 
 
 def ping(url: str) -> bool:

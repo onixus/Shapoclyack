@@ -72,7 +72,7 @@ Technical findings and estate metadata are evaluated against a closed vocabulary
 *See [Reports and Compliance Mapping](docs/reports-and-compliance.md).*
 
 ### 6. Distributed Remote Agents (NATS JetStream & Zero Inbound Ports)
-Scan segmented VPCs, private clouds, and DMZ enclaves without exposing internal networks. Remote scanner agents pull tenant-scoped jobs over **NATS JetStream** with mTLS encryption. Agents require **zero inbound listening ports**, communicate entirely outbound, and feature heartbeat leases, distributed claim serialization (`SELECT ... FOR UPDATE SKIP LOCKED`), and automatic orphan recovery.  
+Scan segmented VPCs, private clouds, and DMZ enclaves without exposing internal networks. Remote scanner agents pull tenant-scoped jobs over **NATS JetStream** or, without a broker, by claiming them over HTTPS from the API. Both are outbound connections authenticated by a per-tenant agent JWT; NATS transport encryption is [#309](https://github.com/onixus/Shapoclyack/issues/309)/[#359](https://github.com/onixus/Shapoclyack/issues/359) and mutual TLS is on the roadmap, not in the build. Agents require **zero inbound listening ports**, communicate entirely outbound, and feature heartbeat leases, distributed claim serialization (`SELECT ... FOR UPDATE SKIP LOCKED`), and automatic orphan recovery.  
 *See [Architecture](docs/architecture.md).*
 
 ### 7. Branded Multi-Tenant Report Factory
@@ -119,7 +119,7 @@ graph TD
 |---|---|
 | [**Wiki Portal & Architecture Principles**](docs/wiki/README.md) | Central entry point: concepts, asset-centric paradigm, NIST SP 800-30, mechanical verification |
 | [**Security Engineer Playbook**](docs/wiki/scenarios-security-engineer.md) | Daily operations: scan profiling, finding triage, remediation kanban, mechanical re-verification, patch gaps, noise reduction |
-| [**Architect Playbook**](docs/wiki/scenarios-architect.md) | Perimeter mapping, Shadow IT discovery, CMDB/Active Directory integration, remote agents in DMZ/VPC, CI/CD DevSecOps, compliance controls |
+| [**Architect Playbook**](docs/wiki/scenarios-architect.md) | Perimeter mapping, Shadow IT discovery, the asset business-context REST contract (`PATCH /api/assets/{id}`) your CMDB/AD sync script drives — a packaged importer is [#350](https://github.com/onixus/Shapoclyack/issues/350) — remote agents in DMZ/VPC, CI/CD DevSecOps, compliance controls |
 | [**CISO & Executive Guide**](docs/wiki/scenarios-ciso.md) | Strategic governance: Risk Overview dashboard, estate risk score, CISA KEV tracking, SLA & MTTR metrics, adoption KPIs, board reporting |
 | [**Formal Security Processes**](docs/wiki/security-processes.md) | End-to-end VM lifecycle, continuous EASM, 0-day emergency response (KEV), and IT/DevOps SLA collaboration with 2-way ticket sync |
 | [**12-Week Implementation Roadmap**](docs/wiki/implementation-plan.md) | 4-phase rollout (Pilot → Production Scale), deployment topologies, RACI responsibility matrix, and measurable KPIs |
@@ -143,7 +143,7 @@ flowchart TD
     end
 
     subgraph Workers ["Distributed Execution Fleet"]
-        G["Remote Agents (mTLS, DMZ/VPC)"]
+        G["Remote Agents (outbound-only, DMZ/VPC)"]
         S["Scanner Engine (Pulse / Nuclei / Discovery)"]
     end
 
@@ -267,7 +267,7 @@ For UI screenshots and walkthroughs, see [Web Interface Documentation](docs/ui.m
 |---|---|---|
 | **All-in-One Local (`kind-dev`)** | Local evaluation, testing, CI | Single pod or container with embedded API, Web UI, and scanner engine; includes PostgreSQL, NATS, and ClickHouse. |
 | **Production Kubernetes (`overlays/prod`)** | Enterprise production deployments | Scaled FastAPI replicas, persistent PostgreSQL cluster, clustered NATS JetStream, ClickHouse analytics, and ingress controllers. |
-| **Distributed Remote Agents** | Segmented networks, DMZs, multi-VPC, multi-cloud | Outbound-only agent workers polling NATS JetStream via mTLS; zero inbound open ports required on agents. |
+| **Distributed Remote Agents** | Segmented networks, DMZs, multi-VPC, multi-cloud | Outbound-only agent workers, pulling from NATS JetStream or claiming over HTTPS; zero inbound open ports required on agents. NATS runs without TLS today ([#309](https://github.com/onixus/Shapoclyack/issues/309)) — keep it off untrusted segments. |
 | **Standalone Scanner CLI** | Ad-hoc audits, single-shot scans, pipeline automation | Headless container execution outputting structured JSON, CSV, and PDF artifacts directly to local disk. |
 
 Detailed guides:
@@ -289,7 +289,7 @@ Every request is scoped to a verified tenant context using JWT bearer tokens:
 * `admin`: Operator privileges plus managing tenants, approving scan scopes, configuring SSO/OIDC, issuing service tokens, and accepting risk.
 
 ### Enterprise Integrations
-* **Two-Way Ticket Synchronization**: Seamlessly bi-directionally sync findings with Jira, ServiceNow, and DefectDojo. Resolving a ticket triggers mechanical re-verification.
+* **Ticket Synchronization**: Push findings to Jira, ServiceNow, and DefectDojo automatically. The pull direction — noticing that a ticket was resolved and triggering mechanical re-verification — is an on-demand action today; a poller is [#347](https://github.com/onixus/Shapoclyack/issues/347).
 * **Asset Event Webhooks**: Subscribed endpoints receive signed HMAC payloads for events (`new_asset`, `new_open_port`, `new_cve`, `cert_expiring`, `decommissioned_host`) over a durable JetStream fan-out queue.
 
 See [API and RBAC Documentation](docs/api-and-rbac.md) for endpoint details and token authentication.

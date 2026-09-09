@@ -401,6 +401,46 @@ All notable changes to Shapoclyack are documented in this file.
   `/livez`, and rolls with `maxUnavailable: 0` / `maxSurge: 1`, a 45s
   termination grace period and a 5s `preStop` pause.
 
+### Security
+
+- **Transport encryption is configured explicitly instead of inferred** (#309).
+  Report delivery's `starttls()` was called with no SSL context, which is
+  `CERT_NONE` with no hostname check — encryption against a passive listener
+  and nothing else; it now passes `ssl.create_default_context()`, with
+  `OCTO_REPORT_SMTP_VERIFY_TLS=false` as the documented, warned-about way out
+  for an internal relay. The ClickHouse client derived TLS from the port, so
+  `https://host:8123` — an ordinary URL for a TLS-terminating proxy — sent the
+  password and every row of scan data in cleartext; `secure=` now follows the
+  scheme on any port. A `prod` start whose `OCTO_POSTGRES_URL` carries no
+  `sslmode=` now logs a warning naming `verify-full` (a warning, not a refusal:
+  a Unix socket or an operator-owned encrypted link is a legitimate install,
+  and refusing would break every deployment on upgrade). The example Ingress
+  gained `spec.tls`, a cert-manager issuer annotation and
+  `force-ssl-redirect`. NATS TLS is tracked separately under the same issue.
+
+### Docs
+
+- **README and Wiki now say what the build does** (#343). "mTLS" is gone from
+  the README, the architecture diagrams and the architect playbook — nothing in
+  this repository issues or checks a client certificate; agents connect
+  outbound over HTTPS to the API and over NATS, and NATS TLS is #309/#359. The
+  "CMDB/Active Directory integration" is named for what it is, the asset
+  business-context REST contract (`PATCH /api/assets/{id}`) that an external
+  sync script drives, with the packaged importer as #350, and "bi-directional"
+  ticket sync as push-automatic, pull-on-demand until #347. The implementation
+  plan's production topology now matches `overlays/prod` — one API replica,
+  NATS and ClickHouse off by empty URL — and points at #335/#336 for HA and
+  object storage; Docker Compose is no longer offered, kind replaced it.
+  `docs/wiki/README.md` gained a "supported now / in roadmap" table over the
+  `enterprise` issues, and the rule it enforces: a claim in the Wiki carries a
+  link to a file or a test, or it moves to the roadmap column.
+- **`docs/operations.md` gained a "Transport encryption" section** — a per-link
+  table of what is encrypted and how it is configured, plus mounting a private
+  CA for Postgres `verify-full`. Its NATS permission note no longer reads as
+  broader than it is: an agent cannot read `ingest.>`/`events.>` or publish
+  work, but `jobs.scan` is one shared subject and per-tenant separation there
+  is still open work.
+
 ### Changed
 
 - **The agent's version is the release's version**
