@@ -47,6 +47,9 @@ _DECIDING_VARS = (
     "OCTO_OIDC_ROLE_MAP",
     "OCTO_REPORT_SMTP_HOST",
     "OCTO_REPORT_SMTP_VERIFY_TLS",
+    "OCTO_DB_POOL_SIZE",
+    "OCTO_DB_MAX_OVERFLOW",
+    "OCTO_DB_POOL_TIMEOUT",
 )
 
 
@@ -511,3 +514,26 @@ def test_prod_warns_when_smtp_certificate_verification_is_off(
 
     assert settings.report_smtp_verify_tls is False
     assert any("OCTO_REPORT_SMTP_VERIFY_TLS" in record.getMessage() for record in caplog.records)
+
+
+def test_db_pool_is_configurable_and_floored(clean_env: pytest.MonkeyPatch) -> None:
+    """The pool is per replica, so an HA overlay has to be able to shrink it
+    below SQLAlchemy's 5+10 or the server's max_connections is spent by the
+    third replica (#335). A mistyped 0 for size or timeout is floored rather
+    than handed to the pool, where it means something else entirely."""
+    _configure_prod(clean_env)
+    assert load_settings().db_pool_size == 5
+    assert load_settings().db_max_overflow == 10
+    assert load_settings().db_pool_timeout == 30
+
+    clean_env.setenv("OCTO_DB_POOL_SIZE", "3")
+    clean_env.setenv("OCTO_DB_MAX_OVERFLOW", "2")
+    clean_env.setenv("OCTO_DB_POOL_TIMEOUT", "10")
+    settings = load_settings()
+    assert (settings.db_pool_size, settings.db_max_overflow, settings.db_pool_timeout) == (3, 2, 10)
+
+    clean_env.setenv("OCTO_DB_POOL_SIZE", "0")
+    clean_env.setenv("OCTO_DB_POOL_TIMEOUT", "0")
+    floored = load_settings()
+    assert floored.db_pool_size == 1
+    assert floored.db_pool_timeout == 1

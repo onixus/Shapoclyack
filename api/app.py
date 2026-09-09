@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
+from api.db import engine as db_engine
 from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
@@ -138,6 +139,10 @@ def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # Before the tenant store opens the first session: the engine is a lazy
+    # singleton keyed by URL, so pool sizing that arrives after something has
+    # already built it would apply to nobody (#335).
+    db_engine.configure(settings)
     tenants_service.load_tenants(settings)
     # After the tenant store (it shares the session factory), and before any
     # router is mounted: a prod install with no console account refuses here

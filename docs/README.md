@@ -14,6 +14,7 @@ Commands assume the repository root unless a guide explicitly says otherwise.
 | Configure scanning, enrichment, and runtime settings | [Configuration](configuration.md) |
 | Deploy or upgrade Kubernetes workloads | [Kubernetes deployment](../k8s/README.md) |
 | Operate, monitor, back up, and recover the platform | [Operations](operations.md) |
+| Run a profile that survives a node loss | [High availability](high-availability.md) |
 | Use the Web UI | [Web interface](ui.md) |
 | Diagnose failures | [Troubleshooting](troubleshooting.md) |
 | Integrate with the API and understand tenant/RBAC rules | [API and RBAC](api-and-rbac.md) |
@@ -46,6 +47,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Configuration](configuration.md) | Profiles, stages, protocols, rates, enrichment, safe overrides |
 | [Web interface](ui.md) | Current UI routes, tenant context, workflows, screenshot maintenance |
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |
+| [High availability](high-availability.md) | The `prod-ha` overlay: multi-replica API, NATS cluster, external PostgreSQL — its prerequisites and its limits |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |

@@ -1,0 +1,29 @@
+# The hard prerequisite of this whole overlay (#335, blocked on #336).
+#
+# Scan artifacts are files on `scanner-data`, mounted by the API Deployment,
+# the scan Job and the CronJob alike. Base requests ReadWriteOnce, which a
+# CSI driver may attach to exactly ONE node at a time: a second API replica
+# scheduled elsewhere sits in ContainerCreating with a
+# "Multi-Attach error for volume" event until the first pod moves.
+#
+# So `replicas: 2` and RWO are mutually exclusive, and the fix is one of:
+#
+#   * an RWX-capable StorageClass — CephFS, Azure Files, AWS EFS, GCP
+#     Filestore, NFS, Portworx shared volumes — named below; or
+#   * #336, which moves artifacts to object storage and removes the shared
+#     filesystem from the picture entirely. Until #336 lands, an installation
+#     without RWX storage CANNOT run this overlay. There is no third option
+#     that keeps both the replicas and the artifacts.
+#
+# The class name is left as a placeholder rather than guessed: a wrong
+# `storageClassName` binds to the wrong backend silently, whereas an unknown
+# one leaves the PVC Pending with a "storageclass not found" event. 20Gi is
+# inherited from base — size it against docs/scale-profile.md.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scanner-data
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: REPLACE-WITH-YOUR-RWX-STORAGE-CLASS

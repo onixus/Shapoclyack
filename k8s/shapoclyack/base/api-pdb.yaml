@@ -6,7 +6,17 @@ metadata:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: api
 spec:
-  minAvailable: 1
+  # maxUnavailable, not minAvailable: base and overlays/prod run ONE API pod,
+  # and `minAvailable: 1` on a single replica means "no voluntary disruption is
+  # ever allowed" — `kubectl drain` on that node blocks forever, so a node
+  # upgrade needs the PDB deleted by hand (#335). `maxUnavailable: 1` lets the
+  # eviction through, which is the honest statement for a single-replica
+  # install: there is nothing here to keep available, the rollout strategy
+  # (maxUnavailable: 0 / maxSurge: 1) is what limits the gap.
+  #
+  # overlays/prod-ha, where there are at least two replicas to protect, patches
+  # this back to `minAvailable: 1`.
+  maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: shapoclyack

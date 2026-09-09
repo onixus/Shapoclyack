@@ -100,6 +100,7 @@ k8s/shapoclyack/
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
+├── overlays/prod-ha/     # HA profile: API >=2 replicas + HPA + PDB, 3-node NATS, external Postgres
 ├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false
 ├── overlays/agents/      # remote agents (topology spread + VPA) + API agent-mode
 ├── overlays/enrichment/  # real GeoIP/EPSS/KEV/CVSS4 data, hot-reloaded, no restart needed
@@ -178,7 +179,7 @@ than JetStream's 2-minute default because that is shorter than the gap between
 an upload and its retry.
 
 **HA:** base runs a single NATS pod (fine for dev/lab). The cluster config is
-already in `base/nats/configmap.yaml` — apply `examples/nats-ha-patch.yaml`
+already in `base/nats/configmap.yaml` — apply `overlays/prod-ha/nats-ha-patch.yaml`
 to scale to 3 replicas for a real quorum, and set `OCTO_NATS_STREAM_REPLICAS=3`
 on the API so streams replicate R3 instead of staying single-copy. Each
 replica requests its own 5Gi PVC (3 nodes = 15Gi total, not shared).
@@ -415,6 +416,18 @@ kubectl apply -k k8s/shapoclyack/overlays/dev
 
 ```bash
 kubectl apply -k k8s/shapoclyack/overlays/prod
+```
+
+**Prod HA** — API >= 2 replicas spread across nodes with an HPA and a PDB,
+3-node NATS JetStream with R3 streams, ClickHouse on, and an **external**
+PostgreSQL (the in-cluster StatefulSet and its `pg_dump` CronJob are removed).
+It renders but is deliberately **not appliable as-is**: an RWX storage class,
+the NATS route password and the `shapoclyack-postgres-external` Secret are
+placeholders you must fill in first. Read
+[docs/high-availability.md](../docs/high-availability.md) before running it.
+
+```bash
+kubectl apply -k k8s/shapoclyack/overlays/prod-ha
 ```
 
 **Results-only API** (thin image, no local scan start):

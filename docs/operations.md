@@ -639,6 +639,14 @@ no agent, device, asset, tenant, or product names):
 
 ## Backup and disaster recovery
 
+> **`overlays/prod-ha` moves this out of the cluster.** That overlay deletes the
+> in-cluster PostgreSQL StatefulSet and the `pg_dump` CronJob below along with
+> it, because the database is expected to be a managed one (RDS, Cloud SQL,
+> CloudNativePG, Patroni). Backups, PITR and the restore drill then belong to
+> that provider — everything in this section describes the in-cluster database
+> that `base` and `overlays/prod` ship. See
+> [high-availability.md](high-availability.md#external-postgres).
+
 ### Recovery objectives and verification status
 
 The base deployment takes a logical PostgreSQL backup every day at 02:15 UTC.
@@ -934,6 +942,11 @@ leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
 last night survives a rollout, and `seed` stays a statement worth acting on.
 
 ## Upgrade and rollback
+
+> With `base` and `overlays/prod` there is a single API replica, so the probes
+> and grace periods below limit the gap in a rollout without closing it. The
+> multi-replica profile that turns them into a genuinely non-disruptive rollout
+> is [high-availability.md](high-availability.md#rolling-upgrade-without-5xx).
 
 ### Probes, and what a rollout costs
 

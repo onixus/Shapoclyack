@@ -1,17 +1,21 @@
 # Scale NATS JetStream to a 3-node cluster for production HA.
 #
+# Wired into overlays/prod-ha/kustomization.yaml (#335). It used to live in
+# examples/ and be referenced by nothing; it moved here rather than being
+# referenced across directories because kustomize refuses to load a patch file
+# from outside the kustomization root, and an overlay that only renders with
+# `--load-restrictor LoadRestrictionsNone` cannot be applied with a plain
+# `kubectl apply -k`.
+#
 # Base ships WITHOUT a cluster{} block — at replicas=1 a cluster block
 # listing unreachable peer routes keeps the server stuck retrying routes
 # and JetStream never reports ready. This patch bumps replica count; you
-# MUST also apply examples/nats-ha-configmap-patch.yaml in the same overlay
+# MUST also apply nats-ha-configmap-patch.yaml in the same overlay
 # to supply the clustered nats.conf, or the extra pods will run standalone
 # (no shared JetStream state) instead of forming a cluster.
 #
-# Apply both patches via kustomize (see overlays/prod/kustomization.yaml):
-#   patches:
-#     - path: ../../examples/nats-ha-patch.yaml
-#     - path: ../../examples/nats-ha-configmap-patch.yaml
-# or ad hoc:
+# Both are applied by overlays/prod-ha. To use them from an overlay of your
+# own, copy the two files into it. Ad hoc:
 #   kubectl patch statefulset shapoclyack-nats -n network-scan --type=merge \
 #     -p '{"spec":{"replicas":3}}'
 #

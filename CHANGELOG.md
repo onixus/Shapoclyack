@@ -43,6 +43,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **`overlays/prod-ha` — a Kubernetes profile that survives a node loss**
+  ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `overlays/prod`
+  ran one API replica pinned to a scanner node, the in-cluster single-pod
+  PostgreSQL, and neither NATS nor ClickHouse; there was no second overlay to
+  point at. The new one sets API `replicas: 2` with `podAntiAffinity` and
+  `topologySpreadConstraints`, an HPA (CPU 70%, 2–6) and a PDB
+  `minAvailable: 1`; scales NATS JetStream to three nodes with
+  `OCTO_NATS_STREAM_REPLICAS=3` (the `nats-ha` patches moved out of `examples/`,
+  where nothing referenced them, into the overlay — kustomize refuses to load a
+  patch file from outside its root); fills in `OCTO_NATS_URL` and
+  `OCTO_CLICKHOUSE_URL`; and replaces the in-cluster PostgreSQL — StatefulSet,
+  Services, NetworkPolicy, `pg_dump` CronJob and dev Secret — with a
+  Secret-supplied `?sslmode=verify-full` URL to a managed one. It also opens the
+  NATS route port 6222 between broker pods, which base's NetworkPolicy denied:
+  without that rule a 3-node cluster silently never forms under an enforcing
+  CNI. `k8s/scripts/validate-kustomize.sh` renders the overlay in CI.
+  **It is deliberately not appliable as rendered** — the RWX storage class, the
+  NATS route password and the external-PostgreSQL Secret are placeholders that
+  fail loudly. Requirements, the manual drill, and what the profile does *not*
+  cover (single-pod ClickHouse, artifacts still on a shared filesystem
+  pending [#336](https://github.com/onixus/Shapoclyack/issues/336), DR beyond
+  PostgreSQL pending [#333](https://github.com/onixus/Shapoclyack/issues/333))
+  are in the new [docs/high-availability.md](docs/high-availability.md).
+- **`OCTO_DB_POOL_SIZE`, `OCTO_DB_MAX_OVERFLOW`, `OCTO_DB_POOL_TIMEOUT`**
+  ([#335](https://github.com/onixus/Shapoclyack/issues/335)). The SQLAlchemy
+  pool was whatever the library chose (5 + 10) and could not be changed. That
+  is a per-process figure multiplied by the replica count, while
+  `max_connections` on the server is one shared budget — so the profile that
+  scales the API is exactly the one that needs to shrink it. Applied in
+  `api/db/engine.py` from `create_app()`, before the first session is opened;
+  the `dev` SQLite fallback ignores them, having no connection queue.
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426
@@ -712,6 +743,17 @@ All notable changes to Shapoclyack are documented in this file.
   regardless — setting it changed what half the codebase signed with and nothing
   that verified it. `Settings` is now the only source, `HS256` is the only
   accepted value, and anything else refuses startup in every environment.
+
+### Fixed
+
+- **The API PodDisruptionBudget no longer blocks every node drain**
+  ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `base` and
+  `overlays/prod` run a single API replica, and `minAvailable: 1` on one replica
+  means no voluntary disruption is ever permitted: `kubectl drain` on that node
+  waited forever, so a node upgrade needed the PDB deleted by hand. Base now
+  says `maxUnavailable: 1`, which is the honest statement for one replica — the
+  rollout strategy is what limits the gap — and `overlays/prod-ha` patches it
+  back to `minAvailable: 1`, where there are at least two replicas to protect.
 
 ## [0.44-0907] — 2026-09-07
 

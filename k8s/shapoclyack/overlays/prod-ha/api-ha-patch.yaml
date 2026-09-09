@@ -1,0 +1,134 @@
+# API: more than one replica, and placed so that losing a node loses one of
+# them rather than all of them (#335).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  # Two is the floor, not the target: the HPA in api-hpa.yaml owns the number
+  # from here on (minReplicas: 2). Kustomize still has to set it, because a
+  # first apply creates the Deployment before the HPA has observed anything.
+  replicas: 2
+  template:
+    spec:
+      # No nodeSelector, unlike overlays/prod. That patch pins the API to a
+      # scanner node so an RWO PVC can be shared with the scan Jobs; spreading
+      # replicas across nodes is the opposite requirement, and it is why this
+      # overlay needs RWX storage (pvc-rwx-patch.yaml).
+      affinity:
+        podAntiAffinity:
+          # Preferred, not required: `required` caps the Deployment at one pod
+          # per node, so the HPA's ceiling of 6 would silently become "however
+          # many nodes you have" and the surplus pods would sit Pending with no
+          # obvious cause. The hard spread rule below does the enforcing; this
+          # weight is what breaks ties among otherwise equal nodes.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: shapoclyack
+                    app.kubernetes.io/component: api
+      topologySpreadConstraints:
+        # One pod per node until every node has one, then a second round.
+        # DoNotSchedule is deliberate: two API pods on one node is not high
+        # availability, and a cluster too small to honour it should say so at
+        # schedule time rather than at the first node failure.
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: api
+        # Zones are best-effort: a single-zone cluster has exactly one value for
+        # this label, and DoNotSchedule there would make every pod after the
+        # first unschedulable. Where zones exist the scheduler will use them.
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: api
+      # Both the migrate init container and the API talk to the external
+      # database, so both need the URL. The Secret is a prerequisite of this
+      # overlay, not something it ships — see docs/high-availability.md
+      # § External Postgres. A missing Secret is a CreateContainerConfigError
+      # that names it, which is the loud failure we want here.
+      initContainers:
+        - name: migrate
+          env:
+            # Repeated in both containers and listed FIRST on purpose: $(VAR)
+            # in an env value expands only against variables defined earlier in
+            # the same container's list, and a strategic merge places entries
+            # this patch introduces ahead of the base list. Same mechanism as
+            # NATS_PASSWORD in base/api-deployment.yaml.
+            - name: POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-postgres-external
+                  key: url
+            - name: OCTO_POSTGRES_URL
+              value: $(POSTGRES_URL)
+            - name: POSTGRES_PASSWORD
+              $patch: delete
+      containers:
+        - name: api
+          env:
+            # ORDER MATTERS, and it is not the order in base. A strategic merge
+            # moves every entry this patch touches to the FRONT of the merged
+            # list, so the three URLs below end up ahead of the password
+            # entries base declares — and $(VAR) expands only against variables
+            # defined earlier in the same container's list. The two passwords
+            # are therefore repeated here, ahead of the URLs that interpolate
+            # them; without that the pod starts with a literal
+            # "$(NATS_PASSWORD)" in its broker URL. (Verified against
+            # `kubectl kustomize overlays/prod-ha`, not assumed.)
+            - name: POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-postgres-external
+                  key: url
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nats
+                  key: api_password
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-clickhouse
+                  key: password
+            - name: OCTO_POSTGRES_URL
+              value: $(POSTGRES_URL)
+            # Base leaves both URLs empty — NATS and ClickHouse are opt-in
+            # sidecars there, and an HA profile is exactly the case that opts in.
+            - name: OCTO_NATS_URL
+              value: nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+            - name: OCTO_CLICKHOUSE_URL
+              value: http://default:$(CLICKHOUSE_PASSWORD)@shapoclyack-clickhouse-client:8123
+            # Streams replicated across the 3-node cluster. Left at the default
+            # of 1 the streams live on one server, so a JetStream cluster buys
+            # nothing: losing that server loses the queued jobs.
+            - name: OCTO_NATS_STREAM_REPLICAS
+              value: "3"
+            # The pool is per replica and `max_connections` is one shared
+            # budget. 10 + 5 * 6 replicas at the HPA ceiling = 90 connections,
+            # plus the migrate init containers during a rollout — sized against
+            # a managed instance's default (RDS db.t3.medium ≈ 340). Raise the
+            # server's limit or a pgbouncer in front of it before raising these.
+            - name: OCTO_DB_POOL_SIZE
+              value: "10"
+            - name: OCTO_DB_MAX_OVERFLOW
+              value: "5"
+            - name: OCTO_DB_POOL_TIMEOUT
+              value: "30"
+            # The URL above carries its own credentials, so nothing reads the
+            # in-cluster Postgres password any more. Deleted rather than left
+            # dangling: the Secret it names is removed with the StatefulSet in
+            # postgres-external-patch.yaml, and a secretKeyRef to a Secret that
+            # does not exist is a pod that never starts.
+            - name: POSTGRES_PASSWORD
+              $patch: delete

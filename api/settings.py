@@ -189,6 +189,18 @@ class Settings:
     # a per-replica file means a per-replica control plane. Empty-string default
     # is kept only for config-shape consistency.
     postgres_url: str = ""
+    # SQLAlchemy connection pool for that engine (#335). SQLAlchemy's own
+    # defaults — 5 checked-out connections plus 10 overflow — are per *process*,
+    # and `max_connections` on the server is the shared budget, so an overlay
+    # that runs N API replicas multiplies the left column by N. Exhausting the
+    # server's budget is the failure that takes every replica down at once,
+    # which is why these are configurable rather than implied by the library.
+    # pool_timeout bounds the wait for a free connection: without it a saturated
+    # pool is a request that never returns, with it a request that fails with a
+    # cause. Ignored for the SQLite fallback, which does not use a QueuePool.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_timeout: int = 30
     # Asset lifecycle: active assets not re-observed within this many days flip
     # to "stale" at the end of every ingest (api/services/assets.py).
     asset_stale_days: int = 14
@@ -838,6 +850,13 @@ def load_settings() -> Settings:
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         postgres_url=postgres_url_env or _default_sqlite_url(),
+        # Floored rather than trusted: pool_size=0 means "no pooling limit" to
+        # SQLAlchemy for some pool classes and an unusable engine for others,
+        # and pool_timeout=0 turns a busy pool into an immediate failure. A
+        # mistyped 0 should not be the thing that decides either.
+        db_pool_size=max(1, int(os.environ.get("OCTO_DB_POOL_SIZE", "5"))),
+        db_max_overflow=max(0, int(os.environ.get("OCTO_DB_MAX_OVERFLOW", "10"))),
+        db_pool_timeout=max(1, int(os.environ.get("OCTO_DB_POOL_TIMEOUT", "30"))),
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
         asset_events_enabled=os.environ.get("OCTO_ASSET_EVENTS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),

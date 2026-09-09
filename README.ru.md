@@ -210,7 +210,8 @@ graph TB
 |---|---|---|
 | **Scanner CLI** | Разовые экспресс-оценки, CI/CD конвейеры DevSecOps, локальная отладка | Только образ сканера (`shapoclyack-scanner`) |
 | **Kubernetes (`overlays/kind-dev`)** | Локальная демонстрация, лаборатория, оценка функциональности | All-in-one контейнер (`shapoclyack-aio`), PostgreSQL |
-| **Kubernetes (`overlays/prod`)** | Промышленная эксплуатация, мультиагентность | Отдельные Deployment'ы: API (сейчас одна реплика), PostgreSQL, пул агентов. NATS и ClickHouse в этом оверлее выключены пустыми URL, HA-профиль — [#335](https://github.com/onixus/Shapoclyack/issues/335) |
+| **Kubernetes (`overlays/prod`)** | Промышленная эксплуатация, мультиагентность | Отдельные Deployment'ы: API (одна реплика), PostgreSQL, пул агентов. NATS и ClickHouse в этом оверлее выключены пустыми URL |
+| **Kubernetes HA (`overlays/prod-ha`)** | Установки, которые должны переживать потерю узла | API от двух реплик с разносом по узлам, HPA и PDB, кластер NATS из трёх узлов (streams R3), включённый ClickHouse, внешний управляемый PostgreSQL. Нужны RWX-хранилище для артефактов (или [#336](https://github.com/onixus/Shapoclyack/issues/336)) и внешняя БД — см. [high-availability.md](docs/high-availability.md) |
 
 Специализированные руководства:
 * [Развертывание в Kubernetes](k8s/README.md)

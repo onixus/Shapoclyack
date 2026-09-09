@@ -90,7 +90,7 @@ data:
     # No `cluster {}` block here on purpose: base runs replicas=1, and a
     # cluster block listing unreachable peer routes (nats-1/nats-2 don't
     # exist yet) keeps the server stuck retrying routes and JetStream never
-    # reports ready. Bump `spec.replicas` to 3 with examples/nats-ha-patch.yaml
+    # reports ready. Bump `spec.replicas` to 3 with overlays/prod-ha/nats-ha-patch.yaml
     # AND examples/nats-ha-configmap-patch.yaml (which supplies the clustered
     # nats.conf) to form a real JetStream cluster; also set
     # OCTO_NATS_STREAM_REPLICAS=3 on the API so streams replicate R3.

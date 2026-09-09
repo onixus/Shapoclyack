@@ -1,0 +1,44 @@
+# Production HA profile (#335).
+#
+# What overlays/prod is not: it runs ONE API replica pinned to a scanner node,
+# with the in-cluster single-pod Postgres, no NATS and no ClickHouse. That is a
+# working install, not a highly available one — every node drain is an outage
+# and the database has no failover.
+#
+# This overlay changes four things, and three of them have a prerequisite that
+# is NOT part of these manifests. Read docs/high-availability.md before
+# applying: rendered as-is the overlay is deliberately un-appliable, carrying
+# placeholders (RWX storage class, NATS route password, external Postgres
+# Secret) that fail loudly rather than defaults that fail quietly.
+#
+#   1. API: >= 2 replicas, spread across nodes, HPA to 6, PDB minAvailable: 1.
+#      Requires ReadWriteMany artifact storage — until #336 moves artifacts to
+#      object storage, two API pods on two nodes both mount `scanner-data`, and
+#      an RWO volume can only be attached to one node at a time.
+#   2. NATS: 3-node JetStream cluster with R3 streams.
+#   3. Postgres: external/managed; the in-cluster StatefulSet is removed.
+#   4. ClickHouse and NATS URLs switched on (base leaves both empty).
+#
+# ClickHouse stays a single StatefulSet pod here — see docs/high-availability.md
+# § What this overlay does not give you.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - api-hpa.yaml
+
+patches:
+  - path: api-ha-patch.yaml
+  - path: api-pdb-patch.yaml
+  - path: pvc-rwx-patch.yaml
+  # NATS 3-node cluster. Both halves are required: the first scales the
+  # StatefulSet, the second replaces nats.conf with the clustered one. See the
+  # header of each file — the route password in the ConfigMap is a placeholder
+  # that must be replaced before this is applied.
+  - path: nats-ha-patch.yaml
+  - path: nats-ha-configmap-patch.yaml
+  - path: nats-cluster-networkpolicy-patch.yaml
+  # External Postgres: removes the in-cluster StatefulSet, its Services, its
+  # NetworkPolicy and the pg_dump CronJob that reached it.
+  - path: postgres-external-patch.yaml
