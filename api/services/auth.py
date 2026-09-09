@@ -26,7 +26,7 @@ def create_agent_access_token(
         agent_id=resolved_agent_id,
         key_id=key_id,
         expires_minutes=ttl,
-        secret=settings.jwt_secret,
+        secret=settings.agent_signing_secret(),
     )
 
 

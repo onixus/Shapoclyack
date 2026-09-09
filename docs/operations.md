@@ -1181,6 +1181,30 @@ them with `examples/api-secrets.example.yaml` (or
 `examples/externalsecret.example.yaml` with ExternalSecrets) before any install
 that holds real scan data.
 
+### Rotating the agent token signing key
+
+Agent JWTs are signed with `OCTO_AGENT_JWT_SECRET`, or with a key derived from
+`OCTO_JWT_SECRET` when it is unset ([#312](https://github.com/onixus/Shapoclyack/issues/312)).
+Rotate it when an agent host is suspected of being compromised, and rotate it
+rather than `OCTO_JWT_SECRET` when the console's own sessions should survive.
+
+1. Set (or change) `OCTO_AGENT_JWT_SECRET` in the API Secret — the same value
+   on every replica, or agents will authenticate against some pods and not
+   others — and roll the API.
+2. Every agent token in the fleet stops verifying at that moment. Nothing else
+   has to be done: an agent that meets a `401` re-exchanges its provisioning
+   key on its next pass, and one that somehow does not re-exchanges when its
+   token expires, within `OCTO_AGENT_JWT_EXPIRE_MINUTES` (default 2 hours).
+   Jobs already claimed keep running; their result upload re-authenticates the
+   same way.
+3. Confirm with `GET /api/agents` that `last_seen_at` is moving again for every
+   agent. One that is not has lost its **provisioning key**, not its token —
+   mint a new one and re-run the installer on that host.
+
+Revoking a provisioning key is the narrower tool and does not need this: it
+stops new exchanges for one agent, while an already-issued token stays valid
+until it expires.
+
 NATS has two users rather than one because they are not equally trusted. `api`
 owns the whole subject tree. `agent` may open an `octo-agents-*` pull consumer
 on the `JOBS` stream, fetch `jobs.scan.{tenant}`, and ack — and nothing else:

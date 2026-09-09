@@ -73,7 +73,7 @@ export default function AgentsPage() {
                 v{row.original.version || "—"}
               </code>
               {isOutdated && (
-                <span title={`Update available: v${row.original.latest_version || "0.42.0"}`} className="flex items-center">
+                <span title={`Update available: v${row.original.latest_version || "—"}`} className="flex items-center">
                   <ArrowUpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                 </span>
               )}
@@ -203,7 +203,7 @@ export default function AgentsPage() {
         <KpiCard
           label="Updates Available"
           value={summary?.outdated_agents ?? 0}
-          hint={`Target: v${summary?.latest_version || "0.42.0"}`}
+          hint={`Target: v${summary?.latest_version || "—"}`}
           decorationColor="amber"
         />
       </div>

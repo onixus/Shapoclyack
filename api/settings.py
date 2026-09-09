@@ -24,6 +24,14 @@ VALID_ENVS = (ENV_DEV, ENV_PROD)
 # stale copy of the literal would pass while the insecure default stayed live.
 DEFAULT_JWT_SECRET = "shapoclyack-dev-secret-change-me"
 
+# The only JWT algorithm this installation signs and verifies with. It is an
+# allowlist rather than a free-text setting because the algorithm decides what
+# a token's ``alg`` header can talk the decoder into: "none" and the RS/ES
+# families are the two classic confusion attacks, and neither has key material
+# here to make it work honestly. Widening this set is a key-management change
+# (#312), not a configuration one.
+ALLOWED_JWT_ALGORITHMS = ("HS256",)
+
 # The other credentials k8s/shapoclyack/base/kustomization.yaml ships as
 # literals. They are placeholders exactly like the JWT secret above, but they
 # reach the process inside a connection URL rather than as a variable of their
@@ -84,8 +92,11 @@ class Settings:
     # are trusted, since whoever writes the field is stating the value.
     env: str = ENV_PROD
     jwt_secret: str = DEFAULT_JWT_SECRET
-    jwt_algorithm: str = "HS256"
+    jwt_algorithm: str = ALLOWED_JWT_ALGORITHMS[0]
     jwt_expire_minutes: int = 480
+    # Signing key for agent JWTs (OCTO_AGENT_JWT_SECRET). Empty means "derive
+    # one from jwt_secret" -- see agent_signing_secret() below.
+    agent_jwt_secret: str = ""
     output_dir: Path = Path("scanner/output")
     state_dir: Path = Path("scanner/state")
     config_path: Path = Path("scanner/config/default.yaml")
@@ -117,6 +128,10 @@ class Settings:
     # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables legacy agent auth.
     agent_token: str = ""
     agent_stale_seconds: int = 120
+    # Lowest agent version allowed to claim jobs (OCTO_AGENT_MIN_VERSION).
+    # Empty = no floor, which is the default: a gate that refuses work by
+    # default would strand every fleet on the upgrade that introduced it.
+    agent_min_version: str = ""
     # TCP ports the SSH push deployer and its host-key probe may dial (#240).
     # The probe opens a connection to a host and port taken from the request
     # body and reports what answered, which over an open range is a port
@@ -434,6 +449,21 @@ class Settings:
     # driving a busy integration does not turn every request into a write.
     service_token_last_used_interval_seconds: int = 300
 
+    def agent_signing_secret(self) -> str:
+        """The key agent JWTs are signed and verified with (#312).
+
+        Never ``jwt_secret``: an operator session and an agent token used to
+        carry the same signature, so a console token with ``typ`` rewritten was
+        a valid agent credential for any tenant the moment a ``typ`` check was
+        missed anywhere. When ``OCTO_AGENT_JWT_SECRET`` is unset the key is
+        derived from ``jwt_secret``, which keeps existing installs working
+        across the upgrade while still giving the two audiences different key
+        material.
+        """
+        from api.core.security import derive_agent_jwt_secret
+
+        return self.agent_jwt_secret or derive_agent_jwt_secret(self.jwt_secret)
+
 
 # Legacy sqlite filename from when the product was called "octo-man". Kept as a
 # fallback so an existing self-host keeps its data after the rename instead of
@@ -693,10 +723,23 @@ def load_settings() -> Settings:
     if mode not in {"local", "agent"}:
         mode = "local"
 
+    # Refused in every environment, not only prod: an algorithm this build
+    # cannot honestly verify is never a local-development convenience, and the
+    # variable used to be read by api.core.security alone while Settings pinned
+    # HS256 regardless (#312).
+    algorithm = os.environ.get("OCTO_JWT_ALGORITHM", ALLOWED_JWT_ALGORITHMS[0]).strip() or ALLOWED_JWT_ALGORITHMS[0]
+    if algorithm not in ALLOWED_JWT_ALGORITHMS:
+        raise InsecureConfigurationError(
+            f"OCTO_JWT_ALGORITHM must be one of {', '.join(ALLOWED_JWT_ALGORITHMS)}.\n"
+            "    Anything else is either unverifiable here or a token-forgery\n"
+            "    surface: this installation holds one shared symmetric secret."
+        )
+
     settings = Settings(
         env=env,
         jwt_secret=os.environ.get("API_SECRET_KEY", "").strip()
         or os.environ.get("OCTO_JWT_SECRET", DEFAULT_JWT_SECRET),
+        jwt_algorithm=algorithm,
         jwt_expire_minutes=int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")),
         output_dir=Path(os.environ.get("OCTO_OUTPUT_DIR", "scanner/output")),
         state_dir=Path(os.environ.get("OCTO_STATE_DIR", "scanner/state")),
@@ -714,12 +757,14 @@ def load_settings() -> Settings:
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
+        agent_min_version=os.environ.get("OCTO_AGENT_MIN_VERSION", "").strip(),
         agent_deploy_ssh_ports=os.environ.get("OCTO_AGENT_DEPLOY_SSH_PORTS", "22,2222").strip(),
         agent_deploy_enforce_scan_scope=os.environ.get(
             "OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE", "false"
         ).lower()
         in {"1", "true", "yes"},
         agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
+        agent_jwt_secret=os.environ.get("OCTO_AGENT_JWT_SECRET", "").strip(),
         agent_results_max_body_bytes=int(
             os.environ.get("OCTO_AGENT_RESULTS_MAX_BODY_BYTES", str(128 * 1024 * 1024))
         ),

@@ -43,6 +43,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
+  ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
+  which changes nothing. Set it and an agent below the floor is answered `426
+  Upgrade Required` on `POST /api/agent/jobs/claim`, while `register` and
+  `heartbeat` keep working on purpose — a gated agent that vanished from
+  `GET /api/agents` would be a host nobody could find to upgrade. The heartbeat
+  response carries `min_version`, `upgrade_required` and a human-readable
+  `upgrade_message`; `agent/worker.py` logs it once per change rather than once
+  per poll, and treats the `426` as a wait rather than a crash. Versions are
+  ordered by the dpkg comparator this codebase already uses for package
+  matching, so `0.3.2.1` < `0.44-0907` and a `-beta1` of the required release is
+  not below it. An unparseable or absent version is below every floor.
+- **`OCTO_AGENT_JWT_SECRET`** — see *Security* below.
 - **Three gaps the console's Users and Integrations pages ran into.**
   `POST /api/users` now accepts an optional `email`, written in the same
   transaction as the account (always unverified — marking an address verified,
@@ -378,6 +391,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **The agent's version is the release's version**
+  ([#363](https://github.com/onixus/Shapoclyack/issues/363)). `LATEST_AGENT_VERSION`
+  was the literal `0.42.0` while the agent shipped `0.3.2.1`, so every agent in
+  every installation reported `is_outdated`, `outdated_agents` equalled the
+  fleet size, and `upgrade_requested` could never clear — it clears when the
+  agent reports a *different* version, and no upgrade could reach a version that
+  constant agreed with. `LATEST_AGENT_VERSION` is now `api.__version__`.
+  `agent/__init__.py` keeps its own literal because neither container image
+  ships both packages; `tests/test_agent_version.py` fails on any drift, and the
+  agent's version is now a release bump touch-point.
 - **The tenant-wide matcher run is batched** — `run_for_tenant` opened a
   session per device and issued a `DELETE` plus one `INSERT` per row, so its
   cost scaled with the device count rather than the row count. It now walks
@@ -582,6 +605,38 @@ All notable changes to Shapoclyack are documented in this file.
   verification run had confirmed a fix for something visibly still there — the
   one claim that column exists to make un-fakeable. Found while auditing the
   reopen path for the false-positive work.
+
+### Security
+
+- **Operator tokens and agent tokens no longer share a signing key**
+  ([#312](https://github.com/onixus/Shapoclyack/issues/312)). Both families were
+  signed with `jwt_secret`, so the `typ` claim was the only thing separating a
+  console session from an agent credential for an arbitrary tenant: any missed
+  `typ` check, anywhere, was a full escalation, and the key an agent host could
+  leak was the key that signs admin sessions. Agent JWTs are now signed with
+  `OCTO_AGENT_JWT_SECRET`. **No action is required on upgrade** — when that
+  variable is unset the key is derived from `OCTO_JWT_SECRET` with HKDF-SHA256
+  (info `shapoclyack-agent-jwt`), which needs no new configuration and no new
+  dependency while still giving the two audiences different key material. Set it
+  explicitly to rotate the fleet without invalidating console sessions; see
+  *Rotating the agent token signing key* in `docs/operations.md`.
+
+  **On upgrade every existing agent token stops verifying.** An agent
+  re-exchanges its provisioning key as soon as it meets a `401` (new: it used to
+  wait for its next scheduled refresh), and at worst when its token expires —
+  within `OCTO_AGENT_JWT_EXPIRE_MINUTES`, 2 hours by default. Jobs already
+  claimed keep running.
+- **`get_api_secret_key()` no longer falls back to a published literal.** It
+  returned the development secret printed in this repository whenever neither
+  `API_SECRET_KEY` nor `OCTO_JWT_SECRET` was set, with no environment check at
+  all, so any code path reaching it before `load_settings()` had refused to
+  start signed real tokens with a public key. `prod` now raises; `dev` lands on
+  the same default `Settings.jwt_secret` uses.
+- **`OCTO_JWT_ALGORITHM` has one reader.** It was honoured by
+  `api/core/security.py` and ignored by `Settings`, which pinned `HS256`
+  regardless — setting it changed what half the codebase signed with and nothing
+  that verified it. `Settings` is now the only source, `HS256` is the only
+  accepted value, and anything else refuses startup in every environment.
 
 ## [0.44-0907] — 2026-09-07
 

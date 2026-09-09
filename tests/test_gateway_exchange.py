@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import jwt
+import pytest
 from fastapi.testclient import TestClient
 
-from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES, decode_jwt
+from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES, decode_jwt, derive_agent_jwt_secret
 from api.services import nats_bus
 from api.services import results_ingest
 from api.settings import Settings
-from tests.conftest import configured_client, make_settings, requires_postgres
+from tests.conftest import TEST_JWT_SECRET, configured_client, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -54,7 +56,12 @@ def test_v1_auth_exchange_returns_tenant_and_agent_claims(tmp_path, monkeypatch)
     assert body["agent_id"] == "edge-42"
     assert body["expires_in"] == DEFAULT_EXCHANGE_TTL_MINUTES * 60
 
-    claims = decode_jwt(body["access_token"], secret="test-secret")
+    # Signed with the *agent* key, not the operator secret (#312): decoding it
+    # with "test-secret" is exactly what the split is supposed to stop.
+    with pytest.raises(jwt.InvalidSignatureError):
+        decode_jwt(body["access_token"], secret=TEST_JWT_SECRET)
+
+    claims = decode_jwt(body["access_token"], secret=derive_agent_jwt_secret(TEST_JWT_SECRET))
     assert claims["typ"] == "agent"
     assert claims["tenant_id"] == "ten_gate"
     assert claims["agent_id"] == "edge-42"

@@ -117,7 +117,7 @@ export function AgentDetailsDrawer({
                   <div className="flex items-center gap-2">
                     <ArrowUpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
                     <span>
-                      Update available: Current <strong>v{agent.version}</strong> &rarr; Latest <strong>v{agent.latest_version || "0.42.0"}</strong>
+                      Update available: Current <strong>v{agent.version}</strong> &rarr; Latest <strong>v{agent.latest_version || "—"}</strong>
                       <span className="block opacity-80">
                         Marking records the intent for operators. The upgrade itself runs on the
                         host — the agent receives no command from here.

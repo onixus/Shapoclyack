@@ -138,6 +138,27 @@ def _collect_system_metrics() -> dict[str, Any]:
     return metrics
 
 
+class AgentTokenRejected(RuntimeError):
+    """The API refused this agent's bearer token (401).
+
+    Its own class so the run loop can tell "this credential is no longer
+    accepted" from every other failure and re-exchange the provisioning key
+    immediately. Rotating ``OCTO_AGENT_JWT_SECRET`` (or the operator secret it
+    is derived from, #312) invalidates every token in the fleet at once, and
+    waiting out ``--jwt-refresh-seconds`` would idle every agent for up to half
+    an hour after an otherwise instant server-side change.
+    """
+
+
+class AgentUpgradeRequired(RuntimeError):
+    """The API refused the claim because this agent is below its version floor.
+
+    Not retried faster than the poll interval and not fatal: the agent keeps
+    registering and heartbeating so it stays visible in the fleet view, which
+    is where an operator finds the hosts that need the upgrade (#363).
+    """
+
+
 class AgentClient:
     def __init__(self, base_url: str, token: str, *, timeout: float = 60.0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -194,6 +215,10 @@ class AgentClient:
                     time.sleep(0.5 * (2**attempt))
                     continue
                 detail = exc.read().decode("utf-8", errors="replace")
+                if exc.code == 401:
+                    raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
+                if exc.code == 426:
+                    raise AgentUpgradeRequired(f"{method} {path} -> 426: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 if attempt < max_retries:
@@ -806,6 +831,7 @@ def run_loop(args: argparse.Namespace) -> int:
     token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))
 
     shutdown_event = threading.Event()
+    last_upgrade_message = ""
 
     def _sig_handler(signum: int, frame: Any) -> None:
         LOG.info("Received signal %s, initiating graceful shutdown", signum)
@@ -828,7 +854,14 @@ def run_loop(args: argparse.Namespace) -> int:
                     token_refresh_at = time.time() + max(60, expires // 2)
                     LOG.info("Refreshed agent JWT (tenant=%s)", exchanged.get("tenant_id"))
 
-                client.heartbeat(agent_id, status="idle")
+                beat = client.heartbeat(agent_id, status="idle")
+                message = str((beat or {}).get("upgrade_message") or "")
+                if message and message != last_upgrade_message:
+                    # Logged on change only: the API repeats it on every
+                    # heartbeat, and an agent that cannot claim work would
+                    # otherwise fill its journal with one line per poll.
+                    LOG.error("%s", message)
+                last_upgrade_message = message
                 job: dict[str, Any] | None = None
                 if nats_session is not None:
                     job = nats_session.pull_and_claim(
@@ -853,6 +886,19 @@ def run_loop(args: argparse.Namespace) -> int:
             except KeyboardInterrupt:
                 LOG.info("Shutting down")
                 return 0
+            except AgentTokenRejected as exc:
+                if not args.provisioning_key:
+                    LOG.error("Agent token rejected and no provisioning key to re-exchange: %s", exc)
+                    time.sleep(args.poll_interval)
+                    continue
+                # Due now, not at the next scheduled refresh: the token is
+                # already worthless, so every poll until then would fail.
+                token_refresh_at = 0.0
+                LOG.warning("Agent token rejected; re-exchanging the provisioning key: %s", exc)
+                time.sleep(min(args.poll_interval, 5.0))
+            except AgentUpgradeRequired as exc:
+                LOG.error("Job claim refused: %s", exc)
+                time.sleep(args.poll_interval)
             except Exception:  # noqa: BLE001
                 LOG.exception("Agent loop error")
                 time.sleep(args.poll_interval)

@@ -159,8 +159,16 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
 
 
 def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
+    """Verify an agent JWT against the *agent* signing key (#312).
+
+    Not ``jwt_secret``: that key signs console sessions, and while the ``typ``
+    checks above and below are what separate the two audiences, a shared
+    signature meant every one of those checks was load-bearing on its own. With
+    separate keys an operator token does not verify here at all, and an agent
+    token does not verify in :func:`decode_token`.
+    """
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(token, settings.agent_signing_secret(), algorithms=[settings.jwt_algorithm])
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

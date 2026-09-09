@@ -206,6 +206,145 @@ def test_agent_client_request_fails_fast_on_client_error(monkeypatch):
     assert attempts == 1  # No retries on 401
 
 
+def test_the_server_side_refusals_get_their_own_exception_types(monkeypatch):
+    """401 and 426 are the two answers the run loop reacts to rather than
+    logs: a rotated signing key (#312) and a fleet-wide version floor (#363).
+    Both used to arrive as a bare RuntimeError indistinguishable from a 500."""
+    import io
+    import urllib.error
+
+    import pytest
+
+    codes = iter([401, 426])
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=next(codes),
+            msg="refused",
+            hdrs={},
+            fp=io.BytesIO(b"nope"),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+
+    with pytest.raises(worker.AgentTokenRejected):
+        client._request("GET", "/api/ping", max_retries=0)  # noqa: SLF001
+    with pytest.raises(worker.AgentUpgradeRequired):
+        client._request("GET", "/api/ping", max_retries=0)  # noqa: SLF001
+
+
+def test_the_loop_re_exchanges_the_provisioning_key_after_a_401(monkeypatch):
+    """Rotating the agent signing key invalidates every token in the fleet at
+    once (#312). Waiting out --jwt-refresh-seconds would idle every agent for
+    up to half an hour after a change that took effect server-side instantly,
+    so a rejected token is re-exchanged on the next pass."""
+    import argparse
+
+    exchanges: list[str] = []
+    beats = 0
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def exchange_provisioning_key(self, provisioning_key: str) -> dict[str, Any]:
+            exchanges.append(provisioning_key)
+            return {"access_token": f"tok-{len(exchanges)}", "tenant_id": "t1", "expires_in": 3600}
+
+        def register(self, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": "a1", "hostname": "edge-1", "tenant_id": "t1"}
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            nonlocal beats
+            beats += 1
+            if beats == 1:
+                raise worker.AgentTokenRejected("POST /api/agent/heartbeat -> 401: expired")
+            # Ends the loop once the re-exchange above has been observed.
+            raise KeyboardInterrupt
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    args = argparse.Namespace(
+        api_url="http://127.0.0.1:8080",
+        token="",
+        timeout=1.0,
+        provisioning_key="prov-key",
+        jwt_refresh_seconds=1800,
+        agent_id="a1",
+        hostname="edge-1",
+        label=None,
+        nats_url="",
+        poll_interval=0.01,
+        config="scanner/config/default.yaml",
+        output_dir="out",
+        scan_timeout=1.0,
+    )
+
+    assert worker.run_loop(args) == 0
+    # One before the loop, one forced by the 401 — not one every 1800 seconds.
+    assert exchanges == ["prov-key", "prov-key"]
+
+
+def test_the_loop_logs_the_upgrade_message_once(monkeypatch, caplog):
+    """The heartbeat response is the only channel that reaches a gated agent,
+    and it repeats the message on every poll — the journal must not."""
+    import argparse
+    import logging
+
+    beats = 0
+    message = "This installation requires agent 0.44-0907 or newer"
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def register(self, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": "a1", "hostname": "edge-1", "tenant_id": "t1"}
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            nonlocal beats
+            beats += 1
+            if beats > 3:
+                raise KeyboardInterrupt
+            return {"agent_id": "a1", "upgrade_message": message}
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    args = argparse.Namespace(
+        api_url="http://127.0.0.1:8080",
+        token="static-token",
+        timeout=1.0,
+        provisioning_key="",
+        jwt_refresh_seconds=1800,
+        agent_id="a1",
+        hostname="edge-1",
+        label=None,
+        nats_url="",
+        poll_interval=0.01,
+        config="scanner/config/default.yaml",
+        output_dir="out",
+        scan_timeout=1.0,
+    )
+
+    with caplog.at_level(logging.ERROR, logger=worker.LOG.name):
+        assert worker.run_loop(args) == 0
+    assert [r for r in caplog.records if message in r.getMessage()].__len__() == 1
+
+
 def test_run_scan_handles_timeout(monkeypatch, tmp_path):
     import subprocess
     from unittest.mock import MagicMock
