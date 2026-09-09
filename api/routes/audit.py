@@ -25,9 +25,10 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from api.auth import Role, TenantPrincipal, require_tenant
-from api.routes._pagination import PageParams, build_page
+from api.routes._pagination import PageQuery, build_page
 from api.schemas import AuditEventInfo, Page
 from api.services import audit as audit_service
+from api.services.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
 router = APIRouter(tags=["audit"])
 
@@ -92,8 +93,9 @@ def _ndjson_rows(events: Iterator[dict[str, Any]]) -> Iterator[str]:
 
 @router.get("/audit", response_model=None)
 def list_audit_events(
-    params: PageParams,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
+    limit: Annotated[int, Query(ge=1, le=MAX_LIMIT, description="Rows per page")] = DEFAULT_LIMIT,
     actor: Annotated[str | None, Query(description="Exact actor (username, token or agent)")] = None,
     action: Annotated[str | None, Query(description="Exact action, e.g. user.role_change")] = None,
     resource_type: Annotated[str | None, Query(description="Exact resource type")] = None,
@@ -111,11 +113,12 @@ def list_audit_events(
 ) -> Page[AuditEventInfo] | StreamingResponse:
     """Recorded changes, newest first. Admin in the tenant; platform admin sees all.
 
-    Always newest-first: this is a log, and the ``sort``/``order`` parameters
-    the other lists take would only offer orders nobody reads an audit trail
-    in. ``q`` is not used here either — the filters below are exact, because
-    "every change to *this* token" is the question, and a substring match over
-    a trail is how the wrong row gets read as the right one.
+    Takes ``offset``/``limit`` but not the ``q``/``sort``/``order`` of the other
+    paginated lists, and does not advertise them: this is a log, so the only
+    order anybody reads it in is newest-first, and the filters below are exact
+    because "every change to *this* token" is the question — a substring match
+    over a trail is how the wrong row gets read as the right one. A parameter
+    accepted and quietly ignored is worse than one that is not there.
 
     ``?format=csv`` and ``?format=ndjson`` stream **every** matching event, not
     the current page: an export bounded by ``limit`` is a page with a filename.
@@ -140,9 +143,8 @@ def list_audit_events(
             media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="audit-events.{suffix}"'},
         )
-    items, total = audit_service.list_events(
-        **scope, offset=params.offset, limit=params.limit
-    )
+    items, total = audit_service.list_events(**scope, offset=offset, limit=limit)
+    params = PageQuery(offset=offset, limit=limit, q=None, sort=None, order="desc")
     return build_page([AuditEventInfo.model_validate(item) for item in items], total, params)
 
 
