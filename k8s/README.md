@@ -115,7 +115,7 @@ API/agent stay HTTP-only until you set:
 ```bash
 # API:    user `api`   — full subject tree
 OCTO_NATS_URL=nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
-# Agent:  user `agent` — pull + ack jobs.scan, nothing else
+# Agent:  user `agent` — pull + ack jobs.scan.{tenant}, nothing else
 OCTO_NATS_URL=nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
 ```
 
@@ -125,8 +125,14 @@ The broker requires authentication (`authorization` in `base/nats/configmap.yaml
 container. Example patches: `examples/nats-api-patch.yaml`,
 `examples/nats-agent-patch.yaml` — both show the ordering.
 
-Subjects: `jobs.scan` (work-queue stream `JOBS`), `ingest.raw_results` (stream
-`INGEST`), `events.asset.{tenant_id}.{kind}` (stream `EVENTS`).
+Subjects: `jobs.scan.{tenant_id}` (work-queue stream `JOBS`, one durable
+consumer `octo-agents-{tenant_id}` per tenant), `ingest.raw_results` (stream
+`INGEST`), `events.asset.{tenant_id}.{kind}` (stream `EVENTS`). See
+[operations.md](../docs/operations.md#per-tenant-job-stream).
+
+The client port is plaintext in base. `examples/nats-tls-configmap-patch.yaml`
+adds TLS (with the cert-manager `Certificate` to copy); clients configure it
+with `OCTO_NATS_TLS_CA` / `_CERT` / `_KEY` / `_HOSTNAME` and a `tls://` URL.
 
 **Asset events (Phase 10.2):** after every successful run the API publishes the
 run's `diff.json` events — `new_asset`, `new_open_port`, `new_cve`,

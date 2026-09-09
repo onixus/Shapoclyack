@@ -1486,11 +1486,13 @@ def _publish_job_offer(settings: Settings, job_id: str) -> None:
             job_id,
         )
         return
+    tenant_subject = nats_bus.jobs_scan_subject(str(payload["tenant_id"]))
     if bus.publish_job_offer(payload):
-        _log.info("Published jobs.scan offer for %s", job_id)
+        _log.info("Published %s offer for %s", tenant_subject, job_id)
     else:
         _log.warning(
-            "Failed to publish jobs.scan for %s; HTTP claim still available",
+            "Failed to publish %s for %s; HTTP claim still available",
+            tenant_subject,
             job_id,
         )
 

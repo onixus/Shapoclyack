@@ -423,7 +423,11 @@ Core deployment variables:
 | `OCTO_API_CORS` | Comma-separated allowed origins. **Must not be `*` in `prod`** |
 | `OCTO_PUBLIC_BASE_URL` | The URL this installation is reached at from outside, e.g. `https://shapoclyack.example.com`. **Required in `prod`.** Everything that hands an operator or a target host a link back to the API is built from it: the install one-liner, the container and Kubernetes snippets, and the `OCTO_API_URL` the SSH push writes into `agent.env`. Never taken from the request's `Host` header, which the caller writes. Under `OCTO_ENV=dev` an unset value falls back to the request URL so a laptop needs no extra variable |
 | `OCTO_POSTGRES_URL` | Primary database connection. **Required in `prod`** — an unset value or a `sqlite://` URL refuses startup, see [above](#startup-safety-octo_env). Falls back to a local SQLite file only under `OCTO_ENV=dev` |
-| `OCTO_NATS_URL` | JetStream connection; empty disables NATS |
+| `OCTO_NATS_URL` | JetStream connection; empty disables NATS. `tls://` selects TLS. Job offers go to `jobs.scan.{tenant}` and each tenant has its own durable consumer `octo-agents-{tenant}` — see [operations.md](operations.md#per-tenant-job-stream) |
+| `OCTO_NATS_TLS_CA` | PEM bundle used to verify the NATS server. Only needed for a privately issued certificate (cert-manager with an in-cluster issuer); a publicly issued one is verified against the system trust store with no variable at all |
+| `OCTO_NATS_TLS_CERT` | Client certificate presented to NATS (mTLS). Requires `verify_and_map: true` server-side, with the certificate CN equal to the NATS username |
+| `OCTO_NATS_TLS_KEY` | Private key for `OCTO_NATS_TLS_CERT` |
+| `OCTO_NATS_TLS_HOSTNAME` | Name the server certificate is verified against, when it differs from the host in `OCTO_NATS_URL` (a broker issued for its in-cluster Service name but dialed by a remote agent at a public address). Never a way to skip verification — hostname checking and certificate verification stay on |
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
 | `OCTO_JOB_EXECUTION_MODE` | `local` or `agent` |

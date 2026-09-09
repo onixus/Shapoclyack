@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from api.services import nats_bus
-from agent.worker import AgentNatsSession, SUBJECT_JOBS_SCAN
+from agent.worker import AgentNatsSession, jobs_scan_subject
 
 NATS_URL = (os.environ.get("OCTO_NATS_URL") or os.environ.get("NATS_URL") or "").strip()
 
@@ -58,7 +58,7 @@ def test_live_agent_session_pulls_offer(bus):
 
     bus._call(_purge())  # noqa: SLF001
     assert bus.publish_json(
-        SUBJECT_JOBS_SCAN,
+        jobs_scan_subject("default"),
         {"job_id": expected_job_id, "tenant_id": "default"},
         msg_id=f"msg-{expected_job_id}",
     )
@@ -69,7 +69,7 @@ def test_live_agent_session_pulls_offer(bus):
             assert job_id == expected_job_id
             return {"job_id": expected_job_id, "run_id": "run-live", "status": "running"}
 
-    session = AgentNatsSession(NATS_URL)
+    session = AgentNatsSession(NATS_URL, tenant_id="default")
     try:
         session.start()
         claimed = session.pull_and_claim(_FakeClient(), "agent-live", timeout=5.0)
@@ -106,3 +106,28 @@ def test_live_ingest_publish(bus):
     )
     assert meta["published"] is True
     assert meta["msg_id"]
+
+
+def test_live_an_agent_never_sees_another_tenants_offer(bus):
+    """The consumer's filter_subject, not the HTTP claim, is what keeps the
+    offer body — ranges, domains, the approved scope — out of the other
+    tenant's agent."""
+    other_job_id = f"live-other-{uuid.uuid4().hex[:12]}"
+
+    async def _purge() -> None:
+        assert bus._js is not None  # noqa: SLF001
+        await bus._js.purge_stream("JOBS")  # noqa: SLF001
+
+    bus._call(_purge())  # noqa: SLF001
+    assert bus.publish_job_offer({"job_id": other_job_id, "tenant_id": "default"})
+
+    class _RefusingClient:
+        def claim(self, agent_id: str, *, job_id: str | None = None):
+            raise AssertionError(f"agent for tenant-b was offered {job_id}")
+
+    session = AgentNatsSession(NATS_URL, tenant_id="tenant-b")
+    try:
+        session.start()
+        assert session.pull_and_claim(_RefusingClient(), "agent-b", timeout=2.0) is None
+    finally:
+        session.close()

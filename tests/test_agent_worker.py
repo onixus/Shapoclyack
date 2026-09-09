@@ -8,8 +8,10 @@ the same targets to a second agent.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from agent import worker
@@ -227,3 +229,98 @@ def test_run_scan_handles_timeout(monkeypatch, tmp_path):
     assert code == 124
     assert "timed out" in (err or "")
     assert archive is None
+
+
+class _FakeMsg:
+    """One JetStream message, recording which disposition the session chose."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.data = json.dumps(payload).encode("utf-8")
+        self.acked = False
+        self.nakked = False
+        self.termed = False
+
+    async def ack(self) -> None:
+        self.acked = True
+
+    async def nak(self) -> None:
+        self.nakked = True
+
+    async def term(self) -> None:
+        self.termed = True
+
+
+class _FakeSub:
+    def __init__(self, *msgs: _FakeMsg) -> None:
+        self._msgs = list(msgs)
+
+    async def fetch(self, batch: int, timeout: float | None = None):
+        from nats.errors import TimeoutError as NatsTimeout
+
+        if not self._msgs:
+            raise NatsTimeout
+        return [self._msgs.pop(0)]
+
+
+def _connected_session(sub: _FakeSub, tenant_id: str) -> worker.AgentNatsSession:
+    """A session with its event loop running but no broker behind it."""
+    session = worker.AgentNatsSession("nats://unused:4222", tenant_id=tenant_id)
+    session._thread.start()  # noqa: SLF001
+    session._nc = SimpleNamespace(is_connected=True, is_closed=True)  # noqa: SLF001
+    session._sub = sub  # noqa: SLF001
+    session._started = True  # noqa: SLF001
+    return session
+
+
+def test_the_session_binds_only_its_own_tenants_subject():
+    """The durable is per tenant too: two tenants sharing one consumer is the
+    same thing as sharing the subject, because a work-queue stream drops a
+    message as soon as whoever pulled it acks."""
+    session = worker.AgentNatsSession("nats://unused:4222", tenant_id="acme-eu")
+
+    assert session._subject == "jobs.scan.acme-eu"  # noqa: SLF001
+    assert session._durable == "octo-agents-acme-eu"  # noqa: SLF001
+
+
+def test_an_offer_for_this_tenant_is_claimed_and_acked():
+    msg = _FakeMsg({"job_id": "job-1", "tenant_id": "acme-eu"})
+    session = _connected_session(_FakeSub(msg), "acme-eu")
+
+    class _Client:
+        def claim(self, agent_id: str, *, job_id: str | None = None):
+            return {"job_id": job_id, "run_id": "run-1"}
+
+    try:
+        claimed = session.pull_and_claim(_Client(), "agent-1", timeout=1.0)
+    finally:
+        session.close()
+
+    assert claimed is not None and claimed["job_id"] == "job-1"
+    assert msg.acked and not msg.termed
+
+
+def test_an_offer_for_another_tenant_is_terminated_not_nakked():
+    """A NAK redelivers the message and spends one of its max_deliver attempts,
+    so an agent that must not run the job would be deciding how many tries its
+    rightful owner has left. Nothing is HTTP-claimed either."""
+    msg = _FakeMsg({"job_id": "job-2", "tenant_id": "other-tenant"})
+    session = _connected_session(_FakeSub(msg), "acme-eu")
+
+    class _Client:
+        def __init__(self) -> None:
+            self.claims = 0
+
+        def claim(self, agent_id: str, *, job_id: str | None = None):
+            self.claims += 1
+            return {"job_id": job_id, "run_id": "run-2"}
+
+    client = _Client()
+    try:
+        claimed = session.pull_and_claim(client, "agent-1", timeout=1.0)
+    finally:
+        session.close()
+
+    assert claimed is None
+    assert msg.termed
+    assert not msg.nakked and not msg.acked
+    assert client.claims == 0

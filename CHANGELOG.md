@@ -16,6 +16,30 @@ All notable changes to Shapoclyack are documented in this file.
   (`422` otherwise, and the job stays the agent's to finish), and every run
   id — the operator-supplied one on `POST /api/jobs` included — must be a
   single path segment of `[A-Za-z0-9_-]{1,64}`.
+- **Per-tenant job subjects and consumers.** Job offers are published on
+  `jobs.scan.{tenant}` instead of a single shared `jobs.scan`, and each tenant
+  has its own durable pull consumer `octo-agents-{tenant}` filtered to that
+  subject. An agent learns its tenant from the API (`tenant_id` in the
+  `POST /api/auth/agent/token` response, or the registration response for an
+  agent on the legacy shared `OCTO_AGENT_TOKEN`, tenant `default`) and consumes
+  only its own tenant's stream; an offer for another tenant that somehow
+  reaches it is terminated rather than NAKed, so it cannot spend one of the
+  offer's redelivery attempts. Tenant ids that are not valid NATS subject
+  tokens go through the same injective encoder `ingest.results.{tenant}` and
+  `events.asset.{tenant}.{kind}` already use. The `agent` NATS permission list
+  in `base/nats/configmap.yaml` now allows `octo-agents-*`; the shared
+  `octo-agents` consumer is no longer created but is left in place (and still
+  permitted) so a rolling agent upgrade works — remove it with
+  `nats consumer rm JOBS octo-agents` once the fleet is upgraded. HTTP claim is
+  unchanged and remains the fallback when NATS is unavailable.
+- **TLS for the NATS connection** ([#309](https://github.com/onixus/Shapoclyack/issues/309),
+  [#359](https://github.com/onixus/Shapoclyack/issues/359)). API and agent
+  accept `tls://` URLs and `OCTO_NATS_TLS_CA`, `OCTO_NATS_TLS_CERT`,
+  `OCTO_NATS_TLS_KEY`, `OCTO_NATS_TLS_HOSTNAME`; certificate and hostname
+  verification are always on, and a publicly issued broker certificate needs no
+  variable at all. `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`
+  adds the server-side `tls {}` block and the cert-manager `Certificate` to
+  copy. Base is unchanged — the kind stand has no CA and stays plaintext.
 
 ### Added
 

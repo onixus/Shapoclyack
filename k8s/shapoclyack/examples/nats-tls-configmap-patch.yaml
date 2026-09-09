@@ -1,0 +1,150 @@
+# TLS for the NATS client port (#309 / #359).
+#
+# Base runs the client port in the clear on purpose: the kind stand has no
+# certificate authority, and a `tls {}` block with no key file is a startup
+# error, not a warning. This patch is what you apply where the port is reached
+# from outside the cluster — every remote agent dials :4222 with a password in
+# the URL, and without TLS that password and every job offer on the wire are
+# plaintext on the path between the agent and the cluster.
+#
+# Strategic-merge patch: Kubernetes replaces the whole `nats.conf` string, so
+# this is the full config, not a diff. Keep it in sync with
+# base/nats/configmap.yaml when that file changes, the same way
+# nats-ha-configmap-patch.yaml is kept in sync. Applying this patch *and*
+# nats-ha-configmap-patch.yaml in one overlay does not work — one of them wins;
+# merge the `tls {}` block below into that file instead.
+#
+# Wiring (overlay kustomization.yaml):
+#
+#   patches:
+#     - path: nats-tls-configmap-patch.yaml
+#     - path: nats-tls-statefulset-patch.yaml   # mounts the Secret, see below
+#
+# There is no statefulset patch in this directory: the mount is three lines and
+# depends on your Secret's name.
+#
+#   spec:
+#     template:
+#       spec:
+#         volumes:
+#           - name: nats-tls
+#             secret:
+#               secretName: shapoclyack-nats-tls
+#         containers:
+#           - name: nats
+#             volumeMounts:
+#               - name: nats-tls
+#                 mountPath: /etc/nats-tls
+#                 readOnly: true
+#
+# Getting the certificate with cert-manager
+# -----------------------------------------
+# cert-manager writes `tls.crt`, `tls.key` and `ca.crt` into the Secret named
+# by `secretName`, which is exactly the three files referenced below. An
+# in-cluster issuer is enough when agents are given the CA; use a public issuer
+# (Let's Encrypt with a DNS-01 solver) if you would rather not distribute one.
+#
+#   apiVersion: cert-manager.io/v1
+#   kind: Certificate
+#   metadata:
+#     name: shapoclyack-nats-tls
+#     namespace: network-scan
+#   spec:
+#     secretName: shapoclyack-nats-tls
+#     issuerRef:
+#       name: your-issuer
+#       kind: ClusterIssuer
+#     dnsNames:
+#       # In-cluster clients (API, in-cluster agents).
+#       - shapoclyack-nats-client
+#       - shapoclyack-nats-client.network-scan.svc
+#       # The name remote agents dial. It must be here, or their handshake
+#       # fails hostname verification — that is what OCTO_NATS_TLS_HOSTNAME is
+#       # for when it cannot be.
+#       - nats.example.com
+#     duration: 2160h    # 90d
+#     renewBefore: 360h  # 15d
+#
+# Client side
+# -----------
+# API and agents (api/services/nats_bus.py, agent/worker.py) both read:
+#
+#   OCTO_NATS_URL=tls://agent:$(NATS_PASSWORD)@nats.example.com:4222
+#   OCTO_NATS_TLS_CA=/etc/nats-tls/ca.crt        # only for a private CA
+#   OCTO_NATS_TLS_HOSTNAME=nats.example.com      # only if it differs from the URL host
+#   OCTO_NATS_TLS_CERT=/etc/nats-tls/tls.crt     # mTLS only, with verify_and_map below
+#   OCTO_NATS_TLS_KEY=/etc/nats-tls/tls.key
+#
+# A public CA needs none of the OCTO_NATS_TLS_* variables — `tls://` alone
+# verifies against the system trust store. See docs/configuration.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shapoclyack-nats-config
+data:
+  nats.conf: |
+    port: 4222
+    http_port: 8222
+
+    # TLS on the client port. `verify: false` because clients authenticate with
+    # the username/password in their URL, not with a client certificate: this
+    # encrypts the connection and proves the *server's* identity. To require
+    # client certificates as well, set `verify_and_map: true`, give each client
+    # a certificate whose CN is its NATS username (`api` / `agent`), and set
+    # OCTO_NATS_TLS_CERT / OCTO_NATS_TLS_KEY on both.
+    #
+    # Files come from the Secret cert-manager writes (see the header). No
+    # `$VAR` expansion here — nats-server reads the paths at boot, so a rotated
+    # certificate needs a pod restart unless you add a reloader sidecar.
+    tls {
+      cert_file: "/etc/nats-tls/tls.crt"
+      key_file: "/etc/nats-tls/tls.key"
+      ca_file: "/etc/nats-tls/ca.crt"
+      verify: false
+      timeout: 3
+    }
+
+    jetstream {
+      store_dir: /data
+      max_mem: 256M
+      max_file: 4G
+    }
+
+    # $SERVER_NAME (pod name, e.g. shapoclyack-nats-0) keeps cluster peers
+    # distinct; set via downward API in statefulset.yaml.
+    server_name: $SERVER_NAME
+
+    # Authentication. Identical to base/nats/configmap.yaml — TLS is about the
+    # transport; it does not replace the user split, and an anonymous client
+    # over TLS is still an anonymous client.
+    authorization {
+      users: [
+        # API: publishes jobs.scan.{tenant}, creates the streams and their
+        # per-tenant consumers, and consumes ingest.> for the ClickHouse
+        # worker. No permissions block — it owns the whole subject tree.
+        { user: api, password: $NATS_API_PASSWORD }
+
+        # Agents pull their tenant's jobs.scan.{tenant} and ack it, and nothing
+        # else. See base/nats/configmap.yaml for what each token is for.
+        {
+          user: agent
+          password: $NATS_AGENT_PASSWORD
+          permissions: {
+            publish: {
+              allow: [
+                "$JS.API.INFO"
+                "$JS.API.STREAM.NAMES"
+                "$JS.API.STREAM.INFO.JOBS"
+                "$JS.API.CONSUMER.INFO.JOBS.octo-agents-*"
+                "$JS.API.CONSUMER.CREATE.JOBS.octo-agents-*"
+                "$JS.API.CONSUMER.CREATE.JOBS.octo-agents-*.>"
+                "$JS.API.CONSUMER.DURABLE.CREATE.JOBS.octo-agents-*"
+                "$JS.API.CONSUMER.MSG.NEXT.JOBS.octo-agents-*"
+                "$JS.ACK.JOBS.octo-agents-*.>"
+              ]
+            }
+            subscribe: { allow: ["_INBOX.>"] }
+          }
+        }
+      ]
+    }
