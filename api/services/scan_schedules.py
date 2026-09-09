@@ -37,7 +37,19 @@ from scanner.scheduler import next_cron_time, parse_cron
 
 _settings: Settings | None = None
 
-_SCAN_OPTION_KEYS = ("mode", "intent", "delta", "skip_nse", "notify", "export_defectdojo")
+# Stored verbatim in the schedule's scan_options and replayed into
+# StartScanRequest by schedule_dispatcher, so a key added here has to exist
+# on that model. A schedule written before a key existed simply has no
+# entry for it and dispatches on the request default.
+_SCAN_OPTION_KEYS = (
+    "mode",
+    "intent",
+    "delta",
+    "skip_nse",
+    "notify",
+    "export_defectdojo",
+    "surface",
+)
 _TARGET_KEYS = ("ranges", "domains", "ports", "ports_udp")
 
 

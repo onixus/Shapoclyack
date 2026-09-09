@@ -163,6 +163,9 @@ export type RunSummary = {
   vulnerable_hosts: number | null;
   has_diff: boolean;
   has_summary: boolean;
+  /** Which side of the perimeter the scan looked at (see lib/scan-surface.ts);
+   * null for a run recorded before the marker existed. */
+  surface?: "external" | "internal" | "mixed" | null;
 };
 
 export type RunDetail = {
@@ -369,6 +372,21 @@ export type JobInfo = {
   attempts?: number;
   /** Persisted start options (intent, mode, delta, wordlist provenance, …). */
   scan_options?: Record<string, unknown> | null;
+  /** Top-level mirror of `scan_options.surface`. */
+  surface?: "external" | "internal" | "mixed" | null;
+  /** Whether the operator declared the surface or the server derived it from the targets. */
+  surface_source?: "operator" | "derived" | null;
+};
+
+/** `GET /api/jobs/summary`: one grouped count instead of paging the list. */
+export type JobSurfaceCounts = { running: number; queued: number; total: number };
+export type JobSummary = {
+  by_status: Record<string, number>;
+  running: number;
+  /** queued + claimed */
+  queued: number;
+  by_surface: Record<"external" | "internal" | "mixed" | "unknown", JobSurfaceCounts>;
+  generated_at: string | null;
 };
 
 export type ScheduleScanOptions = {
@@ -378,6 +396,7 @@ export type ScheduleScanOptions = {
   skip_nse: boolean;
   notify: boolean;
   export_defectdojo: boolean;
+  surface?: "external" | "internal" | "mixed" | null;
 };
 
 export type ScheduleTargets = {
@@ -414,6 +433,7 @@ export type CreateScheduleBody = {
   skip_nse: boolean;
   notify: boolean;
   export_defectdojo?: boolean;
+  surface?: "external" | "internal" | "mixed" | null;
   ranges?: string | null;
   domains?: string | null;
   ports?: string | null;
@@ -901,9 +921,20 @@ function pageSearchParams(page?: PageParams, base?: Record<string, string>): URL
   return params;
 }
 
-export async function fetchRuns(page?: PageParams) {
+/** Server-side list filter shared by jobs and runs: `unknown` selects rows the
+ * server could not classify (pre-field jobs, runs without a marker). */
+export type ScanListFilters = {
+  surface?: "external" | "internal" | "mixed" | "unknown";
+};
+
+function scanFilterParams(filters?: ScanListFilters): Record<string, string> | undefined {
+  return filters?.surface ? { surface: filters.surface } : undefined;
+}
+
+export async function fetchRuns(page?: PageParams, filters?: ScanListFilters) {
   try {
-    const { data } = await api.get<Page<RunSummary>>(`/runs?${pageSearchParams(page)}`);
+    const params = pageSearchParams(page, scanFilterParams(filters));
+    const { data } = await api.get<Page<RunSummary>>(`/runs?${params}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -1011,10 +1042,7 @@ export async function withdrawPromotedDomain(domain: string) {
 
 /** Encode each path segment but keep the "/" separators for the :path route param. */
 function encodeArtifactPath(path: string): string {
-  return path
-    .split("/")
-    .map(encodeURIComponent)
-    .join("/");
+  return path.split("/").map(encodeURIComponent).join("/");
 }
 
 /** Raw text of a run artifact (JSON/TXT/MD) for in-UI preview. Kept as a plain
@@ -1143,10 +1171,9 @@ export async function fetchAgentDeploymentSnippets() {
 
 export async function createAgentDeploymentKey(label?: string) {
   try {
-    const { data } = await api.post<AgentDeploymentSnippetResponse>(
-      "/agent/deployment-command",
-      { label: label ?? "" },
-    );
+    const { data } = await api.post<AgentDeploymentSnippetResponse>("/agent/deployment-command", {
+      label: label ?? "",
+    });
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -1185,9 +1212,40 @@ export async function fetchDeployStatus(deployId: string) {
   }
 }
 
-export async function fetchJobs(page?: PageParams) {
+export async function fetchJobs(page?: PageParams, filters?: ScanListFilters) {
   try {
-    const { data } = await api.get<Page<JobInfo>>(`/jobs?${pageSearchParams(page)}`);
+    const params = pageSearchParams(page, scanFilterParams(filters));
+    const { data } = await api.get<Page<JobInfo>>(`/jobs?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchJobSummary() {
+  try {
+    const { data } = await api.get<JobSummary>("/jobs/summary");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchJob(jobId: string) {
+  try {
+    const { data } = await api.get<JobInfo>(`/jobs/${encodeURIComponent(jobId)}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Cancel a job that has not started (ROADMAP P1.3). The API answers 409 for
+ * one already running or finished — cancellation prevents execution, it does
+ * not stop a scan in flight. */
+export async function cancelJob(jobId: string) {
+  try {
+    const { data } = await api.post<JobInfo>(`/jobs/${encodeURIComponent(jobId)}/cancel`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -1219,11 +1277,7 @@ export async function fetchWordlists() {
   }
 }
 
-export async function uploadWordlist(input: {
-  file: File;
-  kind: WordlistKind;
-  name?: string;
-}) {
+export async function uploadWordlist(input: { file: File; kind: WordlistKind; name?: string }) {
   try {
     const form = new FormData();
     form.append("file", input.file);
@@ -1244,22 +1298,36 @@ export async function deleteWordlist(wordlistId: string) {
   }
 }
 
-export async function startScan(body: {
+export type StartScanBody = {
   mode: string;
   intent?: ScanIntent | null;
   delta: boolean;
   skip_nse: boolean;
   notify: boolean;
   export_defectdojo?: boolean;
+  /** Operator's declared surface; the server derives one from the targets when omitted. */
+  surface?: "external" | "internal" | "mixed" | null;
   ranges?: string;
   domains?: string;
   ports?: string;
   ports_udp?: string;
   tenant_id?: string;
   wordlist_id?: string;
-}) {
+};
+
+export async function startScan(
+  body: StartScanBody,
+  options?: {
+    /** Sent as `Idempotency-Key` (ROADMAP P1.5): a retry after a timeout must
+     * not queue a second scan of the same targets. */
+    idempotencyKey?: string;
+  },
+) {
   try {
-    const { data } = await api.post<JobInfo>("/jobs", body);
+    const headers = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    const { data } = await api.post<JobInfo>("/jobs", body, { headers });
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -1346,7 +1414,11 @@ export async function fetchAsset(assetId: string, tenantId = "default") {
   }
 }
 
-export async function fetchAssetContextEvents(assetId: string, tenantId = "default", page?: PageParams) {
+export async function fetchAssetContextEvents(
+  assetId: string,
+  tenantId = "default",
+  page?: PageParams,
+) {
   try {
     const params = pageSearchParams(page, tenantParam(tenantId));
     const { data } = await api.get<Page<AssetContextEvent>>(
@@ -1359,10 +1431,7 @@ export async function fetchAssetContextEvents(assetId: string, tenantId = "defau
 }
 
 /** All Lariska endpoint devices for a tenant (optional filter by linked asset). */
-export async function fetchEndpointDevices(opts?: {
-  tenantId?: string;
-  assetId?: string;
-}) {
+export async function fetchEndpointDevices(opts?: { tenantId?: string; assetId?: string }) {
   try {
     const params = new URLSearchParams(tenantParam(opts?.tenantId));
     if (opts?.assetId) params.set("asset_id", opts.assetId);
@@ -1406,16 +1475,11 @@ export async function fetchEndpointDeviceChanges(deviceId: string, tenantId = "d
 
 /** Cross-device recent software-change feed (installed/removed/updated),
  * newest first — the global counterpart to fetchEndpointDeviceChanges. */
-export async function fetchRecentSoftwareChanges(opts?: {
-  tenantId?: string;
-  limit?: number;
-}) {
+export async function fetchRecentSoftwareChanges(opts?: { tenantId?: string; limit?: number }) {
   try {
     const params = new URLSearchParams(tenantParam(opts?.tenantId));
     params.set("limit", String(opts?.limit ?? 50));
-    const { data } = await api.get<EndpointSoftwareChangeFeedItem[]>(
-      `/endpoint/changes?${params}`,
-    );
+    const { data } = await api.get<EndpointSoftwareChangeFeedItem[]>(`/endpoint/changes?${params}`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -1582,12 +1646,7 @@ export async function createProvisioningKey(tenantId: string, label = "") {
 /** Persistent finding across runs (#145). Distinct from `Vulnerability`, which
  * is a *run's* observation read off disk. */
 export type VulnLifecycleState =
-  | "OPEN"
-  | "ACKNOWLEDGED"
-  | "PLANNED"
-  | "FIXING"
-  | "VERIFYING"
-  | "CLOSED";
+  "OPEN" | "ACKNOWLEDGED" | "PLANNED" | "FIXING" | "VERIFYING" | "CLOSED";
 
 export type SlaState = "on_track" | "due_soon" | "breached" | "accepted" | "none";
 
@@ -1693,6 +1752,9 @@ export type VulnerabilitySummary = {
   estate_risk: NistRiskLevel | null;
   by_state: Record<string, number>;
   by_severity_open: Record<string, number>;
+  /** Open findings by observed network exposure: external / internal / unknown
+   * (NULL counted as unknown). Absent from an API older than this field. */
+  by_network_exposure_open?: Record<string, number>;
   by_risk_level_open: Record<string, number>;
   by_sla: Record<string, number>;
   breached: number;
@@ -1724,7 +1786,11 @@ export type VulnerabilityListFilters = {
   sla?: SlaState | "";
   stale_days?: number;
   in_kev?: boolean;
+  /** Observed exposure of the finding's host; "unknown" also matches NULL. */
+  network_exposure?: NetworkExposure | "";
 };
+
+export type NetworkExposure = "external" | "internal" | "unknown";
 
 export type VulnerabilityTransitionBody = {
   state: VulnLifecycleState;
@@ -1769,6 +1835,7 @@ export async function fetchTrackedVulnerabilities(
     if (filters?.unassigned) params.set("unassigned", "true");
     if (filters?.sla) params.set("sla", filters.sla);
     if (filters?.in_kev) params.set("in_kev", "true");
+    if (filters?.network_exposure) params.set("network_exposure", filters.network_exposure);
     if (filters?.stale_days != null) params.set("stale_days", String(filters.stale_days));
     const { data } = await api.get<Page<TrackedVulnerability>>(`/vulnerabilities?${params}`);
     return data;
@@ -1989,9 +2056,7 @@ export async function fetchRiskHistory(params?: {
 
 export async function triggerRiskSnapshot() {
   try {
-    const { data } = await api.post<RiskScoreSnapshot>(
-      "/vulnerabilities/risk-history/snapshot",
-    );
+    const { data } = await api.post<RiskScoreSnapshot>("/vulnerabilities/risk-history/snapshot");
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -2304,7 +2369,12 @@ export type GeneratedReportInfo = {
   size_bytes: number;
   error: string | null;
   /** One entry per recipient — "sent" is not true when three of four bounced. */
-  delivery: { transport: string | null; target: string | null; status: string; error: string | null }[];
+  delivery: {
+    transport: string | null;
+    target: string | null;
+    status: string;
+    error: string | null;
+  }[];
   generated_at: string | null;
   generated_by: string | null;
 };
@@ -2660,9 +2730,7 @@ export type TenantQuotaUpdate = {
 
 export async function fetchTenantQuota(tenantId: string) {
   try {
-    const { data } = await api.get<TenantQuota>(
-      `/tenants/${encodeURIComponent(tenantId)}/quota`,
-    );
+    const { data } = await api.get<TenantQuota>(`/tenants/${encodeURIComponent(tenantId)}/quota`);
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -2687,6 +2755,411 @@ export async function updateTenantQuota(tenantId: string, body: TenantQuotaUpdat
 export async function deleteTenantQuota(tenantId: string) {
   try {
     await api.delete(`/tenants/${encodeURIComponent(tenantId)}/quota`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Integrations: outbound webhooks and ticket transports
+// ---------------------------------------------------------------------------
+
+/** `webhook` is the signed HMAC POST; the other three build a native
+ * create-issue call for the tracker (api/services/integrations/tickets.py). */
+export type WebhookTransport = "webhook" | "jira" | "servicenow" | "defectdojo";
+
+/** Asset-event kinds a subscription may filter on (api/services/asset_events.py
+ * EVENT_KINDS). An empty list on a subscription means "every kind". */
+export const WEBHOOK_EVENT_KINDS = [
+  "new_asset",
+  "new_open_port",
+  "new_cve",
+  "cert_expiring",
+  "decommissioned_host",
+] as const;
+
+export type WebhookEventKind = (typeof WEBHOOK_EVENT_KINDS)[number];
+
+export type WebhookSeverity = "low" | "medium" | "high" | "critical";
+
+export type WebhookInfo = {
+  subscription_id: string;
+  tenant_id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  event_kinds: string[];
+  min_severity: string | null;
+  has_secret: boolean;
+  headers: Record<string, string>;
+  transport: WebhookTransport;
+  /** Adapter knobs: `project_key`/`issue_type`, `table`, or `test_id`. */
+  transport_config: Record<string, unknown>;
+  created_at: string | null;
+  created_by: string | null;
+  updated_at: string | null;
+  last_delivery_at: string | null;
+  last_status: string | null;
+  /** Present only in the response that created or rotated it — write-only after. */
+  secret?: string | null;
+};
+
+/** One delivery: queue entry, DLQ row and audit record in the same shape. */
+export type WebhookDelivery = {
+  delivery_id: string;
+  tenant_id: string;
+  subscription_id: string;
+  event_id: string;
+  event_kind: string;
+  status: string;
+  attempts: number;
+  next_attempt_at: string | null;
+  last_status_code: number | null;
+  last_error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  delivered_at: string | null;
+};
+
+export type CreateWebhookBody = {
+  name: string;
+  url: string;
+  event_kinds?: string[];
+  min_severity?: WebhookSeverity | null;
+  /** Omitted on a `webhook` transport = the API generates the signing secret.
+   * Required on a ticket transport unless an Authorization header is set. */
+  secret?: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  transport?: WebhookTransport;
+  transport_config?: Record<string, unknown>;
+};
+
+export type UpdateWebhookBody = {
+  name?: string;
+  url?: string;
+  enabled?: boolean;
+  event_kinds?: string[];
+  min_severity?: WebhookSeverity | null;
+  headers?: Record<string, string>;
+  transport?: WebhookTransport;
+  transport_config?: Record<string, unknown>;
+  /** New HMAC secret or tracker token; omitted = keep the current one. Never echoed back. */
+  secret?: string;
+};
+
+/** `null` says the webhook router is not mounted — `OCTO_WEBHOOKS_ENABLED` is
+ * off on this installation, so there is nothing to list rather than an error to
+ * report. Two spellings of the same thing reach us: a plain 404 from the API,
+ * and a 200 carrying the exported console's `index.html`, because a build that
+ * serves the SPA answers every unregistered path from `spa_fallback`
+ * (api/app.py). Anything that is not a page envelope is that second one. */
+export async function fetchWebhooks(page?: PageParams) {
+  try {
+    const params = pageSearchParams(page);
+    const { data } = await api.get<Page<WebhookInfo>>(`/webhooks?${params}`);
+    return Array.isArray(data?.items) ? data : null;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) return null;
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createWebhook(body: CreateWebhookBody) {
+  try {
+    const { data } = await api.post<WebhookInfo>("/webhooks", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function updateWebhook(subscriptionId: string, body: UpdateWebhookBody) {
+  try {
+    const { data } = await api.patch<WebhookInfo>(
+      `/webhooks/${encodeURIComponent(subscriptionId)}`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteWebhook(subscriptionId: string) {
+  try {
+    await api.delete(`/webhooks/${encodeURIComponent(subscriptionId)}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** New HMAC signing secret, returned once. Refused by the API for a ticket
+ * transport, where `secret` holds the tracker's API token. */
+export async function rotateWebhookSecret(subscriptionId: string) {
+  try {
+    const { data } = await api.post<WebhookInfo>(
+      `/webhooks/${encodeURIComponent(subscriptionId)}/rotate-secret`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Queues a signed `test` delivery. 202: the ping is queued, not answered —
+ * the outcome shows up in the deliveries list one dispatcher tick later. */
+export async function testWebhook(subscriptionId: string) {
+  try {
+    const { data } = await api.post<WebhookDelivery>(
+      `/webhooks/${encodeURIComponent(subscriptionId)}/test`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** `null` for the same reason as `fetchWebhooks`. `status` is the queue state:
+ * pending, delivered, or dead — the dead-letter queue. */
+export async function fetchWebhookDeliveries(page?: PageParams, filters?: { status?: string }) {
+  try {
+    const params = pageSearchParams(page, filters?.status ? { status: filters.status } : undefined);
+    const { data } = await api.get<Page<WebhookDelivery>>(`/webhooks/deliveries?${params}`);
+    return Array.isArray(data?.items) ? data : null;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) return null;
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Takes one delivery back out of the DLQ; the dispatcher picks it up next tick. */
+export async function retryWebhookDelivery(deliveryId: string) {
+  try {
+    const { data } = await api.post<WebhookDelivery>(
+      `/webhooks/deliveries/${encodeURIComponent(deliveryId)}/retry`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Console accounts, tenant membership and the sign-in trail (#156, #157)
+// ---------------------------------------------------------------------------
+
+/** A console account. Carries no password material by construction — the API
+ * has no field for one, so nothing here can leak a hash. */
+export type UserInfo = {
+  username: string;
+  role: Role;
+  disabled: boolean;
+  /** False for an account backfilled from an orphan membership: it exists and
+   * can be granted tenants, but cannot sign in until an admin sets a password. */
+  has_password: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  disabled_at: string | null;
+  password_changed_at: string | null;
+  created_by: string | null;
+  /** Tenant ids the account is a member of; a platform admin needs none. */
+  tenants?: string[];
+  is_platform_admin?: boolean;
+  email: string | null;
+  email_verified: boolean;
+  sso_linked: boolean;
+};
+
+export type CreateUserBody = {
+  username: string;
+  password: string;
+  role: Role;
+  /** Set in the same transaction as the account. */
+  email?: string | null;
+};
+
+export async function fetchUsers() {
+  try {
+    const { data } = await api.get<UserInfo[]>("/users");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** The API owns the rules (username shape, password length): the caller shows
+ * whatever it refuses with rather than re-implementing them here. */
+export async function createUser(body: CreateUserBody) {
+  try {
+    const { data } = await api.post<UserInfo>("/users", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Admin reset — deliberately does not take the old password, which is the
+ * case the reset exists for. */
+export async function setUserPassword(username: string, password: string) {
+  try {
+    const { data } = await api.put<UserInfo>(`/users/${encodeURIComponent(username)}/password`, {
+      password,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function setUserRole(username: string, role: Role) {
+  try {
+    const { data } = await api.put<UserInfo>(`/users/${encodeURIComponent(username)}/role`, {
+      role,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** `verified` is an administrative assertion: it is what makes the account
+ * eligible to be linked to an SSO identity by address (Track E). */
+export async function setUserEmail(username: string, email: string | null, verified: boolean) {
+  try {
+    const { data } = await api.put<UserInfo>(`/users/${encodeURIComponent(username)}/email`, {
+      email,
+      verified,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function setUserDisabled(username: string, disabled: boolean) {
+  try {
+    const { data } = await api.put<UserInfo>(`/users/${encodeURIComponent(username)}/disabled`, {
+      disabled,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteUser(username: string) {
+  try {
+    await api.delete(`/users/${encodeURIComponent(username)}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Rotate your own password. Any role — the current one is re-verified even
+ * though the caller already holds a token. */
+export async function changeOwnPassword(currentPassword: string, newPassword: string) {
+  try {
+    await api.post("/auth/password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type AuthEventOutcome = "success" | "failure" | "locked" | "denied" | "trust_change";
+
+/** One recorded access decision (#157, #226, #241): a login, a scan or deploy
+ * target refused by the tenant's approved scope, or an SSH host-key pin an
+ * admin set or removed. `client_ip` is empty for the decisions taken in the
+ * service layer, which have no request to read it from. */
+export type AuthEventInfo = {
+  id: number;
+  occurred_at: string | null;
+  username: string;
+  client_ip: string;
+  outcome: AuthEventOutcome;
+  reason: string | null;
+  detail: string | null;
+};
+
+/** Always newest-first: this is a log, and the API takes no sort for it. */
+export async function fetchAuthEvents(page?: PageParams, outcome?: AuthEventOutcome) {
+  try {
+    const params = pageSearchParams(page, outcome ? { outcome } : undefined);
+    const { data } = await api.get<Page<AuthEventInfo>>(`/auth/events?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** One user's access to one tenant (ROADMAP P0). The role inside the tenant
+ * can differ from the account's global role. */
+export type MembershipInfo = {
+  username: string;
+  tenant_id: string;
+  role: Role;
+  created_at: string | null;
+  created_by: string | null;
+};
+
+export async function fetchTenantMembers(tenantId: string) {
+  try {
+    const { data } = await api.get<MembershipInfo[]>(
+      `/tenants/${encodeURIComponent(tenantId)}/members`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Grant or re-grant one user access to one tenant. Idempotent, so the same
+ * call is both "add" and "change the role". */
+export async function grantMembership(tenantId: string, username: string, role: Role) {
+  try {
+    const { data } = await api.put<MembershipInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(username)}`,
+      { role },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function revokeMembership(tenantId: string, username: string) {
+  try {
+    await api.delete(
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(username)}`,
+    );
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** The plaintext key is never in this list: it exists once, in the response to
+ * the create call the agent deployment dialog makes. */
+export async function fetchProvisioningKeys(tenantId: string) {
+  try {
+    const { data } = await api.get<ProvisioningKeyInfo[]>(
+      `/tenants/${encodeURIComponent(tenantId)}/provisioning-keys`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function revokeProvisioningKey(tenantId: string, keyId: string) {
+  try {
+    const { data } = await api.post<ProvisioningKeyInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/provisioning-keys/${encodeURIComponent(keyId)}/revoke`,
+    );
+    return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }

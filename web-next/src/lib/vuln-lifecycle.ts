@@ -77,6 +77,8 @@ export function vulnListHref(filters?: {
   state?: VulnLifecycleState;
   severity?: string;
   unassigned?: boolean;
+  /** Observed network exposure of the finding's host (external/internal/unknown). */
+  networkExposure?: string;
 }): string {
   const params = new URLSearchParams();
   if (filters?.assetId) params.set("assetId", filters.assetId);
@@ -84,6 +86,7 @@ export function vulnListHref(filters?: {
   if (filters?.state) params.set("state", filters.state);
   if (filters?.severity) params.set("severity", filters.severity);
   if (filters?.unassigned) params.set("unassigned", "1");
+  if (filters?.networkExposure) params.set("exposure", filters.networkExposure);
   const query = params.toString();
   return query ? `/vulnerabilities?${query}` : "/vulnerabilities";
 }

@@ -360,6 +360,7 @@ def resolve_network_exposure(
     host: str | None = None,
     operator_exposure: str | None = None,
     explicit: str | None = None,
+    declared_surface: str | None = None,
 ) -> tuple[str, str]:
     """``(exposure, source)`` for likelihood (#171).
 
@@ -368,6 +369,15 @@ def resolve_network_exposure(
     RFC1918 *is* evidence it is not. Operator-set ``exposure_level=internet``
     is a named decision, not a measurement. ``unknown`` is the default so
     absence of data does not score as "nothing is exposed".
+
+    ``declared_surface`` is the surface the operator *declared* on the scan
+    request — the same class of evidence as the asset's ``exposure_level``, and
+    ranked just below it because it describes the whole scan rather than this
+    host. Only an operator-declared surface may be passed: the surface the
+    server derives from the targets is the address-space rule wearing a
+    different hat, and feeding it back here would be exactly the laundering the
+    paragraph above forbids (see ``api.services.scan_surface``). ``mixed``
+    names both answers at once, so it is no evidence and never reaches here.
     """
     if explicit in NETWORK_EXPOSURES:
         return explicit, "finding"
@@ -377,6 +387,10 @@ def resolve_network_exposure(
         return EXTERNAL, "operator-set"
     if operator_exposure == "internal":
         return INTERNAL, "operator-set"
+    if declared_surface == "external":
+        return EXTERNAL, "scan-surface"
+    if declared_surface == "internal":
+        return INTERNAL, "scan-surface"
     return UNKNOWN_EXPOSURE, "none"
 
 
@@ -747,6 +761,7 @@ class RiskScoring:
         *,
         asset_criticality_override: int | None = None,
         operator_exposure: str | None = None,
+        declared_surface: str | None = None,
         cdn_waf_index: dict[tuple[str, int], tuple[str, ...]] | None = None,
         same_asset_foothold: bool = False,
     ) -> dict[str, Any]:
@@ -793,6 +808,7 @@ class RiskScoring:
             host=str(item.get("host") or "") or None,
             operator_exposure=operator_exposure,
             explicit=str(item["network_exposure"]) if item.get("network_exposure") else None,
+            declared_surface=declared_surface,
         )
         exposed = apply_network_exposure(raw_likelihood, exposure)
         published = str(item.get("cve_published") or item.get("published") or "") or None
@@ -961,6 +977,7 @@ class RiskScoring:
         source_label = {
             "address-space": "address-space",
             "operator-set": "operator-set",
+            "scan-surface": "operator-declared scan surface",
             "finding": "finding",
             "none": "no observation",
         }.get(network_exposure_source, network_exposure_source)

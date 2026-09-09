@@ -77,7 +77,42 @@ def _to_dict(row: models.User) -> dict[str, Any]:
         # the customer's IdP and the user inside it, and no console screen has
         # a use for either.
         "sso_linked": bool(row.oidc_subject),
+        # The global admin role *is* platform admin: it acts across every
+        # tenant and bypasses the membership table entirely, which is why
+        # ``tenants`` below is usually empty for one.
+        "is_platform_admin": row.role == "admin",
     }
+
+
+def _tenant_ids(session, usernames: list[str]) -> dict[str, list[str]]:
+    """``{username: [tenant_id, ...]}`` for the given accounts, in one query.
+
+    One query for the whole page rather than one per row: the users list is
+    the only place that needs memberships for more than one account, and a
+    per-row lookup there would grow with the installation.
+    """
+    if not usernames:
+        return {}
+    rows = session.execute(
+        select(models.UserTenant.username, models.UserTenant.tenant_id)
+        .where(models.UserTenant.username.in_(usernames))
+        .order_by(models.UserTenant.username, models.UserTenant.tenant_id)
+    ).all()
+    grouped: dict[str, list[str]] = {}
+    for username, tenant_id in rows:
+        grouped.setdefault(username, []).append(tenant_id)
+    return grouped
+
+
+def _with_tenants(session, row: models.User) -> dict[str, Any]:
+    """Public shape plus this one account's memberships.
+
+    Kept apart from :func:`_to_dict` so ``authenticate`` — the hot path, which
+    only needs the username and the role — does not pay for the extra query.
+    """
+    result = _to_dict(row)
+    result["tenants"] = _tenant_ids(session, [row.username]).get(row.username, [])
+    return result
 
 
 def _validate_role(role: str) -> str:
@@ -149,28 +184,52 @@ def list_users() -> list[dict[str, Any]]:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         rows = session.execute(select(models.User).order_by(models.User.username)).scalars().all()
-        return [_to_dict(row) for row in rows]
+        tenants = _tenant_ids(session, [row.username for row in rows])
+        return [
+            {**_to_dict(row), "tenants": tenants.get(row.username, [])} for row in rows
+        ]
 
 
 def get_user(username: str) -> dict[str, Any] | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
-        return _to_dict(row) if row else None
+        return _with_tenants(session, row) if row else None
 
 
 def create_user(
-    *, username: str, password: str, role: str, created_by: str | None = None
+    *,
+    username: str,
+    password: str,
+    role: str,
+    email: str | None = None,
+    created_by: str | None = None,
 ) -> dict[str, Any]:
+    """Create one account, address included, in a single transaction.
+
+    ``email`` is written here rather than by a follow-up call to
+    :func:`set_email` on purpose: a second request that fails leaves an
+    account whose address the operator believes they set. It is always stored
+    **unverified** — the verified flag is what makes an account linkable to an
+    SSO identity by address, and that assertion belongs to a deliberate
+    ``PUT /users/{username}/email``, not to whoever filled the create form.
+    """
     username = _validate_username(username)
     role = _validate_role(role)
     password = _validate_password(password)
+    cleaned_email = _normalise_email(email)
 
     settings = _require_settings()
     now = _now()
     with get_session(settings.postgres_url) as session:
         if session.get(models.User, username) is not None:
             raise ValueError(f"user '{username}' already exists")
+        if cleaned_email is not None:
+            clash = session.execute(
+                select(models.User).where(models.User.email == cleaned_email)
+            ).scalars().first()
+            if clash is not None:
+                raise ValueError("email is already used by another account")
         row = models.User(
             username=username,
             password_hash=hash_password(password),
@@ -179,10 +238,12 @@ def create_user(
             updated_at=now,
             password_changed_at=now,
             created_by=created_by,
+            email=cleaned_email,
+            email_verified=False,
         )
         session.add(row)
         session.flush()
-        return _to_dict(row)
+        return _with_tenants(session, row)
 
 
 def set_password(username: str, password: str) -> dict[str, Any] | None:
@@ -196,7 +257,7 @@ def set_password(username: str, password: str) -> dict[str, Any] | None:
         row.password_changed_at = _now()
         row.updated_at = _now()
         session.flush()
-        return _to_dict(row)
+        return _with_tenants(session, row)
 
 
 def change_own_password(username: str, *, current: str, new: str) -> dict[str, Any] | None:
@@ -221,7 +282,7 @@ def set_role(username: str, role: str) -> dict[str, Any] | None:
         row.role = role
         row.updated_at = _now()
         session.flush()
-        return _to_dict(row)
+        return _with_tenants(session, row)
 
 
 def set_disabled(username: str, disabled: bool) -> dict[str, Any] | None:
@@ -233,7 +294,7 @@ def set_disabled(username: str, disabled: bool) -> dict[str, Any] | None:
         row.disabled_at = _now() if disabled else None
         row.updated_at = _now()
         session.flush()
-        return _to_dict(row)
+        return _with_tenants(session, row)
 
 
 class SsoLinkError(PermissionError):
@@ -415,7 +476,7 @@ def set_email(username: str, email: str | None, *, verified: bool = False) -> di
         row.email_verified = bool(cleaned) and verified
         row.updated_at = _now()
         session.flush()
-        return _to_dict(row)
+        return _with_tenants(session, row)
 
 
 def count_active_admins(exclude: str | None = None) -> int:

@@ -52,6 +52,7 @@ def create_user(
             username=body.username,
             password=body.password,
             role=body.role,
+            email=body.email,
             created_by=admin.username,
         )
     except ValueError as exc:

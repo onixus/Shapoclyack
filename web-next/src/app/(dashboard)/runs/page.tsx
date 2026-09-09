@@ -1,25 +1,58 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Play } from "lucide-react";
+import { FileText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
+import { SurfaceBadge } from "@/components/scans/surface-badge";
 import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
-import { type RunSummary } from "@/lib/api";
+import { type RunSummary, type ScanListFilters } from "@/lib/api";
 import { runDetailHref } from "@/lib/run-data";
+import { runSurface } from "@/lib/scan-surface";
 import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+
+const SURFACE_FILTERS: Array<ScanListFilters["surface"] | undefined> = [
+  undefined,
+  "external",
+  "internal",
+  "mixed",
+  "unknown",
+];
+
+function parseSurface(value: string | null): ScanListFilters["surface"] | undefined {
+  return value === "external" || value === "internal" || value === "mixed" || value === "unknown"
+    ? value
+    : undefined;
+}
 
 export default function RunsPage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
+      <RunsInner />
+    </Suspense>
+  );
+}
+
+function RunsInner() {
   const t = useT();
+  const searchParams = useSearchParams();
+  const surface = parseSurface(searchParams.get("surface"));
   // Server-side paging/search (ROADMAP P3.3). Runs are ordered by run_id —
   // the API cannot sort on summary columns without opening every run's JSON —
   // so only that column is server-sortable here.
   const pagination = usePagination({ sort: "run_id", order: "desc" });
-  const { data, isLoading, error, isFetching } = useRuns(undefined, pagination.params);
+  const { data, isLoading, error, isFetching } = useRuns(
+    undefined,
+    pagination.params,
+    surface ? { surface } : undefined,
+  );
   const runs = data?.items ?? [];
 
   const columns = useMemo<ColumnDef<RunSummary>[]>(
@@ -30,16 +63,26 @@ export default function RunsPage() {
         cell: ({ row }) => (
           <Link
             href={runDetailHref(row.original.run_id)}
-            className="font-mono text-xs text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline font-semibold"
+            className="font-mono text-xs font-semibold text-primary underline-offset-2 hover:underline"
           >
             {row.original.run_id}
           </Link>
         ),
       },
       {
+        id: "surface",
+        header: t("col.surface"),
+        enableSorting: false,
+        cell: ({ row }) => <SurfaceBadge surface={runSurface(row.original)} link />,
+      },
+      {
         accessorKey: "profile",
         header: t("col.profileMode"),
-        cell: ({ getValue }) => <Badge variant="secondary" className="bg-slate-800 text-sky-300 font-mono text-[11px]">{String(getValue() || "—")}</Badge>,
+        cell: ({ getValue }) => (
+          <Badge variant="secondary" className="font-mono text-[11px]">
+            {String(getValue() || "—")}
+          </Badge>
+        ),
       },
       {
         accessorKey: "started_at",
@@ -47,7 +90,7 @@ export default function RunsPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at ? (
-            <span className="font-mono text-xs text-slate-300">
+            <span className="font-mono text-xs text-foreground">
               {format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm")}
             </span>
           ) : (
@@ -58,14 +101,18 @@ export default function RunsPage() {
         accessorKey: "alive_hosts",
         header: t("col.aliveHosts"),
         cell: ({ getValue }) => (
-          <span className="font-mono text-xs font-semibold text-slate-200">{Number(getValue() ?? 0).toLocaleString()}</span>
+          <span className="font-mono text-xs font-semibold text-foreground">
+            {Number(getValue() ?? 0).toLocaleString()}
+          </span>
         ),
       },
       {
         accessorKey: "open_host_port_pairs",
         header: t("col.openPorts"),
         cell: ({ getValue }) => (
-          <span className="font-mono text-xs font-semibold text-slate-200">{Number(getValue() ?? 0).toLocaleString()}</span>
+          <span className="font-mono text-xs font-semibold text-foreground">
+            {Number(getValue() ?? 0).toLocaleString()}
+          </span>
         ),
       },
       {
@@ -78,11 +125,19 @@ export default function RunsPage() {
           const unconfirmed = row.original.unconfirmed_findings ?? 0;
           return (
             <span className="flex items-baseline gap-1.5">
-              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-400" : "text-slate-400"}`}>
+              <span
+                className={cn(
+                  "font-mono text-xs font-bold",
+                  val > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground",
+                )}
+              >
                 {val.toLocaleString()}
               </span>
               {unconfirmed > 0 ? (
-                <span className="font-mono text-[10px] text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
+                <span
+                  className="font-mono text-[10px] text-amber-600 dark:text-amber-300/80"
+                  title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total"
+                >
                   {unconfirmed.toLocaleString()} unconf.
                 </span>
               ) : null}
@@ -96,8 +151,22 @@ export default function RunsPage() {
         header: t("col.artifacts"),
         cell: ({ row }) => (
           <div className="flex gap-1.5">
-            {row.original.has_diff ? <Badge variant="secondary" className="bg-indigo-500/20 text-indigo-300 border-indigo-500/30 text-[10px]">diff</Badge> : null}
-            {row.original.has_summary ? <Badge variant="outline" className="border-emerald-500/30 text-emerald-300 bg-emerald-500/10 text-[10px]">pdf</Badge> : null}
+            {row.original.has_diff ? (
+              <Badge
+                variant="secondary"
+                className="border-indigo-500/30 bg-indigo-500/20 text-[10px] text-indigo-700 dark:text-indigo-300"
+              >
+                diff
+              </Badge>
+            ) : null}
+            {row.original.has_summary ? (
+              <Badge
+                variant="outline"
+                className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-300"
+              >
+                pdf
+              </Badge>
+            ) : null}
           </div>
         ),
       },
@@ -105,22 +174,51 @@ export default function RunsPage() {
     [t],
   );
 
+  const subtitle =
+    surface === "external"
+      ? t("runs.subtitle.external")
+      : surface === "internal"
+        ? t("runs.subtitle.internal")
+        : t("page.runs.subtitle");
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20 shadow-md">
-            <Play className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.runs.title")}</h1>
-            <p className="text-xs text-slate-400">
-              {t("page.runs.subtitle")}
-              {isFetching ? t("common.refreshing") : ""}
-            </p>
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        icon={FileText}
+        tone={surface === "external" ? "sky" : surface === "internal" ? "violet" : "slate"}
+        title={t("page.runs.title")}
+        subtitle={
+          <>
+            {subtitle}
+            {isFetching ? t("common.refreshing") : ""}
+          </>
+        }
+      >
+        <nav
+          aria-label={t("runs.surfaceFilter")}
+          className="inline-flex flex-wrap rounded-lg border border-border bg-muted/50 p-1"
+        >
+          {SURFACE_FILTERS.map((value) => {
+            const active = value === surface;
+            const key = value ?? "all";
+            return (
+              <Link
+                key={key}
+                href={value ? `/runs?surface=${value}` : "/runs"}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
+                  active
+                    ? "bg-card text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {value ? t(`surface.${value}`) : t("surface.all")}
+              </Link>
+            );
+          })}
+        </nav>
+      </PageHeader>
 
       <DataTable
         columns={columns}
@@ -147,4 +245,3 @@ export default function RunsPage() {
     </div>
   );
 }
-

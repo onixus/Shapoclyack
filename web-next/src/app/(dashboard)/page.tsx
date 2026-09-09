@@ -7,6 +7,7 @@ import { ArrowUpRight, Camera, Play, RefreshCw, ShieldAlert, TrendingUp } from "
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { KpiCard } from "@/components/kpi-card";
+import { ScanOpsPanel } from "@/components/dashboard/scan-ops-panel";
 import { OrgPostureTile } from "@/components/org-profile/posture-tile";
 import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
@@ -156,7 +157,7 @@ export default function DashboardPage() {
             />
             {t("common.refresh")}
           </Button>
-          <Link href="/jobs">
+          <Link href="/scans">
             <Button size="sm" className="gap-2 bg-sky-600 text-white hover:bg-sky-500 shadow-lg shadow-sky-950">
               <Play className="h-3.5 w-3.5 fill-current" />
               {t("page.risk.launch")}
@@ -176,7 +177,7 @@ export default function DashboardPage() {
           <ShieldAlert className="mx-auto h-10 w-10 text-slate-500" />
           <h3 className="mt-3 text-sm font-semibold text-slate-200">{t("page.risk.emptyTitle")}</h3>
           <p className="mt-1 text-xs text-slate-400">{t("page.risk.emptyBody")}</p>
-          <Link href="/jobs" className="mt-4 inline-block">
+          <Link href="/scans" className="mt-4 inline-block">
             <Button size="sm" className="bg-sky-600 hover:bg-sky-500">
               {t("page.risk.emptyCta")}
             </Button>
@@ -229,6 +230,8 @@ export default function DashboardPage() {
         />
         <OrgPostureTile runId={latest?.run_id ?? ""} />
       </div>
+
+      <ScanOpsPanel />
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
         <Link href={vulnListHref()} className="text-sky-400 hover:underline">

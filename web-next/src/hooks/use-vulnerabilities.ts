@@ -44,6 +44,10 @@ function filtersKey(filters: VulnerabilityListFilters): Record<string, unknown> 
     sla: filters.sla ?? "",
     stale_days: filters.stale_days ?? null,
     in_kev: Boolean(filters.in_kev),
+    // Both were missing from the key: switching the Source filter served the
+    // previous filter's page from cache until the next poll.
+    source: filters.source ?? "",
+    network_exposure: filters.network_exposure ?? "",
   };
 }
 

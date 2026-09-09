@@ -146,6 +146,120 @@ def test_create_list_and_login_as_new_user(tmp_path, monkeypatch) -> None:
     assert token.json()["role"] == "operator"
 
 
+def test_create_user_stores_the_email_it_was_given_unverified(tmp_path, monkeypatch) -> None:
+    """The address was silently dropped before: ``CreateUserRequest`` had no field.
+
+    Unverified whatever the caller says, because ``verified`` is what makes an
+    account linkable to an SSO identity by address.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+
+    created = client.post(
+        "/api/users",
+        json={
+            "username": "alice",
+            "password": STRONG,
+            "role": "viewer",
+            "email": " Alice@Example.COM ",
+        },
+        headers=_admin(client),
+    )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["email"] == "alice@example.com"
+    assert created.json()["email_verified"] is False
+    listed = {u["username"]: u for u in client.get("/api/users", headers=_admin(client)).json()}
+    assert listed["alice"]["email"] == "alice@example.com"
+
+
+def test_create_user_with_a_taken_email_leaves_no_account_behind(tmp_path, monkeypatch) -> None:
+    """The address is written in the account's own transaction, so the refusal
+    that a second request would have raised cannot leave a half-created user."""
+    client = configured_client(tmp_path, monkeypatch)
+    headers = _admin(client)
+    client.put(
+        "/api/users/operator/email",
+        json={"email": "shared@example.com", "verified": True},
+        headers=headers,
+    )
+
+    refused = client.post(
+        "/api/users",
+        json={
+            "username": "alice",
+            "password": STRONG,
+            "role": "viewer",
+            "email": "shared@example.com",
+        },
+        headers=headers,
+    )
+
+    assert refused.status_code == 422
+    assert "already used" in refused.json()["detail"]
+    assert "alice" not in [u["username"] for u in client.get("/api/users", headers=headers).json()]
+
+
+def test_user_responses_carry_tenant_memberships(tmp_path, monkeypatch) -> None:
+    """Sorted membership ids, and the platform-admin flag that explains an empty list."""
+    client = configured_client(tmp_path, monkeypatch)
+    headers = _admin(client)
+    client.post(
+        "/api/users",
+        json={"username": "alice", "password": STRONG, "role": "viewer"},
+        headers=headers,
+    )
+    acme = client.post("/api/tenants", json={"name": "Acme"}, headers=headers).json()["tenant_id"]
+    client.put(f"/api/tenants/{acme}/members/alice", json={"role": "operator"}, headers=headers)
+    client.put("/api/tenants/default/members/alice", json={"role": "viewer"}, headers=headers)
+
+    listed = {u["username"]: u for u in client.get("/api/users", headers=headers).json()}
+
+    assert listed["alice"]["tenants"] == sorted([acme, "default"])
+    assert listed["alice"]["is_platform_admin"] is False
+    # A platform admin has no grant row and needs none: the global admin role
+    # bypasses the membership table, so an empty list is not "no access".
+    assert listed["admin"]["tenants"] == []
+    assert listed["admin"]["is_platform_admin"] is True
+
+    single = client.put("/api/users/alice/role", json={"role": "operator"}, headers=headers)
+    assert single.json()["tenants"] == sorted([acme, "default"])
+
+
+def test_the_users_list_takes_one_membership_query_whatever_its_length(
+    tmp_path, monkeypatch
+) -> None:
+    """No N+1: the memberships of the whole page come back in a single SELECT."""
+    from sqlalchemy import event
+
+    from api.db.engine import get_engine
+    from api.services import users as users_service
+
+    client = configured_client(tmp_path, monkeypatch)
+    headers = _admin(client)
+    for name in ("alice", "bob", "carol"):
+        client.post(
+            "/api/users",
+            json={"username": name, "password": STRONG, "role": "viewer"},
+            headers=headers,
+        )
+        client.put(f"/api/tenants/default/members/{name}", json={"role": "viewer"}, headers=headers)
+
+    engine = get_engine(users_service._require_settings().postgres_url)
+    seen: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "user_tenants" in statement:
+            seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        users_service.list_users()
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert len(seen) == 1, seen
+
+
 def test_no_response_ever_carries_password_material(tmp_path, monkeypatch) -> None:
     client = configured_client(tmp_path, monkeypatch)
     client.post(

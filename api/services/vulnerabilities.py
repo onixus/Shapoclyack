@@ -50,9 +50,18 @@ from api.services import exploit_evidence
 from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
+from api.services import scan_surface
 from api.services import vuln_states
 from scanner.pipeline.cvss4 import normalize_cwes
-from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
+from api.services.risk_scoring import (
+    FOOTHOLD,
+    LOCAL,
+    NETWORK_EXPOSURES,
+    UNKNOWN_EXPOSURE,
+    get_scorer,
+    index_cdn_waf,
+    path_role,
+)
 from api.settings import Settings
 from scanner.pipeline.asset_identity import identity_candidates_for_host
 from scanner.pipeline.report import SEVERITY_ORDER
@@ -667,6 +676,24 @@ def _run_verifies_anything(settings: Settings, *, run_id: str, tenant_id: str) -
         ) > 0
 
 
+def _declared_surface_for_run(session: Any, *, tenant_id: str, run_id: str) -> str | None:
+    """The surface the operator declared on the job that produced this run.
+
+    ``None`` when no job owns the run (an imported or hand-placed run
+    directory), or when the surface on it was derived rather than declared —
+    see ``scan_surface.declared_surface_for_job``. Newest job first, because a
+    retried scan reuses the run id and the last request is the current
+    declaration.
+    """
+    options = session.scalars(
+        select(models.Job.scan_options)
+        .where(models.Job.tenant_id == tenant_id, models.Job.run_id == run_id)
+        .order_by(models.Job.queued_at.desc())
+        .limit(1)
+    ).first()
+    return scan_surface.declared_surface_for_job(options)
+
+
 def register_findings_from_run(
     settings: Settings, *, tenant_id: str, run_id: str
 ) -> RegisterStats:
@@ -696,6 +723,9 @@ def register_findings_from_run(
     fp_suppressed_observations = fp_overridden = 0
 
     with get_session(settings.postgres_url) as session:
+        declared_surface = _declared_surface_for_run(
+            session, tenant_id=tenant_id, run_id=run_id
+        )
         resolved: list[tuple[dict[str, Any], Any]] = []
         for entry in entries:
             host = str(entry.get("host") or "")
@@ -721,6 +751,7 @@ def register_findings_from_run(
             scored = scorer.score_vulnerability(
                 entry,
                 operator_exposure=asset.exposure_level,
+                declared_surface=declared_surface,
                 cdn_waf_index=cdn_waf,
                 same_asset_foothold=(
                     path_role(entry) == LOCAL and asset.asset_id in footholds
@@ -1962,6 +1993,7 @@ def list_vulnerabilities(
     severity: str | None = None,
     asset_id: str | None = None,
     source: str | None = None,
+    network_exposure: str | None = None,
     assignee: str | None = None,
     unassigned: bool = False,
     sla: str | None = None,
@@ -1988,6 +2020,11 @@ def list_vulnerabilities(
         raise ValueError("unassigned and assignee cannot be combined")
     if source and source not in SOURCES:
         raise ValueError(f"unknown source {source!r}; expected one of {', '.join(SOURCES)}")
+    if network_exposure and network_exposure not in NETWORK_EXPOSURES:
+        raise ValueError(
+            f"unknown network_exposure {network_exposure!r}; "
+            f"expected one of {', '.join(NETWORK_EXPOSURES)}"
+        )
     if severity:
         severity = _validate_severity(severity)
 
@@ -2008,6 +2045,18 @@ def list_vulnerabilities(
         filters.append(models.Vulnerability.asset_id == asset_id)
     if source:
         filters.append(models.Vulnerability.source == source)
+    if network_exposure == UNKNOWN_EXPOSURE:
+        # Findings scored before the exposure signal existed carry NULL, which
+        # says the same thing as "unknown" — excluding them would hide most of
+        # what the filter is asked for.
+        filters.append(
+            or_(
+                models.Vulnerability.network_exposure.is_(None),
+                models.Vulnerability.network_exposure == UNKNOWN_EXPOSURE,
+            )
+        )
+    elif network_exposure:
+        filters.append(models.Vulnerability.network_exposure == network_exposure)
     if unassigned:
         filters.append(models.Vulnerability.assignee.is_(None))
     elif assignee:
@@ -2136,6 +2185,7 @@ def summary(
     by_severity = {severity: 0 for severity in SEVERITY_ORDER}
     by_risk = {level: 0 for level in nist_risk.LEVELS}
     by_sla = {reading: 0 for reading in SLA_STATES}
+    by_exposure = {exposure: 0 for exposure in NETWORK_EXPOSURES}
     total = 0
     open_total = 0
     unassigned = 0
@@ -2152,6 +2202,7 @@ def summary(
                 models.Vulnerability.due_at,
                 models.Vulnerability.exception_until,
                 models.Vulnerability.machine_verified,
+                models.Vulnerability.network_exposure,
             ).where(*filters)
         ).all()
     machine_verified_closed = 0
@@ -2163,6 +2214,7 @@ def summary(
         due_at,
         exception_until,
         machine_verified,
+        network_exposure,
     ) in rows:
         total += 1
         by_state[str(state)] = by_state.get(str(state), 0) + 1
@@ -2175,6 +2227,12 @@ def summary(
         if state in vuln_states.ACTIVE:
             open_total += 1
             by_severity[str(severity)] = by_severity.get(str(severity), 0) + 1
+            # NULL is what a finding scored before the signal existed carries;
+            # it is unknown exposure, not a fourth bucket.
+            exposure = (
+                network_exposure if network_exposure in NETWORK_EXPOSURES else UNKNOWN_EXPOSURE
+            )
+            by_exposure[exposure] += 1
             if not assignee:
                 unassigned += 1
             level = str(risk_level) if risk_level in nist_risk.LEVEL_RANK else None
@@ -2199,6 +2257,7 @@ def summary(
         # reading "42 critical" must not be counting ones that were fixed last
         # year.
         "by_severity_open": by_severity,
+        "by_network_exposure_open": by_exposure,
         "by_risk_level_open": by_risk,
         "by_sla": by_sla,
         "breached": by_sla.get("breached", 0),

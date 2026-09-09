@@ -153,19 +153,46 @@ def read_run_tenant(run_dir: Path) -> str:
     return tenants_service.DEFAULT_TENANT_ID
 
 
+def read_run_surface(run_dir: Path) -> str | None:
+    """Surface this run scanned — external/internal/mixed — or ``None``.
+
+    ``None`` is "not recorded", not a fourth surface: runs written before this
+    shipped carry no key, and neither does a scan of the server's default input
+    files, which the classifier never sees (see api.services.scan_surface).
+    """
+    meta = _load_json(run_dir / RUN_TENANT_FILE)
+    if isinstance(meta, dict):
+        surface = str(meta.get("surface") or "").strip()
+        if surface:
+            return surface
+    return None
+
+
 def write_run_tenant(
-    settings: Settings, run_id: str, tenant_id: str, *, job_id: str | None = None
+    settings: Settings,
+    run_id: str,
+    tenant_id: str,
+    *,
+    job_id: str | None = None,
+    surface: str | None = None,
 ) -> bool:
     """Tag a run directory with its owning tenant. Best-effort: returns False
     when the run directory doesn't exist or the write fails, since losing the
     marker must never fail a scan that otherwise succeeded (the run then reads
-    back as the default tenant)."""
+    back as the default tenant).
+
+    ``surface`` rides along in the same file rather than a second one: it is
+    known at the same moment, written by the same two call sites, and a run
+    listing already pays for this read.
+    """
     run_dir = settings.output_dir / "runs" / run_id if run_id != "default" else settings.output_dir
     if not run_dir.is_dir():
         return False
     payload: dict[str, Any] = {"tenant_id": tenant_id}
     if job_id:
         payload["job_id"] = job_id
+    if surface:
+        payload["surface"] = surface
     try:
         (run_dir / RUN_TENANT_FILE).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     except OSError:
@@ -181,6 +208,7 @@ def list_runs(
     q: str | None = None,
     order: str | None = None,
     tenant_id: str | None = None,
+    surface: str | None = None,
 ) -> tuple[list[RunSummary], int]:
     """Return ``(page, total_after_filtering)``.
 
@@ -195,6 +223,10 @@ def list_runs(
     other filters this one can't be answered from the directory name, so it
     costs one small ``tenant.json`` read per run *before* slicing; pass ``None``
     (platform admin, fleet-wide view) to skip those reads entirely.
+
+    ``surface`` (external/internal/mixed, or ``"unknown"`` for runs carrying no
+    marker) reads the same file and is the same cost class: one read per run
+    before slicing, paid only when the filter is asked for.
     """
     run_dirs = _run_dirs(settings)
     if q:
@@ -202,6 +234,9 @@ def list_runs(
         run_dirs = [d for d in run_dirs if needle in _run_id_for(d, settings).lower()]
     if tenant_id:
         run_dirs = [d for d in run_dirs if read_run_tenant(d) == tenant_id]
+    if surface:
+        wanted = None if surface == "unknown" else surface
+        run_dirs = [d for d in run_dirs if read_run_surface(d) == wanted]
     if (order or "").lower() == "asc":
         run_dirs = list(reversed(run_dirs))
     page_dirs, total = pagination.slice_page(run_dirs, offset=offset, limit=limit)
@@ -227,6 +262,7 @@ def list_runs(
                     summary.get("unconfirmed_findings") if isinstance(summary, dict) else None
                 ),
                 vulnerable_hosts=summary.get("vulnerable_hosts") if isinstance(summary, dict) else None,
+                surface=read_run_surface(run_dir),
                 has_diff=(run_dir / "diff.json").exists(),
                 has_summary=(run_dir / "summary.json").exists(),
                 path=str(run_dir),

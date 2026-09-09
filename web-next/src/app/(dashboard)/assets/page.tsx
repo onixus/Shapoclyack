@@ -51,7 +51,11 @@ function AssetsInner() {
 
   // Server-side paging/search/sort (ROADMAP P3.3) — the registry is the one
   // list expected to reach 50k rows, so nothing here is filtered client-side.
-  const pagination = usePagination({ sort: "last_seen", order: "desc" });
+  const pagination = usePagination({
+    sort: "last_seen",
+    order: "desc",
+    search: (searchParams.get("q") || "").trim(),
+  });
   const assetsQuery = useAssets({ status, unowned: unowned || undefined }, pagination.params);
   const data = assetsQuery.data?.items ?? [];
   const total = assetsQuery.data?.total ?? 0;

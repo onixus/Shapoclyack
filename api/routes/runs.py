@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -43,7 +43,12 @@ def list_runs(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
     page: PageParams,
+    surface: Annotated[
+        Literal["external", "internal", "mixed", "unknown"] | None, Query()
+    ] = None,
 ) -> Page[RunSummary]:
+    """``surface`` selects external / internal / mixed runs, or ``unknown`` for
+    those carrying no marker (see api/services/scan_surface.py)."""
     # `sort` is accepted for uniformity but ignored: runs are ordered by
     # run_id, the only key readable without opening every run's JSON.
     items, total = runs_service.list_runs(
@@ -53,6 +58,7 @@ def list_runs(
         q=page.q,
         order=page.order,
         tenant_id=_run_tenant_filter(principal),
+        surface=surface,
     )
     return build_page(items, total, page)
 

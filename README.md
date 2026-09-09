@@ -96,11 +96,13 @@ The Web UI provides these primary surfaces:
 - persistent asset inventory and asset detail;
 - endpoint inventory, software CVE matches, and patch gaps;
 - attack-surface graph and geo map;
-- scan jobs, runs, findings, reports, and the report factory;
+- external and internal scan operations (surface-specific launchers, job
+  control, runs), findings, reports, and the report factory;
 - compliance posture per framework;
 - adoption metrics: are findings being closed and verified, or only produced;
 - usage against quota per tenant, with the provider's cross-tenant view;
-- tenants and remote agent fleet;
+- tenants, users and tenant membership, remote agent fleet, and integrations
+  (webhooks and ticket-system transports);
 - wordlists, service tokens, system status, and editable safe configuration
   overrides.
 

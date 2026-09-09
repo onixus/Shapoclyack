@@ -11,8 +11,9 @@ pinned DNS). Credentials live in ``secret`` / ``Authorization``, never in
 ``transport_config``.
 
 HONESTY: a created ticket records that we *asked* the tracker to open work
-for this event. It is not confirmation the CVE is exploitable, and we do
-not sync status back when the finding closes.
+for this event. It is not confirmation the CVE is exploitable. The ticket's
+status is reconciled back onto the finding, but by ``ticket_sync.py`` (#183)
+polling the tracker — not by this module, which only opens the ticket.
 """
 
 from __future__ import annotations

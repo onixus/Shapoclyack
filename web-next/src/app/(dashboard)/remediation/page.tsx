@@ -901,7 +901,7 @@ function VulnerabilityDrawer({
               </div>
               <div>
                 <span className="text-muted-foreground">Exposure:</span>{" "}
-                <span className="text-foreground">{vuln.network_exposure || "internal"}</span>
+                <span className="text-foreground">{vuln.network_exposure || "unknown"}</span>
               </div>
             </div>
           </div>

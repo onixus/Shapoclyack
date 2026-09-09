@@ -251,6 +251,29 @@ instead of **202** — nothing was accepted this time — so a client that retri
 after a timeout cannot queue the same scan twice. Keys are scoped per tenant
 and never expire; reuse one only for the request it named.
 
+The key is checked against the *request*, not only against itself: the fields
+that define the scan (`mode`, `intent`, `delta`, `skip_nse`, `notify`,
+`export_defectdojo`, `surface`, `ranges`, `domains`, `ports`, `ports_udp`,
+`wordlist_id`) are digested and stored on the job, and a key sent with a
+different body answers **409** (`Idempotency-Key already used for a different
+scan request (job …)`) rather than replaying. Replaying would report a scan of
+targets this caller never asked about; starting a second scan would break the
+promise the key was given for. `tenant_id` and `run_id` are not part of the
+digest — the route decides the first and the second only names the output — and
+target texts are compared line by line, so re-serialised but identical targets
+still replay. Jobs created before this shipped carry no digest and keep
+replaying on the key alone.
+
+`GET /api/jobs/summary` (operator) is the queue depth behind the job list, in
+one grouped query: `by_status` (all six lifecycle states, zero-filled),
+`running`, `queued` (queued **plus** claimed — a job an agent holds but has not
+started is still work waiting), `by_surface` (`external` / `internal` / `mixed`
+/ `unknown`, each with `running`, `queued`, `total`) and `generated_at`.
+Tenant-scoped exactly like `GET /api/jobs`: fleet-wide for a platform admin who
+named no tenant, the caller's own tenant otherwise. Note the `queued`/`running`
+split here differs from the `octo_jobs_*` gauges in [slo.md](slo.md), which
+count `claimed` as running because they measure executor occupancy instead.
+
 `POST /api/agent/jobs/{job_id}/results` accepts an optional `idempotency_key`
 form field with the same intent on the upload side: repeating an upload that
 already landed returns the stored outcome (200), rather than the 422 a second
@@ -306,6 +329,15 @@ only put work back on the queue, and a control that is harder to release than
 to apply is one people stop applying. It answers `409` when the finding carries
 no verdict to withdraw, rather than a `200` for a call that changed nothing. See
 [vulnerability-lifecycle.md](vulnerability-lifecycle.md#false-positives).
+
+**Network exposure.** `GET /api/vulnerabilities?network_exposure=` narrows to
+`external`, `internal` or `unknown` — where the finding sits relative to the
+perimeter, as resolved when it was scored; any other value is `422`. `unknown`
+also matches findings written before the signal existed, which store `NULL`:
+those are the ones an operator most needs to see, so they are not filtered out
+by asking for what is not yet known. `GET /api/vulnerabilities/summary` carries
+the same split as `by_network_exposure_open` — open findings only, the three
+keys always present and always summing to `open_total`.
 
 **Risk history.** `GET /api/vulnerabilities/risk-history` (viewer) returns the
 tenant's persisted risk snapshots — `recorded_at`, estate risk level, open and
@@ -431,8 +463,8 @@ closer to granting access than to scheduling a scan.
 |---|---|---|
 | `GET /api/webhooks` | operator | Page of subscriptions; the signing secret is never included |
 | `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, a missing ticket `transport_config`, or the per-tenant limit. The generated `secret` is in this response only (webhook transport). Ticket transports take `secret` as the tracker token and do not HMAC |
-| `PATCH`/`DELETE /api/webhooks/{id}` | admin | Deleting takes that subscription's delivery history with it |
-| `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new HMAC secret once. `422` on a ticket transport — PATCH `secret` with the tracker token instead |
+| `PATCH`/`DELETE /api/webhooks/{id}` | admin | `PATCH` also takes `secret` — the only way to rotate a tracker API token — and never echoes it back; an empty string clears signing. Deleting takes that subscription's delivery history with it |
+| `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new HMAC secret once. `409` on a ticket transport: a random value is an HMAC key, not a tracker token, so PATCH `secret` instead |
 | `POST /api/webhooks/{id}/test` | admin | **202** — a signed `test` delivery is *queued*, not confirmed. Poll the deliveries list for the outcome |
 | `GET /api/webhooks/{id}/deliveries` | operator | Audit trail for one subscription |
 | `GET /api/webhooks/deliveries?status=dead` | operator | The dead-letter queue (`status` is `pending`, `delivered` or `dead`; anything else is `422`) |
@@ -482,6 +514,44 @@ require opening every run's JSON, so only `order` applies there.
 Sub-resources of a run (`/hosts`, `/ports`, `/vulnerabilities`) remain
 `limit`-only — the graph and detail views consume them whole.
 
+## Scan surface
+
+Every scan is classified as **external** (internet-facing: domains and public
+address space) or **internal** (RFC1918, loopback, link-local, RFC6598 shared
+space, IPv6 ULA/link-local/loopback), and **mixed** when its targets are both.
+The classification is derived from the targets at the moment the job is
+created; `POST /api/jobs` and the schedule endpoints also accept an explicit
+`surface` (`external` | `internal` | `mixed`) in the body, which wins over the
+derived value — a tenant whose internal estate is a block of public addresses
+is not wrong, and no address-based rule can know that.
+
+It is stored on the job's `scan_options` and, once the run lands, in the run's
+`tenant.json` marker; no column and no migration. `JobInfo.surface` and
+`RunSummary.surface` mirror it at the top level.
+
+Which of the two produced the value is recorded alongside it, as
+`JobInfo.surface_source` (`operator` | `derived`, `null` when there is no
+surface at all). Risk scoring treats only an operator-*declared* external scan
+as network-exposure evidence: a derived surface is the address-space rule read
+back, and scoring it would turn a routing fact into a decision.
+
+| Where | Field / parameter |
+|---|---|
+| `POST /api/jobs`, `POST`/`PATCH /api/schedules` | `surface` in the body (optional) |
+| `GET /api/jobs`, `GET /api/runs` | `surface=external\|internal\|mixed\|unknown` |
+| `GET /api/jobs/{id}`, `GET /api/jobs` items | `surface` and `surface_source` (may be `null`) |
+| `GET /api/jobs/summary` | `by_surface` counts per surface |
+| `GET /api/runs` items | `surface` (may be `null`) |
+
+`null` — selected by `surface=unknown` — is "not recorded", not a fourth
+surface: jobs and runs created before this shipped carry nothing, and neither
+does a scan of the server's default input files, whose contents the API never
+reads. The four values therefore partition each list, so no job or run is
+invisible under every filter.
+
+On runs the filter reads one small `tenant.json` per run before slicing, the
+same cost class as the tenant filter, and it is paid only when asked for.
+
 Inspect the generated OpenAPI schema for exact request and response fields:
 
 ```bash
@@ -507,9 +577,10 @@ plaintext whenever the configured value did not start with `$2`.
 
 ```http
 GET    /api/users                               # admin
-POST   /api/users                               # admin  {"username","password","role"}
+POST   /api/users                               # admin  {"username","password","role","email"?}
 PUT    /api/users/{username}/password           # admin — reset, no old password needed
 PUT    /api/users/{username}/role               # admin
+PUT    /api/users/{username}/email              # admin  {"email": …, "verified": bool}
 PUT    /api/users/{username}/disabled           # admin  {"disabled": true}
 DELETE /api/users/{username}                    # admin
 POST   /api/auth/password                       # any role — change your own
@@ -520,6 +591,19 @@ caller already holds a valid token: a token proves "can act as this user right
 now", which a stolen one also proves; the password proves rather more.
 
 No response carries a password or a hash — `UserInfo` has no field for one.
+
+`email` on `POST /api/users` is written in the same transaction as the account,
+so a rejected address (one another account already uses — `422`) leaves no
+half-created user. It is always stored **unverified**: `verified` is what makes
+an account linkable to an SSO identity by address, and that stays the separate,
+deliberate `PUT /api/users/{username}/email`.
+
+`UserInfo` carries `tenants` — the tenant ids this account holds an explicit
+membership row in, sorted — and `is_platform_admin`. An empty `tenants` never
+means "no access": a platform admin acts in every tenant without a grant row,
+and an account with no rows keeps pre-P0 access to `default` (see
+[Tenant memberships](#tenant-memberships)). `GET /api/users` fills them for the
+whole list in one query.
 
 **Disabling beats deleting.** A disabled account keeps its tenant memberships
 and its history, so revoking access does not silently discard grants that would
