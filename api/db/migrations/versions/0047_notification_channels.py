@@ -64,7 +64,14 @@ def upgrade() -> None:
         sa.Column("config", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("secret", sa.String(), nullable=True),
         sa.Column("key_id", sa.String(), nullable=True),
-        # Naive UTC, like every other timestamp column in this schema.
+        # Naive, like every other timestamp column in this schema, and the
+        # values written into it are UTC. Python-side they are *aware*
+        # (``channels._now()`` is ``datetime.now(UTC)``), so a row read back
+        # loses the tzinfo the row just written still carried;
+        # ``channels._iso`` re-attaches UTC on the way out, which is why a
+        # POST response and the following GET agree on the ``Z``. The same
+        # mismatch is in ``webhooks.py`` — see its note at the ``created_at``
+        # column — and this is the copy that is at least documented.
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("created_by", sa.String(), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=True),

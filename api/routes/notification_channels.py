@@ -37,6 +37,11 @@ _BAD_REQUEST = (ValueError, transports.ChannelSpecError)
 
 
 def _require_own_channel(channel_id: str, principal: TenantPrincipal) -> dict:
+    """404 for a channel in another tenant, and the *first* of two checks.
+
+    The writes below re-state the scope as a ``tenant_id=`` predicate on the
+    service call, so this function being wrong is a bug rather than a breach.
+    """
     channel = channels.get_channel(channel_id)
     if channel is None or (
         not principal.is_platform_admin and channel.get("tenant_id") != principal.tenant_id
@@ -112,7 +117,10 @@ def update_notification_channel(
     _require_own_channel(channel_id, principal)
     try:
         channel = channels.update_channel(
-            channel_id, audit=audit, **body.model_dump(exclude_unset=True)
+            channel_id,
+            tenant_id=_scope(principal),
+            audit=audit,
+            **body.model_dump(exclude_unset=True),
         )
     except _BAD_REQUEST as exc:
         raise HTTPException(
@@ -132,7 +140,9 @@ def delete_notification_channel(
     audit: AuditDep,
 ) -> None:
     _require_own_channel(channel_id, principal)
-    if not channels.delete_channel(channel_id, audit=audit):  # pragma: no cover - raced delete
+    if not channels.delete_channel(
+        channel_id, tenant_id=_scope(principal), audit=audit
+    ):  # pragma: no cover - raced delete
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Notification channel not found"
         )

@@ -790,16 +790,23 @@ def _notify_channels_best_effort(
     unreachable Slack must not turn a successful scan into a failed job. The
     per-channel outcome is recorded on the channel row (``last_status``), which
     is where an operator looks when a channel goes silent.
+
+    Asynchronous, unlike the hooks above it, because it is the only one that
+    dials a third party. ``complete_job`` runs inside ``async def
+    upload_results``, so a blocking send there stalls the API's event loop for
+    the timeout budget of every channel in turn — see the note in
+    ``channels.notify_run_complete_async``. The hooks above touch Postgres and
+    the local NATS and are left alone.
     """
     if not run_id or not settings.notification_channels_enabled:
         return
     try:
-        channels_service.notify_run_complete(
+        channels_service.notify_run_complete_async(
             tenant_id=tenant_id,
             run_id=run_id,
             run_dir=settings.output_dir / "runs" / run_id,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - a thread that would not start
         logging.exception(
             "Notification fan-out failed for run %s (tenant=%s, job=%s)",
             run_id,
@@ -1903,9 +1910,6 @@ def complete_job(
                 _publish_asset_events_best_effort(
                     settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
                 )
-                _notify_channels_best_effort(
-                    settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
-                )
 
         _update_job(
             settings,
@@ -1931,6 +1935,16 @@ def complete_job(
     # After the _update_job above, so a raise in ingestion leaves them for the
     # agent's retry rather than deleting what the retry needs.
     _discard_job_inputs(settings, job_id)
+    # Last, and after the status is written — the asymmetry with the local path
+    # (``_run_job``, which already announced *after* ``_update_job``) is what
+    # made this bite: a fan-out that hung held the terminal status hostage, so
+    # the agent's retry met its own in-flight reservation and got a 409 for an
+    # upload that had in fact landed. The send itself is on a thread, so this
+    # line costs the request one ``Thread.start``.
+    if archive_bytes and status == job_states.SUCCEEDED:
+        _notify_channels_best_effort(
+            settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+        )
     result = get_job(settings, job_id)
     assert result is not None
     return result

@@ -514,12 +514,22 @@ webhook, whose URL is the credential and is encrypted at rest), `email` (the
 tenant's recipients through the installation's `OCTO_REPORT_SMTP_*` relay) and
 `defectdojo` (the bulk Generic Findings Import into *this tenant's* product).
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `OCTO_NOTIFICATION_CHANNELS_ENABLED` | `true` | Register `/api/notification-channels` and announce finished runs. Off means no channels and no sending; unlike webhooks the two cannot be split across replicas, because the send happens in the process that finished the job |
-| `OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT` | `10` | Bound on the destinations one tenant's runs can reach |
-| `OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS` | `30` | Per-send budget. Longer than the webhook timeout because a DefectDojo import deduplicates inside the request |
-| `OCTO_SINGLE_TENANT_ALERTS` | `false` | Declare this installation single-tenant, which is what re-enables the **installation-wide** alert credentials below |
+| Variable | Read by | Default | Purpose |
+|---|---|---|---|
+| `OCTO_NOTIFICATION_CHANNELS_ENABLED` | API | `true` | Register `/api/notification-channels` and announce finished runs. Off means no channels and no sending; unlike webhooks the two cannot be split across replicas, because the send is started by the process that finished the job |
+| `OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT` | API | `10` | Bound on the destinations one tenant's runs can reach |
+| `OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS` | API | `30` | Per-send budget, for every kind including `email`. Longer than the webhook timeout because a DefectDojo import deduplicates inside the request. The send runs on a background thread, so a channel spending the whole budget delays no request |
+| `OCTO_SINGLE_TENANT_ALERTS` | **scanner** | `false` | Declare this installation single-tenant, which is what re-enables the **installation-wide** alert credentials below |
+
+`OCTO_SINGLE_TENANT_ALERTS` is the one row above that the API never reads: the
+stages it gates are `scanner/pipeline/alerts.py` and
+`scanner/pipeline/defectdojo.py`, which run in the *scanner* process. On the
+API host that is the scan subprocess and it inherits the Deployment's
+environment; in Kubernetes a scheduled scan is a separate CronJob pod, so the
+variable has to be set **there** — it belongs in the `shapoclyack-alerts`
+Secret the CronJob already mounts
+(`k8s/shapoclyack/examples/api-secrets.example.yaml`), not on the API
+Deployment. Set on the API alone it changes nothing at all, silently.
 
 `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` also governs channel URLs: a Slack or
 DefectDojo target resolving to a loopback, private or link-local address is
@@ -560,7 +570,23 @@ To move a multi-tenant installation across, per tenant:
    tenant**. `product_name` is required for exactly that reason;
 4. clear the old Secret (`shapoclyack-alerts`, `shapoclyack-defectdojo` in
    `k8s/shapoclyack/examples/api-secrets.example.yaml`) and leave
-   `OCTO_SINGLE_TENANT_ALERTS` unset.
+   `OCTO_SINGLE_TENANT_ALERTS` unset — **but read the next paragraph first if
+   any of your scans are CronJob scans**, because for those this step turns
+   alerting off and channels do not replace it.
+
+> **Channels only cover runs the API knows about.** The fan-out hangs off job
+> completion (`jobs.complete_job` for an agent upload, `jobs._run_job` for a
+> local scan), so it fires for a scan started through `POST /api/jobs`, a
+> schedule, or a remote agent. A `k8s/shapoclyack/base/cronjob.yaml` scan and a
+> bare `python -m scanner.main` run create no job row, reach neither function,
+> and are therefore **never** announced through a notification channel. For
+> those the installation-wide stages are still the only alerting there is:
+> keep `shapoclyack-alerts` populated and set `OCTO_SINGLE_TENANT_ALERTS=true`
+> on the CronJob — accepting that those alerts are installation-wide — or move
+> the schedule into `POST /api/schedules`, where the scan gets a job row, a
+> tenant and its tenant's channels. Giving CronJob scans per-tenant channels is
+> [#351](https://github.com/onixus/Shapoclyack/issues/351)'s explicit
+> non-goal, not an oversight.
 
 Two things this does **not** do. There is no Telegram channel kind: Telegram
 was never a per-tenant destination in any installation we know of, and a kind

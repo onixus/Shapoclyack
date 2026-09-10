@@ -312,12 +312,21 @@ def send_email(
     recipients: list[str],
     subject: str,
     text: str,
+    timeout_seconds: int | None = None,
 ) -> SendOutcome:
     """Mail one run summary to a tenant's recipients through the shared relay.
 
     One message with the tenant's recipients in ``To``, not one per address:
     they are an operations channel for a single tenant, so they already see
     each other's addresses on every alert.
+
+    ``timeout_seconds`` is the channel budget
+    (``OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS``), which is what
+    docs/configuration.md advertises as *the* per-send knob. Without it this
+    transport was the one exception, quietly answering to
+    ``OCTO_REPORT_SMTP_TIMEOUT_SECONDS`` instead, so an operator with a slow
+    relay raised the documented knob and nothing changed. ``None`` keeps the
+    relay default, for the report factory's own callers.
     """
     if not settings.report_smtp_host or not settings.report_smtp_from:
         return SendOutcome(
@@ -338,7 +347,11 @@ def send_email(
         with smtplib.SMTP(
             settings.report_smtp_host,
             settings.report_smtp_port,
-            timeout=settings.report_smtp_timeout_seconds,
+            timeout=(
+                timeout_seconds
+                if timeout_seconds is not None
+                else settings.report_smtp_timeout_seconds
+            ),
         ) as smtp:
             if settings.report_smtp_starttls:
                 smtp.starttls(context=_tls_context(settings))

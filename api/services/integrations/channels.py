@@ -18,12 +18,24 @@ returns. A summary that arrives twenty minutes late describes a run the
 operator has already opened in the console, and the artifacts it summarises are
 in ``runs/{run_id}`` either way. The failure is visible — ``last_status`` on the
 channel, a warning in the job log — rather than silent.
+
+**Off the request, though.** No queue is not the same as no thread.
+:func:`notify_run_complete` dials third parties with a
+``notification_channel_timeout_seconds`` budget *each*, and its caller on the
+agent path is ``POST /agent/jobs/{id}/results`` — an ``async def`` handler, so
+a synchronous call there blocks the API process's whole event loop. Three
+channels whose receiver drops packets is a minute and a half of that, which is
+a failed liveness probe, a restarted pod and an agent retrying an upload whose
+job is already terminal. :func:`notify_run_complete_async` is therefore what
+the job paths call, and it returns before the first socket is opened.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -86,7 +98,19 @@ def _now() -> datetime:
 
 
 def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat().replace("+00:00", "Z") if dt else None
+    """UTC with a ``Z``, whichever side of the database the value came from.
+
+    ``_now()`` is aware and the column is naive (migration 0047 says why), so
+    a plain ``isoformat()`` gave the POST response a ``Z`` and the following
+    GET of the same row none at all — and a consumer parses an offsetless
+    timestamp as local time. Normalising here rather than at each call site
+    because ``created_at``, ``updated_at`` and ``last_send_at`` all have it.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def reset_for_tests() -> None:
@@ -286,6 +310,7 @@ def get_channel(channel_id: str) -> dict[str, Any] | None:
 def update_channel(
     channel_id: str,
     *,
+    tenant_id: str | None = None,
     audit: audit_service.AuditContext | None = None,
     **fields: Any,
 ) -> dict[str, Any] | None:
@@ -296,17 +321,25 @@ def update_channel(
     that changed it would have to revalidate the row against knobs the request
     did not send. Refusing it is one line; getting it subtly wrong is a Slack
     URL POSTed to DefectDojo as a token.
+
+    ``tenant_id``, when given, is part of the *predicate*: a row belonging to
+    another tenant reads as missing here, not merely at the route. The route
+    checks too, and that is the point — a review of #351 mutated the route's
+    check away and the whole suite stayed green, which is one layer at a
+    tenant boundary pretending to be two. ``None`` is the unscoped platform
+    admin's cross-tenant edit, the same view :func:`list_channels` takes.
     """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         # Locked, not merely fetched: ``reencrypt_secrets`` rewrites the same
         # row under ``SELECT … FOR UPDATE``, and the runbook promises a
         # concurrent edit is serialised against that pass rather than lost.
-        row = session.scalar(
-            select(models.NotificationChannel)
-            .where(models.NotificationChannel.channel_id == channel_id)
-            .with_for_update()
+        query = select(models.NotificationChannel).where(
+            models.NotificationChannel.channel_id == channel_id
         )
+        if tenant_id:
+            query = query.where(models.NotificationChannel.tenant_id == tenant_id)
+        row = session.scalar(query.with_for_update())
         if row is None:
             return None
         before = _to_dict(row)
@@ -356,12 +389,16 @@ def update_channel(
 
 
 def delete_channel(
-    channel_id: str, *, audit: audit_service.AuditContext | None = None
+    channel_id: str,
+    *,
+    tenant_id: str | None = None,
+    audit: audit_service.AuditContext | None = None,
 ) -> bool:
+    """Drop one channel. ``tenant_id`` scopes it, as in :func:`update_channel`."""
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.NotificationChannel, channel_id)
-        if row is None:
+        if row is None or (tenant_id and row.tenant_id != tenant_id):
             return False
         audit_service.record(
             session,
@@ -450,12 +487,19 @@ def _send_one(
             # The chat message's Slack-flavoured markers read as noise in a
             # plain-text mail, exactly as the scanner stage stripped them.
             text=text.replace("*", "").replace("`", ""),
+            timeout_seconds=settings.notification_channel_timeout_seconds,
         )
     if kind == "defectdojo":
-        vulnerabilities = _load_json(run_dir / "vulnerabilities.json", [])
+        # ``None`` as the fallback, not ``[]``: an absent or truncated
+        # artifact would otherwise arrive as an empty list, walk into the
+        # "no findings ≥ high" branch below and record a *green* status. An
+        # operator reading ``last_status`` would conclude the tenant is clean
+        # when in fact nothing was ever imported — for an MSSP the worst
+        # available failure mode.
+        vulnerabilities = _load_json(run_dir / "vulnerabilities.json", None)
         if not isinstance(vulnerabilities, list):
             return transports.SendOutcome(
-                ok=False, status="skipped", detail="run has no readable vulnerabilities.json"
+                ok=False, status="error", detail="run has no readable vulnerabilities.json"
             )
         script_findings = _load_json(run_dir / "script_findings.json", [])
         document = transports.defectdojo_document(
@@ -582,3 +626,73 @@ def notify_run_complete(
             }
         )
     return results
+
+
+# --------------------------------------------------------------------------
+# Getting the fan-out off the request
+# --------------------------------------------------------------------------
+
+#: In-flight fan-out threads. Nothing in the API waits for Slack, so these are
+#: daemon threads with nobody holding the handle — but a thread still writing
+#: ``last_status`` into a database the next test is about to truncate is the
+#: flake #257 was filed for, so the handles are kept for :func:`join_senders`,
+#: exactly as ``agent_deployer`` keeps its deployment workers.
+_senders: set[threading.Thread] = set()
+_senders_lock = threading.Lock()
+
+
+def join_senders(timeout: float = 10.0) -> bool:
+    """Wait for the in-flight fan-out threads. Returns ``False`` on timeout.
+
+    Test-suite scaffolding rather than a production path: no request blocks on
+    a channel send finishing, which is the whole point of the thread.
+    """
+    with _senders_lock:
+        pending = list(_senders)
+    deadline = time.monotonic() + timeout
+    for thread in pending:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    with _senders_lock:
+        _senders.difference_update({t for t in _senders if not t.is_alive()})
+        return not any(t.is_alive() for t in pending)
+
+
+def notify_run_complete_async(
+    *,
+    tenant_id: str,
+    run_id: str,
+    run_dir: Path,
+    post_fn=None,
+) -> threading.Thread:
+    """Hand one finished run's fan-out to a thread and return at once.
+
+    A thread per finished run rather than a pool: a run finishes at most once,
+    the work is bounded by ``notification_channel_max_per_tenant`` sends, and
+    a pool with a queue would be the delivery queue this feature deliberately
+    does not have. The dispatcher next door owns *retries*; this owns only
+    "not on the caller's thread".
+
+    Never raises: :func:`notify_run_complete` already reports every failure as
+    data, and the thread swallows what is left, because by the time it runs the
+    caller's request has been answered and there is nobody to raise at.
+    """
+    def _run() -> None:
+        try:
+            notify_run_complete(
+                tenant_id=tenant_id, run_id=run_id, run_dir=run_dir, post_fn=post_fn
+            )
+        except Exception:  # noqa: BLE001 - the request is long gone
+            LOG.exception(
+                "Notification fan-out crashed for run %s (tenant=%s)", run_id, tenant_id
+            )
+
+    thread = threading.Thread(target=_run, daemon=True, name=f"octo-notify-{run_id}")
+    with _senders_lock:
+        # Pruned on the way in as well as in join_senders(): nothing in the API
+        # calls that, so otherwise the set would keep one dead Thread — and the
+        # run directory it closes over — per finished run, for the life of the
+        # process.
+        _senders.difference_update({t for t in _senders if not t.is_alive()})
+        _senders.add(thread)
+    thread.start()
+    return thread

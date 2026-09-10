@@ -114,6 +114,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import users as users_service
     from api.services import wordlists as wordlists_service
     from api.services.crypto import envelope as crypto_envelope
+    from api.services.integrations import channels as channels_service
     from api.services.integrations import webhooks as webhooks_service
 
     # The KEK provider is process-global (#310). Clearing it here means a test
@@ -128,6 +129,10 @@ def reset_service_state(settings: "Settings") -> None:
     # and a later, unrelated test failed.
     assert agent_deployer.join_workers(), "a deployment worker outlived its test"
     agent_deployer.configure(settings)
+    # Same reasoning for the notification fan-out (#351): since it moved off
+    # the request thread, a send still recording ``last_status`` would race
+    # this truncation and the next test's channels.
+    assert channels_service.join_senders(), "a notification fan-out outlived its test"
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     # Users are cleared here and re-seeded by create_app()'s bootstrap, which

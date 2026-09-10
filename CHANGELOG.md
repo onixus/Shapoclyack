@@ -32,6 +32,38 @@ All notable changes to Shapoclyack are documented in this file.
   channels. Not done: no console UI (API only), no Telegram channel kind, and a
   channel send is not queued or retried — a failed DefectDojo import waits for
   the next scan.
+  Two more limits worth knowing before the migration steps are followed. Only
+  runs the API knows about are announced: a `k8s/shapoclyack/base/cronjob.yaml`
+  scan creates no job row, so it reaches no channel and the installation-wide
+  stages remain its only alerting — `OCTO_SINGLE_TENANT_ALERTS` is read by the
+  *scanner* process and belongs on that CronJob, not on the API Deployment.
+  And only a **succeeding** run is announced, where the scanner stage fired on
+  any outcome; a failed scan going unannounced is left to the `scan_failed`
+  event in [#349](https://github.com/onixus/Shapoclyack/issues/349) rather than
+  being a second notification path here.
+
+- **Review fixes on #351, before it went anywhere near a release.** A review of
+  the change above found five things worth naming. *(1)* The route was the only
+  place the tenant boundary was checked on a channel's GET/PATCH/DELETE, and no
+  test covered it — a mutation deleting the check passed the entire suite. There
+  is now a cross-tenant route test (and one for `webhook_subscriptions`, whose
+  template this was copied from and which had the same hole), and
+  `channels.update_channel` / `delete_channel` take the tenant as part of their
+  predicate, so the boundary has two layers. *(2)* The fan-out ran
+  synchronously inside `async def upload_results`, and *before* the job's
+  status was written: three channels whose receiver drops packets blocked the
+  API's event loop for the full per-channel budget each, which is a failed
+  liveness probe and an agent being told 409 for an upload that landed. It now
+  runs on a background thread, started after the status write. *(3)* A missing
+  or truncated `vulnerabilities.json` was reported as `skipped: no findings ≥
+  high` with `ok=True` — indistinguishable, in `last_status`, from a clean
+  tenant. It is an `error` now. *(4)* `OCTO_SINGLE_TENANT_ALERTS` was
+  documented in the API's variable table although only the scanner reads it, and
+  the migration steps told operators to clear `shapoclyack-alerts` without
+  saying that CronJob scans get no channels in exchange; both are stated now,
+  and the key is in the example Secret. *(5)* `email` ignored
+  `OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS` and used the report relay's
+  timeout instead; it takes the documented budget.
 
 - **A console account can carry a second factor, and an admin role can be made
   to** ([#315](https://github.com/onixus/Shapoclyack/issues/315)). A local

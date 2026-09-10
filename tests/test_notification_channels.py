@@ -16,13 +16,19 @@ listening socket, exactly as the webhook dispatch tests are.
 from __future__ import annotations
 
 import base64
+import io
 import json
+import tarfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import agents as agents_service
+from api.services import jobs as jobs_service
 from api.services import tenants as tenants_service
 from api.services.crypto import envelope
 from api.services.crypto import startup as crypto_startup
@@ -31,7 +37,14 @@ from api.services.integrations import channels
 from api.services.integrations import delivery as delivery_transport
 from api.db import reencrypt_secrets
 from api.settings import ENV_PROD, InsecureConfigurationError, Settings
-from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
+from tests.conftest import (
+    approve_scan_scope,
+    auth_headers,
+    configured_client,
+    login,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -181,7 +194,14 @@ def test_fan_out_reaches_only_the_runs_own_tenant(settings):
     assert _row(settings, channel_a["channel_id"]).last_status == "ok"
 
 
-def test_disabled_channels_and_other_tenants_runs_are_skipped(settings):
+def test_a_disabled_channel_is_not_sent_to(settings):
+    """Only what the body actually covers: one tenant, one muted channel.
+
+    The name used to promise "and other tenants' runs" as well, which is
+    :func:`test_fan_out_reaches_only_the_runs_own_tenant`'s job — a name
+    claiming coverage that lives elsewhere is how the route's missing
+    cross-tenant test went unnoticed for a whole review.
+    """
     _use(KEY_A)
     tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
     off = _slack(settings, tenant_id="ten_a", name="muted", enabled=False)
@@ -230,6 +250,63 @@ def test_defectdojo_channel_imports_into_its_own_tenants_product(settings):
     assert b'name="product_name"\r\n\r\nTenant A' in body
     assert b'name="engagement_name"\r\n\r\nContinuous' in body
     assert b"CVE-2026-1" in body
+
+
+def test_a_missing_findings_artifact_is_a_failure_not_a_clean_bill(settings):
+    """"No vulnerabilities.json" must never read like "no vulnerabilities".
+
+    The fallback used to be ``[]``, so a run whose archive lost the artifact
+    walked into the "no findings ≥ high" branch and recorded ``skipped`` with
+    ``ok=True``: nothing imported into DefectDojo, no warning in the job log,
+    and an operator reading ``last_status`` in the console concluding the
+    tenant was clean.
+    """
+    _use(KEY_A)
+    tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    channel = channels.create_channel(
+        tenant_id="ten_a",
+        name="dd",
+        kind="defectdojo",
+        endpoint="https://dojo.example.com",
+        secret="tenant-a-token",
+        config={"product_name": "Tenant A"},
+        created_by="admin",
+    )
+    run_dir = _run_dir(settings, "run-truncated")
+    (run_dir / "vulnerabilities.json").unlink()
+
+    recorder = _Recorder()
+    results = channels.notify_run_complete(
+        tenant_id="ten_a", run_id="run-truncated", run_dir=run_dir, post_fn=recorder
+    )
+
+    assert results[0]["status"] == "error"
+    assert "vulnerabilities.json" in results[0]["detail"]
+    # Nothing was uploaded, and the row says why rather than saying "skipped".
+    assert recorder.calls == []
+    assert "vulnerabilities.json" in (_row(settings, channel["channel_id"]).last_status or "")
+
+
+def test_an_unreadable_findings_artifact_is_reported_the_same_way(settings):
+    """A half-written file is the same failure as a missing one."""
+    _use(KEY_A)
+    tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    channels.create_channel(
+        tenant_id="ten_a",
+        name="dd",
+        kind="defectdojo",
+        endpoint="https://dojo.example.com",
+        secret="tenant-a-token",
+        config={"product_name": "Tenant A"},
+        created_by="admin",
+    )
+    run_dir = _run_dir(settings, "run-torn")
+    (run_dir / "vulnerabilities.json").write_text('[{"host": "10.0.0.1"', encoding="utf-8")
+
+    results = channels.notify_run_complete(
+        tenant_id="ten_a", run_id="run-torn", run_dir=run_dir, post_fn=_Recorder()
+    )
+    assert results[0]["status"] == "error"
 
 
 def test_defectdojo_sends_nothing_when_the_run_is_under_the_floor(settings):
@@ -341,6 +418,47 @@ def test_email_channel_mails_this_tenants_recipients_only(settings, monkeypatch)
 
     assert results[0]["status"] == "ok"
     assert sent == ["connect:relay.internal", "a@example.com"]
+
+
+def test_email_obeys_the_documented_channel_timeout(settings, monkeypatch):
+    """The knob the docs advertise is the one the transport uses.
+
+    ``OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS`` is documented as *the*
+    per-send budget, but email alone reached for ``report_smtp_timeout_seconds``
+    — so an operator with a slow relay raised the documented knob and the
+    connection still gave up after 20 seconds.
+    """
+    _use(KEY_A)
+    settings.report_smtp_host = "relay.internal"
+    settings.report_smtp_from = "alerts@shapoclyack.example"
+    settings.report_smtp_starttls = False
+    settings.report_smtp_timeout_seconds = 20
+    settings.notification_channel_timeout_seconds = 120
+    channels.create_channel(
+        tenant_id="default", name="mail", kind="email", config={"to": ["ops@example.com"]}
+    )
+
+    timeouts: list[float | None] = []
+
+    class _Smtp:
+        def __init__(self, host, port, timeout=None):
+            timeouts.append(timeout)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def send_message(self, message):
+            return None
+
+    monkeypatch.setattr("api.services.integrations.channel_transports.smtplib.SMTP", _Smtp)
+    channels.notify_run_complete(
+        tenant_id="default", run_id="run-a", run_dir=_run_dir(settings, "run-a")
+    )
+
+    assert timeouts == [120]
 
 
 def test_email_channel_says_so_when_the_installation_has_no_relay(settings):
@@ -520,6 +638,92 @@ def test_the_startup_check_counts_channel_credentials(settings):
 
 
 # --------------------------------------------------------------------------
+# Off the request thread
+# --------------------------------------------------------------------------
+
+
+def _archive() -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in (
+            ("summary.json", b'{"alive_hosts": 1}\n'),
+            ("vulnerabilities.json", b"[]\n"),
+        ):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_a_silent_channel_neither_delays_nor_precedes_the_jobs_status(settings, monkeypatch):
+    """The two halves of the review's worst finding, in one test.
+
+    ``complete_job`` is called from ``async def upload_results`` with no
+    thread-pool hop, so a fan-out that spends its whole per-channel budget
+    against a receiver that drops packets used to block the API's event loop —
+    and it ran *before* ``_update_job``, so the job stayed non-terminal while
+    it did. The agent's own 60s timeout then fired, its retry met the
+    still-reserved idempotency key, and the upload it had already delivered was
+    reported to it as a 409.
+
+    So: the call must return before the send finishes, and the send must see a
+    job that is already ``succeeded``.
+    """
+    _use(KEY_A)
+    approve_scan_scope(settings)
+    agents_service.configure(settings)
+    channel = _slack(settings, tenant_id="default", name="soc")
+
+    released = threading.Event()
+    observed: list[str] = []
+
+    def _hanging_post(url, body, headers, **kwargs):
+        """Stands in for a receiver that accepts the connection and says nothing."""
+        job = jobs_service.get_job(settings, job_id)
+        observed.append(job.status if job else "gone")
+        assert released.wait(30.0), "the fan-out thread was never released"
+        return delivery_transport.DeliveryResult(
+            ok=True, status_code=200, error=None, retryable=False
+        )
+
+    monkeypatch.setattr(channels, "_default_post", _hanging_post)
+
+    from api.schemas import StartScanRequest
+
+    settings.job_execution_mode = "agent"
+    job_id = jobs_service.start_scan(
+        settings, StartScanRequest(mode="balanced"), username="admin"
+    ).job_id
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    jobs_service.claim_job(settings, "agent-1")
+    run_id = jobs_service.get_job(settings, job_id).run_id
+
+    started = time.monotonic()
+    completed = jobs_service.complete_job(
+        settings,
+        job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=run_id,
+        archive_bytes=_archive(),
+    )
+    elapsed = time.monotonic() - started
+
+    # The upload was answered, with a terminal status, while the channel is
+    # still hanging. One second is generous: the request's share of the work is
+    # a Thread.start().
+    assert completed.status == "succeeded"
+    assert elapsed < 1.0, f"complete_job waited {elapsed:.1f}s on the channel"
+    assert released.is_set() is False
+
+    released.set()
+    assert channels.join_senders(), "the fan-out thread did not finish"
+    # And it really did send — off the request, after the status was written.
+    assert observed == ["succeeded"]
+    assert _row(settings, channel["channel_id"]).last_status == "ok"
+
+
+# --------------------------------------------------------------------------
 # The API surface
 # --------------------------------------------------------------------------
 
@@ -611,3 +815,105 @@ def test_api_records_who_pointed_the_alerts_where(client):
     # default has to fail in, so this asserts it rather than working around it.
     assert SLACK_A not in trail.text
     assert rows[0]["after"]["has_secret"] == "[redacted]"
+
+
+# --------------------------------------------------------------------------
+# The tenant boundary on the route
+# --------------------------------------------------------------------------
+
+
+def _make_tenant(client, tenant_id: str) -> None:
+    created = client.post(
+        "/api/tenants",
+        headers=auth_headers(client, "admin"),
+        json={"name": tenant_id, "tenant_id": tenant_id},
+    )
+    assert created.status_code == 201, created.text
+
+
+def _grant(client, username: str, tenant_id: str, role: str = "admin") -> None:
+    granted = client.put(
+        f"/api/tenants/{tenant_id}/members/{username}",
+        headers=auth_headers(client, "admin"),
+        json={"role": role},
+    )
+    assert granted.status_code == 200, granted.text
+
+
+def test_a_channel_in_another_tenant_is_not_readable_or_mutable(client):
+    """The test this feature shipped without.
+
+    Every API test above ran as one tenant, so a mutation deleting the
+    ``tenant_id`` comparison in ``_require_own_channel`` passed the whole
+    suite — the fan-out's own isolation test does not touch the route, which
+    is a different mechanism. ``404`` rather than ``403``, as for jobs and
+    schedules: whether an id exists is not the caller's business.
+    """
+    _make_tenant(client, "ten_a")
+    _make_tenant(client, "ten_b")
+    # Tenant admin in ten_a and nowhere else. Not the seeded ``admin``, who is
+    # a platform admin and is *meant* to see across tenants.
+    _grant(client, "operator", "ten_a", "admin")
+    theirs = _create(
+        client, auth_headers(client, "admin"), tenant_id="ten_b", secret=SLACK_B
+    ).json()["channel_id"]
+    intruder = {"Authorization": f"Bearer {login(client, 'operator')}"}
+
+    assert client.get(f"/api/notification-channels/{theirs}", headers=intruder).status_code == 404
+    assert (
+        client.patch(
+            f"/api/notification-channels/{theirs}", json={"enabled": False}, headers=intruder
+        ).status_code
+        == 404
+    )
+    assert (
+        client.delete(f"/api/notification-channels/{theirs}", headers=intruder).status_code == 404
+    )
+    # None of the three touched it, and the list stays empty for ten_a.
+    assert client.get("/api/notification-channels", headers=intruder).json() == []
+    survivor = client.get(
+        f"/api/notification-channels/{theirs}", headers=auth_headers(client, "admin")
+    )
+    assert survivor.status_code == 200
+    assert survivor.json()["enabled"] is True
+
+
+def test_the_service_scopes_the_writes_too(settings):
+    """The second layer, asserted where the route cannot vouch for it.
+
+    ``update_channel``/``delete_channel`` took an id and nothing else, so the
+    route was the only thing standing between tenant B's admin and tenant A's
+    Slack URL. They now take the scope as part of the predicate; this is the
+    test that fails if either the route or the service check is removed.
+    """
+    _use(KEY_A)
+    tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    tenants_service.create_tenant(tenant_id="ten_b", name="Tenant B")
+    theirs = _slack(settings, tenant_id="ten_b", name="theirs", secret=SLACK_B)["channel_id"]
+
+    assert channels.update_channel(theirs, tenant_id="ten_a", name="hijacked") is None
+    assert channels.delete_channel(theirs, tenant_id="ten_a") is False
+    # Untouched, and still reachable by its owner and by the unscoped
+    # platform admin (``tenant_id=None``).
+    assert _row(settings, theirs).name == "theirs"
+    assert channels.update_channel(theirs, tenant_id="ten_b", name="renamed")["name"] == "renamed"
+    assert channels.delete_channel(theirs, tenant_id=None) is True
+
+
+def test_timestamps_carry_the_same_offset_on_the_way_out_and_back(client):
+    """A row just written and the same row read back must agree on the ``Z``.
+
+    ``created_at`` is an aware ``datetime`` in Python and a naive column in
+    Postgres, so ``isoformat()`` alone gave the POST response an offset and the
+    following GET none — and a consumer parses an offsetless timestamp as
+    local time.
+    """
+    admin = auth_headers(client, "admin")
+    created = _create(client, admin).json()
+    fetched = client.get(
+        f"/api/notification-channels/{created['channel_id']}", headers=admin
+    ).json()
+
+    assert created["created_at"].endswith("Z")
+    assert fetched["created_at"].endswith("Z")
+    assert fetched["created_at"] == created["created_at"]

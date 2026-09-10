@@ -942,7 +942,7 @@ this tenant's exposure data to a destination of the creator's choosing.
 |---|---|---|
 | `GET /api/notification-channels` | operator | This tenant's channels. Unpaginated — the table is capped by `OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT`. The credential is never included, only `has_secret` |
 | `POST /api/notification-channels` | admin | `422` on an unknown `kind` or severity, a credential the adapter cannot use (a chat channel with no webhook URL, a `defectdojo` channel with no `config.product_name`), an `endpoint` on a kind that has none, an address list that is not one, a target resolving to a non-public address, or the per-tenant limit. **No secret is echoed back, ever** — unlike a webhook signing secret, every credential here is one the operator already holds |
-| `GET`/`PATCH`/`DELETE /api/notification-channels/{id}` | operator / admin / admin | `PATCH` takes `secret` (write-only) but **not `kind`**: the kind decides what every other field means, so changing it is a delete and a create |
+| `GET`/`PATCH`/`DELETE /api/notification-channels/{id}` | operator / admin / admin | `PATCH` takes `secret` (write-only) but **not `kind`**: the kind decides what every other field means, so changing it is a delete and a create. A channel in another tenant answers `404` at the route *and* is out of the service's `UPDATE`/`DELETE` predicate, so the boundary does not rest on one comparison |
 
 `kind` selects the wire:
 
