@@ -264,8 +264,8 @@ def test_a_disabled_agents_403_is_its_own_exception_and_a_plain_403_is_not(monke
             fp=io.BytesIO(next(bodies)),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
 
     for _ in range(2):
         with pytest.raises(worker.AgentDisabled):
