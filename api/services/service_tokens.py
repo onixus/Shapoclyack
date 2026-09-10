@@ -27,6 +27,12 @@ Scope names are *not* validated against a route table on purpose: routers are
 registered conditionally (webhooks, endpoint inventory), so a closed list would
 turn a disabled feature into an unissuable token. Unknown scopes simply match
 nothing.
+
+**Issuance has a ceiling of its own**, and it is not the same question as the
+two above: those bound what a token may do once it exists, this one bounds who
+may bring it into existence. A token outlives the session that minted it and
+needs no password, so minting one stronger than yourself is promoting yourself
+— see :func:`create_token`.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from typing import Any
 from sqlalchemy import select
 
 from api.auth import pwd_context
+from api.core import permissions as permission_catalog
 from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
@@ -220,6 +227,39 @@ def _new_token() -> tuple[str, str]:
     return f"{prefix}_{secrets.token_urlsafe(_SECRET_BYTES)}", prefix
 
 
+def _refuse_escalation(role: str, *, issuer_role: str, issuer_is_platform_admin: bool) -> None:
+    """Refuse a token whose authority exceeds the hand issuing it (#318 review).
+
+    ``tenant.credential.manage`` is held by the tenant's ``admin`` **and** by
+    ``token-admin``, which is rank 1 — it passes no write gate in the API. With
+    no ceiling here that role could mint a ``role: admin`` token and then use
+    it to start scans, write assets and file reports: a credential is not a
+    delegation of what the issuer holds unless something says so, and this is
+    that something.
+
+    Both halves of the token's authority are compared, not just the rank: the
+    rank is what ``require_tenant`` gates on, the permission set is what
+    ``require_permission`` gates on, and a role table that later grows a rank-3
+    role with a narrower permission set would otherwise leak through the
+    second. The **scopes** need no ceiling of their own — the role is the
+    ceiling they narrow (see the module docstring), never a way past it.
+
+    A platform admin has no ceiling: it already holds every permission in every
+    tenant, so there is nothing it could issue that it does not have.
+    """
+    if issuer_is_platform_admin:
+        return
+    issuer = (issuer_role or permission_catalog.ROLE_VIEWER).strip().lower()
+    granted = permission_catalog.permissions_for(role)
+    held = permission_catalog.permissions_for(issuer)
+    if permission_catalog.rank_for(role) > permission_catalog.rank_for(issuer) or not (
+        granted <= held
+    ):
+        raise PermissionError(
+            f"role '{role}' is stronger than the caller's role '{issuer}' in this tenant"
+        )
+
+
 def create_token(
     settings: Settings | None = None,
     *,
@@ -229,13 +269,25 @@ def create_token(
     role: str = "viewer",
     created_by: str | None = None,
     expires_in_days: int | None = None,
+    issuer_role: str,
+    issuer_is_platform_admin: bool = False,
     audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any]:
-    """Mint one token. The returned dict carries ``token`` — the only time it exists."""
+    """Mint one token. The returned dict carries ``token`` — the only time it exists.
+
+    ``issuer_role`` is the caller's role *in this tenant* and bounds ``role``
+    (see :func:`_refuse_escalation`). Required, and deliberately not defaulted
+    to anything: a new caller that forgets it should fail to import rather than
+    quietly inherit a ceiling. ``issuer_is_platform_admin`` lifts the ceiling
+    and defaults to false, so the same mistake errs toward refusing.
+    """
     resolved = settings or _require_settings()
     role = (role or "viewer").strip().lower()
     if role not in VALID_ROLES:
         raise ValueError(f"role must be one of {', '.join(VALID_ROLES)}")
+    _refuse_escalation(
+        role, issuer_role=issuer_role, issuer_is_platform_admin=issuer_is_platform_admin
+    )
     cleaned_name = (name or "").strip()
     if not cleaned_name:
         raise ValueError("name must not be empty")

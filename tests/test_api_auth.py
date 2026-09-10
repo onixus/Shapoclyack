@@ -37,6 +37,10 @@ def test_login_and_me():
         # that.
         "tenant_role": "viewer",
         "permissions": [],
+        # Which tenant those two describe: the request named none, so the
+        # default one. The console sends the tenant its switcher is on, and
+        # this is how it tells a scoped answer from a stale one (#318).
+        "scoped_tenant": "default",
         # Second-factor state of the account and of this session (#315). All
         # three false on an installation that has not configured MFA, which is
         # what "nothing changes on upgrade" looks like from the console's side.

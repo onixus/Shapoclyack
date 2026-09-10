@@ -162,7 +162,7 @@ class MeResponse(BaseModel):
     tenants: list[str] = Field(default_factory=list)
     default_tenant: str = "default"
     is_platform_admin: bool = False
-    # The caller's role *inside* ``default_tenant`` and what it lets them do
+    # The caller's role inside ``scoped_tenant`` and what it lets them do
     # (#318). ``role`` above is the global one, which since #318 is no longer
     # the whole answer: a global viewer can be an auditor in one tenant and a
     # scope-approver in another. The console reads this to decide which pages
@@ -170,6 +170,14 @@ class MeResponse(BaseModel):
     # every other field here, it is re-derived per request.
     tenant_role: Role = Role.viewer
     permissions: list[str] = Field(default_factory=list)
+    #: Which tenant ``tenant_role`` and ``permissions`` above describe. The
+    #: console attaches the tenant its switcher is on to every request
+    #: (``web-next/src/lib/api.ts``), this route included, so answering only
+    #: for ``default_tenant`` gated each page on a tenant the user might not
+    #: be looking at — hiding a panel the API would have served, and offering
+    #: one it refuses. Echoed rather than assumed so a client can tell a
+    #: scoped answer from a stale one.
+    scoped_tenant: str = "default"
     # Second-factor state of the signed-in account (#315), so the console can
     # render the "set up MFA" banner and the security page without a second
     # call on every page load. ``mfa_pending`` is a property of this session,

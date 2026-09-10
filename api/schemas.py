@@ -1005,7 +1005,17 @@ class ChangeOwnPasswordRequest(BaseModel):
 class TenantInfo(BaseModel):
     tenant_id: str
     name: str
-    status: Literal["active", "disabled"] = "active"
+    #: ``suspended`` is the one non-active state a tenant has, and the word is
+    #: canonical: it is what :func:`api.services.tenants.require_active`
+    #: refuses with, what #325 will set, and what the docs call it. It is
+    #: deliberately *not* ``disabled`` — that word is already an account
+    #: (``PUT /api/users/{u}/disabled``) and an agent
+    #: (``lifecycle_status``), and a third meaning on a third object is how a
+    #: reader ends up guessing. The literal is narrow on purpose: this model
+    #: serialises rows read straight out of ``tenants.status``, so anything
+    #: written there that is not named here is a 500 on the tenant switcher
+    #: rather than a refusal — which is exactly how the mismatch was found.
+    status: Literal["active", "suspended"] = "active"
     created_at: str | None = None
 
 

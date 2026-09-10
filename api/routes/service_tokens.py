@@ -9,6 +9,12 @@ the ``token-admin`` role as well as by the platform admin, so a customer
 rotates its own integration credentials instead of asking the platform
 operator to — but an ``operator`` still cannot, which is the part that matters.
 
+Holding the permission is not the same as holding the authority to *delegate*:
+``token-admin`` is rank 1, so the role it asks for is capped at its own
+(:func:`api.services.service_tokens._refuse_escalation`, `403`). A token
+outlives the session that minted it and carries no password, so a credential
+stronger than its issuer is the issuer promoting itself.
+
 The plaintext is in the create response and nowhere else. ``GET`` never
 returns it, no log line carries it, and no error message quotes it — only a
 bcrypt hash is stored, so there is nothing to return afterwards even by
@@ -62,7 +68,12 @@ def create_service_token(
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> ServiceTokenInfo:
-    """Issue one token. The response is the only place its plaintext ever exists."""
+    """Issue one token. The response is the only place its plaintext ever exists.
+
+    ``403`` when the requested ``role`` is stronger than the caller's own role
+    in this tenant; ``404`` for an unknown tenant; ``422`` for a malformed
+    scope or lifetime.
+    """
     try:
         created = service_tokens_service.create_token(
             settings,
@@ -72,10 +83,14 @@ def create_service_token(
             role=body.role,
             created_by=admin.username,
             expires_in_days=body.expires_in_days,
+            issuer_role=admin.role.value,
+            issuer_is_platform_admin=admin.is_platform_admin,
             audit=audit,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

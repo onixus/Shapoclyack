@@ -510,6 +510,18 @@ be read back.
 | `GET /api/tenants/{tenant_id}/service-tokens` | `tenant.credential.manage` | List, without secrets. Revoked and expired ones stay listed |
 | `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke` | `tenant.credential.manage` | Kill immediately. Idempotent |
 
+**A token is never stronger than the hand that issued it.** `role` in the
+create request is capped at the caller's own role in that tenant, and both the
+rank and the permission set are compared; over the cap is a `403`. Holding
+`tenant.credential.manage` is permission to rotate a credential, not authority
+to delegate more than you have: `token-admin` is rank 1 — it passes no write
+gate in the API — so it issues `viewer`-role tokens and nothing above, while
+the tenant's `admin` keeps the whole ladder and a platform admin has no cap.
+Without this, one request turned "manages credentials" into a credential that
+starts scans, writes assets and files reports, and outlives the session that
+minted it. The **scopes** need no separate cap: the role is the ceiling they
+narrow, never a way past it.
+
 A token is presented on the ordinary `Authorization: Bearer` header; which
 credential it is, is decided by its own shape, never by anything the caller
 asserts. Authorization is **two independent limits and a request must pass
@@ -620,12 +632,29 @@ raise their own limit or widen their own scope is the control removing itself.
 
 ### Suspended tenants
 
-`tenants.status` used to reach machines only: a suspended tenant could not
-exchange a provisioning key or mint one, while every person in it kept reading
-and scanning. Since #318 every tenant-scoped request by a non-platform-admin
-principal in a tenant whose status is not `active` is refused with `403`
-("Tenant … is suspended"). The platform admin is exempt, so the suspension can
-be inspected and lifted. Nothing in the API sets that status yet — see #325.
+`tenants.status` is `active` or `suspended`. **The word is `suspended`**, in
+the column, in the `TenantInfo` schema, in the refusal and in this document:
+`disabled` is already an account (`PUT /api/users/{u}/disabled`) and an agent
+(`lifecycle_status`), and a third meaning of it on a third object is how a
+reader ends up guessing.
+
+The status used to reach machines only: a suspended tenant could not exchange a
+provisioning key or mint one, while every person in it kept reading and
+scanning. Since #318 every tenant-scoped request by a non-platform-admin
+principal in a suspended tenant is refused with `403` ("Tenant … is
+suspended"), and that includes the two routes that resolve their own tenant set
+rather than going through the tenant gate:
+
+| Route | In a suspended tenant |
+|---|---|
+| Anything scoped by `tenant_id` or by a `/tenants/{id}/…` path | `403 "Tenant … is suspended"` |
+| `GET /api/tenants` | The tenant is absent from the list, so the console's switcher does not offer a tenant whose every page then refuses |
+| `GET /api/tenants/posture` | The tenant is absent — its open findings, breached SLAs and KEV counts are exactly the disclosure a suspension is meant to stop |
+
+The platform admin is exempt from all of it, and keeps the tenant in both
+listings, so the suspension can be inspected and lifted. Nothing in the API
+sets the status yet — see
+[#325](https://github.com/onixus/Shapoclyack/issues/325).
 
 ## Endpoint groups
 
@@ -1400,10 +1429,19 @@ else is `403`:
 | Has no memberships | `default` only | Pre-P0 behaviour, so existing single-tenant installations keep working; granting any membership opts the user into strict scoping |
 
 `GET /api/auth/me` returns `tenants`, `default_tenant`, `is_platform_admin`,
-and — since #318 — `tenant_role` and `permissions` for the caller's default
-tenant, which is what the console gates its pages on; `GET /api/tenants` lists only the tenants
-the caller may act in, so an MSSP's customer list does not leak to a single
-customer's operator.
+and — since #318 — `tenant_role`, `permissions` and `scoped_tenant`, which is
+what the console gates its pages on. The three describe **one tenant**: the
+`tenant_id` the request named, else `default_tenant`, echoed back in
+`scoped_tenant` so a client can tell a scoped answer from a stale one. Naming a
+tenant the caller holds nothing in is a `403`, exactly as it is everywhere else
+a `tenant_id` is accepted — not an answer about the default one. The console
+attaches the tenant its switcher is on to every request, this one included, and
+re-reads the principal when that switcher moves: answering only for the default
+tenant gated each page on a tenant the user might not be looking at, which hid
+a panel the API would have served and showed one it refuses.
+
+`GET /api/tenants` lists only the tenants the caller may act in, so an MSSP's
+customer list does not leak to a single customer's operator.
 
 A resource belonging to another tenant answers `404`, not `403`, on direct id
 lookups (`/jobs/{id}`, `/assets/{id}`, `/schedules/{id}`, `/runs/{id}` and its

@@ -283,7 +283,23 @@ def list_auth_events(
 def me(
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
+    tenant_id: Annotated[
+        str | None,
+        Query(description="Tenant to report the role and permissions for"),
+    ] = None,
 ) -> MeResponse:
+    """The signed-in principal, as it stands in one tenant.
+
+    ``tenant_id`` selects which tenant ``tenant_role``/``permissions`` describe
+    and defaults to ``default_tenant``. It exists because the console attaches
+    the tenant its switcher is on to every request, this one included: without
+    it the console gated every page on the default tenant while every other
+    call it made was scoped to a different one, so a panel could be hidden
+    where the API would have served it and shown where the API refuses. Like
+    everywhere else a ``tenant_id`` is accepted, it can only select among the
+    tenants the caller is entitled to — naming another is a `403`, not an
+    answer about the default one.
+    """
     is_platform_admin = user.role == Role.admin
     tenants = memberships_service.tenants_for_user(
         user.username, is_platform_admin=is_platform_admin
@@ -291,22 +307,27 @@ def me(
     default_tenant = memberships_service.default_tenant_for_user(
         user.username, is_platform_admin=is_platform_admin
     )
-    # The role in the default tenant, which is what the console is about to
-    # render for (#318). Falls back to the global role exactly as
-    # ``resolve_tenant`` does for a user with no memberships, so the answer
-    # here and the answer a request gets cannot disagree.
-    tenant_role = memberships_service.roles_for_user(user.username).get(
-        default_tenant, user.role.value
-    )
+    # Resolved through the same service every tenant-scoped route resolves
+    # through, so "what may I do here" and "what does a request here get"
+    # cannot drift apart — including the refusal for a tenant with no claim.
+    try:
+        scoped_tenant, tenant_role = memberships_service.resolve_tenant(
+            user.username, tenant_id, global_role=user.role.value
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     try:
         effective_role = Role(tenant_role)
     except ValueError:
+        # A membership naming a role this build does not know resolves to the
+        # lowest authority, exactly as ``resolve_tenant_principal`` does.
         effective_role = Role.viewer
     return MeResponse(
         username=user.username,
         role=user.role,
         tenants=tenants,
         default_tenant=default_tenant,
+        scoped_tenant=scoped_tenant,
         is_platform_admin=is_platform_admin,
         tenant_role=effective_role,
         permissions=sorted(
@@ -570,6 +591,35 @@ def auth_exchange(
     return AuthExchangeResponse.model_validate(result)
 
 
+def _visible_tenants(user: TokenUser) -> list[dict]:
+    """Tenants this caller may act in, minus the ones it may not act in.
+
+    Both listings below resolve their own tenant set rather than going through
+    :func:`api.auth.resolve_tenant_principal`, so neither passed the
+    ``require_active`` gate that #318 added — which made "every tenant-scoped
+    request in a suspended tenant is refused" untrue of exactly the two routes
+    that *describe* tenants. Leaving a suspended tenant in ``GET /tenants``
+    offers the console's switcher a tenant whose every page then answers 403,
+    and ``GET /tenants/posture`` answered with its open findings and breached
+    SLAs — the disclosure the suspension exists to stop.
+
+    The platform admin keeps seeing them, for the same reason it is exempt from
+    the gate itself: somebody has to be able to look at, and lift, the state.
+    """
+    is_platform_admin = user.role == Role.admin
+    allowed = set(
+        memberships_service.tenants_for_user(
+            user.username, is_platform_admin=is_platform_admin
+        )
+    )
+    return [
+        tenant
+        for tenant in tenants_service.list_tenants()
+        if tenant["tenant_id"] in allowed
+        and (is_platform_admin or tenant["status"] == "active")
+    ]
+
+
 @router.get("/tenants", response_model=list[TenantInfo])
 def list_tenants(
     user: Annotated[TokenUser, Depends(require_role(Role.operator))],
@@ -579,16 +629,7 @@ def list_tenants(
     This is what the UI's tenant switcher reads, so returning every tenant to
     every operator would leak the customer list of an MSSP installation.
     """
-    allowed = set(
-        memberships_service.tenants_for_user(
-            user.username, is_platform_admin=user.role == Role.admin
-        )
-    )
-    return [
-        TenantInfo.model_validate(t)
-        for t in tenants_service.list_tenants()
-        if t["tenant_id"] in allowed
-    ]
+    return [TenantInfo.model_validate(tenant) for tenant in _visible_tenants(user)]
 
 
 @router.get("/tenants/posture", response_model=list[TenantPosture])
@@ -597,9 +638,7 @@ def list_tenant_posture(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[TenantPosture]:
     """Per-tenant risk comparison for an MSSP (#139). Same tenant set as ``GET /tenants``."""
-    allowed = memberships_service.tenants_for_user(
-        user.username, is_platform_admin=user.role == Role.admin
-    )
+    allowed = [tenant["tenant_id"] for tenant in _visible_tenants(user)]
     return [
         TenantPosture.model_validate(row)
         for row in tenant_posture.list_posture(settings, tenant_ids=allowed)

@@ -61,6 +61,31 @@ def _account(client, username: str, tenant_id: str, role: str) -> dict[str, str]
     return {"Authorization": f"Bearer {login(client, username, password)}"}
 
 
+def _global_account(
+    client, username: str, tenant_id: str, role: str, *, global_role: str
+) -> dict[str, str]:
+    """Like :func:`_account`, but with a global role above ``viewer``.
+
+    Only for the routes that are still gated on the *global* role — the
+    cross-tenant listings, which resolve their own tenant set — where a global
+    viewer is refused before the membership under test is looked at.
+    """
+    password = f"{username}-password-1234"
+    created = client.post(
+        "/api/users",
+        headers=_admin(client),
+        json={"username": username, "password": password, "role": global_role},
+    )
+    assert created.status_code == 201, created.text
+    granted = client.put(
+        f"/api/tenants/{tenant_id}/members/{username}",
+        headers=_admin(client),
+        json={"role": role},
+    )
+    assert granted.status_code == 200, granted.text
+    return {"Authorization": f"Bearer {login(client, username, password)}"}
+
+
 def _tenant(client, tenant_id: str) -> None:
     created = client.post(
         "/api/tenants",
@@ -329,3 +354,135 @@ def test_a_role_grant_is_recorded_in_the_audit_trail(tmp_path, monkeypatch):
     # New membership, so there is no "before" — the same distinction #327 drew
     # between a grant and a re-grant, now carrying the new role names.
     assert rows[0]["before"] is None
+
+
+def test_a_token_admin_cannot_mint_a_credential_stronger_than_itself(tmp_path, monkeypatch):
+    """The ceiling on issuance. Without it, #318 *added* an escalation.
+
+    ``token-admin`` is rank 1 — it passes no write gate in the API — and holds
+    ``tenant.credential.manage`` so a customer can rotate its own integration
+    credentials. Before this check it could mint a service token with
+    ``role: admin`` and then use that token to start scans, write assets and
+    file reports: one request from "manages credentials" to "operates the
+    tenant", which is the whole of what the role table is for.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    token_admin = _account(client, "keymaster", "default", "token-admin")
+
+    for role in ("admin", "operator"):
+        refused = client.post(
+            "/api/tenants/default/service-tokens",
+            headers=token_admin,
+            json={"name": f"escalate-{role}", "scopes": ["jobs:write"], "role": role},
+        )
+        assert refused.status_code == 403, refused.text
+        assert "stronger" in refused.json()["detail"]
+
+    # What it *is* for still works, and the credential it gets is no wider than
+    # the hand that issued it.
+    minted = client.post(
+        "/api/tenants/default/service-tokens",
+        headers=token_admin,
+        json={"name": "ci-read", "scopes": ["runs:read"], "role": "viewer"},
+    )
+    assert minted.status_code == 201, minted.text
+    issued = {"Authorization": f"Bearer {minted.json()['token']}"}
+    assert client.post("/api/jobs", headers=issued, json={"mode": "balanced"}).status_code == 403
+
+    # The tenant's own admin is rank 3 and keeps the whole ladder.
+    tenant_admin = _account(client, "tenant-boss", "default", "admin")
+    allowed = client.post(
+        "/api/tenants/default/service-tokens",
+        headers=tenant_admin,
+        json={"name": "integration", "scopes": ["*"], "role": "admin"},
+    )
+    assert allowed.status_code == 201, allowed.text
+
+
+def test_me_answers_for_the_tenant_the_console_is_acting_in(tmp_path, monkeypatch):
+    """``/auth/me`` gates the console, and the console is not always in its default.
+
+    Every request carries the tenant selected in the switcher (the axios
+    interceptor in ``web-next/src/lib/api.ts``), so answering only for
+    ``default_tenant`` gated each page on the wrong tenant: it hid a panel the
+    API would have served, and offered one the API refuses.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _tenant(client, "globex")
+    account = _account(client, "two-hats", "acme", "auditor")
+    granted = client.put(
+        "/api/tenants/globex/members/two-hats", headers=_admin(client), json={"role": "viewer"}
+    )
+    assert granted.status_code == 200, granted.text
+
+    # The default tenant: an auditor, who may read the configuration.
+    default_view = client.get("/api/auth/me", headers=account)
+    assert default_view.status_code == 200, default_view.text
+    assert default_view.json()["scoped_tenant"] == "acme"
+    assert default_view.json()["tenant_role"] == "auditor"
+    assert permission_catalog.CONFIG_READ in default_view.json()["permissions"]
+    assert client.get("/api/config?tenant_id=acme", headers=account).status_code == 200
+
+    # The switcher moves to globex, where the same account is a plain viewer.
+    # The panel the console would render off the default answer 403s there.
+    scoped = client.get("/api/auth/me?tenant_id=globex", headers=account)
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["scoped_tenant"] == "globex"
+    assert scoped.json()["tenant_role"] == "viewer"
+    assert permission_catalog.CONFIG_READ not in scoped.json()["permissions"]
+    assert client.get("/api/config?tenant_id=globex", headers=account).status_code == 403
+
+    # And a tenant this account holds nothing in is refused rather than
+    # answered with the default tenant's authority.
+    _tenant(client, "initech")
+    assert client.get("/api/auth/me?tenant_id=initech", headers=account).status_code == 403
+
+
+def test_a_suspended_tenant_leaves_the_listings_that_describe_it(tmp_path, monkeypatch):
+    """"Every tenant-scoped request refused" has to include the tenant lists.
+
+    ``GET /api/tenants`` feeds the console's switcher — offering a tenant whose
+    every page then 403s — and ``GET /api/tenants/posture`` answered with the
+    suspended tenant's *risk metrics*, which is the disclosure the suspension
+    is supposed to stop. Both resolve their tenant set themselves, so neither
+    passed through the ``require_active`` gate.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    _tenant(client, "paused")
+    # Its own account with a *global* operator role, rather than the
+    # membership-only ones ``_account`` builds: both listings hang off
+    # ``require_role``, which reads the global role, so a global viewer never
+    # reaches them at all. Its own rather than the seeded ``operator`` because
+    # this test suspends the only tenant the account belongs to, and the
+    # database outlives the test.
+    member = _global_account(client, "paused-op", "paused", "operator", global_role="operator")
+
+    listed = client.get("/api/tenants", headers=member)
+    assert listed.status_code == 200, listed.text
+    assert "paused" in {t["tenant_id"] for t in listed.json()}
+
+    from api.auth import get_settings
+
+    settings = get_settings()
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Tenant, "paused").status = "suspended"
+
+    # The list still parses — the status is in the schema, which is the other
+    # half of this: a word the API cannot serialise turns the switcher into a
+    # 500 rather than into a refusal.
+    listed = client.get("/api/tenants", headers=member)
+    assert listed.status_code == 200, listed.text
+    assert "paused" not in {t["tenant_id"] for t in listed.json()}
+    posture = client.get("/api/tenants/posture", headers=member)
+    assert posture.status_code == 200, posture.text
+    assert "paused" not in {row["tenant_id"] for row in posture.json()}
+
+    # The platform admin keeps both, since it is who lifts the suspension.
+    seen = client.get("/api/tenants", headers=_admin(client))
+    assert seen.status_code == 200, seen.text
+    rows = {t["tenant_id"]: t["status"] for t in seen.json()}
+    assert rows["paused"] == "suspended"
+    assert "paused" in {
+        row["tenant_id"] for row in client.get("/api/tenants/posture", headers=_admin(client)).json()
+    }
