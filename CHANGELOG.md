@@ -74,6 +74,39 @@ All notable changes to Shapoclyack are documented in this file.
   refused over NATS now reaches that backoff too, and NAKs the offer so another
   agent in the tenant can take it, instead of being swallowed as a reconnect.
 
+- **An administrative audit trail, and one the application cannot edit**
+  ([#327](https://github.com/onixus/Shapoclyack/issues/327),
+  [#329](https://github.com/onixus/Shapoclyack/issues/329)). Creating,
+  promoting, disabling and deleting an account; granting and revoking a
+  membership; minting and revoking a service token or a provisioning key; a
+  password reset and a self-service rotation; an agent's first registration; a
+  report download; a scan scope replaced; a config override changed — each is
+  now a row in `audit_events` with the actor, what kind of principal it is, the
+  resolved client address, the user agent, the request's `X-Request-Id`, and the
+  resource before and after the change. Every action that is itself a database
+  write records **in the transaction that makes the change**, so a change
+  without a record and a record without a change are both impossible;
+  `report.download` is the one exception, because a file read has no transaction
+  to join and its row is committed before the stream starts. Every
+  credential-shaped field (`password`, `*_hash`, `token`, `*_secret`, `*_key`)
+  is replaced by `[redacted]` before storage. `GET /api/audit` reads it back —
+  admin *in the tenant*, never a service token, filters on actor/action/resource
+  and a time window, and `?format=csv|ndjson` streams every matching event
+  rather than the page. Migration `0037_audit_events` makes the table
+  append-only in Postgres: triggers refuse every `UPDATE`, `DELETE` and
+  `TRUNCATE`, and the only way past them is `audit_events_prune`, a `SECURITY
+  DEFINER` function the recommended `GRANT` layout in `docs/operations.md`
+  withholds from the API's role. That layout — which includes moving the table
+  off the API's role with `ALTER TABLE … OWNER TO` — is what makes the trail
+  proof against the API's *credentials* rather than only against its bugs; the
+  shipped `k8s/` base runs both as one role, and the docs now say so. Retention
+  is a separate privileged job, `python -m api.services.audit_retention --days
+  365` (`OCTO_AUDIT_EVENT_RETENTION_DAYS`), with a CronJob example in
+  `k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`. The console
+  gets `/audit` — the same list with the filters and the two export buttons.
+  Login attempts stay in `auth_events` and are not mirrored: they are the same
+  fact in two tables, and that one is also the rate limiter's counter.
+
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
   form and preferred it over the value the server minted at `start_scan` or
@@ -110,6 +143,106 @@ All notable changes to Shapoclyack are documented in this file.
   copy. Base is unchanged — the kind stand has no CA and stays plaintext.
 
 ### Added
+
+- **One outbound HTTP client, with a proxy and an internal CA**
+  ([#359](https://github.com/onixus/Shapoclyack/issues/359)). Nothing in this
+  repository read a proxy variable, and webhook/ticket delivery on raw
+  `http.client` could not have used one anyway — on a network whose only egress
+  is a proxy, no webhook ever left and no remote agent ever registered.
+  `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`, `OCTO_NO_PROXY` and `OCTO_CA_BUNDLE`
+  now decide the control-plane HTTP calls on both sides: `api/services/egress.py`
+  for webhook and ticket delivery, OIDC and advisory feeds, and its deliberate
+  mirror `agent/egress.py` for the agent's token exchange, registration,
+  heartbeat, claim and results upload (a copy, not an import — the agent ships
+  without the `api` package; a test asserts the two agree). The scanner's own
+  external lookups — RIPEstat in `asn_discovery`, the three object stores in
+  `cloud_discovery` — read the same two variables through
+  `scanner/pipeline/egress_env.py`; the remaining outbound stages (`hostnames`,
+  `ownership`, `alerts`) do not, and
+  [docs/network-requirements.md](docs/network-requirements.md) now lists every
+  direction and says which is which rather than claiming all of them. Each
+  variable falls back to the conventional `HTTPS_PROXY`/`NO_PROXY`, and for the
+  plain-HTTP direction to the **lowercase** `http_proxy` only: a CGI-shaped
+  environment derives uppercase `HTTP_PROXY` from an incoming `Proxy:` request
+  header, so that is the spelling an untrusted caller can write (httpoxy), and
+  curl reads only the lowercase one for the same reason. A proxy URL must
+  itself be `http://` — nothing here wraps the hop to the proxy in TLS, so
+  `https://` is refused by name instead of promising an encrypted hop that
+  `Proxy-Authorization: Basic` would then cross in the clear.
+  `OCTO_CA_BUNDLE` is *added* to the system trust store — HTTPS, the SMTP relay
+  and the NATS connection on **both** ends read it, so one internal root is
+  named once — and a path that does not resolve to a usable PEM is an error
+  rather than a silent fallback. The SSRF boundary (#151) is unchanged: a
+  proxied webhook target is still parsed, port-checked and address-checked
+  before anything is sent, a host whose name resolves to nothing here is
+  refused rather than handed to the proxy to resolve, and a host
+  `OCTO_NO_PROXY` exempts keeps the pinned direct dial. What proxying
+  necessarily gives up is that pinning, which
+  [docs/network-requirements.md](docs/network-requirements.md) says plainly.
+- **NATS on 443, and an honest answer about proxies**
+  ([#359](https://github.com/onixus/Shapoclyack/issues/359)). `wss://` in
+  `OCTO_NATS_URL` now works where `aiohttp` is installed — nats-py implements
+  the WebSocket transport with it, the agent image does not carry it, and the
+  agent refuses at start naming the package instead of failing later inside its
+  event-loop thread. `k8s/shapoclyack/examples/nats-443-ingress.example.yaml`
+  has both routes onto 443: a raw-TCP (stream) ingress with `tls://`, which
+  keeps TLS end to end and is the recommended one, and the `wss://` listener
+  with an ordinary Ingress. **No HTTP proxy carries NATS** in any of its
+  transports; where the proxy is the only way out, leave `OCTO_NATS_URL` unset
+  and the agent polls `POST /api/agent/jobs/claim` — a supported mode, not a
+  degraded one. `k8s/shapoclyack/examples/agent-proxy-ca-patch.yaml` is that
+  deployment.
+- **`OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS`** ([#359](https://github.com/onixus/Shapoclyack/issues/359)).
+  Shapes the agent's results upload to a token bucket, `0` (the default) for no
+  limit. The multipart body is now streamed from disk rather than assembled in
+  memory, so the limit bounds the wire rate rather than the size of a buffer
+  that was already filled — and a run archive stops being why a branch office's
+  uplink saturates for two minutes after every scan. `Content-Length` is set
+  explicitly so the streamed body does not fall through to chunked encoding,
+  which the results route answers `411` to. An upload the API cuts off
+  mid-body — how `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` looks from the agent's
+  side, since the refusal is decided on `Content-Length` and the status line is
+  lost with the socket — is not retried: re-shaping the same archive through
+  the token bucket only spends the site's uplink to be refused twice more.
+- **[docs/network-requirements.md](docs/network-requirements.md)** — ports,
+  directions and protocols for the agent, the cluster and the API's own egress;
+  the proxy and CA variables with their exact `NO_PROXY` dialect; what TLS
+  inspection does and does not change; and the bandwidth section. Linked from
+  [operations.md](docs/operations.md#transport-encryption) and the wiki portal.
+  The transport-encryption table in `operations.md` also stops saying NATS is
+  unencrypted, which has not been true since `tls://` landed.
+- **Structured logging, a request id, and secret redaction**
+  ([#330](https://github.com/onixus/Shapoclyack/issues/330)). `OCTO_LOG_FORMAT`
+  (`text` by default, `json` for a shipper) and `OCTO_LOG_LEVEL` configure the
+  API and the agent alike; the API hands the same formatter to uvicorn, so
+  `uvicorn.access` stops being the one stream in a different shape. JSON lines
+  carry `ts`, `level`, `logger`, `msg`, `request_id`, and `exc` on a traceback,
+  and the formatter is built on the standard library — no new dependency.
+  `RequestIdMiddleware` binds a correlation id per request: `X-Request-Id` from
+  the caller when it is safe to echo and to log (128 characters of a narrow
+  set, so a uuid, a ULID or a `traceparent` passes and a CRLF injection does
+  not), a fresh uuid4 otherwise. It wraps the whole ASGI stack — outside
+  Starlette's own `ServerErrorMiddleware`, which `add_middleware` cannot reach
+  — so the 500 for an unhandled exception carries the header like every other
+  response, and the record about it is written under the id rather than by
+  uvicorn after the context is gone. The value comes back in the response
+  header (named in the CORS `expose_headers`, so the console can read it
+  cross-origin and shows it in the toast for a server-side failure), appears in
+  every log line the request produces, and is set on the OpenTelemetry span as
+  `shapoclyack.request_id`. Both formats print UTC.
+  A `logging.Filter` on both processes masks keyed
+  `password=`/`token=`/`secret=` pairs (JSON spelling included), the whole
+  `Authorization` header whatever its scheme, bare `Bearer` credentials,
+  passwords inside `scheme://user:pass@host` URLs — an empty user, as Redis
+  writes them, included — and JWTs, in the message and in the formatted
+  traceback of either format; `%s` arguments are covered, which is how this
+  repository logs. `sqlalchemy.engine`, `paramiko`, `httpx`/`httpcore` and
+  `nats` are held at a floor, so `OCTO_LOG_LEVEL=DEBUG` does not turn on the
+  SQL statement log with its bound parameters, and `OCTO_LOG_LEVEL=NOTSET` is
+  refused rather than silently meaning "everything". `docs/operations.md`
+  now describes the filter and its limits instead of instructing operators not
+  to log secrets. Head trace sampling is configurable with
+  `OCTO_OTEL_TRACES_SAMPLER_RATIO` (default `1.0`, parent-based).
 
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,

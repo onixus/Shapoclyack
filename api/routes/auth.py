@@ -44,6 +44,7 @@ from api.schemas import (
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
+from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.services import agents as agents_service
 from api.services import auth as auth_service
@@ -419,6 +420,7 @@ def grant_membership(
     username: str,
     body: GrantMembershipRequest,
     user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> MembershipInfo:
     """Grant (or re-grant) one user access to one tenant. Idempotent."""
     try:
@@ -427,6 +429,7 @@ def grant_membership(
             tenant_id=tenant_id,
             role=body.role,
             created_by=user.username,
+            audit=audit,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -438,8 +441,9 @@ def revoke_membership(
     tenant_id: str,
     username: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> None:
-    if not memberships_service.revoke(username=username, tenant_id=tenant_id):
+    if not memberships_service.revoke(username=username, tenant_id=tenant_id, audit=audit):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membership not found")
 
 
@@ -464,9 +468,12 @@ def create_provisioning_key(
     tenant_id: str,
     body: CreateProvisioningKeyRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> ProvisioningKeyInfo:
     try:
-        created = tenants_service.create_provisioning_key(tenant_id=tenant_id, label=body.label)
+        created = tenants_service.create_provisioning_key(
+            tenant_id=tenant_id, label=body.label, audit=audit
+        )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
@@ -495,8 +502,9 @@ def revoke_provisioning_key(
     tenant_id: str,
     key_id: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> ProvisioningKeyInfo:
-    revoked = tenants_service.revoke_provisioning_key(key_id)
+    revoked = tenants_service.revoke_provisioning_key(key_id, audit=audit)
     if revoked is None or revoked.get("tenant_id") != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="key not found")
     return ProvisioningKeyInfo.model_validate(revoked)
@@ -629,6 +637,7 @@ def replace_scan_scope(
     body: ReplaceScanScopeRequest,
     user: Annotated[TokenUser, Depends(require_role(Role.admin))],
     settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
 ) -> list[ScanScopeEntryInfo]:
     """Approve the scope this tenant may scan, replacing whatever it had.
 
@@ -643,6 +652,7 @@ def replace_scan_scope(
             tenant_id=tenant_id,
             entries=[entry.model_dump() for entry in body.entries],
             approved_by=user.username,
+            audit=audit,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

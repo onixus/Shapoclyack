@@ -27,6 +27,7 @@ from api import __version__
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentFleetSummary, AgentInfo
+from api.services import audit as audit_service
 from api.services import pagination
 from api.services import tenants as tenants_service
 from api.services import version_compare
@@ -572,6 +573,7 @@ def register_agent(
     metrics: dict[str, Any] | None = None,
     capabilities: list[str] | None = None,
     provisioning_key_id: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> AgentInfo:
     settings = _require_settings()
     now = _now()
@@ -634,18 +636,28 @@ def register_agent(
         session.add(row)
         session.flush()
         info = _to_info(row)
-    # #327 replaces this with an audit_events row. Until then it is the only
-    # record that a key was exchanged for a place in the fleet, which is the
-    # event an operator reconstructs an intrusion from.
-    _log.info(
-        "agent registered agent_id=%s tenant_id=%s hostname=%s version=%s key_id=%s",
-        info.agent_id,
-        info.tenant_id,
-        info.hostname,
-        info.version,
-        provisioning_key_id or "",
-    )
-    return info
+        # Only a *new* agent is an administrative event. An agent that restarts
+        # re-registers, and recording those would bury the row that matters --
+        # "a machine joined this tenant's fleet" -- under the fleet's uptime.
+        # The re-registration is still visible: it moves ``last_seen_at``.
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_AGENT_REGISTER,
+            resource_type="agent",
+            resource_id=row.agent_id,
+            tenant_id=tenant_id,
+            after={
+                "agent_id": row.agent_id,
+                "hostname": row.hostname,
+                "version": row.version,
+                "labels": dict(row.labels or {}),
+                # Which key bought this place in the fleet is the first thing
+                # an operator asks after an unexpected agent appears (#308).
+                "provisioning_key_id": provisioning_key_id or "",
+            },
+        )
+        return info
 
 
 def heartbeat(

@@ -17,6 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.auth import Role, TokenUser, get_current_user, require_role
+from api.routes._audit import AuditDep
 from api.schemas import (
     ChangeOwnPasswordRequest,
     CreateUserRequest,
@@ -46,6 +47,7 @@ def list_users(_: Annotated[TokenUser, Depends(require_role(Role.admin))]) -> li
 def create_user(
     body: CreateUserRequest,
     admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> UserInfo:
     try:
         created = users_service.create_user(
@@ -54,6 +56,7 @@ def create_user(
             role=body.role,
             email=body.email,
             created_by=admin.username,
+            audit=audit,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -67,14 +70,17 @@ def set_user_password(
     username: str,
     body: SetUserPasswordRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> UserInfo:
     """Admin reset. Deliberately does not require the old password.
 
     An admin resetting an account does not know it; requiring it would make the
-    reset useless in the case it exists for — a user who cannot log in.
+    reset useless in the case it exists for — a user who cannot log in. Which
+    is also why it is recorded: taking over an account is one request, and the
+    trail is the only thing that says it happened.
     """
     try:
-        updated = users_service.set_password(username, body.password)
+        updated = users_service.set_password(username, body.password, audit=audit)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -89,6 +95,7 @@ def set_user_role(
     username: str,
     body: SetUserRoleRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> UserInfo:
     if body.role != "admin" and users_service.count_active_admins(exclude=username) == 0:
         raise HTTPException(
@@ -96,7 +103,7 @@ def set_user_role(
             detail="cannot demote the last active admin — create another admin first",
         )
     try:
-        updated = users_service.set_role(username, body.role)
+        updated = users_service.set_role(username, body.role, audit=audit)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -136,6 +143,7 @@ def set_user_disabled(
     username: str,
     body: SetUserDisabledRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> UserInfo:
     """Disable rather than delete: memberships and history survive the revocation."""
     if body.disabled and users_service.count_active_admins(exclude=username) == 0:
@@ -143,7 +151,7 @@ def set_user_disabled(
             status_code=status.HTTP_409_CONFLICT,
             detail="cannot disable the last active admin — create another admin first",
         )
-    updated = users_service.set_disabled(username, body.disabled)
+    updated = users_service.set_disabled(username, body.disabled, audit=audit)
     if updated is None:
         raise _not_found(username)
     return UserInfo.model_validate(updated)
@@ -153,6 +161,7 @@ def set_user_disabled(
 def delete_user(
     username: str,
     admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> None:
     if username == admin.username:
         raise HTTPException(
@@ -164,7 +173,7 @@ def delete_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="cannot delete the last active admin — create another admin first",
         )
-    if not users_service.delete_user(username):
+    if not users_service.delete_user(username, audit=audit):
         raise _not_found(username)
 
 
@@ -172,6 +181,7 @@ def delete_user(
 def change_own_password(
     body: ChangeOwnPasswordRequest,
     user: Annotated[TokenUser, Depends(get_current_user)],
+    audit: AuditDep,
 ) -> None:
     """Rotate your own password. Any role — this is not an admin operation.
 
@@ -181,7 +191,7 @@ def change_own_password(
     """
     try:
         changed = users_service.change_own_password(
-            user.username, current=body.current_password, new=body.new_password
+            user.username, current=body.current_password, new=body.new_password, audit=audit
         )
     except ValueError as exc:
         raise HTTPException(

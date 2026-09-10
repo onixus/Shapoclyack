@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import JSON, ForeignKey, Index, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# ``jsonb`` on Postgres, plain ``json`` on the SQLite dev fallback, which has
+# neither. Only the audit trail's before/after use it: they are stored and read
+# whole, so what jsonb buys here is dropping the key order and whitespace of a
+# document nobody edits.
+_JSON_DOC = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Base(DeclarativeBase):
@@ -204,6 +211,70 @@ class AuthEvent(Base):
         Index("ix_auth_events_pair", "username", "client_ip", "occurred_at"),
         # The per-IP limiter and the "what is this address doing" audit query.
         Index("ix_auth_events_ip", "client_ip", "occurred_at"),
+    )
+
+
+class AuditEvent(Base):
+    """One administrative change this platform made, and who made it (#327).
+
+    :class:`AuthEvent` next door answers "who signed in and what was refused";
+    this one answers "what was changed" — the accounts, memberships,
+    credentials, scan scopes and configuration an operator altered, with the
+    value before and the value after. They stay two tables because they are two
+    lifetimes: the login trail is also the rate limiter's counter and is pruned
+    on the login path, while these rows are append-only (#329) and outlive it.
+
+    ``tenant_id`` is NULL for a platform-level act (creating a console account,
+    changing the installation-wide scanner config) and set for anything done
+    *inside* a tenant. It is deliberately **not** a foreign key: deleting a
+    tenant must not delete the record of what was done in it, which is the one
+    moment the record matters most.
+
+    ``before``/``after`` are the resource's public shape, never its secrets —
+    :func:`api.services.audit.redact` drops password hashes, token plaintexts,
+    provisioning keys and webhook secrets by field name before either is
+    stored, so a reader of this table cannot recover a credential from it.
+    """
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime]
+    # NULL for a platform-level act; see the class docstring.
+    tenant_id: Mapped[str | None] = mapped_column(default=None)
+    # Console username, service-token name, agent id, or "system" — whatever
+    # ``actor_type`` says this is. Not a FK, for the reason auth_events.username
+    # is not one: the actor may be gone by the time the row is read.
+    actor: Mapped[str] = mapped_column(default="")
+    # user | service_token | agent | system
+    actor_type: Mapped[str] = mapped_column(default="user")
+    # Dotted verb, e.g. "user.create", "membership.revoke". See ACTIONS in
+    # api/services/audit.py.
+    action: Mapped[str] = mapped_column(default="")
+    resource_type: Mapped[str] = mapped_column(default="")
+    resource_id: Mapped[str] = mapped_column(default="")
+    # Redacted snapshots. NULL rather than {} where the action has no such
+    # side: a creation has no "before", a deletion has no "after".
+    before: Mapped[dict | None] = mapped_column(_JSON_DOC, default=None)
+    after: Mapped[dict | None] = mapped_column(_JSON_DOC, default=None)
+    # Resolved through api/core/client_ip.py, like auth_events.client_ip — never
+    # a raw X-Forwarded-For, which the client writes itself.
+    client_ip: Mapped[str] = mapped_column(default="")
+    user_agent: Mapped[str] = mapped_column(default="")
+    # The X-Request-Id of the request that made the change, when it carried
+    # one, so a row here can be joined to the API log line that produced it.
+    request_id: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        # The list endpoint's default query: one tenant's rows, newest first.
+        Index("ix_audit_events_tenant_time", "tenant_id", "occurred_at"),
+        Index("ix_audit_events_action", "action"),
+        # "everything that happened to this object", the question an incident
+        # asks about one account, token or scope.
+        Index("ix_audit_events_resource", "resource_type", "resource_id"),
+        # The platform-admin listing and the export, which are not filtered by
+        # tenant at all.
+        Index("ix_audit_events_time", "occurred_at"),
     )
 
 

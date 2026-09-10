@@ -32,6 +32,7 @@ def configure(app: Any, settings: Settings, *, exporter: Any | None = None) -> b
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+        from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
     except ImportError:
         LOG.warning("OpenTelemetry packages missing; tracing not started")
         return False
@@ -42,7 +43,11 @@ def configure(app: Any, settings: Settings, *, exporter: Any | None = None) -> b
             "service.instance.id": settings.instance_id,
         }
     )
-    provider = TracerProvider(resource=resource)
+    # Parent-based: a request that arrives with a `traceparent` keeps the
+    # decision the ingress (or the console) already made, so a sampled trace
+    # does not lose its API span. The ratio applies to root spans only (#330).
+    sampler = ParentBased(root=TraceIdRatioBased(settings.otel_traces_sampler_ratio))
+    provider = TracerProvider(resource=resource, sampler=sampler)
     if exporter is None:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
@@ -57,9 +62,10 @@ def configure(app: Any, settings: Settings, *, exporter: Any | None = None) -> b
     )
     _provider = provider
     LOG.info(
-        "OpenTelemetry tracing on (service=%s exporter=%s)",
+        "OpenTelemetry tracing on (service=%s exporter=%s sampler_ratio=%s)",
         settings.otel_service_name,
         "otlp" if endpoint else "injected",
+        settings.otel_traces_sampler_ratio,
     )
     return True
 

@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit as audit_service
 from api.settings import Settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -235,7 +236,9 @@ def create_tenant(*, name: str, tenant_id: str | None = None) -> dict[str, Any]:
         return _tenant_to_dict(row)
 
 
-def create_provisioning_key(*, tenant_id: str, label: str = "") -> dict[str, Any]:
+def create_provisioning_key(
+    *, tenant_id: str, label: str = "", audit: "audit_service.AuditContext | None" = None
+) -> dict[str, Any]:
     """Mint a provisioning key. Returns record including one-time ``key`` plaintext."""
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
@@ -264,6 +267,18 @@ def create_provisioning_key(*, tenant_id: str, label: str = "") -> dict[str, Any
         session.add(row)
         session.flush()
         out = _key_to_dict(row)
+        # Recorded before the plaintext is attached below: a key that registers
+        # agents into this tenant is exactly what must not end up in a table
+        # every tenant admin can read (#327).
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_PROVISIONING_KEY_CREATE,
+            resource_type="provisioning_key",
+            resource_id=key_id,
+            tenant_id=tenant_id,
+            after=out,
+        )
         out["key"] = plaintext
         return out
 
@@ -280,7 +295,9 @@ def list_provisioning_keys(tenant_id: str | None = None) -> list[dict[str, Any]]
     return items
 
 
-def revoke_provisioning_key(key_id: str) -> dict[str, Any] | None:
+def revoke_provisioning_key(
+    key_id: str, *, audit: "audit_service.AuditContext | None" = None
+) -> dict[str, Any] | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.ProvisioningKey, key_id)
@@ -288,7 +305,17 @@ def revoke_provisioning_key(key_id: str) -> dict[str, Any] | None:
             return None
         row.revoked_at = _now()
         session.flush()
-        return _key_to_dict(row)
+        revoked = _key_to_dict(row)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_PROVISIONING_KEY_REVOKE,
+            resource_type="provisioning_key",
+            resource_id=key_id,
+            tenant_id=row.tenant_id,
+            after=revoked,
+        )
+        return revoked
 
 
 def provisioning_key_state(key_id: str) -> str:

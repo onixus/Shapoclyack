@@ -241,7 +241,7 @@ Retention must cover all stateful layers:
 | Layer | Retain/backup |
 |---|---|
 | Run filesystem/PVC | Raw artifacts, reports, checkpoints |
-| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots |
+| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail |
 | ClickHouse | Analytical vulnerability and port history |
 | NATS | Pending jobs and ingest messages |
 
@@ -277,6 +277,141 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 - Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
 - `0` days disables the reaper.
 - Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+
+### Audit-trail immutability and retention (#327, #329)
+
+`audit_events` is the administrative trail: what was changed, by whom, with the
+value before and after. Migration `0037_audit_events` installs triggers that
+refuse every `UPDATE`, `DELETE` and `TRUNCATE` on it:
+
+```
+ERROR:  audit_events is append-only: DELETE refused (#329)
+```
+
+(`TRUNCATE` has its own statement-level trigger. A row trigger never fires for
+it, so a `DELETE`-only guard would leave the whole trail removable in one
+statement.)
+
+**Read what that buys carefully.** Out of the box it stops *a bug in the API*,
+unconditionally. It stops *someone holding the API's database credential* only
+once `audit_events` is owned by a role the API does not run as — an owner may
+drop its own triggers, and the owner check below is satisfied by whoever owns
+the table. The manifests in `k8s/` connect the API, the migration initContainer
+and the retention example to the same superuser role (`octo`), so on a stock
+deployment the property is "the API cannot rewrite its own trail by accident",
+not "cannot rewrite it at all". The GRANT layout below is what turns the second
+into a true statement, and the verification after it is how you prove it landed.
+
+The one way past it is `audit_events_prune(cutoff timestamp)`, a `SECURITY
+DEFINER` function. It sets a transaction-local GUC that the trigger honours, and
+the trigger *also* requires the effective user to be the table's owner — true
+inside the definer function, false for anyone who merely sets the GUC
+themselves. So the escape hatch is the function, and **`EXECUTE` on the function
+is the privilege to guard**. (The alternative, `ALTER TABLE … DISABLE TRIGGER`
+around the delete, was rejected: it needs ownership anyway, takes an ACCESS
+EXCLUSIVE lock for the length of the sweep, and opens the table to *every*
+session while it is off.)
+
+Retention is therefore a **separate job with its own credentials**, not the API:
+
+```
+python -m api.services.audit_retention --days 365
+```
+
+`--days` defaults to `OCTO_AUDIT_EVENT_RETENTION_DAYS` (365). `0` is refused
+rather than read as "delete everything" — the value that means "keep forever" in
+the configuration must not become "keep nothing" because a variable was unset in
+the job's environment. Run it from a `CronJob` (weekly is plenty; the sweep is
+idempotent) using the retention role, not the API role. A worked example —
+CronJob plus the separate Secret holding that role's DSN — is
+[`k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`](../k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml);
+it is not in the base kustomization, because applying it before the GRANT layout
+above would either fail on every run or run as the API's role and prove nothing.
+
+#### Recommended GRANT layout
+
+The migration does not create roles — it does not know what this installation
+calls them, and a migration that invents them fails on every installation whose
+names differ. Apply this once, substituting your own role names:
+
+```sql
+-- FIRST, and the step the rest depends on: move the table and both functions
+-- off the API's role. A migration cannot do this — it runs as the role that
+-- would have to be given up — and without it every REVOKE below is undone by
+-- the fact that an owner may re-GRANT and drop triggers at will.
+CREATE ROLE shapoclyack_audit_owner NOLOGIN;
+ALTER TABLE audit_events OWNER TO shapoclyack_audit_owner;
+ALTER SEQUENCE audit_events_id_seq OWNER TO shapoclyack_audit_owner;
+-- The prune function is SECURITY DEFINER: it runs as *its* owner, and the
+-- trigger's owner check is what makes that the only way to delete a row. Owned
+-- by the API's role, it would run as the API.
+ALTER FUNCTION audit_events_prune(timestamp without time zone)
+  OWNER TO shapoclyack_audit_owner;
+ALTER FUNCTION audit_events_immutable() OWNER TO shapoclyack_audit_owner;
+
+-- The API may append to the trail and read it back. Nothing else — TRUNCATE
+-- named explicitly because REVOKE ALL is easy to narrow later by accident.
+REVOKE ALL ON TABLE audit_events FROM shapoclyack_api;
+REVOKE TRUNCATE ON TABLE audit_events FROM shapoclyack_api, PUBLIC;
+GRANT SELECT, INSERT ON TABLE audit_events TO shapoclyack_api;
+GRANT USAGE, SELECT ON SEQUENCE audit_events_id_seq TO shapoclyack_api;
+
+-- And it may not reach the escape hatch. (REVOKE … FROM PUBLIC is already done
+-- by the migration; this is the explicit statement of the same thing.)
+REVOKE EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
+  FROM shapoclyack_api;
+
+-- The retention job, and only it, may prune.
+GRANT EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
+  TO shapoclyack_audit_retention;
+```
+
+The migration initContainer runs as the API's role in the shipped manifests, so
+re-run the ownership statements after any future migration that recreates the
+table or the functions.
+
+A superuser can still do anything at all; what this layout buys is that the
+credential in the API's Secret is not enough.
+
+#### Verifying it after a deploy
+
+Two checks, and the first is the one that matters — it is what separates a real
+split from an installation where nothing changed:
+
+```sql
+-- 1. As anyone: who owns the table? This must NOT be the API's role.
+SELECT pg_get_userbyid(relowner) AS owner
+  FROM pg_class WHERE relname = 'audit_events';
+--   owner
+-- ------------------------
+--  shapoclyack_audit_owner
+
+-- 2. As the API's role, with the escape hatch's GUC deliberately set — this is
+--    what an attacker holding the API's credential would try, and a plain
+--    DELETE without the SET proves nothing, because it fails for the table's
+--    owner too:
+BEGIN;
+SET LOCAL shapoclyack.audit_retention = 'on';
+DELETE FROM audit_events WHERE id = (SELECT min(id) FROM audit_events);
+-- expected: ERROR ... audit_events is append-only: DELETE refused (#329)
+TRUNCATE audit_events;
+-- expected: ERROR ... audit_events is append-only: TRUNCATE refused (#329)
+ROLLBACK;
+```
+
+If check 1 returns the API's role, check 2 will still fail — the trigger's owner
+test is against the *table's* owner — but it is not evidence: that role can drop
+the trigger and repeat the delete. Proof for an auditor is check 1, then check 2,
+then the grants in `\dp audit_events` and the function ACL in
+`\df+ audit_events_prune`.
+
+**Not done here, deliberately:** a hash chain over the rows (`prev_hash`/`hash`).
+It only detects tampering by someone who could bypass the trigger *and* the
+grants — i.e. the database's owner or a superuser — and to be a chain at all it
+would have to serialise every audit write behind one lock, which is a
+throughput cost paid on every administrative request. If an installation needs
+tamper-evidence against its own DBA, ship the rows off-box (the NDJSON export
+into a WORM bucket or a log pipeline) rather than hashing them in place.
 
 ### ClickHouse ingest consumer subjects (#230)
 
@@ -678,8 +813,89 @@ first, otherwise the next heartbeat registers it again.
 
 ## Logs and observability
 
-Use structured application logs and correlate by tenant, `job_id`, `run_id`,
-and `agent_id`. Do not log secrets or full authorization headers.
+### Log format, level, and the request id
+
+`OCTO_LOG_FORMAT=json` puts the API and the agent on one line-per-object
+format; `text` (the default) keeps them readable in a terminal.
+`OCTO_LOG_LEVEL` sets the level for both — see
+[configuration.md](configuration.md#environment-variables). The API hands the
+same formatter to uvicorn, so `uvicorn.access` is in the chosen format too
+instead of uvicorn's own colourised one.
+
+```json
+{"ts":"2026-09-09T11:04:21.318452Z","level":"INFO","logger":"uvicorn.access","msg":"10.42.0.7:53114 - \"GET /api/runs?token=*** HTTP/1.1\" 200","request_id":"3f9c1a7be0d4472f8a1e6b2c5d8e0f11"}
+```
+
+Every request carries a correlation id. `X-Request-Id` is taken from the
+caller when it is safe to echo and to log — at most 128 characters of
+`[A-Za-z0-9._:@=+/-]`, so a uuid, a ULID, a W3C `traceparent` or nginx's
+`$request_id` all pass — and a fresh uuid4 is minted otherwise. An id that
+fails that check is *replaced*, not escaped: a client whose id we had to
+rewrite cannot correlate on it anyway. The value comes back in the response's
+`X-Request-Id`, appears in the `request_id` field of every log line the request
+produces, and is set on the OpenTelemetry span as `shapoclyack.request_id` when
+tracing is on.
+
+Following one request from a user report:
+
+```bash
+# the id the console (or your ingress) reported — the console appends it to
+# the error toast for a 5xx, and it is on the response as `X-Request-Id`
+kubectl -n network-scan logs deployment/shapoclyack-api --tail=-1 \
+  | grep '"request_id":"3f9c1a7be0d4472f8a1e6b2c5d8e0f11"'
+
+# text format: the id is the bracketed field after the logger name
+kubectl -n network-scan logs deployment/shapoclyack-api | grep '\[3f9c1a7b'
+```
+
+Both formats timestamp in **UTC**: `json` writes an ISO string ending in `Z`,
+`text` a `%Y-%m-%d %H:%M:%S,mmm` followed by a literal `Z`. Neither reads the
+pod's `/etc/localtime`, so a text line and a JSON one line up with each other
+and with everything else in the cluster.
+
+`OCTO_LOG_LEVEL=DEBUG` raises the application's loggers, not every library's.
+`sqlalchemy.engine` and `sqlalchemy.pool` stay at `WARNING`, `paramiko`,
+`httpx`, `httpcore` and `nats` at `INFO` — the SQL statement log prints every
+statement *with its bound parameters*, and on this schema those are bcrypt
+hashes, `token_hash` values and session ids. Chasing a bug at DEBUG must not
+write the credential store to stdout. The floor only holds the level down: a
+quieter `OCTO_LOG_LEVEL` still applies to them. `OCTO_LOG_LEVEL=NOTSET` is
+refused (it would mean "no level check at all") and reads as `INFO`.
+
+Beyond the request id, correlate by tenant, `job_id`, `run_id`, and `agent_id`
+— a scan outlives the request that started it, and those are the keys that
+follow it into the agent's own logs.
+
+### Secret redaction, and what it does not cover
+
+A `logging.Filter` on the process's handler rewrites each record's **rendered**
+message before it is formatted, on both the API and the agent. It renders the
+record first (so a secret passed as a `%s` argument is masked exactly like one
+written into the format string) and masks four shapes:
+
+| Shape | Example in, example out |
+|---|---|
+| Keyed pairs — `password`, `passwd`, `pwd`, `token`, `secret`, `api_key`, with `=` or `:`, quoted or not | `token=abc123` → `token=***`, `{"password": "hunter2"}` → `{"password": "***"}` |
+| The `Authorization` header, scheme word included (`Bearer`, `Basic`, `Token`, `ApiKey`, `Digest`, `Negotiate`), however it was written | `Authorization: Token abc` → `Authorization: ***`, `{"Authorization": "Bearer abc"}` → `{"Authorization": "***"}` |
+| A bare `Bearer` credential with no header name | `Bearer abc.def` → `Bearer ***` |
+| Credentials in a URL, empty user included | `postgresql://octo:s3cret@db/octo` → `postgresql://octo:***@db/octo`, `redis://:s3cret@cache` → `redis://:***@cache` |
+| JWTs in compact serialization | `eyJhbGciOi….payload.sig` → `eyJ***` |
+
+A separator is *required* for the keyed pairs, so "the token is invalid"
+survives intact — a redaction that eats the only line saying what went wrong
+protects nothing.
+
+This is a backstop, not a licence to log credentials. Its limits, stated
+plainly:
+
+- It masks the log **message** (a `logging.Filter`) and the **formatted
+  traceback** (the formatter, in both `text` and `json`). Anything written to
+  stdout by something other than the `logging` module — a subprocess the
+  scanner runs, a library printing directly — never passes through it.
+- It is syntactic. A secret logged with no key, no scheme and no recognisable
+  shape (`LOG.info(value)`) looks like ordinary text and is emitted as it is.
+- It runs on the handlers this process installs. A sidecar or an operator that
+  adds its own handler to the root logger gets unfiltered records.
 
 Useful checks:
 
@@ -1399,10 +1615,17 @@ every row of scan data. As of
 | API → Postgres | Only if you ask for it | `?sslmode=verify-full` in `OCTO_POSTGRES_URL`; a `prod` start without any `sslmode=` logs a warning |
 | API → ClickHouse | Only if you ask for it | `https://` in `OCTO_CLICKHOUSE_URL`. The scheme decides, not the port |
 | API → SMTP relay | Yes, verified | `OCTO_REPORT_SMTP_STARTTLS` (default on) with certificate verification; `OCTO_REPORT_SMTP_VERIFY_TLS=false` downgrades it deliberately |
-| API / agents ↔ NATS | **No** | Tracked in [#309](https://github.com/onixus/Shapoclyack/issues/309) and [#359](https://github.com/onixus/Shapoclyack/issues/359). Until it lands, keep NATS on the cluster network and do not expose `:4222` across an untrusted segment |
+| API / agents ↔ NATS | Yes, when you configure it | `tls://` in `OCTO_NATS_URL` plus `OCTO_NATS_TLS_*`; the broker side is `examples/nats-tls-configmap-patch.yaml`. Plain `nats://` is still accepted and still plaintext — do not expose `:4222` across an untrusted segment without `tls://` |
 
 There is no mTLS anywhere yet: nothing in this repository issues or checks a
 client certificate. Where the README once said "mTLS", read "TLS, one-way".
+
+Which ports have to be open for any of it, how egress goes through a corporate
+proxy (`OCTO_HTTPS_PROXY`, `OCTO_NO_PROXY`), and where an internal root goes
+(`OCTO_CA_BUNDLE`) are in
+[network-requirements.md](network-requirements.md) — including why NATS is the
+one link a proxy cannot carry, and what an agent does instead
+([#359](https://github.com/onixus/Shapoclyack/issues/359)).
 
 **Postgres with a private CA.** `verify-full` needs the CA in the pod, not in
 the operator's laptop:

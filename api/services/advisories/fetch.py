@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from api.services import egress
 from api.services.advisories import debian, ubuntu
 
 LOG = logging.getLogger("shapoclyack.advisories.fetch")
@@ -79,12 +80,17 @@ def fetch_json(
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_bytes: int = DEFAULT_MAX_BYTES,
-    opener: Callable[..., Any] = urllib.request.urlopen,
+    opener: Callable[..., Any] | None = None,
 ) -> Any:
     """GET ``url`` and parse it as JSON, refusing to read past ``max_bytes``.
 
     ``opener`` is injectable so the bound can be tested without a network.
+    Unset, it is this installation's egress opener — advisory feeds are the one
+    egress path that always goes to the public internet, so behind a corporate
+    proxy they are the first thing to stop working (#359).
     """
+    if opener is None:
+        opener = egress.build_opener(url).open
     request = urllib.request.Request(url, headers={"User-Agent": "shapoclyack-advisories"})
     chunks: list[bytes] = []
     total = 0
@@ -130,7 +136,7 @@ def refresh(
     path: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_bytes: int = DEFAULT_MAX_BYTES,
-    opener: Callable[..., Any] = urllib.request.urlopen,
+    opener: Callable[..., Any] | None = None,
 ) -> int:
     """Download, normalize and write one advisory dataset. Returns the entry count.
 

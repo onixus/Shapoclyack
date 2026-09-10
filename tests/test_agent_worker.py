@@ -174,8 +174,8 @@ def test_agent_client_request_retries_on_transient_error(monkeypatch):
         resp.__enter__.return_value = resp
         return resp
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
     data = client._request("GET", "/api/ping", max_retries=2)  # noqa: SLF001
     assert data == {"status": "ok"}
     assert attempts == 2
@@ -199,8 +199,8 @@ def test_agent_client_request_fails_fast_on_client_error(monkeypatch):
             fp=io.BytesIO(b"bad token"),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
     with pytest.raises(RuntimeError, match="401"):
         client._request("GET", "/api/ping", max_retries=3)  # noqa: SLF001
     assert attempts == 1  # No retries on 401
@@ -226,8 +226,8 @@ def test_the_server_side_refusals_get_their_own_exception_types(monkeypatch):
             fp=io.BytesIO(b"nope"),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
 
     with pytest.raises(worker.AgentTokenRejected):
         client._request("GET", "/api/ping", max_retries=0)  # noqa: SLF001

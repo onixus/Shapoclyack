@@ -13,8 +13,14 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
-from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
+from api.middleware import (
+    BodySizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+    install_request_id_middleware,
+)
+from api.request_context import REQUEST_ID_HEADER
 from api.routes import agents as agents_routes
+from api.routes import audit as audit_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
@@ -36,6 +42,7 @@ from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse, SsoStatus
 from api.services import agent_deployer
 from api.services import agents as agents_service
+from api.services import audit as audit_service
 from api.services import auth_audit
 from api.services import ch_ingest_worker
 from api.services import endpoint_inventory as endpoint_inventory_service
@@ -149,6 +156,7 @@ def create_app() -> FastAPI:
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
     auth_audit.configure(settings)
+    audit_service.configure(settings)
     service_tokens_service.configure(settings)
     endpoint_inventory_service.configure(settings)
     webhooks_service.configure(settings)
@@ -198,6 +206,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Without this the console cannot read `X-Request-Id` off a cross-origin
+        # response at all — a browser hides every response header that is not on
+        # the CORS-safelist unless the server names it — and docs/operations.md
+        # telling an operator to grep for "the id the console reported" would be
+        # asking for an id nothing could report (#330).
+        expose_headers=[REQUEST_ID_HEADER],
     )
 
     @app.middleware("http")
@@ -279,6 +293,7 @@ def create_app() -> FastAPI:
     app.include_router(schedules_routes.router, prefix="/api")
     app.include_router(wordlists_routes.router, prefix="/api")
     app.include_router(users_routes.router, prefix="/api")
+    app.include_router(audit_routes.router, prefix="/api")
     if settings.service_tokens_enabled:
         app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(vulnerabilities_routes.router, prefix="/api")
@@ -343,6 +358,12 @@ def create_app() -> FastAPI:
             # other unknown route: the client-side router owns 404 rendering.
             return FileResponse(web_dist / "index.html")
 
+    # Last, and deliberately not `add_middleware`: the correlation id has to be
+    # bound before anything else can log — the body-size rejections that never
+    # reach a route, the CORS preflight answers, and the 500 that Starlette's
+    # own ServerErrorMiddleware writes from outside the user middleware stack
+    # (#330). Nothing may add middleware after this point.
+    install_request_id_middleware(app)
     return app
 
 

@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { AxiosError } from "axios";
 
 const TOKEN_KEY = "shapoclyack_access_token";
 const TENANT_KEY = "shapoclyack_active_tenant";
@@ -111,16 +112,35 @@ function pydanticErrorMessage(detail: unknown[]): string | null {
   return lines.join("; ");
 }
 
+/** The correlation id the API put on the response, when there is one worth
+ * showing (#330). Only for a server-side failure: a 422 already says what the
+ * user typed wrong, while a 500 says nothing an operator can act on without
+ * the id to grep the API logs for. Reading it cross-origin depends on the
+ * `expose_headers` the API sets; absent that, or on a network error with no
+ * response at all, this is null and the message is unchanged. */
+function serverErrorRequestId(error: AxiosError): string | null {
+  const response = error.response;
+  if (!response || response.status < 500) return null;
+  const headers = response.headers as unknown;
+  const value =
+    typeof (headers as { get?: (name: string) => unknown })?.get === "function"
+      ? (headers as { get: (name: string) => unknown }).get("x-request-id")
+      : (headers as Record<string, unknown> | undefined)?.["x-request-id"];
+  return typeof value === "string" && value ? value : null;
+}
+
 function apiErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
+    const requestId = serverErrorRequestId(error);
+    const suffix = requestId ? ` (request id: ${requestId})` : "";
     const detail = error.response?.data?.detail;
-    if (typeof detail === "string") return detail;
+    if (typeof detail === "string") return `${detail}${suffix}`;
     if (Array.isArray(detail)) {
       const flattened = pydanticErrorMessage(detail);
-      if (flattened) return flattened;
+      if (flattened) return `${flattened}${suffix}`;
     }
-    if (detail != null) return JSON.stringify(detail);
-    return error.message;
+    if (detail != null) return `${JSON.stringify(detail)}${suffix}`;
+    return `${error.message}${suffix}`;
   }
   if (error instanceof Error) return error.message;
   return "Request failed";
@@ -3126,6 +3146,83 @@ export async function fetchAuthEvents(page?: PageParams, outcome?: AuthEventOutc
     const params = pageSearchParams(page, outcome ? { outcome } : undefined);
     const { data } = await api.get<Page<AuthEventInfo>>(`/auth/events?${params}`);
     return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** What kind of principal made a change (#327). A service token and the console
+ * account that minted it can carry the same name; only this tells them apart. */
+export type AuditActorType = "user" | "service_token" | "agent" | "system";
+
+/** One recorded administrative change (#327): an account created or disabled, a
+ * membership granted, a credential minted or revoked, a scan scope replaced, a
+ * report downloaded. `tenant_id` is null for a platform-level act, which only a
+ * platform admin sees. `before`/`after` arrive with every credential-shaped
+ * field already replaced by `[redacted]` on the server. */
+export type AuditEventInfo = {
+  id: number;
+  occurred_at: string | null;
+  tenant_id: string | null;
+  actor: string;
+  actor_type: AuditActorType;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  client_ip: string;
+  user_agent: string;
+  request_id: string | null;
+};
+
+/** The trail's filters. All exact matches: "every change to *this* token" is the
+ * question an audit asks, and a substring match is how the wrong row gets read
+ * as the right one. `from`/`to` are ISO instants. */
+export type AuditFilters = {
+  tenantId?: string;
+  actor?: string;
+  action?: string;
+  resourceType?: string;
+  resourceId?: string;
+  from?: string;
+  to?: string;
+};
+
+function auditFilterParams(filters?: AuditFilters): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (filters?.tenantId) params.tenant_id = filters.tenantId;
+  if (filters?.actor) params.actor = filters.actor;
+  if (filters?.action) params.action = filters.action;
+  if (filters?.resourceType) params.resource_type = filters.resourceType;
+  if (filters?.resourceId) params.resource_id = filters.resourceId;
+  if (filters?.from) params.from = filters.from;
+  if (filters?.to) params.to = filters.to;
+  return params;
+}
+
+/** Always newest-first: this is a log, and the API takes no sort for it. */
+export async function fetchAuditEvents(page?: PageParams, filters?: AuditFilters) {
+  try {
+    const params = pageSearchParams(page, auditFilterParams(filters));
+    const { data } = await api.get<Page<AuditEventInfo>>(`/audit?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Export every matching event, not the page on screen. Fetched as a blob via
+ * axios so the Authorization interceptor applies — a plain <a href> would not
+ * carry the bearer token. */
+export async function downloadAuditExport(
+  format: "csv" | "ndjson",
+  filters?: AuditFilters,
+) {
+  try {
+    const params = new URLSearchParams({ ...auditFilterParams(filters), format });
+    const { data } = await api.get<Blob>(`/audit?${params}`, { responseType: "blob" });
+    triggerBrowserDownload(data, `audit-events.${format}`);
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }
