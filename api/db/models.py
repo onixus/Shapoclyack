@@ -52,6 +52,15 @@ class Tenant(Base):
     name: Mapped[str]
     status: Mapped[str] = mapped_column(default="active")
     created_at: Mapped[datetime]
+    # Change freeze (#352). Distinct from ``status``: a frozen tenant is fully
+    # operational — its console works, its findings are readable — it has
+    # simply declared that nothing may touch its estate right now, so scan
+    # admission refuses. Deactivating the tenant instead would take the
+    # customer's data away from them to stop a scan.
+    change_freeze: Mapped[bool] = mapped_column(default=False)
+    change_freeze_note: Mapped[str | None] = mapped_column(default=None)
+    change_freeze_at: Mapped[datetime | None] = mapped_column(default=None)
+    change_freeze_by: Mapped[str | None] = mapped_column(default=None)
 
 
 class User(Base):
@@ -578,6 +587,72 @@ class ScanSchedule(Base):
     created_by: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (Index("ix_scan_schedules_tenant_enabled", "tenant_id", "enabled"),)
+
+
+class MaintenanceWindow(Base):
+    """One recurring period in which scanning is forbidden, or the only one in
+    which it is allowed (#352).
+
+    The platform could express *when* a scan repeats (``scan_schedules``) but
+    nothing about when it must not happen. A customer's change calendar —
+    quarter close, a payment window, the night of a migration — lived in an
+    email, and the only way to honour it was for somebody to remember to
+    disable the schedules and remember to enable them again.
+
+    ``kind`` is the polarity of the entry:
+
+    * ``blackout`` — no scan may start while the window is open.
+    * ``allowed`` — the tenant's scans may start **only** while one of its
+      allowed windows is open. One such window turns the whole tenant into
+      opt-in, which is why it is a separate kind rather than an inverted
+      blackout: the two read differently in the calendar and are written by
+      different customers.
+
+    Recurrence is an RFC 5545 ``RRULE`` (the supported subset is documented in
+    ``api/services/maintenance.py``), and it is evaluated in ``timezone`` —
+    the tenant's, not the server's. ``dtstart_local`` is therefore a *wall
+    clock* naive timestamp interpreted in that zone, so "every Saturday at
+    22:00 local" stays at 22:00 local across a DST change instead of drifting
+    by an hour. The absolute duration is ``duration_minutes``, which is what
+    makes a window that crosses a spring-forward end when the operator said it
+    would rather than an hour early.
+
+    ``scope_kind`` is ``tenant`` (every scan of the tenant) or ``asset_group``.
+    The platform has no first-class asset-group entity, so a group is named by
+    ``asset_group`` and *defined* by ``scope_targets`` — the CIDRs and domain
+    suffixes it covers, matched against a scan's targets by overlap with the
+    same rules the approved scan scope uses. A scan whose targets are the
+    installation defaults matches every window of its tenant: the control
+    plane cannot tell what such a run will touch, and a blackout that could be
+    dodged by omitting targets is not a blackout.
+    """
+
+    __tablename__ = "maintenance_windows"
+
+    window_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    kind: Mapped[str] = mapped_column(default="blackout")  # blackout | allowed
+    enabled: Mapped[bool] = mapped_column(default=True)
+    timezone: Mapped[str] = mapped_column(default="UTC")
+    rrule: Mapped[str]
+    # Naive on purpose: wall clock in ``timezone``. See the class docstring.
+    dtstart_local: Mapped[datetime]
+    duration_minutes: Mapped[int] = mapped_column(default=60)
+    scope_kind: Mapped[str] = mapped_column(default="tenant")  # tenant | asset_group
+    asset_group: Mapped[str | None] = mapped_column(default=None)
+    scope_targets: Mapped[list] = mapped_column(JSON, default=list)
+    note: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+    updated_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index("ix_maintenance_windows_tenant_enabled", "tenant_id", "enabled"),
+    )
 
 
 class EndpointDevice(Base):

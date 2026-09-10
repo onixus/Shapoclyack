@@ -465,6 +465,29 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Maintenance windows, blackout calendars and a per-tenant change freeze**
+  ([#352](https://github.com/onixus/Shapoclyack/issues/352)). The platform could
+  say when a scan repeats and nothing about when it must not happen, so
+  honouring a customer's change window meant disabling their schedules by hand
+  and remembering to switch them back on. `maintenance_windows` (migration
+  `0048`, expand-only) stores recurring windows per tenant or per asset group,
+  with an RFC 5545 `RRULE` — a documented subset parsed in-repo, no new
+  dependency — read in the **tenant's** IANA timezone: a wall clock that stays
+  22:00 for the customer across a DST change, with the duration added in
+  absolute time so a window over a spring-forward lasts as long as it says.
+  `kind=blackout` forbids scanning while open, `kind=allowed` permits it only
+  then, and `PUT /api/change-freeze` covers the period with no end date yet.
+  Admission runs inside `start_scan`, so the console, the recurring dispatcher
+  and the platform's own re-scans are held to the same calendar: a manual scan
+  gets `409` with `Retry-After` (absent under a freeze, which has no knowable
+  end), a schedule is **deferred to the moment the block lifts** rather than
+  dropped, and every refusal lands in `audit_events` as
+  `scan.maintenance_block`. `/schedules` shows the calendar, the banner and the
+  freeze switch. Two gaps are deliberate and #352 stays open for them: windows
+  are created and edited over the API (the console has no window editor), and
+  the check runs at admission only — in agent mode a job queued before a window
+  opened can still be claimed inside it, because `claim_job` does not consult
+  the calendar.
 - **The remediation workflow has events, and a missed deadline reaches
   somebody** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). The
   webhook machine carried five discovery kinds; SLA breach was derived on read,

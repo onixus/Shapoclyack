@@ -357,6 +357,9 @@ One row per administrative change, with the resource before and after it:
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
 | `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
+| `maintenance_window.create`, `maintenance_window.update`, `maintenance_window.delete` | `POST`/`PATCH`/`DELETE /api/maintenance-windows[/{id}]` — the window as stored, so "who moved the blackout off Saturday night" has an answer |
+| `tenant.change_freeze` | `PUT /api/change-freeze`. `before`/`after` carry the flag, the note and the stamp, so both the freeze and the thaw are rows — the thaw is the one that precedes the scan somebody did not expect |
+| `scan.maintenance_block` | Not an edit: the platform refusing a scan because a window or a freeze said so ([#352](https://github.com/onixus/Shapoclyack/issues/352)). Written by `jobs_service.start_scan`, so the console's `POST /api/jobs` and the recurring dispatcher leave the same row, with the `reason`, the `window_id` that refused and the `retry_at` it will lift at. Best-effort like the scope denial above: the scan is already refused, and losing the row must not turn a clean `409` into a `500` |
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
 
@@ -1278,6 +1281,77 @@ dispatch-time check stays — a scope narrowed after the schedule was written
 still has to stop it. The model, the third barrier inside the run, and the
 grandfathering migration `0025` applies on upgrade are described in
 [operations.md](operations.md#approved-scan-scope-per-tenant).
+
+## Maintenance windows and the change freeze
+
+The approved scope above says *what* a tenant may scan. The calendar says
+*when* ([#352](https://github.com/onixus/Shapoclyack/issues/352)). Until it
+existed, honouring a customer's change window meant an operator disabling the
+schedules by hand and remembering to switch them back on.
+
+```http
+GET    /api/maintenance-windows            # operator: the calendar + the verdict right now
+POST   /api/maintenance-windows            # tenant admin
+PATCH  /api/maintenance-windows/{id}       # tenant admin
+DELETE /api/maintenance-windows/{id}       # tenant admin
+GET    /api/change-freeze                  # operator
+PUT    /api/change-freeze  {"change_freeze": true, "note": "migration weekend"}   # tenant admin
+GET    /api/tenants/{tenant_id}/maintenance-windows   # platform admin: one customer's calendar
+```
+
+**Tenant admin, not platform admin** — the opposite of the scan scope. A scope
+is the provider deciding what a customer may aim the platform at; a calendar is
+the customer's own operational knowledge, and a control they have to raise a
+ticket for is a control that gets bypassed by disabling the schedules instead.
+A platform admin still reaches any tenant with `?tenant_id=`, and reading the
+calendar is `operator` because somebody about to press *start scan* should be
+able to see why it will be refused.
+
+A window carries a `kind` (`blackout` — no scan may start while it is open;
+`allowed` — scans may start **only** while one is open, so a single such window
+turns the tenant opt-in), an IANA `timezone`, a wall-clock `dtstart_local`
+carrying **no offset**, `duration_minutes`, and an RFC 5545 `rrule` restricted
+to a documented subset. `scope_kind` is `tenant` or `asset_group`; a group is
+named by `asset_group` and defined by the CIDRs and domains in `scope_targets`,
+which are matched against a scan's targets *by overlap*. A scan with no explicit
+targets runs on the installation defaults and is covered by every window of its
+tenant — the control plane cannot tell what it will touch, and a blackout that
+could be dodged by leaving the target boxes empty is not a blackout. The subset,
+the DST rules and the operator's procedure are in
+[operations.md](operations.md#maintenance-windows-and-the-change-freeze).
+
+`GET /api/maintenance-windows` answers the list and the verdict in one
+response — `admission.allowed`, its `reason`
+(`maintenance_blackout` / `outside_allowed_window` / `change_freeze`), the
+window that refused and the `retry_at` it lifts at — because a console showing
+the banner and the table from two requests can show them disagreeing.
+
+### What the calendar refuses, and how
+
+A scan the calendar forbids is **`409`, with `Retry-After` when the block has a
+knowable end**. Neither `403` (the caller is entitled to this scan) nor `429`
+(they have asked for nothing too often): the tenant's own state forbids it, and
+that state changes. Under a change freeze the header is deliberately absent —
+a freeze ends when somebody lifts it, and a retry time there would be an
+invention an integration would believe. Every refusal is checked inside
+`jobs_service.start_scan`, so the route, the recurring dispatcher and the
+platform's own re-scans are held to the same calendar; a verification re-scan
+is **not** exempt the way it is from the quota, because it still reaches the
+customer's network.
+
+The check runs when a scan is **accepted**. In agent execution mode the job
+then waits in the queue, and `claim_job` does not re-check the calendar: a
+worker that was busy at 21:50 can claim that job at 22:30, inside a blackout
+that opened at 22:00. Admission is a control over what the platform accepts,
+not a kill switch over queued work — see
+[operations.md](operations.md#maintenance-windows-and-the-change-freeze).
+
+A blocked *schedule* is deferred, not dropped: `next_run_at` moves to the
+moment the block lifts, so a nightly scan blacked out tonight runs when the
+window closes. A freeze has no such moment, so the schedule advances by its own
+cadence instead — which keeps the dispatcher from re-refusing the same tick
+every 30 seconds for as long as the freeze lasts. Neither writes `last_run_at`:
+no scan ran.
 
 ## Usage metering and quotas
 

@@ -44,7 +44,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
 | `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age; plus **Noise** (false-positive verdicts, suppressions in force and lapsed, overrides, noisiest detectors and observers) and **Coverage** (scanned share, vulnerability-assessed share, and how many approved ranges a scan has reached) | Viewer |
 | `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
-| `/schedules` | Tenant-scoped recurring scan schedules | Operator |
+| `/schedules` | Tenant-scoped recurring scan schedules, with the tenant's maintenance calendar and change freeze above them | Operator; admin to freeze or thaw |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
 | `/users` | Users & access: accounts and roles, tenant membership, provisioning-key revocation, sign-in audit; every role gets **My account** (own password) | Admin; any role for own password |
 | `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | Admin in the tenant |
@@ -863,6 +863,39 @@ saving a **schedule** outside the scope answers the same `403` on `/schedules`
 instead of silently never firing, so the schedule form surfaces the refusal
 where the operator is standing. See
 [api-and-rbac.md](api-and-rbac.md#approved-scanning-scope).
+
+## The maintenance calendar on `/schedules`
+
+A schedule that did not fire last night and a blackout window that was open
+last night are the same fact, so the calendar is rendered above the schedule
+table rather than on a page of its own
+([#352](https://github.com/onixus/Shapoclyack/issues/352)).
+
+The panel appears only when there is something to say — an installation with no
+windows and no freeze sees the page exactly as before. When there is, it shows:
+
+- **a banner**, taken from the server's own admission verdict rather than
+  recomputed in the browser: "scanning is paused by the maintenance calendar"
+  with the window that refused and when scans resume, or "change freeze is on"
+  with the note and who set it. A freeze deliberately shows no resume time —
+  it ends when an admin lifts it, and a countdown would be invented.
+- **the windows**, with the stored `RRULE` shown verbatim next to the wall
+  clock and the IANA zone it is read in (`FREQ=WEEKLY;BYDAY=SA at 22:00
+  Europe/Berlin, 4h`). The rule is not paraphrased: it is what an admin edits
+  and what the API validates, and a prettified version that drifted from it
+  would be the console misreporting what is stored. An asset-group window shows
+  the group's name *and* the targets that define it, because the name alone
+  does not tell a reader whether their scan is inside it.
+- **the freeze switch**, for an admin only, with the note that the refusal will
+  quote back at whoever tries to start a scan.
+
+The calendar refetches on a minute's interval: a blackout opens at 22:00
+whether or not anybody reloads the page, and a banner saying "scanning allowed"
+ten minutes into a blackout is worse than no banner. Windows themselves are
+created and edited over `/api/maintenance-windows` — the console shows the
+calendar and offers the one control an admin reaches for in a hurry. A blocked
+manual scan answers `409` on `POST /api/jobs`, so the launcher on `/scans/*`
+surfaces the same refusal as an error toast.
 
 ## Error toasts and the request id
 

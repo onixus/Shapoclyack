@@ -47,6 +47,7 @@ from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import config_override as config_override_service
 from api.services import job_states
+from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
@@ -1388,6 +1389,31 @@ def start_scan(
                 job_id,
                 ", ".join(promoted_refused[:8]),
             )
+
+    # What the tenant consented to *right now* (#352): a blackout window or a
+    # change freeze. In start_scan rather than in the route for the same reason
+    # the quota is here — the recurring dispatcher never touches a route, and a
+    # blackout the scheduler walks through at 02:00 is not a blackout.
+    #
+    # Below the promoted-domain widening on purpose: a promoted related domain
+    # is a target of every scan the tenant starts, so an asset-group window
+    # covering it has to see it. Checking the operator's typed targets alone
+    # would let a scan of an unrelated domain carry the promoted one straight
+    # into the group the window was protecting.
+    #
+    # Deliberately not exempted for `quota_exempt` dispatches: a verification
+    # re-scan still reaches the customer's network, and the calendar is about
+    # the network rather than the invoice.
+    try:
+        maintenance.assert_scan_admitted(
+            settings,
+            tenant_id=tenant_id,
+            ranges_text=request.ranges,
+            domains_text="\n".join([request.domains or "", *promoted_admitted]),
+        )
+    except maintenance.MaintenanceBlocked as blocked:
+        maintenance.record_block(username=username, blocked=blocked)
+        raise
 
     try:
         _, target_counts, target_args = _prepare_target_inputs(
