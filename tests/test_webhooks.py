@@ -22,7 +22,13 @@ from api.services import tenants as tenants_service
 from api.services.integrations import delivery as delivery_transport
 from api.services.integrations import webhooks
 from api.settings import Settings
-from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
+from tests.conftest import (
+    auth_headers,
+    configured_client,
+    login,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -603,6 +609,58 @@ def test_api_crud_and_rbac(tmp_path, monkeypatch):
 
     assert client.delete(f"/api/webhooks/{subscription_id}", headers=admin).status_code == 204
     assert client.get(f"/api/webhooks/{subscription_id}", headers=admin).status_code == 404
+
+
+def test_a_subscription_in_another_tenant_is_not_readable_or_mutable(tmp_path, monkeypatch):
+    """The same gap #351's review found next door, closed in the template too.
+
+    Every webhook API test here runs as one tenant, and the only 404 asserted
+    is for an id that does not exist — which a route with no tenant comparison
+    at all would also pass. ``notification_channels`` was copied from this
+    file, so the missing test was copied with it.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    platform_admin = auth_headers(client, "admin")
+    for tenant_id in ("ten_a", "ten_b"):
+        created = client.post(
+            "/api/tenants", headers=platform_admin, json={"name": tenant_id, "tenant_id": tenant_id}
+        )
+        assert created.status_code == 201, created.text
+    # Tenant admin in ten_a only; the seeded ``admin`` is a platform admin and
+    # is meant to keep the cross-tenant view.
+    granted = client.put(
+        "/api/tenants/ten_a/members/operator", headers=platform_admin, json={"role": "admin"}
+    )
+    assert granted.status_code == 200, granted.text
+    theirs = client.post(
+        "/api/webhooks",
+        headers=platform_admin,
+        json={"name": "theirs", "tenant_id": "ten_b", "url": "https://b.example/hook"},
+    )
+    assert theirs.status_code == 201, theirs.text
+    subscription_id = theirs.json()["subscription_id"]
+    intruder = {"Authorization": f"Bearer {login(client, 'operator')}"}
+
+    assert client.get(f"/api/webhooks/{subscription_id}", headers=intruder).status_code == 404
+    assert (
+        client.patch(
+            f"/api/webhooks/{subscription_id}", headers=intruder, json={"enabled": False}
+        ).status_code
+        == 404
+    )
+    assert client.delete(f"/api/webhooks/{subscription_id}", headers=intruder).status_code == 404
+    # The secret-rotation and test-send routes take the same id and must not be
+    # the way around the three above.
+    assert (
+        client.post(
+            f"/api/webhooks/{subscription_id}/rotate-secret", headers=intruder
+        ).status_code
+        == 404
+    )
+    assert client.post(f"/api/webhooks/{subscription_id}/test", headers=intruder).status_code == 404
+    still_there = client.get(f"/api/webhooks/{subscription_id}", headers=platform_admin)
+    assert still_there.status_code == 200
+    assert still_there.json()["enabled"] is True
 
 
 def test_api_rejects_bad_url_and_unknown_kind(tmp_path, monkeypatch):

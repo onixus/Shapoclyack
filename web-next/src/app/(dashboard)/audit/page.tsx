@@ -38,6 +38,9 @@ const ACTIONS = [
   "report.download",
   "scan_scope.replace",
   "config.update",
+  "notification_channel.create",
+  "notification_channel.update",
+  "notification_channel.delete",
   "vulnerability.bulk",
   "asset.bulk",
 ] as const;

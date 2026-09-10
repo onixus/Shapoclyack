@@ -2180,8 +2180,10 @@ rotation.
 ## Secrets at rest
 
 The credentials this installation holds *for other systems* — a webhook's HMAC
-signing key, and the header values that carry a Jira / ServiceNow / DefectDojo
-API token — are stored in `webhook_subscriptions`. Until
+signing key, the header values that carry a Jira / ServiceNow / DefectDojo API
+token, and since [#351](https://github.com/onixus/Shapoclyack/issues/351) the
+per-tenant Slack / Teams / Mattermost webhook URLs and DefectDojo tokens in
+`notification_channels` — are stored in Postgres. Until
 [#310](https://github.com/onixus/Shapoclyack/issues/310) they were stored as
 typed, so a dump, a base backup, a read replica or a shell in the API pod
 yielded every tenant's tracker tokens at once. The API-level redaction that was
@@ -2205,6 +2207,8 @@ working one.
 |-------|----------------|---------|
 | Webhook HMAC secret, ticket API token (`webhook_subscriptions.secret`) | Postgres | Encrypted (#310) |
 | Configured header values, e.g. `Authorization` (`webhook_subscriptions.headers`) | Postgres | Encrypted (#310) |
+| Chat webhook URL, DefectDojo token of a notification channel (`notification_channels.secret`) | Postgres | Encrypted (#351), under its own GCM context `notification_channels.secret`. A chat incoming-webhook URL is a credential — anyone holding it can post into the channel — which is why it is here and not in a plaintext `url` column |
+| A notification channel's recipients and product names (`notification_channels.config`) | Postgres | Plaintext, deliberately: an address list is configuration, and encrypting it would make an installation with no credentials demand a key |
 | TOTP shared secret of an enrolled account (`users.mfa_secret`) | Postgres | Encrypted (#315), under its own GCM context `users.mfa_secret`, and covered by the same `python -m api.db.reencrypt_secrets` passes |
 | Recovery codes (`users.mfa_recovery_codes`) | Postgres | bcrypt hashes — a recovery code is a password |
 | Console passwords, service tokens, agent provisioning keys | Postgres | bcrypt / SHA-256 hashes — never reversible, so nothing to encrypt |
@@ -2279,11 +2283,15 @@ window — that is what `OCTO_MASTER_KEY_PREVIOUS` is for.
    ```sql
    SELECT key_id, count(*) FROM webhook_subscriptions
     WHERE secret IS NOT NULL OR headers::text <> '{}' GROUP BY key_id;
+   SELECT key_id, count(*) FROM notification_channels
+    WHERE secret IS NOT NULL GROUP BY key_id;
    ```
 
-   One row, with the current `kek_id`, means the rotation is complete. A `NULL`
-   `key_id` means those rows are still plaintext — run the pass without
-   `--rotate` first.
+   One row each, with the current `kek_id`, means the rotation is complete. A
+   `NULL` `key_id` means those rows are still plaintext — run the pass without
+   `--rotate` first. Both queries matter: one pass covers
+   `webhook_subscriptions`, `users.mfa_secret` and `notification_channels`, so
+   an old key is only retired when every table agrees.
 
 Skipping step 1 and simply replacing the key makes every stored secret
 unreadable, which the next section is about. Recovery is putting the old key

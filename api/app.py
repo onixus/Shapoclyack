@@ -39,6 +39,7 @@ from api.routes import service_tokens as service_tokens_routes
 from api.routes import system as system_routes
 from api.routes import users as users_routes
 from api.routes import vulnerabilities as vulnerabilities_routes
+from api.routes import notification_channels as notification_channels_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse, SsoStatus
@@ -58,6 +59,7 @@ from api.services import job_reaper
 from api.services.crypto import startup as crypto_startup
 from api.services.integrations import ticket_sync_worker
 from api.services.integrations import webhook_worker
+from api.services.integrations import channels as channels_service
 from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
@@ -184,6 +186,7 @@ def create_app() -> FastAPI:
     service_tokens_service.configure(settings)
     endpoint_inventory_service.configure(settings)
     webhooks_service.configure(settings)
+    channels_service.configure(settings)
     wordlists_service.configure(settings)
 
     # Unmounted rather than authenticated when disabled (#319): FastAPI builds
@@ -335,6 +338,8 @@ def create_app() -> FastAPI:
         app.include_router(reports_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")
+    if settings.notification_channels_enabled:
+        app.include_router(notification_channels_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:
         app.include_router(endpoint_inventory_routes.router, prefix="/api")
 

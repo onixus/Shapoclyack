@@ -6,11 +6,26 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from scanner.pipeline import alerts
 from scanner.pipeline.config_schema import DefectDojoConfig
 from scanner.pipeline.defectdojo import (
     export_to_defectdojo,
     map_vulnerabilities_to_generic_findings,
 )
+
+
+@pytest.fixture(autouse=True)
+def single_tenant_installation(monkeypatch):
+    """Declare the installation single-tenant for the tests below (#351).
+
+    ``defectdojo.url``/``api_key`` are installation-wide, so this stage now
+    refuses to use them unless an operator has said the installation has one
+    tenant. The gate itself is asserted by
+    ``test_export_refuses_installation_wide_credentials_by_default``.
+    """
+    monkeypatch.setenv(alerts.SINGLE_TENANT_ENV, "true")
 
 
 def test_map_vulnerabilities_filters_by_min_severity_and_maps_fields():
@@ -82,6 +97,35 @@ def test_export_skipped_when_disabled(tmp_path: Path):
     )
     assert result["attempted"] is False
     assert result["skipped_reason"] == "defectdojo.disabled"
+
+
+def test_export_refuses_installation_wide_credentials_by_default(tmp_path: Path, monkeypatch):
+    """#351: one product for every tenant's findings is not a configuration."""
+    monkeypatch.delenv(alerts.SINGLE_TENANT_ENV, raising=False)
+    (tmp_path / "vulnerabilities.json").write_text(
+        json.dumps(
+            [{"host": "10.0.0.1", "port": "22", "script_id": "vulners", "severity": "critical"}]
+        ),
+        encoding="utf-8",
+    )
+
+    with patch("scanner.pipeline.defectdojo.urllib.request.urlopen") as mocked:
+        result = export_to_defectdojo(
+            DefectDojoConfig(
+                enabled=True,
+                url="https://dd.example.com",
+                api_key="installation-wide-token",
+                product_name="Shared",
+            ),
+            run_id="run-multi",
+            output_dir=tmp_path,
+        )
+
+    assert result["attempted"] is False
+    assert result["skipped_reason"] == alerts.MULTI_TENANT_SKIP_REASON
+    mocked.assert_not_called()
+    # And nothing was even written: the stage stops before it maps findings.
+    assert not (tmp_path / "defectdojo_findings.json").exists()
 
 
 def test_export_writes_payload_and_reports_missing_credentials(tmp_path: Path):

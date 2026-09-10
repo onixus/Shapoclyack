@@ -651,6 +651,60 @@ class WebhookInfo(BaseModel):
     secret: str | None = None
 
 
+#: Adapter kinds a notification channel can be (#351). Mirrors
+#: ``api/services/integrations/channel_transports.py::KINDS`` — the service is
+#: the authority and validates again, this is what the OpenAPI schema shows.
+ChannelKind = Literal["slack", "msteams", "mattermost", "email", "defectdojo"]
+
+
+class CreateNotificationChannelRequest(BaseModel):
+    """Where one tenant's finished runs are announced (#351)."""
+
+    tenant_id: str | None = None
+    name: str = Field(min_length=1, max_length=128)
+    kind: ChannelKind
+    # The target system's non-secret base URL. DefectDojo only: for a chat kind
+    # the incoming-webhook URL is the credential and belongs in ``secret``,
+    # which is the column that is encrypted at rest.
+    endpoint: str | None = Field(default=None, max_length=2048)
+    # Write-only, and never echoed back — unlike a webhook signing secret this
+    # is a credential the operator already holds, so there is nothing to show.
+    secret: str | None = Field(default=None, max_length=2048)
+    # Adapter knobs: ``to`` for email, ``product_name`` and friends for
+    # DefectDojo, ``channel`` for Mattermost.
+    config: dict[str, Any] | None = None
+    min_severity: Literal["low", "medium", "high", "critical"] | None = None
+    enabled: bool = True
+
+
+class UpdateNotificationChannelRequest(BaseModel):
+    """``kind`` is absent on purpose: it decides what every other field means."""
+
+    name: str | None = None
+    enabled: bool | None = None
+    endpoint: str | None = None
+    secret: str | None = Field(default=None, max_length=2048)
+    config: dict[str, Any] | None = None
+    min_severity: Literal["low", "medium", "high", "critical"] | None = None
+
+
+class NotificationChannelInfo(BaseModel):
+    channel_id: str
+    tenant_id: str
+    name: str
+    kind: str
+    enabled: bool
+    min_severity: str
+    endpoint: str | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
+    has_secret: bool = False
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    last_send_at: str | None = None
+    last_status: str | None = None
+
+
 class WebhookDeliveryInfo(BaseModel):
     """One delivery attempt chain: queue entry, DLQ row and audit record."""
 
