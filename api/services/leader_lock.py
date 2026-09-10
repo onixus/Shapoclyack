@@ -58,8 +58,9 @@ SOFTWARE_MATCH_LOCK_ID = 3
 MIGRATION_LOCK_ID = 4
 # The inbound ticket-sync poller (#347). Leader-locked for the same reason the
 # software matcher is: it takes no per-row claim, so every replica would read
-# the same tenant's tickets and write the same lifecycle events.
-TICKET_SYNC_LOCK_ID = 5
+# the same tenant's tickets and write the same lifecycle events. Id 5 went to
+# the SLA-escalation worker (#349), which lands in the same wave.
+TICKET_SYNC_LOCK_ID = 6
 
 
 class LeaderLock:
