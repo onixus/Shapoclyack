@@ -1,4 +1,9 @@
-"""Online (re-)encryption of the integration secrets in Postgres (#310).
+"""Online (re-)encryption of the secrets this platform stores in Postgres (#310).
+
+Two tables: ``webhook_subscriptions`` (the integration credentials this command
+was written for) and ``users.mfa_secret`` (the TOTP seeds, #315). One tally
+covers both, because an operator rotating a key wants one answer to "is the old
+key still needed", not one per feature.
 
 Three passes over the same rows, chosen by flag:
 
@@ -86,7 +91,14 @@ def _target(value: str | None, *, context: str, rotate: bool, decrypt: bool) -> 
 
 
 def run(url: str, *, rotate: bool = False, decrypt: bool = False, dry_run: bool = False) -> Outcome:
-    """Walk ``webhook_subscriptions`` and bring every secret to the target form."""
+    """Bring every stored secret to the target form, in one tally.
+
+    Two tables, because two tables hold credentials: ``webhook_subscriptions``
+    (the integration secrets #310 was about) and, since #315, the TOTP seeds in
+    ``users.mfa_secret``. A rotation that covered only the first would leave
+    every enrolled admin's seed under a key the operator believes they have
+    retired, which is the failure mode this command exists to prevent.
+    """
     outcome = Outcome()
 
     with get_session(url) as session:
@@ -156,7 +168,60 @@ def run(url: str, *, rotate: bool = False, decrypt: bool = False, dry_run: bool 
             row.headers = headers
             row.key_id = key_id
 
+    _run_user_secrets(url, outcome, rotate=rotate, decrypt=decrypt, dry_run=dry_run)
     return outcome
+
+
+def _run_user_secrets(
+    url: str, outcome: Outcome, *, rotate: bool, decrypt: bool, dry_run: bool
+) -> None:
+    """The same pass over ``users.mfa_secret`` (#315), into the same tally.
+
+    Accounts that never enrolled are not scanned at all: they hold no secret,
+    so counting them would report a pass over the whole user table when nothing
+    was ever at stake. There is no ``key_id`` mirror column here — the users
+    table is small and read by primary key, so "which rows are on the old key"
+    is a parse of the few rows that have a secret rather than a query that
+    needs an index maintained on every login.
+    """
+    from api.services import mfa as mfa_service
+
+    with get_session(url) as session:
+        usernames = list(
+            session.scalars(
+                select(models.User.username)
+                .where(models.User.mfa_secret.is_not(None))
+                .order_by(models.User.username)
+            )
+        )
+
+    for username in usernames:
+        outcome.scanned += 1
+        with get_session(url) as session:
+            row = session.scalar(
+                select(models.User).where(models.User.username == username).with_for_update()
+            )
+            if row is None or not row.mfa_secret:  # disenrolled between the two transactions
+                outcome.scanned -= 1
+                continue
+            try:
+                target = _target(
+                    row.mfa_secret,
+                    context=mfa_service.SECRET_CONTEXT,
+                    rotate=rotate,
+                    decrypt=decrypt,
+                )
+            except envelope.SecretDecryptionError as exc:
+                outcome.failed += 1
+                _log.warning("Account %s left unchanged: %s", username, exc)
+                continue
+            if target == row.mfa_secret:
+                outcome.skipped += 1
+                continue
+            outcome.changed += 1
+            if dry_run:
+                continue
+            row.mfa_secret = target
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -205,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     _log.info(
-        "%s: %d subscription(s) scanned, %d %s, %d already in the target form",
+        "%s: %d row(s) scanned, %d %s, %d already in the target form",
         "Would rewrite" if args.dry_run else "Rewrote",
         outcome.scanned,
         outcome.changed,
@@ -214,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if outcome.failed:
         _log.error(
-            "%d subscription(s) could not be read and were left as they are. Put the "
+            "%d row(s) could not be read and were left as they are. Put the "
             "key that wrote them in %s and run this again; until then their "
             "deliveries dead-letter.",
             outcome.failed,

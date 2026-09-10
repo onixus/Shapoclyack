@@ -10,7 +10,15 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import PlainTextResponse
 
-from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
+from api.auth import (
+    AgentPrincipal,
+    Role,
+    StepUpDep,
+    TenantPrincipal,
+    get_settings,
+    require_agent,
+    require_tenant,
+)
 from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
@@ -530,6 +538,11 @@ def get_deployment_command(
 def create_deployment_command(
     body: CreateAgentDeploymentKeyRequest,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    # Same credential, therefore same step-up (#315). This is the route the
+    # console actually uses to mint a provisioning key — the one under
+    # /api/tenants is the API-first path — so gating only that one would have
+    # put the check on the door nobody walks through.
+    _: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     request: Request,
 ) -> AgentDeploymentSnippetResponse:

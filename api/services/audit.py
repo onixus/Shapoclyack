@@ -58,6 +58,19 @@ ACTION_USER_DISABLE = "user.disable"
 ACTION_USER_PASSWORD_RESET = "user.password_reset"
 ACTION_USER_PASSWORD_CHANGE = "user.password_change"
 ACTION_USER_DELETE = "user.delete"
+# Multi-factor authentication (#315). Three actions rather than one, because
+# they are three different facts: the owner turned a second factor on, the
+# owner turned it off, and an admin removed somebody else's. The last is the
+# one a review looks for — it is the only way to take a factor off an account
+# without holding the factor.
+ACTION_USER_MFA_ENABLE = "user.mfa_enable"
+ACTION_USER_MFA_DISABLE = "user.mfa_disable"
+ACTION_USER_MFA_RESET = "user.mfa_reset"
+# A password login accepted on an installation where SSO is the ordinary way in
+# and ``OCTO_LOCAL_LOGIN=break-glass`` (#315). Its own action so that "somebody
+# used the emergency door" is a filter rather than an inference from the login
+# trail — see docs/operations.md § Break-glass local login.
+ACTION_BREAK_GLASS_LOGIN = "auth.break_glass_login"
 ACTION_MEMBERSHIP_GRANT = "membership.grant"
 ACTION_MEMBERSHIP_REVOKE = "membership.revoke"
 ACTION_SERVICE_TOKEN_CREATE = "service_token.create"

@@ -6,6 +6,83 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **A console account can carry a second factor, and an admin role can be made
+  to** ([#315](https://github.com/onixus/Shapoclyack/issues/315)). A local
+  administrator — the account that mints service tokens, approves scanning
+  scopes and deploys agents onto somebody else's network — was protected by one
+  password, and the trail could only record that the right password had been
+  presented. TOTP (RFC 6238, HMAC-SHA-1, six digits, thirty seconds) is now
+  enrolled per account through `POST /api/auth/mfa/totp/setup` and `…/confirm`,
+  which issues ten single-use recovery codes, hashed like passwords and shown
+  once. A code is accepted within ±1 step and **spent** — the step is written in
+  the same transaction, so an observed code cannot be replayed inside its own
+  thirty seconds. The shared secret is stored envelope-encrypted under its own
+  context (#310) and is covered by `python -m api.db.reencrypt_secrets`.
+  Implemented without a new dependency and verified against the RFC 6238
+  Appendix B vectors. WebAuthn / passkeys, the other half of the issue, are
+  **not** implemented and #315 stays open for them.
+- **Logging in as an enrolled account is two legs**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
+  `POST /api/auth/login` answers `mfa_required` with a five-minute `typ=mfa`
+  challenge token and **no** session token; `POST /api/auth/mfa/verify`
+  exchanges it plus a code (or a recovery code) for the ordinary session.
+  `decode_token` now allowlists `typ=user`, so the challenge authenticates
+  nothing else. Refused codes go through the existing login limiter under the
+  account's own key and land in `auth_events` as `reason=mfa_failed`.
+- **`OCTO_MFA_REQUIRED_ROLES` makes a second factor mandatory for a role**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). Empty by default,
+  so an upgrade changes nothing. An account in a listed role that has not
+  enrolled still signs in — refusing would leave nobody able to enrol — but its
+  session is `mfa_pending` and is answered `403` on everything except the MFA
+  routes, `/api/auth/me` and the two ways out. The console shows a banner and
+  sends such a session to the new `/security` page. `mfa_pending` is derived per
+  request from the policy and the account row rather than carried as a claim, so
+  turning the policy on reaches sessions that predate it and finishing an
+  enrolment lifts the confinement without a sign-out.
+- **Step-up on the operations that issue a credential**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). Creating or
+  revoking a service token or a provisioning key, and replacing a tenant's scan
+  scope, now require a second factor proved within `OCTO_MFA_STEPUP_MINUTES`
+  (15) — as do creating an account, setting somebody's password, changing a role
+  setting a verified address and resetting somebody's MFA, each of which is
+  otherwise a one-request way to end up holding an admin account that carries no
+  factor. Only for accounts that have MFA enabled, so an installation that has
+  not adopted it is unchanged. A service token cannot be challenged and is
+  exempt, so the routes behind step-up are refused it by scope instead —
+  `agent` joins `config` in `FORBIDDEN_WRITE_RESOURCES`, which closes
+  `POST /api/agent/deployment-command` (a provisioning key) to service tokens.
+  The console raises a code dialog on that 403 wherever it happens.
+- **SSO is not a way around the second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
+  `GET /api/auth/oidc/callback` challenges an enrolled account exactly as
+  password login does, putting `mfa_token` in the redirect fragment where the
+  session would have been. Its response model is now the same `LoginResponse`,
+  on which `access_token` is nullable.
+- **Enrolling a second factor costs the account's password**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
+  `POST /api/auth/mfa/totp/confirm` verifies it, symmetrically with `disable`:
+  without that, a stolen session could enrol its own authenticator and lock out
+  an owner who still knows the password. Skipped for an account that cannot be
+  asked for one — provisioned by the identity provider, or one whose password
+  `OCTO_LOCAL_LOGIN` no longer accepts. Both checks run inside the login limiter
+  and land in `auth_events`, so neither endpoint is a password oracle for a
+  stolen session.
+- **Password login on an SSO installation is a decision, not a default**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). `OCTO_LOCAL_LOGIN`
+  is `enabled` (as before), `break-glass` (only `OCTO_BREAK_GLASS_USERS`) or
+  `disabled`. A break-glass login is audited as `auth.break_glass_login`,
+  recorded in `auth_events`, counted in `octo_break_glass_logins_total` and
+  logged at WARNING — four sinks, because the value of an emergency account is
+  in it being noticed. Refusals answer the same `401 Invalid credentials` a
+  wrong password does; the *mode* is public in `GET /api/auth/sso`, the account
+  names are not. Inert when no identity provider is configured.
+- **An admin can clear a lost second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
+  `POST /api/users/{username}/mfa/reset` (platform admin) deletes the secret and
+  the recovery codes and bumps `token_version`, ending every session that
+  account has open — including any opened by whoever has the phone. Its own
+  audit action, `user.mfa_reset`, and its own button on `/users`.
+
 - **An agent token can only act as the agent it was minted for**
   ([#308](https://github.com/onixus/Shapoclyack/issues/308)). The `agent_id` in
   an agent JWT was never compared with the one in the request — body, form or

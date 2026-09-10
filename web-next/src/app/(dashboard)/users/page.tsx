@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { KeyRound, Mail, RotateCcw, Trash2, UserCog, UserPlus } from "lucide-react";
+import { KeyRound, Mail, RotateCcw, ShieldOff, Trash2, UserCog, UserPlus } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/data-table";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
+import { useResetUserMfa } from "@/hooks/use-mfa";
 import { usePagination } from "@/hooks/use-pagination";
 import { useTenants } from "@/hooks/use-tenants";
 import {
@@ -189,8 +190,16 @@ export default function UsersPage() {
           </>
         ) : null}
 
-        <TabsContent value="account">
+        <TabsContent value="account" className="space-y-4">
           <OwnPasswordTab t={t} username={user?.username ?? ""} role={user?.role ?? "viewer"} />
+          {/* The second factor lives on its own route, not here: a session that
+              still owes an enrolment is refused GET /api/users, which this page
+              loads before it can render anything (#315). */}
+          <p className="text-sm text-muted-foreground">
+            <Link className="underline underline-offset-4" href="/security">
+              {t("header.security")}
+            </Link>
+          </p>
         </TabsContent>
       </Tabs>
     </div>
@@ -344,9 +353,11 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
   const setRole = useSetUserRole();
   const setDisabled = useSetUserDisabled();
   const remove = useDeleteUser();
+  const resetMfa = useResetUserMfa();
   const [resetTarget, setResetTarget] = useState<UserInfo | null>(null);
   const [emailTarget, setEmailTarget] = useState<UserInfo | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<UserInfo | null>(null);
+  const [mfaTarget, setMfaTarget] = useState<UserInfo | null>(null);
 
   const columns = useMemo<ColumnDef<UserInfo>[]>(
     () => [
@@ -479,6 +490,14 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
                 <Mail className="mr-1.5 h-3.5 w-3.5" />
                 {t("users.action.setEmail")}
               </Button>
+              {/* No per-account MFA column to gate this on: GET /api/users does
+                  not report anybody's second factor, and it should not — the
+                  reset is idempotent and an account with none is cleared to
+                  the state it is already in. */}
+              <Button variant="ghost" size="sm" onClick={() => setMfaTarget(account)}>
+                <ShieldOff className="mr-1.5 h-3.5 w-3.5" />
+                {t("users.action.resetMfa")}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -531,6 +550,29 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
 
       <ResetPasswordDialog t={t} account={resetTarget} onClose={() => setResetTarget(null)} />
       <SetEmailDialog t={t} account={emailTarget} onClose={() => setEmailTarget(null)} />
+
+      <AlertDialog open={mfaTarget !== null} onOpenChange={(open) => !open && setMfaTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("users.resetMfa.title", { username: mfaTarget?.username ?? "" })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>{t("users.resetMfa.description")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("users.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-amber-600 text-white hover:bg-amber-500"
+              onClick={() => {
+                if (mfaTarget) resetMfa.mutate(mfaTarget.username);
+                setMfaTarget(null);
+              }}
+            >
+              {t("users.resetMfa.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={deleteTarget !== null}

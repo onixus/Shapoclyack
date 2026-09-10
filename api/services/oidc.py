@@ -59,7 +59,7 @@ from api.core.security import jwt_kid
 from api.db import models
 from api.db.engine import get_session
 from api.services import egress
-from api.settings import Settings
+from api.settings import LOCAL_LOGIN_ENABLED, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +178,20 @@ def public_config(settings: Settings) -> dict[str, Any]:
     Reports only that SSO exists and what to call the button; deliberately not
     the issuer, which names the customer's identity provider to anyone who can
     reach the login form.
+
+    ``local_login`` is what ``OCTO_LOCAL_LOGIN`` makes of the password form
+    (#315), so the console can hide or annotate it instead of offering a form
+    every submission of which is refused. It names a mode, never an account:
+    the break-glass usernames stay out of an unauthenticated response.
     """
-    return {"enabled": is_enabled(settings), "login_url": "/api/auth/oidc/login"}
+    return {
+        "enabled": is_enabled(settings),
+        "login_url": "/api/auth/oidc/login",
+        # "enabled" whenever no provider is configured, because the policy does
+        # not apply then — an installation with no SSO and no password login
+        # would be one nobody can reach.
+        "local_login": settings.local_login if is_enabled(settings) else LOCAL_LOGIN_ENABLED,
+    }
 
 
 # --------------------------------------------------------------------------- #

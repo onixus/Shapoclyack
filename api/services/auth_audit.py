@@ -96,6 +96,20 @@ REASON_SSO_SIGNIN = "sso_signin"
 REASON_SSO_LINKED = "sso_linked"
 REASON_SSO_PROVISIONED = "sso_provisioned"
 
+# Multi-factor authentication (#315). A refused second factor is recorded as a
+# *failed login* rather than as a category of its own: it is counted by the
+# same limiter, so guessing six digits costs an attacker the same five attempts
+# per window that guessing a password does.
+REASON_MFA_FAILED = "mfa_failed"
+# Local password login refused by the OCTO_LOCAL_LOGIN policy: either this
+# installation allows no password login at all, or this account is not one of
+# the named break-glass accounts.
+REASON_LOCAL_LOGIN_DISABLED = "local_login_disabled"
+REASON_NOT_BREAK_GLASS = "local_login_not_break_glass"
+#: A break-glass account signed in with a password while SSO was configured.
+#: A success, and one an operator is expected to be able to account for.
+REASON_BREAK_GLASS = "break_glass_login"
+
 _SSO_ACTION_REASONS = {
     "signin": REASON_SSO_SIGNIN,
     "link": REASON_SSO_LINKED,
@@ -301,6 +315,26 @@ def record_sso_login(*, username: str, client_ip: str, action: str) -> None:
         )
 
 
+def record_break_glass_login(*, username: str, client_ip: str) -> None:
+    """Record one break-glass password login in the access trail (#315).
+
+    A ``success`` like every other sign-in, because it is one — the series in
+    ``/metrics`` must not under-report logins — distinguished by its reason so
+    that ``GET /api/auth/events`` shows it next to the ordinary ones rather
+    than in a place an operator has to know to look. The separate alerting path
+    is :mod:`api.services.local_login`.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        _record(
+            session,
+            username=username,
+            client_ip=client_ip,
+            outcome=OUTCOME_SUCCESS,
+            reason=REASON_BREAK_GLASS,
+        )
+
+
 def _record_locked(
     session, settings: Settings, *, username: str, client_ip: str, lockout: Lockout
 ) -> None:
@@ -387,12 +421,23 @@ class AttemptOutcome:
     user: Any | None = None
 
 
-def attempt_login(*, username: str, client_ip: str, verify: Callable[[], Any]) -> AttemptOutcome:
+def attempt_login(
+    *,
+    username: str,
+    client_ip: str,
+    verify: Callable[[], Any],
+    failure_reason: str = REASON_INVALID_CREDENTIALS,
+) -> AttemptOutcome:
     """Rate-limit, verify, and record one login attempt as a single operation.
 
     ``verify`` is called only when the attempt is allowed, and is called *while
     the limiter key is held* — that is what makes the limit a limit rather than
     a suggestion under concurrency. It returns the authenticated user, or None.
+
+    ``failure_reason`` names what was wrong when it returns None. The second
+    leg of an MFA login passes ``REASON_MFA_FAILED`` (#315) so that a refused
+    code reads as one in the trail — while still being counted by the very same
+    limiter, which is the point of routing it through here rather than around.
 
     Errors are not swallowed. An earlier draft recorded best-effort so that a
     broken audit write could not fail a valid login, but console accounts live
@@ -413,7 +458,7 @@ def attempt_login(*, username: str, client_ip: str, verify: Callable[[], Any]) -
                 username=username,
                 client_ip=client_ip,
                 outcome=OUTCOME_FAILURE,
-                reason=REASON_INVALID_CREDENTIALS,
+                reason=failure_reason,
             )
             return AttemptOutcome()
 

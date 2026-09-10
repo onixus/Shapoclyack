@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { fetchSsoStatus } from "@/lib/api";
+import { fetchSsoStatus, type SsoStatus } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -14,20 +14,28 @@ import { useT } from "@/lib/i18n";
  * installation with no identity provider should not advertise one. The status
  * call cannot fail the page — `fetchSsoStatus` resolves to "off" on any error,
  * so password login keeps working when the API is older or unreachable.
+ *
+ * A caller that has already asked passes the answer in: the login page reads
+ * the same status to decide what to say about password sign-in (#315), and
+ * fetching it twice on one screen would be two calls for one fact.
  */
-export function SsoSignInButton() {
+export function SsoSignInButton({ status: given }: { status?: SsoStatus | null } = {}) {
   const t = useT();
-  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [fetched, setFetched] = useState<SsoStatus | null>(null);
 
   useEffect(() => {
+    if (given !== undefined) return;
     let cancelled = false;
     void fetchSsoStatus().then((status) => {
-      if (!cancelled && status.enabled) setLoginUrl(status.login_url);
+      if (!cancelled) setFetched(status);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [given]);
+
+  const status = given === undefined ? fetched : given;
+  const loginUrl = status?.enabled ? status.login_url : null;
 
   if (!loginUrl) return null;
 

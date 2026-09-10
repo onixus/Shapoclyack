@@ -8,6 +8,8 @@ session belongs to, and what is written down about it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from api.services import auth_audit
@@ -15,6 +17,7 @@ from api.services import oidc
 from api.services import users as users_service
 from tests.conftest import (
     POSTGRES_URL,
+    TEST_USERS,
     auth_headers,
     bearer,
     configured_client,
@@ -86,6 +89,9 @@ def test_sso_is_reported_off_and_the_routes_404_when_unconfigured(tmp_path, monk
     assert client.get("/api/auth/sso").json() == {
         "enabled": False,
         "login_url": "/api/auth/oidc/login",
+        # With no provider configured, OCTO_LOCAL_LOGIN has nothing to say and
+        # the password form is the only way in (#315).
+        "local_login": "enabled",
     }
     assert client.get("/api/health").json()["sso"]["enabled"] is False
     assert client.get("/api/auth/oidc/login").status_code == 404
@@ -145,6 +151,63 @@ def test_callback_signs_in_a_linked_account(tmp_path, monkeypatch, provider):
     # The session is the platform's ordinary one.
     me = client.get("/api/auth/me", headers=bearer(body["access_token"]))
     assert me.status_code == 200
+    assert me.json()["username"] == "operator"
+
+
+def test_sso_challenges_an_account_that_has_enrolled_a_second_factor(
+    tmp_path, monkeypatch, provider
+):
+    """SSO proves an identity; it does not prove the authenticator (#315).
+
+    Without this the whole feature is opt-out: an installation that requires a
+    second factor, and an account that has enrolled one, would both be bypassed
+    by clicking the other button on the login form.
+    """
+    from api.core import totp
+    from api.services import mfa as mfa_service
+
+    settings = sso_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    assert (
+        client.put(
+            "/api/users/operator/email",
+            headers=admin,
+            json={"email": "op@example.com", "verified": True},
+        ).status_code
+        == 200
+    )
+
+    # Enrol the operator the way the console does.
+    operator = auth_headers(client, "operator")
+    secret = client.post("/api/auth/mfa/totp/setup", headers=operator).json()["secret"]
+    now = datetime.now(UTC).replace(tzinfo=None)
+    assert (
+        client.post(
+            "/api/auth/mfa/totp/confirm",
+            headers=operator,
+            json={"code": totp.code_at(secret, now), "password": TEST_USERS["operator"]},
+        ).status_code
+        == 200
+    )
+
+    state = start_login(client)
+    response = callback(client, provider, state, email="op@example.com", email_verified=True)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # A challenge, not a session — the field a client reads is simply absent.
+    assert body["mfa_required"] is True
+    assert body["access_token"] is None
+    assert body["mfa_token"]
+    assert body["expires_in"] == mfa_service.PRE_AUTH_TTL_MINUTES * 60
+
+    later = now + timedelta(seconds=totp.STEP_SECONDS)
+    verified = client.post(
+        "/api/auth/mfa/verify",
+        json={"mfa_token": body["mfa_token"], "code": totp.code_at(secret, later)},
+    )
+    assert verified.status_code == 200, verified.text
+    me = client.get("/api/auth/me", headers=bearer(verified.json()["access_token"]))
     assert me.json()["username"] == "operator"
 
 

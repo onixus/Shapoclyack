@@ -38,6 +38,10 @@ class SsoStatus(BaseModel):
 
     enabled: bool = False
     login_url: str = "/api/auth/oidc/login"
+    # What password login is for on this installation (#315): "enabled",
+    # "break-glass" or "disabled". A mode, never a list of accounts — the
+    # console renders the form, a warning, or nothing at all from it.
+    local_login: Literal["enabled", "break-glass", "disabled"] = "enabled"
 
 
 class HealthResponse(BaseModel):
@@ -793,6 +797,93 @@ class SetUserEmailRequest(BaseModel):
 
     email: str | None = Field(default=None, max_length=320)
     verified: bool = False
+
+
+# A TOTP code is six digits; a recovery code is ten characters in two groups.
+# Both are bounded here so a megabyte of "code" never reaches the verifier, and
+# both stay strings — a code with a leading zero is not the integer 12345.
+_MFA_CODE = Field(default=None, max_length=16)
+_RECOVERY_CODE = Field(default=None, max_length=32)
+
+
+class MfaStatus(BaseModel):
+    """What the console's security page shows about one account (#315).
+
+    Carries no secret, no code and no hash: everything here is safe to render,
+    to log and to cache. ``setup_pending`` is an enrolment that was started and
+    never confirmed, which the console offers to resume rather than restart.
+    """
+
+    username: str
+    enabled: bool = False
+    enabled_at: str | None = None
+    setup_pending: bool = False
+    recovery_codes_remaining: int = 0
+    # Whether OCTO_MFA_REQUIRED_ROLES names this account's role. The console
+    # uses it to say "your organisation requires this" rather than "optional".
+    required: bool = False
+    stepup_minutes: int = 15
+    # Whether ``POST /api/auth/mfa/totp/confirm`` will ask for the password.
+    # False for an account that has none (SSO-provisioned).
+    password_required: bool = True
+
+
+class MfaSetupResponse(BaseModel):
+    """The enrolment secret, once. Nothing re-reads it: confirm or start again.
+
+    Both forms are returned because both are used: the URI is what an
+    authenticator imports, and the bare secret is what somebody types into an
+    app that will not scan. The console renders the URI itself and makes no
+    external request to do it — a QR service would be handed every admin's TOTP
+    secret.
+    """
+
+    secret: str
+    otpauth_uri: str
+    algorithm: str = "SHA1"
+    digits: int = 6
+    period: int = 30
+
+
+class MfaConfirmRequest(BaseModel):
+    """A code from the new authenticator, and the account's own password.
+
+    The password is optional in the schema and required by the service for any
+    account that has one: an SSO-provisioned identity has no password to
+    present, and refusing it here would leave exactly the accounts most likely
+    to be admins unable to enrol.
+    """
+
+    code: str = Field(min_length=1, max_length=16)
+    password: str | None = Field(default=None, max_length=256)
+
+
+class MfaRecoveryCodesResponse(BaseModel):
+    """The ten one-time codes, in the only response that will ever carry them."""
+
+    recovery_codes: list[str] = Field(default_factory=list)
+
+
+class MfaVerifyRequest(BaseModel):
+    """One second factor, plus the challenge token when this is a login.
+
+    ``mfa_token`` is the short-lived receipt ``POST /api/auth/login`` returned;
+    omitting it means the caller already holds a session and is re-proving the
+    factor for step-up. Exactly one of ``code`` and ``recovery_code`` is
+    expected — the route refuses a request carrying neither.
+    """
+
+    mfa_token: str | None = Field(default=None, max_length=4096)
+    code: str | None = _MFA_CODE
+    recovery_code: str | None = _RECOVERY_CODE
+
+
+class MfaDisableRequest(BaseModel):
+    """Turn one's own second factor off: the password **and** a live factor."""
+
+    password: str = Field(min_length=1, max_length=256)
+    code: str | None = _MFA_CODE
+    recovery_code: str | None = _RECOVERY_CODE
 
 
 class OidcLoginResponse(BaseModel):

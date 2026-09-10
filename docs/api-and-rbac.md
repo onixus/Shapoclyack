@@ -136,6 +136,140 @@ so are their windows — see `OCTO_AGENT_JWT_SECRET_PREVIOUS` in
 [configuration.md](configuration.md#environment-variables) and the procedure in
 [operations.md](operations.md#rotating-the-jwt-signing-key).
 
+## Multi-factor authentication
+
+A console account can carry a second factor: a TOTP authenticator (RFC 6238,
+HMAC-SHA-1, six digits, thirty seconds) plus ten single-use recovery codes
+([#315](https://github.com/onixus/Shapoclyack/issues/315)). It is **off by
+default and enrolled by the account itself** — an upgrade changes nothing until
+somebody enrols or an operator sets `OCTO_MFA_REQUIRED_ROLES`.
+
+WebAuthn / passkeys, the other half of #315, are **not** implemented.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/auth/mfa` | session | The caller's own state: enabled, setup pending, recovery codes left, whether policy requires it |
+| `POST /api/auth/mfa/totp/setup` | session | Mints an unconfirmed secret and returns it with its `otpauth://` URI. Nothing is enabled yet |
+| `POST /api/auth/mfa/totp/confirm` | session | `{"code":"123456","password":…}`. Turns the factor on and returns the ten recovery codes **once**. The password is required for any account that has one — enrolling a factor must cost what removing one does, or a stolen session could enrol its own and lock the owner out |
+| `POST /api/auth/mfa/verify` | challenge token *or* session | Second leg of a login, or a step-up on a live session |
+| `POST /api/auth/mfa/disable` | session | `{"password":…, "code"\|"recovery_code":…}`. Both are required |
+| `POST /api/users/{username}/mfa/reset` | platform admin + step-up | Clears the factor, bumps `token_version` (ends the account's sessions), audited as `user.mfa_reset` |
+
+### The two-leg login
+
+`POST /api/auth/login` answers 200 with one of two shapes. For an account with
+no second factor it is the object it has always been. For an enrolled account
+there is **no** `access_token`:
+
+```json
+{"username":"admin","mfa_required":true,"mfa_token":"<challenge>","expires_in":300}
+```
+
+The challenge token is `typ=mfa`, lives five minutes, carries no role, and is
+accepted by `POST /api/auth/mfa/verify` and by nothing else — `decode_token`
+allowlists `typ=user`, so presenting it as a session is a 401. It carries the
+account's `token_version`, so revoking sessions kills an in-flight challenge
+too.
+
+Every password or code check in this module runs inside the login limiter
+(#157) under the account's own key and lands in `auth_events`: `confirm` and
+`disable` are reachable by a session, and an uncounted password check behind a
+stolen token would be a password oracle. An account that cannot be asked for a
+password — provisioned by the identity provider, or one whose password
+`OCTO_LOCAL_LOGIN` no longer accepts — is asked only for the factor
+(`MfaStatus.password_required` says which). That is a real, deliberate
+weakening of `disable` for those accounts, and a small one: the thing the
+password-plus-code pair defends against is a stolen session, which holds
+neither half.
+
+`POST /api/auth/mfa/verify` takes `{"mfa_token":…, "code":…}` or
+`{"mfa_token":…, "recovery_code":…}` and returns the ordinary session token.
+Refusals go through the same limiter as a password (#157) under the account's
+own key and land in `auth_events` with `reason=mfa_failed`.
+
+**SSO is not an exemption.** `GET /api/auth/oidc/callback` makes the same
+decision: an account that has enrolled gets the challenge where the session
+would have been — `mfa_token` in the redirect fragment, or in the JSON body for
+an API-only install. The provider proved an identity; it did not prove
+possession of the authenticator this installation holds a seed for. The
+callback's response model is therefore the same `LoginResponse` password login
+uses (`access_token` is now nullable on it).
+
+A TOTP code is accepted within ±1 step (±30 s) and **spent**: the step it
+belonged to is written to `users.mfa_last_step` in the same transaction, and a
+step at or before it is refused, so an observed code cannot be replayed inside
+its own thirty seconds. A recovery code is bcrypt-hashed like a password and
+stamped `used_at` when it is spent.
+
+### Required roles, and the confined session
+
+`OCTO_MFA_REQUIRED_ROLES` (empty by default) names roles that must carry a
+factor. An account in such a role that has not enrolled still signs in — a
+refusal would leave nobody able to enrol — but the session is `mfa_pending`,
+and `get_current_user` then answers **403** on everything except
+`/api/auth/mfa*`, `/api/auth/me`, `/api/auth/logout` and
+`/api/auth/sessions/revoke-all`. `GET /api/auth/me` reports `mfa_enabled`,
+`mfa_required` and `mfa_pending` so the console can say why.
+
+`mfa_pending` is **derived on every request** from the policy and the account
+row, not carried as a token claim — the same rule the role follows. Turning the
+policy on is a redeploy, not a sign-out, so a claim minted at login would have
+exempted every administrator already signed in for the rest of their eight
+hours; a promotion into a covered role would have done the same. It also means
+finishing an enrolment lifts the confinement on the *existing* token, with no
+sign-out in the middle.
+
+### Step-up
+
+Operations that create or destroy a credential, or widen what a tenant may
+scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
+(default 15):
+
+- `POST`/`DELETE /api/tenants/{id}/service-tokens…`
+- `POST`/`DELETE /api/tenants/{id}/provisioning-keys…` **and**
+  `POST /api/agent/deployment-command`, which mints the same key and is the one
+  the console uses
+- `PUT /api/tenants/{id}/scan-scope`
+- `POST /api/users`, `PUT /api/users/{u}/password`, `PUT /api/users/{u}/role`,
+  `PUT /api/users/{u}/email` and `POST /api/users/{u}/mfa/reset` — each of them
+  a way to end up holding an admin account that carries no second factor
+  (a verified address is what an SSO identity is linked to an account by),
+  which would otherwise be a one-request path around every line above
+
+A **service token** is exempt from step-up: there is no human at one to
+challenge. That is why every route in the list above must also be refused a
+service token by scope — `auth`, `users`, `tenants` and `audit` are forbidden
+outright, `config` and `agent` for writes — and why adding a route here means
+checking that list too.
+
+The check applies **only to accounts that have MFA enabled**; an installation
+that has not adopted MFA behaves exactly as before. A stale session gets a 403
+naming `POST /api/auth/mfa/verify`; calling it *without* `mfa_token` while
+signed in returns a fresh session token whose `mfa_verified_at` restarts the
+window. The console raises a code dialog on that 403 and asks the user to
+repeat the action — the refused request is **not** replayed, because it never
+reached the server and silently repeating a `POST` nobody saw succeed is worse
+than asking again.
+
+### Break-glass local login
+
+`OCTO_LOCAL_LOGIN` decides what password login is for once SSO is configured.
+It is **ignored entirely when no identity provider is set** — an installation
+with neither SSO nor password login is one nobody can reach.
+
+| Value | Effect |
+|---|---|
+| `enabled` (default) | Password login for everyone, as before |
+| `break-glass` | Only the accounts in `OCTO_BREAK_GLASS_USERS` may present a password. Each such login is audited as `auth.break_glass_login`, recorded in `auth_events` with `reason=break_glass_login`, counted in `octo_break_glass_logins_total` and logged at WARNING |
+| `disabled` | No password login at all |
+
+A refusal is the same `401 Invalid credentials` a wrong password gets: naming
+the policy to an unauthenticated caller would hand over the shortlist of
+accounts worth attacking. The *mode* is public in `GET /api/auth/sso` as
+`local_login`, which names nobody, so the login form knows what to offer. The
+reason (`local_login_disabled`, `local_login_not_break_glass`) is in
+`auth_events`.
+
 ## Login rate limiting and the auth audit trail
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
@@ -306,7 +440,7 @@ so it is reported as off rather than failing at the first redirect.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/auth/sso` | none | `{"enabled": …, "login_url": …}`. The login form has to render before anyone is signed in. Also embedded in `GET /api/health` as `sso` |
+| `GET /api/auth/sso` | none | `{"enabled": …, "login_url": …, "local_login": …}`. The login form has to render before anyone is signed in. Also embedded in `GET /api/health` as `sso`. `local_login` is the `OCTO_LOCAL_LOGIN` mode and names no account |
 | `GET /api/auth/oidc/login` | none | 307 to the provider's authorize URL. `?redirect=false` returns the URL as JSON; `?next=/path` is carried through the flow and is dropped unless it is a path on this console |
 | `GET /api/auth/oidc/callback` | none | Exchanges the code and issues **the platform's ordinary session token** — same JWT, same claims, same expiry as password login |
 
