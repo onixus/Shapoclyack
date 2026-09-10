@@ -532,8 +532,8 @@ what the redaction filter does and does not cover.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OCTO_LOG_FORMAT` | `text` | `text` or `json`. `json` emits one object per line (`ts`, `level`, `logger`, `msg`, `request_id`, plus `exc` on a traceback) for a shipper; `text` stays readable in a terminal. An unrecognised value warns on stderr and reads as `text`. The API hands the same formatter to uvicorn, so `uvicorn.access` is in the chosen format too |
-| `OCTO_LOG_LEVEL` | `INFO` | Any level name (`DEBUG`, `INFO`, `WARNING`, `ERROR`). An unrecognised name warns and reads as `INFO` rather than silencing the process. On the agent, `--verbose` still wins over this |
+| `OCTO_LOG_FORMAT` | `text` | `text` or `json`. `json` emits one object per line (`ts`, `level`, `logger`, `msg`, `request_id`, plus `exc` on a traceback) for a shipper; `text` stays readable in a terminal. The same five fields on both processes — on the agent `request_id` is always empty, since it serves no requests and correlates by `job_id`, but the field is there so one shipper schema covers both. Both formats timestamp in UTC. An unrecognised value warns on stderr and reads as `text`. The API hands the same formatter to uvicorn, so `uvicorn.access` is in the chosen format too |
+| `OCTO_LOG_LEVEL` | `INFO` | Any level name (`DEBUG`, `INFO`, `WARNING`, `ERROR`). An unrecognised name warns and reads as `INFO` rather than silencing the process, and so does `NOTSET` — on the root logger it means "no level check at all". `DEBUG` does not reach `sqlalchemy.engine`/`sqlalchemy.pool` (held at `WARNING`, because the statement log prints bound parameters) or `paramiko`/`httpx`/`httpcore`/`nats` (held at `INFO`); see [operations.md](operations.md#secret-redaction-and-what-it-does-not-cover). On the agent, `--verbose` still wins over this |
 
 OpenTelemetry (ROADMAP P3). Empty endpoint means no TracerProvider — the
 API does not buffer spans nobody will read. Traces are request timing, not

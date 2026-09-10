@@ -632,13 +632,28 @@ tracing is on.
 Following one request from a user report:
 
 ```bash
-# the id the console (or your ingress) reported
+# the id the console (or your ingress) reported — the console appends it to
+# the error toast for a 5xx, and it is on the response as `X-Request-Id`
 kubectl -n network-scan logs deployment/shapoclyack-api --tail=-1 \
   | grep '"request_id":"3f9c1a7be0d4472f8a1e6b2c5d8e0f11"'
 
 # text format: the id is the bracketed field after the logger name
 kubectl -n network-scan logs deployment/shapoclyack-api | grep '\[3f9c1a7b'
 ```
+
+Both formats timestamp in **UTC**: `json` writes an ISO string ending in `Z`,
+`text` a `%Y-%m-%d %H:%M:%S,mmm` followed by a literal `Z`. Neither reads the
+pod's `/etc/localtime`, so a text line and a JSON one line up with each other
+and with everything else in the cluster.
+
+`OCTO_LOG_LEVEL=DEBUG` raises the application's loggers, not every library's.
+`sqlalchemy.engine` and `sqlalchemy.pool` stay at `WARNING`, `paramiko`,
+`httpx`, `httpcore` and `nats` at `INFO` — the SQL statement log prints every
+statement *with its bound parameters*, and on this schema those are bcrypt
+hashes, `token_hash` values and session ids. Chasing a bug at DEBUG must not
+write the credential store to stdout. The floor only holds the level down: a
+quieter `OCTO_LOG_LEVEL` still applies to them. `OCTO_LOG_LEVEL=NOTSET` is
+refused (it would mean "no level check at all") and reads as `INFO`.
 
 Beyond the request id, correlate by tenant, `job_id`, `run_id`, and `agent_id`
 — a scan outlives the request that started it, and those are the keys that
@@ -653,9 +668,10 @@ written into the format string) and masks four shapes:
 
 | Shape | Example in, example out |
 |---|---|
-| Keyed pairs — `password`, `passwd`, `pwd`, `token`, `secret`, `api_key`, `authorization`, with `=` or `:` | `token=abc123` → `token=***` |
-| `Bearer` credentials, header or JSON | `Authorization: Bearer abc.def` → `Authorization: ***` |
-| Credentials in a URL | `postgresql://octo:s3cret@db/octo` → `postgresql://octo:***@db/octo` |
+| Keyed pairs — `password`, `passwd`, `pwd`, `token`, `secret`, `api_key`, with `=` or `:`, quoted or not | `token=abc123` → `token=***`, `{"password": "hunter2"}` → `{"password": "***"}` |
+| The `Authorization` header, scheme word included (`Bearer`, `Basic`, `Token`, `ApiKey`, `Digest`, `Negotiate`), however it was written | `Authorization: Token abc` → `Authorization: ***`, `{"Authorization": "Bearer abc"}` → `{"Authorization": "***"}` |
+| A bare `Bearer` credential with no header name | `Bearer abc.def` → `Bearer ***` |
+| Credentials in a URL, empty user included | `postgresql://octo:s3cret@db/octo` → `postgresql://octo:***@db/octo`, `redis://:s3cret@cache` → `redis://:***@cache` |
 | JWTs in compact serialization | `eyJhbGciOi….payload.sig` → `eyJ***` |
 
 A separator is *required* for the keyed pairs, so "the token is invalid"
@@ -665,7 +681,8 @@ protects nothing.
 This is a backstop, not a licence to log credentials. Its limits, stated
 plainly:
 
-- It masks the log **message** and a formatted traceback. Anything written to
+- It masks the log **message** (a `logging.Filter`) and the **formatted
+  traceback** (the formatter, in both `text` and `json`). Anything written to
   stdout by something other than the `logging` module — a subprocess the
   scanner runs, a library printing directly — never passes through it.
 - It is syntactic. A secret logged with no key, no scheme and no recognisable

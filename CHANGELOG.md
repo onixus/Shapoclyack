@@ -53,12 +53,25 @@ All notable changes to Shapoclyack are documented in this file.
   `RequestIdMiddleware` binds a correlation id per request: `X-Request-Id` from
   the caller when it is safe to echo and to log (128 characters of a narrow
   set, so a uuid, a ULID or a `traceparent` passes and a CRLF injection does
-  not), a fresh uuid4 otherwise. It comes back in the response header, appears
-  in every log line the request produces, and is set on the OpenTelemetry span
-  as `shapoclyack.request_id`. A `logging.Filter` on both processes masks
-  keyed `password=`/`token=`/`secret=` pairs, `Bearer` credentials, passwords
-  inside `scheme://user:pass@host` URLs, and JWTs — including secrets that
-  arrive as `%s` arguments, which is how this repository logs. `docs/operations.md`
+  not), a fresh uuid4 otherwise. It wraps the whole ASGI stack — outside
+  Starlette's own `ServerErrorMiddleware`, which `add_middleware` cannot reach
+  — so the 500 for an unhandled exception carries the header like every other
+  response, and the record about it is written under the id rather than by
+  uvicorn after the context is gone. The value comes back in the response
+  header (named in the CORS `expose_headers`, so the console can read it
+  cross-origin and shows it in the toast for a server-side failure), appears in
+  every log line the request produces, and is set on the OpenTelemetry span as
+  `shapoclyack.request_id`. Both formats print UTC.
+  A `logging.Filter` on both processes masks keyed
+  `password=`/`token=`/`secret=` pairs (JSON spelling included), the whole
+  `Authorization` header whatever its scheme, bare `Bearer` credentials,
+  passwords inside `scheme://user:pass@host` URLs — an empty user, as Redis
+  writes them, included — and JWTs, in the message and in the formatted
+  traceback of either format; `%s` arguments are covered, which is how this
+  repository logs. `sqlalchemy.engine`, `paramiko`, `httpx`/`httpcore` and
+  `nats` are held at a floor, so `OCTO_LOG_LEVEL=DEBUG` does not turn on the
+  SQL statement log with its bound parameters, and `OCTO_LOG_LEVEL=NOTSET` is
+  refused rather than silently meaning "everything". `docs/operations.md`
   now describes the filter and its limits instead of instructing operators not
   to log secrets. Head trace sampling is configurable with
   `OCTO_OTEL_TRACES_SAMPLER_RATIO` (default `1.0`, parent-based).

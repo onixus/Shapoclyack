@@ -10,6 +10,7 @@ other layer can log, the body-cap rejections that never reach a route included.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -23,6 +24,8 @@ from api.request_context import (
     set_request_id,
 )
 from api.services import metrics as metrics_service
+
+LOG = logging.getLogger("shapoclyack.api")
 
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
@@ -208,9 +211,10 @@ class RequestIdMiddleware:
     otherwise. An id that fails validation is *replaced*, not escaped: a client
     whose id we had to rewrite cannot correlate on it anyway.
 
-    Raw ASGI rather than ``BaseHTTPMiddleware``, like the two classes above, and
-    added outermost so that the id is set before any other layer can log —
-    including the body-size rejections, which never reach a route.
+    Raw ASGI rather than ``BaseHTTPMiddleware``, like the two classes above.
+    Installed by :func:`install_request_id_middleware` rather than by
+    ``app.add_middleware``, because "outermost" has to mean outside Starlette's
+    own ``ServerErrorMiddleware`` too — see that function.
 
     The OTel span attribute is set from the ``http.response.start`` hook rather
     than on the way in: ``FastAPIInstrumentor`` is installed *inside* this
@@ -248,8 +252,41 @@ class RequestIdMiddleware:
         token = set_request_id(request_id)
         try:
             await self.app(scope, receive, _send_with_id)
+        except Exception:
+            # By the time an unhandled exception reaches here, the 500 for it
+            # has already been written by ``ServerErrorMiddleware`` — which
+            # this layer wraps, so it went out through ``_send_with_id`` and
+            # carries the header like every other response. What is left is the
+            # log line: re-raising would hand it to uvicorn's
+            # "Exception in ASGI application", one frame above this contextvar,
+            # i.e. with ``request_id=""`` — the one record about the request
+            # that could not be found by its id. So it is written here, where
+            # the id is still bound, and not raised again (#330).
+            LOG.exception(
+                "unhandled exception serving %s %s",
+                scope.get("method", "?"),
+                scope.get("path", "?"),
+            )
         finally:
             reset_request_id(token)
+
+
+def install_request_id_middleware(app: Any) -> None:
+    """Wrap ``app``'s middleware stack in :class:`RequestIdMiddleware` (#330).
+
+    ``app.add_middleware`` cannot express what this layer needs. Starlette
+    builds ``ServerErrorMiddleware`` *outside* everything added that way, and
+    that is where an unhandled exception becomes a 500 — sent through the send
+    callable of whatever wraps it, which with ``add_middleware`` is uvicorn's
+    own. So the single response in the API that most needs a correlation id was
+    the only one without an ``X-Request-Id`` header, and
+    docs/api-and-rbac.md's "every response carries" was false for it.
+
+    Building the stack here rather than letting the first request build it is
+    the price: ``add_middleware`` raises afterwards, so this is called last in
+    ``create_app``.
+    """
+    app.middleware_stack = RequestIdMiddleware(app.build_middleware_stack())
 
 
 # Resolved once, not per response: OpenTelemetry is an optional dependency of
