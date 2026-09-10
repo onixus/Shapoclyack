@@ -2,13 +2,22 @@
 
 import { KeyRound } from "lucide-react";
 import { ServiceTokensPanel } from "@/components/service-tokens-panel";
-import { useAuthStore } from "@/lib/auth-store";
+import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 
 export default function ServiceTokensPage() {
   const t = useT();
   const { user, activeTenant } = useAuthStore();
-  const isAdmin = user?.role === "admin";
+  // `tenant.credential.manage` in the tenant selected below, not the global
+  // admin role (#318): the tenant's own admin and a `token-admin` hold it and
+  // the route accepts them, so gating on the global role refused the page to
+  // the very people it is for. The fallback keeps it for a platform admin on
+  // an API that predates the permission list.
+  const canManage = holdsPermission(
+    user,
+    "tenant.credential.manage",
+    user?.role === "admin",
+  );
   // The panel is per tenant, so it needs one named: a platform admin viewing
   // the fleet has no tenant selected, and issuing "for everything" is not a
   // thing this credential can be.
@@ -27,7 +36,7 @@ export default function ServiceTokensPage() {
           secret is shown once and cannot be read back.
         </p>
       </header>
-      <ServiceTokensPanel tenantId={tenantId} isAdmin={Boolean(isAdmin)} />
+      <ServiceTokensPanel tenantId={tenantId} canManage={canManage} />
     </div>
   );
 }

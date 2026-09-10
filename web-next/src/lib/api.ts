@@ -173,6 +173,11 @@ export type Me = {
    */
   tenant_role?: string;
   permissions?: string[];
+  /** Which tenant `tenant_role`/`permissions` describe. The request
+   * interceptor below attaches the tenant the switcher is on to every call,
+   * `/auth/me` included, so this is the tenant those two are about — not
+   * necessarily `default_tenant`. Absent on an API older than #318. */
+  scoped_tenant?: string;
   /** Second-factor state (#315): whether the account has enrolled, whether
    * this installation requires it of the account's role, and whether *this
    * session* is confined to the enrolment flow until it does. */
@@ -597,7 +602,11 @@ export type AgentDeploymentSnippetResponse = {
 export type TenantInfo = {
   tenant_id: string;
   name: string;
-  status: "active" | "disabled";
+  /** `suspended` is the one non-active state, and the word is the API's:
+   * `disabled` is an account and an agent, never a tenant (#318). A suspended
+   * tenant refuses every request from a non-platform-admin, and drops out of
+   * this listing for them, so only a platform admin ever sees the value. */
+  status: "active" | "suspended";
   created_at: string | null;
 };
 

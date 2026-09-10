@@ -751,9 +751,15 @@ under an existing name replaces it; deleting one does not affect a scan already
 running.
 
 `/service-tokens` issues and revokes non-interactive API credentials for the
-selected tenant. It is admin-only, and a platform admin has to have a tenant
-selected: the token is confined to that tenant, a role, and its scopes. The
-secret is shown once, at creation. See
+selected tenant. The menu entry and the panel are gated on
+`tenant.credential.manage` **in the selected tenant** — its own admin or a
+`token-admin`, not the global admin role, which is what the gate compared
+against before #318 and which hid the page from exactly the people it is for.
+Without the permission the panel names it instead of showing the form. A
+platform admin has to have a tenant selected: the token is confined to that
+tenant, a role, and its scopes — and the role it may be issued with is capped
+at the issuer's own, so a `token-admin` can mint a `viewer` token and not an
+`admin` one. The secret is shown once, at creation. See
 [api-and-rbac.md](api-and-rbac.md#service-tokens).
 
 ## Finding presentation

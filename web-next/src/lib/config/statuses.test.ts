@@ -51,7 +51,7 @@ describe("status maps", () => {
       "succeeded",
     ]);
     expect(Object.keys(AGENT_STATUS).sort()).toEqual(["busy", "error", "idle", "offline", "stale"]);
-    expect(Object.keys(TENANT_STATUS).sort()).toEqual(["active", "disabled"]);
+    expect(Object.keys(TENANT_STATUS).sort()).toEqual(["active", "suspended"]);
     expect(Object.keys(ASSET_STATUS).sort()).toEqual(["active", "decommissioned", "stale"]);
     expect(Object.keys(SEVERITY_STATUS).sort()).toEqual([...SEVERITIES].sort());
     expect(Object.keys(VULN_LIFECYCLE_STATUS).sort()).toEqual([...VULN_STATES].sort());

@@ -32,15 +32,23 @@ import type { MsgKey } from "@/lib/i18n/messages";
 import type { Role } from "@/lib/api";
 
 /**
- * Minimum role a menu entry is *shown* for. This is presentation only — the
- * API enforces access on every request — but a viewer should not be handed
- * eleven doors that all open onto "operator role required".
+ * What a menu entry is *shown* for. This is presentation only — the API
+ * enforces access on every request — but a viewer should not be handed eleven
+ * doors that all open onto "operator role required".
+ *
+ * `minRole` gates on the account's global role, which is all the JWT carries.
+ * `permission` gates on a named permission from `/auth/me` (#318) and is the
+ * right one for anything a *tenant* role can hold: the global role is not the
+ * whole answer any more, so `minRole: "admin"` on a tenant-administration
+ * page hides it from exactly the tenant admin it is for. The two are
+ * exclusive; `permission` wins if both are set.
  */
 export type NavItem = {
   href: string;
   labelKey: MsgKey;
   icon: LucideIcon;
   minRole?: Exclude<Role, "viewer">;
+  permission?: string;
   /** Short hint shown in the command palette. */
   hintKey?: MsgKey;
 };
@@ -215,10 +223,15 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.integrations",
       },
       {
+        // A permission, not `minRole: "admin"`: since #318 the tenant's own
+        // admin and a `token-admin` hold `tenant.credential.manage` while
+        // their global role is whatever it is, and gating on the global role
+        // hid this page from both of them — the one thing docs/ui.md promises
+        // it for.
         href: "/service-tokens",
         labelKey: "nav.serviceTokens",
         icon: KeyRound,
-        minRole: "admin",
+        permission: "tenant.credential.manage",
         hintKey: "nav.hint.serviceTokens",
       },
       {
@@ -247,16 +260,31 @@ export const NAV: readonly NavItem[] = NAV_GROUPS.flatMap((group) => group.items
 
 const ROLE_RANK: Record<Role, number> = { viewer: 0, operator: 1, admin: 2 };
 
-export function canSee(item: Pick<NavItem, "minRole">, role: Role | undefined): boolean {
+export function canSee(
+  item: Pick<NavItem, "minRole" | "permission">,
+  role: Role | undefined,
+  permissions?: readonly string[],
+): boolean {
+  if (item.permission) {
+    // No list at all means an API older than #318, which sends none: fall back
+    // to the global role the entry used to be gated on, so an upgrade in two
+    // steps loses no page.
+    return permissions
+      ? permissions.includes(item.permission)
+      : role === "admin";
+  }
   if (!item.minRole) return true;
   return ROLE_RANK[role ?? "viewer"] >= ROLE_RANK[item.minRole];
 }
 
-/** Groups with the entries this role may see; a group left empty disappears. */
-export function visibleNavGroups(role: Role | undefined): NavGroup[] {
+/** Groups with the entries this principal may see; a group left empty disappears. */
+export function visibleNavGroups(
+  role: Role | undefined,
+  permissions?: readonly string[],
+): NavGroup[] {
   return NAV_GROUPS.map((group) => ({
     ...group,
-    items: group.items.filter((item) => canSee(item, role)),
+    items: group.items.filter((item) => canSee(item, role, permissions)),
   })).filter((group) => group.items.length > 0);
 }
 

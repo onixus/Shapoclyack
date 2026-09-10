@@ -45,7 +45,10 @@ type AuthState = {
   /** Ends every session of this account, not just this browser's (#314).
    * Throws when the server refused, in which case nothing was signed out. */
   revokeAllSessions: () => Promise<void>;
-  selectTenant: (tenantId: string | null) => void;
+  /** Switches the tenant every request is scoped to, and re-reads the
+   * principal for it: the permissions a page gates on are per tenant (#318).
+   * Awaitable so a caller can wait for the new authority before rendering. */
+  selectTenant: (tenantId: string | null) => Promise<void>;
 };
 
 function canOperate(role: Role | undefined) {
@@ -121,6 +124,12 @@ export const useAuthStore = create<AuthState>((set) => ({
         expiresIn: session.expires_in,
       };
     }
+    // A login is a new session, and the tenant a previous user of this browser
+    // had selected is not this user's to inherit: /auth/me is scoped by the
+    // request interceptor, so leaving a stale selection in place would ask the
+    // API about a tenant this account may hold nothing in and get a 403 where
+    // a principal should be. The switcher starts at the server's own choice.
+    setActiveTenant(null);
     // The login response carries no tenant context (ROADMAP P0), so read the
     // full principal — tenants, default tenant, platform-admin flag — from
     // /auth/me and fall back to the login payload if that call fails.
@@ -171,8 +180,23 @@ export const useAuthStore = create<AuthState>((set) => ({
     setActiveTenant(null);
     set({ user: null, loading: false, hydrated: true, canOperate: false, activeTenant: null });
   },
-  selectTenant(tenantId) {
+  async selectTenant(tenantId) {
+    // Set first, so the request below — and anything the caller fires next —
+    // is already in the new tenant.
     setActiveTenant(tenantId);
     set({ activeTenant: tenantId });
+    // Then re-read the principal *for that tenant*. `tenant_role` and
+    // `permissions` are per tenant (#318) and the request interceptor scopes
+    // this call like every other, so without it the console would keep gating
+    // its pages on the authority of the tenant it just left — hiding a panel
+    // the API would serve, and showing one it refuses.
+    try {
+      const user = await fetchMe();
+      set({ user, canOperate: canOperate(user.role) });
+    } catch {
+      // The tenant stays selected: the API is the boundary and it is now being
+      // asked in the right scope, so the cost of a failure here is a stale
+      // gate, not a wrong answer. hydrate() retries on the next page load.
+    }
   },
 }));

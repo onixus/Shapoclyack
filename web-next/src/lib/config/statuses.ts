@@ -78,9 +78,14 @@ export const SCHEDULE_ENABLED_STATUS: Record<"enabled" | "disabled", StatusStyle
   disabled: { label: "disabled", variant: "secondary", className: MUTED },
 };
 
+/** `suspended`, not `disabled`: that is the word the API serialises and the
+ * one #318's enforcement refuses with. Danger rather than muted — a suspended
+ * tenant is refusing every one of its people, which is a state to notice
+ * rather than an "off" switch. Only a platform admin ever sees it: the tenant
+ * listing drops suspended tenants for everyone else. */
 export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
   active: { label: "active", className: SUCCESS },
-  disabled: { label: "disabled", variant: "secondary", className: MUTED },
+  suspended: { label: "suspended", variant: "destructive", className: DANGER },
 };
 
 /** An allow/deny entry of a tenant's approved scanning scope (#226). Deny is

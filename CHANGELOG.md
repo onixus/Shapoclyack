@@ -24,9 +24,34 @@ All notable changes to Shapoclyack are documented in this file.
   control removing itself. `GET /api/config` needs `config.read`, so a viewer
   no longer reads the installation's scanning posture, and the cross-tenant
   counters in `GET /api/system` need `platform.fleet.read`. A suspended tenant
-  now refuses its people and not only its agents. **Custom roles per tenant are
-  not implemented** — the schema and the read side hold them, there is no way to
-  create one — so #318 stays open.
+  now refuses its people and not only its agents — including in
+  `GET /api/tenants` and `GET /api/tenants/posture`, which resolve their own
+  tenant set and so had kept answering with a suspended tenant's risk metrics.
+  The word for that state is **`suspended`** everywhere: the column, the
+  `TenantInfo` schema, the refusal and the docs. `disabled` is an account and an
+  agent, never a tenant, and the `TenantInfo` literal that still said so turned
+  the console's tenant switcher into a `500` the moment anything wrote the real
+  value. `GET /api/auth/me` now takes `tenant_id` and echoes `scoped_tenant`,
+  so `tenant_role`/`permissions` describe the tenant the console is acting in
+  rather than always the default one — the console re-reads the principal when
+  its switcher moves, and `/service-tokens` is gated on
+  `tenant.credential.manage` instead of on the global admin role, which had
+  hidden the page from the tenant admins and token-admins it is for.
+  **Custom roles per tenant are not implemented** — the schema and the read
+  side hold them, there is no way to create one — so #318 stays open, and the
+  console's own copy of the role table means the five new roles can only be
+  granted over the API.
+
+- **A `token-admin` can no longer mint a credential stronger than itself**
+  ([#318](https://github.com/onixus/Shapoclyack/issues/318)). Handing
+  `tenant.credential.manage` to a rank-1 role opened an escalation with it:
+  `POST /api/tenants/{id}/service-tokens` took the requested `role` on trust,
+  so an account that could not start a scan could issue itself a `role: admin`
+  service token and then start one — plus assets, reports, webhooks and
+  wordlists — with a credential that needs no password and outlives the session
+  that minted it. The requested role is now capped at the caller's own role in
+  that tenant, on rank *and* on permission set, and over the cap is a `403`. A
+  tenant `admin` keeps the whole ladder and a platform admin has no cap.
 
 - **A console account can carry a second factor, and an admin role can be made
   to** ([#315](https://github.com/onixus/Shapoclyack/issues/315)). A local
