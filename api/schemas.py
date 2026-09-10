@@ -13,6 +13,23 @@ from api.services.scan_intents import ScanIntent
 
 T = TypeVar("T")
 
+#: The roles a membership may name (#318). Spelled out rather than derived from
+#: :data:`api.core.permissions.TENANT_ROLES` because a Pydantic ``Literal``
+#: needs literal values — ``tests/test_api_rbac_permissions.py`` asserts the
+#: two lists are the same set, which is what keeps this copy honest. The
+#: *global* role in ``users.role`` is still the three original names, so the
+#: ``Literal`` on ``UserInfo`` and friends below is deliberately narrower.
+TenantRoleName = Literal[
+    "viewer",
+    "operator",
+    "admin",
+    "auditor",
+    "scan-operator",
+    "scope-approver",
+    "token-admin",
+    "risk-approver",
+]
+
 
 class Page(BaseModel, Generic[T]):
     """Uniform envelope for every paginated list endpoint (ROADMAP P3.2).
@@ -694,13 +711,36 @@ class MembershipInfo(BaseModel):
 
     username: str
     tenant_id: str
-    role: Literal["viewer", "operator", "admin"]
+    role: TenantRoleName
     created_at: str | None = None
     created_by: str | None = None
 
 
 class GrantMembershipRequest(BaseModel):
-    role: Literal["viewer", "operator", "admin"] = "viewer"
+    role: TenantRoleName = "viewer"
+
+
+class PermissionInfo(BaseModel):
+    """One named authority a role can carry (#318)."""
+
+    permission_key: str
+    description: str = ""
+
+
+class RoleInfo(BaseModel):
+    """One role and what it may do (#318).
+
+    ``tenant_id`` is None for a built-in role — every tenant has it — and set
+    for one a tenant defined for itself. ``rank`` is the coarse read/write
+    level the older gates compare against: 1 reads, 2 writes, 3 administers.
+    """
+
+    role_id: str
+    tenant_id: str | None = None
+    description: str = ""
+    builtin: bool = False
+    rank: int = 1
+    permissions: list[str] = Field(default_factory=list)
 
 
 class AuthEventInfo(BaseModel):

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -194,6 +201,72 @@ class UserTenant(Base):
 
     __table_args__ = (
         UniqueConstraint("username", "tenant_id", name="uq_user_tenant"),
+    )
+
+
+class Permission(Base):
+    """The catalogue of named authorities a role can carry (migration 0049, #318).
+
+    Reference data, not state: the rows are seeded by the migration from
+    :data:`api.core.permissions.PERMISSIONS` and read by
+    ``GET /api/rbac/permissions`` so an operator building a role can see what
+    there is to grant. Enforcement does **not** read this table — a request
+    that had to query for its own authority is a request that fails open when
+    the database is slow — which is why the compiled dict is the source of
+    truth and a test asserts the two still agree.
+    """
+
+    __tablename__ = "permissions"
+
+    permission_key: Mapped[str] = mapped_column(primary_key=True)
+    description: Mapped[str] = mapped_column(default="")
+
+
+class RoleDefinition(Base):
+    """One role, built-in or defined by a tenant (migration 0049, #318).
+
+    ``tenant_id`` is ``""`` for a built-in role — every tenant's — and a real
+    tenant id for one that tenant defined. Empty string rather than NULL
+    because both halves are in the primary key: a composite PK cannot hold a
+    NULL at all, and a unique constraint over a nullable column treats two
+    NULLs as distinct, which would let the same built-in role be seeded twice.
+
+    The class is not called ``Role``: that name is the console's own role enum
+    (:class:`api.auth.Role`), and two things called Role in one import graph is
+    a bug waiting for a tired reviewer.
+    """
+
+    __tablename__ = "roles"
+
+    role_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(primary_key=True, default="")
+    description: Mapped[str] = mapped_column(default="")
+    builtin: Mapped[bool] = mapped_column(default=False)
+    # 1 = read-only, 2 = operator-level writes, 3 = administers the tenant.
+    # Mirrors RoleDefinition.rank in api/core/permissions.py.
+    rank: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+
+
+class RolePermission(Base):
+    """One permission held by one role (migration 0049, #318)."""
+
+    __tablename__ = "role_permissions"
+
+    role_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(primary_key=True, default="")
+    permission_key: Mapped[str] = mapped_column(
+        ForeignKey("permissions.permission_key", ondelete="CASCADE"), primary_key=True
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["role_id", "tenant_id"],
+            ["roles.role_id", "roles.tenant_id"],
+            ondelete="CASCADE",
+            name="fk_role_permissions_role",
+        ),
     )
 
 

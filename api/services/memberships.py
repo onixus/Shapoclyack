@@ -25,6 +25,13 @@ The role *inside* a tenant comes from the membership row when one exists and
 falls back to the user's global role otherwise, so a membership can grant less
 (a global operator who is only a viewer in tenant B) or more (a global viewer
 who operates tenant C) than the configured global role.
+
+Since #318 that role is one of eight rather than three: the original
+viewer/operator/admin plus ``auditor``, ``scan-operator``, ``scope-approver``,
+``token-admin`` and ``risk-approver``. What each may do is
+:mod:`api.core.permissions`; this module only stores the name and hands it
+back. Nothing about the existing three changed, so no grant written before
+#318 means anything different than it did.
 """
 
 from __future__ import annotations
@@ -34,13 +41,18 @@ from typing import Any
 
 from sqlalchemy import select
 
+from api.core import permissions as permission_catalog
 from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
-VALID_ROLES = ("viewer", "operator", "admin")
+#: Every built-in role a membership may name (#318) — the original three plus
+#: the separation-of-duties roles. ``platform-admin`` is deliberately not in
+#: here: it is a property of the account (``users.role``), not a grant inside
+#: one tenant, and :data:`api.core.permissions.TENANT_ROLES` excludes it.
+VALID_ROLES = permission_catalog.TENANT_ROLES
 
 _settings: Settings | None = None
 
