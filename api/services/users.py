@@ -260,6 +260,18 @@ def create_user(
         return created
 
 
+def _end_sessions(row: models.User) -> None:
+    """Move the account to the next session generation (#314).
+
+    Called from inside the transaction that makes the change, so "the password
+    is new" and "the tokens issued under the old one are dead" commit together
+    or not at all. Every console JWT carries the version it was minted at and
+    ``api/services/sessions.py`` refuses one that no longer matches, so this
+    single ``+= 1`` is the whole of "and sign them out".
+    """
+    row.token_version = int(row.token_version or 0) + 1
+
+
 def set_password(
     username: str,
     password: str,
@@ -267,7 +279,8 @@ def set_password(
     audit: "audit_service.AuditContext | None" = None,
     action: str | None = None,
 ) -> dict[str, Any] | None:
-    """Write a new password hash, and record *that* it changed (#327).
+    """Write a new password hash, end every session opened with the old one
+    (#314), and record *that* it changed (#327).
 
     ``action`` names which of the two acts this is — an admin's reset or the
     owner's own rotation — because they are different facts to an auditor and
@@ -286,6 +299,7 @@ def set_password(
         row.password_hash = hash_password(password)
         row.password_changed_at = _now()
         row.updated_at = _now()
+        _end_sessions(row)
         session.flush()
         updated = _with_tenants(session, row)
         audit_service.record(
@@ -333,8 +347,21 @@ def set_role(
         if row is None:
             return None
         previous = row.role
+        changed = row.role != role
         row.role = role
         row.updated_at = _now()
+        # A demotion that leaves the old role live in an already-issued token
+        # is not a demotion (#314). The decoder reads the role from this row
+        # too, so the bump is belt-and-braces — it also ends the sessions of a
+        # *promoted* account, which is the conservative reading of "their
+        # authority changed".
+        #
+        # Only when the role actually moved: this endpoint is what an IaC run
+        # or a directory sync calls on every reconcile, and bumping on a PUT
+        # that asserts the role the account already has would sign everybody
+        # out on a schedule for no change at all.
+        if changed:
+            _end_sessions(row)
         session.flush()
         updated = _with_tenants(session, row)
         # Only the field that moved: "admin -> viewer" is the fact a review
@@ -360,8 +387,19 @@ def set_disabled(
         if row is None:
             return None
         was_disabled = row.disabled_at is not None
+        changed = was_disabled != disabled
         row.disabled_at = _now() if disabled else None
         row.updated_at = _now()
+        # Both directions, but only on a real transition. Disabling must end
+        # the sessions — that is the whole point of the operation — and
+        # re-enabling ends whatever was still in flight when the account was
+        # locked, so "disabled and enabled again" is a clean start rather than
+        # a resumed one. Re-asserting the state the account is already in
+        # changes nothing and must not end anyone's session: the reconcile
+        # loop that keeps accounts in step with a directory sends exactly that
+        # PUT on every pass.
+        if changed:
+            _end_sessions(row)
         session.flush()
         updated = _with_tenants(session, row)
         # One action for both directions, with the values either side: an

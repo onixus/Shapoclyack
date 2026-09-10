@@ -58,6 +58,84 @@ turn one into the other. The agent key sits on every scanner host, which is a
 much wider blast radius than the API's own secret — see
 [configuration.md](configuration.md#environment-variables) for rotating it.
 
+## Sessions, logout and revocation
+
+A console token is no longer believed on its own
+([#314](https://github.com/onixus/Shapoclyack/issues/314)). Every request
+verifies the signature and then reads the account row: the session dies the
+moment the account is disabled, deleted, demoted or has its password changed —
+"a disabled user loses access in under a minute" is in practice "on the next
+request". The role that reaches the request is the one in the table, not the
+one in the claim, so a demotion applies immediately rather than at the next
+login. The claim is still parsed, and a token naming a role that does not exist
+is still refused.
+
+Two claims and one header carry this:
+
+| Field | Where | What it does |
+|---|---|---|
+| `ver` | claim | The account's `token_version` when the token was minted. A mismatch is a 401 |
+| `jti` | claim | Per-token id. What `POST /api/auth/logout` puts on the denylist |
+| `kid` | header | Which signing key signed it — see [Key rotation](#jwt-signing-key-rotation) |
+
+```http
+POST /api/auth/logout                           # any role — ends this session only
+POST /api/auth/sessions/revoke-all              # any role — ends every session of your account
+POST /api/users/{username}/sessions/revoke-all  # admin   — ends every session of that account
+```
+
+All three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
+until its own `exp` and is idempotent; the two `revoke-all` routes increment
+`users.token_version`, which invalidates every token quoting the old value —
+including the caller's own, which is the point. `revoke-all` on an account that
+does not exist is a `404`.
+
+Tenant memberships need no version bump: the role *inside* a tenant is
+resolved from `user_tenants` on every request and was never in the token, so
+granting or revoking a membership already applies immediately.
+
+`PUT /api/users/{username}/role` and `PUT /api/users/{username}/disabled` bump
+the version only when the value actually moves. Re-asserting the state an
+account is already in — what a reconciling IaC run or a directory sync does on
+every pass — is a no-op and leaves that account's sessions alone.
+
+When Postgres is unreachable the check cannot be made, and an authenticated
+request answers `503` with `Retry-After`, not `401`: the session was not
+refused, it was undecided. See
+[operations.md](operations.md#sessions-and-revocation).
+
+A session with no `jti` cannot be logged out one at a time and says so with a
+`400` rather than a `204` that did nothing. That is only reachable for tokens
+minted before #314; `revoke-all` ends those.
+
+Service tokens are not sessions. They never reach these routes at all — `auth`
+is a resource no service token may touch — and are revoked as credentials with
+`POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke`.
+
+Changing your own password (`POST /api/auth/password`) ends **every** session
+of the account, the one making the request included: the console lands back on
+the login form. That is deliberate — a rotation is usually "somebody may have
+my password", and the session that survives it is the one that mattered.
+
+### JWT signing key rotation
+
+`OCTO_JWT_SECRET_PREVIOUS` is a comma-separated list of retired keys that are
+still accepted while the tokens they signed expire. Nothing is ever signed with
+one. Every token carries a `kid` — a domain-separated `sha256` prefix of the
+key — so the verifier tries the named key rather than each in turn; a token
+naming one key of the window and signed with another is refused, and a token
+with no `kid` (anything minted before #314) is tried against the whole window.
+
+While `OCTO_AGENT_JWT_SECRET` is unset the agent key is derived from the
+operator key, so the same list rotates both audiences and an agent fleet is not
+locked out mid-rotation. The OIDC login state (`api/services/oidc.py`) is
+signed with the same key and verified against the same window, so an SSO login
+started just before a rotating deploy still completes on a replica that has
+already moved on. When it is set explicitly the two are independent and
+so are their windows — see `OCTO_AGENT_JWT_SECRET_PREVIOUS` in
+[configuration.md](configuration.md#environment-variables) and the procedure in
+[operations.md](operations.md#rotating-the-jwt-signing-key).
+
 ## Login rate limiting and the auth audit trail
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
@@ -822,8 +900,15 @@ PUT    /api/users/{username}/role               # admin
 PUT    /api/users/{username}/email              # admin  {"email": …, "verified": bool}
 PUT    /api/users/{username}/disabled           # admin  {"disabled": true}
 DELETE /api/users/{username}                    # admin
+POST   /api/users/{username}/sessions/revoke-all # admin — sign that account out everywhere
 POST   /api/auth/password                       # any role — change your own
 ```
+
+Disabling, demoting and resetting a password already end that account's
+sessions (see [Sessions, logout and revocation](#sessions-logout-and-revocation)).
+`POST /api/users/{username}/sessions/revoke-all` is for the case where none of
+those is the right answer — a laptop left in a taxi, a token pasted into a chat
+— and the account should simply start over.
 
 `POST /api/auth/password` re-verifies the current password even though the
 caller already holds a valid token: a token proves "can act as this user right

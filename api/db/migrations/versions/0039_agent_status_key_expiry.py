@@ -1,7 +1,7 @@
 """Agent lifecycle state, agent↔key binding, and provisioning key expiry (#308)
 
 Revision ID: 0039_agent_status_key_expiry
-Revises: 0036_oidc_pending_states
+Revises: 0038_user_token_version
 Create Date: 2026-09-09
 
 An agent JWT named an ``agent_id`` that nothing checked against the row, and
@@ -49,7 +49,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0039_agent_status_key_expiry"
-down_revision: Union[str, None] = "0036_oidc_pending_states"
+down_revision: Union[str, None] = "0038_user_token_version"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

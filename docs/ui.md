@@ -75,6 +75,41 @@ place of the former decorative "Live System" pill. The sidebar
 footer shows the API version and the execution mode (local / agent) from
 `GET /api/system`.
 
+### Sessions
+
+**Sign out** ends the session on the server as well as in the browser
+([#314](https://github.com/onixus/Shapoclyack/issues/314)): it calls
+`POST /api/auth/logout`, which denylists that token's `jti` until it expires,
+and then forgets the token locally whether or not the API answered. Before
+this, "sign out" only meant "forget it in this browser", so a token copied out
+of `localStorage` kept working.
+
+A sign-out the server did not confirm is said out loud rather than swallowed.
+A `401` or `403` is a session that was already gone; anything else — a `5xx`, a
+dropped connection, or the `400` a token minted before #314 gets for having no
+`jti` — is retried as `POST /api/auth/sessions/revoke-all`, which needs no
+`jti`. Only if that fails too does the console warn that the session may still
+be active on the server, and point at **End all sessions**.
+
+**End all sessions** in the account menu is the same route as an explicit
+action: it ends every session of the account on every device, this browser
+included, and lands on the login form. Unlike sign-out it keeps the local token
+when the server refuses, because in that case nothing was ended.
+
+Five minutes before the session ends, a banner above the header says how long
+is left and offers **Sign in again**. The countdown is read from the token's own
+`exp` (`src/lib/session.ts`) and decides nothing — the API verifies signature,
+account, generation and denylist on every request. There is no silent renewal
+yet: refresh tokens are still open on #314, so the banner says what will happen
+rather than quietly preventing it. Once the token has actually expired the
+banner stays and turns red — "your session has ended" — instead of
+disappearing at zero: nothing else on the page changes at that moment, and the
+next request is the hard redirect to `/login` that `src/lib/api.ts` has always
+done on a `401`, taking any open form with it.
+
+Changing your own password on **My account** ends every session of the account,
+this one included, so the console lands on the login form.
+
 ## Scan operations: external and internal
 
 Every job and run carries a **surface** — `external` (domains, public address
