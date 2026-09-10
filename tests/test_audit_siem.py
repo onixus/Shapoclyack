@@ -391,6 +391,30 @@ def test_no_broker_configured_publishes_nothing_and_raises_nothing(sqlite_settin
     assert audit_events.publish_envelopes("", [_envelope()]) == 0
 
 
+def test_an_unreachable_broker_is_not_re_dialled_on_every_change(monkeypatch):
+    """A down broker costs one request ten seconds, not every request ten.
+
+    These events are published from administrative requests, and
+    ``nats_bus.get_bus`` does not cache a failure: it spends its connect and
+    stream budget again on each call. Without the window below, a broker that
+    is down adds that to every role change and token issue until it returns.
+    """
+    attempts: list[str] = []
+    monkeypatch.setattr(
+        audit_events.nats_bus, "get_bus", lambda url: attempts.append(url) or None
+    )
+    monkeypatch.setattr(audit_events, "_broker_down", ("", 0.0))
+
+    for _ in range(3):
+        assert audit_events.publish_envelopes("nats://down:4222", [_envelope()]) == 0
+    assert attempts == ["nats://down:4222"]
+
+    # ...and the verdict is about *that* broker, not about publishing at large:
+    # a second URL is still dialled.
+    assert audit_events.publish_envelopes("nats://other:4222", [_envelope()]) == 0
+    assert attempts == ["nats://down:4222", "nats://other:4222"]
+
+
 # --------------------------------------------------------------------------- #
 # Webhook subscriptions on audit events
 # --------------------------------------------------------------------------- #

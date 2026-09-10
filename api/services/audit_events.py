@@ -97,18 +97,21 @@ _PENDING_KEY = "shapoclyack_audit_events_pending"
 _ARMED_KEY = "shapoclyack_audit_events_armed"
 
 _settings: Settings | None = None
-# Monotonic deadline before which the broker is assumed still down. Plain
-# module state and deliberately unlocked: a race costs one extra connect
-# attempt, and a lock here would be held across that attempt.
-_broker_down_until: float = 0.0
+# The broker URL last found unreachable, and the monotonic deadline before
+# which it is assumed still to be. Keyed on the URL because the verdict is
+# about one broker: a process that publishes to a second one — the live NATS
+# test does — must not inherit the first one's outage. Plain module state and
+# deliberately unlocked: a race costs one extra connect attempt, and a lock
+# here would be held across that attempt.
+_broker_down: tuple[str, float] = ("", 0.0)
 
 
 def configure(settings: Settings) -> None:
-    global _settings, _broker_down_until
+    global _settings, _broker_down
     _settings = settings
-    # A reconfiguration is a new URL as far as this is concerned; the old one's
-    # verdict says nothing about it.
-    _broker_down_until = 0.0
+    # A reconfiguration may be a new URL, and the old one's verdict says
+    # nothing about it.
+    _broker_down = ("", 0.0)
 
 
 def _nats_url() -> str:
@@ -236,10 +239,11 @@ def publish_envelopes(
     change it describes is already durable — there is no failure here worth
     turning into a 500.
     """
-    global _broker_down_until
+    global _broker_down
     if not envelopes:
         return 0
-    if nats_url and time.monotonic() < _broker_down_until:
+    down_url, down_until = _broker_down
+    if nats_url and nats_url == down_url and time.monotonic() < down_until:
         # Known down, and re-establishing that would cost this request ten
         # seconds it cannot spend. Counted as skipped, exactly like the attempt
         # that discovered it.
@@ -256,7 +260,7 @@ def publish_envelopes(
         for _ in envelopes:
             metrics.AUDIT_EVENTS_PUBLISHED_TOTAL.labels(outcome="skipped").inc()
         if nats_url:
-            _broker_down_until = time.monotonic() + _BROKER_RETRY_SECONDS
+            _broker_down = (nats_url, time.monotonic() + _BROKER_RETRY_SECONDS)
             LOG.warning(
                 "NATS is configured but unavailable; %s audit events were not published "
                 "and the next %.0fs of them will be skipped without retrying "
@@ -265,7 +269,7 @@ def publish_envelopes(
                 _BROKER_RETRY_SECONDS,
             )
         return 0
-    _broker_down_until = 0.0
+    _broker_down = ("", 0.0)
 
     started = time.monotonic()
     published = 0
