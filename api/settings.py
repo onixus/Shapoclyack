@@ -360,6 +360,12 @@ class Settings:
     # The value is the OTLP HTTP traces URL, e.g. http://otel-collector:4318/v1/traces
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "shapoclyack-api"
+    # Head sampling ratio, 0.0-1.0 (#330). 1.0 keeps every request span, which
+    # is fine for a demo and expensive for an installation scanning all day:
+    # the API's own traffic is the console polling run state. Sampling is
+    # parent-based, so a trace started upstream keeps whatever the ingress
+    # decided and only root spans are drawn against this ratio.
+    otel_traces_sampler_ratio: float = 1.0
     # Identity of this API process in the shared control plane (ROADMAP P1.2).
     # Local-mode jobs execute in a thread inside one specific replica, so the
     # jobs table records which one; on startup a replica only reconciles the
@@ -593,6 +599,23 @@ def _oidc_role_map() -> dict[str, str]:
 
 def _is_sqlite_url(url: str) -> bool:
     return url.strip().lower().startswith("sqlite")
+
+
+def _float_env(name: str, default: float) -> float:
+    """Float from the environment; an unparsable value warns and keeps the default.
+
+    Deliberately not a refusal, unlike the credential checks above: this is the
+    trace sampling ratio, and a typo in an observability knob should cost the
+    operator a warning, not the API's ability to start.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
 
 
 def _today() -> date:
@@ -997,6 +1020,12 @@ def load_settings() -> Settings:
         otel_exporter_otlp_endpoint=os.environ.get("OCTO_OTEL_EXPORTER_OTLP_ENDPOINT", "").strip(),
         otel_service_name=os.environ.get("OCTO_OTEL_SERVICE_NAME", "shapoclyack-api").strip()
         or "shapoclyack-api",
+        # Clamped rather than validated: a ratio outside 0..1 has an obvious
+        # intended meaning at either end, and refusing startup over a
+        # observability knob would take the API down for a typo.
+        otel_traces_sampler_ratio=min(
+            1.0, max(0.0, _float_env("OCTO_OTEL_TRACES_SAMPLER_RATIO", 1.0))
+        ),
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),

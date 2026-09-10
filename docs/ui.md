@@ -645,6 +645,18 @@ instead of silently never firing, so the schedule form surfaces the refusal
 where the operator is standing. See
 [api-and-rbac.md](api-and-rbac.md#approved-scanning-scope).
 
+## Error toasts and the request id
+
+An error toast shows what the API said. For a **server-side** failure (`5xx`)
+it also appends `(request id: …)`, taken from the response's `X-Request-Id`
+([#330](https://github.com/onixus/Shapoclyack/issues/330)) — that is the token
+an operator greps the API logs for, and it is the only actionable thing a `500`
+carries. A `4xx` gets no suffix: its message already says what the request got
+wrong, and the id would be noise in a validation toast. When the console is
+served from a different origin than the API, reading the header depends on the
+API naming it in `expose_headers`, which it does; without that the toast is
+simply unchanged.
+
 ## Current versus planned UI
 
 The shell now follows the roadmap's information architecture: risk workflows first, then the two scanning surfaces, then the operations that serve both (runs, schedules, agents, reports) and administration. What is still planned — attack paths, ticket views beyond the link, role-specific dashboards — is documented in the [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md), not mixed into this current-state guide.

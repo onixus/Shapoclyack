@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { AxiosError } from "axios";
 
 const TOKEN_KEY = "shapoclyack_access_token";
 const TENANT_KEY = "shapoclyack_active_tenant";
@@ -111,16 +112,35 @@ function pydanticErrorMessage(detail: unknown[]): string | null {
   return lines.join("; ");
 }
 
+/** The correlation id the API put on the response, when there is one worth
+ * showing (#330). Only for a server-side failure: a 422 already says what the
+ * user typed wrong, while a 500 says nothing an operator can act on without
+ * the id to grep the API logs for. Reading it cross-origin depends on the
+ * `expose_headers` the API sets; absent that, or on a network error with no
+ * response at all, this is null and the message is unchanged. */
+function serverErrorRequestId(error: AxiosError): string | null {
+  const response = error.response;
+  if (!response || response.status < 500) return null;
+  const headers = response.headers as unknown;
+  const value =
+    typeof (headers as { get?: (name: string) => unknown })?.get === "function"
+      ? (headers as { get: (name: string) => unknown }).get("x-request-id")
+      : (headers as Record<string, unknown> | undefined)?.["x-request-id"];
+  return typeof value === "string" && value ? value : null;
+}
+
 function apiErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
+    const requestId = serverErrorRequestId(error);
+    const suffix = requestId ? ` (request id: ${requestId})` : "";
     const detail = error.response?.data?.detail;
-    if (typeof detail === "string") return detail;
+    if (typeof detail === "string") return `${detail}${suffix}`;
     if (Array.isArray(detail)) {
       const flattened = pydanticErrorMessage(detail);
-      if (flattened) return flattened;
+      if (flattened) return `${flattened}${suffix}`;
     }
-    if (detail != null) return JSON.stringify(detail);
-    return error.message;
+    if (detail != null) return `${JSON.stringify(detail)}${suffix}`;
+    return `${error.message}${suffix}`;
   }
   if (error instanceof Error) return error.message;
   return "Request failed";
