@@ -281,13 +281,26 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 ### Audit-trail immutability and retention (#327, #329)
 
 `audit_events` is the administrative trail: what was changed, by whom, with the
-value before and after. Unlike every other table here, **the application cannot
-edit or delete it.** Migration `0037_audit_events` installs a trigger that
-refuses every `UPDATE` and `DELETE`:
+value before and after. Migration `0037_audit_events` installs triggers that
+refuse every `UPDATE`, `DELETE` and `TRUNCATE` on it:
 
 ```
 ERROR:  audit_events is append-only: DELETE refused (#329)
 ```
+
+(`TRUNCATE` has its own statement-level trigger. A row trigger never fires for
+it, so a `DELETE`-only guard would leave the whole trail removable in one
+statement.)
+
+**Read what that buys carefully.** Out of the box it stops *a bug in the API*,
+unconditionally. It stops *someone holding the API's database credential* only
+once `audit_events` is owned by a role the API does not run as — an owner may
+drop its own triggers, and the owner check below is satisfied by whoever owns
+the table. The manifests in `k8s/` connect the API, the migration initContainer
+and the retention example to the same superuser role (`octo`), so on a stock
+deployment the property is "the API cannot rewrite its own trail by accident",
+not "cannot rewrite it at all". The GRANT layout below is what turns the second
+into a true statement, and the verification after it is how you prove it landed.
 
 The one way past it is `audit_events_prune(cutoff timestamp)`, a `SECURITY
 DEFINER` function. It sets a transaction-local GUC that the trigger honours, and
@@ -309,7 +322,11 @@ python -m api.services.audit_retention --days 365
 rather than read as "delete everything" — the value that means "keep forever" in
 the configuration must not become "keep nothing" because a variable was unset in
 the job's environment. Run it from a `CronJob` (weekly is plenty; the sweep is
-idempotent) using the migration role, not the API role.
+idempotent) using the retention role, not the API role. A worked example —
+CronJob plus the separate Secret holding that role's DSN — is
+[`k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`](../k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml);
+it is not in the base kustomization, because applying it before the GRANT layout
+above would either fail on every run or run as the API's role and prove nothing.
 
 #### Recommended GRANT layout
 
@@ -318,8 +335,24 @@ calls them, and a migration that invents them fails on every installation whose
 names differ. Apply this once, substituting your own role names:
 
 ```sql
--- The API may append to the trail and read it back. Nothing else.
+-- FIRST, and the step the rest depends on: move the table and both functions
+-- off the API's role. A migration cannot do this — it runs as the role that
+-- would have to be given up — and without it every REVOKE below is undone by
+-- the fact that an owner may re-GRANT and drop triggers at will.
+CREATE ROLE shapoclyack_audit_owner NOLOGIN;
+ALTER TABLE audit_events OWNER TO shapoclyack_audit_owner;
+ALTER SEQUENCE audit_events_id_seq OWNER TO shapoclyack_audit_owner;
+-- The prune function is SECURITY DEFINER: it runs as *its* owner, and the
+-- trigger's owner check is what makes that the only way to delete a row. Owned
+-- by the API's role, it would run as the API.
+ALTER FUNCTION audit_events_prune(timestamp without time zone)
+  OWNER TO shapoclyack_audit_owner;
+ALTER FUNCTION audit_events_immutable() OWNER TO shapoclyack_audit_owner;
+
+-- The API may append to the trail and read it back. Nothing else — TRUNCATE
+-- named explicitly because REVOKE ALL is easy to narrow later by accident.
 REVOKE ALL ON TABLE audit_events FROM shapoclyack_api;
+REVOKE TRUNCATE ON TABLE audit_events FROM shapoclyack_api, PUBLIC;
 GRANT SELECT, INSERT ON TABLE audit_events TO shapoclyack_api;
 GRANT USAGE, SELECT ON SEQUENCE audit_events_id_seq TO shapoclyack_api;
 
@@ -333,20 +366,44 @@ GRANT EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
   TO shapoclyack_audit_retention;
 ```
 
-Two things this layout does **not** claim. `audit_events` must be owned by a
-role the API does not hold — an owner can drop its own triggers, so an API
-running as the table's owner is protected by the trigger only against its own
-bugs, not against its own credentials. And a superuser can do anything at all;
-what this buys is that the credential in the API's Secret is not enough. To
-verify the property after a deploy, as the API's role:
+The migration initContainer runs as the API's role in the shipped manifests, so
+re-run the ownership statements after any future migration that recreates the
+table or the functions.
+
+A superuser can still do anything at all; what this layout buys is that the
+credential in the API's Secret is not enough.
+
+#### Verifying it after a deploy
+
+Two checks, and the first is the one that matters — it is what separates a real
+split from an installation where nothing changed:
 
 ```sql
+-- 1. As anyone: who owns the table? This must NOT be the API's role.
+SELECT pg_get_userbyid(relowner) AS owner
+  FROM pg_class WHERE relname = 'audit_events';
+--   owner
+-- ------------------------
+--  shapoclyack_audit_owner
+
+-- 2. As the API's role, with the escape hatch's GUC deliberately set — this is
+--    what an attacker holding the API's credential would try, and a plain
+--    DELETE without the SET proves nothing, because it fails for the table's
+--    owner too:
+BEGIN;
+SET LOCAL shapoclyack.audit_retention = 'on';
 DELETE FROM audit_events WHERE id = (SELECT min(id) FROM audit_events);
--- expected: ERROR ... audit_events is append-only
+-- expected: ERROR ... audit_events is append-only: DELETE refused (#329)
+TRUNCATE audit_events;
+-- expected: ERROR ... audit_events is append-only: TRUNCATE refused (#329)
+ROLLBACK;
 ```
 
-Proof of immutability for an auditor is that error, the `GRANT` output of
-`\dp audit_events`, and the function's ACL in `\df+ audit_events_prune`.
+If check 1 returns the API's role, check 2 will still fail — the trigger's owner
+test is against the *table's* owner — but it is not evidence: that role can drop
+the trigger and repeat the delete. Proof for an auditor is check 1, then check 2,
+then the grants in `\dp audit_events` and the function ACL in
+`\df+ audit_events_prune`.
 
 **Not done here, deliberately:** a hash chain over the rows (`prev_hash`/`hash`).
 It only detects tampering by someone who could bypass the trigger *and* the

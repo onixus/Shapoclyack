@@ -377,6 +377,7 @@ def replace_scope(
             )
         session.flush()
         current = [_to_dict(row) for row in _rows(session, tenant_id)]
+        removed, added = _scope_diff(previous, current)
         audit_service.record(
             session,
             audit,
@@ -384,10 +385,40 @@ def replace_scope(
             resource_type="scan_scope",
             resource_id=tenant_id,
             tenant_id=tenant_id,
-            before={"entries": previous},
-            after={"entries": current},
+            before={"removed": removed, "entry_count": len(previous)},
+            after={"added": added, "entry_count": len(current)},
         )
         return current
+
+
+def _entry_signature(entry: dict[str, Any]) -> tuple:
+    """What makes a scope entry the same entry across a replace.
+
+    Not ``id``/``approved_at``: a replace deletes every row and re-inserts, so
+    those move for entries nobody touched, and a diff keyed on them would call
+    an unchanged scope a complete rewrite.
+    """
+    return (entry.get("effect"), entry.get("kind"), entry.get("value"), entry.get("note"))
+
+
+def _scope_diff(
+    before: list[dict[str, Any]], after: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(removed, added)`` — what the replace actually changed.
+
+    Both scopes in full were the first shape of this record, and a tenant with
+    a few thousand entries pushed the pair past the audit table's document cap,
+    where it became ``{"truncated": true}`` — a row saying a scope changed and
+    refusing to say how (#327). The diff is bounded by the size of the change
+    instead of the size of the scope, and it is also the thing a review reads:
+    "``allow example.com`` was added" is the question, not the other 3 000
+    entries that stayed.
+    """
+    before_map = {_entry_signature(entry): entry for entry in before}
+    after_map = {_entry_signature(entry): entry for entry in after}
+    removed = [entry for key, entry in before_map.items() if key not in after_map]
+    added = [entry for key, entry in after_map.items() if key not in before_map]
+    return removed, added
 
 
 def _resolve(host: str) -> list[str]:

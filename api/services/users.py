@@ -260,30 +260,67 @@ def create_user(
         return created
 
 
-def set_password(username: str, password: str) -> dict[str, Any] | None:
+def set_password(
+    username: str,
+    password: str,
+    *,
+    audit: "audit_service.AuditContext | None" = None,
+    action: str | None = None,
+) -> dict[str, Any] | None:
+    """Write a new password hash, and record *that* it changed (#327).
+
+    ``action`` names which of the two acts this is — an admin's reset or the
+    owner's own rotation — because they are different facts to an auditor and
+    :func:`change_own_password` delegates here. Neither the old nor the new
+    password appears in the row: ``before``/``after`` carry the timestamp that
+    moved, which is what "was this account's password changed at 03:00" needs
+    and all it needs.
+    """
     password = _validate_password(password)
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
         if row is None:
             return None
+        previous_changed_at = _iso(row.password_changed_at)
         row.password_hash = hash_password(password)
         row.password_changed_at = _now()
         row.updated_at = _now()
         session.flush()
-        return _with_tenants(session, row)
+        updated = _with_tenants(session, row)
+        audit_service.record(
+            session,
+            audit,
+            action=action or audit_service.ACTION_USER_PASSWORD_RESET,
+            resource_type="user",
+            resource_id=username,
+            before={"password_changed_at": previous_changed_at},
+            after={"password_changed_at": _iso(row.password_changed_at)},
+        )
+        return updated
 
 
-def change_own_password(username: str, *, current: str, new: str) -> dict[str, Any] | None:
+def change_own_password(
+    username: str,
+    *,
+    current: str,
+    new: str,
+    audit: "audit_service.AuditContext | None" = None,
+) -> dict[str, Any] | None:
     """Rotate one's own password, re-verifying the current one first.
 
     Separate from :func:`set_password` on purpose: an admin resetting someone
     else's password does not know the old one, while a user changing their own
-    must prove they are still the one sitting at the session.
+    must prove they are still the one sitting at the session. Recorded under
+    its own action for the same reason — a reset performed *on* an account is
+    the interesting one to review, and folding it in with every user's routine
+    rotation is how it stops being noticed.
     """
     if authenticate(username, current) is None:
         return None
-    return set_password(username, new)
+    return set_password(
+        username, new, audit=audit, action=audit_service.ACTION_USER_PASSWORD_CHANGE
+    )
 
 
 def set_role(

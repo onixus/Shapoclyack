@@ -591,7 +591,15 @@ rows (account creation, config changes) that belong to no tenant. The query is
 fired regardless of the account's global role — "admin" on this endpoint means
 admin *in the tenant*, which the console cannot tell from the JWT, so a tenant
 admin signed in as a global viewer gets their own trail instead of an empty
-page.
+page. The sidebar entry carries **no** `minRole` for the same reason (unlike
+`/users` next to it, which really is global-admin-only): a link hidden from the
+global role would hide the page from exactly the account it is for. The API is
+the boundary, and a caller who is admin nowhere gets the 403 the page renders.
+
+`before → after` is a diff, not a pair of snapshots, wherever a snapshot would
+be mostly noise: a scan scope shows the entries `added` and `removed` with the
+scope's total count, and a config change shows only the dot-paths whose value
+moved (`"[unset]"` where a path was not overridden).
 
 ## Integrations
 

@@ -70,14 +70,17 @@ def set_user_password(
     username: str,
     body: SetUserPasswordRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> UserInfo:
     """Admin reset. Deliberately does not require the old password.
 
     An admin resetting an account does not know it; requiring it would make the
-    reset useless in the case it exists for — a user who cannot log in.
+    reset useless in the case it exists for — a user who cannot log in. Which
+    is also why it is recorded: taking over an account is one request, and the
+    trail is the only thing that says it happened.
     """
     try:
-        updated = users_service.set_password(username, body.password)
+        updated = users_service.set_password(username, body.password, audit=audit)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -178,6 +181,7 @@ def delete_user(
 def change_own_password(
     body: ChangeOwnPasswordRequest,
     user: Annotated[TokenUser, Depends(get_current_user)],
+    audit: AuditDep,
 ) -> None:
     """Rotate your own password. Any role — this is not an admin operation.
 
@@ -187,7 +191,7 @@ def change_own_password(
     """
     try:
         changed = users_service.change_own_password(
-            user.username, current=body.current_password, new=body.new_password
+            user.username, current=body.current_password, new=body.new_password, audit=audit
         )
     except ValueError as exc:
         raise HTTPException(

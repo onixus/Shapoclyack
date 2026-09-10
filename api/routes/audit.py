@@ -64,6 +64,28 @@ def _tenant_scope(principal: TenantPrincipal) -> str | None:
     return principal.tenant_id
 
 
+# Leading characters a spreadsheet reads as the start of a formula rather than
+# as text. Tab and carriage return are here because Excel strips them before
+# deciding, so ``\t=cmd|…`` is a formula too.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value: Any) -> Any:
+    """Neutralise a cell a spreadsheet would evaluate instead of display.
+
+    Almost every column in this export is attacker-influenced: an agent picks
+    its own ``agent_id``, a viewer picks their ``User-Agent``, and a
+    ``resource_id`` is whatever was named in the request that got refused. A
+    trail whose whole purpose is to be opened in Excel by someone reviewing an
+    incident is the last place to hand that straight to the formula parser, so
+    a leading formula character gets an apostrophe in front of it — the
+    convention every spreadsheet reads back as literal text.
+    """
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _csv_rows(events: Iterator[dict[str, Any]]) -> Iterator[str]:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
@@ -75,7 +97,7 @@ def _csv_rows(events: Iterator[dict[str, Any]]) -> Iterator[str]:
         # dict repr is not something the spreadsheet on the other end can read.
         for key in ("before", "after"):
             row[key] = json.dumps(row[key], default=str) if row.get(key) is not None else ""
-        writer.writerow(row)
+        writer.writerow({key: _csv_cell(value) for key, value in row.items()})
         yield _drain(buffer)
 
 

@@ -22,6 +22,8 @@ const ACTIONS = [
   "user.role_change",
   "user.disable",
   "user.delete",
+  "user.password_reset",
+  "user.password_change",
   "membership.grant",
   "membership.revoke",
   "service_token.create",

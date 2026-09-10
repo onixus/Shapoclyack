@@ -17,14 +17,25 @@ replicas that record nothing and new ones that record everything; both keep
 serving, and the gap is bounded by the rollout.
 
 **Immutability (#329) is enforced by the database, not by the application.**
-``audit_events_immutable`` refuses every UPDATE and every DELETE, so a bug in
-the API — or an operator with the API's credentials — cannot rewrite history.
+``audit_events_immutable`` refuses every UPDATE and every DELETE (row triggers)
+and every TRUNCATE (a statement trigger — a row trigger never fires for it, and
+a TRUNCATE past a DELETE-only guard empties the trail in one statement).
 Retention still has to remove aged rows, and it does so through
 ``audit_events_prune``, a SECURITY DEFINER function: it sets a transaction-local
 GUC that the trigger honours, and the trigger *also* requires the effective
 user to be the table's owner, which is true inside the definer function and
 false for anyone who merely sets the GUC themselves. So the escape hatch is the
 function, and EXECUTE on the function is the privilege to guard.
+
+**What that is worth depends on who owns the table.** The triggers stop a bug in
+the API unconditionally. They stop *an operator holding the API's credentials*
+only where the API's role is not the table's owner: an owner can drop its own
+triggers, and the owner-check above is satisfied by whoever owns the table, so
+the GUC alone is enough for them. The shipped ``k8s/`` base connects the API and
+the migration with the same role, which means the property is "protected against
+its own bugs" until the two are split — see the GRANT layout (with its
+``ALTER TABLE … OWNER TO``) and the post-deploy verification in
+``docs/operations.md``.
 
 The alternative — ``ALTER TABLE … DISABLE TRIGGER`` around the delete — was
 rejected: it needs table ownership anyway, takes an ACCESS EXCLUSIVE lock on
@@ -152,6 +163,22 @@ def upgrade() -> None:
             "FOR EACH ROW EXECUTE FUNCTION audit_events_immutable()"
         )
     )
+    # TRUNCATE never fires a row trigger, so the two above do not see it at all
+    # and the trail could be emptied in one statement by anyone holding the
+    # privilege. Statement-level, and with no escape hatch: retention removes
+    # aged rows with a DELETE, and nothing this project runs wants the whole
+    # table gone.
+    op.execute(
+        sa.text(
+            "CREATE TRIGGER audit_events_no_truncate BEFORE TRUNCATE ON audit_events "
+            "FOR EACH STATEMENT EXECUTE FUNCTION audit_events_immutable()"
+        )
+    )
+    # Belt to the trigger's braces, and the part that survives a role which can
+    # drop triggers only by first becoming the owner: TRUNCATE is not granted to
+    # PUBLIC by default, but an installation that has already granted it broadly
+    # would otherwise keep it.
+    op.execute(sa.text("REVOKE TRUNCATE ON TABLE audit_events FROM PUBLIC"))
     op.execute(sa.text(_PRUNE_FUNCTION))
     # Retention is a privileged job, not something the API may do. PUBLIC keeps
     # EXECUTE on a new function otherwise, which would hand the escape hatch to
@@ -172,6 +199,7 @@ def downgrade() -> None:
     op.execute(
         sa.text("DROP FUNCTION IF EXISTS audit_events_prune(timestamp without time zone)")
     )
+    op.execute(sa.text("DROP TRIGGER IF EXISTS audit_events_no_truncate ON audit_events"))
     op.execute(sa.text("DROP TRIGGER IF EXISTS audit_events_no_delete ON audit_events"))
     op.execute(sa.text("DROP TRIGGER IF EXISTS audit_events_no_update ON audit_events"))
     op.execute(sa.text("DROP FUNCTION IF EXISTS audit_events_immutable()"))

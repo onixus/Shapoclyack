@@ -197,10 +197,13 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.users",
       },
       {
+        // No minRole, unlike /users next door: "admin" on GET /api/audit means
+        // admin *in the tenant*, which the JWT does not carry, so filtering on
+        // the global role would hide the page from exactly the tenant admin
+        // it is for. The API is the boundary; the page renders its 403.
         href: "/audit",
         labelKey: "nav.audit",
         icon: ScrollText,
-        minRole: "admin",
         hintKey: "nav.hint.audit",
       },
       {

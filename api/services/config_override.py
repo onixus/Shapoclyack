@@ -254,6 +254,32 @@ def _restore_masked_secrets(stored: dict[str, Any], incoming: dict[str, Any]) ->
     return unflatten(incoming_flat) if changed else incoming
 
 
+#: What a path holds when it is not overridden at all. Distinct from any value
+#: an override can carry, so "unset -> 150" and "150 -> unset" both read.
+_UNSET = "[unset]"
+
+
+def _override_diff(
+    previous: dict[str, Any], incoming: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(before, after)`` holding only the dot-paths whose value changed.
+
+    Flat rather than nested so the two documents line up path by path, and a
+    reader does not have to walk two trees to find the one leaf that moved.
+    """
+    before_flat = _flatten(previous)
+    after_flat = _flatten(incoming)
+    changed = {
+        path
+        for path in set(before_flat) | set(after_flat)
+        if before_flat.get(path, _UNSET) != after_flat.get(path, _UNSET)
+    }
+    return (
+        {path: before_flat.get(path, _UNSET) for path in sorted(changed)},
+        {path: after_flat.get(path, _UNSET) for path in sorted(changed)},
+    )
+
+
 def set_overrides(
     settings: Settings,
     data: dict[str, Any],
@@ -280,18 +306,22 @@ def set_overrides(
             row.data = data
             row.updated_at = datetime.now(UTC)
             row.updated_by = username
-        # In the same transaction as the row it describes. Values whose path
-        # names a secret (``enrichment.cvss4.nvd_api_key``) are replaced by
+        # In the same transaction as the row it describes, and carrying only
+        # the paths that moved: the whole override document repeated twice is
+        # mostly the settings nobody touched, and "nuclei.rate_limit went from
+        # 150 to 10000" is the line a review is looking for (#327). Values whose
+        # path names a secret (``enrichment.cvss4.nvd_api_key``) are replaced by
         # audit's own redaction, which keys on the field name — the same name
-        # ``SECRET_PATHS`` masks for the console (#327).
+        # ``SECRET_PATHS`` masks for the console.
+        before_paths, after_paths = _override_diff(previous, data)
         audit_service.record(
             session,
             audit,
             action=audit_service.ACTION_CONFIG_UPDATE,
             resource_type="config_override",
             resource_id=_SCOPE,
-            before=previous,
-            after=data,
+            before=before_paths,
+            after=after_paths,
         )
     return data
 

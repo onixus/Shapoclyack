@@ -67,8 +67,12 @@ READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # further tokens is a token that can outlive and out-scope its own revocation.
 # ``tenants`` is in the list for that last reason — every route under it is
 # administrative, and a token is already pinned to one tenant, so the read
-# side of it has nothing to tell one.
-FORBIDDEN_RESOURCES = frozenset({"auth", "users", "tenants"})
+# side of it has nothing to tell one. ``audit`` joins them because the
+# administrative trail records the acts of the humans who administer the
+# installation, addresses included: a token minted for a CI pipeline that can
+# stream a year of that is an exfiltration path with a long life and no
+# password behind it, and the export makes it one request (#327).
+FORBIDDEN_RESOURCES = frozenset({"audit", "auth", "users", "tenants"})
 
 # Resources a service token may read but never write. These are the routes that
 # are *not* tenant-scoped — they hang off :func:`api.auth.require_role`, so the

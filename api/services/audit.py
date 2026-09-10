@@ -54,6 +54,8 @@ ACTOR_TYPES = (ACTOR_USER, ACTOR_SERVICE_TOKEN, ACTOR_AGENT, ACTOR_SYSTEM)
 ACTION_USER_CREATE = "user.create"
 ACTION_USER_ROLE = "user.role_change"
 ACTION_USER_DISABLE = "user.disable"
+ACTION_USER_PASSWORD_RESET = "user.password_reset"
+ACTION_USER_PASSWORD_CHANGE = "user.password_change"
 ACTION_USER_DELETE = "user.delete"
 ACTION_MEMBERSHIP_GRANT = "membership.grant"
 ACTION_MEMBERSHIP_REVOKE = "membership.revoke"
@@ -92,9 +94,14 @@ _REDACTED_NAMES = frozenset(
 _REDACTED_SUFFIXES = ("_password", "_secret", "_token", "_key", "_hash")
 
 # Serialised documents past this are stored as a marker instead. ``before``/
-# ``after`` describe one resource; anything this large is a payload that has
+# ``after`` describe one change; anything this large is a payload that has
 # escaped its route's own limits, and the audit table is the wrong place to
-# discover that.
+# discover that. The two call sites that could plausibly reach it — a scan
+# scope with thousands of entries, the whole override document — record what
+# changed rather than a pair of snapshots, so the cap is a backstop and not the
+# normal case. Reaching it is logged (see :func:`record`) rather than swallowed:
+# a row that says a change happened and not what it was is a gap an auditor has
+# to be able to find from the API's own logs.
 _MAX_DOCUMENT_BYTES = 16 * 1024
 
 _settings: Settings | None = None
@@ -239,6 +246,18 @@ def record(
     when both writes land.
     """
     ctx = context or system_context()
+    before_document = _document(before)
+    after_document = _document(after)
+    for side, document in (("before", before_document), ("after", after_document)):
+        if isinstance(document, dict) and document.get("truncated"):
+            logger.warning(
+                "audit %s for %s %s exceeded %d bytes and was stored as a marker; "
+                "the row records that the change happened, not what it was",
+                side,
+                resource_type,
+                resource_id,
+                _MAX_DOCUMENT_BYTES,
+            )
     session.add(
         models.AuditEvent(
             occurred_at=_now(),
@@ -248,8 +267,8 @@ def record(
             action=action,
             resource_type=resource_type,
             resource_id=(resource_id or "")[:255],
-            before=_document(before),
-            after=_document(after),
+            before=before_document,
+            after=after_document,
             client_ip=ctx.client_ip,
             user_agent=ctx.user_agent,
             request_id=ctx.request_id,

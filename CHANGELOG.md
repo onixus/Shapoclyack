@@ -10,27 +10,34 @@ All notable changes to Shapoclyack are documented in this file.
   ([#327](https://github.com/onixus/Shapoclyack/issues/327),
   [#329](https://github.com/onixus/Shapoclyack/issues/329)). Creating,
   promoting, disabling and deleting an account; granting and revoking a
-  membership; minting and revoking a service token or a provisioning key; an
-  agent's first registration; a report download; a scan scope replaced; a config
-  override changed — each is now a row in `audit_events` with the actor, what
-  kind of principal it is, the resolved client address, the user agent, the
-  request's `X-Request-Id`, and the resource before and after the change. The
-  row is written **in the transaction that makes the change**, so a change
-  without a record and a record without a change are both impossible, and every
+  membership; minting and revoking a service token or a provisioning key; a
+  password reset and a self-service rotation; an agent's first registration; a
+  report download; a scan scope replaced; a config override changed — each is
+  now a row in `audit_events` with the actor, what kind of principal it is, the
+  resolved client address, the user agent, the request's `X-Request-Id`, and the
+  resource before and after the change. Every action that is itself a database
+  write records **in the transaction that makes the change**, so a change
+  without a record and a record without a change are both impossible;
+  `report.download` is the one exception, because a file read has no transaction
+  to join and its row is committed before the stream starts. Every
   credential-shaped field (`password`, `*_hash`, `token`, `*_secret`, `*_key`)
   is replaced by `[redacted]` before storage. `GET /api/audit` reads it back —
-  admin *in the tenant*, filters on actor/action/resource and a time window,
-  and `?format=csv|ndjson` streams every matching event rather than the page.
-  Migration `0037_audit_events` makes the table append-only in Postgres: a
-  trigger refuses every `UPDATE` and `DELETE`, and the only way past it is
-  `audit_events_prune`, a `SECURITY DEFINER` function the recommended `GRANT`
-  layout in `docs/operations.md` withholds from the API's role. Retention is
-  therefore a separate privileged job, `python -m api.services.audit_retention
-  --days 365` (`OCTO_AUDIT_EVENT_RETENTION_DAYS`), not something the API can do
-  to its own trail. The console gets `/audit` — the same list with the filters
-  and the two export buttons. Login attempts stay in `auth_events` and are not
-  mirrored: they are the same fact in two tables, and that one is also the rate
-  limiter's counter.
+  admin *in the tenant*, never a service token, filters on actor/action/resource
+  and a time window, and `?format=csv|ndjson` streams every matching event
+  rather than the page. Migration `0037_audit_events` makes the table
+  append-only in Postgres: triggers refuse every `UPDATE`, `DELETE` and
+  `TRUNCATE`, and the only way past them is `audit_events_prune`, a `SECURITY
+  DEFINER` function the recommended `GRANT` layout in `docs/operations.md`
+  withholds from the API's role. That layout — which includes moving the table
+  off the API's role with `ALTER TABLE … OWNER TO` — is what makes the trail
+  proof against the API's *credentials* rather than only against its bugs; the
+  shipped `k8s/` base runs both as one role, and the docs now say so. Retention
+  is a separate privileged job, `python -m api.services.audit_retention --days
+  365` (`OCTO_AUDIT_EVENT_RETENTION_DAYS`), with a CronJob example in
+  `k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`. The console
+  gets `/audit` — the same list with the filters and the two export buttons.
+  Login attempts stay in `auth_events` and are not mirrored: they are the same
+  fact in two tables, and that one is also the rate limiter's counter.
 
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart

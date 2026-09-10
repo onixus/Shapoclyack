@@ -112,13 +112,15 @@ One row per administrative change, with the resource before and after it:
 | Action | Recorded on |
 |---|---|
 | `user.create`, `user.role_change`, `user.disable`, `user.delete` | `POST /api/users`, `PUT /api/users/{u}/role`, `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` |
+| `user.password_reset` | `PUT /api/users/{u}/password` — an admin resetting someone else's password is one request away from acting as them. `before`/`after` carry the `password_changed_at` that moved, never the password |
+| `user.password_change` | `POST /api/auth/password` — the owner rotating their own, kept a separate action so a reset performed *on* an account is not buried under everyone's routine rotations |
 | `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
 | `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
-| `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`, with both scopes in `before`/`after` |
-| `config.update` | `PUT /api/config` |
+| `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
+| `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
 
 Every row carries the actor and what kind of principal it is (`user`,
 `service_token`, `agent`, `system`), the client address resolved the same way
@@ -128,7 +130,12 @@ matches a value that was on the wire.
 
 **The row is written in the transaction that makes the change.** A membership
 granted but not recorded is a silent change; a membership recorded but not
-granted is a trail that lies. Both are impossible here.
+granted is a trail that lies. Both are impossible for every action that *is* a
+database write. `report.download` is the exception, and the only one: a download
+is a file read with no transaction to join, so its row is committed on its own
+before the streaming response starts. A transfer that dies mid-stream therefore
+leaves a row saying the report was downloaded — which is the direction that
+error should point.
 
 **Secrets never reach `before`/`after`.** Every field whose name reads like a
 credential — `password`, `*_hash`, `token`, `*_secret`, `*_key` — is replaced by
@@ -155,11 +162,26 @@ are the ones who have to review its changes. Rows with no tenant at all —
 creating a console account, editing the installation-wide scanner config — are
 platform-level acts and appear only in the platform admin's answer.
 
+A service token can never read this endpoint, whatever role or scopes it was
+minted with (`audit` is in `FORBIDDEN_RESOURCES` alongside `auth`, `users` and
+`tenants`): the trail records the acts of the humans who administer the
+installation, addresses included, and `?format=ndjson` makes a year of that one
+request.
+
+`before`/`after` are capped at 16 KiB of serialised JSON each. Past that the
+side is stored as `{"truncated": true, "bytes": …}` and the API logs a warning
+naming the resource — the two actions that could plausibly reach it record a
+diff rather than a snapshot, so this is a backstop rather than the normal case.
+
 The rows are **append-only in the database itself**
-([#329](https://github.com/onixus/Shapoclyack/issues/329)): a trigger refuses
-every `UPDATE` and `DELETE`, so neither a bug in the API nor an operator holding
-the API's credentials can rewrite history. Retention is a separate privileged
-job — see [operations.md](operations.md#audit-trail-immutability-and-retention).
+([#329](https://github.com/onixus/Shapoclyack/issues/329)): triggers refuse
+every `UPDATE`, `DELETE` and `TRUNCATE`, so a bug in the API cannot rewrite
+history. Whether *an operator holding the API's credentials* can is a
+deployment question, not a code one — it depends on `audit_events` being owned
+by a role the API does not run as, which the shipped `k8s/` manifests do **not**
+do and the GRANT layout in
+[operations.md](operations.md#audit-trail-immutability-and-retention) does.
+Retention is a separate privileged job, documented in the same place.
 
 ## Single sign-on (OIDC)
 
