@@ -193,10 +193,25 @@ class AgentClient:
     def set_token(self, token: str) -> None:
         self.token = token
 
-    def exchange_provisioning_key(self, provisioning_key: str) -> dict[str, Any]:
-        """POST /api/auth/agent/token — no bearer required."""
+    def exchange_provisioning_key(
+        self,
+        provisioning_key: str,
+        *,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /api/auth/agent/token — no bearer required.
+
+        ``agent_id`` is sent on every exchange, including the periodic refresh
+        (#308). Omitting it makes the server mint a *fresh* random id and put
+        it in the token, after which registering or heartbeating as the id this
+        process already has is refused as impersonation — an agent that
+        re-exchanged on a timer used to lose its own identity that way.
+        """
         url = f"{self.base_url}/api/auth/agent/token"
-        body = json.dumps({"provisioning_key": provisioning_key}).encode("utf-8")
+        payload: dict[str, Any] = {"provisioning_key": provisioning_key}
+        if agent_id:
+            payload["agent_id"] = agent_id
+        body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=body,
@@ -208,6 +223,14 @@ class AgentClient:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            # The exchange refuses a disabled or quarantined agent_id too, so
+            # it needs the same classification the bearer calls get: without
+            # it, the state an operator set would reach the run loop as a bare
+            # RuntimeError and be retried at the poll interval forever.
+            if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
+                raise AgentDisabled(
+                    f"POST /api/auth/agent/token -> 403: {detail}"
+                ) from exc
             raise RuntimeError(f"POST /api/auth/agent/token -> {exc.code}: {detail}") from exc
 
     def _request(
@@ -788,7 +811,15 @@ class AgentNatsSession:
                 await msg.term()
                 return None
             job_id = str(payload["job_id"])
-            claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+            try:
+                claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+            except (AgentDisabled, AgentUpgradeRequired, AgentTokenRejected):
+                # This agent cannot take the offer, but another one in the
+                # tenant can: NAK now rather than hold the message until
+                # ack_wait expires, and let the run loop decide what to do
+                # about the refusal (#308).
+                await msg.nak()
+                raise
             if claimed is None:
                 LOG.warning("NATS offer %s not claimable; NAK", job_id)
                 await msg.nak()
@@ -799,6 +830,12 @@ class AgentNatsSession:
         try:
             fut = asyncio.run_coroutine_threadsafe(_once(), self._loop)
             return fut.result(timeout=timeout + 30)
+        except (AgentDisabled, AgentUpgradeRequired, AgentTokenRejected):
+            # Raised by the HTTP claim above, not by NATS. Swallowing these as
+            # "will reconnect" tore down a healthy session on every poll and
+            # cost the agent the backoff and the token re-exchange the HTTP
+            # path gets — the NATS half of the fleet never had either (#308).
+            raise
         except Exception:  # noqa: BLE001
             LOG.exception("NATS pull/claim failed; will reconnect")
             self.close()
@@ -807,17 +844,7 @@ class AgentNatsSession:
 
 def run_loop(args: argparse.Namespace) -> int:
     client = AgentClient(args.api_url, args.token or "pending", timeout=args.timeout)
-    tenant_id = ""
-    if args.provisioning_key:
-        exchanged = client.exchange_provisioning_key(args.provisioning_key)
-        client.set_token(str(exchanged["access_token"]))
-        tenant_id = str(exchanged.get("tenant_id") or "")
-        LOG.info(
-            "Exchanged provisioning key for agent JWT (tenant=%s expires_in=%ss)",
-            exchanged.get("tenant_id"),
-            exchanged.get("expires_in"),
-        )
-    elif not args.token:
+    if not args.provisioning_key and not args.token:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
 
@@ -828,34 +855,21 @@ def run_loop(args: argparse.Namespace) -> int:
                 key, value = item.split("=", 1)
                 labels[key.strip()] = value.strip()
 
-    info = client.register(
-        agent_id=args.agent_id,
-        hostname=args.hostname or socket.gethostname(),
-        labels=labels,
-    )
-    agent_id = str(info["agent_id"])
-    # The registration response is authoritative for the legacy shared token,
-    # which is exchanged for nothing and whose tenant the agent cannot know on
-    # its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
-    tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
-    LOG.info(
-        "Registered agent %s (%s) tenant=%s",
-        agent_id,
-        info.get("hostname"),
-        info.get("tenant_id"),
-    )
+    hostname = args.hostname or socket.gethostname()
 
+    # The identity this process keeps for the rest of its life. Seeded from
+    # OCTO_AGENT_ID when the installer wrote one, adopted from the first
+    # exchange when it did not, and from then on sent with *every* exchange —
+    # a refresh that omitted it used to hand the process a token for a
+    # different agent, after which its own heartbeat was 403 (#308).
+    agent_id: str = (args.agent_id or "").strip()
+    tenant_id = ""
     nats_session: AgentNatsSession | None = None
-    if args.nats_url:
-        LOG.info(
-            "NATS pull enabled (%s) subject=%s",
-            args.nats_url,
-            jobs_scan_subject(tenant_id),
-        )
-        nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
-        nats_session.start()
-
-    token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))
+    registered = False
+    # Due immediately with a provisioning key (the bootstrap exchange happens
+    # inside the loop, so a refusal is backed off instead of killing the
+    # process); never with a legacy shared token, which is not exchanged.
+    token_refresh_at = 0.0 if args.provisioning_key else float("inf")
 
     shutdown_event = threading.Event()
     last_upgrade_message = ""
@@ -873,15 +887,71 @@ def run_loop(args: argparse.Namespace) -> int:
             except (ValueError, AttributeError):
                 pass
 
+    def _exchange() -> None:
+        nonlocal agent_id, tenant_id, token_refresh_at, registered
+        exchanged = client.exchange_provisioning_key(
+            args.provisioning_key, agent_id=agent_id or None
+        )
+        client.set_token(str(exchanged["access_token"]))
+        expires = int(exchanged.get("expires_in") or 3600)
+        token_refresh_at = time.time() + max(
+            60, args.jwt_refresh_seconds or (expires // 2)
+        )
+        tenant_id = str(exchanged.get("tenant_id") or "") or tenant_id
+        minted = str(exchanged.get("agent_id") or "")
+        if minted and minted != agent_id:
+            # Only reachable on the bootstrap exchange of an agent with no
+            # OCTO_AGENT_ID: the server minted one, and this process is that
+            # agent from here on.
+            agent_id = minted
+            registered = False
+        LOG.info(
+            "Exchanged provisioning key for agent JWT (agent=%s tenant=%s expires_in=%ss)",
+            agent_id,
+            exchanged.get("tenant_id"),
+            exchanged.get("expires_in"),
+        )
+
+    def _register() -> None:
+        nonlocal agent_id, tenant_id, registered
+        info = client.register(
+            agent_id=agent_id or None,
+            hostname=hostname,
+            labels=labels,
+        )
+        agent_id = str(info["agent_id"])
+        # The registration response is authoritative for the legacy shared
+        # token, which is exchanged for nothing and whose tenant the agent
+        # cannot know on its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
+        tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
+        registered = True
+        LOG.info(
+            "Registered agent %s (%s) tenant=%s",
+            agent_id,
+            info.get("hostname"),
+            info.get("tenant_id"),
+        )
+
     try:
         while not shutdown_event.is_set():
             try:
                 if args.provisioning_key and time.time() >= token_refresh_at:
-                    exchanged = client.exchange_provisioning_key(args.provisioning_key)
-                    client.set_token(str(exchanged["access_token"]))
-                    expires = int(exchanged.get("expires_in") or 3600)
-                    token_refresh_at = time.time() + max(60, expires // 2)
-                    LOG.info("Refreshed agent JWT (tenant=%s)", exchanged.get("tenant_id"))
+                    _exchange()
+                if not registered:
+                    # Inside the loop, and inside the same handlers as every
+                    # other call: a quarantined agent is refused *here*, and
+                    # before #308 that refusal escaped run_loop and killed the
+                    # process — which systemd Restart=always then repeated
+                    # every five seconds for the whole fleet.
+                    _register()
+                if nats_session is None and args.nats_url:
+                    LOG.info(
+                        "NATS pull enabled (%s) subject=%s",
+                        args.nats_url,
+                        jobs_scan_subject(tenant_id),
+                    )
+                    nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
+                    nats_session.start()
 
                 beat = client.heartbeat(agent_id, status="idle")
                 message = str((beat or {}).get("upgrade_message") or "")

@@ -406,6 +406,11 @@ class AgentInfo(BaseModel):
     lifecycle_status: Literal["active", "disabled", "quarantined"] = "active"
     lifecycle_reason: str | None = None
     lifecycle_message: str | None = None
+    # How many *other* agents registered with the same provisioning key — the
+    # blast radius of ``DELETE …?revoke_key=true``, which stops every one of
+    # them (#308). Counted only on the single-agent read, which is where the
+    # delete is confirmed; the fleet list leaves it at 0.
+    other_agents_on_key: int = 0
 
 
 class UpdateAgentStatusRequest(BaseModel):

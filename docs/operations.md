@@ -487,16 +487,27 @@ An agent has two states at once, and they answer different questions
   `PATCH /api/agents/{id}` or the **Agent State** controls in the agent's
   drawer on `/agents`.
 
-A `disabled` or `quarantined` agent is refused job claims and result uploads
-with `403` and the reason you typed. Its **heartbeat is still accepted**: the
-heartbeat response is the only channel that reaches a running agent, so it is
-where the agent learns why it is being refused, and refusing it too would drop
-the agent out of the fleet view at the moment you are watching it. The agent
-logs the reason once and backs off to one poll every five minutes rather than
-one per second.
+A `disabled` or `quarantined` agent is refused job claims, result uploads and
+inventory submissions with `403` and the reason you typed. Its **heartbeat is
+still accepted**: the heartbeat response is the only channel that reaches a
+running agent, so it is where the agent learns why it is being refused, and
+refusing it too would drop the agent out of the fleet view at the moment you
+are watching it. The agent logs the reason once and backs off to one poll every
+five minutes rather than one per second — over NATS as well as over HTTP, and
+at start-up as well as mid-run.
 
-The state survives re-registration — restarting the agent is not an appeal.
-Only `PATCH … {"status": "active"}` puts it back, and that clears the reason.
+The state survives re-registration *and* a re-exchange of the provisioning key:
+the exchange reads the lifecycle state too, so a restarted host is refused a
+fresh token rather than coming back under a new id. Only `PATCH … {"status":
+"active"}` puts it back, and that clears the reason.
+
+**What quarantine does not stop.** A job the agent claimed *before* you
+quarantined it keeps running on the host — nothing on the target is killed —
+and its results upload is then refused, so the archive is lost and the job
+stays `running` until its lease expires and it is requeued for another agent.
+That is deliberate: accepting the upload would mean a quarantined host still
+writes scan output into the tenant. If the run matters more than the
+quarantine, wait for the job to finish before switching the state.
 
 **Deregistering is weaker than it looks.** `DELETE /api/agents/{id}` removes
 the row; it does not stop the remote process, and it does not revoke anything.
@@ -507,10 +518,13 @@ delete was a pause. Two ways to make it stick, depending on what you mean:
 | You want | Do this |
 |---|---|
 | This host must stop working, the rest of the fleet must not | `PATCH /api/agents/{id}` → `quarantined`. Survives restarts; the host keeps its credential but can claim nothing |
-| This host is gone and its credential must die with it | `DELETE /api/agents/{id}?revoke_key=true` — revokes the key it registered with, which also invalidates the JWTs already minted from it, at once |
+| This host is gone and its credential must die with it | `DELETE /api/agents/{id}?revoke_key=true` — revokes the key it registered with, which also invalidates the JWTs already minted from it, at once. **Check `other_agents_on_key` first**: one key commonly provisions a fleet, and revoking it stops every one of them |
 | The key itself is compromised | `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke` — every agent that registered with it is refused on its next request |
 
-The delete response says which of these happened. `provisioning_key_id: null,
+The delete response says which of these happened, and both it and `GET
+/api/agents/{id}` carry `other_agents_on_key` — how many *other* agents hold
+the same key, which is exactly what `revoke_key=true` would strand. The agent
+drawer shows that number the moment the checkbox is ticked, before the delete. `provisioning_key_id: null,
 key_revoked: false` means there was no key on record to revoke: an agent that
 registered before this was tracked, or a legacy `OCTO_AGENT_TOKEN` one, which
 has no per-agent credential at all. Those agents record a key the first time
@@ -524,6 +538,14 @@ before this feature have `expires_at: null` and never expire** — nothing
 back-dates them, because stranding a fleet on a deadline nobody was told about
 is worse than a key that outlives its usefulness. Find them in that list,
 re-install the agents against a fresh key, then revoke the old one.
+
+**Revoke before you re-provision, not after.** An `agent_id` is bound to the
+key it first registered with, so an exchange asking for that id under a
+*different* key answers `403` while the old key is still active — that refusal
+is what stops one key's holder impersonating another key's agent. Revoking the
+old key releases the id (and stops its live JWTs in the same move), after which
+the new key adopts the host under its own name. Re-provisioning first leaves
+the agent unable to authenticate until you get to the revocation.
 
 ### SSH push deployment
 

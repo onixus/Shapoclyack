@@ -9,6 +9,7 @@ live JWT and re-registered on the next poll.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -63,6 +64,24 @@ def _register(client: TestClient, token: str, hostname: str = "edge-1") -> dict:
     reg = client.post("/api/agent/register", headers=bearer(token), json={"hostname": hostname})
     assert reg.status_code == 200, reg.text
     return reg.json()
+
+
+def _inventory_snapshot(agent_id: str, snapshot_id: str = "snap_agent_identity_01") -> dict:
+    """The golden schema-v1 inventory body, re-stamped for one agent.
+
+    Shared with tests/test_api_endpoint_inventory.py rather than hand-written
+    here: the ingest route validates the whole contract, and a body assembled
+    from memory fails on the fields this test is not about.
+    """
+    body = json.loads(
+        (Path(__file__).parent / "fixtures" / "endpoint_inventory_v1_valid.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    body["agent_id"] = agent_id
+    body["snapshot_id"] = snapshot_id
+    body["collected_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return body
 
 
 def _queue_job(client: TestClient, operator: str) -> str:
@@ -390,6 +409,7 @@ def test_delete_reports_that_there_was_no_key_to_revoke(tmp_path, monkeypatch):
         "agent_id": agent_id,
         "provisioning_key_id": None,
         "key_revoked": False,
+        "other_agents_on_key": 0,
     }
 
 
@@ -463,3 +483,262 @@ def test_an_expired_key_cannot_be_exchanged_and_stops_its_agents(tmp_path, monke
     listed = client.get("/api/tenants/default/provisioning-keys", headers=bearer(admin)).json()
     # Already expired is not "expiring soon" — it is done.
     assert listed[0]["expires_soon"] is False
+
+
+# --------------------------------------------------------------------------
+# 5. The exchange itself, and the sequence a real worker performs.
+# --------------------------------------------------------------------------
+
+
+def test_the_worker_sequence_exchange_register_refresh_heartbeat(tmp_path, monkeypatch):
+    """The four calls agent/worker.py makes, in the order it makes them.
+
+    This is the sequence that shipped broken: the worker exchanged its key
+    *without* an agent_id, so the server minted a random one into the token,
+    and the very next call — a register carrying OCTO_AGENT_ID — was refused
+    as impersonation. Every host with a provisioning key would have restarted
+    every five seconds. Asserted end to end rather than per-route, because
+    each route on its own was fine.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    key = _mint_key(client, admin)["key"]
+
+    # 1. Exchange, carrying the id the installer wrote into OCTO_AGENT_ID.
+    exchanged = _agent_jwt(client, key, agent_id="edge-01")
+    assert exchanged["agent_id"] == "edge-01"
+
+    # 2. Register as that id.
+    registered = client.post(
+        "/api/agent/register",
+        headers=bearer(exchanged["access_token"]),
+        json={"agent_id": "edge-01", "hostname": "edge-01.lab"},
+    )
+    assert registered.status_code == 200, registered.text
+    assert registered.json()["agent_id"] == "edge-01"
+
+    # 3. The refresh on the JWT timer — same id, and a token minted for it.
+    # (Not asserted to differ from the first: minted in the same second, from
+    # the same claims, it legitimately is the same string.)
+    refreshed = _agent_jwt(client, key, agent_id="edge-01")
+    assert refreshed["agent_id"] == "edge-01"
+
+    # 4. Heartbeat on the refreshed token, still as itself.
+    beat = client.post(
+        "/api/agent/heartbeat",
+        headers=bearer(refreshed["access_token"]),
+        json={"agent_id": "edge-01", "status": "idle"},
+    )
+    assert beat.status_code == 200, beat.text
+    assert beat.json()["agent_id"] == "edge-01"
+
+    operator = login(client, "operator")
+    # One agent, not one per exchange.
+    assert client.get("/api/agents", headers=bearer(operator)).json()["total"] == 1
+
+
+def test_an_exchange_without_an_agent_id_cannot_register_as_a_named_one(tmp_path, monkeypatch):
+    """The failure mode above, pinned so it cannot come back.
+
+    A token minted for a server-chosen id may register — as *that* id. What it
+    may not do is carry OCTO_AGENT_ID in the body and become the host's own
+    agent, and the 403 is what the fix in agent/worker.py exists to avoid.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    key = _mint_key(client, admin)["key"]
+
+    anonymous = _agent_jwt(client, key)
+    assert anonymous["agent_id"].startswith("agent_")
+
+    refused = client.post(
+        "/api/agent/register",
+        headers=bearer(anonymous["access_token"]),
+        json={"agent_id": "edge-01", "hostname": "edge-01.lab"},
+    )
+    assert refused.status_code == 403
+    assert "bound to a different agent_id" in refused.json()["detail"]
+
+    # Without the body id it registers as the id the token names.
+    accepted = _register(client, anonymous["access_token"])
+    assert accepted["agent_id"] == anonymous["agent_id"]
+
+
+def test_a_second_key_cannot_exchange_for_a_live_agents_identity(tmp_path, monkeypatch):
+    """403 at the exchange, before a token for that id exists at all.
+
+    Binding the id only at register time left the door open one step earlier:
+    any holder of any valid key in the tenant could ask for a live agent's id,
+    get a token that then passes every downstream check, and rewrite that
+    agent's hostname and labels.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    fleet_key = _mint_key(client, admin, label="fleet")["key"]
+    other_key = _mint_key(client, admin, label="other")["key"]
+    _register(client, _agent_jwt(client, fleet_key, agent_id="edge-01")["access_token"], "edge-01")
+
+    stolen = client.post(
+        "/api/auth/agent/token",
+        json={"provisioning_key": other_key, "agent_id": "edge-01"},
+    )
+    assert stolen.status_code == 403
+    assert "different provisioning key" in stolen.json()["detail"]
+    # 401 is reserved for a key that is not exchangeable; this key is fine.
+    assert client.post(
+        "/api/auth/agent/token", json={"provisioning_key": other_key}
+    ).status_code == 200
+
+
+def test_rotating_the_key_releases_the_agent_id_once_the_old_key_is_revoked(
+    tmp_path, monkeypatch
+):
+    """The documented rotation order, asserted so the binding is not a trap.
+
+    Revoke first, then re-provision: the revocation already stops the old
+    key's live JWTs, so nothing is impersonated by letting the new key adopt
+    the id.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    old = _mint_key(client, admin, label="old")
+    new_key = _mint_key(client, admin, label="new")["key"]
+    _register(client, _agent_jwt(client, old["key"], agent_id="edge-01")["access_token"], "edge-01")
+
+    # Before the revocation, the new key is refused the id.
+    assert client.post(
+        "/api/auth/agent/token", json={"provisioning_key": new_key, "agent_id": "edge-01"}
+    ).status_code == 403
+
+    revoked = client.post(
+        f"/api/tenants/default/provisioning-keys/{old['key_id']}/revoke", headers=bearer(admin)
+    )
+    assert revoked.status_code == 200
+
+    rotated = client.post(
+        "/api/auth/agent/token", json={"provisioning_key": new_key, "agent_id": "edge-01"}
+    )
+    assert rotated.status_code == 200, rotated.text
+    reregistered = client.post(
+        "/api/agent/register",
+        headers=bearer(rotated.json()["access_token"]),
+        json={"agent_id": "edge-01", "hostname": "edge-01.lab"},
+    )
+    assert reregistered.status_code == 200
+
+
+def test_a_quarantined_agent_cannot_exchange_its_key_for_a_fresh_token(tmp_path, monkeypatch):
+    """Restarting the host is not a way out of quarantine.
+
+    The register refusal alone was not enough: the exchange came first and
+    happily minted a token, so the state only bit one call later — and the
+    agent's own run loop needs the refusal to carry the lifecycle wording, or
+    it retries at the poll interval instead of backing off.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    key = _mint_key(client, admin)["key"]
+    _register(client, _agent_jwt(client, key, agent_id="edge-01")["access_token"], "edge-01")
+
+    client.patch(
+        "/api/agents/edge-01",
+        headers=bearer(admin),
+        json={"status": "quarantined", "reason": "credential leak"},
+    )
+    refused = client.post(
+        "/api/auth/agent/token", json={"provisioning_key": key, "agent_id": "edge-01"}
+    )
+    assert refused.status_code == 403
+    assert "quarantined by an operator" in refused.json()["detail"]
+    assert "credential leak" in refused.json()["detail"]
+
+
+def test_result_upload_refuses_a_form_agent_id_that_is_not_the_tokens(tmp_path, monkeypatch):
+    """The fourth route, and the only one that takes its agent_id from a form.
+
+    Multipart is why it was missed: the id arrives as a form field rather than
+    JSON or a query parameter, so a check written against either of those
+    would not have covered it.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    operator = login(client, "operator")
+    key = _mint_key(client, admin)["key"]
+    victim = _agent_jwt(client, key, agent_id="edge-01")
+    thief = _agent_jwt(client, key, agent_id="edge-02")
+    _register(client, victim["access_token"], "edge-01")
+    _register(client, thief["access_token"], "edge-02")
+
+    job_id = _queue_job(client, operator)
+    claimed = client.post(
+        "/api/agent/jobs/claim?agent_id=edge-01", headers=bearer(victim["access_token"])
+    )
+    assert claimed.status_code == 200, claimed.text
+
+    stolen = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=bearer(thief["access_token"]),
+        data={"agent_id": "edge-01", "exit_code": "0"},
+    )
+    assert stolen.status_code == 403
+    assert "bound to a different agent_id" in stolen.json()["detail"]
+
+
+def test_a_quarantined_agent_stops_feeding_the_endpoint_inventory(tmp_path, monkeypatch):
+    """Quarantine means stop writing, not stop writing half of it (#308).
+
+    ``POST /api/endpoint/inventory`` checked that the token matched the
+    agent_id but never that the agent was allowed to be talking at all, so a
+    quarantined host kept adding devices and software to the tenant's
+    inventory.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    key = _mint_key(client, admin)["key"]
+    agent_token = _agent_jwt(client, key, agent_id="edge-01")["access_token"]
+    _register(client, agent_token, "edge-01")
+
+    # The same golden schema-v1 body the inventory suite posts, re-stamped for
+    # this agent; only the lifecycle state differs between the two calls.
+    snapshot = _inventory_snapshot("edge-01")
+    accepted = client.post("/api/endpoint/inventory", headers=bearer(agent_token), json=snapshot)
+    assert accepted.status_code in (200, 201), accepted.text
+
+    client.patch(
+        "/api/agents/edge-01",
+        headers=bearer(admin),
+        json={"status": "quarantined", "reason": "credential leak"},
+    )
+    snapshot = _inventory_snapshot("edge-01", snapshot_id="snap_edge01_second")
+    refused = client.post("/api/endpoint/inventory", headers=bearer(agent_token), json=snapshot)
+    assert refused.status_code == 403
+    assert "quarantined by an operator" in refused.json()["detail"]
+
+
+def test_delete_reports_how_many_agents_share_the_key(tmp_path, monkeypatch):
+    """The blast radius of ``revoke_key``, counted before the click (#308).
+
+    One key commonly provisions a whole fleet, and revoking it deregisters
+    nothing but stops every one of them — the console needs the number to say
+    so in the confirmation.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    operator = login(client, "operator")
+    key = _mint_key(client, admin)["key"]
+    for agent_id in ("edge-01", "edge-02", "edge-03"):
+        _register(client, _agent_jwt(client, key, agent_id=agent_id)["access_token"], agent_id)
+
+    # Before the click: the drawer reads the agent, and the warning above the
+    # "revoke the key" checkbox is built from this number.
+    detail = client.get("/api/agents/edge-01", headers=bearer(operator))
+    assert detail.status_code == 200
+    assert detail.json()["other_agents_on_key"] == 2
+
+    deleted = client.delete("/api/agents/edge-01", headers=bearer(operator))
+    assert deleted.status_code == 200
+    assert deleted.json()["other_agents_on_key"] == 2
+
+    # And after it, with one fewer agent left on the key.
+    remaining = client.get("/api/agents/edge-02", headers=bearer(operator))
+    assert remaining.json()["other_agents_on_key"] == 1

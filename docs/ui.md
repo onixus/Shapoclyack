@@ -381,7 +381,10 @@ it is not active, since a badge on every healthy agent would say nothing.
 **Deregister** now offers *Also revoke its provisioning key*, off by default
 because one key commonly provisions a whole fleet. Left off, the deregistration
 is a pause: the host still holds the key and re-registers on its next poll, and
-the toast says so rather than letting the operator assume otherwise.
+the toast says so rather than letting the operator assume otherwise. Ticked, it
+names the size of the fleet it is about to stop — "This key also provisioned 12
+other agents" — read from the agent before the click rather than reported in the
+answer afterwards, which is too late to be a warning.
 
 The **Deploy Agent** dialog has four tabs. **Remote SSH Push** installs onto a
 host the platform connects to itself: host, port, username, either a password or

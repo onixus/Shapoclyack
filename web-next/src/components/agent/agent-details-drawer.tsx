@@ -61,6 +61,7 @@ export function AgentDetailsDrawer({
   const metrics = agent?.metrics || {};
   const lifecycle: AgentLifecycleStatus = agent?.lifecycle_status ?? "active";
   const isOutdated = Boolean(agent?.is_outdated);
+  const otherAgentsOnKey = agent?.other_agents_on_key ?? 0;
   const cpuPercent = metrics.cpu_percent ?? 0;
   const memPercent = metrics.memory_percent ?? 0;
   const diskPercent = metrics.disk_percent ?? 0;
@@ -392,6 +393,19 @@ export function AgentDetailsDrawer({
                       />
                       Also revoke its provisioning key
                     </label>
+                    {/* The blast radius, before the click rather than in the
+                        response: revoking the key stops every agent holding
+                        it, and the operator is looking at one of them. */}
+                    {revokeKey && otherAgentsOnKey > 0 ? (
+                      <span
+                        role="alert"
+                        className="w-full text-xs font-semibold text-rose-600 dark:text-rose-400"
+                      >
+                        This key also provisioned {otherAgentsOnKey} other{" "}
+                        {otherAgentsOnKey === 1 ? "agent" : "agents"} — revoking it stops{" "}
+                        {otherAgentsOnKey === 1 ? "that one" : "all of them"} too.
+                      </span>
+                    ) : null}
                     <Button
                       size="sm"
                       disabled={deleteMutation.isPending}

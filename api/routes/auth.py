@@ -45,6 +45,7 @@ from api.schemas import (
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
 from api.routes._pagination import PageParams, build_page
+from api.services import agents as agents_service
 from api.services import auth as auth_service
 from api.services import auth_audit
 from api.services import memberships as memberships_service
@@ -320,13 +321,21 @@ def agent_token(
     body: AgentTokenRequest,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentTokenResponse:
-    """Exchange a provisioning key for a short-lived agent JWT (tenant_id in claims)."""
+    """Exchange a provisioning key for a short-lived agent JWT (tenant_id in claims).
+
+    A good key and a free ``agent_id`` are two different questions, and they
+    get two different answers (#308): 401 when the key is not exchangeable,
+    403 when it is but the id belongs to another tenant, to another live key,
+    or to an agent an operator has disabled.
+    """
     try:
         result = auth_service.exchange_provisioning_key(
             settings,
             body.provisioning_key,
             agent_id=body.agent_id,
         )
+    except agents_service.AgentIdentityConflict as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     return AgentTokenResponse.model_validate(result)
@@ -345,6 +354,8 @@ def auth_exchange(
             agent_id=body.agent_id,
             expires_minutes=DEFAULT_EXCHANGE_TTL_MINUTES,
         )
+    except agents_service.AgentIdentityConflict as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     return AuthExchangeResponse.model_validate(result)

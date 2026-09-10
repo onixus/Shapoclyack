@@ -372,9 +372,16 @@ def test_the_loop_re_exchanges_the_provisioning_key_after_a_401(monkeypatch):
         def set_token(self, token: str) -> None:
             pass
 
-        def exchange_provisioning_key(self, provisioning_key: str) -> dict[str, Any]:
+        def exchange_provisioning_key(
+            self, provisioning_key: str, *, agent_id: str | None = None
+        ) -> dict[str, Any]:
             exchanges.append(provisioning_key)
-            return {"access_token": f"tok-{len(exchanges)}", "tenant_id": "t1", "expires_in": 3600}
+            return {
+                "access_token": f"tok-{len(exchanges)}",
+                "tenant_id": "t1",
+                "agent_id": agent_id or "a1",
+                "expires_in": 3600,
+            }
 
         def register(self, **kwargs: Any) -> dict[str, Any]:
             return {"agent_id": "a1", "hostname": "edge-1", "tenant_id": "t1"}
@@ -411,6 +418,219 @@ def test_the_loop_re_exchanges_the_provisioning_key_after_a_401(monkeypatch):
     assert worker.run_loop(args) == 0
     # One before the loop, one forced by the 401 — not one every 1800 seconds.
     assert exchanges == ["prov-key", "prov-key"]
+
+
+def _run_loop_args(**overrides: Any):
+    """The Namespace ``run_loop`` reads, with the fields these tests vary.
+
+    Same defaults the three tests above spell out inline; the identity tests
+    that follow flip ``agent_id`` and ``provisioning_key`` against each other,
+    and four near-identical Namespaces would hide which field is the subject.
+    """
+    import argparse
+
+    base = {
+        "api_url": "http://127.0.0.1:8080",
+        "token": "",
+        "timeout": 1.0,
+        "provisioning_key": "prov-key",
+        "jwt_refresh_seconds": 0,
+        "agent_id": None,
+        "hostname": "edge-1",
+        "label": None,
+        "nats_url": "",
+        "poll_interval": 0.01,
+        "config": "scanner/config/default.yaml",
+        "output_dir": "out",
+        "scan_timeout": 1.0,
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _advance_the_clock_past_every_refresh(monkeypatch) -> None:
+    """Make ``time.time()`` jump a refresh interval on each call.
+
+    The JWT refresh is due at ``now + max(60, …)``, so against a real clock a
+    two-pass loop never reaches the second exchange — which is the call these
+    tests exist to inspect.
+    """
+    ticks = iter(range(10**9, 10**9 + 10_000, 1_000))
+    monkeypatch.setattr(worker.time, "time", lambda: next(ticks))
+
+
+def test_the_key_exchange_carries_the_agents_own_id(monkeypatch):
+    """Every exchange, bootstrap and refresh alike, asks to be OCTO_AGENT_ID.
+
+    This is the crash-loop the branch shipped with (#308): the installer always
+    writes OCTO_AGENT_ID, the exchange did not send it, so the server minted a
+    random id into the token — and the register that followed, carrying the
+    host's real id, was refused as impersonation. Outside any handler, so the
+    process died and systemd restarted it five seconds later, for every agent
+    provisioned with a key.
+    """
+    exchanged_ids: list[str | None] = []
+    registered_ids: list[str | None] = []
+    beats = 0
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def exchange_provisioning_key(
+            self, provisioning_key: str, *, agent_id: str | None = None
+        ) -> dict[str, Any]:
+            exchanged_ids.append(agent_id)
+            # The server echoes back whatever it minted the token for.
+            return {
+                "access_token": "tok",
+                "tenant_id": "t1",
+                "agent_id": agent_id or "agent_random",
+                "expires_in": 3600,
+            }
+
+        def register(self, *, agent_id=None, **kwargs: Any) -> dict[str, Any]:
+            registered_ids.append(agent_id)
+            return {"agent_id": agent_id or "agent_random", "hostname": "edge-1", "tenant_id": "t1"}
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            nonlocal beats
+            beats += 1
+            if beats > 1:
+                raise KeyboardInterrupt
+            return {"agent_id": agent_id}
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    # 60 s is the refresh floor, and the clock steps past it every pass, so the
+    # second loop iteration performs the *refresh* exchange this test is about.
+    _advance_the_clock_past_every_refresh(monkeypatch)
+    args = _run_loop_args(agent_id="edge-01", jwt_refresh_seconds=60)
+
+    assert worker.run_loop(args) == 0
+    assert exchanged_ids == ["edge-01", "edge-01"]
+    assert registered_ids == ["edge-01"]
+
+
+def test_an_agent_with_no_id_of_its_own_keeps_the_first_one_it_was_given(monkeypatch):
+    """The docker and k8s snippets set no OCTO_AGENT_ID, and must not drift.
+
+    The first exchange has nothing to ask for and the server picks an id; from
+    then on the agent *is* that id and every refresh has to say so. Re-exchanging
+    on a bare timer used to hand the process a token for a brand-new id while its
+    heartbeat still named the old one — a permanent 403 swallowed by the loop's
+    catch-all, one dead agent per JWT lifetime.
+    """
+    exchanged_ids: list[str | None] = []
+    beat_ids: list[str] = []
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def exchange_provisioning_key(
+            self, provisioning_key: str, *, agent_id: str | None = None
+        ) -> dict[str, Any]:
+            exchanged_ids.append(agent_id)
+            minted = agent_id or f"agent_{len(exchanged_ids)}"
+            return {
+                "access_token": "tok",
+                "tenant_id": "t1",
+                "agent_id": minted,
+                "expires_in": 3600,
+            }
+
+        def register(self, *, agent_id=None, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": agent_id, "hostname": "edge-1", "tenant_id": "t1"}
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            beat_ids.append(agent_id)
+            if len(beat_ids) > 1:
+                raise KeyboardInterrupt
+            return {"agent_id": agent_id}
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    _advance_the_clock_past_every_refresh(monkeypatch)
+    args = _run_loop_args(agent_id=None, jwt_refresh_seconds=60)
+
+    assert worker.run_loop(args) == 0
+    # Nothing to ask for the first time; the id it was given every time after.
+    assert exchanged_ids == [None, "agent_1"]
+    assert beat_ids == ["agent_1", "agent_1"]
+
+
+def test_a_quarantined_agent_backs_off_at_registration_instead_of_dying(monkeypatch):
+    """A quarantined host restarting must wait, not spin under Restart=always.
+
+    Registration used to happen before the loop and outside every handler, so
+    the 403 an operator's quarantine produces there killed the process — and
+    systemd brought it back every five seconds, forever, with no heartbeat in
+    between to show it in the fleet view.
+    """
+    waits: list[float] = []
+    attempts = 0
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def exchange_provisioning_key(
+            self, provisioning_key: str, *, agent_id: str | None = None
+        ) -> dict[str, Any]:
+            return {
+                "access_token": "tok",
+                "tenant_id": "t1",
+                "agent_id": agent_id,
+                "expires_in": 3600,
+            }
+
+        def register(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal attempts
+            attempts += 1
+            if attempts > 2:
+                raise KeyboardInterrupt
+            raise worker.AgentDisabled(
+                "POST /api/agent/register -> 403: This agent is quarantined by an "
+                "operator; Reason: credential leak"
+            )
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": agent_id}
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    original_wait = threading.Event.wait
+
+    def fake_wait(self, timeout=None):
+        if timeout is not None:
+            waits.append(timeout)
+            return False
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", fake_wait)
+
+    # Returns, rather than propagating the 403 out of run_loop.
+    assert worker.run_loop(_run_loop_args(agent_id="edge-01")) == 0
+    assert waits == [worker.DISABLED_BACKOFF_SECONDS, worker.DISABLED_BACKOFF_SECONDS]
 
 
 def test_the_loop_logs_the_upgrade_message_once(monkeypatch, caplog):
@@ -583,3 +803,32 @@ def test_an_offer_for_another_tenant_is_terminated_not_nakked():
     assert msg.termed
     assert not msg.nakked and not msg.acked
     assert client.claims == 0
+
+
+def test_a_refusal_of_the_claim_reaches_the_run_loop_and_nakks_the_offer():
+    """The NATS half of the fleet gets the same backoff as the HTTP half (#308).
+
+    ``pull_and_claim`` used to catch everything as "will reconnect", so a
+    disabled agent tore down a healthy session and logged a traceback on every
+    poll instead of backing off — and because the loop does not sleep while a
+    NATS session is up, that was one per iteration. The offer must go back to
+    the stream, too: another agent in the tenant can take it.
+    """
+    import pytest
+
+    msg = _FakeMsg({"job_id": "job-3", "tenant_id": "acme-eu"})
+    session = _connected_session(_FakeSub(msg), "acme-eu")
+
+    class _Client:
+        def claim(self, agent_id: str, *, job_id: str | None = None):
+            raise worker.AgentDisabled(
+                "POST /api/agent/jobs/claim -> 403: This agent is quarantined by an operator;"
+            )
+
+    try:
+        with pytest.raises(worker.AgentDisabled):
+            session.pull_and_claim(_Client(), "agent-1", timeout=1.0)
+    finally:
+        session.close()
+
+    assert msg.nakked and not msg.acked and not msg.termed

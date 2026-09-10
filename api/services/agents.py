@@ -282,6 +282,27 @@ def _pack_detail(
     return json.dumps(payload)
 
 
+def _count_other_agents_on_key(session, *, key_id: str | None, agent_id: str) -> int:
+    """How many agents besides this one registered with the same key (#308).
+
+    Revoking a provisioning key stops every agent that holds it, and one key
+    commonly provisions a whole fleet, so this number is the blast radius of
+    ``DELETE /api/agents/{id}?revoke_key=true``. Zero when there is no key on
+    record — a legacy shared-token agent has no per-agent credential to revoke.
+    """
+    if not key_id:
+        return 0
+    count = (
+        session.query(func.count(models.Agent.agent_id))
+        .filter(
+            models.Agent.provisioning_key_id == key_id,
+            models.Agent.agent_id != agent_id,
+        )
+        .scalar()
+    )
+    return int(count or 0)
+
+
 def _to_info(row: models.Agent) -> AgentInfo:
     online = _is_online(row.last_seen_at)
     lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
@@ -408,6 +429,75 @@ def require_identity_match(token_agent_id: str | None, requested_agent_id: str |
     if requested and requested != token_agent_id:
         raise PermissionError(
             "Agent token is bound to a different agent_id; a token may only act as itself"
+        )
+
+
+class AgentIdentityConflict(RuntimeError):
+    """The ``agent_id`` asked for at key exchange is not this caller's to take.
+
+    Its own class rather than ``PermissionError`` because the exchange route
+    answers ``401`` for a bad key and must answer ``403`` here: the key is
+    good, the identity is not available. The message is built from
+    :func:`lifecycle_message` when the reason is a lifecycle state, so the
+    agent's run loop recognises "wait" rather than "misconfigured" — see
+    ``agent/worker.py::_DISABLED_MARKERS``.
+    """
+
+
+def check_exchange_identity(*, agent_id: str | None, tenant_id: str, key_id: str) -> None:
+    """Gate a key exchange that asks to *be* an already-registered agent (#308).
+
+    Binding the ``agent_id`` at registration was only half the job: the token
+    is minted before any of it is checked, so a holder of any valid key in the
+    tenant could ask for a live agent's id and get a token that then passes
+    every downstream identity check. Quarantine was equally simple to walk
+    around — mint a token for a fresh id and register as a second, ``active``
+    row.
+
+    So the exchange refuses, with :class:`AgentIdentityConflict` (403), to hand
+    out a token for an existing row that
+
+    * belongs to another tenant, or was registered with a *different key that
+      is still active* — impersonation of a live agent by a peer holding
+      another key in the same tenant;
+    * is ``disabled`` or ``quarantined`` — otherwise the operator's decision
+      lasts exactly until the host restarts.
+
+    "Different key that is still active" and not simply "different key",
+    because rotating a key is a legitimate act: revoke the old key (which
+    already stops the JWTs minted from it, see :func:`check_credential`) and
+    the agent's id is released to whatever key re-provisions the host. That
+    order is the documented rotation procedure in ``docs/operations.md``.
+
+    An unknown ``agent_id`` passes: minting a token for an id that has never
+    registered is how every agent starts.
+    """
+    requested = (agent_id or "").strip()
+    if not requested:
+        return
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, requested)
+        if row is None:
+            return
+        if row.tenant_id != tenant_id:
+            raise AgentIdentityConflict(
+                "This agent_id is registered in another tenant"
+            )
+        lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
+        if lifecycle_status != LIFECYCLE_ACTIVE:
+            raise AgentIdentityConflict(
+                lifecycle_message(lifecycle_status, row.lifecycle_reason)
+            )
+        bound_key_id = row.provisioning_key_id
+        if not bound_key_id or bound_key_id == key_id:
+            return
+    # Outside the agents session on purpose: provisioning_key_state opens its
+    # own, and holding two nested sessions on one request buys nothing here.
+    if tenants_service.provisioning_key_state(bound_key_id) == "active":
+        raise AgentIdentityConflict(
+            "This agent_id is registered with a different provisioning key; "
+            "revoke that key before re-provisioning the host with this one"
         )
 
 
@@ -684,7 +774,14 @@ def get_agent(agent_id: str, tenant_id: str | None = None) -> AgentInfo | None:
             return None
         if tenant_id and row.tenant_id != tenant_id:
             return None
-        return _to_info(row)
+        info = _to_info(row)
+        # Only here, not in the fleet list: this is the read the delete dialog
+        # makes, and the number is what tells an operator that `revoke_key`
+        # stops a fleet rather than a host (#308).
+        info.other_agents_on_key = _count_other_agents_on_key(
+            session, key_id=row.provisioning_key_id, agent_id=row.agent_id
+        )
+        return info
 
 
 def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> None:
@@ -763,6 +860,11 @@ def delete_agent(
     agent registered before this column existed, and for a legacy
     shared-token agent: neither has a key on record, and ``OCTO_AGENT_TOKEN``
     is not a per-agent credential this could revoke at all.
+
+    ``other_agents_on_key`` is how many *other* agents registered with the same
+    key — the blast radius of ``revoke_key``, counted before the delete and
+    reported whether or not the revocation was asked for, so the console can
+    warn before the click as well as explain after it (#308).
     """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
@@ -773,6 +875,9 @@ def delete_agent(
             return None
         key_id = row.provisioning_key_id
         agent_tenant_id = row.tenant_id
+        other_agents_on_key = _count_other_agents_on_key(
+            session, key_id=key_id, agent_id=agent_id
+        )
         session.delete(row)
         session.flush()
 
@@ -785,17 +890,20 @@ def delete_agent(
         key_revoked = tenants_service.revoke_provisioning_key(key_id) is not None
     # #327 replaces this with an audit_events row.
     _log.info(
-        "agent deleted agent_id=%s tenant_id=%s actor=%s key_id=%s key_revoked=%s",
+        "agent deleted agent_id=%s tenant_id=%s actor=%s key_id=%s key_revoked=%s "
+        "other_agents_on_key=%s",
         agent_id,
         agent_tenant_id,
         actor or "unknown",
         key_id or "",
         key_revoked,
+        other_agents_on_key,
     )
     return {
         "agent_id": agent_id,
         "provisioning_key_id": key_id,
         "key_revoked": key_revoked,
+        "other_agents_on_key": int(other_agents_on_key),
     }
 
 

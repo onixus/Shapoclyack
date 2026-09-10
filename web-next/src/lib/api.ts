@@ -483,6 +483,10 @@ export type AgentInfo = {
   lifecycle_status?: AgentLifecycleStatus;
   lifecycle_reason?: string | null;
   lifecycle_message?: string | null;
+  /** How many *other* agents registered with the same provisioning key — the
+   * blast radius of a delete with `revoke_key` (#308). Only the single-agent
+   * read fills it in; in the fleet list it is absent. */
+  other_agents_on_key?: number;
 };
 
 export type AgentFleetSummary = {
@@ -1156,6 +1160,7 @@ export async function deleteAgent(agentId: string, revokeKey = false) {
       agent_id: string;
       provisioning_key_id: string | null;
       key_revoked: boolean;
+      other_agents_on_key: number;
     }>(`/agents/${encodeURIComponent(agentId)}?revoke_key=${revokeKey}`);
     return data;
   } catch (error) {

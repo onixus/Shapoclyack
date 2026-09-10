@@ -12,10 +12,18 @@ All notable changes to Shapoclyack are documented in this file.
   query string — only the tenant was, so a token lifted off one worker could
   heartbeat as, claim jobs for and upload results as every other agent in that
   tenant, which for an MSSP customer is its whole fleet. All four agent routes
-  now answer `403` for a mismatch, and registering without an `agent_id` uses
-  the token's own rather than minting a random one. A legacy `OCTO_AGENT_TOKEN`
-  agent has no identity to bind to and is unchanged — one more reason that
-  variable is deprecated.
+  now answer `403` for a mismatch — including `POST /api/endpoint/inventory`,
+  which a quarantined host was otherwise still free to feed — and registering
+  without an `agent_id` uses the token's own rather than minting a random one.
+  The binding starts one step earlier than the register: `POST
+  /api/auth/agent/token` refuses (`403`) to mint a token for an `agent_id` that
+  belongs to another tenant, to an agent registered with a *different key that
+  is still active*, or to a `disabled`/`quarantined` agent. Without that, a
+  holder of any valid key in the tenant could take a live agent's identity, and
+  quarantine lasted only until the host restarted and asked for a fresh id.
+  Revoking the old key releases the id, which is the documented rotation order.
+  A legacy `OCTO_AGENT_TOKEN` agent has no identity to bind to and is
+  unchanged — one more reason that variable is deprecated.
 - **Agents can be disabled or quarantined, and it survives a restart**
   ([#308](https://github.com/onixus/Shapoclyack/issues/308)). New
   `PATCH /api/agents/{id}` (tenant **admin**) moves an agent between `active`,
@@ -32,7 +40,10 @@ All notable changes to Shapoclyack are documented in this file.
   provisioning key and a JWT valid for up to two hours, and re-registered on
   its next poll, so "delete" was a pause. `?revoke_key=true` revokes the key the
   agent registered with — a link that is now recorded — and the response reports
-  whether anything was revoked rather than implying it. Every authenticated
+  whether anything was revoked rather than implying it. Both the response and
+  `GET /api/agents/{id}` carry `other_agents_on_key`, the number of other agents
+  that revocation would stop, and the drawer puts it in front of the operator
+  when the checkbox is ticked rather than in the answer afterwards. Every authenticated
   agent request re-checks its provisioning key against the database, so
   revoking a key (by this route or the tenant one) stops the JWTs already
   minted from it at once instead of after their remaining lifetime.
@@ -47,6 +58,21 @@ All notable changes to Shapoclyack are documented in this file.
   Registration, lifecycle changes, deletion and key revocation are logged with
   their fields today; the audit trail
   ([#327](https://github.com/onixus/Shapoclyack/issues/327)) will pick them up.
+
+- **The agent keeps one identity for its whole life, and refusals back off**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). `agent/worker.py`
+  exchanged its provisioning key without naming an `agent_id`, so the server
+  minted a random one into the token and the register that followed — carrying
+  the `OCTO_AGENT_ID` the installer always writes — was refused as
+  impersonation. Registration sat outside the loop's error handling, so that
+  `403` killed the process and `Restart=always` repeated it every five seconds.
+  The id is now sent on every exchange including the periodic refresh, adopted
+  from the first exchange when the deployment sets none, and registration
+  happens inside the loop: a refused agent — quarantined, disabled, or holding
+  a rejected token — waits out the same five-minute backoff every other refusal
+  gets, and keeps heartbeating so it stays visible in the fleet view. A claim
+  refused over NATS now reaches that backoff too, and NAKs the offer so another
+  agent in the tenant can take it, instead of being swallowed as a reconnect.
 
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
