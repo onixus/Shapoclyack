@@ -29,6 +29,7 @@ from api.schemas import (
 )
 from api.services import agent_deployer
 from api.services import agents as agents_service
+from api.services import audit as audit_service
 from api.services import jobs as jobs_service
 from api.settings import Settings
 
@@ -53,8 +54,18 @@ def _server_url(settings: Settings, request: Request) -> str:
 @router.post("/agent/register", response_model=AgentInfo)
 def register_agent(
     body: AgentRegisterRequest,
+    request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentInfo:
+    # The actor is the agent, not a console account, so the context is built
+    # here rather than through ``AuditDep``, which authenticates a user (#327).
+    audit = audit_service.context_from_request(
+        request,
+        settings,
+        actor=(body.agent_id or principal.agent_id or principal.subject),
+        actor_type=audit_service.ACTOR_AGENT,
+    )
     try:
         return agents_service.register_agent(
             agent_id=body.agent_id,
@@ -62,6 +73,7 @@ def register_agent(
             version=body.version,
             labels=body.labels,
             tenant_id=principal.tenant_id,
+            audit=audit,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc

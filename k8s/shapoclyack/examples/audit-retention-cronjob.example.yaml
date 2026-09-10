@@ -1,0 +1,92 @@
+# Retention for the append-only audit trail (#329).
+#
+# Not part of the base kustomization, and deliberately so: it needs a database
+# credential the API does not hold. `audit_events` refuses UPDATE and DELETE
+# (migration 0037), the one way past that is `audit_events_prune()`, and the
+# GRANT layout in docs/operations.md withholds EXECUTE on it from the API's
+# role. A CronJob reusing `shapoclyack-postgres` would therefore either fail on
+# every run or — worse, if the split has not been applied — prove nothing,
+# because the API's own role could have pruned the trail all along.
+#
+# Apply the GRANT layout first (docs/operations.md, "Audit trail: immutability
+# and retention"), create the Secret below with the retention role's DSN, then
+# `kubectl apply -f` this file.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shapoclyack-audit-retention
+  namespace: shapoclyack
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-retention
+type: Opaque
+stringData:
+  # The retention role, not `octo`: this is the credential that may call
+  # audit_events_prune(), and nothing else in the cluster should hold it.
+  # Replace the password before applying — an example that ships a working one
+  # is a default credential.
+  postgres_url: postgresql+psycopg://shapoclyack_audit_retention:CHANGE_ME@shapoclyack-postgres-client:5432/shapoclyack
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shapoclyack-audit-retention
+  namespace: shapoclyack
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-retention
+spec:
+  # Weekly at 03:40 UTC on Sunday. The sweep is idempotent and deletes by age,
+  # so running it more often only shortens how long an expired row survives.
+  schedule: "40 3 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: shapoclyack
+            app.kubernetes.io/component: audit-retention
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+          containers:
+            - name: prune
+              # Same image as the API — the CLI lives in the same package. Pin
+              # it to the digest the deployment runs, so a sweep never runs
+              # against a schema its code does not know.
+              image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.44-0907@sha256:d5dee841f44057c56a68750fffed49f970af85fe0e5419af160b6d0ccd9873ba
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - api.services.audit_retention
+                - --days
+                - "365"
+              env:
+                - name: OCTO_POSTGRES_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-audit-retention
+                      key: postgres_url
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: 128Mi
+                limits:
+                  cpu: "500m"
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL

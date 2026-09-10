@@ -125,6 +125,86 @@ A locked-out client keeps retrying, and recording each retry would make the
 audit trail an amplifier for unauthenticated writes — so one `locked` row is
 written per window and the rest are counted only in `/metrics`.
 
+## Administrative audit trail
+
+`auth_events` above answers "who signed in and what was refused". `audit_events`
+answers the other half — **what was changed** ([#327](https://github.com/onixus/Shapoclyack/issues/327)).
+One row per administrative change, with the resource before and after it:
+
+| Action | Recorded on |
+|---|---|
+| `user.create`, `user.role_change`, `user.disable`, `user.delete` | `POST /api/users`, `PUT /api/users/{u}/role`, `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` |
+| `user.password_reset` | `PUT /api/users/{u}/password` — an admin resetting someone else's password is one request away from acting as them. `before`/`after` carry the `password_changed_at` that moved, never the password |
+| `user.password_change` | `POST /api/auth/password` — the owner rotating their own, kept a separate action so a reset performed *on* an account is not buried under everyone's routine rotations |
+| `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
+| `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
+| `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
+| `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
+| `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
+| `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
+| `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
+
+Every row carries the actor and what kind of principal it is (`user`,
+`service_token`, `agent`, `system`), the client address resolved the same way
+the login limiter resolves it, the user agent, and the `X-Request-Id` of the
+request when it carried one — nothing invents one, so the value in a row always
+matches a value that was on the wire.
+
+**The row is written in the transaction that makes the change.** A membership
+granted but not recorded is a silent change; a membership recorded but not
+granted is a trail that lies. Both are impossible for every action that *is* a
+database write. `report.download` is the exception, and the only one: a download
+is a file read with no transaction to join, so its row is committed on its own
+before the streaming response starts. A transfer that dies mid-stream therefore
+leaves a row saying the report was downloaded — which is the direction that
+error should point.
+
+**Secrets never reach `before`/`after`.** Every field whose name reads like a
+credential — `password`, `*_hash`, `token`, `*_secret`, `*_key` — is replaced by
+`[redacted]` before storage, so a table every tenant admin can read cannot be
+mined for one. Login attempts stay in `auth_events` and are not mirrored here:
+they are the same fact in two tables, and the login trail is the one the rate
+limiter counts.
+
+```http
+GET /api/audit?action=user.role_change&resource_id=amy&from=2026-09-01T00:00:00Z
+GET /api/audit?tenant_id=acme&format=csv
+```
+
+| Parameter | Meaning |
+|---|---|
+| `tenant_id` | Narrows to one tenant. A tenant admin may only name their own (403 otherwise); a platform admin who names none reads every tenant |
+| `actor`, `action`, `resource_type`, `resource_id` | Exact matches — "every change to *this* token" is the question, and a substring match is how the wrong row gets read as the right one |
+| `from`, `to` | ISO instants, inclusive; an offset is honoured and converted to UTC |
+| `offset`, `limit` | `Page` envelope like the other lists. Always newest first: this is a log, so there is no `sort`/`order` |
+| `format=csv\|ndjson` | Streams **every** matching event rather than the current page, as an attachment. An export bounded by `limit` would be a page with a filename |
+
+Reading requires **admin in the tenant**: the people who administer a customer
+are the ones who have to review its changes. Rows with no tenant at all —
+creating a console account, editing the installation-wide scanner config — are
+platform-level acts and appear only in the platform admin's answer.
+
+A service token can never read this endpoint, whatever role or scopes it was
+minted with (`audit` is in `FORBIDDEN_RESOURCES` alongside `auth`, `users` and
+`tenants`): the trail records the acts of the humans who administer the
+installation, addresses included, and `?format=ndjson` makes a year of that one
+request.
+
+`before`/`after` are capped at 16 KiB of serialised JSON each. Past that the
+side is stored as `{"truncated": true, "bytes": …}` and the API logs a warning
+naming the resource — the two actions that could plausibly reach it record a
+diff rather than a snapshot, so this is a backstop rather than the normal case.
+
+The rows are **append-only in the database itself**
+([#329](https://github.com/onixus/Shapoclyack/issues/329)): triggers refuse
+every `UPDATE`, `DELETE` and `TRUNCATE`, so a bug in the API cannot rewrite
+history. Whether *an operator holding the API's credentials* can is a
+deployment question, not a code one — it depends on `audit_events` being owned
+by a role the API does not run as, which the shipped `k8s/` manifests do **not**
+do and the GRANT layout in
+[operations.md](operations.md#audit-trail-immutability-and-retention) does.
+Retention is a separate privileged job, documented in the same place.
+
 ## Single sign-on (OIDC)
 
 Authorization code with PKCE against a generic OpenID Connect provider
@@ -254,6 +334,7 @@ not an authorization control.
 | Prefix | Purpose |
 |---|---|
 | `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
+| `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (admin in the tenant; CSV/NDJSON export) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |

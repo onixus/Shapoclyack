@@ -28,6 +28,7 @@ from sqlalchemy import select
 from api.auth import hash_password, verify_password
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
+from api.services import audit as audit_service
 from api.settings import ENV_PROD, InsecureConfigurationError, Settings
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,7 @@ def create_user(
     role: str,
     email: str | None = None,
     created_by: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any]:
     """Create one account, address included, in a single transaction.
 
@@ -243,58 +245,138 @@ def create_user(
         )
         session.add(row)
         session.flush()
-        return _with_tenants(session, row)
+        created = _with_tenants(session, row)
+        # In this transaction, so an account that exists and an account that was
+        # recorded are the same set (#327). ``created`` carries no password
+        # material by construction, and audit redacts by field name anyway.
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_USER_CREATE,
+            resource_type="user",
+            resource_id=username,
+            after=created,
+        )
+        return created
 
 
-def set_password(username: str, password: str) -> dict[str, Any] | None:
+def set_password(
+    username: str,
+    password: str,
+    *,
+    audit: "audit_service.AuditContext | None" = None,
+    action: str | None = None,
+) -> dict[str, Any] | None:
+    """Write a new password hash, and record *that* it changed (#327).
+
+    ``action`` names which of the two acts this is — an admin's reset or the
+    owner's own rotation — because they are different facts to an auditor and
+    :func:`change_own_password` delegates here. Neither the old nor the new
+    password appears in the row: ``before``/``after`` carry the timestamp that
+    moved, which is what "was this account's password changed at 03:00" needs
+    and all it needs.
+    """
     password = _validate_password(password)
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
         if row is None:
             return None
+        previous_changed_at = _iso(row.password_changed_at)
         row.password_hash = hash_password(password)
         row.password_changed_at = _now()
         row.updated_at = _now()
         session.flush()
-        return _with_tenants(session, row)
+        updated = _with_tenants(session, row)
+        audit_service.record(
+            session,
+            audit,
+            action=action or audit_service.ACTION_USER_PASSWORD_RESET,
+            resource_type="user",
+            resource_id=username,
+            before={"password_changed_at": previous_changed_at},
+            after={"password_changed_at": _iso(row.password_changed_at)},
+        )
+        return updated
 
 
-def change_own_password(username: str, *, current: str, new: str) -> dict[str, Any] | None:
+def change_own_password(
+    username: str,
+    *,
+    current: str,
+    new: str,
+    audit: "audit_service.AuditContext | None" = None,
+) -> dict[str, Any] | None:
     """Rotate one's own password, re-verifying the current one first.
 
     Separate from :func:`set_password` on purpose: an admin resetting someone
     else's password does not know the old one, while a user changing their own
-    must prove they are still the one sitting at the session.
+    must prove they are still the one sitting at the session. Recorded under
+    its own action for the same reason — a reset performed *on* an account is
+    the interesting one to review, and folding it in with every user's routine
+    rotation is how it stops being noticed.
     """
     if authenticate(username, current) is None:
         return None
-    return set_password(username, new)
+    return set_password(
+        username, new, audit=audit, action=audit_service.ACTION_USER_PASSWORD_CHANGE
+    )
 
 
-def set_role(username: str, role: str) -> dict[str, Any] | None:
+def set_role(
+    username: str, role: str, *, audit: "audit_service.AuditContext | None" = None
+) -> dict[str, Any] | None:
     role = _validate_role(role)
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
         if row is None:
             return None
+        previous = row.role
         row.role = role
         row.updated_at = _now()
         session.flush()
-        return _with_tenants(session, row)
+        updated = _with_tenants(session, row)
+        # Only the field that moved: "admin -> viewer" is the fact a review
+        # reads, and the rest of the account is noise around it.
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_USER_ROLE,
+            resource_type="user",
+            resource_id=username,
+            before={"role": previous},
+            after={"role": role},
+        )
+        return updated
 
 
-def set_disabled(username: str, disabled: bool) -> dict[str, Any] | None:
+def set_disabled(
+    username: str, disabled: bool, *, audit: "audit_service.AuditContext | None" = None
+) -> dict[str, Any] | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
         if row is None:
             return None
+        was_disabled = row.disabled_at is not None
         row.disabled_at = _now() if disabled else None
         row.updated_at = _now()
         session.flush()
-        return _with_tenants(session, row)
+        updated = _with_tenants(session, row)
+        # One action for both directions, with the values either side: an
+        # account disabled and re-enabled an hour later is two rows that read as
+        # the pair they are.
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_USER_DISABLE,
+            resource_type="user",
+            resource_id=username,
+            before={"disabled": was_disabled},
+            after={"disabled": disabled},
+        )
+        return updated
 
 
 class SsoLinkError(PermissionError):
@@ -498,15 +580,27 @@ def count_active_admins(exclude: str | None = None) -> int:
         return len(session.execute(stmt).scalars().all())
 
 
-def delete_user(username: str) -> bool:
+def delete_user(username: str, *, audit: "audit_service.AuditContext | None" = None) -> bool:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
         if row is None:
             return False
+        # Snapshot before the delete: this row is the only remaining answer to
+        # "what did the account we deleted have", including the tenants whose
+        # membership rows go with it.
+        removed = _with_tenants(session, row)
         # Memberships cascade (FK from migration 0013), so no orphan grant
         # survives to be silently re-attached if the name is recreated later.
         session.delete(row)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_USER_DELETE,
+            resource_type="user",
+            resource_id=username,
+            before=removed,
+        )
         return True
 
 

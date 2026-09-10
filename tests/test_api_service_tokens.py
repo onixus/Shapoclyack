@@ -150,6 +150,27 @@ def test_a_token_never_exceeds_the_role_it_maps_to(env):
     assert response.status_code == 403
 
 
+def test_the_audit_trail_is_closed_even_to_an_admin_token(env):
+    """A token is a long-lived bearer credential with no password behind it.
+
+    The administrative trail names the humans who administer the installation
+    and the addresses they work from, and ``?format=ndjson`` hands a year of
+    that over in one request (#327) — so ``audit`` is in
+    ``FORBIDDEN_RESOURCES`` rather than left to how narrowly someone happened
+    to scope the token.
+    """
+    client, _settings, admin = env
+    token = issue(client, admin, scopes=["*"], role="admin")["token"]
+    assert client.get("/api/audit", headers=bearer(token)).status_code == 403
+    assert (
+        client.get("/api/audit", headers=bearer(token), params={"format": "ndjson"}).status_code
+        == 403
+    )
+    # The same token still reaches what it was minted for, so this is the
+    # resource being refused and not a broken token.
+    assert client.get("/api/runs", headers=bearer(token)).status_code == 200
+
+
 def test_identity_administration_is_closed_even_to_an_admin_token(env):
     client, _settings, admin = env
     token = issue(client, admin, scopes=["*"], role="admin")["token"]

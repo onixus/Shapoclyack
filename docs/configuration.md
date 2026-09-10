@@ -561,6 +561,7 @@ Login rate limiting and the auth audit trail (see
 | `OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES` | `50` | Failures allowed per client IP across *all* usernames, in the same window — what walking a username list looks like. Much looser on purpose: one NAT or office egress address is many legitimate users, and tripping it refuses them too |
 | `OCTO_TRUSTED_PROXIES` | *(empty)* | Comma-separated proxy IPs/CIDRs. `X-Forwarded-For` is read **only** when the immediate peer is one of these. Leave empty and every attempt is attributed to the socket peer — set it when the API sits behind an ingress, or the whole installation shares one limiter key |
 | `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever. Rows inside the limiter window are kept regardless, so a short retention cannot weaken the lockout |
+| `OCTO_AUDIT_EVENT_RETENTION_DAYS` | `365` | Age past which `audit_events` (the administrative trail, #327) rows are pruned; `0` keeps them forever. The API never prunes them — the rows are append-only and only `python -m api.services.audit_retention`, run with its own credentials, can, see [operations.md](operations.md#audit-trail-immutability-and-retention-327-329) |
 
 Single sign-on (see [api-and-rbac.md](api-and-rbac.md#single-sign-on-oidc)).
 SSO stays **off** until the first three are all set:
