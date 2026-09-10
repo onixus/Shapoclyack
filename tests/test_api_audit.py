@@ -609,7 +609,7 @@ def test_the_trail_refuses_truncate(env):
     assert actions(client, admin, resource_id="tom") == ["user.create"]
 
 
-def test_a_rolled_back_change_leaves_no_row(env, monkeypatch):
+def test_a_rolled_back_change_leaves_no_row(env):
     """The other half of "the row commits with the change".
 
     The suite already asserts that a change which succeeds is recorded. This is
@@ -626,14 +626,20 @@ def test_a_rolled_back_change_leaves_no_row(env, monkeypatch):
         original(session, context, **kwargs)
         raise RuntimeError("boom, with the audit row already in the session")
 
-    monkeypatch.setattr(audit_service, "record", record_then_die)
-    with pytest.raises(RuntimeError):
-        client.post(
-            "/api/users",
-            headers=admin,
-            json={"username": "una", "password": "correct-horse-1", "role": "viewer"},
-        )
-    monkeypatch.undo()
+    # Swapped by hand rather than through ``monkeypatch``: the ``env`` fixture
+    # built its client with the same monkeypatch instance, so undoing this one
+    # patch early would also undo the environment that client authenticates
+    # against — and every later request in the test would 401.
+    audit_service.record = record_then_die
+    try:
+        with pytest.raises(RuntimeError):
+            client.post(
+                "/api/users",
+                headers=admin,
+                json={"username": "una", "password": "correct-horse-1", "role": "viewer"},
+            )
+    finally:
+        audit_service.record = original
 
     # Neither the account nor a row claiming it was created.
     listed = client.get("/api/users", headers=admin)
