@@ -54,7 +54,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0045_vuln_ticket_sync_cursor"
-down_revision: Union[str, None] = "0043_user_mfa"
+down_revision: Union[str, None] = "0044_idempotency_records"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
