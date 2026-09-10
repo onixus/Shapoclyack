@@ -3,8 +3,9 @@ import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SystemPage from "@/app/(dashboard)/system/page";
 import * as apiModule from "@/lib/api";
-import type { EnrichmentDb, SystemStatus } from "@/lib/api";
+import type { EnrichmentDb, Me, SystemStatus } from "@/lib/api";
 import { useAppearanceStore } from "@/lib/appearance";
+import { useAuthStore } from "@/lib/auth-store";
 
 const NOW = "2026-09-08T10:00:00Z";
 
@@ -134,5 +135,59 @@ describe("SystemPage enrichment freshness", () => {
     expect(await screen.findByText("advisories_debian")).toBeInTheDocument();
     expect(badgeOf("advisories_debian")).toHaveTextContent("заглушка");
     expect(badgeOf("kev")).toHaveTextContent("актуально");
+  });
+});
+
+
+function principal(overrides: Partial<Me>): Me {
+  return {
+    username: "someone",
+    role: "viewer",
+    tenants: ["default"],
+    default_tenant: "default",
+    is_platform_admin: false,
+    ...overrides,
+  };
+}
+
+describe("SystemPage configuration panel", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppearanceStore.setState({ locale: "en" });
+    vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(status([db({ name: "kev" })]));
+    vi.spyOn(apiModule, "fetchConfig").mockResolvedValue({
+      editable_paths: ["nuclei.enabled"],
+      defaults: { "nuclei.enabled": false },
+      effective: { "nuclei.enabled": false },
+      overrides: {},
+    });
+  });
+
+  it("hides the tuner from a principal without config.read", async () => {
+    // GET /api/config is 403 for a viewer since #318, so rendering the panel
+    // would put an error message where a read-only view used to be.
+    useAuthStore.setState({ user: principal({ permissions: [] }) });
+    renderPage();
+
+    expect(await screen.findByText("kev")).toBeInTheDocument();
+    expect(screen.queryByText("Scanner Configuration Tuner")).not.toBeInTheDocument();
+  });
+
+  it("shows it to a principal that holds config.read", async () => {
+    useAuthStore.setState({
+      user: principal({ role: "operator", permissions: ["config.read"] }),
+    });
+    renderPage();
+
+    expect(await screen.findByText("Scanner Configuration Tuner")).toBeInTheDocument();
+  });
+
+  it("falls back to the role on an API that sends no permissions", async () => {
+    // An installation upgraded in two steps: the console is new, the API is
+    // not. Gating on a field that is simply absent would empty the page.
+    useAuthStore.setState({ user: principal({ role: "admin" }) });
+    renderPage();
+
+    expect(await screen.findByText("Scanner Configuration Tuner")).toBeInTheDocument();
   });
 });

@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { ConfigEditor } from "@/components/config-editor";
 import { KpiCard } from "@/components/kpi-card";
 import { useSystemStatus } from "@/hooks/use-system";
-import { useAuthStore } from "@/lib/auth-store";
+import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import type { EnrichmentDb } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
@@ -48,6 +48,13 @@ export default function SystemPage() {
   const t = useT();
   const { data, isLoading, error, isFetching } = useSystemStatus();
   const isAdmin = useAuthStore((s) => s.user?.role === "admin");
+  // GET /api/config needs `config.read` since #318, which a viewer does not
+  // hold: rendering the panel for one would show an error where there used to
+  // be a read-only view. The fallback keeps the panel for anyone above viewer
+  // on an API that predates the permission list.
+  const canReadConfig = useAuthStore((s) =>
+    holdsPermission(s.user, "config.read", s.user?.role !== "viewer"),
+  );
 
   return (
     <div className="space-y-6">
@@ -266,7 +273,7 @@ export default function SystemPage() {
             </Card>
           </div>
 
-          <ConfigEditor canEdit={isAdmin} />
+          {canReadConfig ? <ConfigEditor canEdit={isAdmin} /> : null}
         </>
       )}
     </div>

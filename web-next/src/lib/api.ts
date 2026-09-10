@@ -165,6 +165,14 @@ export type Me = {
   tenants: string[];
   default_tenant: string;
   is_platform_admin: boolean;
+  /** The role held *inside* `default_tenant` and what it grants (#318). Since
+   * #318 the global `role` above is no longer the whole answer: the same
+   * account can be an auditor in one tenant and a scope-approver in another,
+   * so the pages gate on these rather than on the role name. Optional: an API
+   * older than #318 does not send them, and the callers fall back to the role.
+   */
+  tenant_role?: string;
+  permissions?: string[];
   /** Second-factor state (#315): whether the account has enrolled, whether
    * this installation requires it of the account's role, and whether *this
    * session* is confined to the enrolment flow until it does. */

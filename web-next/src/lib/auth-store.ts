@@ -52,6 +52,23 @@ function canOperate(role: Role | undefined) {
   return role === "operator" || role === "admin";
 }
 
+/** Whether the signed-in principal holds one named permission (#318).
+ *
+ * `fallback` is what to answer when the API did not send a permission list at
+ * all — an installation older than #318 — so a page gated on this keeps
+ * rendering for whoever it used to render for instead of disappearing. It is
+ * presentation only: the API is the boundary, and every one of these
+ * permissions is enforced there.
+ */
+export function holdsPermission(
+  user: Me | null | undefined,
+  permission: string,
+  fallback = false,
+): boolean {
+  if (!user?.permissions) return fallback;
+  return user.permissions.includes(permission);
+}
+
 /** Keep a persisted tenant only while the signed-in user is still entitled to
  * it — a revoked membership (or a different user on the same browser) would
  * otherwise 403 every request until localStorage is cleared by hand. */

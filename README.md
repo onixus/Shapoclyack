@@ -288,7 +288,13 @@ The FastAPI control plane exposes a REST API rooted at `/api`. Interactive OpenA
 Every request is scoped to a verified tenant context using JWT bearer tokens:
 * `viewer`: Read-only access to assets, vulnerabilities, scans, reports, compliance, and metrics.
 * `operator`: Viewer privileges plus launching scans, managing remediation kanban, triggering mechanical verification, and updating asset context.
-* `admin`: Operator privileges plus managing tenants, approving scan scopes, configuring SSO/OIDC, issuing service tokens, and accepting risk.
+* `admin`: Operator privileges plus administering the tenant — its members, provisioning keys, service tokens and audit trail. Held globally on an account it means *platform* admin: creating tenants, setting quotas, approving scan scopes and editing the installation-wide scanner configuration.
+
+Roles also carry **named permissions**, so duties can be separated: `auditor`
+(reads the audit trail and configuration, writes nothing), `scope-approver`
+(approves what may be scanned, runs no scans), `scan-operator`, `token-admin`
+and `risk-approver`. Any of them can be granted per tenant on a membership —
+see [API and RBAC Documentation](docs/api-and-rbac.md#roles).
 
 ### Enterprise Integrations
 * **Ticket Synchronization**: Push findings to Jira, ServiceNow, and DefectDojo automatically. The pull direction — noticing that a ticket was resolved and triggering mechanical re-verification — is an on-demand action today; a poller is [#347](https://github.com/onixus/Shapoclyack/issues/347).

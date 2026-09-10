@@ -15,7 +15,10 @@ pytestmark = requires_postgres
 
 def test_get_config_shape():
     client = api_client()
-    headers = auth_headers(client, "viewer")
+    # Operator, not viewer: GET /api/config needs ``config.read`` since #318,
+    # which a viewer does not hold (tests/test_api_rbac_permissions.py covers
+    # the refusal itself).
+    headers = auth_headers(client, "operator")
     r = client.get("/api/config", headers=headers)
     assert r.status_code == 200
     body = r.json()
@@ -61,16 +64,17 @@ def test_admin_update_rejects_invalid():
 
 
 def test_nvd_api_key_is_never_returned_to_a_reader():
-    """GET /api/config is viewer-readable, so a stored key must come back masked
-    -- in every bucket, not just `overrides`."""
+    """GET /api/config is readable by anyone holding ``config.read`` -- every
+    operator, tenant admin and auditor -- so a stored key must come back masked
+    in every bucket, not just `overrides`."""
     client = api_client()
     admin = auth_headers(client, "admin")
     secret = "nvd-secret-value-under-test"
     r = client.put("/api/config", headers=admin, json={"overrides": {"enrichment.cvss4.nvd_api_key": secret}})
     assert r.status_code == 200, r.text
 
-    viewer = auth_headers(client, "viewer")
-    r = client.get("/api/config", headers=viewer)
+    reader = auth_headers(client, "operator")
+    r = client.get("/api/config", headers=reader)
     assert r.status_code == 200
     assert secret not in r.text
     assert r.json()["effective"]["enrichment.cvss4.nvd_api_key"] == SECRET_MASK

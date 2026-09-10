@@ -31,6 +31,12 @@ def test_login_and_me():
         "tenants": ["default"],
         "default_tenant": "default",
         "is_platform_admin": False,
+        # The role inside ``default_tenant`` and what it grants (#318). A
+        # viewer holds no named permission at all: reading findings is the
+        # rank, and every permission in the catalogue is something more than
+        # that.
+        "tenant_role": "viewer",
+        "permissions": [],
         # Second-factor state of the account and of this session (#315). All
         # three false on an installation that has not configured MFA, which is
         # what "nothing changes on upgrade" looks like from the console's side.

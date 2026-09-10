@@ -496,8 +496,9 @@ installation has no account for).
 
 ## Service tokens
 
-Non-interactive API credentials, admin-issued per tenant, so an integration
-stops running under a person's password (ROADMAP Track E). Format:
+Non-interactive API credentials, issued per tenant by whoever holds
+`tenant.credential.manage` on it, so an integration stops running under a
+person's password (ROADMAP Track E). Format:
 `octo_st_<16 hex>_<secret>`. The first two segments are the **prefix** — public,
 unique, indexed, and what the console shows; the secret is stored only as a
 bcrypt hash, so the plaintext exists once, in the create response, and cannot
@@ -505,9 +506,9 @@ be read back.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/tenants/{tenant_id}/service-tokens` | admin | Issue. Returns `token` — the only time it exists |
-| `GET /api/tenants/{tenant_id}/service-tokens` | admin | List, without secrets. Revoked and expired ones stay listed |
-| `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke` | admin | Kill immediately. Idempotent |
+| `POST /api/tenants/{tenant_id}/service-tokens` | `tenant.credential.manage` | Issue. Returns `token` — the only time it exists |
+| `GET /api/tenants/{tenant_id}/service-tokens` | `tenant.credential.manage` | List, without secrets. Revoked and expired ones stay listed |
+| `POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke` | `tenant.credential.manage` | Kill immediately. Idempotent |
 
 A token is presented on the ordinary `Authorization: Bearer` header; which
 credential it is, is decided by its own shape, never by anything the caller
@@ -545,21 +546,94 @@ turn every request into a write.
 
 ## Roles
 
-| Role | Intended capability |
+Two things decide what a caller may do: a **rank** (read / write / administer),
+which the older routes compare against, and a set of **named permissions**
+(#318), which the finer-grained routes ask for by name. Both are declared for
+every role in one table — `api/core/permissions.py` — and published over
+`GET /api/rbac/permissions` and `GET /api/rbac/roles`.
+
+A **global** role lives on the account (`users.role`) and is still one of three
+names, of which `admin` means *platform* admin. Every role below can be granted
+on a **membership** instead (`PUT /api/tenants/{id}/members/{username}`), and
+then it applies in that tenant only.
+
+| Role | Rank | Intended capability |
+|---|---|---|
+| `viewer` | read | Read assets, runs, findings, diffs, artifacts (except screenshot PNGs and restricted artifacts), and status |
+| `operator` | write | Viewer plus start jobs, screenshot PNGs, restricted artifacts, update permitted asset metadata, and read the scanner configuration |
+| `admin` | administer | Operator plus this tenant's members, provisioning keys, service tokens, audit trail and quota (read) |
+| `auditor` | read | Viewer plus the audit trail, the scanner configuration, the approved scope and the quota — and **no** write anywhere |
+| `scan-operator` | write | Operator, named separately so "runs scans" can be granted without the word operator |
+| `scope-approver` | read | Approves what the tenant may scan (`PUT …/scan-scope`) and starts no scans |
+| `token-admin` | read | Manages the tenant's provisioning keys and service tokens, and nothing else |
+| `risk-approver` | read | Holds `vulnerability.exception.approve` for the risk-acceptance workflow (#348, **not yet implemented** — the role and the permission exist, the approval flow does not) |
+
+The specialist roles are deliberately at **read** rank: a `scope-approver` at
+write rank would pass every `operator` gate in the API and could run the scans
+it is only supposed to approve.
+
+### Permissions
+
+| Permission | Held by |
 |---|---|
-| `viewer` | Read assets, runs, findings, diffs, artifacts (except screenshot PNGs and restricted artifacts), and status |
-| `operator` | Viewer plus start jobs, screenshot PNGs, restricted artifacts, and update permitted asset metadata |
-| `admin` | Operator plus tenant provisioning, destructive administration, and config overrides |
+| `audit.read` | `auditor`, tenant `admin`, platform admin |
+| `config.read` | `operator`, `scan-operator`, `auditor`, tenant `admin`, platform admin |
+| `config.write` | platform admin |
+| `scan_scope.read` | `scope-approver`, `auditor`, tenant `admin`, platform admin |
+| `scan_scope.approve` | `scope-approver`, platform admin |
+| `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
+| `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
+| `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
+| `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
+| `vulnerability.exception.approve` | `risk-approver`, platform admin |
+
+`platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
+anyone below it: those counters span every tenant on the installation.
+
+**Custom roles per tenant are not implemented.** The schema holds them
+(`roles`/`role_permissions`, keyed by role and tenant, with the built-ins under
+the empty tenant id) and `GET /api/rbac/roles` already returns a tenant's own
+rows, but there is no way to create one and an unknown role name resolves to no
+permissions at all. #318 stays open for it.
 
 The route implementation is authoritative. Client-side hiding is usability,
 not an authorization control.
+
+### Platform admin vs tenant admin
+
+`admin` means two different things depending on where it is held, and since
+#318 they are genuinely different authorities:
+
+* **Platform admin** — the global `admin` role on the account. Acts in every
+  tenant without a membership, creates tenants, sets quotas, edits the
+  installation-wide scanner configuration, and reads the cross-tenant counters.
+* **Tenant admin** — an `admin` *membership* in one tenant. Administers that
+  tenant end to end — members, provisioning keys, service tokens, audit trail,
+  and reading its quota and approved scope — and reaches nothing outside it.
+  Naming another tenant in the path is `403`.
+
+Two things a tenant admin deliberately cannot do, because they are the controls
+on the tenant rather than controls of it: **approve its scanning scope**
+(`scan_scope.approve`, the `scope-approver` role or the platform admin) and
+**change its quota** (`platform.quota.manage`). An administrator who could
+raise their own limit or widen their own scope is the control removing itself.
+
+### Suspended tenants
+
+`tenants.status` used to reach machines only: a suspended tenant could not
+exchange a provisioning key or mint one, while every person in it kept reading
+and scanning. Since #318 every tenant-scoped request by a non-platform-admin
+principal in a tenant whose status is not `active` is refused with `403`
+("Tenant … is suspended"). The platform admin is exempt, so the suspension can
+be inspected and lifted. Nothing in the API sets that status yet — see #325.
 
 ## Endpoint groups
 
 | Prefix | Purpose |
 |---|---|
 | `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
-| `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (admin in the tenant; CSV/NDJSON export) |
+| `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (`audit.read` in the tenant, so an `auditor` too; CSV/NDJSON export) |
+| `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`), read-only |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |
@@ -567,7 +641,7 @@ not an authorization control.
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher **and fold the result into the vulnerability lifecycle** are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
-| `/api/tenants` | Tenant lifecycle, provisioning keys, and the approved scanning scope (`/api/tenants/{id}/scan-scope`, admin). A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
+| `/api/tenants` | Tenant lifecycle (platform admin), members and credentials (the tenant's own admin, per-permission — see [Roles](#roles)), and the approved scanning scope (`/api/tenants/{id}/scan-scope`: read `scan_scope.read`, approve `scan_scope.approve`). A supplied `tenant_id` must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and must not start with the reserved `h_`, since it doubles as a NATS subject token (422 otherwise) |
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
 | `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
@@ -576,7 +650,7 @@ not an authorization control.
 | `/api/compliance` | PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory. Read-only, `viewer`. A platform admin gets no cross-tenant view here: a control status is a statement about one organisation — see [reports-and-compliance.md](reports-and-compliance.md) |
 | `/api/reports` | Report factory: branding (`admin`), templates (`operator`), scheduled delivery (`admin` — it sends this tenant's findings outside the installation), on-demand generation (`operator`) and downloads (`viewer`) |
 | `/api/system` | Non-secret installation status |
-| `/api/config` | Validated, whitelisted scanner overrides |
+| `/api/config` | Validated, whitelisted scanner overrides. Read needs `config.read` (not a viewer), write is platform admin |
 
 `POST /api/jobs/{job_id}/cancel` (operator) cancels a `queued` job — one no
 executor has taken yet, so refusing to hand it out is a real stop. It answers
@@ -814,8 +888,10 @@ the first pair worth revisiting.
 
 Reading the snippets stays `operator`: `GET` mints nothing and returns a
 `<PROVISIONING_KEY>` placeholder. Tenant-wide key administration (listing,
-revoking, minting against an arbitrary tenant under
-`/api/tenants/{tenant_id}/provisioning-keys`) is `admin`, as before.
+revoking, minting under `/api/tenants/{tenant_id}/provisioning-keys`) needs
+`tenant.credential.manage` on **that** tenant, which since #318 the tenant's
+own admin and the `token-admin` role hold as well as the platform admin — a
+tenant rotates the key its installer uses instead of filing a ticket.
 
 The split between GET and POST is deliberate: rendering the snippets is
 idempotent, minting is not. Keys are hashed at rest and the plaintext is
@@ -1097,10 +1173,14 @@ install with neither an account nor that variable refuses to start. See
 ## Approved scanning scope
 
 What a tenant may point the platform at is a stored, approved list rather than
-a syntax check (#226). All three endpoints are platform admin, for the same reason
-provisioning-key creation is (#231): deciding that a tenant may scan a network
-is an administrative act, and an operator who could widen their own scope
-would be the control removing itself.
+a syntax check (#226). Reading it needs `scan_scope.read` (the tenant's own
+admin, its auditor, the scope-approver, the platform admin); **approving** it
+needs `scan_scope.approve`, which since #318 only the `scope-approver` role
+and the platform admin hold — and no role that can start a scan does, not
+`operator`, not `scan-operator`, not the tenant's own `admin`. Deciding that a
+tenant may scan a network is an administrative act about somebody else's
+property, and an operator who could widen their own scope would be the control
+removing itself.
 
 ```http
 GET /api/tenants/{tenant_id}/scan-scope
@@ -1225,8 +1305,11 @@ GET /api/tenants/{tenant_id}/quota
 PUT /api/tenants/{tenant_id}/quota   {"max_assets": 2000, "max_scans_per_month": 40, "note": "Renewal 2027-01"}
 ```
 
-Platform admin, for the reason scan-scope approval is: a tenant operator who
-could raise their own quota is the control removing itself. `PUT` replaces
+`GET` needs `tenant.quota.read`, so a tenant admin or auditor sees its own
+limit rather than discovering it as a refused scan. `PUT` and `DELETE` are
+platform admin (`platform.quota.manage`), for the reason scan-scope approval
+is: a tenant admin who could raise their own quota is the control removing
+itself. `PUT` replaces
 whatever applied before and stamps the caller and the moment on the row, so
 "who sold them 5,000 assets" has an answer that is not a memory. An unknown
 tenant is `404`; a value outside `0..10000000` (assets) or `0..1000000`
@@ -1291,7 +1374,7 @@ increments the same counter with `resource="scans"`.
 ## Tenant memberships
 
 Which tenants a user may act in comes from the `user_tenants` table, managed by
-a platform admin:
+the tenant's own admin or by a platform admin (`tenant.member.manage`):
 
 ```http
 GET    /api/tenants/{tenant_id}/members
@@ -1299,8 +1382,11 @@ PUT    /api/tenants/{tenant_id}/members/{username}   {"role": "operator"}
 DELETE /api/tenants/{tenant_id}/members/{username}
 ```
 
-`PUT` is idempotent and re-grants change the role. Membership rows hold no
-credential material.
+`PUT` is idempotent and re-grants change the role; `role` is any of the eight
+tenant roles in [Roles](#roles) above. Every grant and revoke is recorded in
+the administrative audit trail (`membership.grant` / `membership.revoke`, with
+the role before and after), which is what makes tenant self-service reviewable.
+Membership rows hold no credential material.
 
 Every tenant-scoped route resolves its tenant server-side from the
 authenticated username. The `tenant_id` query parameter still exists, but it
@@ -1313,8 +1399,9 @@ else is `403`:
 | Has memberships | Requested (must be granted), else their sole membership / `default` / first by name | Role inside the tenant comes from the membership row, so it can differ from the global role |
 | Has no memberships | `default` only | Pre-P0 behaviour, so existing single-tenant installations keep working; granting any membership opts the user into strict scoping |
 
-`GET /api/auth/me` returns `tenants`, `default_tenant`, and
-`is_platform_admin` for the caller; `GET /api/tenants` lists only the tenants
+`GET /api/auth/me` returns `tenants`, `default_tenant`, `is_platform_admin`,
+and — since #318 — `tenant_role` and `permissions` for the caller's default
+tenant, which is what the console gates its pages on; `GET /api/tenants` lists only the tenants
 the caller may act in, so an MSSP's customer list does not leak to a single
 customer's operator.
 

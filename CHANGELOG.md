@@ -6,6 +6,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Named permissions, an auditor role, and a tenant admin that is not the
+  platform admin** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
+  Three ranked roles could not express "reads the audit trail and writes
+  nothing" or "approves what we may scan but runs no scans", and every
+  tenant-administration route belonged to the global admin alone. A role now
+  carries a set of named permissions alongside its rank (`api/core/permissions.py`,
+  published by `GET /api/rbac/permissions` and `GET /api/rbac/roles`, seeded by
+  migration 0049), and five roles join the original three: `auditor`,
+  `scan-operator`, `scope-approver`, `token-admin` and `risk-approver` (defined
+  for #348; the approval workflow itself is not implemented here). The existing
+  three keep exactly the authority they had, so no administrator has to do
+  anything after the upgrade. A tenant's own admin now manages its members,
+  provisioning keys and service tokens and reads its quota and scope, while
+  approving the scope (`scan_scope.approve`) and changing the quota stay
+  platform admin — an administrator who could widen their own scope is the
+  control removing itself. `GET /api/config` needs `config.read`, so a viewer
+  no longer reads the installation's scanning posture, and the cross-tenant
+  counters in `GET /api/system` need `platform.fleet.read`. A suspended tenant
+  now refuses its people and not only its agents. **Custom roles per tenant are
+  not implemented** — the schema and the read side hold them, there is no way to
+  create one — so #318 stays open.
+
 - **A console account can carry a second factor, and an admin role can be made
   to** ([#315](https://github.com/onixus/Shapoclyack/issues/315)). A local
   administrator — the account that mints service tokens, approves scanning
