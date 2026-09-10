@@ -925,9 +925,21 @@ timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
 `servicenow` / `defectdojo`. Ticket transports POST the native create-issue
 body to the instance URL, then link `ticket_key` on the matching tracked
 finding. An operator-set link is not overwritten. `transport_config` holds
-non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`).
-Credentials stay in `secret` or `Authorization`. Needs NATS, like any other
-asset-event consumer.
+non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`) plus two
+that every ticket transport takes ([#347](https://github.com/onixus/Shapoclyack/issues/347)):
+
+- `auth_mode`: `bearer` (default; Jira Data Center PATs), `basic` (Jira Cloud —
+  `secret` is then `email:api_token` and is base64'd for the request, never
+  stored decoded) or `token` (DefectDojo's default). `422` on anything else. An
+  `Authorization` header set in `headers` still wins over all three.
+- `sync_interval_seconds`: how often the inbound poller re-reads *this*
+  tenant's tickets. `0` (default) means the platform's
+  `OCTO_TICKET_SYNC_INTERVAL_SECONDS`; anything else must be ≥ 60, and a
+  smaller number is `422` rather than a tracker quietly being hammered.
+
+Credentials stay in `secret` or `Authorization`. Ticket *creation* needs NATS,
+like any other asset-event consumer; reading tickets back does not — it works
+from the subscription and the linked findings alone.
 
 ## Operational endpoints
 

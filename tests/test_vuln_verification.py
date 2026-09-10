@@ -53,13 +53,20 @@ def test_servicenow_result_list_is_unwrapped():
     assert ticket_sync.map_remote_status_to_vuln_state("servicenow", payload)[0] == "CLOSED"
 
 
-def test_defectdojo_mitigated_is_closed_and_active_is_not():
+def test_defectdojo_mitigated_is_closed_and_active_suggests_nothing():
+    """``active`` used to suggest FIXING. It is the state every DefectDojo
+    finding is created in and says nothing about whether anybody has started —
+    which was harmless while the sync was a button and destructive once it ran
+    on a cadence (#347): every OPEN, ACKNOWLEDGED and PLANNED finding on a
+    DefectDojo subscription was dragged into FIXING within one interval, and
+    dragged back after any operator moved it, because all three of those moves
+    are legal."""
     assert ticket_sync.map_remote_status_to_vuln_state(
         "defectdojo", {"active": False, "is_mitigated": True}
     ) == ("CLOSED", "Mitigated")
     assert ticket_sync.map_remote_status_to_vuln_state(
         "defectdojo", {"active": True, "is_mitigated": False}
-    ) == ("FIXING", "Active")
+    ) == (None, "Active")
 
 
 def test_ticket_key_cannot_walk_the_request_off_its_path():

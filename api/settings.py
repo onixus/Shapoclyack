@@ -318,6 +318,36 @@ class Settings:
     webhook_allow_private_targets: bool = False
     # Bound on how much fan-out one event can cause per tenant.
     webhook_max_subscriptions_per_tenant: int = 20
+    # Inbound ticket sync (#347). "Two-way" used to mean one button: nothing
+    # read a tracker back unless an operator clicked, so a fix marked Done in
+    # Jira stayed OPEN here until somebody opened that finding's page. This
+    # gates whether *this* replica runs the poller, the same split webhooks and
+    # reports use — the API surface and the button are unaffected, and the
+    # worker is leader-locked so only one replica polls whatever the count.
+    ticket_sync_enabled: bool = True
+    # How often the thread wakes to look for due findings. Not the poll
+    # cadence: that is per subscription, below.
+    ticket_sync_poll_interval_seconds: int = 60
+    # Default seconds between two reads of the *same* ticket. Overridden per
+    # subscription by ``transport_config.sync_interval_seconds``, because a
+    # self-hosted Jira behind a corporate proxy and a Cloud instance with a
+    # published rate limit do not want the same cadence.
+    ticket_sync_interval_seconds: int = 900
+    # Findings polled per subscription per tick. The rest stay due and are
+    # taken by the next tick, oldest cursor first.
+    ticket_sync_batch_size: int = 200
+    # Whole-subscription backoff after a *retryable* failure (5xx, timeout):
+    # base * 2**(failures-1), capped. A tracker that is down must not be asked
+    # once per linked finding, every tick. A 4xx on one ticket is that ticket's
+    # problem and is recorded on its row instead.
+    ticket_sync_retry_base_seconds: int = 120
+    ticket_sync_retry_max_seconds: int = 3600
+    # How long after a ticket-driven closure the tracker may still reopen the
+    # finding. Closed findings have to stay in the queue for the reopen path to
+    # exist at all, and they have to leave it eventually or the queue grows by
+    # every closure forever — a year of them fills the batch ahead of the
+    # findings somebody is working on. 0 drops the reopen path entirely.
+    ticket_sync_reopen_window_days: int = 30
     # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
     # default since postgres_url always resolves — Postgres in prod, the SQLite
     # fallback in dev — unlike the opt-in NATS/ClickHouse sidecars.
@@ -1146,6 +1176,32 @@ def load_settings() -> Settings:
         ),
         webhook_delivery_retention_days=max(
             0, int(os.environ.get("OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS", "30"))
+        ),
+        ticket_sync_enabled=os.environ.get("OCTO_TICKET_SYNC_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        # Floored like the dispatchers' intervals above: a mistyped 0 would
+        # turn the worker's Event.wait() into a busy loop against the database.
+        ticket_sync_poll_interval_seconds=max(
+            5, int(os.environ.get("OCTO_TICKET_SYNC_POLL_INTERVAL_SECONDS", "60"))
+        ),
+        # Floored at 60s for the same reason the per-subscription override is
+        # (api/services/integrations/tickets.py): the poll is one GET per
+        # linked finding, and a tenant with thousands of them can put real load
+        # on a self-hosted tracker.
+        ticket_sync_interval_seconds=max(
+            60, int(os.environ.get("OCTO_TICKET_SYNC_INTERVAL_SECONDS", "900"))
+        ),
+        ticket_sync_batch_size=max(
+            1, int(os.environ.get("OCTO_TICKET_SYNC_BATCH_SIZE", "200"))
+        ),
+        ticket_sync_retry_base_seconds=max(
+            1, int(os.environ.get("OCTO_TICKET_SYNC_RETRY_BASE_SECONDS", "120"))
+        ),
+        ticket_sync_retry_max_seconds=max(
+            1, int(os.environ.get("OCTO_TICKET_SYNC_RETRY_MAX_SECONDS", "3600"))
+        ),
+        ticket_sync_reopen_window_days=max(
+            0, int(os.environ.get("OCTO_TICKET_SYNC_REOPEN_WINDOW_DAYS", "30"))
         ),
         webhook_allow_private_targets=os.environ.get(
             "OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS", "false"

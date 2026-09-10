@@ -1019,6 +1019,26 @@ class Vulnerability(Base):
     ticket_system: Mapped[str | None] = mapped_column(default=None)
     ticket_key: Mapped[str | None] = mapped_column(default=None)
     ticket_url: Mapped[str | None] = mapped_column(default=None)
+    # The inbound sync worker's cursor (#347): when this finding's ticket was
+    # last *read*, whether or not the read succeeded. It is the attempt and not
+    # the success on purpose — a tracker answering 404 for one key must not put
+    # that finding at the head of every batch forever, starving the rest. Which
+    # of the two it was is in ``ticket_sync_error``, and the worker's `lag`
+    # metric is the age of the oldest cursor still due.
+    ticket_synced_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The tracker's own status string as of that read ("Done", "6", "Active").
+    # The poller applies a suggestion only when this *changes*, which is what
+    # keeps it from re-imposing a state an operator has just overruled: if a
+    # human reopens a finding whose Jira issue is still Done — and the outbound
+    # reflection could not move it, because the workflow offers no Reopen —
+    # then without this the next tick would close it again, every interval,
+    # forever. The manual button is not subject to it: a person clicking Sync
+    # is asking for the tracker's current word regardless.
+    ticket_remote_status: Mapped[str | None] = mapped_column(default=None)
+    # The last read's failure, or NULL after one that worked. Kept on the row
+    # rather than only in the log because "the ticket link is broken" is a
+    # property of this finding that an operator has to be able to see.
+    ticket_sync_error: Mapped[str | None] = mapped_column(default=None)
     # Closed-loop remediation (#183). ``machine_verified`` is only ever set by
     # the ingest path in api/services/vulnerabilities.py, never from a request
     # body: the whole value of the metric is that it cannot be self-attested.
@@ -1067,6 +1087,14 @@ class Vulnerability(Base):
         # Adoption: one tenant's closures inside a window, by reason.
         Index("ix_vulnerabilities_fp", "tenant_id", "closure_reason", "closed_at"),
         Index("ix_vulnerabilities_closed", "tenant_id", "state", "closed_at"),
+        # The ticket-sync worker's due read: one tenant's findings on one
+        # tracker, oldest cursor first (#347).
+        Index(
+            "ix_vulnerabilities_ticket_sync",
+            "tenant_id",
+            "ticket_system",
+            "ticket_synced_at",
+        ),
     )
 
 

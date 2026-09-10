@@ -18,6 +18,7 @@ polling the tracker — not by this module, which only opens the ticket.
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -26,6 +27,20 @@ from api.services.integrations.delivery import DeliveryResult, post
 
 TRANSPORTS = ("webhook", "jira", "servicenow", "defectdojo")
 TICKET_TRANSPORTS = ("jira", "servicenow", "defectdojo")
+
+#: How ``secret`` is presented to the tracker (#347). Which one a tracker wants
+#: is a deployment fact, not something we can infer from the transport name:
+#: Jira Data Center takes a personal access token as ``Bearer``, while Jira
+#: Cloud only accepts ``Basic base64(email:api_token)`` and answers 401 to a
+#: bearer token. Before this knob, a Cloud tenant had to hand-write the whole
+#: ``Authorization`` header into ``headers``, which put a credential in the
+#: column meant for gateway tokens and made the tracker unreachable for
+#: anyone who did not know to do it.
+AUTH_MODES = ("bearer", "basic", "token")
+
+#: The mode used when ``transport_config.auth_mode`` is unset — the behaviour
+#: every subscription created before #347 already has.
+DEFAULT_AUTH_MODES = {"jira": "bearer", "servicenow": "bearer", "defectdojo": "token"}
 
 _USER_AGENT = "Shapoclyack-Ticket/1"
 
@@ -43,21 +58,71 @@ def validate_transport(value: str | None) -> str:
     return transport
 
 
+def validate_auth_mode(transport: str, value: Any) -> str:
+    """The ``auth_mode`` of a ticket transport, defaulted per tracker.
+
+    Rejected rather than defaulted when it is set to something unknown: an
+    operator who typed ``basic_auth`` wants a 422 on the subscription, not a
+    tracker that keeps answering 401 for a reason nothing in the UI explains.
+    """
+    mode = str(value or "").strip().lower()
+    if not mode:
+        return DEFAULT_AUTH_MODES.get(transport, "bearer")
+    if mode not in AUTH_MODES:
+        raise TicketSpecError(
+            f"{transport} transport_config.auth_mode must be one of {', '.join(AUTH_MODES)}"
+        )
+    return mode
+
+
+def validate_sync_interval(transport: str, value: Any) -> int:
+    """Per-subscription poll cadence for the inbound sync worker (#347).
+
+    0 means "use the platform default" (``OCTO_TICKET_SYNC_INTERVAL_SECONDS``).
+    Floored at 60s so a mistyped value cannot turn one tenant's tracker into a
+    target: the worker polls one GET per linked finding, and a self-hosted Jira
+    with a few thousand of them notices.
+    """
+    if value in (None, ""):
+        return 0
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TicketSpecError(
+            f"{transport} transport_config.sync_interval_seconds must be an integer"
+        ) from exc
+    if seconds == 0:
+        return 0
+    if seconds < 60:
+        raise TicketSpecError(
+            f"{transport} transport_config.sync_interval_seconds must be 0 or >= 60"
+        )
+    return seconds
+
+
 def validate_transport_config(transport: str, raw: dict[str, Any] | None) -> dict[str, Any]:
     cfg = dict(raw or {})
     if transport == "webhook":
         return {}
+    # Shared by every ticket transport: how the credential is presented, and
+    # how often the inbound worker reads this tenant's tickets back.
+    common = {
+        "auth_mode": validate_auth_mode(transport, cfg.get("auth_mode")),
+        "sync_interval_seconds": validate_sync_interval(
+            transport, cfg.get("sync_interval_seconds")
+        ),
+    }
     if transport == "jira":
         project = str(cfg.get("project_key") or "").strip()
         if not project:
             raise TicketSpecError("jira transport_config.project_key is required")
         issue_type = str(cfg.get("issue_type") or "Bug").strip() or "Bug"
-        return {"project_key": project, "issue_type": issue_type}
+        return {"project_key": project, "issue_type": issue_type, **common}
     if transport == "servicenow":
         table = str(cfg.get("table") or "incident").strip() or "incident"
         if "/" in table or "\\" in table or ".." in table:
             raise TicketSpecError("servicenow transport_config.table is not a table name")
-        return {"table": table}
+        return {"table": table, **common}
     if transport == "defectdojo":
         test_id = cfg.get("test_id")
         if test_id is None or str(test_id).strip() == "":
@@ -68,7 +133,7 @@ def validate_transport_config(transport: str, raw: dict[str, Any] | None) -> dic
             raise TicketSpecError("defectdojo transport_config.test_id must be an integer") from exc
         if test_id_int < 1:
             raise TicketSpecError("defectdojo transport_config.test_id must be >= 1")
-        return {"test_id": test_id_int}
+        return {"test_id": test_id_int, **common}
     return {}
 
 
@@ -176,19 +241,43 @@ def request_headers(
     *,
     secret: str | None,
     extra_headers: dict[str, str] | None,
+    auth_mode: str | None = None,
 ) -> dict[str, str]:
-    """Auth for the foreign API. Never HMAC — those APIs would reject it."""
+    """Auth for the foreign API. Never HMAC — those APIs would reject it.
+
+    ``auth_mode`` comes from ``transport_config`` and defaults per tracker to
+    what this function did before #347. An ``Authorization`` header the
+    operator wrote by hand still wins: it is the escape hatch for a tracker
+    behind a scheme none of the three modes covers.
+    """
     headers = {str(k): str(v) for k, v in (extra_headers or {}).items()}
     headers["Content-Type"] = "application/json"
     headers["User-Agent"] = _USER_AGENT
     has_auth = any(k.lower() == "authorization" for k in headers)
     token = (secret or "").strip()
     if token and not has_auth:
-        if transport == "defectdojo":
-            headers["Authorization"] = f"Token {token}"
-        else:
-            headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = authorization_value(
+            validate_auth_mode(transport, auth_mode), token
+        )
     return headers
+
+
+def authorization_value(auth_mode: str, token: str) -> str:
+    """The ``Authorization`` value for one already-validated mode."""
+    if auth_mode == "basic":
+        # Jira Cloud's credential is a pair, and the pair is what has to be
+        # encoded. A lone token base64'd here would be sent as a username with
+        # an empty password, which Jira answers 401 to — the same symptom as no
+        # credential at all, which is why this is a refusal and not a guess.
+        if ":" not in token:
+            raise TicketSpecError(
+                "auth_mode 'basic' needs the secret as 'user:token' "
+                "(for Jira Cloud, 'email:api_token')"
+            )
+        return "Basic " + base64.b64encode(token.encode("utf-8")).decode("ascii")
+    if auth_mode == "token":
+        return f"Token {token}"
+    return f"Bearer {token}"
 
 
 def parse_created(
