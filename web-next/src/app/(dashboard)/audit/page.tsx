@@ -38,6 +38,8 @@ const ACTIONS = [
   "report.download",
   "scan_scope.replace",
   "config.update",
+  "vulnerability.bulk",
+  "asset.bulk",
 ] as const;
 
 /** ISO instant from a `datetime-local` value, or undefined when it is empty.

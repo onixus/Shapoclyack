@@ -371,6 +371,44 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Bulk actions in the console; one request for a whole selection**
+  ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Triaging a scan's
+  four hundred findings was four hundred clicks and four hundred POSTs. The
+  findings and asset tables now have a multi-select whose state is held as ids —
+  so it survives paging, the poll and a filter change — and
+  `POST /api/vulnerabilities/bulk` applies `assign`, `transition`, `ticket`
+  (operator) or `exception`, `false_positive` (tenant admin, exactly as one at a
+  time) to up to 200 ids. `POST /api/assets/bulk` does the same for asset
+  context. Each id is applied through the *same* service call the single-finding
+  route uses and gets its own outcome: the answer is 200 with a per-id report,
+  so one finding that has since closed, or one id from a tenant the caller
+  cannot write in, no longer refuses the other hundred and ninety-nine. One
+  `audit_events` row per request lists the ids — written **before** a 500 when
+  a batch dies part-way, since the ids it already applied are committed, and
+  filed in the tenant whose findings changed rather than the caller's when a
+  platform admin's batch crosses tenants. Ids are capped at 48 characters as
+  well as 200 per request, and an oversized request body gives way inside the
+  audit document before the ids do: the row names what was touched or it is
+  worth nothing. In the console, a blank Assign field is **not sent** — the
+  finding keeps what it has — and clearing an assignee or an owning team is its
+  own checkbox; the selection is cleared when the tenant changes.
+- **`Idempotency-Key` on the bulk write endpoints**
+  ([#346](https://github.com/onixus/Shapoclyack/issues/346)). A bulk request is
+  the slowest, so it is the one that times out, and a blind retry would apply
+  two hundred transitions twice. The new `idempotency_records` table
+  (migration `0044`) gives a key the same contract `POST /api/jobs` already had
+  — same body replays the stored report, different body is 409, a retry while
+  the first is still running is 409 — for the endpoints that create no row of
+  their own to hang it on. "Still running" lasts a 15-minute lease and not the
+  full retention, so a replica killed mid-batch does not leave the key
+  answerable to nobody for a day. A request that *failed* releases its key,
+  unless it applied part of itself: then the partial report is stored as the
+  answer, because releasing would let the retry re-apply what landed. Records
+  self-expire after 24 hours. The console mints one key per submission and holds
+  it against that body until it is answered, so clicking Apply again after a
+  proxy timeout replays instead of applying the batch twice. The scan-start path
+  is unchanged.
+
 - **`overlays/prod-ha` — a Kubernetes profile that survives a node loss**
   ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `overlays/prod`
   ran one API replica pinned to a scanner node, the in-cluster single-pod
