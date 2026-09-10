@@ -63,6 +63,28 @@ JOB_IDEMPOTENT_REPLAYS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+IDEMPOTENT_REPLAYS_TOTAL = Counter(
+    "octo_idempotent_replays_total",
+    "Write requests answered from a stored Idempotency-Key record instead of "
+    "being executed again, by endpoint (#346). Separate from "
+    "octo_job_idempotent_replays_total, which counts the scan-start and "
+    "results paths that hang their key on the job row itself.",
+    ["endpoint"],
+    registry=REGISTRY,
+)
+
+BULK_ACTION_ITEMS_TOTAL = Counter(
+    "octo_bulk_action_items_total",
+    "Ids processed by a bulk write, by endpoint, action and per-id outcome "
+    "(ok, not_found, conflict, invalid) — #346. A batch is a partial success "
+    "by design, so the ratio here is what says whether an operator's "
+    "selection matched what they may act on. There is no 'forbidden': an id "
+    "outside the caller's write scope is reported missing, never refused, for "
+    "the same reason the single-id routes 404 it.",
+    ["endpoint", "action", "outcome"],
+    registry=REGISTRY,
+)
+
 AUTH_ATTEMPTS_TOTAL = Counter(
     "octo_auth_attempts_total",
     "Access decisions, by outcome (success, failure, locked, denied). "

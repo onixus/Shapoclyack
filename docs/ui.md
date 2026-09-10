@@ -293,6 +293,45 @@ its row shows the installed package and the version that closes it
 (`curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20`) where a scan finding shows
 `port 443`.
 
+### Bulk actions
+
+Every row carries a checkbox, and the header one ticks the whole page
+([#346](https://github.com/onixus/Shapoclyack/issues/346)). Selection is held
+as **finding ids**, not row positions, so it survives the table's poll, a
+filter change, and paging away and back — an operator can build a selection
+across several pages. A bar appears above the table with the count, **Clear**,
+and the verbs:
+
+| Button | Role | What it sends |
+|---|---|---|
+| **Assign** | operator | assignee and owner team. A field left blank is **not sent**, so the finding keeps what it has; clearing one is its own checkbox (*Unassign every selected finding*, *Clear the owning team*), because "I only wanted to set the assignee" must never be read as "and drop the owning team of all two hundred". Apply stays disabled until at least one of the four decisions is made |
+| **Move to…** | operator | one button per lifecycle state; the API refuses the states a given finding cannot reach and says so per id |
+| **Link ticket** | operator | tracker, key and URL |
+| **Accept risk** | tenant admin | expiry and reason, both required before Apply enables |
+| **False positive** | tenant admin | reason and suppression window (1–365 days) |
+
+The two admin verbs are **not rendered** for an operator: the API needs tenant
+`admin` for them whether they are applied once or two hundred times, so a
+button would only produce a 403 after the form had been filled in.
+
+The select-all box stops at **200** ids, which is the API's own batch ceiling —
+a larger selection is two submissions rather than a request the server refuses.
+Rows beyond the ceiling are disabled, but an already-ticked row never is, so the
+limit cannot be a trap. **Switching tenant clears the selection**, which is the
+one change it does not survive: ids ticked in one tenant are `not_found` in the
+next, and at the ceiling they would disable every checkbox on a page where
+nothing is selected at all.
+
+A batch is a partial success by design, and the console says so rather than
+claiming a clean run: the toast reports `N updated, M skipped` with the distinct
+reasons, and **the ids that failed stay selected** so the operator can see which
+ones are left. A retried submission that the server recognised as a replay says
+`already applied — replayed`: the `Idempotency-Key` is minted once per
+submission and held against the body it names until that submission is
+answered, so clicking Apply again after a timeout sends the *same* request and
+the server replays it instead of applying two hundred transitions twice. The
+operator's next, different batch mints its own key.
+
 `/vulnerabilities/view?vulnId=…` is the remediation card:
 
 - lifecycle stepper `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`;
@@ -340,6 +379,15 @@ owner or service.
 Operators edit owner, service, environment, classification and exposure on
 the same page. Exposure is how the asset is *treated*, not a scan fact.
 See [asset-context.md](asset-context.md).
+
+`/assets` has the same multi-select as the findings table, with one verb —
+**Set context…** (operator): owner email, business unit, criticality,
+environment and exposure. Blank fields are left untouched on every selected
+asset, so an owner can be filled in across forty assets without flattening
+their criticality to whatever the form happened to show. This is the other half
+of the four-hundred-clicks problem: asset context is what findings are scored
+and prioritised by, so fixing it one asset at a time is what leaves a pilot's
+queue unsorted.
 
 ## Exposure and MSSP
 

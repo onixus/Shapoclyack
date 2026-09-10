@@ -241,7 +241,7 @@ Retention must cover all stateful layers:
 | Layer | Retain/backup |
 |---|---|
 | Run filesystem/PVC | Raw artifacts, reports, checkpoints |
-| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail |
+| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail. `idempotency_records` is the one table that needs *no* retention decision — it self-expires in 24h, see below |
 | ClickHouse | Analytical vulnerability and port history |
 | NATS | Pending jobs and ingest messages |
 
@@ -277,6 +277,29 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 - Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
 - `0` days disables the reaper.
 - Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+
+### Idempotency records (#346)
+
+`idempotency_records` remembers which `Idempotency-Key` a bulk write has already
+answered, so a retry after a timeout replays the first report instead of
+applying two hundred transitions twice. One row per key per endpoint per
+tenant, holding the request digest and the report.
+
+**Nothing operational to schedule.** Rows expire 24 hours after they are
+written (`RETENTION_SECONDS` in `api/services/idempotency.py`) and are deleted
+by a sweep the write path itself runs, at most once every five minutes per API
+process — the same shape as the login trail being pruned on the login path. A
+failed sweep is logged at WARNING and retried by the next request; it never
+fails the write it was riding on.
+
+The table is therefore bounded by *bulk request volume in the last day*, not by
+history: on a console-only installation it is tens of rows. It holds no secrets
+and no findings — the key, a digest, and the per-id report — and it is safe to
+truncate at any time. The only consequence is that a client mid-retry
+re-executes its batch, so prefer letting the sweep do it.
+
+The scan-start and results-upload paths are **not** in this table and are
+unchanged: they hang their key on the `jobs` row the request produced.
 
 ### Audit-trail immutability and retention (#327, #329)
 
