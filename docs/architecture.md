@@ -152,9 +152,11 @@ Event IDs are content-derived and include tenant, run, kind, host, port, protoco
 
 Outbound webhooks are the first consumer of the asset-event stream. A tenant subscription contains routing policy such as event kinds and an optional minimum severity for event types that actually have severity.
 
+Since [#328](https://github.com/onixus/Shapoclyack/issues/328) the same subscription may also route the administrative audit trail, published to `events.audit.{tenant_token}` after the change it describes commits. Its kinds are `audit.<action>`, with `audit.*` meaning every action — a wildcard rather than an enumeration, because the action list grows and a subscription naming today's actions would silently stop covering tomorrow's. A minimum severity does not apply to them: severity is a statement about vulnerabilities.
+
 Two workers deliberately separate broker consumption from network delivery:
 
-1. a durable JetStream consumer (`octo-webhook-fanout` on `events.asset.>`) validates each envelope, materializes matching deliveries in PostgreSQL, and acknowledges the message;
+1. durable JetStream consumers (`octo-webhook-fanout` on `events.asset.>` and `octo-webhook-audit-fanout` on `events.audit.>`) validate each envelope, materialize matching deliveries in PostgreSQL, and acknowledge the message. Two consumers rather than one on `events.>` because a consumer carries a single filter subject, and widening a deployed one means resetting its cursor;
 2. a dispatcher claims due rows and sends HTTP requests outside the database transaction.
 
 This split keeps slow or broken receivers from creating JetStream consumer lag and prevents a hanging HTTP request from holding a database connection.

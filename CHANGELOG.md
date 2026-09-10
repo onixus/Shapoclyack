@@ -328,6 +328,58 @@ All notable changes to Shapoclyack are documented in this file.
   the software-match worker each hold one connection for the life of the process
   for their session-scoped advisory lock, so a pool of one or two would have
   left a worker unable to become leader at all, in every replica, silently.
+- **The audit trail leaves the platform: JetStream, webhooks and a CEF/syslog
+  forwarder** ([#328](https://github.com/onixus/Shapoclyack/issues/328)).
+  [#327](https://github.com/onixus/Shapoclyack/issues/327) gave the platform an
+  administrative trail; nothing could subscribe to it. `GET /api/audit` is a
+  paginated console endpoint, and the five asset events were all a webhook could
+  filter on — so "alert me when someone changes a role" had no answer and a SIEM
+  had no feed at all. Three ways out now, all built on the row staying the
+  source of truth:
+  - Each committed `audit_events` row is published to `events.audit.{tenant}`
+    (`events.audit._platform` for a platform-level act, a subject no tenant id
+    can claim). **After the commit, never before it**: a post-commit hook on the
+    caller's session snapshots what the flush inserted and a rollback discards
+    it, so a change that did not land announces nothing. A broker that is down
+    loses the notification and not the row — counted on
+    `octo_audit_events_published_total` and logged at WARNING. With
+    `OCTO_NATS_URL` unset nothing is published, which the docs say plainly
+    rather than implying a feed that is not there.
+  - A webhook subscription may name `audit.*` (every action) or one exact
+    `audit.<action>`. Signing, retries, the DLQ and the tenant filter are the
+    ones Phase 10.3 already had; `min_severity` does not apply, since it is a
+    statement about vulnerabilities. The trail is **opt-in**: a subscription
+    with an empty `event_kinds` keeps meaning "every asset event", so an
+    upgrade does not start posting who reset whose password into a receiver
+    somebody configured for CVE alerts. A second durable consumer
+    `octo-webhook-audit-fanout` does the fan-out — two consumers rather than
+    widening the deployed one, whose filter subject cannot be changed without
+    resetting its cursor and replaying a month of asset events (#152). The
+    console's event-kind checkboxes gain *Audit trail (every action)*.
+  - `python -m api.services.audit_syslog_forwarder` ships events to a SIEM as
+    ArcSight CEF inside RFC 5424 syslog, octet-counted, over TCP with TLS
+    (`OCTO_AUDIT_SYSLOG_URL=tls://host:6514`, `_CA`, optional client
+    certificate). `tcp://` connects and warns; UDP is not implemented, because
+    it carries no delivery signal and so nothing could decide when an event may
+    be acknowledged — and acknowledgement only after the bytes reached the
+    socket is what keeps a receiver going away from silently losing events.
+    Reconnects back off 1s → 30s. It reads JetStream by default and, for an
+    installation with no broker, `audit_events` directly with a cursor in the
+    new `audit_forward_cursors` table (migration `0042`). That cursor is the
+    pair `(occurred_at, id)` and the read is ordered by the same pair: keying
+    it on the id alone loses a row whose transaction committed after a
+    higher-id one, permanently and silently. The mode's one remaining
+    visibility window — a transaction outliving
+    `OCTO_AUDIT_SYSLOG_DB_LAG_SECONDS` — is documented rather than glossed
+    over.
+  Escaping is the part a SIEM depends on and nobody can see: `|` in the CEF
+  header, `\` and `=` in the extensions, and every line break, so a username or
+  user agent someone controls cannot end the syslog message early.
+  `docs/operations.md` § "Audit events to SIEM" carries the CEF ↔ `audit_events`
+  field table and parser snippets for Splunk, QRadar and MaxPatrol;
+  `k8s/shapoclyack/examples/audit-syslog-forwarder.example.yaml` has the
+  Deployment, its Secret and a NetworkPolicy that permits egress to the SIEM
+  port and nothing else.
 - **One outbound HTTP client, with a proxy and an internal CA**
   ([#359](https://github.com/onixus/Shapoclyack/issues/359)). Nothing in this
   repository read a proxy variable, and webhook/ticket delivery on raw

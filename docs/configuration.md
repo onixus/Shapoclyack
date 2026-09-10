@@ -574,6 +574,27 @@ Login rate limiting and the auth audit trail (see
 | `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever. Rows inside the limiter window are kept regardless, so a short retention cannot weaken the lockout |
 | `OCTO_AUDIT_EVENT_RETENTION_DAYS` | `365` | Age past which `audit_events` (the administrative trail, #327) rows are pruned; `0` keeps them forever. The API never prunes them — the rows are append-only and only `python -m api.services.audit_retention`, run with its own credentials, can, see [operations.md](operations.md#audit-trail-immutability-and-retention-327-329) |
 
+Audit trail to a SIEM ([#328](https://github.com/onixus/Shapoclyack/issues/328),
+see [operations.md](operations.md#audit-events-to-siem-328)). The API side needs
+no configuration of its own: with `OCTO_NATS_URL` set, each committed
+`audit_events` row is published to `events.audit.{tenant}` after the commit, and
+with it unset **nothing is published**. The variables below are read by the
+forwarder worker (`python -m api.services.audit_syslog_forwarder`) only:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_AUDIT_SYSLOG_URL` | *(empty)* | `tls://host:6514` or `tcp://host:514`. Required — the worker refuses to start without it rather than forwarding nothing quietly. `tcp://` connects and warns on every connect; **UDP is not implemented**, because it carries no delivery signal and so nothing could decide when an event may be acknowledged |
+| `OCTO_AUDIT_SYSLOG_SOURCE` | `nats` | `nats` reads `events.audit.>` from JetStream (durable `octo-audit-syslog`); `db` walks `audit_events` by id and keeps its place in `audit_forward_cursors`. `db` exists for installations with no `OCTO_NATS_URL` and has a visibility window `nats` does not — see the table in operations.md |
+| `OCTO_AUDIT_SYSLOG_CA` | *(empty)* | PEM bundle verifying the collector. Unset falls back to the system trust store, which is right for a publicly issued certificate. `OCTO_CA_BUNDLE` is not consulted here: the SIEM link is not the outbound-HTTPS trust decision |
+| `OCTO_AUDIT_SYSLOG_CERT` / `OCTO_AUDIT_SYSLOG_KEY` | *(empty)* | Client certificate and key, for a collector that requires one |
+| `OCTO_AUDIT_SYSLOG_TLS_HOSTNAME` | *(empty)* | Name to verify the collector's certificate against, when it differs from the host in the URL |
+| `OCTO_AUDIT_SYSLOG_HOSTNAME` | *(hostname)* | Value of the RFC 5424 `HOSTNAME` field. Set it to the installation's name: the pod name changes on every restart and makes a SIEM's host list unusable |
+| `OCTO_AUDIT_SYSLOG_FACILITY` | `13` | Syslog facility. 13 is `log audit`, which is what CEF ingest rules are usually written against |
+| `OCTO_AUDIT_SYSLOG_TIMEOUT_SECONDS` | `10` | Connect and write timeout, per write. In `db` mode the whole batch is sent inside the transaction that moves the cursor, so a slow-but-alive receiver can hold that row lock for up to this × `OCTO_AUDIT_SYSLOG_DB_BATCH` — lower the batch, not just the timeout, if that matters |
+| `OCTO_AUDIT_SYSLOG_DB_BATCH` | `200` | Rows per `db`-mode poll. Small for the same reason |
+| `OCTO_AUDIT_SYSLOG_DB_POLL_SECONDS` | `10` | Idle wait between `db`-mode polls. A full batch goes straight round again |
+| `OCTO_AUDIT_SYSLOG_DB_LAG_SECONDS` | `15` | How far behind the present `db` mode reads. `occurred_at` is stamped when the change is recorded but the row appears only at COMMIT, so a shorter lag risks passing a row that had not yet been published; a transaction that outlives this window between the two can still be skipped |
+
 Single sign-on (see [api-and-rbac.md](api-and-rbac.md#single-sign-on-oidc)).
 SSO stays **off** until the first three are all set:
 

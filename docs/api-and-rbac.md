@@ -285,6 +285,17 @@ do and the GRANT layout in
 [operations.md](operations.md#audit-trail-immutability-and-retention) does.
 Retention is a separate privileged job, documented in the same place.
 
+**Getting the trail out of the API.** This endpoint is the read model, not a
+feed. Each committed row is also published to the JetStream subject
+`events.audit.{tenant}` (`events.audit._platform` for a platform-level act) —
+after the commit, so a change that rolled back announces nothing, and not at all
+when `OCTO_NATS_URL` is unset. From there a webhook subscription on `audit.*`
+delivers it signed, and `python -m api.services.audit_syslog_forwarder` ships it
+to a SIEM as CEF over RFC 5424 syslog. Subjects, field mapping and the
+Splunk/QRadar/MaxPatrol parsers are in
+[operations.md](operations.md#audit-events-to-siem-328)
+([#328](https://github.com/onixus/Shapoclyack/issues/328)).
+
 ## Single sign-on (OIDC)
 
 Authorization code with PKCE against a generic OpenID Connect provider
@@ -762,7 +773,7 @@ closer to granting access than to scheduling a scan.
 | Route | Role | Notes |
 |---|---|---|
 | `GET /api/webhooks` | operator | Page of subscriptions; the signing secret is never included |
-| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, a missing ticket `transport_config`, or the per-tenant limit. The generated `secret` is in this response only (webhook transport). Ticket transports take `secret` as the tracker token and do not HMAC |
+| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, a missing ticket `transport_config`, or the per-tenant limit. The generated `secret` is in this response only (webhook transport). Ticket transports take `secret` as the tracker token and do not HMAC. `event_kinds` accepts the five asset kinds, `audit.*` (the whole administrative trail) and one exact `audit.<action>`, e.g. `audit.user.role_change` ([#328](https://github.com/onixus/Shapoclyack/issues/328)); an empty list still means every *asset* kind — the trail is opt-in, so an existing unfiltered subscription does not start receiving it on upgrade — and `min_severity` does not apply to audit kinds |
 | `PATCH`/`DELETE /api/webhooks/{id}` | admin | `PATCH` also takes `secret` — the only way to rotate a tracker API token — and never echoes it back; an empty string clears signing. Deleting takes that subscription's delivery history with it |
 | `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new HMAC secret once. `409` on a ticket transport: a random value is an HMAC key, not a tracker token, so PATCH `secret` instead |
 | `POST /api/webhooks/{id}/test` | admin | **202** — a signed `test` delivery is *queued*, not confirmed. Poll the deliveries list for the outcome |

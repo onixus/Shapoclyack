@@ -31,7 +31,7 @@ from sqlalchemy import delete, func, or_, select
 
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
-from api.services import asset_events, metrics, pagination
+from api.services import asset_events, audit_events, metrics, pagination
 from api.services import tenants as tenants_service
 from api.services import vulnerabilities as vulns_service
 from api.services.crypto import envelope as crypto
@@ -223,15 +223,32 @@ def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
     }
 
 
+def _is_audit_kind(kind: str) -> bool:
+    """Whether ``kind`` names an audit event, either exactly or as the wildcard.
+
+    ``audit.*`` covers every action; ``audit.user.role_change`` covers one. The
+    exact form is deliberately not checked against ``audit.ACTION_*``: an
+    installation whose API adds an action would otherwise have its existing
+    subscriptions refused on the next PATCH, and a subscription naming an
+    action that does not exist yet is inert rather than wrong.
+    """
+    return kind == audit_events.KIND_WILDCARD or (
+        kind.startswith(audit_events.KIND_PREFIX) and len(kind) > len(audit_events.KIND_PREFIX)
+    )
+
+
 def _validate_event_kinds(kinds: list[str] | None) -> list[str]:
     if not kinds:
         return []
     cleaned: list[str] = []
     for raw in kinds:
         kind = str(raw).strip()
-        if kind not in asset_events.EVENT_KINDS:
+        if kind not in asset_events.EVENT_KINDS and not _is_audit_kind(kind):
             raise ValueError(
-                f"unknown event kind {kind!r}; known kinds: {', '.join(asset_events.EVENT_KINDS)}"
+                f"unknown event kind {kind!r}; known kinds: "
+                f"{', '.join(asset_events.EVENT_KINDS)}, "
+                f"{audit_events.KIND_WILDCARD} (or one action, e.g. "
+                f"{audit_events.event_kind('user.role_change')})"
             )
         if kind not in cleaned:
             cleaned.append(kind)
@@ -519,13 +536,36 @@ def routing_fields(row: models.WebhookSubscription) -> dict[str, Any]:
 
 
 def matches(subscription: dict[str, Any], envelope: dict[str, Any]) -> bool:
-    """Whether one event should be delivered to one subscription."""
+    """Whether one event should be delivered to one subscription.
+
+    Exact membership, with one wildcard: ``audit.*`` matches every
+    ``audit.<action>`` kind (#328). It exists because the audit actions are a
+    growing list of dotted verbs — a subscription enumerating today's twenty
+    would silently stop covering the twenty-first, which is the direction an
+    audit feed must not fail in.
+
+    An **empty** ``event_kinds`` still means "every asset event", as it always
+    has, and deliberately does *not* now mean "and the audit trail too". Those
+    subscriptions were created when the trail could not leave the platform, and
+    an upgrade that started posting who reset whose password, from which
+    address, to a receiver somebody configured for CVE alerts would be a
+    disclosure introduced by a version bump. The trail is opt-in: name
+    ``audit.*`` or one action.
+    """
     if not subscription.get("enabled"):
         return False
     kind = str(envelope.get("kind") or "")
     kinds = subscription.get("event_kinds") or []
-    if kinds and kind not in kinds:
-        return False
+    is_audit = kind.startswith(audit_events.KIND_PREFIX)
+    if not kinds:
+        # "Every kind" ends at the asset events; see above. Falls through to the
+        # severity filter for anything else, which is what it always did.
+        if is_audit:
+            return False
+    elif kind not in kinds:
+        wildcarded = audit_events.KIND_WILDCARD in kinds and is_audit
+        if not wildcarded:
+            return False
     minimum = subscription.get("min_severity")
     if minimum and kind in _SEVERITY_BEARING_KINDS:
         severity = event_severity(envelope) or "unknown"
@@ -572,19 +612,28 @@ def _build_payload(
 
 
 def enqueue_event(envelope: dict[str, Any]) -> list[str]:
-    """Fan one asset event out to the tenant's matching subscriptions.
+    """Fan one event out to the tenant's matching subscriptions.
+
+    Takes both envelope shapes — an asset event and, since #328, an
+    ``audit.<action>`` one — because they carry the same routing fields.
 
     Returns the ids of the deliveries created. Re-enqueueing the same
     ``(subscription, event_id)`` is a no-op rather than a second call: the
     JetStream consumer is at-least-once, and a redelivered message must not
     page anyone twice.
+
+    An envelope with no ``tenant_id`` is dropped here, which for an audit event
+    means a platform-level act (creating a console account, changing
+    installation-wide config). Webhook subscriptions belong to a tenant, so
+    there is no correct recipient; the SIEM forwarder, which is not
+    tenant-scoped, is where those events go.
     """
     settings = _require_settings()
     tenant_id = str(envelope.get("tenant_id") or "").strip()
     kind = str(envelope.get("kind") or "").strip()
     event_id = str(envelope.get("event_id") or "").strip()
     if not tenant_id or not kind or not event_id:
-        LOG.debug("Ignoring asset event without tenant/kind/event_id: %r", envelope)
+        LOG.debug("Ignoring event without tenant/kind/event_id: %r", envelope)
         return []
 
     now = _now()
