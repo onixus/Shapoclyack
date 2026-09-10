@@ -724,11 +724,9 @@ def test_a_rolled_back_change_leaves_no_row(env):
     transaction. Simulated by failing the instant the row is added — there is no
     code between that point and the commit to fail on its own.
 
-    The failure surfaces as the 500 ``ServerErrorMiddleware`` writes, not as the
-    ``RuntimeError`` itself: ``RequestIdMiddleware`` wraps that layer and
-    deliberately does not re-raise, so the log line about the 500 is written
-    while the request id is still bound (#330, ``api/middleware.py``). What this
-    test is about is what the database is left holding either way.
+    ``RequestIdMiddleware`` logs the failure under the bound request id and
+    re-raises it (#330, #383), so ``TestClient`` surfaces the ``RuntimeError``
+    itself. What this test is about is what the database is left holding.
     """
     client, _settings, admin = env
     original = audit_service.record
@@ -743,14 +741,14 @@ def test_a_rolled_back_change_leaves_no_row(env):
     # against — and every later request in the test would 401.
     audit_service.record = record_then_die
     try:
-        failed = client.post(
-            "/api/users",
-            headers=admin,
-            json={"username": "una", "password": "correct-horse-1", "role": "viewer"},
-        )
+        with pytest.raises(RuntimeError):
+            client.post(
+                "/api/users",
+                headers=admin,
+                json={"username": "una", "password": "correct-horse-1", "role": "viewer"},
+            )
     finally:
         audit_service.record = original
-    assert failed.status_code == 500
 
     # Neither the account nor a row claiming it was created.
     listed = client.get("/api/users", headers=admin)
