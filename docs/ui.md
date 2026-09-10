@@ -665,6 +665,14 @@ tracker token via `secret`, left empty to keep the current one) and Delete.
 **Deliveries**: the paged delivery log with Retry on dead deliveries.
 Operators read, admins change.
 
+The event-kind checkboxes carry a sixth entry, *Audit trail (every action)* —
+the `audit.*` kind ([#328](https://github.com/onixus/Shapoclyack/issues/328)),
+which delivers every administrative change in the tenant. The API also accepts a
+single action (`audit.user.role_change`); the console does not offer twenty-odd
+more checkboxes for that, but a subscription that names one is listed with the
+kind exactly as the server holds it rather than as a message key it has no
+translation for.
+
 ## Wordlists and service tokens
 
 `/wordlists` uploads tenant-scoped subdomain and bucket dictionaries

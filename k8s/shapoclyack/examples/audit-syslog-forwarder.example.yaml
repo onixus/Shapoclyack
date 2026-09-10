@@ -1,0 +1,215 @@
+# Ship the audit trail to a SIEM as CEF over RFC 5424 syslog (#328).
+#
+# Not part of the base kustomization: where the events go is an installation's
+# decision, and a Deployment that dials a host nobody configured would restart
+# forever. Copy this file, fill the Secret in, `kubectl apply -f` it.
+#
+# One replica, `strategy: Recreate`. The `nats` source would tolerate more —
+# JetStream divides a durable consumer between them — but the `db` source
+# serialises replicas on a row lock, so a second one only waits. Both sources
+# are at-least-once, and the CEF `cs6`/eventId extension is what lets the SIEM
+# collapse a duplicate after a reconnect.
+#
+# See docs/operations.md § "Audit events to SIEM" for the field mapping and for
+# the Splunk / QRadar / MaxPatrol parser snippets.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shapoclyack-audit-syslog
+  namespace: shapoclyack
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-syslog-forwarder
+type: Opaque
+stringData:
+  # tls://host:6514 (or tcp://host:514, which the forwarder accepts and warns
+  # about on every connect — the trail names actors and their addresses).
+  # UDP is not implemented: it has no delivery signal, so nothing could decide
+  # whether an event may be acked.
+  url: "tls://siem.example.internal:6514"
+  # PEM bundle that verifies the SIEM's certificate. Omit the key to fall back
+  # to the system trust store, which is right for a publicly issued one.
+  ca.pem: |
+    -----BEGIN CERTIFICATE-----
+    REPLACE_ME
+    -----END CERTIFICATE-----
+  # Only for a SIEM that requires a client certificate. When it does not, delete
+  # these two keys, the two matching entries under `volumes[].secret.items` and
+  # the OCTO_AUDIT_SYSLOG_CERT/_KEY env vars — all three, not just the env vars.
+  # An empty value here is a zero-byte file, and the forwarder refuses to start
+  # on one rather than retrying a TLS handshake that can never succeed.
+  client.pem: ""
+  client.key: ""
+  # The `db` source needs a database credential; the `nats` source does not.
+  # Read-only on `audit_events` is enough — plus INSERT/UPDATE on
+  # `audit_forward_cursors` (migration 0042), which is where it keeps its place.
+  postgres_url: postgresql+psycopg://shapoclyack_audit_forward:CHANGE_ME@shapoclyack-postgres-client:5432/shapoclyack
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-audit-syslog-forwarder
+  namespace: shapoclyack
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-syslog-forwarder
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: audit-syslog-forwarder
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: audit-syslog-forwarder
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: forwarder
+          # Same image as the API — the worker lives in the same package. Pin
+          # it to the digest the deployment runs, so the CEF a SIEM's parser
+          # was written against does not change under it on a partial rollout.
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.44-0907@sha256:d5dee841f44057c56a68750fffed49f970af85fe0e5419af160b6d0ccd9873ba
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - api.services.audit_syslog_forwarder
+          env:
+            # `nats` (default) reads events.audit.> out of JetStream. Switch to
+            # `db` on an installation with no OCTO_NATS_URL: it walks
+            # audit_events by id instead. See the module docstring for the
+            # window that mode has and this one does not.
+            - name: OCTO_AUDIT_SYSLOG_SOURCE
+              value: "nats"
+            - name: OCTO_AUDIT_SYSLOG_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-audit-syslog
+                  key: url
+            - name: OCTO_AUDIT_SYSLOG_CA
+              value: /etc/shapoclyack/siem/ca.pem
+            # Client certificate — delete both when the SIEM does not ask for one.
+            - name: OCTO_AUDIT_SYSLOG_CERT
+              value: /etc/shapoclyack/siem/client.pem
+            - name: OCTO_AUDIT_SYSLOG_KEY
+              value: /etc/shapoclyack/siem/client.key
+            # Goes into the syslog HOSTNAME field. The pod name would change on
+            # every restart and make a SIEM's host list unusable, so it is the
+            # installation that is named, not the replica.
+            - name: OCTO_AUDIT_SYSLOG_HOSTNAME
+              value: shapoclyack
+            # Built the way examples/nats-api-patch.yaml builds it for the API,
+            # and from the same credential: the `api` NATS user owns the whole
+            # subject tree, and this consumer reads `events.audit.>` off the
+            # EVENTS stream. NATS_PASSWORD must be declared *before* the URL —
+            # `$(VAR)` only expands against a variable defined earlier in the
+            # list. Required in OCTO_AUDIT_SYSLOG_SOURCE=nats: the forwarder
+            # refuses to start without it rather than forwarding nothing.
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-nats
+                  key: api_password
+            - name: OCTO_NATS_URL
+              value: nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+            # Only read in OCTO_AUDIT_SYSLOG_SOURCE=db.
+            - name: OCTO_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-audit-syslog
+                  key: postgres_url
+          volumeMounts:
+            - name: siem-certs
+              mountPath: /etc/shapoclyack/siem
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: 128Mi
+            limits:
+              cpu: "500m"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: siem-certs
+          secret:
+            secretName: shapoclyack-audit-syslog
+            items:
+              - key: ca.pem
+                path: ca.pem
+              - key: client.pem
+                path: client.pem
+              - key: client.key
+                path: client.key
+---
+# Egress for the forwarder: DNS, the SIEM's syslog port, and whichever of NATS
+# or Postgres its source needs. Nothing else — this pod holds a credential and
+# reads a table that names every administrator, so its allowed destinations are
+# worth writing down explicitly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-audit-syslog-egress
+  namespace: shapoclyack
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-syslog-forwarder
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: audit-syslog-forwarder
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The SIEM. Replace the CIDR with the collector's address — /32 if you can,
+    # since this is the one rule that lets the audit trail leave the cluster.
+    # A NetworkPolicy cannot name a DNS host, so this and OCTO_AUDIT_SYSLOG_URL
+    # have to be kept in step by hand.
+    - to:
+        - ipBlock:
+            cidr: 10.20.30.40/32
+      ports:
+        - protocol: TCP
+          port: 6514
+    # NATS JetStream (OCTO_AUDIT_SYSLOG_SOURCE=nats)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: nats
+      ports:
+        - protocol: TCP
+          port: 4222
+    # Postgres (OCTO_AUDIT_SYSLOG_SOURCE=db). Drop this rule when the source is
+    # `nats`: the forwarder then needs no database at all.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

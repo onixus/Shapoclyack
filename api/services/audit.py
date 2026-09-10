@@ -36,6 +36,7 @@ from sqlalchemy import func, select, tuple_
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit_events
 from api.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,10 @@ _settings: Settings | None = None
 def configure(settings: Settings) -> None:
     global _settings
     _settings = settings
+    # The publish side needs the same settings and is armed from record(), so a
+    # caller that configured the trail has configured its feed too — there is
+    # no state in which rows are written and the bus URL is unknown.
+    audit_events.configure(settings)
 
 
 def _require_settings() -> Settings:
@@ -251,6 +256,11 @@ def record(
     (a test helper, a worker), and it records the change as ``system`` rather
     than dropping it. Nothing here flushes — the caller's transaction decides
     when both writes land.
+
+    The same transaction is also what decides whether the change is *announced*:
+    :func:`api.services.audit_events.arm` hangs a post-commit hook on the
+    session, so a row that rolled back publishes nothing to ``events.audit.*``
+    and a row that committed publishes exactly what the database kept (#328).
     """
     ctx = context or system_context()
     before_document = _document(before)
@@ -281,6 +291,7 @@ def record(
             request_id=ctx.request_id,
         )
     )
+    audit_events.arm(session)
 
 
 def record_standalone(

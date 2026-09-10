@@ -222,8 +222,20 @@ def test_start_worker_respects_the_flags(monkeypatch):
     monkeypatch.setattr(
         webhook_worker.WebhookDispatcher, "start", lambda self: started.append("dispatch")
     )
+    # Records what each fan-out worker was built to consume, not just that one
+    # was started: two workers sharing a durable or a filter subject would be
+    # the bug having two of them exists to avoid, and "fanout, fanout" alone
+    # cannot tell that apart from the right thing (#328).
     monkeypatch.setattr(
-        webhook_worker.WebhookFanoutWorker, "start", lambda self: started.append("fanout")
+        webhook_worker.WebhookFanoutWorker,
+        "start",
+        lambda self: started.append(f"fanout:{self._consumer}:{self._subject_filter}"),
+    )
+    asset_fanout = (
+        f"fanout:{webhook_worker.CONSUMER_WEBHOOK_FANOUT}:{webhook_worker.SUBJECT_FILTER}"
+    )
+    audit_fanout = (
+        f"fanout:{webhook_worker.CONSUMER_AUDIT_FANOUT}:{webhook_worker.AUDIT_SUBJECT_FILTER}"
     )
 
     webhook_worker.start_worker(Settings(webhooks_enabled=False, nats_url="nats://x"))
@@ -234,8 +246,14 @@ def test_start_worker_respects_the_flags(monkeypatch):
     webhook_worker.start_worker(
         Settings(webhooks_enabled=True, webhook_dispatch_enabled=False, nats_url="nats://x")
     )
-    assert started == ["fanout"]
-    assert webhook_worker.worker_stats() == {"fanout": webhook_worker._FANOUT.stats}
+    # Two fan-out workers, not one: the asset subject tree and the audit one
+    # (#328) need a durable consumer each, because a JetStream consumer carries
+    # a single filter_subject.
+    assert started == [asset_fanout, audit_fanout]
+    assert webhook_worker.worker_stats() == {
+        "fanout": webhook_worker._FANOUT.stats,
+        "audit_fanout": webhook_worker._AUDIT_FANOUT.stats,
+    }
     webhook_worker.stop_worker()
     started.clear()
 
@@ -269,7 +287,7 @@ def test_start_worker_respects_the_flags(monkeypatch):
 
     started.clear()
     webhook_worker.start_worker(Settings(webhooks_enabled=True, nats_url="nats://x"))
-    assert sorted(started) == ["dispatch", "fanout"]
+    assert sorted(started) == sorted(["dispatch", asset_fanout, audit_fanout])
 
 
 def test_start_worker_is_idempotent(monkeypatch):

@@ -413,6 +413,158 @@ throughput cost paid on every administrative request. If an installation needs
 tamper-evidence against its own DBA, ship the rows off-box (the NDJSON export
 into a WORM bucket or a log pipeline) rather than hashing them in place.
 
+### Audit events to SIEM (#328)
+
+The trail is a table first: every row is written in the same transaction as the
+change it describes and is readable through `GET /api/audit`. On top of that,
+three ways out.
+
+**1. The event bus.** With `OCTO_NATS_URL` set, each committed row is published
+to `events.audit.{tenant}` on stream `EVENTS` — after the commit, never before
+it, so a change that rolled back announces nothing. A row with no tenant (a
+platform-level act: creating a console account, changing installation-wide
+config) goes to the reserved subject `events.audit._platform`; a tenant id must
+start with an alphanumeric, so no real tenant can claim it. A legacy id that is
+not a valid subject token is hashed into `h_<sha256[:32]>`, exactly as the job
+and asset subjects do it.
+
+Publication is best-effort. A broker that is down loses the *notification*, not
+the row: the failure is logged at WARNING and counted on
+`octo_audit_events_published_total{outcome="error"|"skipped"}`. **With
+`OCTO_NATS_URL` unset nothing is published at all** — such an installation has
+the API endpoint and the `db`-source forwarder below, and nothing else.
+
+**2. Webhooks.** A subscription may name the kind `audit.*` (every action) or
+one exact `audit.<action>`, e.g. `audit.user.role_change`. The console offers
+the wildcard as a checkbox; an exact action is set over the API and shown as it
+is stored. Signing, retries, the DLQ and the tenant filter are unchanged — an
+audit event is a normal delivery. `min_severity` does not apply to them: it is
+a statement about vulnerabilities. Platform-level rows (no tenant) reach no
+webhook, because a subscription belongs to a tenant; use the forwarder for
+those.
+
+**The trail is opt-in.** A subscription with an empty `event_kinds` keeps
+meaning "every asset event" and does *not* silently grow to include the audit
+trail on upgrade: those subscriptions were created when the trail could not
+leave the platform at all, often pointing at a shared chat channel, and posting
+who reset whose password and from which address into one would be a disclosure
+caused by a version bump. Name `audit.*` explicitly. A second durable consumer `octo-webhook-audit-fanout` on
+`events.audit.>` does the fan-out, alongside `octo-webhook-fanout` on
+`events.asset.>`; both are created with `DeliverPolicy.NEW`.
+
+**3. The syslog/CEF forwarder.** A worker of its own:
+
+```bash
+python -m api.services.audit_syslog_forwarder
+```
+
+`k8s/shapoclyack/examples/audit-syslog-forwarder.example.yaml` has the
+Deployment, the Secret and a NetworkPolicy that allows egress to the SIEM port
+and nothing else. Run one replica. Configuration is in
+[configuration.md](configuration.md) under `OCTO_AUDIT_SYSLOG_*`; the shape is
+`OCTO_AUDIT_SYSLOG_URL=tls://siem.example:6514` plus `_CA` (and `_CERT`/`_KEY`
+when the collector wants a client certificate). `tcp://` works and warns on
+every connect. **UDP is not implemented** — it carries no delivery signal, so
+there would be nothing to decide an acknowledgement on.
+
+Two sources:
+
+| `OCTO_AUDIT_SYSLOG_SOURCE` | Reads | Position kept in | Boundary |
+| --- | --- | --- | --- |
+| `nats` (default) | `events.audit.>`, durable `octo-audit-syslog`, `DeliverPolicy.ALL`, `max_deliver` unlimited | JetStream consumer | First start replays what the stream retains (30d by default). At-least-once. Redelivery is not capped: any finite ceiling would be a number of minutes of SIEM downtime after which events are dropped silently, so the stream's retention is the bound. |
+| `db` | `audit_events` in `(occurred_at, id)` order | `audit_forward_cursors` (migration 0042) | For installations with no broker. Reads `OCTO_AUDIT_SYSLOG_DB_LAG_SECONDS` (15) behind the present: `occurred_at` is stamped when the change is recorded but the row appears only at COMMIT, so a reader at the present moment would pass a row about to appear behind it. A transaction that takes longer than the lag between recording and committing can still have its row skipped. |
+
+A message is acknowledged only after its bytes reached the socket, so a
+receiver that goes away leaves the rest of the batch un-acked and it comes
+back. Both sources are therefore at-least-once: a SIEM may see one event twice
+after a reconnect, and the `cs6`/`eventId` extension is what deduplicates it.
+Reconnects back off 1s → 30s.
+
+#### Wire format
+
+CEF inside RFC 5424, framed with RFC 6587 octet counting (`<byte length> SP
+<message>`):
+
+```
+476 <108>1 2026-09-10T09:41:43.549Z shapoclyack shapoclyack - audit - CEF:0|Shapoclyack|api|0.44-0907|user.role_change|user.role_change|8|rt=1789034400000 externalId=42 act=user.role_change outcome=success suser=admin src=10.0.0.1 requestClientApplication=curl/8.6.0 cs1Label=tenant cs1=acme cs2Label=resourceType cs2=user cs3Label=resourceId cs3=amy cs4Label=actorType cs4=user cs5Label=requestId cs5=req-1 cs6Label=eventId cs6=1f2e… msg={"before":{"role":"viewer"},"after":{"role":"admin"}}
+```
+
+PRI is facility 13 (`log audit`) × 8 + a syslog severity derived from the CEF
+one: ≥ 8 → warning (4), ≥ 5 → notice (5), else informational (6). Values are
+escaped as CEF requires — `\` and `|` in the header, `\` and `=` in the
+extensions, and every line break as `\n` — so a username or user agent someone
+controls cannot end the message early.
+
+Field mapping, CEF ↔ `audit_events`:
+
+| CEF field | Column / source | Note |
+| --- | --- | --- |
+| `deviceEventClassId` (5th header) | `action` | e.g. `user.role_change` |
+| `name` (6th header) | `action` | Same value: ArcSight wants a `name` with no variable content, and a friendly label belongs in the SIEM's own lookup |
+| severity (7th header) | derived from `action` | 0–10; 8 for privilege/credential changes and deletions, 6–7 for lifecycle, 3 for `report.download`, 5 for an unknown action |
+| `rt` | `occurred_at` | epoch milliseconds |
+| `externalId` | `id` | the row's primary key |
+| `act` | `action` | |
+| `outcome` | — | always `success`: a *refused* action is an `auth_events` row, a different stream |
+| `suser` | `actor` | console username, service-token name, agent id or `system` |
+| `src` | `client_ip` | resolved through the trusted-proxy chain, never a raw `X-Forwarded-For` |
+| `requestClientApplication` | `user_agent` | |
+| `cs1` / `cs1Label=tenant` | `tenant_id` | `_platform` for a platform-level act |
+| `cs2` / `cs2Label=resourceType` | `resource_type` | |
+| `cs3` / `cs3Label=resourceId` | `resource_id` | |
+| `cs4` / `cs4Label=actorType` | `actor_type` | `user`, `service_token`, `agent`, `system` |
+| `cs5` / `cs5Label=requestId` | `request_id` | `X-Request-Id` when the caller sent one; the key is omitted when it did not |
+| `cs6` / `cs6Label=eventId` | derived | stable per row — the deduplication key |
+| `msg` | `before` + `after` | compact JSON, already redacted; replaced by `{"truncated":true,"bytes":N}` past 1024 characters. The full documents stay in `GET /api/audit` |
+
+A key whose value is empty is omitted entirely, label included — an emitted
+`cs5Label` with no `cs5` reads to a SIEM as an empty column rather than an
+absent optional field.
+
+#### Parsers
+
+**Splunk.** `props.conf`/`transforms.conf` on the indexer or heavy forwarder;
+Splunk's CIM add-on for CEF handles the extraction, this only names the source
+type and maps the custom strings:
+
+```ini
+# props.conf
+[shapoclyack:audit]
+SHOULD_LINEMERGE = false
+TIME_PREFIX = rt=
+TIME_FORMAT = %s%3N
+KV_MODE = none
+REPORT-cef = cef_header, cef_extensions
+FIELDALIAS-tenant = cs1 AS tenant
+FIELDALIAS-resource_type = cs2 AS resource_type
+FIELDALIAS-resource_id = cs3 AS resource_id
+FIELDALIAS-actor_type = cs4 AS actor_type
+FIELDALIAS-request_id = cs5 AS request_id
+FIELDALIAS-event_id = cs6 AS event_id
+EVAL-user = suser
+```
+
+Point a TCP-TLS input at 6514 with `sourcetype = shapoclyack:audit`. Dedupe on
+`event_id` (`| dedup event_id`) when reporting across a forwarder restart.
+
+**QRadar.** Add a log source of type *Universal CEF* with protocol *Syslog*,
+listening on the TLS port. The RFC 5424 header carries the time of the *event*,
+not of the send, so a replayed backlog keeps its own timeline whether QRadar
+reads the header or `rt`. QRadar parses the CEF header itself; the six custom
+strings need a custom property each, or a DSM Editor mapping from
+`cs1`…`cs6` to Tenant / Resource Type / Resource ID / Actor Type / Request ID /
+Event ID. Map `deviceEventClassId` to the QID so that `user.role_change` and
+`membership.grant` land in *Authentication → Privilege escalation* rather than
+in *Unknown*.
+
+**MaxPatrol SIEM.** Use the built-in CEF normalizer (`cef_syslog`) and a
+normalization rule keyed on `DeviceVendor = Shapoclyack`. Suggested mapping to
+the taxonomy: `suser` → `subject.account.name`, `src` → `subject.ip`, `act` →
+`action`, `cs3` → `object.name`, `cs2` → `object.type`, `cs1` →
+`subject.domain`, `cs6` → `external_id`. Correlation on `object.name` plus
+`action in (user.role_change, membership.grant, service_token.create)` is the
+rule an audit review usually asks for first.
+
 ### ClickHouse ingest consumer subjects (#230)
 
 Stream `INGEST` carries the whole `ingest.>` tree, but the ClickHouse worker

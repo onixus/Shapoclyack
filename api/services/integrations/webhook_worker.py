@@ -3,10 +3,15 @@
 Two independent workers, started and stopped from the FastAPI lifespan:
 
 ``WebhookFanoutWorker``
-    A JetStream durable pull consumer on ``events.asset.>`` that turns each
-    event into rows in ``webhook_deliveries``. It only writes the queue — it
-    never POSTs — so a slow receiver can never stall consumption of the event
-    stream, and an event is acked once it is durably queued.
+    A JetStream durable pull consumer that turns each event into rows in
+    ``webhook_deliveries``. It only writes the queue — it never POSTs — so a
+    slow receiver can never stall consumption of the event stream, and an event
+    is acked once it is durably queued. Two are started: one on
+    ``events.asset.>`` and one on ``events.audit.>`` (#328). Two rather than a
+    single consumer on ``events.>`` because a JetStream consumer carries one
+    ``filter_subject``, and widening the deployed one would have meant deleting
+    it and resetting its cursor — replaying a month of retained asset events at
+    everybody's receivers, which is the #152 bug.
 
 ``WebhookDispatcher``
     A timer that drains the due end of that queue. Safe in every replica
@@ -36,6 +41,10 @@ LOG = logging.getLogger("shapoclyack.webhooks")
 
 CONSUMER_WEBHOOK_FANOUT = "octo-webhook-fanout"
 SUBJECT_FILTER = "events.asset.>"
+# The audit half (#328). Its own durable, for the reason in the module
+# docstring; the handler and the resulting queue rows are identical.
+CONSUMER_AUDIT_FANOUT = "octo-webhook-audit-fanout"
+AUDIT_SUBJECT_FILTER = "events.audit.>"
 
 # How often the dispatcher prunes the audit trail. The sweep is one bounded
 # DELETE, but it runs on every replica, so it does not belong on the 5s tick.
@@ -43,11 +52,20 @@ _PRUNE_INTERVAL_SECONDS = 3600.0
 
 
 class WebhookFanoutWorker:
-    """events.asset.* → webhook_deliveries rows."""
+    """One event subject tree → webhook_deliveries rows."""
 
-    def __init__(self, *, nats_url: str, fetch_timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        *,
+        nats_url: str,
+        fetch_timeout: float = 5.0,
+        consumer: str = CONSUMER_WEBHOOK_FANOUT,
+        subject_filter: str = SUBJECT_FILTER,
+    ) -> None:
         self._nats_url = nats_url
         self._fetch_timeout = fetch_timeout
+        self._consumer = consumer
+        self._subject_filter = subject_filter
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._stats = {"messages": 0, "queued": 0, "errors": 0}
@@ -60,15 +78,20 @@ class WebhookFanoutWorker:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="octo-webhook-fanout", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=self._consumer, daemon=True)
         self._thread.start()
-        LOG.info("Webhook fan-out worker started (stream=%s)", STREAM_EVENTS)
+        LOG.info(
+            "Webhook fan-out worker started (stream=%s consumer=%s filter=%s)",
+            STREAM_EVENTS,
+            self._consumer,
+            self._subject_filter,
+        )
 
     def stop(self, *, join_timeout: float = 5.0) -> None:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=join_timeout)
-        LOG.info("Webhook fan-out worker stopped stats=%s", self._stats)
+        LOG.info("Webhook fan-out worker %s stopped stats=%s", self._consumer, self._stats)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -84,21 +107,22 @@ class WebhookFanoutWorker:
         import nats
         from nats.errors import TimeoutError as NatsTimeout
 
-        nc = await nats.connect(self._nats_url, name="octo-webhook-fanout", connect_timeout=5)
+        nc = await nats.connect(self._nats_url, name=self._consumer, connect_timeout=5)
         try:
             js = nc.jetstream()
-            await ensure_fanout_consumer(js)
+            await ensure_fanout_consumer(
+                js, consumer=self._consumer, subject_filter=self._subject_filter
+            )
             # Bind only: pull_subscribe() auto-creates with DeliverPolicy.ALL
             # when the durable is missing, which is the #152 replay-of-history
             # bug. Creation with NEW happens above.
-            sub = await js.pull_subscribe_bind(
-                durable=CONSUMER_WEBHOOK_FANOUT, stream=STREAM_EVENTS
-            )
+            sub = await js.pull_subscribe_bind(durable=self._consumer, stream=STREAM_EVENTS)
 
             LOG.info(
-                "Webhook fan-out subscribed stream=%s consumer=%s",
+                "Webhook fan-out subscribed stream=%s consumer=%s filter=%s",
                 STREAM_EVENTS,
-                CONSUMER_WEBHOOK_FANOUT,
+                self._consumer,
+                self._subject_filter,
             )
             while not self._stop.is_set():
                 try:
@@ -115,7 +139,7 @@ class WebhookFanoutWorker:
     async def _report_lag(self, sub: Any) -> None:
         try:
             info = await sub.consumer_info()
-            metrics.NATS_CONSUMER_PENDING.labels(consumer=CONSUMER_WEBHOOK_FANOUT).set(
+            metrics.NATS_CONSUMER_PENDING.labels(consumer=self._consumer).set(
                 info.num_pending
             )
         except Exception:  # noqa: BLE001
@@ -127,7 +151,7 @@ class WebhookFanoutWorker:
         except Exception:  # noqa: BLE001
             # Undecodable: redelivering it will not make it parse.
             self._stats["errors"] += 1
-            LOG.warning("Dropping unparseable asset event on %s", getattr(msg, "subject", "?"))
+            LOG.warning("Dropping unparseable event on %s", getattr(msg, "subject", "?"))
             await _term(msg)
             return
         if not isinstance(envelope, dict):
@@ -211,8 +235,13 @@ class WebhookDispatcher:
             webhooks.prune_deliveries()
 
 
-async def ensure_fanout_consumer(js: Any) -> None:
-    """Create ``octo-webhook-fanout`` with ``DeliverPolicy.NEW`` if it is missing.
+async def ensure_fanout_consumer(
+    js: Any,
+    *,
+    consumer: str = CONSUMER_WEBHOOK_FANOUT,
+    subject_filter: str = SUBJECT_FILTER,
+) -> None:
+    """Create one fan-out durable with ``DeliverPolicy.NEW`` if it is missing.
 
     ``pull_subscribe(durable=…)`` auto-creates the consumer when absent, and
     nats-py's default config is ``DeliverPolicy.ALL``. A webhook subscribed
@@ -227,14 +256,14 @@ async def ensure_fanout_consumer(js: Any) -> None:
     from nats.js.errors import NotFoundError
 
     try:
-        info = await js.consumer_info(STREAM_EVENTS, CONSUMER_WEBHOOK_FANOUT)
+        info = await js.consumer_info(STREAM_EVENTS, consumer)
     except NotFoundError:
         info = None
     if info is None:
         config = ConsumerConfig(
-            durable_name=CONSUMER_WEBHOOK_FANOUT,
+            durable_name=consumer,
             ack_policy=AckPolicy.EXPLICIT,
-            filter_subject=SUBJECT_FILTER,
+            filter_subject=subject_filter,
             deliver_policy=DeliverPolicy.NEW,
             max_deliver=5,
         )
@@ -249,7 +278,7 @@ async def ensure_fanout_consumer(js: Any) -> None:
             "Webhook fan-out consumer %s exists with deliver_policy=%s; "
             "new installs use DeliverPolicy.NEW so retained history is not "
             "replayed. Delete the consumer to recreate it.",
-            CONSUMER_WEBHOOK_FANOUT,
+            consumer,
             policy,
         )
 
@@ -298,6 +327,7 @@ async def _drain(nc: Any) -> None:
 
 
 _FANOUT: WebhookFanoutWorker | None = None
+_AUDIT_FANOUT: WebhookFanoutWorker | None = None
 _DISPATCHER: WebhookDispatcher | None = None
 
 
@@ -315,33 +345,50 @@ def start_worker(settings: Settings) -> None:
     subscriptions, send a test delivery, and replay the DLQ — deliveries are
     rows, and the dispatcher reads them from Postgres.
     """
-    global _FANOUT, _DISPATCHER
+    global _FANOUT, _AUDIT_FANOUT, _DISPATCHER
     if not settings.webhooks_enabled:
         return
     if _DISPATCHER is None and settings.webhook_dispatch_enabled:
         _DISPATCHER = WebhookDispatcher(settings=settings)
         _DISPATCHER.start()
-    if _FANOUT is None and settings.webhook_fanout_enabled and settings.nats_url.strip():
-        _FANOUT = WebhookFanoutWorker(nats_url=settings.nats_url)
-        _FANOUT.start()
+    if settings.webhook_fanout_enabled and settings.nats_url.strip():
+        if _FANOUT is None:
+            _FANOUT = WebhookFanoutWorker(nats_url=settings.nats_url)
+            _FANOUT.start()
+        # The audit half rides the same flag: both are "turn events into
+        # delivery rows", they touch the same two systems, and an installation
+        # that wanted only one of them would be asking for a subscription
+        # filter, not a deployment topology (#328).
+        if _AUDIT_FANOUT is None:
+            _AUDIT_FANOUT = WebhookFanoutWorker(
+                nats_url=settings.nats_url,
+                consumer=CONSUMER_AUDIT_FANOUT,
+                subject_filter=AUDIT_SUBJECT_FILTER,
+            )
+            _AUDIT_FANOUT.start()
 
 
 def stop_worker() -> None:
-    global _FANOUT, _DISPATCHER
+    global _FANOUT, _AUDIT_FANOUT, _DISPATCHER
     if _FANOUT is not None:
         _FANOUT.stop()
         _FANOUT = None
+    if _AUDIT_FANOUT is not None:
+        _AUDIT_FANOUT.stop()
+        _AUDIT_FANOUT = None
     if _DISPATCHER is not None:
         _DISPATCHER.stop()
         _DISPATCHER = None
 
 
 def worker_stats() -> dict[str, dict[str, int]] | None:
-    if _FANOUT is None and _DISPATCHER is None:
+    if _FANOUT is None and _AUDIT_FANOUT is None and _DISPATCHER is None:
         return None
     stats: dict[str, dict[str, int]] = {}
     if _FANOUT is not None:
         stats["fanout"] = _FANOUT.stats
+    if _AUDIT_FANOUT is not None:
+        stats["audit_fanout"] = _AUDIT_FANOUT.stats
     if _DISPATCHER is not None:
         stats["dispatch"] = _DISPATCHER.stats
     return stats

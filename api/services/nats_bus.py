@@ -4,6 +4,7 @@ Subjects (streams created on connect when missing):
   - jobs.scan.{tenant}               → stream JOBS
   - ingest.raw_results               → stream INGEST
   - events.asset.{tenant}.{kind}     → stream EVENTS (Phase 10.2)
+  - events.audit.{tenant}            → stream EVENTS (#328)
 
 Set OCTO_NATS_URL to enable. Empty URL keeps legacy HTTP-only agent flow.
 
@@ -511,6 +512,18 @@ class NatsBus:
             retries=retries,
         )
 
+    def publish_audit_event(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
+        """Publish one audit event to ``events.audit.{tenant_id}`` (#328)."""
+        tenant_id = str(envelope.get("tenant_id") or "")
+        kind = str(envelope.get("kind") or "audit")
+        return self.publish_json(
+            audit_event_subject(tenant_id),
+            envelope,
+            msg_id=str(envelope.get("event_id") or "") or None,
+            headers={"tenant_id": tenant_id or PLATFORM_SUBJECT_TENANT, "event_kind": kind},
+            retries=retries,
+        )
+
     def publish_endpoint_inventory(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
         """Publish accepted endpoint inventory summary to ``ingest.endpoint_inventory.{tenant_id}`` (Phase S8)."""
         tenant_id = str(envelope.get("tenant_id") or "default")
@@ -547,6 +560,11 @@ _ENCODED_TOKEN_PREFIX = "h_"
 # Tenant of the legacy shared OCTO_AGENT_TOKEN (api.auth.LEGACY_AGENT_TENANT_ID)
 # and of every subject built from an empty tenant id.
 DEFAULT_SUBJECT_TENANT = "default"
+# Subject token for an audit row with no tenant — a platform-level act (#328).
+# `tenants._validate_tenant_id` requires an id to start with an alphanumeric,
+# so this can never collide with a real tenant's subject the way the "default"
+# fallback above would.
+PLATFORM_SUBJECT_TENANT = "_platform"
 
 
 def is_subject_token(value: str) -> bool:
@@ -607,6 +625,22 @@ def ingest_results_subject(tenant_id: str) -> str:
 def asset_event_subject(tenant_id: str, kind: str) -> str:
     """NATS subject ``events.asset.{tenant_id}.{kind}`` with safe tokens."""
     return f"events.asset.{_subject_token(tenant_id, 'default')}.{_subject_token(kind, 'unknown')}"
+
+
+def audit_event_subject(tenant_id: str) -> str:
+    """NATS subject ``events.audit.{tenant_id}`` with safe token (#328).
+
+    No kind token after the tenant, unlike the asset subjects: an audit action
+    is a dotted verb, and one subject token per action would make every new
+    action something each NATS ACL had to learn. The action is in the envelope
+    and in the CEF ``act`` field.
+
+    The fallback token is ``_platform`` rather than ``default``, which is a real
+    tenant id in every installation: a row with a NULL tenant is a
+    platform-level act and must not land on the ``default`` tenant's subject,
+    where its ACL would hand it to that tenant's consumers.
+    """
+    return f"events.audit.{_subject_token(tenant_id, PLATFORM_SUBJECT_TENANT)}"
 
 
 def endpoint_inventory_subject(tenant_id: str) -> str:

@@ -155,6 +155,17 @@ ASSET_EVENTS_PUBLISHED_TOTAL = Counter(
     ["kind", "outcome"],
     registry=REGISTRY,
 )
+AUDIT_EVENTS_PUBLISHED_TOTAL = Counter(
+    "octo_audit_events_published_total",
+    "Administrative audit events published to events.audit.{tenant} by outcome "
+    "(#328). outcome=skipped means no broker was configured or reachable and "
+    "outcome=error that a publish was attempted and failed — in both cases the "
+    "row is committed and readable via GET /api/audit, so this counter measures "
+    "a missing notification, never a missing record. No kind label, unlike the "
+    "asset counter: the action is a dotted verb and would be one series each.",
+    ["outcome"],
+    registry=REGISTRY,
+)
 WEBHOOK_DELIVERIES_TOTAL = Counter(
     "octo_webhook_deliveries_total",
     "Webhook deliveries by outcome (queued, delivered, retrying, dead) "
