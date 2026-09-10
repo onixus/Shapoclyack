@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
+from api.db import engine as db_engine
 from api.middleware import (
     BodySizeLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -146,6 +147,10 @@ def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # Before the tenant store opens the first session: the engine is a lazy
+    # singleton keyed by URL, so pool sizing that arrives after something has
+    # already built it would apply to nobody (#335).
+    db_engine.configure(settings)
     tenants_service.load_tenants(settings)
     # After the tenant store (it shares the session factory), and before any
     # router is mounted: a prod install with no console account refuses here
@@ -259,10 +264,15 @@ def create_app() -> FastAPI:
     @app.get("/readyz", include_in_schema=False)
     def readyz() -> JSONResponse:
         report = health_service.check_readiness(get_settings())
+        # The status code and the body answer different questions: 503 means
+        # "take this replica out of the Service", which only a blocking
+        # dependency earns, while "degraded" means "something configured here
+        # is not answering". A replica with ClickHouse down is 200 degraded —
+        # serving, and saying what is wrong (#335).
         return JSONResponse(
             status_code=200 if report.ready else 503,
             content={
-                "status": "ok" if report.ready else "degraded",
+                "status": "ok" if report.healthy else "degraded",
                 "checks": report.checks,
             },
         )
@@ -277,7 +287,7 @@ def create_app() -> FastAPI:
         # container HEALTHCHECKs are wired to this path.
         report = health_service.check_readiness(settings)
         return HealthResponse(
-            status="ok" if report.ready else "degraded",
+            status="ok" if report.healthy else "degraded",
             version=__version__,
             nats=_check_flag(report, "nats"),
             clickhouse=_check_flag(report, "clickhouse"),

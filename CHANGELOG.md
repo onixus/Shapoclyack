@@ -269,6 +269,65 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **`overlays/prod-ha` — a Kubernetes profile that survives a node loss**
+  ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `overlays/prod`
+  ran one API replica pinned to a scanner node, the in-cluster single-pod
+  PostgreSQL, and neither NATS nor ClickHouse; there was no second overlay to
+  point at. The new one sets API `replicas: 2` with `podAntiAffinity` and
+  `topologySpreadConstraints` (with `nodeTaintsPolicy: Honor`, so a cordoned
+  node stops counting as a domain and a drain does not strand the replacement
+  pod), and an HPA (CPU 70%, 2–6); scales NATS JetStream to three nodes with
+  `OCTO_NATS_STREAM_REPLICAS=3` (the `nats-ha` patches moved out of `examples/`,
+  where nothing referenced them, into the overlay — kustomize refuses to load a
+  patch file from outside its root); fills in `OCTO_NATS_URL` and
+  `OCTO_CLICKHOUSE_URL`; and replaces the in-cluster PostgreSQL — StatefulSet,
+  Services, NetworkPolicy, `pg_dump` CronJob and dev Secret — with a
+  Secret-supplied `?sslmode=verify-full` URL to a managed one (as six
+  single-object `$patch: delete` files: the kustomize inside kubectl 1.31,
+  which is what CI runs, segfaults on a multi-document delete patch that
+  kubectl 1.36 renders happily). It also opens the
+  NATS route port 6222 between broker pods, which base's NetworkPolicy denied
+  (without that rule a 3-node cluster silently never forms under an enforcing
+  CNI), spreads the three broker pods across nodes, and gives them a PDB —
+  three pods the scheduler may stack on one node are one failure domain, and a
+  parallel drain of two nodes costs the JetStream quorum. The API keeps base's
+  `maxUnavailable: 1` budget rather than patching it to `minAvailable: 1`,
+  which at six replicas would permit five simultaneous evictions. `k8s/scripts/validate-kustomize.sh` renders the overlay in CI.
+  **It is deliberately not appliable as rendered** — the RWX storage class, the
+  NATS route password and the external-PostgreSQL Secret are placeholders that
+  fail loudly. Requirements, the manual drill, and what the profile does *not*
+  cover (single-pod ClickHouse, artifacts still on a shared filesystem
+  pending [#336](https://github.com/onixus/Shapoclyack/issues/336), DR beyond
+  PostgreSQL pending [#333](https://github.com/onixus/Shapoclyack/issues/333))
+  are in the new [docs/high-availability.md](docs/high-availability.md).
+- **NATS survives being a cluster** ([#335](https://github.com/onixus/Shapoclyack/issues/335)).
+  The broker's probes both asked bare `/healthz`, which is the *full* JetStream
+  check: enabled, a meta leader elected, and every stream and consumer on this
+  server current. At `replicas: 1` that is roughly "the process is up"; at three
+  it fails for as long as a restarted node is catching up, so liveness restarted
+  the pod mid catch-up while readiness pulled it from the Service. Liveness now
+  asks `/healthz?js-enabled-only=true` and readiness `/healthz?js-server-only=true`,
+  which mean the same thing on one node. Separately, `update_stream` — the call
+  that pushes `OCTO_NATS_STREAM_REPLICAS=3` onto streams that already exist —
+  failed inside a bare `except: pass`: an installation that scaled NATS out kept
+  its single-copy streams and nothing said so. It is logged now, along with any
+  stream whose actual replica count is not the one this replica asked for.
+- **`k8s/scripts/validate-kustomize.sh` discovers overlays instead of listing
+  them.** The hand-written list had drifted: `overlays/kind-restore` and
+  `overlays/enrichment-advisories` were rendered by nothing, which is exactly
+  where a broken patch would have sat unnoticed. Eleven targets now, from a glob.
+- **`OCTO_DB_POOL_SIZE`, `OCTO_DB_MAX_OVERFLOW`, `OCTO_DB_POOL_TIMEOUT`**
+  ([#335](https://github.com/onixus/Shapoclyack/issues/335)). The SQLAlchemy
+  pool was whatever the library chose (5 + 10) and could not be changed. That
+  is a per-process figure multiplied by the replica count, while
+  `max_connections` on the server is one shared budget — so the profile that
+  scales the API is exactly the one that needs to shrink it. Applied in
+  `api/db/engine.py` from `create_app()`, before the first session is opened;
+  the `dev` SQLite fallback ignores them, having no connection queue. The sum of
+  the two is floored at four: the schedule dispatcher, the report dispatcher and
+  the software-match worker each hold one connection for the life of the process
+  for their session-scoped advisory lock, so a pool of one or two would have
+  left a worker unable to become leader at all, in every replica, silently.
 - **One outbound HTTP client, with a proxy and an internal CA**
   ([#359](https://github.com/onixus/Shapoclyack/issues/359)). Nothing in this
   repository read a proxy variable, and webhook/ticket delivery on raw
@@ -731,8 +790,12 @@ All notable changes to Shapoclyack are documented in this file.
   ([#331](https://github.com/onixus/Shapoclyack/issues/331)). `/readyz` runs a
   real sweep — PostgreSQL `SELECT 1`, a NATS round trip and a ClickHouse query
   where those are configured — and answers `503
-  {"status":"degraded","checks":{…}}` when one of them is down, so an
-  unservable replica leaves the Service. `/livez` touches nothing: liveness
+  {"status":"degraded","checks":{…}}` when PostgreSQL or NATS is down, so an
+  unservable replica leaves the Service. ClickHouse is reported in `checks` and
+  degrades the body, but does not fail the probe: it is a single pod with no
+  PDB even in `overlays/prod-ha`, and letting it decide readiness would turn one
+  ClickHouse restart into a 503 from *every* API replica at once — a full
+  control-plane outage in exchange for analytics that were already down. `/livez` touches nothing: liveness
   decides whether to restart the process, and restarting every replica is not
   how an unreachable database gets fixed. The API Deployment now points its
   readiness probe at `/readyz`, both liveness and a new `startupProbe` at
@@ -1050,6 +1113,19 @@ All notable changes to Shapoclyack are documented in this file.
   regardless — setting it changed what half the codebase signed with and nothing
   that verified it. `Settings` is now the only source, `HS256` is the only
   accepted value, and anything else refuses startup in every environment.
+
+### Fixed
+
+- **The API PodDisruptionBudget no longer blocks every node drain**
+  ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `base` and
+  `overlays/prod` run a single API replica, and `minAvailable: 1` on one replica
+  means no voluntary disruption is ever permitted: `kubectl drain` on that node
+  waited forever, so a node upgrade needed the PDB deleted by hand. Base now
+  says `maxUnavailable: 1`, which is the honest statement for one replica — the
+  rollout strategy is what limits the gap — and `overlays/prod-ha` inherits it
+  unchanged: the same rule is correct at one replica (it permits the drain that
+  `minAvailable: 1` blocked) and at six (it keeps five available), because its
+  meaning scales with the replica count.
 
 ## [0.44-0907] — 2026-09-07
 

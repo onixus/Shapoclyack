@@ -58,16 +58,30 @@ spec:
               containerPort: 8222
             - name: cluster
               containerPort: 6222
+          # Bare /healthz is the *full* check: JetStream enabled, a meta
+          # leader elected, and every stream and consumer assigned to this
+          # server current. On a single node that is nearly the same thing as
+          # "the server is up", which is why it was fine here — but a clustered
+          # broker (overlays/prod-ha) fails it for as long as a restarted node
+          # is catching its streams up, so liveness restarted the pod mid
+          # catch-up and readiness took it out of the Service in the same
+          # breath. The narrower forms below say what each probe actually
+          # wants, and mean the same thing at replicas=1.
           readinessProbe:
             httpGet:
-              path: /healthz
+              # JetStream is enabled and this server is serving. Not "the
+              # cluster agrees": a node still replaying its store can accept
+              # clients, and pulling it from the Service does not speed it up.
+              path: /healthz?js-server-only=true
               port: monitor
             initialDelaySeconds: 3
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
+            # The weakest question there is, which is the right one for
+            # liveness: restarting a broker is not how a catch-up finishes.
             httpGet:
-              path: /healthz
+              path: /healthz?js-enabled-only=true
               port: monitor
             initialDelaySeconds: 10
             periodSeconds: 20

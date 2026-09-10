@@ -262,3 +262,68 @@ def test_a_stream_that_appears_late_still_comes_up(monkeypatch):
     js = _FlakyJetStream(unready=3)
     _ensure(js, monkeypatch)
     assert js.add_calls == 4
+
+
+class _ExistingStream:
+    """A JetStream that already holds the stream and refuses to reconcile it.
+
+    The shape a 3-node rollout meets: ``add_stream`` says the stream is there,
+    ``update_stream`` refuses (a cluster with fewer peers than the requested
+    replicas is the usual reason), and ``stream_info`` answers with whatever
+    the stream actually is — R1.
+    """
+
+    def __init__(self, num_replicas: int = 1) -> None:
+        self.num_replicas = num_replicas
+
+    async def add_stream(self, config=None):
+        raise RuntimeError("stream name already in use")
+
+    async def update_stream(self, config=None):
+        raise RuntimeError("replicas > 1 not supported in non-clustered mode")
+
+    async def stream_info(self, name):
+        import types
+
+        return types.SimpleNamespace(config=types.SimpleNamespace(num_replicas=self.num_replicas))
+
+
+def _config(name: str = "INGEST", num_replicas: int = 3):
+    import types
+
+    return types.SimpleNamespace(name=name, num_replicas=num_replicas)
+
+
+def test_a_stream_that_cannot_be_reconciled_is_logged(monkeypatch, caplog):
+    """The defect: ``update_stream`` failed inside ``except Exception: pass``,
+    so an installation that set ``OCTO_NATS_STREAM_REPLICAS=3`` kept its
+    existing R1 streams and nothing anywhere said so — the single-copy failure
+    the scale-out was bought to prevent, silently intact."""
+    import asyncio
+
+    monkeypatch.setattr(nats_bus.asyncio, "sleep", _no_sleep)
+    bus = nats_bus.NatsBus.__new__(nats_bus.NatsBus)
+    bus._js = _ExistingStream(num_replicas=1)
+
+    with caplog.at_level("WARNING", logger="shapoclyack.nats"):
+        asyncio.run(bus._ensure_stream(_config()))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("could not be reconciled" in message and "INGEST" in message for message in messages)
+    assert any("is R1, not the R3" in message for message in messages)
+
+
+def test_a_stream_already_at_the_wanted_replicas_is_quiet(monkeypatch, caplog):
+    """No warning without a reason for one: the reconcile still failed, but a
+    stream that is already R3 is not drift, and a line per stream per start
+    would train operators to ignore the one that matters."""
+    import asyncio
+
+    monkeypatch.setattr(nats_bus.asyncio, "sleep", _no_sleep)
+    bus = nats_bus.NatsBus.__new__(nats_bus.NatsBus)
+    bus._js = _ExistingStream(num_replicas=3)
+
+    with caplog.at_level("WARNING", logger="shapoclyack.nats"):
+        asyncio.run(bus._ensure_stream(_config()))
+
+    assert not any("is R" in record.getMessage() for record in caplog.records)

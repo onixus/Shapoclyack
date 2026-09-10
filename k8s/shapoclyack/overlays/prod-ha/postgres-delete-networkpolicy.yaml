@@ -1,0 +1,8 @@
+# The ingress policy guarded pods that no longer exist. Leaving it would be
+# harmless but misleading — it selects on the postgres component label, and a
+# reader would take it as evidence that a database still lives here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-postgres-ingress
+$patch: delete

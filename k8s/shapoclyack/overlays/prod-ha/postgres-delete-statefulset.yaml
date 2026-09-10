@@ -1,0 +1,20 @@
+# External / managed Postgres: remove the in-cluster one (#335).
+#
+# base/postgres/statefulset.yaml is a single pod with a single PVC. Nothing
+# about it is highly available -- no replica, no failover, no automatic restore
+# -- so an HA profile that kept it would be claiming availability it does not
+# have. The API's own connection is patched to a Secret-supplied URL in
+# api-ha-patch.yaml; the five postgres-delete-*.yaml files remove what that URL
+# replaces. See docs/high-availability.md § External Postgres for what has to
+# exist on the other end.
+#
+# `$patch: delete` needs the full identity of the object (apiVersion, kind,
+# name) and nothing else. One object per file: kustomize v5.4.2, the version
+# inside kubectl 1.31 that CI runs, segfaults on a multi-document delete patch.
+#
+# The database itself.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shapoclyack-postgres
+$patch: delete

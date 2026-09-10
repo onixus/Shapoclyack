@@ -14,11 +14,57 @@ from sqlalchemy import Column, Engine, MetaData, create_engine, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from api.settings import Settings
+
 _log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _engine: Engine | None = None
 _engine_url: str | None = None
 _SessionLocal: sessionmaker[Session] | None = None
+_pool_options: dict[str, int] | None = None
+
+
+def configure(settings: Settings) -> None:
+    """Pin the connection-pool sizing for engines built after this call (#335).
+
+    Same shape as the ``configure(settings)`` the services use, and called from
+    ``create_app()`` *before* the tenant store opens the first session — the
+    engine is a lazy singleton keyed by URL, so options that arrive after it
+    exists would apply to nobody. Changing them therefore disposes the cached
+    engine rather than being silently ignored; in practice that only happens in
+    tests, since a process reads its configuration once.
+
+    Left unconfigured (tools, most of the test suite) the engine keeps
+    SQLAlchemy's own defaults, which is what it did before this existed.
+    """
+    global _pool_options, _engine, _engine_url, _SessionLocal
+    options = {
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_timeout": settings.db_pool_timeout,
+    }
+    with _lock:
+        if options == _pool_options:
+            return
+        _pool_options = options
+        if _engine is not None:
+            _engine.dispose()
+            _engine = None
+            _engine_url = None
+            _SessionLocal = None
+
+
+def _pool_kwargs(url: str) -> dict[str, int]:
+    """Pool sizing, but only where there is a queue to size.
+
+    The SQLite fallback is a single file opened by one process (#174 refuses it
+    in prod); SQLAlchemy gives it a pool class that takes neither ``pool_size``
+    nor ``max_overflow``, so passing them there is a TypeError at engine
+    construction rather than a tuning knob.
+    """
+    if _pool_options is None or url.startswith("sqlite"):
+        return {}
+    return dict(_pool_options)
 
 
 def get_engine(url: str) -> Engine:
@@ -27,7 +73,7 @@ def get_engine(url: str) -> Engine:
         if _engine is None or _engine_url != url:
             if _engine is not None:
                 _engine.dispose()
-            _engine = create_engine(url, pool_pre_ping=True, future=True)
+            _engine = create_engine(url, pool_pre_ping=True, future=True, **_pool_kwargs(url))
             _engine_url = url
             _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
             _create_schema_if_unmanaged(_engine)
@@ -36,9 +82,23 @@ def get_engine(url: str) -> Engine:
 
 def get_session_factory(url: str) -> sessionmaker[Session]:
     """Return a sessionmaker factory configured for ``url``."""
+    return _ensure_session_factory(url)
+
+
+def _ensure_session_factory(url: str) -> sessionmaker[Session]:
+    """Build the engine if needed and hand back the factory it was built with.
+
+    Reading the ``_SessionLocal`` global *after* ``get_engine`` released the
+    lock is a race with anything that resets it — ``configure()`` on a pool
+    change, ``reset_for_tests()`` between tests — and the loser gets an
+    ``AssertionError`` with no message, or a ``TypeError: 'NoneType' object is
+    not callable`` under ``python -O``. Taking the same lock for the read keeps
+    the caller with a usable factory even if the next caller gets a new one.
+    """
     get_engine(url)
-    assert _SessionLocal is not None
-    return _SessionLocal
+    with _lock:
+        assert _SessionLocal is not None
+        return _SessionLocal
 
 
 def _create_schema_if_unmanaged(engine: Engine) -> None:
@@ -124,9 +184,7 @@ def _sqlite_add_column_spec(engine: Engine, column: Column) -> str:
 
 @contextmanager
 def get_session(url: str) -> Iterator[Session]:
-    get_engine(url)
-    assert _SessionLocal is not None
-    session = _SessionLocal()
+    session = _ensure_session_factory(url)()
     try:
         yield session
         session.commit()
@@ -161,10 +219,13 @@ def insert_if_absent(session: Session, row: object, key: str) -> bool:
 
 def reset_for_tests() -> None:
     """Dispose the cached engine so a new URL (or a fresh test DB) takes effect."""
-    global _engine, _engine_url, _SessionLocal
+    global _engine, _engine_url, _SessionLocal, _pool_options
     with _lock:
         if _engine is not None:
             _engine.dispose()
         _engine = None
         _engine_url = None
         _SessionLocal = None
+        # Also drop the pool sizing: a test that configured a deliberately tiny
+        # pool must not leave it for the rest of the session.
+        _pool_options = None

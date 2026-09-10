@@ -13,6 +13,15 @@ sidecars (empty URL disables them), and an installation that runs neither is
 ready, not degraded — an absent dependency is not a failing one. Postgres is
 always checked: the tenant store lives there, so a replica without it can serve
 nothing.
+
+A configured dependency is not automatically a *blocking* one. ClickHouse backs
+analytics only, and it is a single pod with no PDB even in ``overlays/prod-ha``
+(#335): letting it decide readiness means one broker restart takes every API
+replica out of its Service at once, which is a full outage of everything the
+control plane does — jobs, agents, runs — bought in exchange for a dashboard.
+So ClickHouse is reported and degrades ``/api/health``, but does not fail
+``/readyz``. Postgres and NATS do: without them a replica cannot serve a
+request or dispatch a job, and taking it out of the Service is the point.
 """
 
 from __future__ import annotations
@@ -33,6 +42,13 @@ STATUS_OK = "ok"
 STATUS_ERROR = "error"
 
 
+# Dependencies a replica cannot serve without, and which therefore decide the
+# status code of /readyz. Everything else in ``checks`` is advisory: reported,
+# and enough to call the installation degraded, but not enough to pull the
+# replica out of its Service.
+BLOCKING_CHECKS = frozenset({"postgres", "nats"})
+
+
 @dataclass(frozen=True)
 class Readiness:
     """Outcome of one readiness sweep.
@@ -40,10 +56,19 @@ class Readiness:
     ``checks`` maps a dependency name to ``ok``/``error`` and carries only the
     dependencies this installation configured, so a client can tell "ClickHouse
     is down" from "there is no ClickHouse here".
+
+    ``ready`` answers the kubelet and counts only :data:`BLOCKING_CHECKS`;
+    ``healthy`` answers a human and counts every check that ran. They differ
+    exactly when an advisory dependency is down, which is the case worth being
+    able to see.
     """
 
     ready: bool
     checks: dict[str, str]
+
+    @property
+    def healthy(self) -> bool:
+        return all(status == STATUS_OK for status in self.checks.values())
 
 
 def check_readiness(settings: Settings) -> Readiness:
@@ -55,7 +80,9 @@ def check_readiness(settings: Settings) -> Readiness:
             STATUS_OK if clickhouse_client.ping(settings.clickhouse_url) else STATUS_ERROR
         )
     return Readiness(
-        ready=all(status == STATUS_OK for status in checks.values()),
+        ready=all(
+            status == STATUS_OK for name, status in checks.items() if name in BLOCKING_CHECKS
+        ),
         checks=checks,
     )
 

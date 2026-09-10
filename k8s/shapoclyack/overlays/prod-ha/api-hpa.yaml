@@ -1,0 +1,47 @@
+# Horizontal autoscaling for the API (#335). Requires metrics-server (or any
+# provider of metrics.k8s.io) in the cluster; without it the HPA reports
+# `unknown` for the metric and never scales — it does NOT scale to minReplicas
+# and it does not scale down, so an install missing metrics-server keeps
+# whatever replica count it has rather than losing capacity.
+#
+# CPU as the signal, not request rate: the expensive thing this process does is
+# in-process scan work and report rendering (OCTO_ALLOW_SCAN_START=true), which
+# shows up as CPU and not as a request count.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: shapoclyack-api
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: shapoclyack-api
+  # Two, not one: the floor is an availability requirement, not a capacity one.
+  # Scaling to a single replica at 3am would undo the PDB and make the next
+  # node drain an outage.
+  minReplicas: 2
+  # Six is the ceiling the database pool is sized against (see
+  # api-ha-patch.yaml: 6 * (10 + 5) connections). Raising it means raising
+  # `max_connections` on the Postgres server too, or the extra replicas fail to
+  # connect instead of adding capacity.
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Percentage of the container's CPU *request* (500m in base), not the
+          # limit — so this triggers at ~350m per pod, well below the 4-core
+          # limit, leaving headroom for the burst while new pods start.
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # A finished scan drops CPU to near zero within seconds. The default
+      # 5-minute window is short enough that a gap between two scans removes
+      # replicas that the next scan immediately needs back; 15 minutes makes
+      # scale-down follow the trend rather than the last run.
+      stabilizationWindowSeconds: 900

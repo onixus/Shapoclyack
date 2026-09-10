@@ -10,8 +10,8 @@
 # Strategic-merge patch: Kubernetes replaces the whole `nats.conf` string, so
 # this is the full config, not a diff. Keep it in sync with
 # base/nats/configmap.yaml when that file changes, the same way
-# nats-ha-configmap-patch.yaml is kept in sync. Applying this patch *and*
-# nats-ha-configmap-patch.yaml in one overlay does not work — one of them wins;
+# overlays/prod-ha/nats-ha-configmap-patch.yaml is kept in sync. Applying this
+# patch *and* that one in the same overlay does not work — one of them wins;
 # merge the `tls {}` block below into that file instead.
 #
 # Wiring (overlay kustomization.yaml):

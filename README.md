@@ -266,7 +266,8 @@ For UI screenshots and walkthroughs, see [Web Interface Documentation](docs/ui.m
 | Deployment Mode | Recommended For | Architecture & Dependencies |
 |---|---|---|
 | **All-in-One Local (`kind-dev`)** | Local evaluation, testing, CI | Single pod or container with embedded API, Web UI, and scanner engine; includes PostgreSQL, NATS, and ClickHouse. |
-| **Production Kubernetes (`overlays/prod`)** | Enterprise production deployments | Scaled FastAPI replicas, persistent PostgreSQL cluster, clustered NATS JetStream, ClickHouse analytics, and ingress controllers. |
+| **Production Kubernetes (`overlays/prod`)** | Single-site production deployments | One API replica, in-cluster PostgreSQL on a PVC, nightly `pg_dump`; NATS and ClickHouse are switched off by empty URLs. A node drain is an outage. |
+| **High availability (`overlays/prod-ha`)** | Deployments that must survive a node loss | API ≥ 2 replicas spread across nodes with an HPA and a PDB, 3-node NATS JetStream with R3 streams, ClickHouse enabled, external managed PostgreSQL. Requires ReadWriteMany artifact storage (or [#336](https://github.com/onixus/Shapoclyack/issues/336)) and a managed database — see [high-availability.md](docs/high-availability.md). |
 | **Distributed Remote Agents** | Segmented networks, DMZs, multi-VPC, multi-cloud | Outbound-only agent workers, pulling from NATS JetStream or claiming over HTTPS; zero inbound open ports required on agents. NATS TLS is opt-in (`tls://` plus `OCTO_NATS_TLS_*`, see [configuration.md](docs/configuration.md)); enable it before crossing an untrusted segment. Client certificates for agents (mTLS) are not implemented. |
 | **Standalone Scanner CLI** | Ad-hoc audits, single-shot scans, pipeline automation | Headless container execution outputting structured JSON, CSV, and PDF artifacts directly to local disk. |
 
@@ -275,6 +276,7 @@ Detailed guides:
 * [System Architecture Specification](docs/architecture.md)
 * [Configuration & Scanning Profiles](docs/configuration.md)
 * [Operations, Backups & Data Retention](docs/operations.md)
+* [High Availability Profile](docs/high-availability.md)
 
 ---
 
@@ -353,6 +355,7 @@ See the [Development Guide](docs/development.md) for full setup instructions and
 | **Configuration** | [Scan profiles, rate limits, enrichment sources, safe overrides](docs/configuration.md) |
 | **Kubernetes** | [Kustomize production deployment, overlays, secrets](k8s/README.md) |
 | **Operations** | [Backups, disaster recovery, retention rules, Prometheus SLOs](docs/operations.md) |
+| **High Availability** | [Multi-replica overlay, external PostgreSQL, NATS cluster, and what it does not cover](docs/high-availability.md) |
 | **Troubleshooting** | [Diagnostics, database migrations, scanner debugging](docs/troubleshooting.md) |
 
 ---

@@ -1,0 +1,12 @@
+# The nightly pg_dump is hard-wired to PGHOST=shapoclyack-postgres-client, the
+# Service deleted above; kept, it would fail every night against a name that
+# does not resolve. Backups move to the managed provider — snapshots + PITR on
+# RDS/Cloud SQL, Barman on CloudNativePG — and so does the restore drill in
+# docs/operations.md § Backup and disaster recovery. THIS IS A REAL LOSS OF
+# FUNCTION, not a cleanup: an installation that applies this overlay and does
+# not configure backups on the other side has no backups at all.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shapoclyack-postgres-backup
+$patch: delete

@@ -984,7 +984,7 @@ Useful checks:
 
 ```bash
 curl --fail http://localhost:8080/api/health   # console-facing status, always 200
-curl --fail http://localhost:8080/readyz       # 503 when a dependency is down
+curl --fail http://localhost:8080/readyz       # 503 when PostgreSQL or NATS is down
 kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
@@ -1009,6 +1009,14 @@ no agent, device, asset, tenant, or product names):
 | `octo_endpoint_retention_run_duration_seconds` | Sweep cost; alert if it approaches the sweep interval |
 
 ## Backup and disaster recovery
+
+> **`overlays/prod-ha` moves this out of the cluster.** That overlay deletes the
+> in-cluster PostgreSQL StatefulSet and the `pg_dump` CronJob below along with
+> it, because the database is expected to be a managed one (RDS, Cloud SQL,
+> CloudNativePG, Patroni). Backups, PITR and the restore drill then belong to
+> that provider — everything in this section describes the in-cluster database
+> that `base` and `overlays/prod` ship. See
+> [high-availability.md](high-availability.md#external-postgres).
 
 ### Recovery objectives and verification status
 
@@ -1231,11 +1239,16 @@ reloader sidecar is in place.
 
 ### Pod disruption and API availability
 
-`k8s/shapoclyack/base/api-pdb.yaml` sets `minAvailable: 1`. With the current base
-`replicas: 1`, a voluntary eviction is blocked rather than reducing API
-availability to zero. Production overlays that need drain-friendly maintenance
-should run two or more API replicas; the scheduler is already protected by its
-PostgreSQL advisory-lock leadership mechanism.
+`k8s/shapoclyack/base/api-pdb.yaml` sets `maxUnavailable: 1`. It used to set
+`minAvailable: 1`, which at base's `replicas: 1` blocked every voluntary
+eviction outright — `kubectl drain` on the node running the API hung until
+someone deleted the PDB by hand. `maxUnavailable: 1` keeps N-1 replicas
+available at any N and serialises the drain, and it is what
+[`overlays/prod-ha`](high-availability.md) inherits unpatched: at its ceiling of
+six replicas, `minAvailable: 1` would have permitted five simultaneous
+evictions. A single-replica install still has a moment of downtime during a
+drain; two or more replicas is the fix, not a different budget. The scheduler is
+separately protected by its PostgreSQL advisory-lock leadership mechanism.
 
 ## Enrichment data in a release build
 
@@ -1306,6 +1319,11 @@ last night survives a rollout, and `seed` stays a statement worth acting on.
 
 ## Upgrade and rollback
 
+> With `base` and `overlays/prod` there is a single API replica, so the probes
+> and grace periods below limit the gap in a rollout without closing it. The
+> multi-replica profile that turns them into a genuinely non-disruptive rollout
+> is [high-availability.md](high-availability.md#rolling-upgrade-without-5xx).
+
 ### Probes, and what a rollout costs
 
 Three probes on the API pod, with three different questions (#331):
@@ -1314,7 +1332,7 @@ Three probes on the API pod, with three different questions (#331):
 |---|---|---|
 | `startupProbe` | `/livez` | Has the process finished booting? `create_app()` loads the tenant store and bootstraps accounts, so a cold start against a busy PostgreSQL takes a while; 5s × 30 attempts before the pod is failed, and neither probe below runs until this one passes |
 | `livenessProbe` | `/livez` | Is this process wedged? Dependency-free on purpose — a database outage must not restart every replica and put a crash loop on top of the outage |
-| `readinessProbe` | `/readyz` | Can this replica serve? PostgreSQL `SELECT 1`, plus a NATS round trip and a ClickHouse query where those URLs are set. Failing it removes the pod from the Service instead of killing it |
+| `readinessProbe` | `/readyz` | Can this replica serve? PostgreSQL `SELECT 1`, plus a NATS round trip and a ClickHouse query where those URLs are set. Only PostgreSQL and NATS fail the probe — ClickHouse is one pod with no PDB and would otherwise unready every replica at once; it degrades the body instead. Failing it removes the pod from the Service instead of killing it |
 
 `/api/health` is neither probe any more. It stays the console- and
 `HEALTHCHECK`-facing endpoint, always `200`, and its `status` now reads `ok` or

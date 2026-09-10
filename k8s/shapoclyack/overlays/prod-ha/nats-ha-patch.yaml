@@ -1,0 +1,70 @@
+# Scale NATS JetStream to a 3-node cluster for production HA.
+#
+# Wired into overlays/prod-ha/kustomization.yaml (#335). It used to live in
+# examples/ and be referenced by nothing; it moved here rather than being
+# referenced across directories because kustomize refuses to load a patch file
+# from outside the kustomization root, and an overlay that only renders with
+# `--load-restrictor LoadRestrictionsNone` cannot be applied with a plain
+# `kubectl apply -k`.
+#
+# Base ships WITHOUT a cluster{} block — at replicas=1 a cluster block
+# listing unreachable peer routes keeps the server stuck retrying routes
+# and JetStream never reports ready. This patch bumps replica count; you
+# MUST also apply nats-ha-configmap-patch.yaml in the same overlay
+# to supply the clustered nats.conf, or the extra pods will run standalone
+# (no shared JetStream state) instead of forming a cluster.
+#
+# Both are applied by overlays/prod-ha. To use them from an overlay of your
+# own, copy the two files into it. Ad hoc:
+#   kubectl patch statefulset shapoclyack-nats -n network-scan --type=merge \
+#     -p '{"spec":{"replicas":3}}'
+#
+# Pair with the API-side env below so JetStream streams replicate R3 instead
+# of staying single-copy (see examples/nats-api-patch.yaml for enabling NATS
+# itself):
+#   OCTO_NATS_STREAM_REPLICAS=3
+#
+# Note: PVC storage (5Gi per pod, base/nats/statefulset.yaml) is requested
+# per replica — a 3-node cluster requests 15Gi total, not 5Gi shared.
+#
+# podManagementPolicy must be Parallel: under the default OrderedReady
+# policy, pod N+1 isn't created until pod N is Ready — but pod N can't
+# reach Ready until the rest of the configured cluster peers (including
+# N+1) are up and JetStream has a meta leader. That's a bootstrap
+# deadlock (verified: nats-1 sits at 0/1 forever, nats-2 never even gets
+# created). Parallel starts all pods at once so they can find each other.
+#
+# It is also an IMMUTABLE field, so this patch cannot be applied onto a
+# StatefulSet that already exists — `kubectl apply -k` fails part-way, with
+# whatever applied before it still applied. Migrating an install that already
+# runs base or overlays/prod needs
+# `kubectl delete statefulset shapoclyack-nats --cascade=orphan` first; the
+# procedure, and the same problem for the RWX PVC, is
+# docs/high-availability.md § Migrating an existing install.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shapoclyack-nats
+spec:
+  replicas: 3
+  podManagementPolicy: Parallel
+  template:
+    spec:
+      # Three pods that the scheduler is free to put on one node are not a
+      # cluster, they are one failure domain with three PVCs — and losing that
+      # node loses the JetStream quorum along with every queued job offer,
+      # which is the exact failure a 3-node cluster is bought to prevent.
+      # Nothing in base spreads them, because base runs one pod.
+      #
+      # Hard requirement here, unlike the API's: the replica count is fixed at
+      # 3 and a JetStream quorum of 2 is only meaningful across three nodes, so
+      # a cluster with fewer nodes should leave the third pod Pending and say
+      # why rather than pretend.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: shapoclyack
+                  app.kubernetes.io/component: nats

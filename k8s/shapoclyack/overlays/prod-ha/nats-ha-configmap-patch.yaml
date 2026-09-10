@@ -5,8 +5,8 @@
 # is the full config, not a diff. Keep it in sync with
 # base/nats/configmap.yaml if that file's non-cluster settings change.
 #
-# Apply together with nats-ha-patch.yaml (both patches, same overlay) —
-# see that file for the kustomization.yaml wiring.
+# Applied together with nats-ha-patch.yaml by overlays/prod-ha (#335); it moved
+# out of examples/ with that file, see its header for why.
 apiVersion: v1
 kind: ConfigMap
 metadata:
