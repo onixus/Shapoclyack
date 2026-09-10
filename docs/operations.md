@@ -613,7 +613,7 @@ Useful checks:
 
 ```bash
 curl --fail http://localhost:8080/api/health   # console-facing status, always 200
-curl --fail http://localhost:8080/readyz       # 503 when a dependency is down
+curl --fail http://localhost:8080/readyz       # 503 when PostgreSQL or NATS is down
 kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
@@ -961,7 +961,7 @@ Three probes on the API pod, with three different questions (#331):
 |---|---|---|
 | `startupProbe` | `/livez` | Has the process finished booting? `create_app()` loads the tenant store and bootstraps accounts, so a cold start against a busy PostgreSQL takes a while; 5s × 30 attempts before the pod is failed, and neither probe below runs until this one passes |
 | `livenessProbe` | `/livez` | Is this process wedged? Dependency-free on purpose — a database outage must not restart every replica and put a crash loop on top of the outage |
-| `readinessProbe` | `/readyz` | Can this replica serve? PostgreSQL `SELECT 1`, plus a NATS round trip and a ClickHouse query where those URLs are set. Failing it removes the pod from the Service instead of killing it |
+| `readinessProbe` | `/readyz` | Can this replica serve? PostgreSQL `SELECT 1`, plus a NATS round trip and a ClickHouse query where those URLs are set. Only PostgreSQL and NATS fail the probe — ClickHouse is one pod with no PDB and would otherwise unready every replica at once; it degrades the body instead. Failing it removes the pod from the Service instead of killing it |
 
 `/api/health` is neither probe any more. It stays the console- and
 `HEALTHCHECK`-facing endpoint, always `200`, and its `status` now reads `ok` or
