@@ -3116,6 +3116,83 @@ export async function fetchAuthEvents(page?: PageParams, outcome?: AuthEventOutc
   }
 }
 
+/** What kind of principal made a change (#327). A service token and the console
+ * account that minted it can carry the same name; only this tells them apart. */
+export type AuditActorType = "user" | "service_token" | "agent" | "system";
+
+/** One recorded administrative change (#327): an account created or disabled, a
+ * membership granted, a credential minted or revoked, a scan scope replaced, a
+ * report downloaded. `tenant_id` is null for a platform-level act, which only a
+ * platform admin sees. `before`/`after` arrive with every credential-shaped
+ * field already replaced by `[redacted]` on the server. */
+export type AuditEventInfo = {
+  id: number;
+  occurred_at: string | null;
+  tenant_id: string | null;
+  actor: string;
+  actor_type: AuditActorType;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  client_ip: string;
+  user_agent: string;
+  request_id: string | null;
+};
+
+/** The trail's filters. All exact matches: "every change to *this* token" is the
+ * question an audit asks, and a substring match is how the wrong row gets read
+ * as the right one. `from`/`to` are ISO instants. */
+export type AuditFilters = {
+  tenantId?: string;
+  actor?: string;
+  action?: string;
+  resourceType?: string;
+  resourceId?: string;
+  from?: string;
+  to?: string;
+};
+
+function auditFilterParams(filters?: AuditFilters): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (filters?.tenantId) params.tenant_id = filters.tenantId;
+  if (filters?.actor) params.actor = filters.actor;
+  if (filters?.action) params.action = filters.action;
+  if (filters?.resourceType) params.resource_type = filters.resourceType;
+  if (filters?.resourceId) params.resource_id = filters.resourceId;
+  if (filters?.from) params.from = filters.from;
+  if (filters?.to) params.to = filters.to;
+  return params;
+}
+
+/** Always newest-first: this is a log, and the API takes no sort for it. */
+export async function fetchAuditEvents(page?: PageParams, filters?: AuditFilters) {
+  try {
+    const params = pageSearchParams(page, auditFilterParams(filters));
+    const { data } = await api.get<Page<AuditEventInfo>>(`/audit?${params}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Export every matching event, not the page on screen. Fetched as a blob via
+ * axios so the Authorization interceptor applies — a plain <a href> would not
+ * carry the bearer token. */
+export async function downloadAuditExport(
+  format: "csv" | "ndjson",
+  filters?: AuditFilters,
+) {
+  try {
+    const params = new URLSearchParams({ ...auditFilterParams(filters), format });
+    const { data } = await api.get<Blob>(`/audit?${params}`, { responseType: "blob" });
+    triggerBrowserDownload(data, `audit-events.${format}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 /** One user's access to one tenant (ROADMAP P0). The role inside the tenant
  * can differ from the account's global role. */
 export type MembershipInfo = {

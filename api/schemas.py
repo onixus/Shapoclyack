@@ -700,6 +700,36 @@ class AuthEventInfo(BaseModel):
     detail: str | None = None
 
 
+class AuditEventInfo(BaseModel):
+    """One recorded administrative change (#327).
+
+    ``action`` is ``resource.verb`` (``user.create``, ``membership.revoke``,
+    ``scan_scope.replace``); ``actor_type`` says what kind of principal made
+    it, since a service token and the account that minted it can share a name.
+    ``tenant_id`` is NULL for a platform-level act — creating a console
+    account, editing the installation-wide scanner config — and set for
+    anything done inside a tenant.
+
+    ``before``/``after`` are the resource either side of the change, with every
+    credential-looking field replaced by ``[redacted]`` before storage: a
+    creation has no ``before``, a deletion no ``after``.
+    """
+
+    id: int
+    occurred_at: str | None = None
+    tenant_id: str | None = None
+    actor: str
+    actor_type: Literal["user", "service_token", "agent", "system"]
+    action: str
+    resource_type: str
+    resource_id: str
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+    client_ip: str = ""
+    user_agent: str = ""
+    request_id: str | None = None
+
+
 class UserInfo(BaseModel):
     """A console account (#156). Carries no password material by construction."""
 

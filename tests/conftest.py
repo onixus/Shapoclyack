@@ -105,6 +105,7 @@ def reset_service_state(settings: "Settings") -> None:
     """
     from api.services import agent_deployer
     from api.services import agents as agents_service
+    from api.services import audit as audit_service
     from api.services import auth_audit
     from api.services import oidc as oidc_service
     from api.services import scan_schedules
@@ -139,6 +140,11 @@ def reset_service_state(settings: "Settings") -> None:
     # would otherwise count against this one's rate limit.
     auth_audit.configure(settings)
     auth_audit.reset_for_tests()
+    # The administrative trail (#327) is append-only in the database, so it is
+    # emptied through the same privileged function retention uses — a plain
+    # DELETE is refused by migration 0037's trigger, which is the point of it.
+    audit_service.configure(settings)
+    audit_service.reset_for_tests()
     # Service tokens are rows on the tenants the reset above truncated, and the
     # OIDC caches are process-global — a discovery document or an in-flight
     # authorization request from a previous test would otherwise leak into this

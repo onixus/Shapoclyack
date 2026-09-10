@@ -45,6 +45,8 @@ export const queryKeys = {
   users: ["users"] as const,
   authEvents: (page?: PageParams, outcome?: string) =>
     ["auth", "events", outcome ?? null, pageKey(page)] as const,
+  auditEvents: (page?: PageParams, filters?: Record<string, string | undefined>) =>
+    ["audit", "events", filters ?? {}, pageKey(page)] as const,
   tenantMembers: (tenantId: string) => ["tenants", tenantId, "members"] as const,
   provisioningKeys: (tenantId: string) => ["tenants", tenantId, "provisioning-keys"] as const,
   serviceTokens: (tenantId: string) => ["tenants", tenantId, "service-tokens"] as const,

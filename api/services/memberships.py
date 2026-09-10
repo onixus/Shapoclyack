@@ -36,6 +36,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit as audit_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -94,7 +95,14 @@ def list_memberships(
     return items
 
 
-def grant(*, username: str, tenant_id: str, role: str, created_by: str | None = None) -> dict[str, Any]:
+def grant(
+    *,
+    username: str,
+    tenant_id: str,
+    role: str,
+    created_by: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
+) -> dict[str, Any]:
     """Create or update one membership. Idempotent on (username, tenant_id)."""
     settings = _require_settings()
     username = username.strip()
@@ -112,6 +120,7 @@ def grant(*, username: str, tenant_id: str, role: str, created_by: str | None = 
                 models.UserTenant.tenant_id == tenant_id,
             )
         ).scalar_one_or_none()
+        previous = {"role": row.role} if row is not None else None
         if row is None:
             row = models.UserTenant(
                 username=username,
@@ -124,10 +133,26 @@ def grant(*, username: str, tenant_id: str, role: str, created_by: str | None = 
             session.flush()
         else:
             row.role = role
-        return _to_dict(row)
+        granted = _to_dict(row)
+        # One action for the grant and the re-grant, distinguished by
+        # ``before``: NULL where the membership is new, the old role where an
+        # existing one was raised or lowered (#327).
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_MEMBERSHIP_GRANT,
+            resource_type="membership",
+            resource_id=username,
+            tenant_id=tenant_id,
+            before=previous,
+            after={"role": role},
+        )
+        return granted
 
 
-def revoke(*, username: str, tenant_id: str) -> bool:
+def revoke(
+    *, username: str, tenant_id: str, audit: "audit_service.AuditContext | None" = None
+) -> bool:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.execute(
@@ -138,7 +163,17 @@ def revoke(*, username: str, tenant_id: str) -> bool:
         ).scalar_one_or_none()
         if row is None:
             return False
+        removed = _to_dict(row)
         session.delete(row)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_MEMBERSHIP_REVOKE,
+            resource_type="membership",
+            resource_id=username,
+            tenant_id=tenant_id,
+            before=removed,
+        )
         return True
 
 
