@@ -6,6 +6,33 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Run alerts and the DefectDojo bulk export are per tenant, not per
+  installation** ([#351](https://github.com/onixus/Shapoclyack/issues/351)).
+  The scanner's alert stage read `OCTO_SLACK_WEBHOOK` / `OCTO_TELEGRAM_*` /
+  `OCTO_SMTP_*` and the bulk export read `OCTO_DEFECTDOJO_*` — installation-wide
+  values, at a point in the pipeline that held no tenant id — so on an MSSP
+  installation every tenant's scan announced itself in one Slack channel and
+  every tenant's findings were imported into one DefectDojo product. A new
+  `notification_channels` table (migration `0047`) holds destinations per tenant
+  — `slack`, `msteams`, `mattermost`, `email` and `defectdojo` — managed at
+  `/api/notification-channels` (reads `operator`, writes `admin`, audited), and
+  the API announces a finished run to *that tenant's* channels only. Credentials
+  are envelope-encrypted under #310 (a chat incoming-webhook URL *is* a
+  credential, so it lives in `secret`, not in a plaintext column) and are
+  covered by `python -m api.db.reencrypt_secrets`. Chat and DefectDojo sends go
+  through the webhook SSRF boundary; email uses the tenant's recipients over the
+  installation's `OCTO_REPORT_SMTP_*` relay.
+  **Breaking:** the global variables and the config file's `alerts:` /
+  `defectdojo:` sections are now honoured **only** when
+  `OCTO_SINGLE_TENANT_ALERTS=true` — kept rather than deleted because the
+  standalone scanner CLI has no API and no database, and that is the
+  installation for which they were never wrong. Otherwise both stages skip with
+  `skipped_reason: multi_tenant_use_notification_channels` without opening a
+  connection. Migration steps are in docs/configuration.md § Notification
+  channels. Not done: no console UI (API only), no Telegram channel kind, and a
+  channel send is not queued or retried — a failed DefectDojo import waits for
+  the next scan.
+
 - **A console account can carry a second factor, and an admin role can be made
   to** ([#315](https://github.com/onixus/Shapoclyack/issues/315)). A local
   administrator — the account that mints service tokens, approves scanning

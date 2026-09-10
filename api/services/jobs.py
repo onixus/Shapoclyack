@@ -54,6 +54,7 @@ from api.services import quotas
 from api.services import promoted_domains
 from api.services import auth_audit
 from api.services import results_ingest
+from api.services.integrations import channels as channels_service
 from api.services import runs as runs_service
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
@@ -774,6 +775,39 @@ def _publish_asset_events_best_effort(
         logging.exception("Asset event publish failed for run %s (tenant=%s)", run_id, tenant_id)
 
 
+def _notify_channels_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+) -> None:
+    """Announce a finished run to the tenant's notification channels (#351).
+
+    Called from the same two points as the asset-event publish above, and that
+    is the fix: those are the only places where a finished run's artifacts are
+    on disk *under a known tenant*. The alert used to be a scanner stage, which
+    ran with installation-wide credentials and no tenant id at all, so on an
+    MSSP installation every tenant's scan announced itself in one Slack channel.
+
+    Quiet on failure like the event publish, and for a stronger reason: an
+    unreachable Slack must not turn a successful scan into a failed job. The
+    per-channel outcome is recorded on the channel row (``last_status``), which
+    is where an operator looks when a channel goes silent.
+    """
+    if not run_id or not settings.notification_channels_enabled:
+        return
+    try:
+        channels_service.notify_run_complete(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            run_dir=settings.output_dir / "runs" / run_id,
+        )
+    except Exception:  # noqa: BLE001
+        logging.exception(
+            "Notification fan-out failed for run %s (tenant=%s, job=%s)",
+            run_id,
+            tenant_id,
+            job_id,
+        )
+
+
 def _requested_by(settings: Settings, job_id: str) -> str:
     """Who asked for this scan, or "" when the row is gone."""
     job = get_job(settings, job_id)
@@ -1041,6 +1075,11 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
             _publish_asset_events_best_effort(
+                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
+            )
+            # Last of the post-run hooks: the summary it sends describes the
+            # tracker and the registry as they are *after* the folds above.
+            _notify_channels_best_effort(
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
     except Exception as exc:  # noqa: BLE001
@@ -1862,6 +1901,9 @@ def complete_job(
                     settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
                 )
                 _publish_asset_events_best_effort(
+                    settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+                )
+                _notify_channels_best_effort(
                     settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
                 )
 

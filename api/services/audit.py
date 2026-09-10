@@ -87,6 +87,13 @@ ACTION_AGENT_QUARANTINE = "agent.quarantine"
 ACTION_AGENT_DELETE = "agent.delete"
 ACTION_REPORT_DOWNLOAD = "report.download"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
+# Where a tenant's finished runs are announced (#351). Audited although the
+# neighbouring webhook subscriptions are not: a channel is a destination for
+# this tenant's exposure data chosen by a tenant admin, and "who pointed our
+# scan results at that Slack" is a question the trail has to be able to answer.
+ACTION_NOTIFICATION_CHANNEL_CREATE = "notification_channel.create"
+ACTION_NOTIFICATION_CHANNEL_UPDATE = "notification_channel.update"
+ACTION_NOTIFICATION_CHANNEL_DELETE = "notification_channel.delete"
 ACTION_CONFIG_UPDATE = "config.update"
 
 #: The value stored in place of a secret. Not the empty string and not a

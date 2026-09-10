@@ -36,7 +36,9 @@ _REFUSAL = (
     f"{envelope.MASTER_KEY_ENV} is unset.\n\n"
     "  Webhook signing secrets and the header values that carry a Jira /\n"
     "  ServiceNow / DefectDojo token live in the webhook_subscriptions table,\n"
-    "  and the TOTP seeds of every enrolled account live in users.mfa_secret.\n"
+    "  the per-tenant Slack URLs and DefectDojo tokens live in\n"
+    "  notification_channels, and the TOTP seeds of every enrolled account live\n"
+    "  in users.mfa_secret.\n"
     "  Without a master key they are written to Postgres as typed, so a dump, a\n"
     "  backup or a read replica hands over every tenant's tracker tokens; rows\n"
     "  that are already encrypted cannot be read back at all.\n\n"
@@ -89,6 +91,32 @@ def _has_stored_integration_secrets(settings: Settings) -> bool:
     return found is not None
 
 
+def _has_stored_channel_secrets(settings: Settings) -> bool:
+    """Whether any notification channel carries a credential (#351).
+
+    Asked alongside the two questions above and for the same reason: a Slack
+    incoming-webhook URL written as typed lets a database reader post into a
+    customer's operations channel, and a DefectDojo token lets them write
+    findings into it.
+
+    ``secret``/``key_id`` and no JSON predicate, unlike the webhook question:
+    ``config`` here holds recipients and product names, which are not secret
+    material and must not make an installation demand a key it has no use for.
+    """
+    with get_session(settings.postgres_url) as session:
+        found = session.execute(
+            select(models.NotificationChannel.channel_id)
+            .where(
+                or_(
+                    models.NotificationChannel.key_id.is_not(None),
+                    models.NotificationChannel.secret.is_not(None),
+                )
+            )
+            .limit(1)
+        ).first()
+    return found is not None
+
+
 def bootstrap(settings: Settings) -> None:
     """Resolve the KEK provider and decide whether this install may run without one.
 
@@ -107,12 +135,17 @@ def bootstrap(settings: Settings) -> None:
         )
         return
 
-    if not (_has_stored_integration_secrets(settings) or _has_stored_mfa_secrets(settings)):
+    if not (
+        _has_stored_integration_secrets(settings)
+        or _has_stored_mfa_secrets(settings)
+        or _has_stored_channel_secrets(settings)
+    ):
         logger.warning(
             "%s is unset: integration secrets and TOTP seeds would be stored in "
             "Postgres as typed. "
             "Nothing is stored yet, so this is not refused — set the key before "
-            "configuring a webhook or a ticket integration, or enrolling MFA.",
+            "configuring a webhook, a ticket integration or a notification "
+            "channel, or enrolling MFA.",
             envelope.MASTER_KEY_ENV,
         )
         return

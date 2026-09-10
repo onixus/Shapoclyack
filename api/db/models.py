@@ -800,6 +800,77 @@ class WebhookSubscription(Base):
     )
 
 
+class NotificationChannel(Base):
+    """Where one tenant's finished-run notifications go (#351).
+
+    Alerts used to be an installation-wide affair: ``OCTO_SLACK_WEBHOOK``,
+    ``OCTO_SMTP_TO`` and ``OCTO_DEFECTDOJO_*`` were read by the scanner, so in
+    an MSSP every tenant's scan announced itself in one Slack channel and every
+    tenant's findings landed in one DefectDojo product. This table is the
+    per-tenant answer, deliberately shaped like ``webhook_subscriptions`` next
+    door: a tenant-scoped row, a ``kind`` that selects an adapter, non-secret
+    adapter knobs in JSON, and the credential encrypted at rest under #310.
+
+    Where the credential lives depends on the kind, and the split is the
+    interesting part:
+
+    * ``slack`` / ``msteams`` / ``mattermost`` — the incoming-webhook URL *is*
+      the credential (anyone holding it can post to the channel), so it lives
+      in ``secret`` and ``endpoint`` stays NULL. That is a deliberate
+      difference from ``webhook_subscriptions.url``, which is a receiver the
+      tenant also authenticates by signature.
+    * ``defectdojo`` — ``endpoint`` is the instance URL (not a credential) and
+      ``secret`` is the API token, exactly as for the ticket transports.
+    * ``email`` — neither. The recipients are in ``config["to"]``; the relay
+      itself is installation infrastructure (``OCTO_REPORT_SMTP_*``), the same
+      way Postgres is, and it was never the part that crossed tenants.
+
+    ``min_severity`` is the floor this channel cares about: the severity above
+    which new findings are listed in a chat/email alert, and the DefectDojo
+    import's ``minimum_severity``. It is not a mute switch — a run summary is
+    sent even when nothing new crossed the floor, because "nothing new" is a
+    result an operations channel wants.
+    """
+
+    __tablename__ = "notification_channels"
+
+    channel_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    # slack | msteams | mattermost | email | defectdojo. Validated on write
+    # against api/services/integrations/channel_transports.py::KINDS.
+    kind: Mapped[str]
+    enabled: Mapped[bool] = mapped_column(default=True)
+    min_severity: Mapped[str] = mapped_column(default="high")
+    # The target system's non-secret base URL: the DefectDojo instance, and
+    # nothing else so far. NULL for the kinds whose URL is a credential.
+    endpoint: Mapped[str | None] = mapped_column(default=None)
+    # Adapter knobs that are not credentials: the mail recipients, the
+    # DefectDojo product/engagement names, a Mattermost channel override.
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret: Mapped[str | None] = mapped_column(default=None)
+    # The KEK this row's ciphertext is wrapped with, mirroring
+    # ``webhook_subscriptions.key_id`` — same meaning, same non-authority, and
+    # read by the same two callers (the startup check and the rotation
+    # runbook's GROUP BY).
+    key_id: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Last attempt and its outcome. There is no delivery queue behind a
+    # channel: a run summary is only interesting while it is fresh, so an
+    # unreachable Slack is reported here and on the job log rather than
+    # retried for fifteen minutes into a channel that has moved on.
+    last_send_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_status: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index("ix_notification_channels_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+
 class WebhookDelivery(Base):
     """One attempt-carrying delivery of one event to one subscription (10.3).
 

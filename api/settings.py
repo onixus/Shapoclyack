@@ -318,6 +318,17 @@ class Settings:
     webhook_allow_private_targets: bool = False
     # Bound on how much fan-out one event can cause per tenant.
     webhook_max_subscriptions_per_tenant: int = 20
+    # Per-tenant notification channels for finished runs (#351). Gates the API
+    # surface *and* the fan-out that runs when a scan completes — unlike
+    # webhooks the two cannot be split across replicas, because the send
+    # happens in the process that finished the job rather than on a queue.
+    notification_channels_enabled: bool = True
+    # Bound on the destinations one tenant's runs can be announced to.
+    notification_channel_max_per_tenant: int = 10
+    # Longer than webhook_timeout_seconds: a DefectDojo bulk import uploads a
+    # findings document and does the deduplication inside the request, which a
+    # ten-second budget loses on a large run.
+    notification_channel_timeout_seconds: int = 30
     # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
     # default since postgres_url always resolves — Postgres in prod, the SQLite
     # fallback in dev — unlike the opt-in NATS/ClickHouse sidecars.
@@ -1153,6 +1164,16 @@ def load_settings() -> Settings:
         in ("1", "true", "yes", "on"),
         webhook_max_subscriptions_per_tenant=max(
             1, int(os.environ.get("OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT", "20"))
+        ),
+        notification_channels_enabled=os.environ.get(
+            "OCTO_NOTIFICATION_CHANNELS_ENABLED", "true"
+        ).lower()
+        in ("1", "true", "yes", "on"),
+        notification_channel_max_per_tenant=max(
+            1, int(os.environ.get("OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT", "10"))
+        ),
+        notification_channel_timeout_seconds=max(
+            1, int(os.environ.get("OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS", "30"))
         ),
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},

@@ -357,6 +357,7 @@ One row per administrative change, with the resource before and after it:
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
 | `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
+| `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 
 Every row carries the actor and what kind of principal it is (`user`,
 `service_token`, `agent`, `system`), the client address resolved the same way
@@ -571,6 +572,7 @@ not an authorization control.
 | `/api/schedules` | Tenant-scoped recurring scans |
 | `/api/vulnerabilities` | Tracked findings: lifecycle, ownership, SLA policy and the audit trail |
 | `/api/webhooks` | Outbound webhook and ticket-transport subscriptions, delivery trail, DLQ |
+| `/api/notification-channels` | Per-tenant destinations for a **finished run**: Slack / Teams / Mattermost, email, and the bulk DefectDojo import. Reads `operator`, writes `admin` ([#351](https://github.com/onixus/Shapoclyack/issues/351)) |
 | `/api/wordlists` | Tenant-uploaded subdomain wordlists: list, upload, fetch and delete. Reads are `viewer`, writes `operator` — the same bar as starting a scan, since a wordlist is scan input. Selected per scan via `wordlist_id`; caps and normalization are in [configuration.md](configuration.md#tenant-uploaded-wordlists) |
 | `/api/adoption` | Adoption metrics for this tenant over `window_days` (7–365, default 90): closures, share confirmed by a scan, share closed within SLA, median time to fix overall and by severity, reopen share, open findings per asset; active assets with an owner / business context / a scan in the last 30 days / an endpoint inventory too; closed-and-verified per analyst; time to first successful scan and first tracked finding; enrichment overlay age. Two additive blocks: `false_positives` (verdicts in the window, their share of all closures, by severity, by detector and by observer, suppressions active and lapsed, overrides, median hours to a verdict) and `coverage` (assets with any scan history, scanned and vulnerability-assessed shares, and how many of the tenant's approved ranges contain an asset a scan reached — with the unreached ones named in `scope_uncovered_entries`). **False-positive closures are excluded from `closed_in_window`, `machine_verified_share`, `closed_within_sla_share` and every `mttr_hours*`** and reported as `false_positive_in_window` instead, so the quarterly control question cannot be answered by relabelling noise. Read-only, `viewer`, one tenant — a cross-tenant MTTR would be true of nobody. Shares are `null` when there is nothing to divide by — including while the coverage columns are still filling after the upgrade that added them (`scan_history_reason`) — and a per-detector rate is additionally `null` below 20 closures |
 | `/api/compliance` | PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory. Read-only, `viewer`. A platform admin gets no cross-tenant view here: a control status is a statement about one organisation — see [reports-and-compliance.md](reports-and-compliance.md) |
@@ -929,6 +931,41 @@ non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`).
 Credentials stay in `secret` or `Authorization`. Needs NATS, like any other
 asset-event consumer.
 
+### Notification channels
+
+Where a **finished run** is announced, per tenant. Reading takes the tenant
+`operator` role; **creating, editing and deleting take tenant `admin`** — the
+same bar as a webhook subscription, and for the same reason: a channel sends
+this tenant's exposure data to a destination of the creator's choosing.
+
+| Route | Role | Notes |
+|---|---|---|
+| `GET /api/notification-channels` | operator | This tenant's channels. Unpaginated — the table is capped by `OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT`. The credential is never included, only `has_secret` |
+| `POST /api/notification-channels` | admin | `422` on an unknown `kind` or severity, a credential the adapter cannot use (a chat channel with no webhook URL, a `defectdojo` channel with no `config.product_name`), an `endpoint` on a kind that has none, an address list that is not one, a target resolving to a non-public address, or the per-tenant limit. **No secret is echoed back, ever** — unlike a webhook signing secret, every credential here is one the operator already holds |
+| `GET`/`PATCH`/`DELETE /api/notification-channels/{id}` | operator / admin / admin | `PATCH` takes `secret` (write-only) but **not `kind`**: the kind decides what every other field means, so changing it is a delete and a create |
+
+`kind` selects the wire:
+
+| `kind` | `endpoint` | `secret` | `config` |
+|---|---|---|---|
+| `slack`, `msteams`, `mattermost` | *(refused)* | the incoming-webhook URL — it *is* the credential, so it lives in the column that is encrypted at rest ([#310](https://github.com/onixus/Shapoclyack/issues/310)) | `channel` (Mattermost only) |
+| `email` | *(refused)* | *(refused)* | `to`: up to 20 recipients. The relay is installation-wide (`OCTO_REPORT_SMTP_*`) — it is infrastructure, and was never the part that crossed tenants |
+| `defectdojo` | the instance URL | the API token | `product_name` (**required** — this is what keeps one tenant's findings out of another's product), `product_type_name`, `engagement_name`, `test_title`, `close_old_findings` |
+
+`min_severity` (default `high`) is the floor this channel cares about: the
+severity above which new findings are listed in a chat or mail alert, and the
+DefectDojo import's `minimum_severity`. It is not a mute switch — a summary is
+sent even when nothing new crossed the floor, because "nothing new" is a result
+an operations channel wants.
+
+A channel in another tenant answers `404`, not `403`, as everywhere else here.
+Sending happens when a scan finishes, in the process that finished it, and is
+**not queued or retried**: the outcome is on the row (`last_status`,
+`last_send_at`) and in the job log. See
+[configuration.md § Notification channels](configuration.md#notification-channels)
+for the migration off the installation-wide `OCTO_SLACK_WEBHOOK` /
+`OCTO_SMTP_*` / `OCTO_DEFECTDOJO_*` variables.
+
 ## Operational endpoints
 
 Outside `/api`, unauthenticated by default and deliberately outside the
@@ -1154,6 +1191,7 @@ purpose: a tenant with no `tenant_quotas` row inherits the platform default,
 which ships as unlimited. A scope is a security boundary and a quota is a
 commercial one — refusing customers' scans after an upgrade because nobody had
 yet typed a number would be an outage caused by billing.
+
 
 ### Reading the meter
 
