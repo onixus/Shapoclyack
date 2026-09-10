@@ -335,6 +335,27 @@ class Settings:
     # keeps a year, because "the quarterly report we sent in March" is a thing
     # customers ask for and a scan-retention window would not cover.
     report_retention_days: int = 365
+    # Remediation-workflow events (#349). ``workflow_events_enabled`` gates
+    # whether the eight kinds are emitted at all — an installation that wants
+    # only the discovery events turns it off and its subscriptions stop
+    # matching. ``sla_escalation_enabled`` gates the worker that *derives* the
+    # SLA ones, which is the same split webhooks and reports use: one switch
+    # for the surface, one for the thread that acts.
+    workflow_events_enabled: bool = True
+    sla_escalation_enabled: bool = True
+    # 15 minutes. An SLA is measured in days, so a tighter tick buys nothing
+    # but load — and the marker table means a longer one only delays a
+    # notification rather than losing it.
+    sla_escalation_interval_seconds: int = 900
+    # Bound on how many findings one tenant's tick may announce. A tenant that
+    # imports a backlog of ten thousand overdue findings should not turn one
+    # tick into ten thousand webhook deliveries; the rest are announced by the
+    # ticks that follow, oldest deadline first.
+    sla_escalation_max_findings: int = 500
+    # How long a "already announced" marker is kept. Deleting one re-arms its
+    # event, so this is also the period after which a still-breached finding is
+    # raised again. 0 disables the sweep, and with it the re-announcement.
+    workflow_marker_retention_days: int = 365
     # Per-tenant usage quotas (ROADMAP Track E, MSSP operations). These are the
     # platform *defaults*, applied to any tenant without a ``tenant_quotas``
     # row; 0 means unlimited, which is what an installation that never sold a
@@ -1158,6 +1179,21 @@ def load_settings() -> Settings:
         in {"1", "true", "yes"},
         reports_enabled=os.environ.get("OCTO_REPORTS_ENABLED", "true").lower()
         in {"1", "true", "yes"},
+        workflow_events_enabled=os.environ.get("OCTO_WORKFLOW_EVENTS_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        sla_escalation_enabled=os.environ.get("OCTO_SLA_ESCALATION_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        # Floored like the report dispatcher's: a mistyped 0 turns the thread's
+        # Event.wait() into a busy loop against the database.
+        sla_escalation_interval_seconds=max(
+            30, int(os.environ.get("OCTO_SLA_ESCALATION_INTERVAL_SECONDS", "900"))
+        ),
+        sla_escalation_max_findings=max(
+            1, int(os.environ.get("OCTO_SLA_ESCALATION_MAX_FINDINGS", "500"))
+        ),
+        workflow_marker_retention_days=max(
+            0, int(os.environ.get("OCTO_WORKFLOW_MARKER_RETENTION_DAYS", "365"))
+        ),
         quota_default_max_assets=max(
             0, int(os.environ.get("OCTO_QUOTA_DEFAULT_MAX_ASSETS", "0"))
         ),

@@ -1718,3 +1718,109 @@ class TenantQuota(Base):
     note: Mapped[str] = mapped_column(default="", server_default="")
     updated_at: Mapped[datetime]
     updated_by: Mapped[str] = mapped_column(default="", server_default="")
+
+
+class SlaEscalationPolicy(Base):
+    """What a tenant wants done when a remediation deadline is missed (#349).
+
+    The SLA itself is ``sla_policies`` — how long the tenant gets. This is the
+    other half nobody had written down: what happens *after* the deadline
+    passes. Until #349 the answer was nothing at all. ``sla_state`` was derived
+    on read, so a breach existed only for as long as somebody was looking at
+    the list it appeared in.
+
+    One row per tenant, and **the absence of a row does not disable the
+    events** — ``sla_due_soon``/``sla_breached`` are notifications and are
+    emitted for every tenant. What the row enables is the part that *writes*:
+    reassigning a finding and raising its severity. Escalation edits somebody's
+    work queue, so it stays off until a tenant admin asks for it, the same way
+    ``TenantQuota`` leaves metering fail-open until a limit is sold.
+
+    ``bump_severity`` is honestly weaker than it looks, and the class docstring
+    is the place to say so: ``Vulnerability.severity`` is denormalised from the
+    latest observation, so the next scan that re-observes the finding puts the
+    scanner's severity back. The bump is a signal to whoever is looking at the
+    queue now, not a durable reclassification — the durable record is the
+    ``escalated`` entry in the finding's event trail.
+    """
+
+    __tablename__ = "sla_escalation_policies"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    # Gates the *actions* only — the reassignment, the severity bump and the
+    # digest alike, so it is the one off switch. With this false the tenant
+    # still gets the breach and due-soon events on its webhooks.
+    enabled: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # Grace period past ``due_at`` before a finding is escalated, in days. 0 is
+    # "at the breach", which is the default because a deadline the platform
+    # then waits past is two deadlines.
+    escalate_after_days: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Who the breach is reassigned to, and which queue it lands in. NULL leaves
+    # the current owner alone — a tenant may want the severity bump and the
+    # notification without having its assignments rewritten.
+    escalate_to: Mapped[str | None] = mapped_column(default=None)
+    escalate_owner_team: Mapped[str | None] = mapped_column(default=None)
+    # Raise the finding one severity step on escalation, up to critical. See
+    # the class docstring for what this does and does not survive.
+    bump_severity: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # Daily digest of the tenant's breached and due-soon findings, sent to each
+    # asset's ``owner_email``. Off by default: it is outbound mail about
+    # somebody's vulnerabilities, which is not a thing to start sending because
+    # a version was bumped.
+    digest_enabled: Mapped[bool] = mapped_column(default=False, server_default="false")
+    updated_at: Mapped[datetime]
+    updated_by: Mapped[str] = mapped_column(default="", server_default="")
+
+
+class WorkflowEventMarker(Base):
+    """Proof that one workflow event has already been emitted once (#349).
+
+    Every event the discovery bus carries is a *transition* somebody observed:
+    a port that was not open before, a row an operator wrote. The workflow
+    events of #349 are not — ``sla_breached`` is a predicate over ``due_at``
+    and the clock, which is true again on every tick of the escalation worker.
+    Emitting on truth rather than on change would page the tenant's on-call
+    every minute for the rest of the finding's life.
+
+    So the fact is recorded here, once, and the worker's tick skips what this
+    table already holds. Two properties make the row the right shape for that:
+
+    ``marker`` **is the discriminator, not a timestamp.** It carries whatever
+    makes one occurrence distinct from the next — the deadline for an SLA
+    event, the deadline plus the threshold for an expiring exception, the
+    ``last_seen_at`` an agent went quiet at. A finding whose clock restarts (a
+    reopen recomputes ``due_at``) therefore gets a new marker and is announced
+    again, while the same deadline is announced once however many times the
+    worker looks at it.
+
+    **The insert is the claim.** The unique constraint decides, so two replicas
+    that both believe they lead — the advisory lock is not fenced — send one
+    notification between them rather than one each.
+
+    Rows are pruned by age (``OCTO_WORKFLOW_MARKER_RETENTION_DAYS``), which is
+    a deliberate re-announcement and not only housekeeping: a breach still open
+    a year later is worth raising a second time.
+    """
+
+    __tablename__ = "workflow_event_markers"
+
+    marker_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    # An event kind from ``workflow_events.WORKFLOW_EVENT_KINDS``, or one of the
+    # worker's internal bookkeeping keys (the daily digest). A plain string, so
+    # a new kind needs no migration.
+    kind: Mapped[str]
+    # What the event is about: a vuln_id, an agent_id, a digest recipient.
+    subject_id: Mapped[str]
+    marker: Mapped[str] = mapped_column(default="", server_default="")
+    created_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "kind", "subject_id", "marker", name="uq_workflow_event_marker"
+        ),
+    )

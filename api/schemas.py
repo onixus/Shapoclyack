@@ -1624,6 +1624,37 @@ class SlaPolicyRequest(BaseModel):
     asset_criticality: int | None = Field(default=None, ge=0, le=4)
 
 
+class SlaEscalationPolicyInfo(BaseModel):
+    """The tenant's SLA escalation policy (#349).
+
+    ``configured`` distinguishes "a tenant admin turned this off" from "nobody
+    has set it up", which read identically otherwise — every other field is at
+    its all-off default in both cases.
+    """
+
+    tenant_id: str
+    enabled: bool
+    escalate_after_days: int
+    escalate_to: str | None = None
+    escalate_owner_team: str | None = None
+    bump_severity: bool
+    digest_enabled: bool
+    configured: bool
+    updated_at: str | None = None
+    updated_by: str = ""
+
+
+class SlaEscalationPolicyRequest(BaseModel):
+    """Body for ``PUT /vulnerabilities/sla-escalation``. One row per tenant."""
+
+    enabled: bool = False
+    escalate_after_days: int = Field(default=0, ge=0, le=365)
+    escalate_to: str | None = Field(default=None, max_length=320)
+    escalate_owner_team: str | None = Field(default=None, max_length=200)
+    bump_severity: bool = False
+    digest_enabled: bool = False
+
+
 class VulnerabilitySummary(BaseModel):
     """Aggregates for the Vulnerability Center header and the Risk Dashboard
     (#135, #137). ``estate_risk`` is the worst open NIST ``risk_level``."""

@@ -3035,19 +3035,31 @@ export async function deleteTenantQuota(tenantId: string) {
  * create-issue call for the tracker (api/services/integrations/tickets.py). */
 export type WebhookTransport = "webhook" | "jira" | "servicenow" | "defectdojo";
 
-/** Event kinds a subscription may filter on. An empty list means "every kind".
+/** Event kinds a subscription may filter on. An empty list means "every *asset*
+ * kind" — the audit trail and the workflow events are opt-in, so an existing
+ * unfiltered subscription does not start receiving them on upgrade.
  *
  * The first five are the asset events (`api/services/asset_events.py`
- * EVENT_KINDS). `audit.*` is the whole administrative trail (#328) — the API
- * also accepts one exact action (`audit.user.role_change`), which the console
- * deliberately does not offer as twenty-odd more checkboxes; a subscription
- * that names one is shown and preserved, just not composed here. */
+ * EVENT_KINDS). The next eight are the remediation-workflow events (#349,
+ * `api/services/workflow_events.py` WORKFLOW_EVENT_KINDS). `audit.*` is the
+ * whole administrative trail (#328) — the API also accepts one exact action
+ * (`audit.user.role_change`), which the console deliberately does not offer as
+ * twenty-odd more checkboxes; a subscription that names one is shown and
+ * preserved, just not composed here. */
 export const WEBHOOK_EVENT_KINDS = [
   "new_asset",
   "new_open_port",
   "new_cve",
   "cert_expiring",
   "decommissioned_host",
+  "sla_due_soon",
+  "sla_breached",
+  "exception_expiring",
+  "vuln_state_changed",
+  "vuln_assigned",
+  "scan_failed",
+  "report_generated",
+  "agent_offline",
   "audit.*",
 ] as const;
 

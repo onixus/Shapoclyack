@@ -704,6 +704,17 @@ immediately and answers `201` with it. Snapshots are per tenant and are the
 only source the Risk Overview trend chart reads
 ([#144](https://github.com/onixus/Shapoclyack/issues/144), Track C).
 
+**SLA escalation policy.** `GET /api/vulnerabilities/sla-escalation` (viewer)
+and `PUT` (admin) hold what the tenant wants done when a remediation deadline
+passes: reassign to a queue, raise the severity a step, mail the asset owner a
+daily digest ([#349](https://github.com/onixus/Shapoclyack/issues/349)). One
+row per tenant, so `PUT` and not `POST`, and always one tenant even for a
+platform admin. The absence of a policy does **not** silence the
+`sla_breached` / `sla_due_soon` events — those need no configuration; it
+disables only the part that writes to somebody's work queue. `422` on
+`enabled: true` with no action set, and on a grace period outside 0–365 days.
+See [vulnerability-lifecycle.md](vulnerability-lifecycle.md#workflow-events-and-sla-escalation).
+
 ### Agent fleet, deployment and upgrade
 
 | Route | Role | Notes |
@@ -907,7 +918,7 @@ closer to granting access than to scheduling a scan.
 | Route | Role | Notes |
 |---|---|---|
 | `GET /api/webhooks` | operator | Page of subscriptions; the signing secret is never included |
-| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, a missing ticket `transport_config`, or the per-tenant limit. The generated `secret` is in this response only (webhook transport). Ticket transports take `secret` as the tracker token and do not HMAC. `event_kinds` accepts the five asset kinds, `audit.*` (the whole administrative trail) and one exact `audit.<action>`, e.g. `audit.user.role_change` ([#328](https://github.com/onixus/Shapoclyack/issues/328)); an empty list still means every *asset* kind — the trail is opt-in, so an existing unfiltered subscription does not start receiving it on upgrade — and `min_severity` does not apply to audit kinds |
+| `POST /api/webhooks` | admin | `422` on a malformed URL, an unknown event kind or severity, a target resolving to a non-public address, a missing ticket `transport_config`, or the per-tenant limit. The generated `secret` is in this response only (webhook transport). Ticket transports take `secret` as the tracker token and do not HMAC. `event_kinds` accepts the five asset kinds, the eight workflow kinds (`sla_due_soon`, `sla_breached`, `exception_expiring`, `vuln_state_changed`, `vuln_assigned`, `scan_failed`, `report_generated`, `agent_offline` — [#349](https://github.com/onixus/Shapoclyack/issues/349)), `audit.*` (the whole administrative trail) and one exact `audit.<action>`, e.g. `audit.user.role_change` ([#328](https://github.com/onixus/Shapoclyack/issues/328)); an empty list still means every *asset* kind — the trail and the workflow events are both opt-in, so an existing unfiltered subscription does not start receiving them on upgrade — and `min_severity` applies only to the kinds that carry a severity (`new_cve` and the five workflow kinds about a finding) |
 | `PATCH`/`DELETE /api/webhooks/{id}` | admin | `PATCH` also takes `secret` — the only way to rotate a tracker API token — and never echoes it back; an empty string clears signing. Deleting takes that subscription's delivery history with it |
 | `POST /api/webhooks/{id}/rotate-secret` | admin | Returns the new HMAC secret once. `409` on a ticket transport: a random value is an HMAC key, not a tracker token, so PATCH `secret` instead |
 | `POST /api/webhooks/{id}/test` | admin | **202** — a signed `test` delivery is *queued*, not confirmed. Poll the deliveries list for the outcome |

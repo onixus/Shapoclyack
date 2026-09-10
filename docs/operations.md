@@ -565,6 +565,67 @@ the taxonomy: `suser` → `subject.account.name`, `src` → `subject.ip`, `act` 
 `action in (user.role_change, membership.grant, service_token.create)` is the
 rule an audit review usually asks for first.
 
+### Workflow events and the SLA escalation worker (#349)
+
+Eight event kinds describe the remediation *workflow* rather than discovery:
+`sla_due_soon`, `sla_breached`, `exception_expiring`, `vuln_state_changed`,
+`vuln_assigned`, `scan_failed`, `report_generated`, `agent_offline`. Four are
+emitted at the write that causes them; the other four are derived by a
+leader-locked worker started with the API
+(`OCTO_SLA_ESCALATION_ENABLED`, tick `OCTO_SLA_ESCALATION_INTERVAL_SECONDS`).
+
+**They reach webhooks without a broker.** Unlike an asset event, which is built
+by the scanner and travels JetStream, a workflow event is produced inside the
+API and its emitter writes `webhook_deliveries` directly — so an installation
+with `OCTO_NATS_URL` unset still gets these notifications. The bus copy is
+published to `events.workflow.{tenant}.{kind}` for consumers that are not
+webhooks, and there is deliberately **no third fan-out consumer to deploy**:
+widening `octo-webhook-fanout`'s filter subject would mean deleting it and
+resetting its cursor, which replays retained events at every receiver (#152).
+
+**Opt-in.** A subscription with an empty `event_kinds` does not start taking
+these on upgrade, for the same reason the audit trail does not (above). Name
+the kinds.
+
+**Announced once, by a marker.** `sla_breached` is a predicate over `due_at`
+and the clock, true again on every tick, so the worker claims each occurrence
+in `workflow_event_markers` before announcing it. The claim key carries the
+deadline: a reopen recomputes `due_at` and is announced again, the same
+deadline is not. The unique constraint is the claim, so a brief double-leader
+(the advisory lock is not fenced) sends one notification between the two
+replicas.
+
+`OCTO_WORKFLOW_MARKER_RETENTION_DAYS` (365) prunes those markers hourly from
+the same thread. Note what that means: **deleting a marker re-arms its event**,
+so a finding still breached a year later is raised a second time. `0` disables
+both.
+
+**Rolling into it.** Nothing is backfilled — the markers for past breaches were
+never written down, and inventing them would suppress the first announcement of
+every breach the installation already has. So the first tick after the upgrade
+announces the tenant's *current* breaches, once. On an estate with a large
+overdue backlog, set `OCTO_SLA_ESCALATION_ENABLED=false` before the upgrade,
+check `OCTO_SLA_ESCALATION_MAX_FINDINGS` (500 per tenant per tick) and turn it
+on when the receivers are ready.
+
+**Escalation writes rows.** Reassignment and the severity bump happen only for
+tenants with an `sla_escalation_policies` row that enables them
+(`PUT /api/vulnerabilities/sla-escalation`, tenant admin), and each is recorded
+as an `escalated` event in the finding's trail with no actor — the platform did
+it, on a policy. The severity bump does not survive the next observation of the
+finding, which re-copies the scanner's severity; the trail entry is the durable
+record.
+
+**The owner digest** is one plain-text mail per asset `owner_email` per day
+through the report relay (`OCTO_REPORT_SMTP_*`), claimed in the same marker
+table keyed on the calendar day, so a 15-minute tick cannot mail somebody
+ninety-six times. A relay that refuses is logged and counted
+(`digest_failures`) and does not stop the tick.
+
+Worker counters live on `octo_workflow_events_total{kind,outcome}` and
+`octo_sla_escalations_total{action}`; `outcome="no_subscription"` is the
+ordinary case for a tenant that has not opted in, not a failure.
+
 ### ClickHouse ingest consumer subjects (#230)
 
 Stream `INGEST` carries the whole `ingest.>` tree, but the ClickHouse worker

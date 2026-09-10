@@ -47,11 +47,13 @@ from sqlalchemy import func, or_, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import exploit_evidence
+from api.services import metrics
 from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
 from api.services import scan_surface
 from api.services import vuln_states
+from api.services import workflow_events
 from scanner.pipeline.cvss4 import normalize_cwes
 from api.services.risk_scoring import (
     FOOTHOLD,
@@ -106,6 +108,12 @@ VULN_EVENT_KINDS = (
     "verification_passed",
     "verification_failed",
     "ticket_synced",
+    # SLA escalation (#349): the worker reassigned the finding or raised its
+    # severity because its deadline passed. Recorded as an event of its own
+    # rather than as an ``assigned`` one, because the actor is the platform
+    # acting on a policy — "who moved this to the platform team" has to have a
+    # different answer from "somebody did".
+    "escalated",
     # False-positive verdicts (Track E).
     "false_positive_set",
     "false_positive_cleared",
@@ -500,6 +508,190 @@ def delete_sla_policy(settings: Settings, *, tenant_id: str, policy_id: str) -> 
             return False
         session.delete(row)
         return True
+
+
+#: What a tenant with no ``sla_escalation_policies`` row gets (#349). Every
+#: action is off: the breach *events* need no policy, and rewriting somebody's
+#: assignments or mailing their asset owners is not a default to inherit from a
+#: version bump. ``configured`` tells a caller which of the two it is looking
+#: at, so the console can say "not set up" rather than "disabled".
+ESCALATION_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "escalate_after_days": 0,
+    "escalate_to": None,
+    "escalate_owner_team": None,
+    "bump_severity": False,
+    "digest_enabled": False,
+}
+
+#: Cap on the grace period past ``due_at``. A year of grace is a deadline
+#: nobody has, and the column is read into a ``timedelta``.
+MAX_ESCALATE_AFTER_DAYS = 365
+
+
+def _escalation_to_dict(row: models.SlaEscalationPolicy | None, tenant_id: str) -> dict[str, Any]:
+    if row is None:
+        return {
+            "tenant_id": tenant_id,
+            **ESCALATION_DEFAULTS,
+            "configured": False,
+            "updated_at": None,
+            "updated_by": "",
+        }
+    return {
+        "tenant_id": row.tenant_id,
+        "enabled": bool(row.enabled),
+        "escalate_after_days": int(row.escalate_after_days or 0),
+        "escalate_to": row.escalate_to,
+        "escalate_owner_team": row.escalate_owner_team,
+        "bump_severity": bool(row.bump_severity),
+        "digest_enabled": bool(row.digest_enabled),
+        "configured": True,
+        "updated_at": _iso(row.updated_at),
+        "updated_by": row.updated_by or "",
+    }
+
+
+def get_escalation_policy(settings: Settings, *, tenant_id: str) -> dict[str, Any]:
+    """The tenant's escalation policy, or the all-off defaults if it has none."""
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.SlaEscalationPolicy, tenant_id)
+        return _escalation_to_dict(row, tenant_id)
+
+
+def upsert_escalation_policy(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    enabled: bool,
+    escalate_after_days: int = 0,
+    escalate_to: str | None = None,
+    escalate_owner_team: str | None = None,
+    bump_severity: bool = False,
+    digest_enabled: bool = False,
+    updated_by: str | None = None,
+) -> dict[str, Any]:
+    """Replace the tenant's escalation policy. One row per tenant, so ``PUT``.
+
+    Refuses ``enabled`` with nothing to do: a policy that reassigns to nobody,
+    bumps nothing and mails nobody is a switch an operator would reasonably
+    read as "escalation is on", and it would do precisely nothing.
+    """
+    days = int(escalate_after_days or 0)
+    if days < 0 or days > MAX_ESCALATE_AFTER_DAYS:
+        raise ValueError(
+            f"escalate_after_days must be between 0 and {MAX_ESCALATE_AFTER_DAYS}"
+        )
+    assignee = (escalate_to or "").strip() or None
+    team = (escalate_owner_team or "").strip() or None
+    if enabled and not (assignee or team or bump_severity or digest_enabled):
+        raise ValueError(
+            "escalation is enabled but has no action: set escalate_to, "
+            "escalate_owner_team, bump_severity or digest_enabled"
+        )
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.SlaEscalationPolicy, tenant_id)
+        if row is None:
+            row = models.SlaEscalationPolicy(tenant_id=tenant_id, updated_at=now)
+            session.add(row)
+        row.enabled = bool(enabled)
+        row.escalate_after_days = days
+        row.escalate_to = assignee
+        row.escalate_owner_team = team
+        row.bump_severity = bool(bump_severity)
+        row.digest_enabled = bool(digest_enabled)
+        row.updated_at = now
+        row.updated_by = updated_by or ""
+        session.flush()
+        return _escalation_to_dict(row, tenant_id)
+
+
+def escalate(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    vuln_id: str,
+    assignee: str | None = None,
+    owner_team: str | None = None,
+    bump_severity: bool = False,
+) -> dict[str, Any] | None:
+    """Apply a tenant's escalation to one breached finding (#349).
+
+    Called only by ``api/services/sla_escalation.py``, and deliberately narrow:
+    it writes ownership and severity, records an ``escalated`` event, and does
+    not touch the lifecycle state. A finding whose deadline passed is not in a
+    different state — it is the same work, late, and moving it would erase
+    whatever its owner had recorded about it.
+
+    Returns the finding with a ``escalation`` key naming what changed, or
+    ``None`` if there was nothing left to do (already assigned there, already
+    critical). ``None`` is not a failure: the worker uses it to decide whether
+    the event it is about to send should claim an escalation happened.
+    """
+    now = _now()
+    changed: dict[str, Any] = {}
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        target_assignee = (assignee or "").strip() or None
+        if target_assignee and row.assignee != target_assignee:
+            changed["assignee_from"] = row.assignee
+            row.assignee = target_assignee
+            changed["assignee_to"] = target_assignee
+        target_team = (owner_team or "").strip() or None
+        if target_team and row.owner_team != target_team:
+            changed["owner_team_from"] = row.owner_team
+            row.owner_team = target_team
+            changed["owner_team_to"] = target_team
+        if bump_severity:
+            raised = _raise_severity(row.severity)
+            if raised != row.severity:
+                changed["severity_from"] = row.severity
+                row.severity = raised
+                changed["severity_to"] = raised
+        if not changed:
+            return None
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="escalated",
+            occurred_at=now,
+            to_state=row.state,
+            # No actor: the platform did this because the tenant's policy said
+            # so, and naming a user would put somebody's name on a decision
+            # they did not make today.
+            actor=None,
+            note="SLA breach escalation",
+            detail=changed,
+        )
+        session.flush()
+        result = _to_dict(row, now=now)
+    if "severity_to" in changed:
+        metrics.SLA_ESCALATIONS_TOTAL.labels(action="severity_bumped").inc()
+    if "assignee_to" in changed or "owner_team_to" in changed:
+        metrics.SLA_ESCALATIONS_TOTAL.labels(action="reassigned").inc()
+    result["escalation"] = changed
+    return result
+
+
+def _raise_severity(current: str | None) -> str:
+    """One step up the severity ladder, capped at ``critical``.
+
+    ``unknown`` becomes ``medium`` rather than ``low``: the point of the bump
+    is to make a missed deadline more visible, and an unrated finding that
+    nobody fixed in time is not evidence that it is mild.
+    """
+    ladder = ("low", "medium", "high", "critical")
+    value = (current or "unknown").strip().lower()
+    if value == "unknown":
+        return "medium"
+    if value not in ladder:
+        return value
+    return ladder[min(ladder.index(value) + 1, len(ladder) - 1)]
 
 
 def _resolve_sla_days(
@@ -1092,6 +1284,45 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
     }
 
 
+#: What a workflow event (#349) carries about a finding. A deliberate subset of
+#: :func:`_to_dict`: a webhook payload crosses the trust boundary and is stored
+#: in ``webhook_deliveries``, so it names the finding, says how bad it is and
+#: who owns it, and leaves the false-positive evidence and the observation
+#: bookkeeping where they are.
+WORKFLOW_EVENT_FIELDS = (
+    "vuln_id",
+    "asset_id",
+    "cve",
+    "script_id",
+    "port",
+    "title",
+    "severity",
+    "risk_level",
+    "cvss",
+    "in_kev",
+    "state",
+    "assignee",
+    "owner_team",
+    "due_at",
+    "sla_days",
+    "sla_state",
+    "ticket_system",
+    "ticket_key",
+)
+
+
+def workflow_event_data(row: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    """The finding fields one workflow event carries, plus its own extras.
+
+    Shared by the write paths here and by ``api/services/sla_escalation.py`` so
+    that ``sla_breached`` and ``vuln_state_changed`` describe a finding the same
+    way — a receiver should not need two parsers for two events about one row.
+    """
+    data = {key: row.get(key) for key in WORKFLOW_EVENT_FIELDS}
+    data.update(extra)
+    return data
+
+
 def _event_to_dict(row: models.VulnerabilityEvent) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -1210,6 +1441,30 @@ def transition(
             ticket_key=ticket[1],
             to_state=to_state,
         )
+    # Also after the commit, and for the stronger version of the same reason:
+    # the fan-out writes rows of its own, and an event announcing a transition
+    # that then rolled back would be a notification about something that did
+    # not happen. One kind for the move and the reopen alike — ``reopened`` is
+    # a move whose ``from_state`` says so, and a receiver filtering on the kind
+    # should not have to know both spellings (#349).
+    workflow_events.emit(
+        settings,
+        "vuln_state_changed",
+        tenant_id=result["tenant_id"],
+        subject_id=vuln_id,
+        # The change's own timestamp: two moves of one finding are two events,
+        # a retried publish of one move is not.
+        marker=str(result["state_changed_at"] or ""),
+        data=workflow_event_data(
+            result,
+            from_state=previous,
+            to_state=to_state,
+            reopened=kind == "reopened",
+            actor=actor,
+            note=note,
+        ),
+        occurred_at=now,
+    )
     return result
 
 
@@ -1572,7 +1827,21 @@ def assign(
             detail=detail,
         )
         session.flush()
-        return _to_dict(row, now=now)
+        result = _to_dict(row, now=now)
+
+    workflow_events.emit(
+        settings,
+        "vuln_assigned",
+        tenant_id=result["tenant_id"],
+        subject_id=vuln_id,
+        # ``updated_at`` rather than the new assignee: unassigning is an
+        # assignment event too, and two people handed the same finding in turn
+        # are two events even if the second hands it back.
+        marker=now.isoformat(),
+        data=workflow_event_data(result, **detail, actor=actor, note=note),
+        occurred_at=now,
+    )
+    return result
 
 
 def set_exception(

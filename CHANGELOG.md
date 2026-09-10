@@ -346,6 +346,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **The remediation workflow has events, and a missed deadline reaches
+  somebody** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). The
+  webhook machine carried five discovery kinds; SLA breach was derived on read,
+  so it existed only while somebody had the console open on it. Eight kinds
+  join it — `sla_due_soon`, `sla_breached`, `exception_expiring`,
+  `vuln_state_changed`, `vuln_assigned`, `scan_failed`, `report_generated`,
+  `agent_offline` — opt-in per subscription, so an upgrade sends nothing new to
+  an existing receiver. A leader-locked worker derives the four that are
+  predicates over the clock and claims each occurrence once in
+  `workflow_event_markers` (migration `0046`), keyed on the deadline, so a
+  15-minute tick announces a breach once and a reopened finding is announced
+  again. Per-tenant `sla_escalation_policies` add the optional actions —
+  reassign, one severity step, a daily digest to the asset owner — off until a
+  tenant admin sets them (`PUT /api/vulnerabilities/sla-escalation`). Workflow
+  events queue for webhooks directly, so they work with no broker configured;
+  the bus copy goes to `events.workflow.{tenant}.{kind}`. The digest goes
+  through the existing report relay: per-tenant notification channels are
+  [#351](https://github.com/onixus/Shapoclyack/issues/351) and are **not**
+  implemented here. No console UI for the escalation policy yet — it is API and
+  docs only.
 - **`overlays/prod-ha` — a Kubernetes profile that survives a node loss**
   ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `overlays/prod`
   ran one API replica pinned to a scanner node, the in-cluster single-pod
