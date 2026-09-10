@@ -256,17 +256,21 @@ class RequestIdMiddleware:
             # By the time an unhandled exception reaches here, the 500 for it
             # has already been written by ``ServerErrorMiddleware`` — which
             # this layer wraps, so it went out through ``_send_with_id`` and
-            # carries the header like every other response. What is left is the
-            # log line: re-raising would hand it to uvicorn's
-            # "Exception in ASGI application", one frame above this contextvar,
-            # i.e. with ``request_id=""`` — the one record about the request
-            # that could not be found by its id. So it is written here, where
-            # the id is still bound, and not raised again (#330).
+            # carries the header like every other response. The log line is
+            # written here, where the id is still bound: uvicorn's own
+            # "Exception in ASGI application" is emitted one frame above this
+            # contextvar, i.e. with ``request_id=""`` (#330). The exception is
+            # then re-raised all the same — swallowing it would change ASGI
+            # semantics for everything outside (``TestClient`` with
+            # ``raise_server_exceptions``, uvicorn's error accounting), and a
+            # duplicate line without an id is a smaller cost than a server that
+            # never sees its own crashes.
             LOG.exception(
                 "unhandled exception serving %s %s",
                 scope.get("method", "?"),
                 scope.get("path", "?"),
             )
+            raise
         finally:
             reset_request_id(token)
 
