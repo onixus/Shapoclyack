@@ -1,5 +1,6 @@
 import type {
   AgentInfo,
+  AgentLifecycleStatus,
   AssetContextSource,
   AssetDataClassification,
   AssetEnvironment,
@@ -56,6 +57,15 @@ export const AGENT_STATUS: Record<AgentEffectiveStatus, StatusStyle> = {
   error: { label: "error", variant: "destructive", className: DANGER },
   stale: { label: "stale", variant: "outline", className: "bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/30" },
   offline: { label: "offline", variant: "secondary", className: MUTED },
+};
+
+/** The operator's verdict (#308), shown next to — not instead of — the
+ * reported status: a quarantined agent that is still heartbeating is idle
+ * *and* quarantined, and an operator needs both facts to act on it. */
+export const AGENT_LIFECYCLE_STATUS: Record<AgentLifecycleStatus, StatusStyle> = {
+  active: { label: "active", className: SUCCESS },
+  disabled: { label: "disabled", variant: "secondary", className: MUTED },
+  quarantined: { label: "quarantined", variant: "destructive", className: DANGER },
 };
 
 /** Connectivity wins over the agent's self-reported status. */

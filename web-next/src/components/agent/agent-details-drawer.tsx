@@ -13,6 +13,7 @@ import {
   Loader2,
   Play,
   Server,
+  ShieldAlert,
   Trash2,
 } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
@@ -24,8 +25,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useAgentDetail, useDeleteAgent, useUpgradeAgent } from "@/hooks/use-agents";
-import { AGENT_STATUS, agentEffectiveStatus } from "@/lib/config/statuses";
+import { Input } from "@/components/ui/input";
+import {
+  useAgentDetail,
+  useDeleteAgent,
+  useUpdateAgentStatus,
+  useUpgradeAgent,
+} from "@/hooks/use-agents";
+import { type AgentLifecycleStatus } from "@/lib/api";
+import {
+  AGENT_LIFECYCLE_STATUS,
+  AGENT_STATUS,
+  agentEffectiveStatus,
+} from "@/lib/config/statuses";
 
 export function AgentDetailsDrawer({
   agentId,
@@ -39,12 +51,17 @@ export function AgentDetailsDrawer({
   const { data: agent, isLoading } = useAgentDetail(agentId);
   const upgradeMutation = useUpgradeAgent();
   const deleteMutation = useDeleteAgent();
+  const statusMutation = useUpdateAgentStatus();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [revokeKey, setRevokeKey] = useState(false);
+  const [reason, setReason] = useState("");
 
   if (!open || !agentId) return null;
 
   const metrics = agent?.metrics || {};
+  const lifecycle: AgentLifecycleStatus = agent?.lifecycle_status ?? "active";
   const isOutdated = Boolean(agent?.is_outdated);
+  const otherAgentsOnKey = agent?.other_agents_on_key ?? 0;
   const cpuPercent = metrics.cpu_percent ?? 0;
   const memPercent = metrics.memory_percent ?? 0;
   const diskPercent = metrics.disk_percent ?? 0;
@@ -71,13 +88,25 @@ export function AgentDetailsDrawer({
   const handleDelete = async () => {
     if (!agentId) return;
     try {
-      await deleteMutation.mutateAsync(agentId);
+      await deleteMutation.mutateAsync({ agentId, revokeKey });
     } catch {
       // Surfaced via the mutation's onError toast; keep the confirm dialog open.
       return;
     }
     setConfirmDelete(false);
+    setRevokeKey(false);
     onOpenChange(false);
+  };
+
+  const handleLifecycle = async (status: AgentLifecycleStatus) => {
+    if (!agentId) return;
+    try {
+      await statusMutation.mutateAsync({ agentId, status, reason });
+    } catch {
+      // Surfaced via the mutation's onError toast; nothing further to do here.
+      return;
+    }
+    setReason("");
   };
 
   return (
@@ -99,7 +128,15 @@ export function AgentDetailsDrawer({
               </div>
             </div>
             {agent && (
-              <StatusBadge value={agentEffectiveStatus(agent)} map={AGENT_STATUS} />
+              <div className="flex items-center gap-1.5">
+                <StatusBadge value={agentEffectiveStatus(agent)} map={AGENT_STATUS} />
+                {/* Only when it is *not* active: "active" is the state of
+                    every healthy agent, and a badge on all of them would say
+                    nothing while burying the two that matter. */}
+                {lifecycle !== "active" && (
+                  <StatusBadge value={lifecycle} map={AGENT_LIFECYCLE_STATUS} />
+                )}
+              </div>
             )}
           </div>
         </DialogHeader>
@@ -265,6 +302,70 @@ export function AgentDetailsDrawer({
                 </div>
               </div>
 
+              {/* Lifecycle: the operator's verdict, separate from the agent's
+                  own reported status (#308). */}
+              <div className="space-y-2 border-t border-border/80 pt-4">
+                <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+                  Agent State
+                </h4>
+                {lifecycle === "active" ? (
+                  <p className="text-xs text-muted-foreground">
+                    Active — this agent may claim jobs and upload results. Disabling or
+                    quarantining it survives a restart; only an operator undoes it.
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    {agent.lifecycle_message || `This agent is ${lifecycle}.`}
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Sent with whichever button is pressed; the API drops it
+                      on a return to active, so it reads as the reason for
+                      leaving `active` rather than for the state now held. */}
+                  <Input
+                    value={reason}
+                    onChange={(event) => setReason(event.target.value)}
+                    placeholder="Reason (shown to the agent and to the next operator)"
+                    className="h-8 max-w-sm text-xs"
+                    aria-label="Reason"
+                  />
+                  {lifecycle !== "active" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={statusMutation.isPending}
+                      onClick={() => handleLifecycle("active")}
+                      className="h-8 px-3 text-xs"
+                    >
+                      Re-activate
+                    </Button>
+                  ) : null}
+                  {lifecycle !== "disabled" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={statusMutation.isPending}
+                      onClick={() => handleLifecycle("disabled")}
+                      className="h-8 px-3 text-xs"
+                    >
+                      Disable
+                    </Button>
+                  ) : null}
+                  {lifecycle !== "quarantined" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={statusMutation.isPending}
+                      onClick={() => handleLifecycle("quarantined")}
+                      className="h-8 border-rose-500/40 px-3 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-500/10"
+                    >
+                      Quarantine
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
               {/* Danger Zone: Deregister */}
               <div className="border-t border-border/80 pt-4">
                 {!confirmDelete ? (
@@ -278,8 +379,33 @@ export function AgentDetailsDrawer({
                     Deregister Agent
                   </Button>
                 ) : (
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs text-rose-600 dark:text-rose-400 font-semibold">Confirm removal of {agentId}?</span>
+                    {/* Off by default, as on the API: one key commonly
+                        provisions a whole fleet. Without it the host still
+                        holds the key and re-registers on its next poll. */}
+                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={revokeKey}
+                        onChange={(event) => setRevokeKey(event.target.checked)}
+                        aria-label="Revoke provisioning key"
+                      />
+                      Also revoke its provisioning key
+                    </label>
+                    {/* The blast radius, before the click rather than in the
+                        response: revoking the key stops every agent holding
+                        it, and the operator is looking at one of them. */}
+                    {revokeKey && otherAgentsOnKey > 0 ? (
+                      <span
+                        role="alert"
+                        className="w-full text-xs font-semibold text-rose-600 dark:text-rose-400"
+                      >
+                        This key also provisioned {otherAgentsOnKey} other{" "}
+                        {otherAgentsOnKey === 1 ? "agent" : "agents"} — revoking it stops{" "}
+                        {otherAgentsOnKey === 1 ? "that one" : "all of them"} too.
+                      </span>
+                    ) : null}
                     <Button
                       size="sm"
                       disabled={deleteMutation.isPending}

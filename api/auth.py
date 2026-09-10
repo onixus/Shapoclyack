@@ -506,11 +506,40 @@ def require_tenant(minimum: Role):
     return _checker
 
 
+def _revalidate_agent_credential(principal: AgentPrincipal) -> None:
+    """Re-check a verified agent JWT against the database, or refuse it (#308).
+
+    Imported inside the function, like every other service this module reaches
+    for: ``api.services`` imports settings and models, and importing it at
+    module scope would make the auth layer part of that cycle.
+    """
+    from api.services import agents as agents_service
+
+    try:
+        agents_service.check_credential(
+            agent_id=principal.agent_id,
+            tenant_id=principal.tenant_id,
+            key_id=principal.key_id,
+        )
+    except agents_service.AgentCredentialRevoked as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
 def require_agent(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentPrincipal:
-    """Authenticate remote agent via agent JWT, or legacy OCTO_AGENT_TOKEN."""
+    """Authenticate remote agent via agent JWT, or legacy OCTO_AGENT_TOKEN.
+
+    A verified signature is no longer the whole answer (#308): an agent JWT
+    lives for two hours, and revoking its provisioning key, deleting the agent
+    or moving it between tenants used to do nothing until it expired. The
+    database is consulted on every request, so those acts land immediately —
+    see :func:`api.services.agents.check_credential` for exactly which two
+    things are checked and why a missing agent row is not one of them.
+    """
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     token = credentials.credentials
@@ -531,7 +560,9 @@ def require_agent(
         unverified = {}
 
     if unverified.get("typ") == AGENT_TOKEN_TYP:
-        return decode_agent_token(settings, token)
+        principal = decode_agent_token(settings, token)
+        _revalidate_agent_credential(principal)
+        return principal
 
     if settings.agent_token:
         provided = token.encode("utf-8")

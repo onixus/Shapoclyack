@@ -464,6 +464,8 @@ export type UpdateScheduleBody = Partial<
   Omit<CreateScheduleBody, "tenant_id"> & { enabled: boolean }
 >;
 
+export type AgentLifecycleStatus = "active" | "disabled" | "quarantined";
+
 export type AgentInfo = {
   agent_id: string;
   hostname: string;
@@ -495,6 +497,16 @@ export type AgentInfo = {
   is_outdated?: boolean;
   latest_version?: string;
   upgrade_requested?: boolean;
+  /** What an operator decided about this agent (#308), as opposed to `status`
+   * above, which is what the agent last reported about itself. A non-active
+   * agent still heartbeats — it just cannot claim work or upload results. */
+  lifecycle_status?: AgentLifecycleStatus;
+  lifecycle_reason?: string | null;
+  lifecycle_message?: string | null;
+  /** How many *other* agents registered with the same provisioning key — the
+   * blast radius of a delete with `revoke_key` (#308). Only the single-agent
+   * read fills it in; in the fleet list it is absent. */
+  other_agents_on_key?: number;
 };
 
 export type AgentFleetSummary = {
@@ -1217,11 +1229,34 @@ export async function fetchAgentDetail(agentId: string) {
   }
 }
 
-export async function deleteAgent(agentId: string) {
+/** Deregister an agent, and with `revokeKey` also revoke the provisioning key
+ * it registered with (#308) — without that the host still holds the key and a
+ * live JWT, and re-registers on its next poll. */
+export async function deleteAgent(agentId: string, revokeKey = false) {
   try {
-    const { data } = await api.delete<{ status: string; agent_id: string }>(
-      `/agents/${encodeURIComponent(agentId)}`,
-    );
+    const { data } = await api.delete<{
+      status: string;
+      agent_id: string;
+      provisioning_key_id: string | null;
+      key_revoked: boolean;
+      other_agents_on_key: number;
+    }>(`/agents/${encodeURIComponent(agentId)}?revoke_key=${revokeKey}`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function updateAgentStatus(
+  agentId: string,
+  status: AgentLifecycleStatus,
+  reason = "",
+) {
+  try {
+    const { data } = await api.patch<AgentInfo>(`/agents/${encodeURIComponent(agentId)}`, {
+      status,
+      reason,
+    });
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import PlainTextResponse
 
 from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
+from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AgentClaimResponse,
@@ -26,6 +27,7 @@ from api.schemas import (
     CreateAgentDeploymentKeyRequest,
     JobInfo,
     Page,
+    UpdateAgentStatusRequest,
 )
 from api.services import agent_deployer
 from api.services import agents as agents_service
@@ -51,6 +53,33 @@ def _server_url(settings: Settings, request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+def _bind_identity(principal: AgentPrincipal, requested_agent_id: str | None) -> None:
+    """403 unless the request acts as the agent its token was minted for (#308).
+
+    The rule and its one exemption (a legacy shared token carries no identity)
+    live in the service; this is the HTTP half of it, applied on every route
+    that takes an ``agent_id`` from the caller — body, form or query string.
+    """
+    try:
+        agents_service.require_identity_match(principal.agent_id, requested_agent_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+def _require_active(agent_id: str) -> None:
+    """403 when an operator has disabled or quarantined this agent (#308).
+
+    Applied to the two things a non-active agent must not do — claim work and
+    upload results — but deliberately not to the heartbeat, which is answered
+    normally so the agent learns *why* it is being refused instead of polling
+    into a wall.
+    """
+    try:
+        agents_service.require_active(agent_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
 @router.post("/agent/register", response_model=AgentInfo)
 def register_agent(
     body: AgentRegisterRequest,
@@ -58,6 +87,14 @@ def register_agent(
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentInfo:
+    """Register (or re-register) the agent this token was minted for.
+
+    The body may still name an ``agent_id``, but it can now only be the
+    token's own (#308). Omitting it no longer mints a random id either: the
+    exchange already put one in the token, and using it is what makes a
+    restarted agent come back as itself rather than as a second row.
+    """
+    _bind_identity(principal, body.agent_id)
     # The actor is the agent, not a console account, so the context is built
     # here rather than through ``AuditDep``, which authenticates a user (#327).
     audit = audit_service.context_from_request(
@@ -68,11 +105,12 @@ def register_agent(
     )
     try:
         return agents_service.register_agent(
-            agent_id=body.agent_id,
+            agent_id=body.agent_id or principal.agent_id,
             hostname=body.hostname,
             version=body.version,
             labels=body.labels,
             tenant_id=principal.tenant_id,
+            provisioning_key_id=principal.key_id,
             audit=audit,
         )
     except PermissionError as exc:
@@ -85,6 +123,16 @@ def heartbeat(
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentInfo:
+    """Accepted even from a disabled or quarantined agent, on purpose (#308).
+
+    The response carries ``lifecycle_status`` and ``lifecycle_message``, which
+    is the only channel that reaches a running agent: refusing the heartbeat
+    too would take an agent out of the fleet view at exactly the moment an
+    operator is watching it, and leave the agent retrying a bare 403 with
+    nothing to log. What a non-active agent *cannot* do is claim work or upload
+    results, and those are refused below.
+    """
+    _bind_identity(principal, body.agent_id)
     info = agents_service.heartbeat(
         body.agent_id,
         status=body.status,
@@ -119,11 +167,13 @@ def claim_job(
     settings: Annotated[Settings, Depends(get_settings)],
     job_id: str | None = None,
 ) -> AgentClaimResponse | Response:
+    _bind_identity(principal, agent_id)
     agent = agents_service.get_agent(agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id; register first")
     if agent.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+    _require_active(agent_id)
     # The version floor is checked here rather than in require_agent: an agent
     # below it must still register and heartbeat, or the fleet view would lose
     # the very agents an operator needs to find and upgrade (#363).
@@ -166,11 +216,13 @@ async def upload_results(
     # pre-P1.5 agents keep working — unfenced, as they were.
     attempt: Annotated[int | None, Form()] = None,
 ) -> JobInfo:
+    _bind_identity(principal, agent_id)
     agent = agents_service.get_agent(agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id")
     if agent.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+    _require_active(agent_id)
     archive_bytes: bytes | None = None
     if archive is not None:
         archive_bytes = await archive.read()
@@ -234,20 +286,78 @@ def get_agent_detail(
     return agent
 
 
-@router.delete("/agents/{agent_id}")
-def delete_agent(
+@router.patch("/agents/{agent_id}", response_model=AgentInfo)
+def update_agent_status(
     agent_id: str,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
-) -> dict[str, Any]:
+    body: UpdateAgentStatusRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    audit: AuditDep,
+) -> AgentInfo:
+    """Disable, quarantine, or re-activate one agent (#308).
+
+    Tenant ``admin`` — a rung above the ``operator`` who deletes an agent, and
+    for the reason the two differ in effect: delete is undone by the agent
+    itself on its next poll, while this state survives re-registration and is
+    the only thing that stops a compromised host from claiming work.
+
+    Answers the agent as it now stands, so the console renders the new state
+    from the response rather than from what it asked for.
+    """
     tenant_id = (
         None
         if principal.is_platform_admin and not principal.tenant_requested
         else principal.tenant_id
     )
-    deleted = agents_service.delete_agent(agent_id, tenant_id=tenant_id)
-    if not deleted:
+    try:
+        return agents_service.set_lifecycle_status(
+            agent_id,
+            lifecycle_status=body.status,
+            reason=body.reason,
+            tenant_id=tenant_id,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.delete("/agents/{agent_id}")
+def delete_agent(
+    agent_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    audit: AuditDep,
+    revoke_key: Annotated[
+        bool,
+        Query(description="Also revoke the provisioning key this agent registered with"),
+    ] = False,
+) -> dict[str, Any]:
+    """Deregister an agent, optionally revoking the key it registered with.
+
+    Off by default, because one key commonly provisions a whole fleet and
+    revoking it on a single deregistration would strand the rest. `true` is
+    what makes a delete permanent: without it the host still holds the key and
+    a live JWT, and re-registers on its next poll (#308). The response reports
+    which of the two happened — ``key_revoked: false`` with no
+    ``provisioning_key_id`` means there was no key on record to revoke (an
+    agent registered before this was tracked, or a legacy shared-token one).
+    """
+    tenant_id = (
+        None
+        if principal.is_platform_admin and not principal.tenant_requested
+        else principal.tenant_id
+    )
+    deleted = agents_service.delete_agent(
+        agent_id,
+        tenant_id=tenant_id,
+        revoke_key=revoke_key,
+        audit=audit,
+    )
+    if deleted is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-    return {"status": "deleted", "agent_id": agent_id}
+    return {"status": "deleted", **deleted}
 
 
 @router.post("/agents/{agent_id}/upgrade")

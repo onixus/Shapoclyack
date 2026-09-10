@@ -200,6 +200,13 @@ class Settings:
     agent_deploy_enforce_scan_scope: bool = False
     # Short-lived agent JWT lifetime after provisioning-key exchange (Phase 2).
     agent_jwt_expire_minutes: int = 120
+    # Days a newly minted provisioning key stays exchangeable (#308). 0 mints
+    # perpetual keys, which is what every key predating the column already is.
+    # 90 days is a rotation cadence, not a security boundary: the key is a
+    # bootstrap credential the agent trades for a 2h JWT, so the cost of the
+    # expiry is one operator action per quarter and the benefit is that a key
+    # pasted into an install snippet stops being a fleet-wide door forever.
+    provisioning_key_ttl_days: int = 90
     # Hard request-body cap on POST /api/agent/jobs/{job_id}/results, read from
     # Content-Length before the multipart body is buffered (#222). A run archive
     # is a tar.gz of one scan directory — single-digit MiB in practice, more with
@@ -941,6 +948,9 @@ def load_settings() -> Settings:
         ).lower()
         in {"1", "true", "yes"},
         agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
+        provisioning_key_ttl_days=max(
+            0, int(os.environ.get("OCTO_PROVISIONING_KEY_TTL_DAYS", "90") or 0)
+        ),
         agent_jwt_secret=os.environ.get("OCTO_AGENT_JWT_SECRET", "").strip(),
         agent_jwt_secret_previous=_csv_secrets(
             os.environ.get("OCTO_AGENT_JWT_SECRET_PREVIOUS", "")

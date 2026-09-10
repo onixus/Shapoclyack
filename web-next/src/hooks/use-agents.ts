@@ -13,7 +13,9 @@ import {
   fetchDeployStatus,
   probeAgentSSHHostKey,
   triggerAgentUpgrade,
+  updateAgentStatus,
   type AgentDeploySSHRequest,
+  type AgentLifecycleStatus,
   type PageParams,
 } from "@/lib/api";
 import { POLL_INTERVALS } from "@/lib/config/constants";
@@ -108,13 +110,57 @@ export function useUpgradeAgent() {
   });
 }
 
+/** Disable, quarantine, or re-activate an agent (#308).
+ *
+ * The refreshed agent comes back in the response, so the detail drawer is
+ * seeded from what the server stored rather than from what was asked for —
+ * `reason` is trimmed and dropped entirely on a return to `active`. */
+export function useUpdateAgentStatus() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      agentId,
+      status,
+      reason,
+    }: {
+      agentId: string;
+      status: AgentLifecycleStatus;
+      reason?: string;
+    }) => updateAgentStatus(agentId, status, reason ?? ""),
+    onSuccess: (agent) => {
+      queryClient.setQueryData(queryKeys.agentDetail(agent.agent_id), agent);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agentSummary });
+      toast.success(`Agent is now ${agent.lifecycle_status ?? "active"}`);
+    },
+    onError: (err: Error) => {
+      toast.error("Failed to change agent state", { description: err.message });
+    },
+  });
+}
+
 export function useDeleteAgent() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (agentId: string) => deleteAgent(agentId),
-    onSuccess: () => {
+    mutationFn: ({ agentId, revokeKey }: { agentId: string; revokeKey?: boolean }) =>
+      deleteAgent(agentId, revokeKey ?? false),
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents });
       queryClient.invalidateQueries({ queryKey: queryKeys.agentSummary });
+      // Said out loud rather than assumed: an agent registered before the key
+      // was tracked has none to revoke, and an operator who ticked the box
+      // would otherwise walk away believing the credential is dead.
+      if (result.key_revoked) {
+        toast.success("Agent deregistered and its provisioning key revoked");
+      } else if (result.provisioning_key_id === null) {
+        toast.success("Agent deregistered", {
+          description: "No provisioning key on record for this agent — nothing to revoke",
+        });
+      } else {
+        toast.success("Agent deregistered", {
+          description: "Its provisioning key is still valid; revoke it to stop re-registration",
+        });
+      }
     },
     onError: (err: Error) => {
       toast.error("Failed to deregister agent", { description: err.message });

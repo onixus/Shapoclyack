@@ -64,6 +64,13 @@ ACTION_SERVICE_TOKEN_REVOKE = "service_token.revoke"
 ACTION_PROVISIONING_KEY_CREATE = "provisioning_key.create"
 ACTION_PROVISIONING_KEY_REVOKE = "provisioning_key.revoke"
 ACTION_AGENT_REGISTER = "agent.register"
+# One action per resulting state rather than a single "agent.lifecycle": the
+# question an auditor brings to the trail is "who took this host out of the
+# fleet", and a filter on the action is how they ask it (#308).
+ACTION_AGENT_DISABLE = "agent.disable"
+ACTION_AGENT_ENABLE = "agent.enable"
+ACTION_AGENT_QUARANTINE = "agent.quarantine"
+ACTION_AGENT_DELETE = "agent.delete"
 ACTION_REPORT_DOWNLOAD = "report.download"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
 ACTION_CONFIG_UPDATE = "config.update"

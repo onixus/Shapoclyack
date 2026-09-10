@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from api.core import security as core_security
+from api.services import agents as agents_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -41,6 +42,13 @@ def exchange_provisioning_key(
     resolved = tenants_service.resolve_provisioning_key(provisioning_key.strip())
     if resolved is None:
         raise PermissionError("Invalid or revoked provisioning key")
+    # A valid key is not yet a right to *be* a particular agent (#308): raises
+    # AgentIdentityConflict, which the route answers 403 rather than 401.
+    agents_service.check_exchange_identity(
+        agent_id=agent_id,
+        tenant_id=str(resolved["tenant_id"]),
+        key_id=str(resolved["key_id"]),
+    )
     resolved_agent_id = (agent_id or "").strip() or f"agent_{uuid.uuid4().hex[:12]}"
     ttl = expires_minutes if expires_minutes is not None else settings.agent_jwt_expire_minutes
     token = create_agent_access_token(

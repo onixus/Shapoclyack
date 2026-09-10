@@ -315,6 +315,31 @@ class AgentTokenRejected(RuntimeError):
     """
 
 
+class AgentDisabled(RuntimeError):
+    """An operator disabled or quarantined this agent server-side (#308).
+
+    Distinguished from every other 403 because the answer is to wait, not to
+    retry: the state is changed by a person in the console, so polling at the
+    normal interval would fill the journal with one refusal per second and put
+    a pointless request per second on the API for however long the agent stays
+    disabled. The loop backs off to
+    ``DISABLED_BACKOFF_SECONDS`` and keeps heartbeating, which is what keeps it
+    visible in the fleet view — and what lets it notice being re-enabled.
+    """
+
+
+# Five minutes: long enough that a quarantined fleet is not a load source,
+# short enough that re-enabling an agent from the console is felt while the
+# operator is still looking at the page.
+DISABLED_BACKOFF_SECONDS = 300.0
+
+# Substrings of the API's own refusal (api/services/agents.py::lifecycle_message).
+# Matched on the message because a 403 also covers cross-tenant access and the
+# agent-id binding, and those two are misconfiguration to be logged loudly, not
+# a state to wait out.
+_DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operator")
+
+
 class AgentUpgradeRequired(RuntimeError):
     """The API refused the claim because this agent is below its version floor.
 
@@ -352,10 +377,25 @@ class AgentClient:
     def set_token(self, token: str) -> None:
         self.token = token
 
-    def exchange_provisioning_key(self, provisioning_key: str) -> dict[str, Any]:
-        """POST /api/auth/agent/token — no bearer required."""
+    def exchange_provisioning_key(
+        self,
+        provisioning_key: str,
+        *,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /api/auth/agent/token — no bearer required.
+
+        ``agent_id`` is sent on every exchange, including the periodic refresh
+        (#308). Omitting it makes the server mint a *fresh* random id and put
+        it in the token, after which registering or heartbeating as the id this
+        process already has is refused as impersonation — an agent that
+        re-exchanged on a timer used to lose its own identity that way.
+        """
         url = f"{self.base_url}/api/auth/agent/token"
-        body = json.dumps({"provisioning_key": provisioning_key}).encode("utf-8")
+        payload: dict[str, Any] = {"provisioning_key": provisioning_key}
+        if agent_id:
+            payload["agent_id"] = agent_id
+        body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=body,
@@ -367,6 +407,14 @@ class AgentClient:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            # The exchange refuses a disabled or quarantined agent_id too, so
+            # it needs the same classification the bearer calls get: without
+            # it, the state an operator set would reach the run loop as a bare
+            # RuntimeError and be retried at the poll interval forever.
+            if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
+                raise AgentDisabled(
+                    f"POST /api/auth/agent/token -> 403: {detail}"
+                ) from exc
             raise RuntimeError(f"POST /api/auth/agent/token -> {exc.code}: {detail}") from exc
 
     def _request(
@@ -417,6 +465,8 @@ class AgentClient:
                     raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
                 if exc.code == 426:
                     raise AgentUpgradeRequired(f"{method} {path} -> 426: {detail}") from exc
+                if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
+                    raise AgentDisabled(f"{method} {path} -> 403: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 # urllib wraps a socket error from the write side in URLError,
@@ -986,7 +1036,15 @@ class AgentNatsSession:
                 await msg.term()
                 return None
             job_id = str(payload["job_id"])
-            claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+            try:
+                claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+            except (AgentDisabled, AgentUpgradeRequired, AgentTokenRejected):
+                # This agent cannot take the offer, but another one in the
+                # tenant can: NAK now rather than hold the message until
+                # ack_wait expires, and let the run loop decide what to do
+                # about the refusal (#308).
+                await msg.nak()
+                raise
             if claimed is None:
                 LOG.warning("NATS offer %s not claimable; NAK", job_id)
                 await msg.nak()
@@ -997,6 +1055,12 @@ class AgentNatsSession:
         try:
             fut = asyncio.run_coroutine_threadsafe(_once(), self._loop)
             return fut.result(timeout=timeout + 30)
+        except (AgentDisabled, AgentUpgradeRequired, AgentTokenRejected):
+            # Raised by the HTTP claim above, not by NATS. Swallowing these as
+            # "will reconnect" tore down a healthy session on every poll and
+            # cost the agent the backoff and the token re-exchange the HTTP
+            # path gets — the NATS half of the fleet never had either (#308).
+            raise
         except Exception:  # noqa: BLE001
             LOG.exception("NATS pull/claim failed; will reconnect")
             self.close()
@@ -1015,17 +1079,9 @@ def run_loop(args: argparse.Namespace) -> int:
     LOG.info("Egress to %s: %s", args.api_url, egress.describe(args.api_url))
     if args.nats_url:
         check_nats_transport(args.nats_url)
-    tenant_id = ""
-    if args.provisioning_key:
-        exchanged = client.exchange_provisioning_key(args.provisioning_key)
-        client.set_token(str(exchanged["access_token"]))
-        tenant_id = str(exchanged.get("tenant_id") or "")
-        LOG.info(
-            "Exchanged provisioning key for agent JWT (tenant=%s expires_in=%ss)",
-            exchanged.get("tenant_id"),
-            exchanged.get("expires_in"),
-        )
-    elif not args.token:
+    # The provisioning-key exchange itself happens inside the run loop below,
+    # where a refusal is backed off instead of killing the process (#308).
+    if not args.provisioning_key and not args.token:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
 
@@ -1036,37 +1092,26 @@ def run_loop(args: argparse.Namespace) -> int:
                 key, value = item.split("=", 1)
                 labels[key.strip()] = value.strip()
 
-    info = client.register(
-        agent_id=args.agent_id,
-        hostname=args.hostname or socket.gethostname(),
-        labels=labels,
-    )
-    agent_id = str(info["agent_id"])
-    # The registration response is authoritative for the legacy shared token,
-    # which is exchanged for nothing and whose tenant the agent cannot know on
-    # its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
-    tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
-    LOG.info(
-        "Registered agent %s (%s) tenant=%s",
-        agent_id,
-        info.get("hostname"),
-        info.get("tenant_id"),
-    )
+    hostname = args.hostname or socket.gethostname()
 
+    # The identity this process keeps for the rest of its life. Seeded from
+    # OCTO_AGENT_ID when the installer wrote one, adopted from the first
+    # exchange when it did not, and from then on sent with *every* exchange —
+    # a refresh that omitted it used to hand the process a token for a
+    # different agent, after which its own heartbeat was 403 (#308).
+    agent_id: str = (args.agent_id or "").strip()
+    tenant_id = ""
     nats_session: AgentNatsSession | None = None
-    if args.nats_url:
-        LOG.info(
-            "NATS pull enabled (%s) subject=%s",
-            args.nats_url,
-            jobs_scan_subject(tenant_id),
-        )
-        nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
-        nats_session.start()
-
-    token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))
+    registered = False
+    # Due immediately with a provisioning key (the bootstrap exchange happens
+    # inside the loop, so a refusal is backed off instead of killing the
+    # process); never with a legacy shared token, which is not exchanged.
+    token_refresh_at = 0.0 if args.provisioning_key else float("inf")
 
     shutdown_event = threading.Event()
     last_upgrade_message = ""
+    last_lifecycle_message = ""
+    last_backoff_message = ""
 
     def _sig_handler(signum: int, frame: Any) -> None:
         LOG.info("Received signal %s, initiating graceful shutdown", signum)
@@ -1079,15 +1124,71 @@ def run_loop(args: argparse.Namespace) -> int:
             except (ValueError, AttributeError):
                 pass
 
+    def _exchange() -> None:
+        nonlocal agent_id, tenant_id, token_refresh_at, registered
+        exchanged = client.exchange_provisioning_key(
+            args.provisioning_key, agent_id=agent_id or None
+        )
+        client.set_token(str(exchanged["access_token"]))
+        expires = int(exchanged.get("expires_in") or 3600)
+        token_refresh_at = time.time() + max(
+            60, args.jwt_refresh_seconds or (expires // 2)
+        )
+        tenant_id = str(exchanged.get("tenant_id") or "") or tenant_id
+        minted = str(exchanged.get("agent_id") or "")
+        if minted and minted != agent_id:
+            # Only reachable on the bootstrap exchange of an agent with no
+            # OCTO_AGENT_ID: the server minted one, and this process is that
+            # agent from here on.
+            agent_id = minted
+            registered = False
+        LOG.info(
+            "Exchanged provisioning key for agent JWT (agent=%s tenant=%s expires_in=%ss)",
+            agent_id,
+            exchanged.get("tenant_id"),
+            exchanged.get("expires_in"),
+        )
+
+    def _register() -> None:
+        nonlocal agent_id, tenant_id, registered
+        info = client.register(
+            agent_id=agent_id or None,
+            hostname=hostname,
+            labels=labels,
+        )
+        agent_id = str(info["agent_id"])
+        # The registration response is authoritative for the legacy shared
+        # token, which is exchanged for nothing and whose tenant the agent
+        # cannot know on its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
+        tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
+        registered = True
+        LOG.info(
+            "Registered agent %s (%s) tenant=%s",
+            agent_id,
+            info.get("hostname"),
+            info.get("tenant_id"),
+        )
+
     try:
         while not shutdown_event.is_set():
             try:
                 if args.provisioning_key and time.time() >= token_refresh_at:
-                    exchanged = client.exchange_provisioning_key(args.provisioning_key)
-                    client.set_token(str(exchanged["access_token"]))
-                    expires = int(exchanged.get("expires_in") or 3600)
-                    token_refresh_at = time.time() + max(60, expires // 2)
-                    LOG.info("Refreshed agent JWT (tenant=%s)", exchanged.get("tenant_id"))
+                    _exchange()
+                if not registered:
+                    # Inside the loop, and inside the same handlers as every
+                    # other call: a quarantined agent is refused *here*, and
+                    # before #308 that refusal escaped run_loop and killed the
+                    # process — which systemd Restart=always then repeated
+                    # every five seconds for the whole fleet.
+                    _register()
+                if nats_session is None and args.nats_url:
+                    LOG.info(
+                        "NATS pull enabled (%s) subject=%s",
+                        args.nats_url,
+                        jobs_scan_subject(tenant_id),
+                    )
+                    nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
+                    nats_session.start()
 
                 beat = client.heartbeat(agent_id, status="idle")
                 message = str((beat or {}).get("upgrade_message") or "")
@@ -1097,6 +1198,13 @@ def run_loop(args: argparse.Namespace) -> int:
                     # otherwise fill its journal with one line per poll.
                     LOG.error("%s", message)
                 last_upgrade_message = message
+                # The heartbeat is answered even while an agent is disabled or
+                # quarantined (#308), so this is where it finds out — before
+                # the claim below is refused, and with the operator's reason.
+                lifecycle_message = str((beat or {}).get("lifecycle_message") or "")
+                if lifecycle_message and lifecycle_message != last_lifecycle_message:
+                    LOG.error("%s", lifecycle_message)
+                last_lifecycle_message = lifecycle_message
                 job: dict[str, Any] | None = None
                 if nats_session is not None:
                     job = nats_session.pull_and_claim(
@@ -1134,6 +1242,22 @@ def run_loop(args: argparse.Namespace) -> int:
             except AgentUpgradeRequired as exc:
                 LOG.error("Job claim refused: %s", exc)
                 time.sleep(args.poll_interval)
+            except AgentDisabled as exc:
+                # Logged on change only, for the reason upgrade_message is: the
+                # API repeats the refusal on every poll, and at the normal
+                # interval that is one journal line per second for as long as
+                # an operator leaves the agent disabled.
+                message = str(exc)
+                if message != last_backoff_message:
+                    LOG.error(
+                        "Refused by the control plane; backing off %.0fs: %s",
+                        DISABLED_BACKOFF_SECONDS,
+                        message,
+                    )
+                last_backoff_message = message
+                # Interruptible, so SIGTERM still stops the agent promptly
+                # instead of after however much of the backoff is left.
+                shutdown_event.wait(DISABLED_BACKOFF_SECONDS)
             except Exception:  # noqa: BLE001
                 LOG.exception("Agent loop error")
                 time.sleep(args.poll_interval)

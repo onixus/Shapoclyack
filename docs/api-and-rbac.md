@@ -218,6 +218,8 @@ One row per administrative change, with the resource before and after it:
 | `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
+| `agent.disable`, `agent.enable`, `agent.quarantine` | `PATCH /api/agents/{id}` — one action per resulting state, so "who took this host out of the fleet" is a filter on the action rather than a read of every lifecycle row. `before` carries the state the agent was moved out of, `after` the new state and the operator's reason |
+| `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the agent |
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
 | `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
@@ -490,7 +492,11 @@ exactly as before.
 group and carries contract-specific limits: `411` when `Content-Length` is
 absent, `413` when the body or a bounded field exceeds its limit, `429` on the
 per-agent hourly rate limit, `409` when a `snapshot_id` is resubmitted with
-different content, and `200` (rather than `201`) for an exact replay. Read
+different content, and `200` (rather than `201`) for an exact replay. Since
+[#308](https://github.com/onixus/Shapoclyack/issues/308) it also answers `403`
+for a `disabled` or `quarantined` agent, like the job routes: quarantining a
+host is meant to stop it writing, not to stop only the half of its traffic that
+carries a job id. Read
 routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
 filter.
@@ -559,8 +565,9 @@ only source the Risk Overview trend chart reads
 |---|---|---|
 | `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin, as for `/jobs` |
 | `GET /api/agents/summary` | viewer | Fleet rollup: total / online / busy / stale / error / outdated, `latest_version`, and a per-tenant count |
-| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities and `upgrade_requested`; `404` outside the tenant |
-| `DELETE /api/agents/{id}` | operator | Forgets the registration. It does **not** stop the remote process — an agent that is still running re-registers on its next heartbeat |
+| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities, `upgrade_requested`, and `other_agents_on_key` — how many other agents share its provisioning key, which is what `?revoke_key=true` below would stop; `404` outside the tenant |
+| `PATCH /api/agents/{id}` | **admin** | Moves the agent between `active`, `disabled` and `quarantined` (`{"status": …, "reason": …}`), and answers the agent as it now stands. A non-`active` agent is refused job claims and result uploads with `403`; its heartbeat is still accepted so the reason reaches it. The state survives re-registration — a restart is not an appeal ([#308](https://github.com/onixus/Shapoclyack/issues/308)) |
+| `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the agent registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (an agent registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* agents that revocation stopped |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
 | `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
@@ -577,6 +584,68 @@ for the former and `404` for the latter told a caller which ids are real
 elsewhere in the installation, which is the only thing an opaque id is worth. A
 platform admin without a requested tenant sees the whole fleet, the same rule
 as `/api/jobs`.
+
+**An agent token may only act as itself**
+([#308](https://github.com/onixus/Shapoclyack/issues/308)). The JWT a
+provisioning key is exchanged for carries an `agent_id`, and every agent route
+that takes one from the caller — `agent_id` in the body of
+`/api/agent/register`, `/api/agent/heartbeat` and `/api/endpoint/inventory`, in
+the query string of `/api/agent/jobs/claim`, in the form of
+`/api/agent/jobs/{id}/results` — now requires it to be the token's own, or
+answers `403`. Before this the id was
+checked only against the tenant, so one compromised agent could heartbeat as,
+claim for and upload results as every other agent in the tenant, which for an
+MSSP customer is its whole fleet. Registering with no `agent_id` uses the
+token's rather than minting a random one, so a restarted agent comes back as
+itself.
+
+**And a valid key is not a right to be a particular agent.** The check above
+runs after the token exists, which left the exchange itself open: `POST
+/api/auth/agent/token` (and `/api/auth/exchange`) minted a token for whatever
+`agent_id` was asked for. Two things followed from that, and both are now
+`403` — a *different* status from the `401` a bad key gets, because the key is
+fine and the identity is not available:
+
+- **Impersonation by a peer.** A holder of any valid key in the tenant could
+  ask for a live agent's id and get a token that passes every check above,
+  rewriting that agent's hostname and labels. An `agent_id` already registered
+  with a *different provisioning key that is still active* is refused.
+- **Walking out of quarantine.** A `disabled` or `quarantined` agent could
+  exchange for a token under a fresh id and register as a second, `active` row.
+  The exchange now reads the lifecycle state and answers with the same sentence
+  the claim does, so the agent's own loop recognises it and backs off.
+
+Rotating a key is still one procedure and not a trap: **revoke the old key
+first**, which already stops the JWTs minted from it, and the id is released to
+whichever key re-provisions the host. An `agent_id` that has never registered
+is always free — that is how every agent starts.
+
+**The boundary this does not fix.** Two of them, and both are the shape of the
+credential rather than an oversight:
+
+- A legacy `OCTO_AGENT_TOKEN` agent has *no* identity to bind to — the shared
+  token is one credential for every agent in the `default` tenant by
+  construction — so it keeps behaving exactly as before, and the tenant check
+  remains the only boundary it has. That is another reason the variable is
+  deprecated and refused in `prod` from 2027-03-01
+  (see [configuration.md](configuration.md)).
+- **One provisioning key deployed to several hosts is one identity for all of
+  them.** The exchange refuses a *different* key asking for an agent's id, but
+  not the key that agent registered with — it cannot, because that is the same
+  key the host itself re-exchanges on every refresh. Whoever holds a fleet key
+  can therefore be any agent provisioned from it. Mint a key per host (`POST
+  /api/tenants/{tenant_id}/provisioning-keys` is cheap, and the SSH deployment
+  already does exactly that) where that matters.
+
+**A verified signature is not the whole check.** Every authenticated agent
+request re-reads two things from the database, so revocation lands at once
+instead of after the token's remaining lifetime: the provisioning key behind
+the token must still exist, be unrevoked and be unexpired (`401` otherwise),
+and the agent row, when there is one, must belong to the token's tenant
+(`403`). A *missing* row is not refused — the first request an agent ever makes
+is the registration that creates it, and a deleted agent is indistinguishable
+from a never-registered one. Making a delete permanent is therefore
+`?revoke_key=true`, not the delete alone.
 
 **Who may mint a provisioning key** ([#231](https://github.com/onixus/Shapoclyack/issues/231)).
 A provisioning key registers agents into the tenant, which makes handing one
@@ -609,6 +678,21 @@ returned exactly once, so an existing key cannot be re-embedded in a snippet —
 a fresh mint is the only way to fill the placeholder in, and the operator asks
 for it explicitly rather than getting one per dialog open. Revoke unused keys
 via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
+
+**Keys expire** ([#308](https://github.com/onixus/Shapoclyack/issues/308)). A
+key minted from now on carries an `expires_at`, set at mint time from
+`OCTO_PROVISIONING_KEY_TTL_DAYS` (90 days by default; `0` mints perpetual
+keys). An exchange after that time answers `401`, with the same message as an
+unknown or revoked key — presenting a guessed key learns nothing about which
+half was wrong. The key list reports `expires_at` and an `expires_soon` flag,
+`true` within 14 days of the expiry and `false` once the key is already expired
+or revoked: those are conclusions, not deadlines.
+
+**Keys minted before this are perpetual and stay perpetual** — `expires_at` is
+`null` on every one of them and nothing back-dates it. Stamping a TTL onto keys
+an operator was never told had one would strand whichever fleets are already
+past it; expiring an old key is a deliberate revoke, and the list is what finds
+the ones still carrying no expiry.
 
 **Agent version, and the floor** ([#363](https://github.com/onixus/Shapoclyack/issues/363)).
 The agent ships in the same release as the API and carries the same version, so

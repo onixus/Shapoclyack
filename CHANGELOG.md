@@ -6,6 +6,89 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **An agent token can only act as the agent it was minted for**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). The `agent_id` in
+  an agent JWT was never compared with the one in the request — body, form or
+  query string — only the tenant was, so a token lifted off one worker could
+  heartbeat as, claim jobs for and upload results as every other agent in that
+  tenant, which for an MSSP customer is its whole fleet. All four agent routes
+  now answer `403` for a mismatch — including `POST /api/endpoint/inventory`,
+  which a quarantined host was otherwise still free to feed — and registering
+  without an `agent_id` uses the token's own rather than minting a random one.
+  The binding starts one step earlier than the register: `POST
+  /api/auth/agent/token` refuses (`403`) to mint a token for an `agent_id` that
+  belongs to another tenant, to an agent registered with a *different key that
+  is still active*, or to a `disabled`/`quarantined` agent. Without that, a
+  holder of any valid key in the tenant could take a live agent's identity, and
+  quarantine lasted only until the host restarted and asked for a fresh id.
+  Revoking the old key releases the id, which is the documented rotation order.
+  A legacy `OCTO_AGENT_TOKEN` agent has no identity to bind to and is
+  unchanged — one more reason that variable is deprecated.
+- **Agents can be disabled or quarantined, and it survives a restart**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). New
+  `PATCH /api/agents/{id}` (tenant **admin**) moves an agent between `active`,
+  `disabled` and `quarantined`, with a reason that reaches the agent itself.
+  A non-`active` agent is refused job claims and result uploads with `403` and
+  cannot re-register its way back to `active`; its heartbeat is still answered,
+  so it learns why and backs off to one poll every five minutes instead of one
+  per second. The state is a new column and does not disturb the reported
+  `idle`/`busy`/`error` status. Shown, and settable, in the agent drawer on
+  `/agents`.
+- **Deleting an agent can now revoke its credential**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)).
+  `DELETE /api/agents/{id}` removed the row and nothing else: the host kept its
+  provisioning key and a JWT valid for up to two hours, and re-registered on
+  its next poll, so "delete" was a pause. `?revoke_key=true` revokes the key the
+  agent registered with — a link that is now recorded — and the response reports
+  whether anything was revoked rather than implying it. Both the response and
+  `GET /api/agents/{id}` carry `other_agents_on_key`, the number of other agents
+  that revocation would stop, and the drawer puts it in front of the operator
+  when the checkbox is ticked rather than in the answer afterwards. Every authenticated
+  agent request re-checks its provisioning key against the database, so
+  revoking a key (by this route or the tenant one) stops the JWTs already
+  minted from it at once instead of after their remaining lifetime.
+- **Taking an agent out of the fleet is in the audit trail**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308),
+  [#327](https://github.com/onixus/Shapoclyack/issues/327)). The lifecycle
+  routes above recorded their change in a log line, which is the record that is
+  gone with the pod. `PATCH /api/agents/{id}` now writes `agent.disable`,
+  `agent.enable` or `agent.quarantine` — one action per resulting state, so
+  "who took this host out of the fleet" is a filter rather than a read — and
+  `DELETE /api/agents/{id}` writes `agent.delete` with the hostname, the
+  lifecycle state and the `provisioning_key_id` that went with it. Each is
+  written **in the transaction that makes the change**, like every other action
+  in the trail; with `?revoke_key=true` a second row, `provisioning_key.revoke`,
+  follows under the same actor and `X-Request-Id`, because the key is a
+  separate resource that outlives the agent. `agent.register` also records
+  which key bought the place in the fleet. The console's `/audit` filter lists
+  the four new actions.
+- **Provisioning keys expire** ([#308](https://github.com/onixus/Shapoclyack/issues/308)).
+  New `OCTO_PROVISIONING_KEY_TTL_DAYS` (default `90`, `0` = perpetual) stamps
+  `expires_at` at mint time; an exchange after it answers `401`, and the key
+  list carries `expires_at` and an `expires_soon` flag. **Keys minted before
+  this stay perpetual** — nothing back-dates them, because a deadline nobody was
+  told about would strand whichever fleets are already past it; the list is how
+  they are found and rotated.
+  Migration `0039_agent_status_key_expiry` (expand only, nothing backfilled).
+  Registration, lifecycle changes, deletion and key revocation are logged with
+  their fields today; the audit trail
+  ([#327](https://github.com/onixus/Shapoclyack/issues/327)) will pick them up.
+
+- **The agent keeps one identity for its whole life, and refusals back off**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). `agent/worker.py`
+  exchanged its provisioning key without naming an `agent_id`, so the server
+  minted a random one into the token and the register that followed — carrying
+  the `OCTO_AGENT_ID` the installer always writes — was refused as
+  impersonation. Registration sat outside the loop's error handling, so that
+  `403` killed the process and `Restart=always` repeated it every five seconds.
+  The id is now sent on every exchange including the periodic refresh, adopted
+  from the first exchange when the deployment sets none, and registration
+  happens inside the loop: a refused agent — quarantined, disabled, or holding
+  a rejected token — waits out the same five-minute backoff every other refusal
+  gets, and keeps heartbeating so it stays visible in the fleet view. A claim
+  refused over NATS now reaches that backoff too, and NAKs the offer so another
+  agent in the tenant can take it, instead of being swallowed as a reconnect.
+
 - **An administrative audit trail, and one the application cannot edit**
   ([#327](https://github.com/onixus/Shapoclyack/issues/327),
   [#329](https://github.com/onixus/Shapoclyack/issues/329)). Creating,
