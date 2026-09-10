@@ -38,6 +38,19 @@ All notable changes to Shapoclyack are documented in this file.
   A `prod` start refuses a list that carries the shipped development secret or
   repeats the current key. Procedure in
   [operations.md](docs/operations.md#rotating-the-jwt-signing-key).
+  The OIDC login state is signed with the same key and is now verified against
+  the same window, so an SSO login started just before a rotating deploy still
+  completes instead of failing with "invalid or expired login state".
+- **A session store that cannot be reached answers `503`, not `401`**
+  ([#314](https://github.com/onixus/Shapoclyack/issues/314)). The per-request
+  account lookup turns an unreachable Postgres into `503` with `Retry-After`
+  rather than into a refusal: a `401` would sign every console in the fleet out
+  over a database restart, with no way back in.
+- **`PUT /api/users/{username}/role` and `.../disabled` end sessions only when
+  they change something** ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
+  Re-asserting the role or the disabled flag an account already has used to
+  bump its token generation, so a reconciling IaC run or a directory sync
+  signed the whole tenant out on every pass.
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
   form and preferred it over the value the server minted at `start_scan` or
@@ -81,8 +94,12 @@ All notable changes to Shapoclyack are documented in this file.
   in again"; the countdown is read from the token's own `exp` and decides
   nothing. **Sign out** now calls `POST /api/auth/logout` before forgetting the
   token locally, so a copied token stops working rather than outliving the
-  sign-out. There is still no silent renewal — refresh tokens remain open on
-  #314 — so an expired session still ends in the redirect to `/login`.
+  sign-out. A sign-out the server did not confirm is retried as "end every
+  session" and, if that fails too, said out loud instead of reported as done.
+  The account menu gained **End all sessions** for the explicit case. There is
+  still no silent renewal — refresh tokens remain open on #314 — so an expired
+  session still ends in the redirect to `/login`; the banner now stays and
+  turns red at that point rather than disappearing at zero.
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426

@@ -379,6 +379,38 @@ def test_state_is_single_use(provider):
         oidc.consume_state(settings, request.state)
 
 
+def test_state_issued_before_a_key_rotation_is_still_consumed(provider):
+    """A login started seconds before a rotating deploy must still land (#314).
+
+    The state is signed with the operator key, and the callback comes back to
+    whichever replica the load balancer picks — during a rollout that is a
+    replica already carrying the new key. Verifying against ``jwt_secret``
+    alone turned every SSO login in flight into "invalid or expired login
+    state" for the length of the rotation window.
+    """
+    issuing = make_settings()
+    request = oidc.build_authorization_request(issuing)
+
+    rotated = make_settings(
+        jwt_secret="the-key-this-replica-signs-with",
+        jwt_secret_previous=[issuing.jwt_secret],
+    )
+    assert oidc.consume_state(rotated, request.state).nonce
+
+
+def test_state_signed_by_a_key_outside_the_window_is_refused(provider):
+    """The window is the retired keys, not "any key"."""
+    issuing = make_settings()
+    request = oidc.build_authorization_request(issuing)
+
+    stranger = make_settings(
+        jwt_secret="the-key-this-replica-signs-with",
+        jwt_secret_previous=["some-other-installations-retired-key"],
+    )
+    with pytest.raises(oidc.OidcError):
+        oidc.consume_state(stranger, request.state)
+
+
 def test_state_signed_by_another_installation_is_refused(provider):
     settings = make_settings()
     request = oidc.build_authorization_request(settings)

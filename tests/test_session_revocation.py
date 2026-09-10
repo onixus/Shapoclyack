@@ -383,3 +383,78 @@ def test_an_agent_token_signed_with_a_retired_key_still_verifies(tmp_path, monke
     response = client.post("/api/agent/jobs/claim?agent_id=agent-1", headers=bearer(token))
     # Any answer but 401: what is under test is that the signature verified.
     assert response.status_code != 401, response.text
+
+
+# --------------------------------------------------------------------------- #
+# What must *not* end a session
+# --------------------------------------------------------------------------- #
+
+
+def test_a_role_put_that_changes_nothing_leaves_the_sessions_alone(env):
+    """An IaC reconcile re-asserting the current role is not a demotion (#314).
+
+    ``PUT /api/users/{u}/role`` is what a Terraform run or a directory sync
+    calls on every pass, with the role the account already has. Bumping the
+    generation there signed the whole tenant out on the sync's schedule.
+    """
+    client, _settings, admin = env
+    token = login(client, "operator")
+
+    same = client.put("/api/users/operator/role", headers=admin, json={"role": "operator"})
+    assert same.status_code == 200
+
+    assert client.get("/api/auth/me", headers=bearer(token)).status_code == 200
+
+
+def test_a_disabled_put_that_changes_nothing_leaves_the_sessions_alone(env):
+    client, _settings, admin = env
+    token = login(client, "operator")
+
+    same = client.put(
+        "/api/users/operator/disabled", headers=admin, json={"disabled": False}
+    )
+    assert same.status_code == 200
+
+    assert client.get("/api/auth/me", headers=bearer(token)).status_code == 200
+
+
+def test_re_enabling_an_account_still_ends_what_was_in_flight(env):
+    """The no-op check must not cost the real transition its bump."""
+    client, _settings, admin = env
+    client.put("/api/users/operator/disabled", headers=admin, json={"disabled": True})
+    client.put("/api/users/operator/disabled", headers=admin, json={"disabled": False})
+    token = login(client, "operator")
+
+    # Disabling again is a real transition, so this session ends with it.
+    client.put("/api/users/operator/disabled", headers=admin, json={"disabled": True})
+    assert client.get("/api/auth/me", headers=bearer(token)).status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# The store itself being down
+# --------------------------------------------------------------------------- #
+
+
+def test_an_unreachable_session_store_answers_503_and_not_401(env, monkeypatch):
+    """A Postgres outage must not read as "your session was revoked" (#314).
+
+    The check is on the path of every authenticated request, so a failure that
+    escaped it would be a 500 on the whole API, and a failure mapped to 401
+    would sign every console in the fleet out over a database restart — with no
+    way back in, because logging in reads the same table.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from api.services import sessions as sessions_service
+
+    client, _settings, _admin = env
+    token = login(client, "operator")
+
+    def unreachable(*_args, **_kwargs):
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(sessions_service, "get_session", unreachable)
+
+    response = client.get("/api/auth/me", headers=bearer(token))
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"

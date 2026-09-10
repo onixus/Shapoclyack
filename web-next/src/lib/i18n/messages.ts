@@ -38,6 +38,7 @@ export const en = {
   "header.signedInAs": "Signed in as",
   "header.role": "Role: {role}",
   "header.signOut": "Sign Out Console",
+  "header.endAllSessions": "End all sessions",
   "header.operator": "Operator",
 
   "appearance.theme": "Theme",
@@ -61,7 +62,9 @@ export const en = {
   "auth.loading": "Loading session…",
   "auth.redirecting": "Redirecting to login…",
   "session.expiringSoon": "Your session ends in {minutes} min. Sign in again to keep working.",
+  "session.expired": "Your session has ended. Sign in again before you carry on — unsaved work here will not be sent.",
   "session.signInAgain": "Sign in again",
+  "session.logoutUncertain": "The server did not confirm the sign-out — this session may still be active. End every session from the account menu.",
 
   "tenant.label": "Tenant:",
   "tenant.actIn": "Act in tenant",
@@ -936,6 +939,7 @@ export const ru: Record<MsgKey, string> = {
   "header.signedInAs": "Вы вошли как",
   "header.role": "Роль: {role}",
   "header.signOut": "Выйти",
+  "header.endAllSessions": "Завершить все сессии",
   "header.operator": "Оператор",
 
   "appearance.theme": "Тема",
@@ -959,7 +963,9 @@ export const ru: Record<MsgKey, string> = {
   "auth.loading": "Загрузка сессии…",
   "auth.redirecting": "Переход на страницу входа…",
   "session.expiringSoon": "Сессия завершится через {minutes} мин. Войдите заново, чтобы продолжить.",
+  "session.expired": "Сессия истекла. Войдите заново — несохранённое на этой странице отправить не удастся.",
   "session.signInAgain": "Войти заново",
+  "session.logoutUncertain": "Сервер не подтвердил выход — сессия могла остаться активной. Завершите все сессии в меню аккаунта.",
 
   "tenant.label": "Арендатор:",
   "tenant.actIn": "Работать от имени",

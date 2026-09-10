@@ -884,23 +884,56 @@ export async function login(username: string, password: string) {
   }
 }
 
+/** What the server made of a sign-out, for a caller that has to tell the user.
+ *
+ * `already-ended` and `ended` are both "the token is dead"; `uncertain` is the
+ * one the console must not render as a completed sign-out. */
+export type LogoutOutcome = "ended" | "already-ended" | "uncertain";
+
 /** End this session on the server, then forget the token locally (#314).
  *
- * Best-effort on purpose: signing out must not be blocked by a server that is
- * unreachable, and the local token is dropped either way. What the call buys
- * is that a token copied out of localStorage before the sign-out stops working
- * — without it, "log out" only ever meant "forget it in this browser". */
-export async function logout() {
+ * The local token is dropped whatever happens — a browser that cannot reach
+ * the API must still be able to walk away from a session — but the outcome is
+ * reported rather than swallowed. Swallowing it meant that a 500 or a dropped
+ * connection left the token live on the server while the console said "you are
+ * signed out", which is the one failure a user cannot see and cannot act on.
+ *
+ * A 401 or 403 is not a failure: the session was already gone, or the
+ * credential was never a session (a service token cannot touch `auth`), which
+ * is the outcome the caller asked for. Anything else — including the 400 a
+ * pre-#314 token with no `jti` gets — is retried as "end every session of this
+ * account", which needs no `jti` and is the honest superset of the request. */
+export async function logout(): Promise<LogoutOutcome> {
+  let outcome: LogoutOutcome = "ended";
   try {
     await api.post("/auth/logout");
-  } catch {
-    // A 401 here means the session was already gone, which is the outcome the
-    // caller wanted; anything else is a server the user cannot wait for.
+  } catch (error) {
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    if (status === 401 || status === 403) {
+      outcome = "already-ended";
+    } else {
+      outcome = (await revokeAllQuietly()) ? "ended" : "uncertain";
+    }
   }
   setAccessToken(null);
+  return outcome;
 }
 
-/** Sign out of every session of this account, this one included (#314). */
+/** The fallback path of `logout()`: succeeded or not, no message to render. */
+async function revokeAllQuietly(): Promise<boolean> {
+  try {
+    await api.post("/auth/sessions/revoke-all");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Sign out of every session of this account, this one included (#314).
+ *
+ * Throws rather than reporting an outcome: this one is an explicit action with
+ * a button behind it, so a failure is a message the user reads and a retry
+ * they choose, and the local token is kept because nothing was ended. */
 export async function revokeAllSessions() {
   try {
     await api.post("/auth/sessions/revoke-all");

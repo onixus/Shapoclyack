@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { LogOut, UserRound, Shield, Search } from "lucide-react";
+import { LogOut, UserRound, Shield, Search, MonitorX } from "lucide-react";
+import { toast } from "sonner";
 import { AppearanceControls } from "@/components/appearance-controls";
 import { CommandPalette, useCommandPalette } from "@/components/command-palette";
 import { OpsPulse } from "@/components/layout/ops-pulse";
@@ -21,14 +22,29 @@ import { cn } from "@/lib/utils";
 
 export function TopHeader() {
   const router = useRouter();
-  const { user, logout } = useAuthStore();
+  const { user, logout, revokeAllSessions } = useAuthStore();
   const t = useT();
   const palette = useCommandPalette();
 
   async function onLogout() {
     // Awaited so the server has ended the session before the console forgets
     // it (#314); the store clears the local token even if that call fails.
-    await logout();
+    const outcome = await logout();
+    // "You are signed out" while the token is still live on the server is the
+    // one outcome the user has to be told about — the local token is gone
+    // either way, so nothing else here can surface it.
+    if (outcome === "uncertain") toast.warning(t("session.logoutUncertain"));
+    router.replace("/login");
+  }
+
+  async function onRevokeAllSessions() {
+    try {
+      await revokeAllSessions();
+    } catch (error) {
+      // Nothing was ended, so the console stays signed in and says why.
+      toast.error(error instanceof Error ? error.message : String(error));
+      return;
+    }
     router.replace("/login");
   }
 
@@ -109,6 +125,13 @@ export function TopHeader() {
               {t("header.role", { role: user?.role || "—" })}
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-border" />
+            <DropdownMenuItem
+              onClick={() => void onRevokeAllSessions()}
+              className="cursor-pointer text-xs text-foreground focus:bg-muted"
+            >
+              <MonitorX className="mr-2 h-3.5 w-3.5 text-amber-500" />
+              {t("header.endAllSessions")}
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => void onLogout()}
               className="cursor-pointer text-xs font-medium text-rose-600 focus:bg-rose-500/10 dark:text-rose-400"

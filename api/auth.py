@@ -41,7 +41,8 @@ class TokenUser(BaseModel):
     ``jti`` and ``expires_at`` are carried so ``POST /api/auth/logout`` can put
     *this* token on the denylist without decoding the header a second time.
     Both are ``None`` for a service token, which is revoked as a credential
-    rather than as a session (``DELETE /api/service-tokens/{token_id}``).
+    rather than as a session
+    (``POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke``).
     """
 
     username: str
@@ -173,7 +174,14 @@ def create_access_token(settings: Settings, user: TokenUser) -> str:
     )
 
 
-def _verify_signature(settings: Settings, token: str, secrets: list[str]) -> dict[str, Any]:
+def verify_signature(
+    settings: Settings,
+    token: str,
+    secrets: list[str],
+    *,
+    leeway: float = 0,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Verify ``token`` against a rotation window, newest key first (#314).
 
     When the token names a ``kid`` this installation knows, that key is the
@@ -181,6 +189,11 @@ def _verify_signature(settings: Settings, token: str, secrets: list[str]) -> dic
     verify under it is forged, and trying the rest would only make the refusal
     slower. An unknown or absent ``kid`` — every token issued before this
     change has none — falls back to trying the whole window in order.
+
+    ``leeway`` and ``options`` are passed straight to ``jwt.decode``: the OIDC
+    login state is signed with the same key and must verify against the same
+    window (otherwise a rotation breaks SSO mid-rollout), but it asks for
+    required claims and a clock skew allowance the console token does not.
 
     Raises ``jwt.PyJWTError`` like ``jwt.decode`` does, so the callers keep
     their existing single ``except``.
@@ -200,7 +213,13 @@ def _verify_signature(settings: Settings, token: str, secrets: list[str]) -> dic
     last_error: jwt.PyJWTError | None = None
     for secret in candidates:
         try:
-            return jwt.decode(token, secret, algorithms=[settings.jwt_algorithm])
+            return jwt.decode(
+                token,
+                secret,
+                algorithms=[settings.jwt_algorithm],
+                leeway=leeway,
+                options=options or {},
+            )
         except jwt.ExpiredSignatureError:
             # Expiry is a property of the token, not of the key: another key in
             # the window cannot make an expired token fresh, and continuing
@@ -229,7 +248,7 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
     from api.services import sessions as sessions_service
 
     try:
-        payload = _verify_signature(settings, token, settings.jwt_verification_secrets())
+        payload = verify_signature(settings, token, settings.jwt_verification_secrets())
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -271,6 +290,15 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session is no longer valid",
         ) from exc
+    except sessions_service.SessionStoreUnavailable as exc:
+        # Not a 401: the session was not refused, it could not be checked. A
+        # 401 here would sign every console in the fleet out over a Postgres
+        # restart — and they would not be able to sign back in either.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Session store is unavailable, try again",
+            headers={"Retry-After": "5"},
+        ) from exc
     try:
         role = Role(state.role)
     except ValueError as exc:
@@ -303,7 +331,7 @@ def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
     ever *signed* with a retired key.
     """
     try:
-        payload = _verify_signature(settings, token, settings.agent_signing_secrets())
+        payload = verify_signature(settings, token, settings.agent_signing_secrets())
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

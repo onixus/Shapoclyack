@@ -298,6 +298,7 @@ def set_role(username: str, role: str) -> dict[str, Any] | None:
         row = session.get(models.User, username)
         if row is None:
             return None
+        changed = row.role != role
         row.role = role
         row.updated_at = _now()
         # A demotion that leaves the old role live in an already-issued token
@@ -305,7 +306,13 @@ def set_role(username: str, role: str) -> dict[str, Any] | None:
         # too, so the bump is belt-and-braces — it also ends the sessions of a
         # *promoted* account, which is the conservative reading of "their
         # authority changed".
-        _end_sessions(row)
+        #
+        # Only when the role actually moved: this endpoint is what an IaC run
+        # or a directory sync calls on every reconcile, and bumping on a PUT
+        # that asserts the role the account already has would sign everybody
+        # out on a schedule for no change at all.
+        if changed:
+            _end_sessions(row)
         session.flush()
         return _with_tenants(session, row)
 
@@ -316,13 +323,19 @@ def set_disabled(username: str, disabled: bool) -> dict[str, Any] | None:
         row = session.get(models.User, username)
         if row is None:
             return None
+        changed = (row.disabled_at is not None) != disabled
         row.disabled_at = _now() if disabled else None
         row.updated_at = _now()
-        # Both directions. Disabling must end the sessions — that is the whole
-        # point of the operation — and re-enabling ends whatever was still in
-        # flight when the account was locked, so "disabled and enabled again"
-        # is a clean start rather than a resumed one.
-        _end_sessions(row)
+        # Both directions, but only on a real transition. Disabling must end
+        # the sessions — that is the whole point of the operation — and
+        # re-enabling ends whatever was still in flight when the account was
+        # locked, so "disabled and enabled again" is a clean start rather than
+        # a resumed one. Re-asserting the state the account is already in
+        # changes nothing and must not end anyone's session: the reconcile
+        # loop that keeps accounts in step with a directory sends exactly that
+        # PUT on every pass.
+        if changed:
+            _end_sessions(row)
         session.flush()
         return _with_tenants(session, row)
 

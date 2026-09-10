@@ -136,7 +136,8 @@ def logout(
     branch at all — ``auth`` is a resource no service token may touch
     (``FORBIDDEN_RESOURCES``), so the scope layer answers 403 first, which is
     right: a service token is a credential, revoked with
-    ``DELETE /api/service-tokens/{token_id}``, not a session.
+    ``POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke``, not a
+    session.
     """
     if user.jti is None or user.expires_at is None:
         raise HTTPException(

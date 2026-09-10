@@ -7,8 +7,10 @@ import {
   getActiveTenant,
   login as apiLogin,
   logout as apiLogout,
+  revokeAllSessions as apiRevokeAllSessions,
   setAccessToken,
   setActiveTenant,
+  type LogoutOutcome,
   type Me,
   type Role,
 } from "@/lib/api";
@@ -25,8 +27,12 @@ type AuthState = {
   login: (username: string, password: string) => Promise<void>;
   /** Ends the session on the server as well as in this browser (#314), which
    * is why it is a promise now: forgetting the token locally left it working
-   * for anyone who had copied it. */
-  logout: () => Promise<void>;
+   * for anyone who had copied it. The outcome is returned so the caller can
+   * say so when the server could not confirm it. */
+  logout: () => Promise<LogoutOutcome>;
+  /** Ends every session of this account, not just this browser's (#314).
+   * Throws when the server refused, in which case nothing was signed out. */
+  revokeAllSessions: () => Promise<void>;
   selectTenant: (tenantId: string | null) => void;
 };
 
@@ -101,8 +107,17 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
   async logout() {
     // apiLogout clears the stored token whether or not the server answered, so
-    // an unreachable API still signs the console out of this browser.
-    await apiLogout();
+    // an unreachable API still signs the console out of this browser. What it
+    // cannot do is promise the server agreed — that is what the outcome says.
+    const outcome = await apiLogout();
+    setActiveTenant(null);
+    set({ user: null, loading: false, hydrated: true, canOperate: false, activeTenant: null });
+    return outcome;
+  },
+  async revokeAllSessions() {
+    // Deliberately not wrapped: a failure here ended nothing, and clearing the
+    // console's own state would hide that.
+    await apiRevokeAllSessions();
     setActiveTenant(null);
     set({ user: null, loading: false, hydrated: true, canOperate: false, activeTenant: null });
   },

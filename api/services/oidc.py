@@ -54,6 +54,8 @@ from typing import Any
 import jwt
 from sqlalchemy import delete, select
 
+from api.auth import verify_signature
+from api.core.security import jwt_kid
 from api.db import models
 from api.db.engine import get_session
 from api.settings import Settings
@@ -522,6 +524,10 @@ def build_authorization_request(
         },
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
+        # Signed with the current key and named by ``kid``, exactly like a
+        # console token (#314): the callback may well be answered by a replica
+        # that has already moved to the next key.
+        headers={"kid": jwt_kid(settings.jwt_secret)},
     )
 
     query = urllib.parse.urlencode(
@@ -550,12 +556,18 @@ def consume_state(settings: Settings, state: str) -> _StateRecord:
     proves this installation issued the request, and removing the record proves
     nobody has answered it yet. A replayed callback — the same code and state
     delivered twice — therefore stops here rather than at the provider.
+
+    Verified against the whole rotation window rather than against
+    ``jwt_secret`` alone (#314). A login started seconds before a
+    key-rotating deploy comes back to a replica carrying the new key, and
+    checking only the current one would turn every such SSO login into
+    "invalid or expired login state" for the length of the rollout.
     """
     try:
-        payload = jwt.decode(
+        payload = verify_signature(
+            settings,
             state,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
+            settings.jwt_verification_secrets(),
             leeway=LEEWAY_SECONDS,
             options={"require": ["exp", "jti"]},
         )

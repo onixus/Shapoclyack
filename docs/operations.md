@@ -618,8 +618,17 @@ immediate rather than "when it expires":
 | This browser signed out | `POST /api/auth/logout` — the console does it for you |
 
 Disabling, deleting, demoting and a password change already end that account's
-sessions on their own. The route list is in
+sessions on their own — when they actually change something: a `PUT` that
+re-asserts the role or the disabled flag an account already has leaves its
+sessions alone, so a reconcile loop against a directory does not sign the
+tenant out on every pass. The route list is in
 [api-and-rbac.md](api-and-rbac.md#sessions-logout-and-revocation).
+
+**If Postgres is unreachable**, the check cannot be made and authenticated
+requests answer `503` with `Retry-After: 5`, not `401`. That distinction is
+operational: a 401 would sign every console in the fleet out over a database
+restart, and the consoles could not sign back in either. Nothing is revoked by
+an outage — sessions resume as they were once the store answers again.
 
 **After the upgrade to #314.** Tokens minted before it carry no version claim
 and keep working until they expire (up to `OCTO_JWT_EXPIRE_MINUTES`, 8 hours by
@@ -628,16 +637,25 @@ If your threat model does not allow that, run `revoke-all` for every account
 once the rollout is complete:
 
 ```bash
-# every account, from a platform-admin token
+# every account but yours, from a platform-admin token
+ME=admin  # the account $TOKEN belongs to
 for u in $(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/users \
              | python3 -c 'import json,sys; print(" ".join(u["username"] for u in json.load(sys.stdin)))'); do
+  [ "$u" = "$ME" ] && continue
   curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
-    "http://localhost:8080/api/users/$u/sessions/revoke-all"
+    "http://localhost:8080/api/users/$u/sessions/revoke-all" || echo "FAILED: $u"
 done
+# last, and only now: your own sessions, this token included
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/auth/sessions/revoke-all || echo "FAILED: $ME"
 ```
 
-Run it from an account you are willing to be signed out of — the loop reaches
-your own account too.
+The order matters and the skip is not cosmetic. `/api/users` is sorted by
+username, so an `admin` running the loop over itself would revoke its own
+token on the first iteration and every call after it would answer 401 — which
+`curl -sf` reports by exiting non-zero and printing nothing, leaving a run that
+signed out one account looking exactly like a run that signed out all of them.
+Hence `|| echo "FAILED: $u"` as well: a silent loop is the failure mode here.
 
 ### Rotating the JWT signing key
 

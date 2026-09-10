@@ -72,6 +72,16 @@ Tenant memberships need no version bump: the role *inside* a tenant is
 resolved from `user_tenants` on every request and was never in the token, so
 granting or revoking a membership already applies immediately.
 
+`PUT /api/users/{username}/role` and `PUT /api/users/{username}/disabled` bump
+the version only when the value actually moves. Re-asserting the state an
+account is already in — what a reconciling IaC run or a directory sync does on
+every pass — is a no-op and leaves that account's sessions alone.
+
+When Postgres is unreachable the check cannot be made, and an authenticated
+request answers `503` with `Retry-After`, not `401`: the session was not
+refused, it was undecided. See
+[operations.md](operations.md#sessions-and-revocation).
+
 A session with no `jti` cannot be logged out one at a time and says so with a
 `400` rather than a `204` that did nothing. That is only reachable for tokens
 minted before #314; `revoke-all` ends those.
@@ -96,7 +106,10 @@ with no `kid` (anything minted before #314) is tried against the whole window.
 
 While `OCTO_AGENT_JWT_SECRET` is unset the agent key is derived from the
 operator key, so the same list rotates both audiences and an agent fleet is not
-locked out mid-rotation. When it is set explicitly the two are independent and
+locked out mid-rotation. The OIDC login state (`api/services/oidc.py`) is
+signed with the same key and verified against the same window, so an SSO login
+started just before a rotating deploy still completes on a replica that has
+already moved on. When it is set explicitly the two are independent and
 so are their windows — see `OCTO_AGENT_JWT_SECRET_PREVIOUS` in
 [configuration.md](configuration.md#environment-variables) and the procedure in
 [operations.md](operations.md#rotating-the-jwt-signing-key).
