@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.auth import Role, TokenUser, get_current_user, get_settings, require_role
+from api.auth import Role, StepUpDep, TokenUser, get_current_user, get_settings, require_role
 from api.routes._audit import AuditDep
 from api.schemas import (
     ChangeOwnPasswordRequest,
@@ -49,6 +49,12 @@ def list_users(_: Annotated[TokenUser, Depends(require_role(Role.admin))]) -> li
 def create_user(
     body: CreateUserRequest,
     admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Creating an account with a password and a role *is* issuing a credential,
+    # so it sits behind the same recent second factor as minting a token
+    # (#315). Without it, a stolen admin session that cannot mint a service
+    # token can simply create an admin account with no MFA and mint one as
+    # that. Inert for an admin who has not enabled MFA.
+    _: StepUpDep,
     audit: AuditDep,
 ) -> UserInfo:
     try:
@@ -72,6 +78,9 @@ def set_user_password(
     username: str,
     body: SetUserPasswordRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Setting somebody else's password is taking over their account, which is
+    # the same bootstrap as creating one (#315).
+    __: StepUpDep,
     audit: AuditDep,
 ) -> UserInfo:
     """Admin reset. Deliberately does not require the old password.
@@ -97,6 +106,9 @@ def set_user_role(
     username: str,
     body: SetUserRoleRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Promotion to admin is the third way to end up holding an admin account
+    # without a second factor (#315).
+    __: StepUpDep,
     audit: AuditDep,
 ) -> UserInfo:
     if body.role != "admin" and users_service.count_active_admins(exclude=username) == 0:

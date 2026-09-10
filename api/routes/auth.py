@@ -14,7 +14,6 @@ from api.auth import (
     MeResponse,
     Role,
     StepUpDep,
-    TokenResponse,
     TokenUser,
     authenticate_user,
     create_access_token,
@@ -160,9 +159,14 @@ def login(
             expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
         )
 
+    # Not enrolled — ``is_enabled`` said so above — so "policy names this role"
+    # is the whole of "this session owes an enrolment". The session itself is
+    # confined by ``get_current_user``, which re-decides it per request; this
+    # is only what the console is told so it can route straight to the setup
+    # page instead of discovering it as a 403 on the dashboard.
     pending = mfa_service.required_for_role(settings, user.role.value)
     try:
-        token = create_access_token(settings, user, mfa_pending=pending)
+        token = create_access_token(settings, user)
     except LookupError as exc:
         # The account was deleted between the credential check and here. The
         # same refusal as a wrong password: a race with a deletion is not a
@@ -361,7 +365,7 @@ def _safe_next(value: str | None) -> str:
     return candidate[:512]
 
 
-@router.get("/auth/oidc/callback", response_model=TokenResponse)
+@router.get("/auth/oidc/callback", response_model=LoginResponse)
 def oidc_callback(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -374,6 +378,12 @@ def oidc_callback(
     The session is exactly what password login issues — same JWT, same claims,
     same expiry — because everything downstream of authentication should not
     care how the user proved who they are.
+
+    Which includes the second factor (#315): an account that has enrolled one
+    is answered with the same five-minute challenge a password login gets, in
+    the same place the session would have been (the fragment, as ``mfa_token``).
+    Skipping it here would have made MFA opt-out by way of clicking the other
+    button on the login form.
 
     Every failure is one 401 with a short message: which check failed (state,
     signature, audience, nonce, provisioning policy) is information only the
@@ -438,8 +448,25 @@ def oidc_callback(
     auth_audit.record_sso_login(
         username=token_user.username, client_ip=client_ip, action=action
     )
+    # An account that has enrolled a second factor is challenged here too
+    # (#315). The identity provider proved *an* identity; it did not prove
+    # possession of the authenticator this installation holds a seed for, and
+    # letting SSO skip the check would make the whole feature opt-out by way of
+    # clicking a different button. An account that has *not* enrolled needs no
+    # special case: ``get_current_user`` re-derives ``mfa_pending`` per request,
+    # so an SSO session of a covered role is confined exactly like a password
+    # one until it enrols.
+    challenge: str | None = None
     try:
-        token = create_access_token(settings, token_user)
+        if mfa_service.is_enabled(settings, token_user.username):
+            challenge = create_pre_auth_token(
+                settings,
+                token_user.username,
+                ttl_minutes=mfa_service.PRE_AUTH_TTL_MINUTES,
+            )
+            token = ""
+        else:
+            token = create_access_token(settings, token_user)
     except LookupError as exc:  # the account was deleted mid-callback
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed"
@@ -451,7 +478,12 @@ def oidc_callback(
         # server and which is not written to access logs the way a query string
         # is. The console reads it, stores it, and clears the fragment.
         separator = "&" if "#" in destination else "#"
-        landing = f"{destination}{separator}access_token={token}&token_type=bearer"
+        landing = (
+            f"{destination}{separator}mfa_token={challenge}"
+            f"&expires_in={mfa_service.PRE_AUTH_TTL_MINUTES * 60}"
+            if challenge
+            else f"{destination}{separator}access_token={token}&token_type=bearer"
+        )
         next_url = str(completed.get("next_url") or "")
         if next_url:
             # Percent-encoded: the fragment already carries the session token as
@@ -459,7 +491,16 @@ def oidc_callback(
             # parameters of its own to the URL the console is about to parse.
             landing = f"{landing}&next={urllib.parse.quote(next_url, safe='/')}"
         return RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
-    return TokenResponse(access_token=token, role=token_user.role, username=token_user.username)
+    if challenge:
+        return LoginResponse(
+            username=token_user.username,
+            mfa_required=True,
+            mfa_token=challenge,
+            expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
+        )
+    return LoginResponse(
+        access_token=token, role=token_user.role, username=token_user.username
+    )
 
 
 @router.post("/auth/agent/token", response_model=AgentTokenResponse)

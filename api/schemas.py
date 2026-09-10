@@ -823,6 +823,9 @@ class MfaStatus(BaseModel):
     # uses it to say "your organisation requires this" rather than "optional".
     required: bool = False
     stepup_minutes: int = 15
+    # Whether ``POST /api/auth/mfa/totp/confirm`` will ask for the password.
+    # False for an account that has none (SSO-provisioned).
+    password_required: bool = True
 
 
 class MfaSetupResponse(BaseModel):
@@ -843,7 +846,16 @@ class MfaSetupResponse(BaseModel):
 
 
 class MfaConfirmRequest(BaseModel):
+    """A code from the new authenticator, and the account's own password.
+
+    The password is optional in the schema and required by the service for any
+    account that has one: an SSO-provisioned identity has no password to
+    present, and refusing it here would leave exactly the accounts most likely
+    to be admins unable to enrol.
+    """
+
     code: str = Field(min_length=1, max_length=16)
+    password: str | None = Field(default=None, max_length=256)
 
 
 class MfaRecoveryCodesResponse(BaseModel):

@@ -77,6 +77,16 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def now_utc() -> datetime:
+    """The step-up clock, aware UTC. One function so a test can move it.
+
+    ``mfa_verified_at`` rides in a JWT claim as a unix timestamp and comes back
+    aware, so the comparison in :func:`api.auth.require_step_up` is against an
+    aware value — which is why this is not :func:`_now`.
+    """
+    return _now().replace(tzinfo=UTC)
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() + "Z" if value else None
 
@@ -117,6 +127,11 @@ def _state(row: models.User, settings: Settings) -> dict[str, Any]:
         "recovery_codes_remaining": _remaining(row.mfa_recovery_codes),
         "required": required_for_role(settings, row.role),
         "stepup_minutes": settings.mfa_stepup_minutes,
+        # Whether confirming an enrolment will ask for the password. An
+        # SSO-provisioned account has none, and a form that demanded one from
+        # it would be a form it could never submit — so the console reads this
+        # rather than guessing from the sign-in method.
+        "password_required": bool(row.password_hash),
     }
 
 
@@ -180,14 +195,35 @@ def confirm_setup(
     username: str,
     code: str,
     *,
+    password: str | None = None,
     audit: "audit_service.AuditContext | None" = None,
 ) -> list[str]:
     """Turn MFA on once a code proves the authenticator holds the same secret.
+
+    The account's password is asked for here, symmetrically with
+    :func:`disable`. Without it a stolen session could enrol *its own*
+    authenticator on somebody else's account, and the owner — who knows the
+    password but not the new secret — would then be locked out of their own
+    console until an admin reset it. Enrolling a factor has to cost at least
+    what removing one does.
+
+    Skipped for an account that has no password at all: an SSO-provisioned
+    identity has none to present, and demanding one would mean the accounts
+    most likely to be admins are the ones that cannot enrol.
 
     Returns the ten recovery codes **in plaintext, once**. Only their hashes
     are stored, so this return value is the single moment they exist; a caller
     that drops it has cost the user their recovery codes and must reset.
     """
+    from api.services import users as users_service
+
+    record = users_service.get_user(username)
+    if record is None:
+        raise LookupError(f"user '{username}' not found")
+    if record.get("has_password"):
+        if not password or users_service.authenticate(username, password) is None:
+            raise PermissionError("password is incorrect")
+
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username, with_for_update=True)
@@ -238,10 +274,15 @@ def verify(
 ) -> str:
     """Accept one second factor and spend it. Returns which kind was accepted.
 
-    Both kinds are consumed in the same transaction that accepts them — the
-    TOTP step by moving ``mfa_last_step``, the recovery code by stamping
-    ``used_at`` — and the row is locked for the duration, so two requests
-    presenting the same code cannot both win the race.
+    Both kinds are consumed under a row lock — the TOTP step by moving
+    ``mfa_last_step``, the recovery code by stamping ``used_at`` — so two
+    requests presenting the same code cannot both win the race. The recovery
+    path takes that lock only for the write; see :func:`_spend_recovery_code`.
+
+    An account with no MFA has no second factor to accept, and both branches
+    refuse a row that is missing or not enrolled. That is not pedantry: a
+    caller that reaches here has been told a factor was required, and answering
+    "fine" would be the check disabling itself.
 
     Raises ``PermissionError`` for every refusal, with one message: which of
     "wrong code", "already used" and "no codes left" applies is of interest
@@ -249,53 +290,16 @@ def verify(
     """
     now = _now()
     refusal = PermissionError("that code is not valid")
+    supplied_recovery = normalise_recovery_code(recovery_code or "")
+
+    if supplied_recovery:
+        return _spend_recovery_code(settings, username, supplied_recovery, now=now)
+
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username, with_for_update=True)
         if row is None or row.mfa_enabled_at is None:
-            # An account with no MFA has no second factor to accept. Not a
-            # success: a caller that reaches here has been told a factor was
-            # required, and answering "fine" would be the check disabling itself.
             metrics_service.MFA_VERIFICATIONS_TOTAL.labels("failure").inc()
             raise refusal
-
-        supplied_recovery = normalise_recovery_code(recovery_code or "")
-        if supplied_recovery:
-            entries = row.mfa_recovery_codes if isinstance(row.mfa_recovery_codes, list) else []
-            for index, entry in enumerate(entries):
-                if not isinstance(entry, dict) or entry.get("used_at"):
-                    continue
-                stored = str(entry.get("hash") or "")
-                try:
-                    matched = bool(stored) and verify_password(supplied_recovery, stored)
-                except ValueError:
-                    # An unreadable hash is a broken row, not a match. Logged
-                    # without the username's codes: the operator's fix is a
-                    # reset, and the trail already names who could not log in.
-                    logger.warning(
-                        "User %r has an unusable recovery-code hash at position %d; "
-                        "reset MFA with POST /api/users/{username}/mfa/reset.",
-                        username,
-                        index,
-                    )
-                    continue
-                if matched:
-                    updated = [dict(item) for item in entries]
-                    updated[index]["used_at"] = _iso(now)
-                    # Reassigned rather than mutated in place: the column is
-                    # JSON, and SQLAlchemy does not track a mutation inside it.
-                    row.mfa_recovery_codes = updated
-                    row.updated_at = now
-                    session.flush()
-                    metrics_service.MFA_VERIFICATIONS_TOTAL.labels("recovery").inc()
-                    logger.warning(
-                        "Account %r signed in with a recovery code; %d remain.",
-                        username,
-                        _remaining(updated),
-                    )
-                    return FACTOR_RECOVERY
-            metrics_service.MFA_VERIFICATIONS_TOTAL.labels("failure").inc()
-            raise refusal
-
         secret = crypto.decrypt_secret(row.mfa_secret, context=SECRET_CONTEXT)
         step = totp.verify(secret or "", code or "", moment=now, last_step=row.mfa_last_step)
         if step is None:
@@ -306,6 +310,80 @@ def verify(
         session.flush()
         metrics_service.MFA_VERIFICATIONS_TOTAL.labels("success").inc()
         return FACTOR_TOTP
+
+
+def _spend_recovery_code(settings: Settings, username: str, supplied: str, *, now: datetime) -> str:
+    """Match one recovery code and stamp it used. Two transactions, on purpose.
+
+    The comparison is up to ten bcrypt verifications — a second or more at the
+    cost this platform hashes at — and it runs against an **unlocked** read.
+    Holding ``FOR UPDATE`` on the account row across it would serialize every
+    concurrent request for that account behind a wrong guess, inside a login
+    limiter that is itself serialized.
+
+    The second transaction takes the lock and re-checks by *hash string*, not
+    by bcrypt: the entry has to still be at that index, still carry the hash
+    that matched, and still be unspent. Two requests presenting the same code
+    therefore cannot both win — the loser sees ``used_at`` already set and is
+    refused exactly like a wrong code.
+    """
+    refusal = PermissionError("that code is not valid")
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.User, username)
+        if row is None or row.mfa_enabled_at is None:
+            metrics_service.MFA_VERIFICATIONS_TOTAL.labels("failure").inc()
+            raise refusal
+        snapshot = row.mfa_recovery_codes if isinstance(row.mfa_recovery_codes, list) else []
+        snapshot = [dict(item) for item in snapshot if isinstance(item, dict)]
+
+    matched_index: int | None = None
+    matched_hash = ""
+    for index, entry in enumerate(snapshot):
+        if entry.get("used_at"):
+            continue
+        stored = str(entry.get("hash") or "")
+        try:
+            if stored and verify_password(supplied, stored):
+                matched_index, matched_hash = index, stored
+                break
+        except ValueError:
+            # An unreadable hash is a broken row, not a match. Logged without
+            # the account's codes: the operator's fix is a reset, and the trail
+            # already names who could not log in.
+            logger.warning(
+                "User %r has an unusable recovery-code hash at position %d; "
+                "reset MFA with POST /api/users/{username}/mfa/reset.",
+                username,
+                index,
+            )
+    if matched_index is None:
+        metrics_service.MFA_VERIFICATIONS_TOTAL.labels("failure").inc()
+        raise refusal
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.User, username, with_for_update=True)
+        entries = row.mfa_recovery_codes if row is not None else None
+        entries = [dict(item) for item in entries] if isinstance(entries, list) else []
+        if (
+            row is None
+            or row.mfa_enabled_at is None
+            or matched_index >= len(entries)
+            or str(entries[matched_index].get("hash") or "") != matched_hash
+            or entries[matched_index].get("used_at")
+        ):
+            # Lost the race, or the enrolment was reset between the two reads.
+            metrics_service.MFA_VERIFICATIONS_TOTAL.labels("failure").inc()
+            raise refusal
+        entries[matched_index]["used_at"] = _iso(now)
+        # Reassigned rather than mutated in place: the column is JSON, and
+        # SQLAlchemy does not track a mutation inside one.
+        row.mfa_recovery_codes = entries
+        row.updated_at = now
+        session.flush()
+        remaining = _remaining(entries)
+    metrics_service.MFA_VERIFICATIONS_TOTAL.labels("recovery").inc()
+    logger.warning("Account %r signed in with a recovery code; %d remain.", username, remaining)
+    return FACTOR_RECOVERY
 
 
 def disable(

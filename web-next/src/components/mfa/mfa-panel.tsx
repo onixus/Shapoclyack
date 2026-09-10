@@ -39,6 +39,7 @@ export function MfaPanel() {
 
   const [enrolment, setEnrolment] = useState<MfaSetup | null>(null);
   const [code, setCode] = useState("");
+  const [enrolPassword, setEnrolPassword] = useState("");
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [password, setPassword] = useState("");
   const [disableCode, setDisableCode] = useState("");
@@ -69,16 +70,17 @@ export function MfaPanel() {
   async function onConfirm(event: FormEvent) {
     event.preventDefault();
     try {
-      const issued = await confirm.mutateAsync(code);
+      const issued = await confirm.mutateAsync({ code, password: enrolPassword });
       // The order matters: the codes replace the enrolment form, so a user who
       // closes the panel here loses the codes and not the enrolment — which is
       // the state the "no codes left" hint below is written for.
       setRecoveryCodes(issued);
       setEnrolment(null);
       setCode("");
+      setEnrolPassword("");
     } catch {
-      // Wrong code: the form keeps the secret so the next attempt is a retype
-      // of six digits rather than a re-scan.
+      // Wrong code or wrong password: the form keeps the secret, so the next
+      // attempt is a retype rather than a re-scan of a fresh QR.
     }
   }
 
@@ -188,11 +190,35 @@ export function MfaPanel() {
               required
             />
           </div>
+          {/* Asked for the same reason ``disable`` asks: enrolling a factor
+              must cost at least what removing one does, or a stolen session
+              could enrol its own and lock the owner out. Omitted for an
+              account that has no password to give. */}
+          {status.password_required ? (
+            <div className="grid gap-1.5">
+              <Label htmlFor="mfa-setup-password">{t("mfa.disable.password")}</Label>
+              <Input
+                id="mfa-setup-password"
+                type="password"
+                autoComplete="current-password"
+                value={enrolPassword}
+                onChange={(event) => setEnrolPassword(event.target.value)}
+                required
+              />
+            </div>
+          ) : null}
           <div className="flex gap-2">
             <Button type="submit" disabled={confirm.isPending}>
               {confirm.isPending ? t("mfa.setup.confirming") : t("mfa.setup.confirm")}
             </Button>
-            <Button type="button" variant="outline" onClick={() => setEnrolment(null)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setEnrolment(null);
+                setEnrolPassword("");
+              }}
+            >
               {t("mfa.setup.cancel")}
             </Button>
           </div>

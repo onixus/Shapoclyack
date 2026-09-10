@@ -118,6 +118,11 @@ this one included, so the console lands on the login form.
 account menu and from the **Security** entry in the sidebar's administration
 group, which every role sees because every account has one of these pages.
 
+Enrolment asks for the account's password alongside the first code — enrolling
+a factor has to cost what removing one does, or a stolen session could put its
+own authenticator on the account. The field is hidden for an account that has
+none (SSO-provisioned), which `MfaStatus.password_required` reports.
+
 Enrolment shows the `otpauth://` link and the base32 secret **as text**, side by
 side with a copy button. There is deliberately no QR image: drawing one would
 mean either a new dependency or posting every administrator's TOTP seed to an
@@ -131,8 +136,10 @@ Turning it off asks for the password **and** a live factor in one field: six
 digits are sent as `code`, anything else as `recovery_code`, so nobody has to
 tell the form which kind of thing they are holding.
 
-Logging in as an enrolled account is two steps. The password form is replaced
-by a code step; the challenge token lives in the page's state and never reaches
+Logging in as an enrolled account is two steps, and so is signing in with SSO:
+the callback puts `mfa_token` in the redirect fragment where the session would
+have been, and `/login` shows the same code step. The password form is replaced
+by that code step; the challenge token lives in the page's state and never reaches
 the token slot the rest of the console reads from, so walking away at the code
 prompt leaves a browser that is signed out rather than half signed in. **Use a
 recovery code instead** switches the field, and **Start again** drops the
@@ -141,7 +148,9 @@ challenge rather than reusing it.
 When `OCTO_MFA_REQUIRED_ROLES` names your role and you have not enrolled, the
 API confines the session to the enrolment flow. An amber banner above the header
 says so and offers the one route that works; the login form sends such a session
-straight to `/security` rather than to a dashboard of 403s. The banner hides
+straight to `/security` rather than to a dashboard of 403s. Confirming the
+enrolment re-reads `/api/auth/me`, so the banner and the confinement lift on the
+token already in the browser — no sign-out in the middle. The banner hides
 itself on `/security` — standing over the form telling somebody to open the form
 is noise.
 

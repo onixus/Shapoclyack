@@ -150,10 +150,10 @@ WebAuthn / passkeys, the other half of #315, are **not** implemented.
 |---|---|---|
 | `GET /api/auth/mfa` | session | The caller's own state: enabled, setup pending, recovery codes left, whether policy requires it |
 | `POST /api/auth/mfa/totp/setup` | session | Mints an unconfirmed secret and returns it with its `otpauth://` URI. Nothing is enabled yet |
-| `POST /api/auth/mfa/totp/confirm` | session | `{"code":"123456"}`. Turns the factor on and returns the ten recovery codes **once** |
+| `POST /api/auth/mfa/totp/confirm` | session | `{"code":"123456","password":…}`. Turns the factor on and returns the ten recovery codes **once**. The password is required for any account that has one — enrolling a factor must cost what removing one does, or a stolen session could enrol its own and lock the owner out |
 | `POST /api/auth/mfa/verify` | challenge token *or* session | Second leg of a login, or a step-up on a live session |
 | `POST /api/auth/mfa/disable` | session | `{"password":…, "code"\|"recovery_code":…}`. Both are required |
-| `POST /api/users/{username}/mfa/reset` | platform admin | Clears the factor, bumps `token_version` (ends the account's sessions), audited as `user.mfa_reset` |
+| `POST /api/users/{username}/mfa/reset` | platform admin + step-up | Clears the factor, bumps `token_version` (ends the account's sessions), audited as `user.mfa_reset` |
 
 ### The two-leg login
 
@@ -176,6 +176,14 @@ too.
 Refusals go through the same limiter as a password (#157) under the account's
 own key and land in `auth_events` with `reason=mfa_failed`.
 
+**SSO is not an exemption.** `GET /api/auth/oidc/callback` makes the same
+decision: an account that has enrolled gets the challenge where the session
+would have been — `mfa_token` in the redirect fragment, or in the JSON body for
+an API-only install. The provider proved an identity; it did not prove
+possession of the authenticator this installation holds a seed for. The
+callback's response model is therefore the same `LoginResponse` password login
+uses (`access_token` is now nullable on it).
+
 A TOTP code is accepted within ±1 step (±30 s) and **spent**: the step it
 belonged to is written to `users.mfa_last_step` in the same transaction, and a
 step at or before it is refused, so an observed code cannot be replayed inside
@@ -186,11 +194,19 @@ stamped `used_at` when it is spent.
 
 `OCTO_MFA_REQUIRED_ROLES` (empty by default) names roles that must carry a
 factor. An account in such a role that has not enrolled still signs in — a
-refusal would leave nobody able to enrol — but its session carries
-`mfa_pending`, and `get_current_user` then answers **403** on everything except
+refusal would leave nobody able to enrol — but the session is `mfa_pending`,
+and `get_current_user` then answers **403** on everything except
 `/api/auth/mfa*`, `/api/auth/me`, `/api/auth/logout` and
 `/api/auth/sessions/revoke-all`. `GET /api/auth/me` reports `mfa_enabled`,
 `mfa_required` and `mfa_pending` so the console can say why.
+
+`mfa_pending` is **derived on every request** from the policy and the account
+row, not carried as a token claim — the same rule the role follows. Turning the
+policy on is a redeploy, not a sign-out, so a claim minted at login would have
+exempted every administrator already signed in for the rest of their eight
+hours; a promotion into a covered role would have done the same. It also means
+finishing an enrolment lifts the confinement on the *existing* token, with no
+sign-out in the middle.
 
 ### Step-up
 
@@ -199,8 +215,14 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
 (default 15):
 
 - `POST`/`DELETE /api/tenants/{id}/service-tokens…`
-- `POST`/`DELETE /api/tenants/{id}/provisioning-keys…`
+- `POST`/`DELETE /api/tenants/{id}/provisioning-keys…` **and**
+  `POST /api/agent/deployment-command`, which mints the same key and is the one
+  the console uses
 - `PUT /api/tenants/{id}/scan-scope`
+- `POST /api/users`, `PUT /api/users/{u}/password`, `PUT /api/users/{u}/role`
+  and `POST /api/users/{u}/mfa/reset` — each of them a way to end up holding an
+  admin account that carries no second factor, which would otherwise be a
+  one-request path around every line above
 
 The check applies **only to accounts that have MFA enabled**; an installation
 that has not adopted MFA behaves exactly as before. A stale session gets a 403

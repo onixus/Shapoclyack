@@ -22,7 +22,6 @@ and exactly one that carries the shared secret).
 from __future__ import annotations
 
 import urllib.parse
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -31,6 +30,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from api.auth import (
     LoginResponse,
     Role,
+    StepUpDep,
     TokenUser,
     bearer_scheme,
     create_access_token,
@@ -137,12 +137,19 @@ def confirm_totp(
 ) -> MfaRecoveryCodesResponse:
     """Prove the authenticator holds the secret, and turn the factor on.
 
+    Costs the password as well as the code, symmetrically with ``disable``:
+    otherwise a stolen session could enrol its own authenticator on the account
+    and lock the owner out of their own console. Accounts with no password
+    (SSO-provisioned) are asked only for the code.
+
     Returns the ten recovery codes. They are stored as bcrypt hashes, so this
     response is the only moment they exist: a client that fails to show them
     has cost the user their recovery path, and the fix is an admin reset.
     """
     try:
-        codes = mfa_service.confirm_setup(settings, user.username, body.code, audit=audit)
+        codes = mfa_service.confirm_setup(
+            settings, user.username, body.code, password=body.password, audit=audit
+        )
     except LookupError as exc:
         raise _not_found(user.username) from exc
     except ValueError as exc:
@@ -237,7 +244,9 @@ def verify_mfa(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="that code is not valid"
         )
     principal = TokenUser(username=username, role=Role(str(record["role"])))
-    verified_at = datetime.now(UTC)
+    # The same clock the step-up check reads (``mfa_service.now_utc``), so the
+    # stamp and the deadline that measures it can never come from two sources.
+    verified_at = mfa_service.now_utc()
     try:
         token = create_access_token(settings, principal, mfa_verified_at=verified_at)
     except LookupError as exc:
@@ -292,6 +301,11 @@ def disable_mfa(
 def reset_user_mfa(
     username: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Removing somebody else's factor is the operation that most obviously
+    # needs one of your own: without this, an admin session with no recent
+    # verification could strip the second factor off every account on the
+    # installation and then use the routes step-up was protecting.
+    __: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> MfaStatus:

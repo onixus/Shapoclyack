@@ -33,15 +33,31 @@ All notable changes to Shapoclyack are documented in this file.
   ([#315](https://github.com/onixus/Shapoclyack/issues/315)). Empty by default,
   so an upgrade changes nothing. An account in a listed role that has not
   enrolled still signs in — refusing would leave nobody able to enrol — but its
-  session carries `mfa_pending` and is answered `403` on everything except the
-  MFA routes, `/api/auth/me` and the two ways out. The console shows a banner
-  and sends such a session to the new `/security` page.
+  session is `mfa_pending` and is answered `403` on everything except the MFA
+  routes, `/api/auth/me` and the two ways out. The console shows a banner and
+  sends such a session to the new `/security` page. `mfa_pending` is derived per
+  request from the policy and the account row rather than carried as a claim, so
+  turning the policy on reaches sessions that predate it and finishing an
+  enrolment lifts the confinement without a sign-out.
 - **Step-up on the operations that issue a credential**
   ([#315](https://github.com/onixus/Shapoclyack/issues/315)). Creating or
   revoking a service token or a provisioning key, and replacing a tenant's scan
   scope, now require a second factor proved within `OCTO_MFA_STEPUP_MINUTES`
-  (15). Only for accounts that have MFA enabled, so an installation that has not
-  adopted it is unchanged.
+  (15) — as do creating an account, setting somebody's password, changing a role
+  and resetting somebody's MFA, each of which is otherwise a one-request way to
+  end up holding an admin account that carries no factor. Only for accounts that
+  have MFA enabled, so an installation that has not adopted it is unchanged.
+- **SSO is not a way around the second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
+  `GET /api/auth/oidc/callback` challenges an enrolled account exactly as
+  password login does, putting `mfa_token` in the redirect fragment where the
+  session would have been. Its response model is now the same `LoginResponse`,
+  on which `access_token` is nullable.
+- **Enrolling a second factor costs the account's password**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
+  `POST /api/auth/mfa/totp/confirm` verifies it, symmetrically with `disable`:
+  without that, a stolen session could enrol its own authenticator and lock out
+  an owner who still knows the password. Skipped for an account that has none.
 - **Password login on an SSO installation is a decision, not a default**
   ([#315](https://github.com/onixus/Shapoclyack/issues/315)). `OCTO_LOCAL_LOGIN`
   is `enabled` (as before), `break-glass` (only `OCTO_BREAK_GLASS_USERS`) or

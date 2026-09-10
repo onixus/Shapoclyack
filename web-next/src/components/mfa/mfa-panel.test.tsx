@@ -17,6 +17,7 @@ const OFF: MfaStatus = {
   recovery_codes_remaining: 0,
   required: true,
   stepup_minutes: 15,
+  password_required: true,
 };
 
 const ON: MfaStatus = {
@@ -110,11 +111,12 @@ afterEach(() => {
 
 describe("MfaPanel", () => {
   it("shows the secret and the otpauth link, then the recovery codes once confirmed", async () => {
-    installTransport(
+    const sent = installTransport(
       { status: 200, data: OFF },
       {
         "/auth/mfa/totp/setup": { status: 200, data: SETUP },
         "/auth/mfa/totp/confirm": { status: 200, data: { recovery_codes: RECOVERY } },
+        "/auth/me": { status: 200, data: null },
       },
     );
     renderPanel();
@@ -127,11 +129,18 @@ describe("MfaPanel", () => {
     expect(screen.getByText(SETUP.secret)).toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText(/code from the app/i), "123456");
+    await userEvent.type(screen.getByLabelText(/^password$/i), "hunter2");
     await userEvent.click(screen.getByRole("button", { name: /turn it on/i }));
 
     // The ten codes are shown once, and the enrolment form is gone with them.
     for (const code of RECOVERY) expect(await screen.findByText(code)).toBeInTheDocument();
     expect(screen.queryByLabelText(/code from the app/i)).not.toBeInTheDocument();
+    // Enrolling costs the password as well as the code: without it a stolen
+    // session could put its own authenticator on the account.
+    expect(sent.find((entry) => entry.url === "/auth/mfa/totp/confirm")?.body).toEqual({
+      code: "123456",
+      password: "hunter2",
+    });
   });
 
   it("routes six digits as a code and anything else as a recovery code when turning it off", async () => {
@@ -150,6 +159,27 @@ describe("MfaPanel", () => {
     // `recovery_code` to the ten hashes, and a recovery code sent as `code`
     // is simply refused.
     expect(sent[0]?.body).toEqual({ password: "hunter2", recovery_code: "abcde-fghjk" });
+  });
+
+  it("sends six digits as an authenticator code, not as a recovery code", async () => {
+    // The other half of the split above. Without it, widening the regexp to
+    // `/^\d+$/` — or dropping it — passes every existing assertion.
+    const sent = installTransport(
+      { status: 200, data: ON },
+      { "/auth/mfa/disable": { status: 200, data: { ...ON, enabled: false } } },
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <MfaPanel />
+      </QueryClientProvider>,
+    );
+
+    await userEvent.type(await screen.findByLabelText(/^password$/i), "hunter2");
+    await userEvent.type(screen.getByLabelText(/code from the app, or a recovery code/i), "123456");
+    await userEvent.click(screen.getByRole("button", { name: /^turn off$/i }));
+
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]?.body).toEqual({ password: "hunter2", code: "123456" });
   });
 
   it("states the policy, the codes left and the step-up window while it is on", async () => {

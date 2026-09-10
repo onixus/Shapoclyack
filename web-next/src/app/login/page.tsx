@@ -10,8 +10,11 @@ import { fetchSsoStatus, setAccessToken, type SsoStatus } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 
-/** An outstanding second factor: the challenge token and how long it is good for. */
-type Challenge = { token: string; expiresIn: number | null };
+/** An outstanding second factor: the challenge token, how long it is good for,
+ * and the account it names when we know it — after an SSO redirect we do not,
+ * and saying "viewer has MFA on" because that is what the form field happens
+ * to hold would be a lie on the one screen that must not tell them. */
+type Challenge = { token: string; expiresIn: number | null; username: string | null };
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,14 +35,30 @@ export default function LoginPage() {
   // browsers never send to a server and access logs never record. Store it and
   // clear the fragment before hydrating, so a reload or a shared URL does not
   // carry the token with it.
+  //
+  // An account that has enrolled a second factor gets `mfa_token` there
+  // instead (#315): the identity provider proved an identity, not possession
+  // of the authenticator. It goes into the same challenge state a password
+  // login produces — never into the token slot — so the code step below is
+  // what the user sees next.
   useEffect(() => {
     const fragment = window.location.hash.startsWith("#")
       ? new URLSearchParams(window.location.hash.slice(1))
       : null;
     const token = fragment?.get("access_token");
-    if (token) {
-      setAccessToken(token);
+    const pending = fragment?.get("mfa_token");
+    if (token || pending) {
+      if (token) setAccessToken(token);
       window.history.replaceState(null, "", window.location.pathname);
+    }
+    if (pending) {
+      const seconds = Number(fragment?.get("expires_in"));
+      setChallenge({
+        token: pending,
+        expiresIn: Number.isFinite(seconds) ? seconds : null,
+        username: null,
+      });
+      return;
     }
     void hydrate();
   }, [hydrate]);
@@ -69,7 +88,7 @@ export default function LoginPage() {
     try {
       const step = await login(username, password);
       if (step.status === "mfa-required") {
-        setChallenge({ token: step.mfaToken, expiresIn: step.expiresIn });
+        setChallenge({ token: step.mfaToken, expiresIn: step.expiresIn, username });
         setCode("");
         return;
       }
@@ -129,7 +148,11 @@ export default function LoginPage() {
             {challenge ? t("login.mfa.title") : t("login.title")}
           </h1>
           <p className="text-sm text-slate-400">
-            {challenge ? t("login.mfa.subtitle", { username }) : t("login.subtitle")}
+            {!challenge
+              ? t("login.subtitle")
+              : challenge.username
+                ? t("login.mfa.subtitle", { username: challenge.username })
+                : t("login.mfa.subtitleAnon")}
           </p>
         </div>
 

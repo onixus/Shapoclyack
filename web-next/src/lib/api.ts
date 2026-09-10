@@ -971,6 +971,9 @@ export type MfaStatus = {
   recovery_codes_remaining: number;
   required: boolean;
   stepup_minutes: number;
+  /** Whether confirming an enrolment will ask for the password. False for an
+   * SSO-provisioned account, which has none to give. */
+  password_required: boolean;
 };
 
 export type MfaSetup = {
@@ -1001,11 +1004,17 @@ export async function setupTotp(): Promise<MfaSetup> {
   }
 }
 
-/** Confirm enrolment with a code. Returns the ten recovery codes, once. */
-export async function confirmTotp(code: string): Promise<string[]> {
+/** Confirm enrolment with a code and the account's password. Returns the ten
+ * recovery codes, once.
+ *
+ * The password is what stops a stolen session enrolling its own authenticator
+ * and locking the owner out; it is omitted only for an account that has none,
+ * which `MfaStatus.password_required` reports. */
+export async function confirmTotp(code: string, password?: string): Promise<string[]> {
   try {
     const { data } = await api.post<{ recovery_codes: string[] }>("/auth/mfa/totp/confirm", {
       code,
+      password: password || undefined,
     });
     return data.recovery_codes ?? [];
   } catch (error) {

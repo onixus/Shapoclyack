@@ -966,6 +966,7 @@ export const en = {
 
   "login.mfa.title": "Enter your code",
   "login.mfa.subtitle": "{username} has two-factor authentication on. Open your authenticator and type the six digits it shows.",
+  "login.mfa.subtitleAnon": "This account has two-factor authentication on. Open your authenticator and type the six digits it shows.",
   "login.mfa.code": "Six-digit code",
   "login.mfa.recovery": "Recovery code",
   "login.mfa.useRecovery": "Use a recovery code instead",
@@ -1945,6 +1946,7 @@ export const ru: Record<MsgKey, string> = {
 
   "login.mfa.title": "Введите код",
   "login.mfa.subtitle": "У {username} включена двухфакторная аутентификация. Откройте аутентификатор и введите шесть цифр.",
+  "login.mfa.subtitleAnon": "У этой учётной записи включена двухфакторная аутентификация. Откройте аутентификатор и введите шесть цифр.",
   "login.mfa.code": "Шестизначный код",
   "login.mfa.recovery": "Код восстановления",
   "login.mfa.useRecovery": "Ввести код восстановления",

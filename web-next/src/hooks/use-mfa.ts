@@ -10,6 +10,7 @@ import {
   setupTotp,
   type MfaSetup,
 } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 import { queryKeys } from "@/lib/query-keys";
 
 /** The signed-in account's own second-factor state (#315). */
@@ -40,11 +41,16 @@ export function useSetupTotp() {
 /** Confirm a code and turn the factor on. Resolves to the recovery codes. */
 export function useConfirmTotp() {
   const queryClient = useQueryClient();
-  return useMutation<string[], Error, string>({
-    mutationFn: (code: string) => confirmTotp(code),
+  return useMutation<string[], Error, { code: string; password?: string }>({
+    mutationFn: ({ code, password }) => confirmTotp(code, password),
     onSuccess: async () => {
       toast.success("Two-factor authentication is on");
       await queryClient.invalidateQueries({ queryKey: queryKeys.mfa });
+      // And re-read the principal: a session that was confined to this page
+      // (`mfa_pending`) is not confined any more, and the API decides that per
+      // request. Without this the banner stays up and the rest of the console
+      // stays 403 on a screen that just said "you are done".
+      await useAuthStore.getState().hydrate();
     },
     onError: (err) => {
       toast.error("That code was not accepted", { description: err.message });

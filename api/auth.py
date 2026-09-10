@@ -58,12 +58,16 @@ class TokenUser(BaseModel):
     role: Role
     jti: str | None = None
     expires_at: datetime | None = None
-    # Multi-factor state carried by the session (#315). ``mfa_pending`` marks a
-    # session issued to an account this installation requires a second factor
-    # of, which has not enrolled yet: it authenticates, and
-    # :func:`get_current_user` then refuses it everything but the enrolment
-    # routes and logout. ``mfa_verified_at`` is when the factor was last proved
-    # and is what the step-up dependency measures against.
+    # Multi-factor state of this request (#315). ``mfa_pending`` marks a caller
+    # this installation requires a second factor of, which has not enrolled
+    # yet: it authenticates, and :func:`get_current_user` then refuses it
+    # everything but the enrolment routes and logout. It is **derived on every
+    # request** from the policy and the account row, never read from the token
+    # — the same rule the role follows, and for the same reason: a session
+    # minted before the policy was turned on, or before a promotion into a
+    # covered role, would otherwise carry "not my problem" for eight hours.
+    # ``mfa_verified_at`` is the one genuinely per-session fact here: when the
+    # person holding *this* token last proved the factor.
     mfa_pending: bool = False
     mfa_verified_at: datetime | None = None
 
@@ -99,13 +103,6 @@ class AgentPrincipal(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    role: Role
-    username: str
 
 
 class LoginResponse(BaseModel):
@@ -187,7 +184,6 @@ def create_access_token(
     settings: Settings,
     user: TokenUser,
     *,
-    mfa_pending: bool = False,
     mfa_verified_at: datetime | None = None,
 ) -> str:
     """Mint a console session token (#314).
@@ -208,10 +204,11 @@ def create_access_token(
     rather than issued a version-0 token: a missing row is exactly what a
     concurrent delete looks like.
 
-    Two more optional claims since #315, both absent from an ordinary session:
-    ``mfa_pending`` for a session that may do nothing but enrol a second
-    factor, and ``mfa_verified_at`` for one that has just proved it — the claim
-    the step-up checks read.
+    One more optional claim since #315: ``mfa_verified_at``, set on a session
+    minted by ``POST /api/auth/mfa/verify``, which is what the step-up checks
+    measure against. There is deliberately no ``mfa_pending`` claim — whether
+    an account still owes an enrolment is re-decided on every request from the
+    policy and the row, exactly as the role is.
     """
     from api.core.security import jwt_kid
     from api.services import sessions as sessions_service
@@ -226,8 +223,6 @@ def create_access_token(
         "exp": expire,
         "iat": datetime.now(UTC),
     }
-    if mfa_pending:
-        payload["mfa_pending"] = True
     if mfa_verified_at is not None:
         payload["mfa_verified_at"] = int(mfa_verified_at.timestamp())
     return jwt.encode(
@@ -387,7 +382,6 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
         role=role,
         jti=str(payload["jti"]) if payload.get("jti") else None,
         expires_at=datetime.fromtimestamp(int(expires_at), UTC) if expires_at else None,
-        mfa_pending=bool(payload.get("mfa_pending")),
         # Read out of the claim rather than from the row: it is a property of
         # *this* session — when the person holding this token last proved the
         # factor — not of the account, and two sessions of one account are
@@ -590,6 +584,24 @@ _MFA_PENDING_ALLOWED_PATHS = (
 )
 
 
+def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
+    """Whether this caller is in a role that must enrol, and has not (#315).
+
+    Asked per request rather than once at login, and gated on the policy being
+    configured at all so that an installation which has not adopted MFA pays
+    nothing for it: with ``OCTO_MFA_REQUIRED_ROLES`` empty this is a comparison
+    against an empty list and no query. When it is set, the extra read is one
+    lookup by primary key on a row this request has already touched.
+    """
+    if not settings.mfa_required_roles:
+        return False
+    from api.services import mfa as mfa_service
+
+    if not mfa_service.required_for_role(settings, user.role.value):
+        return False
+    return not mfa_service.is_enabled(settings, user.username)
+
+
 def _enforce_mfa_enrolment(request: Request) -> None:
     """Confine a session that owes this installation a second factor (#315).
 
@@ -632,7 +644,8 @@ def get_current_user(
     if service_tokens.looks_like_service_token(token):
         return _authenticate_service_token(request, settings, token)
     user = decode_token(settings, token)
-    if user.mfa_pending:
+    if _owes_enrolment(settings, user):
+        user.mfa_pending = True
         _enforce_mfa_enrolment(request)
     return user
 
@@ -679,7 +692,11 @@ def require_step_up(
     if not mfa_service.is_enabled(settings, user.username):
         return user
     deadline = mfa_service.stepup_deadline(user.mfa_verified_at, settings)
-    if deadline is not None and deadline > datetime.now(UTC):
+    # ``mfa_service.now_utc`` and not ``datetime.now`` so that the window has
+    # one clock, patchable in one place: a check that reads the wall clock
+    # directly is a check whose expiry cannot be tested, and an expiry nobody
+    # tests is a setting that can quietly stop meaning anything.
+    if deadline is not None and deadline > mfa_service.now_utc():
         return user
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,

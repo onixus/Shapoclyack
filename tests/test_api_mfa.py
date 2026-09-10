@@ -69,7 +69,7 @@ def clock(monkeypatch) -> Clock:
     return instance
 
 
-def enrol(client, headers, clock: Clock) -> tuple[str, list[str]]:
+def enrol(client, headers, clock: Clock, username: str = "admin") -> tuple[str, list[str]]:
     """Take one account through setup + confirm. Returns (secret, recovery codes)."""
     setup = client.post("/api/auth/mfa/totp/setup", headers=headers)
     assert setup.status_code == 200, setup.text
@@ -77,7 +77,9 @@ def enrol(client, headers, clock: Clock) -> tuple[str, list[str]]:
     assert setup.json()["otpauth_uri"].startswith("otpauth://totp/")
 
     confirm = client.post(
-        "/api/auth/mfa/totp/confirm", headers=headers, json={"code": clock.code(secret)}
+        "/api/auth/mfa/totp/confirm",
+        headers=headers,
+        json={"code": clock.code(secret), "password": TEST_USERS[username]},
     )
     assert confirm.status_code == 200, confirm.text
     codes = confirm.json()["recovery_codes"]
@@ -178,6 +180,45 @@ def test_a_recovery_code_works_once_and_is_then_spent(tmp_path, monkeypatch, clo
     assert other.status_code == 200
 
 
+def test_enrolment_costs_the_password_too(tmp_path, monkeypatch, clock):
+    # A stolen session must not be able to enrol *its own* authenticator and
+    # lock the account's owner out of a console they still know the password to.
+    client = configured_client(tmp_path, monkeypatch)
+    headers = auth_headers(client, "admin")
+    setup = client.post("/api/auth/mfa/totp/setup", headers=headers)
+    secret = setup.json()["secret"]
+
+    no_password = client.post(
+        "/api/auth/mfa/totp/confirm", headers=headers, json={"code": clock.code(secret)}
+    )
+    assert no_password.status_code == 401
+    wrong = client.post(
+        "/api/auth/mfa/totp/confirm",
+        headers=headers,
+        json={"code": clock.code(secret), "password": "not-the-password"},
+    )
+    assert wrong.status_code == 401
+    # Nothing was turned on by either attempt.
+    assert client.get("/api/auth/mfa", headers=headers).json()["enabled"] is False
+
+
+def test_a_recovery_code_is_spent_once_under_a_race(tmp_path, monkeypatch, clock):
+    # The bcrypt comparison happens outside the row lock, so the second
+    # transaction is what has to catch a duplicate. Two verifications of the
+    # same code back to back exercise exactly that re-check.
+    client = configured_client(tmp_path, monkeypatch)
+    _, codes = enrol(client, auth_headers(client, "admin"), clock)
+
+    outcomes = [
+        client.post(
+            "/api/auth/mfa/verify",
+            json={"mfa_token": password_login(client)["mfa_token"], "recovery_code": codes[0]},
+        ).status_code
+        for _ in range(2)
+    ]
+    assert outcomes == [200, 401]
+
+
 def test_the_stored_secret_is_encrypted_when_a_master_key_is_configured(
     tmp_path, monkeypatch, clock
 ):
@@ -232,7 +273,7 @@ def test_disable_needs_the_password_and_a_live_factor(tmp_path, monkeypatch, clo
 def test_admin_reset_clears_the_factor_and_ends_the_sessions(tmp_path, monkeypatch, clock):
     client = configured_client(tmp_path, monkeypatch)
     operator = auth_headers(client, "operator")
-    enrol(client, operator, clock)
+    enrol(client, operator, clock, "operator")
     admin = auth_headers(client, "admin")
 
     # The operator's own session is live right up to the reset.
@@ -289,6 +330,27 @@ def test_a_required_role_without_a_factor_gets_a_session_that_can_only_enrol(
     assert client.get("/api/users", headers=unrestricted).status_code == 200
 
 
+def test_the_policy_reaches_sessions_that_predate_it(tmp_path, monkeypatch):
+    # Turning OCTO_MFA_REQUIRED_ROLES on is a redeploy, not a sign-out: every
+    # token issued before it stays valid for up to eight hours. If "this
+    # session owes an enrolment" were a claim minted at login, those hours
+    # would be an exemption for exactly the administrators the policy is for.
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    session = bearer(password_login(client)["access_token"])
+    assert client.get("/api/users", headers=session).status_code == 200
+
+    # The replica comes up with the policy configured; the token is untouched.
+    settings.mfa_required_roles = ["admin"]
+
+    refused = client.get("/api/users", headers=session)
+    assert refused.status_code == 403
+    assert "multi-factor" in refused.json()["detail"]
+    # And the way out is open on the very same token.
+    assert client.get("/api/auth/mfa", headers=session).status_code == 200
+    assert client.get("/api/auth/me", headers=session).json()["mfa_pending"] is True
+
+
 def test_a_role_not_named_by_the_policy_is_untouched(tmp_path, monkeypatch):
     client = configured_client(tmp_path, monkeypatch, mfa_required_roles=["admin"])
     session = password_login(client, "operator")
@@ -325,6 +387,74 @@ def test_minting_a_credential_needs_a_recent_verification(tmp_path, monkeypatch,
         ).status_code
         == 201
     )
+
+
+def test_a_step_up_goes_stale_when_the_window_passes(tmp_path, monkeypatch, clock):
+    # The window is the whole point of OCTO_MFA_STEPUP_MINUTES: without this,
+    # setting it to a day would break nothing that is checked.
+    client = configured_client(tmp_path, monkeypatch, mfa_stepup_minutes=15)
+    headers = auth_headers(client, "admin")
+    secret, _ = enrol(client, headers, clock)
+
+    verified = client.post(
+        "/api/auth/mfa/verify", headers=headers, json={"code": clock.next_code(secret)}
+    )
+    fresh = bearer(verified.json()["access_token"])
+    assert (
+        client.post(
+            "/api/tenants/default/provisioning-keys", headers=fresh, json={"label": "a"}
+        ).status_code
+        == 201
+    )
+
+    clock.advance(16 * 60)
+    stale = client.post(
+        "/api/tenants/default/provisioning-keys", headers=fresh, json={"label": "b"}
+    )
+    assert stale.status_code == 403
+    assert "multi-factor" in stale.json()["detail"]
+
+
+def test_the_console_route_that_mints_a_key_is_behind_the_same_step_up(
+    tmp_path, monkeypatch, clock
+):
+    # POST /api/agent/deployment-command mints the same provisioning key the
+    # /api/tenants route does, and it is the one the console uses. A step-up on
+    # only one of the two is a step-up on neither.
+    client = configured_client(tmp_path, monkeypatch)
+    headers = auth_headers(client, "admin")
+    enrol(client, headers, clock)
+
+    refused = client.post("/api/agent/deployment-command", headers=headers, json={})
+    assert refused.status_code == 403
+    assert "multi-factor" in refused.json()["detail"]
+
+
+def test_a_stale_session_cannot_bootstrap_around_the_step_up(tmp_path, monkeypatch, clock):
+    # Creating an account, resetting somebody's password, promoting them and
+    # clearing their second factor are all ways to end up holding an admin
+    # credential with no MFA on it. All four cost a recent verification.
+    client = configured_client(tmp_path, monkeypatch)
+    headers = auth_headers(client, "admin")
+    enrol(client, headers, clock)
+
+    assert (
+        client.post(
+            "/api/users", headers=headers, json={"username": "x", "password": "pw", "role": "admin"}
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            "/api/users/operator/password", headers=headers, json={"password": "pw"}
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put("/api/users/operator/role", headers=headers, json={"role": "admin"}).status_code
+        == 403
+    )
+    assert client.post("/api/users/operator/mfa/reset", headers=headers).status_code == 403
 
 
 def test_step_up_does_not_apply_to_an_account_without_a_factor(tmp_path, monkeypatch):
