@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -1602,6 +1602,114 @@ class VulnerabilityTicketRequest(BaseModel):
     key: str | None = Field(default=None, max_length=200)
     url: str | None = Field(default=None, max_length=2000)
     note: str | None = Field(default=None, max_length=2000)
+
+
+class BulkActionItemResult(BaseModel):
+    """What one id in a bulk request got (#346).
+
+    ``outcome`` is the single-id route's status code, said in words: ``ok`` is
+    its 200, ``not_found`` its 404 (no such id *in the scope this caller writes
+    in* — a foreign tenant's id is reported missing, never forbidden),
+    ``conflict`` its 409, ``invalid`` its 422. ``error`` carries the refusal's
+    own message so an operator does not have to guess which of a batch's
+    hundred ids was already closed.
+    """
+
+    id: str
+    ok: bool
+    outcome: Literal["ok", "not_found", "conflict", "invalid"]
+    error: str | None = None
+
+
+class BulkActionReport(BaseModel):
+    """The answer a bulk request gets: what happened to each id (#346).
+
+    A batch is a partial success by design — one closed finding in a selection
+    of two hundred must not refuse the other hundred and ninety-nine — so the
+    envelope is a report and the status is 200 even when ``failed`` is nonzero.
+    A caller wanting all-or-nothing checks ``failed == 0``.
+
+    ``replayed`` is true when this answer came out of the ``Idempotency-Key``
+    record of an earlier identical request rather than from work done now. The
+    status code says so too (200 on a replay, where a fresh batch answers 200
+    as well), so the flag is what a client actually reads.
+    """
+
+    action: str
+    requested: int
+    succeeded: int
+    failed: int
+    results: list[BulkActionItemResult]
+    replayed: bool = False
+
+
+# One body per verb, selected by ``action`` — a discriminated union rather than
+# one model with five optional payloads, so that a ``transition`` batch missing
+# its ``state`` is a 422 from the schema instead of a KeyError from the service.
+# ``payload`` nests the *existing* single-verb request model unchanged: bulk and
+# hand-applied must validate identically, and re-declaring the fields here is
+# how the two would drift.
+#
+# ``max_length`` mirrors ``bulk_actions.MAX_BULK_IDS``. Spelled as a literal
+# because a schema field's constraint has to be a constant for the OpenAPI
+# document to carry it; ``bulk_actions.validate_ids`` re-checks the same bound
+# so a caller reaching the service directly is refused too.
+class _BulkVulnerabilityBase(BaseModel):
+    vuln_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class BulkVulnerabilityAssign(_BulkVulnerabilityBase):
+    action: Literal["assign"]
+    # Defaulted, unlike the others: an assign with no fields set is the
+    # "unassign these" the single route already accepts.
+    payload: VulnerabilityAssignRequest = Field(default_factory=VulnerabilityAssignRequest)
+
+
+class BulkVulnerabilityTransition(_BulkVulnerabilityBase):
+    action: Literal["transition"]
+    payload: VulnerabilityTransitionRequest
+
+
+class BulkVulnerabilityException(_BulkVulnerabilityBase):
+    action: Literal["exception"]
+    payload: VulnerabilityExceptionRequest
+
+
+class BulkVulnerabilityTicket(_BulkVulnerabilityBase):
+    action: Literal["ticket"]
+    payload: VulnerabilityTicketRequest
+
+
+class BulkVulnerabilityFalsePositive(_BulkVulnerabilityBase):
+    action: Literal["false_positive"]
+    payload: VulnerabilityFalsePositiveRequest
+
+
+BulkVulnerabilityRequest = Annotated[
+    BulkVulnerabilityAssign
+    | BulkVulnerabilityTransition
+    | BulkVulnerabilityException
+    | BulkVulnerabilityTicket
+    | BulkVulnerabilityFalsePositive,
+    Field(discriminator="action"),
+]
+
+
+class BulkAssetRequest(BaseModel):
+    """Body for ``POST /api/assets/bulk`` — one context update, many assets.
+
+    ``action`` has a single member and is still there: it makes the body the
+    same shape as the vulnerability batch, and an asset verb added later is a
+    new member rather than a new endpoint.
+
+    ``payload`` is ``PATCH /api/assets/{id}``'s body unchanged, including its
+    "an explicit null clears the field, an omitted key leaves it untouched"
+    contract — which is why the route sends ``exclude_unset``.
+    """
+
+    action: Literal["context"] = "context"
+    asset_ids: list[str] = Field(min_length=1, max_length=200)
+    payload: UpdateAssetRequest
 
 
 class SlaPolicyInfo(BaseModel):
