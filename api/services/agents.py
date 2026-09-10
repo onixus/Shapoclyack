@@ -153,6 +153,12 @@ def _is_online(last_seen: datetime | None) -> bool:
 # read): one is what an operator decided, the other is what the agent said.
 LIFECYCLE_ACTIVE = "active"
 LIFECYCLE_STATES = (LIFECYCLE_ACTIVE, "disabled", "quarantined")
+#: Which audit action a move to each state is recorded under (#308, #327).
+_LIFECYCLE_ACTIONS = {
+    LIFECYCLE_ACTIVE: audit_service.ACTION_AGENT_ENABLE,
+    "disabled": audit_service.ACTION_AGENT_DISABLE,
+    "quarantined": audit_service.ACTION_AGENT_QUARANTINE,
+}
 
 _LIFECYCLE_MESSAGES = {
     "disabled": (
@@ -525,7 +531,7 @@ def set_lifecycle_status(
     lifecycle_status: str,
     reason: str = "",
     tenant_id: str | None = None,
-    actor: str = "",
+    audit: "audit_service.AuditContext | None" = None,
 ) -> AgentInfo:
     """Move one agent between lifecycle states.
 
@@ -549,17 +555,20 @@ def set_lifecycle_status(
         session.flush()
         info = _to_info(row)
         recorded_reason = row.lifecycle_reason or ""
-    # #327 replaces this with an audit_events row; until it lands the log line
-    # is the only durable record that an operator changed an agent's state.
-    _log.info(
-        "agent lifecycle change agent_id=%s tenant_id=%s from=%s to=%s actor=%s reason=%s",
-        agent_id,
-        info.tenant_id,
-        previous,
-        lifecycle_status,
-        actor or "unknown",
-        recorded_reason,
-    )
+        # In this transaction, so the state and the record of who changed it
+        # commit together (#327). ``before`` carries the state the agent was
+        # taken out of, which is what tells a re-quarantine apart from a first
+        # one when the trail is read back.
+        audit_service.record(
+            session,
+            audit,
+            action=_LIFECYCLE_ACTIONS[lifecycle_status],
+            resource_type="agent",
+            resource_id=agent_id,
+            tenant_id=info.tenant_id,
+            before={"lifecycle_status": previous},
+            after={"lifecycle_status": lifecycle_status, "reason": recorded_reason},
+        )
     return info
 
 
@@ -855,7 +864,7 @@ def delete_agent(
     tenant_id: str | None = None,
     *,
     revoke_key: bool = False,
-    actor: str = "",
+    audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any] | None:
     """Delete the agent, optionally revoking the key it registered with.
 
@@ -887,10 +896,31 @@ def delete_agent(
             return None
         key_id = row.provisioning_key_id
         agent_tenant_id = row.tenant_id
+        hostname = row.hostname or ""
+        lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
         other_agents_on_key = _count_other_agents_on_key(
             session, key_id=key_id, agent_id=agent_id
         )
         session.delete(row)
+        # In the transaction that removes the row, so a delete without a record
+        # of it is impossible (#327). The revocation below is a second event in
+        # a second transaction, because it is a second act on a second resource
+        # -- and one that may not happen at all.
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_AGENT_DELETE,
+            resource_type="agent",
+            resource_id=agent_id,
+            tenant_id=agent_tenant_id,
+            before={
+                "agent_id": agent_id,
+                "hostname": hostname,
+                "lifecycle_status": lifecycle_status,
+                "provisioning_key_id": key_id or "",
+                "other_agents_on_key": int(other_agents_on_key),
+            },
+        )
         session.flush()
 
     key_revoked = False
@@ -898,19 +928,9 @@ def delete_agent(
         # After the delete, and in its own session: revoking first would leave
         # a revoked key behind if the delete then failed, and the FK from
         # agents.provisioning_key_id has to be gone before the key row is
-        # touched by anything that might remove it later.
-        key_revoked = tenants_service.revoke_provisioning_key(key_id) is not None
-    # #327 replaces this with an audit_events row.
-    _log.info(
-        "agent deleted agent_id=%s tenant_id=%s actor=%s key_id=%s key_revoked=%s "
-        "other_agents_on_key=%s",
-        agent_id,
-        agent_tenant_id,
-        actor or "unknown",
-        key_id or "",
-        key_revoked,
-        other_agents_on_key,
-    )
+        # touched by anything that might remove it later. The same audit
+        # context goes with it, so the pair reads as one operator action.
+        key_revoked = tenants_service.revoke_provisioning_key(key_id, audit=audit) is not None
     return {
         "agent_id": agent_id,
         "provisioning_key_id": key_id,

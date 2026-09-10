@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import PlainTextResponse
 
 from api.auth import AgentPrincipal, Role, TenantPrincipal, get_settings, require_agent, require_tenant
+from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AgentClaimResponse,
@@ -290,6 +291,7 @@ def update_agent_status(
     agent_id: str,
     body: UpdateAgentStatusRequest,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    audit: AuditDep,
 ) -> AgentInfo:
     """Disable, quarantine, or re-activate one agent (#308).
 
@@ -312,7 +314,7 @@ def update_agent_status(
             lifecycle_status=body.status,
             reason=body.reason,
             tenant_id=tenant_id,
-            actor=principal.username,
+            audit=audit,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -326,6 +328,7 @@ def update_agent_status(
 def delete_agent(
     agent_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    audit: AuditDep,
     revoke_key: Annotated[
         bool,
         Query(description="Also revoke the provisioning key this agent registered with"),
@@ -350,7 +353,7 @@ def delete_agent(
         agent_id,
         tenant_id=tenant_id,
         revoke_key=revoke_key,
-        actor=principal.username,
+        audit=audit,
     )
     if deleted is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")

@@ -218,6 +218,8 @@ One row per administrative change, with the resource before and after it:
 | `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
+| `agent.disable`, `agent.enable`, `agent.quarantine` | `PATCH /api/agents/{id}` — one action per resulting state, so "who took this host out of the fleet" is a filter on the action rather than a read of every lifecycle row. `before` carries the state the agent was moved out of, `after` the new state and the operator's reason |
+| `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the agent |
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
 | `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |

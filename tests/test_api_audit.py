@@ -341,6 +341,111 @@ def test_agent_registration_is_recorded_once_as_the_agent(tmp_path, monkeypatch)
     assert recorded[0]["tenant_id"] == "default"
 
 
+
+def test_agent_lifecycle_changes_are_recorded_one_action_per_state(tmp_path, monkeypatch):
+    """A quarantine and the release from it are two actions, not two rows of one.
+
+    "Who took this host out of the fleet" is the question the trail is read
+    for, and an operator asks it as a filter on the action.
+    """
+    client = configured_client(tmp_path, monkeypatch, job_execution_mode="agent")
+    agent = {"Authorization": "Bearer test-agent-token"}
+    agent_id = client.post(
+        "/api/agent/register", headers=agent, json={"hostname": "edge-1"}
+    ).json()["agent_id"]
+    admin = {**auth_headers(client, "admin"), "X-Request-Id": REQUEST_ID}
+
+    quarantined = client.patch(
+        f"/api/agents/{agent_id}",
+        headers=admin,
+        json={"status": "quarantined", "reason": "beaconing to 203.0.113.7"},
+    )
+    assert quarantined.status_code == 200, quarantined.text
+    released = client.patch(f"/api/agents/{agent_id}", headers=admin, json={"status": "active"})
+    assert released.status_code == 200, released.text
+
+    [recorded_quarantine] = events(client, admin, action="agent.quarantine")
+    assert recorded_quarantine["actor"] == "admin"
+    assert recorded_quarantine["actor_type"] == "user"
+    assert recorded_quarantine["resource_id"] == agent_id
+    assert recorded_quarantine["tenant_id"] == "default"
+    assert recorded_quarantine["request_id"] == REQUEST_ID
+    assert recorded_quarantine["before"]["lifecycle_status"] == "active"
+    assert recorded_quarantine["after"] == {
+        "lifecycle_status": "quarantined",
+        "reason": "beaconing to 203.0.113.7",
+    }
+
+    [recorded_release] = events(client, admin, action="agent.enable")
+    assert recorded_release["before"]["lifecycle_status"] == "quarantined"
+    assert recorded_release["after"]["reason"] == ""
+    assert actions(client, admin, action="agent.disable") == []
+
+
+def test_deleting_an_agent_records_what_was_removed(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch, job_execution_mode="agent")
+    agent = {"Authorization": "Bearer test-agent-token"}
+    agent_id = client.post(
+        "/api/agent/register", headers=agent, json={"hostname": "edge-1"}
+    ).json()["agent_id"]
+    operator = auth_headers(client, "operator")
+    assert client.delete(f"/api/agents/{agent_id}", headers=operator).status_code == 200
+
+    admin = auth_headers(client, "admin")
+    [recorded] = events(client, admin, action="agent.delete")
+    assert recorded["actor"] == "operator"
+    assert recorded["resource_id"] == agent_id
+    assert recorded["tenant_id"] == "default"
+    assert recorded["before"]["hostname"] == "edge-1"
+    assert recorded["before"]["lifecycle_status"] == "active"
+    # A legacy shared-token agent has no key on record, and the trail says so
+    # rather than leaving the field out.
+    assert recorded["before"]["provisioning_key_id"] == ""
+    # The row outlives the agent: the trail is read after the resource is gone.
+    assert client.get(f"/api/agents/{agent_id}", headers=admin).status_code == 404
+
+
+def test_delete_with_revoke_key_records_the_agent_and_the_key(tmp_path, monkeypatch):
+    """Two acts on two resources, under one actor and one request id (#308).
+
+    The key survives the agent -- it commonly provisions a whole fleet -- so
+    its revocation is its own row rather than a field on the delete.
+    """
+    client = configured_client(
+        tmp_path, monkeypatch, job_execution_mode="agent", agent_token=""
+    )
+    admin = {**auth_headers(client, "admin"), "X-Request-Id": REQUEST_ID}
+    minted = client.post(
+        "/api/tenants/default/provisioning-keys", headers=admin, json={"label": "fleet-a"}
+    )
+    assert minted.status_code == 201, minted.text
+    key = minted.json()
+    exchanged = client.post(
+        "/api/auth/agent/token",
+        json={"provisioning_key": key["key"], "agent_id": "agent_one"},
+    )
+    assert exchanged.status_code == 200, exchanged.text
+    agent = {"Authorization": f"Bearer {exchanged.json()['access_token']}"}
+    assert (
+        client.post("/api/agent/register", headers=agent, json={"hostname": "edge-1"}).status_code
+        == 200
+    )
+
+    operator = {**auth_headers(client, "operator"), "X-Request-Id": REQUEST_ID}
+    deleted = client.delete("/api/agents/agent_one?revoke_key=true", headers=operator)
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["key_revoked"] is True
+
+    [recorded_agent] = events(client, admin, action="agent.delete")
+    assert recorded_agent["before"]["provisioning_key_id"] == key["key_id"]
+    [recorded_key] = events(client, admin, action="provisioning_key.revoke")
+    assert recorded_key["resource_id"] == key["key_id"]
+    assert recorded_key["actor"] == "operator"
+    assert recorded_key["request_id"] == REQUEST_ID
+    # The key's plaintext is never in the trail, only the prefix it is found by.
+    assert "key" not in recorded_key["after"]
+
+
 def test_downloading_a_report_is_recorded(tmp_path, monkeypatch):
     client = configured_client(tmp_path, monkeypatch)
     operator = auth_headers(client, "operator")

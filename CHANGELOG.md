@@ -47,6 +47,21 @@ All notable changes to Shapoclyack are documented in this file.
   agent request re-checks its provisioning key against the database, so
   revoking a key (by this route or the tenant one) stops the JWTs already
   minted from it at once instead of after their remaining lifetime.
+- **Taking an agent out of the fleet is in the audit trail**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308),
+  [#327](https://github.com/onixus/Shapoclyack/issues/327)). The lifecycle
+  routes above recorded their change in a log line, which is the record that is
+  gone with the pod. `PATCH /api/agents/{id}` now writes `agent.disable`,
+  `agent.enable` or `agent.quarantine` — one action per resulting state, so
+  "who took this host out of the fleet" is a filter rather than a read — and
+  `DELETE /api/agents/{id}` writes `agent.delete` with the hostname, the
+  lifecycle state and the `provisioning_key_id` that went with it. Each is
+  written **in the transaction that makes the change**, like every other action
+  in the trail; with `?revoke_key=true` a second row, `provisioning_key.revoke`,
+  follows under the same actor and `X-Request-Id`, because the key is a
+  separate resource that outlives the agent. `agent.register` also records
+  which key bought the place in the fleet. The console's `/audit` filter lists
+  the four new actions.
 - **Provisioning keys expire** ([#308](https://github.com/onixus/Shapoclyack/issues/308)).
   New `OCTO_PROVISIONING_KEY_TTL_DAYS` (default `90`, `0` = perpetual) stamps
   `expires_at` at mint time; an exchange after it answers `401`, and the key
