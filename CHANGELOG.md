@@ -167,6 +167,61 @@ All notable changes to Shapoclyack are documented in this file.
   Re-asserting the role or the disabled flag an account already has used to
   bump its token generation, so a reconciling IaC run or a directory sync
   signed the whole tenant out on every pass.
+- **Integration secrets are encrypted at rest**
+  ([#310](https://github.com/onixus/Shapoclyack/issues/310)). A webhook's HMAC
+  signing key and the header values that carry a Jira / ServiceNow /
+  DefectDojo API token sat in `webhook_subscriptions` as typed, so a database
+  dump, a base backup or a read replica yielded every tenant's tracker tokens
+  at once — the redaction in `secure_webhooks.py` only ever answered what an
+  API *caller* may read. Both columns are now envelope-encrypted: a fresh
+  256-bit data key per write under AES-256-GCM, wrapped by a KEK from
+  `OCTO_MASTER_KEY`, stored as `v1:<kek_id>:<wrapped dek>:<nonce>:<ciphertext>`
+  and bound to its column so a ciphertext moved between the two fails its tag.
+  The API responses are unchanged: the secret is still write-only and header
+  values still redact to `***`. Reading a subscription needs no key at all —
+  the values that would be redacted are never decrypted to be redacted — and
+  neither does the fan-out, which routes on `enabled` / `event_kinds` /
+  `min_severity`. The one function that turns a stored envelope back into a
+  credential is `endpoint_credentials`, called by the delivery loop and by the
+  ticket reflection immediately before the wire call.
+
+  A row whose KEK is not configured — a rotation window closed one step early,
+  a backup restored against another key — is therefore contained: it is listed
+  and edited like any other, it does not stop the event that fans out to its
+  neighbours, and its deliveries dead-letter on the first attempt with
+  `SecretDecryptionError` rather than spending `OCTO_WEBHOOK_MAX_ATTEMPTS` on a
+  retry that cannot succeed. `--rotate` leaves such a row exactly as it is,
+  counts it, and exits non-zero.
+
+  Nothing is re-encrypted by a migration. The stored form names the key that
+  opens it and the read path still accepts plaintext, so encrypting a live
+  installation is an online, resumable operator step
+  (`python -m api.db.reencrypt_secrets`), and a KEK rotation is
+  `OCTO_MASTER_KEY_PREVIOUS` plus the same pass with `--rotate`. Migration
+  `0040_encrypted_secrets` only adds `webhook_subscriptions.key_id`, the
+  queryable mirror of the id inside each ciphertext.
+
+  Without a key: under `OCTO_ENV=prod` the API **refuses to start** if any
+  subscription already holds a secret or a configured header — those rows are
+  either plaintext, which is the defect, or encrypted and unreadable — and
+  starts with a warning when there are none, so a deployment with no
+  integrations is not made to invent a key it does not need. That warning is
+  not a licence: an installation which came up with nothing stored and then
+  had a webhook created **refuses the write**, because the startup answer is
+  about the rows that existed at boot and the first integration is exactly
+  what changes it. Under `dev` it is
+  always a warning and the values stay plaintext, which is what keeps a laptop
+  and the test suite working unchanged. Console passwords, service tokens and
+  provisioning keys are unaffected: they are hashes, not secrets we can read
+  back. `OCTO_OIDC_CLIENT_SECRET` and `OCTO_REPORT_SMTP_PASSWORD` are also
+  unaffected — they never reach the database, and encrypting an environment
+  value with a key from the same environment buys nothing.
+
+  `OCTO_MASTER_KEY_PROVIDER` names where the KEK lives. Only `local` ships;
+  `vault-transit`, `aws-kms` and `gcp-kms` are the **interface**
+  (`KeyProvider`, two methods) and refuse startup rather than falling back to a
+  local key. See `docs/operations.md` § Secrets at rest and the
+  `OCTO_MASTER_KEY` examples in `k8s/shapoclyack/examples/`.
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
   form and preferred it over the value the server minted at `start_scan` or
@@ -201,6 +256,16 @@ All notable changes to Shapoclyack are documented in this file.
   variable at all. `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`
   adds the server-side `tls {}` block and the cert-manager `Certificate` to
   copy. Base is unchanged — the kind stand has no CA and stays plaintext.
+
+### Fixed
+
+- **A webhook delivery whose send raised counted as two attempts** in the
+  dispatch tick's own report while the delivery row recorded one
+  ([#310](https://github.com/onixus/Shapoclyack/issues/310)). The counter was
+  incremented at the wire call and again in the handler that caught it, so the
+  `attempted` figure the worker logs disagreed with the queue whenever a
+  receiver refused a connection. It is now counted once, where the outcome is
+  written back.
 
 ### Added
 

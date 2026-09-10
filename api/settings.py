@@ -62,6 +62,14 @@ class InsecureConfigurationError(RuntimeError):
     Raised from :func:`load_settings`, so it aborts process startup rather than
     surfacing on the first request — a half-started API that answers health
     checks with demo credentials active is the outcome this exists to prevent.
+
+    One check cannot be made at startup and raises from a request instead:
+    storing an integration secret with no ``OCTO_MASTER_KEY`` configured
+    (``api/services/integrations/webhooks.py``). Whether the installation has
+    such a secret is a fact about the database that a later write changes, so
+    the boot-time answer expires. It is the same refusal — the request fails
+    as a server misconfiguration, which is what it is, and the message goes to
+    the log rather than to the caller (#310).
     """
 
 
