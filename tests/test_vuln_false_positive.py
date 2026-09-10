@@ -310,7 +310,11 @@ def test_a_ticket_reopening_a_finding_drops_the_verdict(tmp_path, monkeypatch):
         row.ticket_system = "jira"
         row.ticket_key = "SEC-1"
     monkeypatch.setattr(
-        vulns, "_ticket_endpoint", lambda *args, **kwargs: ("https://jira.example.com", None, {})
+        vulns,
+        "_ticket_endpoint",
+        # (base_url, secret, headers, transport_config) since #347 — the
+        # config is where auth_mode and the sync cadence live.
+        lambda *args, **kwargs: ("https://jira.example.com", None, {}, {}),
     )
     monkeypatch.setattr(
         ticket_sync, "fetch_ticket_status", lambda **kwargs: (vuln_states.OPEN, "Reopened", {})

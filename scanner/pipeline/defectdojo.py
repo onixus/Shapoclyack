@@ -17,6 +17,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .alerts import (
+    MULTI_TENANT_SKIP_REASON,
+    SINGLE_TENANT_ENV,
+    single_tenant_alerts_enabled,
+)
 from .config_schema import DefectDojoConfig
 from .report import SEVERITY_ORDER
 
@@ -127,10 +132,18 @@ def map_vulnerabilities_to_generic_findings(
     }
 
 
-def _encode_multipart(
+def encode_multipart(
     fields: dict[str, str],
     files: dict[str, tuple[str, bytes, str]],
 ) -> tuple[bytes, str]:
+    """``(body, content_type)`` for one ``multipart/form-data`` upload.
+
+    Public because the API's per-tenant DefectDojo channel (#351) sends the
+    same document through ``api/services/integrations`` — same wire format,
+    different credentials and a different product per tenant. The mapping in
+    :func:`map_vulnerabilities_to_generic_findings` is shared for the same
+    reason: two encoders for one API is how the two drift apart.
+    """
     boundary = f"----ShapoclyackBoundary{uuid.uuid4().hex}"
     body = bytearray()
     for name, value in fields.items():
@@ -164,7 +177,7 @@ def _post_reimport(
     timeout: int = 60,
 ) -> dict[str, Any]:
     url = base_url.rstrip("/") + "/api/v2/reimport-scan/"
-    body, content_type = _encode_multipart(
+    body, content_type = encode_multipart(
         fields,
         {"file": (filename, file_bytes, "application/json")},
     )
@@ -211,6 +224,23 @@ def export_to_defectdojo(
 
     if not config.enabled:
         result["skipped_reason"] = "defectdojo.disabled"
+        return result
+
+    # The credentials below (``defectdojo.url``/``api_key``, or
+    # ``OCTO_DEFECTDOJO_*``) are installation-wide, so on a multi-tenant
+    # installation this stage imported every tenant's findings into one
+    # product (#351). Per-tenant DefectDojo channels are configured through
+    # the API and uploaded by ``api/services/integrations/channels.py``.
+    if not single_tenant_alerts_enabled():
+        result["skipped_reason"] = MULTI_TENANT_SKIP_REASON
+        logging.info(
+            "DefectDojo export skipped: %s is not set, so the installation-wide "
+            "credentials are not used. Configure a per-tenant defectdojo "
+            "notification channel through the API, or set %s=true on a "
+            "single-tenant installation.",
+            SINGLE_TENANT_ENV,
+            SINGLE_TENANT_ENV,
+        )
         return result
 
     vulns_path = output_dir / "vulnerabilities.json"

@@ -318,6 +318,47 @@ class Settings:
     webhook_allow_private_targets: bool = False
     # Bound on how much fan-out one event can cause per tenant.
     webhook_max_subscriptions_per_tenant: int = 20
+    # Per-tenant notification channels for finished runs (#351). Gates the API
+    # surface *and* the fan-out that runs when a scan completes — unlike
+    # webhooks the two cannot be split across replicas, because the send
+    # happens in the process that finished the job rather than on a queue.
+    notification_channels_enabled: bool = True
+    # Bound on the destinations one tenant's runs can be announced to.
+    notification_channel_max_per_tenant: int = 10
+    # Longer than webhook_timeout_seconds: a DefectDojo bulk import uploads a
+    # findings document and does the deduplication inside the request, which a
+    # ten-second budget loses on a large run.
+    notification_channel_timeout_seconds: int = 30
+    # Inbound ticket sync (#347). "Two-way" used to mean one button: nothing
+    # read a tracker back unless an operator clicked, so a fix marked Done in
+    # Jira stayed OPEN here until somebody opened that finding's page. This
+    # gates whether *this* replica runs the poller, the same split webhooks and
+    # reports use — the API surface and the button are unaffected, and the
+    # worker is leader-locked so only one replica polls whatever the count.
+    ticket_sync_enabled: bool = True
+    # How often the thread wakes to look for due findings. Not the poll
+    # cadence: that is per subscription, below.
+    ticket_sync_poll_interval_seconds: int = 60
+    # Default seconds between two reads of the *same* ticket. Overridden per
+    # subscription by ``transport_config.sync_interval_seconds``, because a
+    # self-hosted Jira behind a corporate proxy and a Cloud instance with a
+    # published rate limit do not want the same cadence.
+    ticket_sync_interval_seconds: int = 900
+    # Findings polled per subscription per tick. The rest stay due and are
+    # taken by the next tick, oldest cursor first.
+    ticket_sync_batch_size: int = 200
+    # Whole-subscription backoff after a *retryable* failure (5xx, timeout):
+    # base * 2**(failures-1), capped. A tracker that is down must not be asked
+    # once per linked finding, every tick. A 4xx on one ticket is that ticket's
+    # problem and is recorded on its row instead.
+    ticket_sync_retry_base_seconds: int = 120
+    ticket_sync_retry_max_seconds: int = 3600
+    # How long after a ticket-driven closure the tracker may still reopen the
+    # finding. Closed findings have to stay in the queue for the reopen path to
+    # exist at all, and they have to leave it eventually or the queue grows by
+    # every closure forever — a year of them fills the batch ahead of the
+    # findings somebody is working on. 0 drops the reopen path entirely.
+    ticket_sync_reopen_window_days: int = 30
     # In-process per-tenant recurring-scan dispatcher (Phase 8.5). On by
     # default since postgres_url always resolves — Postgres in prod, the SQLite
     # fallback in dev — unlike the opt-in NATS/ClickHouse sidecars.
@@ -335,6 +376,30 @@ class Settings:
     # keeps a year, because "the quarterly report we sent in March" is a thing
     # customers ask for and a scan-retention window would not cover.
     report_retention_days: int = 365
+    # Remediation-workflow events (#349). ``workflow_events_enabled`` gates
+    # whether the eight kinds are emitted at all — an installation that wants
+    # only the discovery events turns it off and its subscriptions stop
+    # matching. ``sla_escalation_enabled`` gates the worker that *derives* the
+    # SLA ones, which is the same split webhooks and reports use: one switch
+    # for the surface, one for the thread that acts.
+    workflow_events_enabled: bool = True
+    sla_escalation_enabled: bool = True
+    # 15 minutes. An SLA is measured in days, so a tighter tick buys nothing
+    # but load — and the marker table means a longer one only delays a
+    # notification rather than losing it.
+    sla_escalation_interval_seconds: int = 900
+    # Bound on how many findings one tenant's tick may announce. A tenant that
+    # imports a backlog of ten thousand overdue findings should not turn one
+    # tick into ten thousand webhook deliveries. It is a *window*, not a
+    # ceiling: the worker keeps a cursor and each tick continues after the last
+    # deadline the previous one reached, so a backlog of N findings is drained
+    # over ceil(N / this) ticks rather than stopping at the first batch (see
+    # ``sla_escalation.SlaEscalationWorker._due_findings``).
+    sla_escalation_max_findings: int = 500
+    # How long a "already announced" marker is kept. Deleting one re-arms its
+    # event, so this is also the period after which a still-breached finding is
+    # raised again. 0 disables the sweep, and with it the re-announcement.
+    workflow_marker_retention_days: int = 365
     # Per-tenant usage quotas (ROADMAP Track E, MSSP operations). These are the
     # platform *defaults*, applied to any tenant without a ``tenant_quotas``
     # row; 0 means unlimited, which is what an installation that never sold a
@@ -1147,6 +1212,32 @@ def load_settings() -> Settings:
         webhook_delivery_retention_days=max(
             0, int(os.environ.get("OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS", "30"))
         ),
+        ticket_sync_enabled=os.environ.get("OCTO_TICKET_SYNC_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        # Floored like the dispatchers' intervals above: a mistyped 0 would
+        # turn the worker's Event.wait() into a busy loop against the database.
+        ticket_sync_poll_interval_seconds=max(
+            5, int(os.environ.get("OCTO_TICKET_SYNC_POLL_INTERVAL_SECONDS", "60"))
+        ),
+        # Floored at 60s for the same reason the per-subscription override is
+        # (api/services/integrations/tickets.py): the poll is one GET per
+        # linked finding, and a tenant with thousands of them can put real load
+        # on a self-hosted tracker.
+        ticket_sync_interval_seconds=max(
+            60, int(os.environ.get("OCTO_TICKET_SYNC_INTERVAL_SECONDS", "900"))
+        ),
+        ticket_sync_batch_size=max(
+            1, int(os.environ.get("OCTO_TICKET_SYNC_BATCH_SIZE", "200"))
+        ),
+        ticket_sync_retry_base_seconds=max(
+            1, int(os.environ.get("OCTO_TICKET_SYNC_RETRY_BASE_SECONDS", "120"))
+        ),
+        ticket_sync_retry_max_seconds=max(
+            1, int(os.environ.get("OCTO_TICKET_SYNC_RETRY_MAX_SECONDS", "3600"))
+        ),
+        ticket_sync_reopen_window_days=max(
+            0, int(os.environ.get("OCTO_TICKET_SYNC_REOPEN_WINDOW_DAYS", "30"))
+        ),
         webhook_allow_private_targets=os.environ.get(
             "OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS", "false"
         ).lower()
@@ -1154,10 +1245,35 @@ def load_settings() -> Settings:
         webhook_max_subscriptions_per_tenant=max(
             1, int(os.environ.get("OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT", "20"))
         ),
+        notification_channels_enabled=os.environ.get(
+            "OCTO_NOTIFICATION_CHANNELS_ENABLED", "true"
+        ).lower()
+        in ("1", "true", "yes", "on"),
+        notification_channel_max_per_tenant=max(
+            1, int(os.environ.get("OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT", "10"))
+        ),
+        notification_channel_timeout_seconds=max(
+            1, int(os.environ.get("OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS", "30"))
+        ),
         scheduler_dispatch_enabled=os.environ.get("OCTO_SCHEDULER_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         reports_enabled=os.environ.get("OCTO_REPORTS_ENABLED", "true").lower()
         in {"1", "true", "yes"},
+        workflow_events_enabled=os.environ.get("OCTO_WORKFLOW_EVENTS_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        sla_escalation_enabled=os.environ.get("OCTO_SLA_ESCALATION_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        # Floored like the report dispatcher's: a mistyped 0 turns the thread's
+        # Event.wait() into a busy loop against the database.
+        sla_escalation_interval_seconds=max(
+            30, int(os.environ.get("OCTO_SLA_ESCALATION_INTERVAL_SECONDS", "900"))
+        ),
+        sla_escalation_max_findings=max(
+            1, int(os.environ.get("OCTO_SLA_ESCALATION_MAX_FINDINGS", "500"))
+        ),
+        workflow_marker_retention_days=max(
+            0, int(os.environ.get("OCTO_WORKFLOW_MARKER_RETENTION_DAYS", "365"))
+        ),
         quota_default_max_assets=max(
             0, int(os.environ.get("OCTO_QUOTA_DEFAULT_MAX_ASSETS", "0"))
         ),

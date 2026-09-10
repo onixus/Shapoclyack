@@ -503,6 +503,12 @@ org_profile:
 #   OCTO_SLACK_WEBHOOK, OCTO_TELEGRAM_BOT_TOKEN, OCTO_TELEGRAM_CHAT_ID
 #   OCTO_SMTP_HOST, OCTO_SMTP_PORT, OCTO_SMTP_FROM, OCTO_SMTP_TO
 # Enable with alerts.enabled: true or CLI --notify.
+#
+# SINGLE-TENANT ONLY (#351): everything below is installation-wide, so this
+# whole section is honoured only when OCTO_SINGLE_TENANT_ALERTS=true. Without
+# it the stage skips with skipped_reason: multi_tenant_use_notification_channels
+# — a multi-tenant installation configures destinations per tenant through
+# POST /api/notification-channels instead (docs/configuration.md).
 alerts:
   enabled: false
   min_severity: high
@@ -533,6 +539,10 @@ alerts:
 # DefectDojo export (Generic Findings Import via /api/v2/reimport-scan/).
 # Prefer env credentials: OCTO_DEFECTDOJO_URL, OCTO_DEFECTDOJO_API_KEY
 # Enable with defectdojo.enabled: true or CLI --export-defectdojo.
+#
+# SINGLE-TENANT ONLY (#351), like alerts above: one product for every tenant's
+# findings. Needs OCTO_SINGLE_TENANT_ALERTS=true; otherwise create a per-tenant
+# defectdojo notification channel through the API.
 defectdojo:
   enabled: false
   url: ""

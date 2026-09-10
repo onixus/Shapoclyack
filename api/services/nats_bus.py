@@ -564,6 +564,23 @@ class NatsBus:
             retries=retries,
         )
 
+    def publish_workflow_event(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
+        """Publish one workflow event to ``events.workflow.{tenant_id}.{kind}`` (#349).
+
+        Not on the notification path: the webhook queue row is written by
+        ``workflow_events.emit`` itself, and this is the copy for consumers
+        that are not webhooks. See that module's docstring.
+        """
+        tenant_id = str(envelope.get("tenant_id") or "default")
+        kind = str(envelope.get("kind") or "unknown")
+        return self.publish_json(
+            workflow_event_subject(tenant_id, kind),
+            envelope,
+            msg_id=str(envelope.get("event_id") or "") or None,
+            headers={"tenant_id": tenant_id, "event_kind": kind},
+            retries=retries,
+        )
+
     def publish_endpoint_inventory(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
         """Publish accepted endpoint inventory summary to ``ingest.endpoint_inventory.{tenant_id}`` (Phase S8)."""
         tenant_id = str(envelope.get("tenant_id") or "default")
@@ -665,6 +682,26 @@ def ingest_results_subject(tenant_id: str) -> str:
 def asset_event_subject(tenant_id: str, kind: str) -> str:
     """NATS subject ``events.asset.{tenant_id}.{kind}`` with safe tokens."""
     return f"events.asset.{_subject_token(tenant_id, 'default')}.{_subject_token(kind, 'unknown')}"
+
+
+def workflow_event_subject(tenant_id: str, kind: str) -> str:
+    """NATS subject ``events.workflow.{tenant_id}.{kind}`` with safe tokens (#349).
+
+    Tenant before kind and a kind token after it, like the asset subjects
+    rather than the audit one: a workflow kind is a fixed, small vocabulary
+    (``workflow_events.WORKFLOW_EVENT_KINDS``), so one token per kind is
+    something an ACL can be written against once — unlike an audit action,
+    which is a growing list of dotted verbs.
+
+    A separate tree from ``events.asset.>`` on purpose: widening the deployed
+    asset fan-out consumer's ``filter_subject`` would mean deleting it and
+    resetting its cursor, which replays a month of retained events at
+    everybody's receivers (#152).
+    """
+    return (
+        f"events.workflow.{_subject_token(tenant_id, 'default')}"
+        f".{_subject_token(kind, 'unknown')}"
+    )
 
 
 def audit_event_subject(tenant_id: str) -> str:

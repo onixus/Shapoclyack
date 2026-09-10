@@ -45,6 +45,11 @@ const ACTIONS = [
   // Not an operator's edit but the platform's own refusal: the filter that
   // answers "which window stopped our scans last night" (#352).
   "scan.maintenance_block",
+  "notification_channel.create",
+  "notification_channel.update",
+  "notification_channel.delete",
+  "vulnerability.bulk",
+  "asset.bulk",
 ] as const;
 
 /** ISO instant from a `datetime-local` value, or undefined when it is empty.

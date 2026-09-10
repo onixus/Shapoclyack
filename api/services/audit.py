@@ -86,7 +86,21 @@ ACTION_AGENT_ENABLE = "agent.enable"
 ACTION_AGENT_QUARANTINE = "agent.quarantine"
 ACTION_AGENT_DELETE = "agent.delete"
 ACTION_REPORT_DOWNLOAD = "report.download"
+# One row per *bulk* request, listing the ids it acted on (#346), rather than
+# one row per id: a batch is one decision, and two hundred rows that each look
+# like a hand edit would hide that it was taken once. The single-finding verbs
+# are not audited here at all — they write ``vulnerability_events``, which is
+# the remediation trail and outlives this one.
+ACTION_VULN_BULK = "vulnerability.bulk"
+ACTION_ASSET_BULK = "asset.bulk"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
+# Where a tenant's finished runs are announced (#351). Audited although the
+# neighbouring webhook subscriptions are not: a channel is a destination for
+# this tenant's exposure data chosen by a tenant admin, and "who pointed our
+# scan results at that Slack" is a question the trail has to be able to answer.
+ACTION_NOTIFICATION_CHANNEL_CREATE = "notification_channel.create"
+ACTION_NOTIFICATION_CHANNEL_UPDATE = "notification_channel.update"
+ACTION_NOTIFICATION_CHANNEL_DELETE = "notification_channel.delete"
 ACTION_CONFIG_UPDATE = "config.update"
 # The maintenance calendar (#352). The three window actions are administrative
 # edits; the fourth is not an edit at all but a refusal — the platform

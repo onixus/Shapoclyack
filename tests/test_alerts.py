@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from scanner.pipeline import alerts, safe_http
 from scanner.pipeline.alerts import (
     check_dkim_record,
@@ -13,6 +15,20 @@ from scanner.pipeline.config_schema import (
     SmtpAlertConfig,
     TelegramAlertConfig,
 )
+
+
+@pytest.fixture(autouse=True)
+def single_tenant_installation(monkeypatch):
+    """Declare the installation single-tenant for the tests below (#351).
+
+    This stage's credentials are installation-wide, so ``send_alerts`` now
+    refuses to use them unless an operator has said the installation has one
+    tenant. Everything here is about the *content* of an alert, which is the
+    same either way; the gate itself is asserted by
+    ``test_send_alerts_refuses_installation_wide_credentials_by_default``,
+    which unsets the flag again.
+    """
+    monkeypatch.setenv(alerts.SINGLE_TENANT_ENV, "true")
 
 
 def test_format_alert_message_includes_diff_counts():
@@ -77,6 +93,32 @@ def test_send_alerts_on_diff_only_without_changes():
     )
     assert result["attempted"] is False
     assert result["skipped_reason"] == "no_diff_changes"
+
+
+def test_send_alerts_refuses_installation_wide_credentials_by_default(monkeypatch):
+    """#351: on a multi-tenant installation there is no correct recipient.
+
+    The Slack webhook below is installation-wide, and this stage holds no
+    tenant id at all — so in an MSSP every tenant's scan announced itself in
+    one channel. Nothing is sent unless the operator has declared otherwise.
+    """
+    monkeypatch.delenv(alerts.SINGLE_TENANT_ENV, raising=False)
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "scanner.pipeline.alerts.send_slack_alert",
+        lambda url, text: sent.append(url),
+    )
+    cfg = AlertsConfig(
+        enabled=True,
+        slack=SlackAlertConfig(enabled=True, webhook_url="https://hooks.slack.example/global"),
+    )
+
+    result = send_alerts(cfg, run_id="r", summary={"alive_hosts": 1}, diff=None)
+
+    assert result["attempted"] is False
+    assert result["skipped_reason"] == alerts.MULTI_TENANT_SKIP_REASON
+    assert result["slack"] is None
+    assert sent == []
 
 
 def test_send_alerts_reports_missing_credentials():

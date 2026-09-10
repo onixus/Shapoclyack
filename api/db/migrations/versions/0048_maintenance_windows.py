@@ -45,7 +45,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0048_maintenance_windows"
-down_revision: Union[str, None] = "0043_user_mfa"
+down_revision: Union[str, None] = "0047_notification_channels"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

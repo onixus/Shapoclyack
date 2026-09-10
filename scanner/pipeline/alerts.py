@@ -21,6 +21,39 @@ from .report import SEVERITY_ORDER
 #: room to spare rather than a guess at the real size.
 _DOH_MAX_RESPONSE_BYTES = 64 * 1024
 
+#: Opt-in for installation-wide alert credentials (#351).
+#:
+#: This stage's Slack webhook, Telegram bot and SMTP recipients come from the
+#: scan config and from ``OCTO_*`` environment variables, both of which are
+#: installation-wide. On a multi-tenant installation that is a cross-tenant
+#: leak and not a configuration choice: every tenant's scan announced itself in
+#: one channel, and nothing at this point in the pipeline even knows which
+#: tenant the run belongs to. So the credentials are now used only where an
+#: operator has declared the installation to be single-tenant.
+#:
+#: Multi-tenant installations configure per-tenant channels through the API
+#: instead (``POST /api/notification-channels``); the API sends the same
+#: message from ``api/services/integrations/channels.py`` once a run finishes.
+SINGLE_TENANT_ENV = "OCTO_SINGLE_TENANT_ALERTS"
+
+#: What ``send_alerts`` reports when the flag is not set. Named so the pipeline
+#: test and the DefectDojo stage next door say the same thing.
+MULTI_TENANT_SKIP_REASON = "multi_tenant_use_notification_channels"
+
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def single_tenant_alerts_enabled() -> bool:
+    """Whether this installation has declared itself single-tenant (#351).
+
+    Default false, which is the direction a leak has to fail in: a standalone
+    CLI user who relies on ``alerts:`` in the config file sets the flag once
+    and keeps the behaviour, while an MSSP installation that upgrades stops
+    sending every tenant's scan to one channel without anybody having to
+    notice.
+    """
+    return os.environ.get(SINGLE_TENANT_ENV, "").strip().lower() in _TRUTHY
+
 
 def _env_or(value: str, env_name: str) -> str:
     return value or os.environ.get(env_name, "")
@@ -238,6 +271,21 @@ def send_alerts(
 
     if not config.enabled:
         result["skipped_reason"] = "alerts.disabled"
+        return result
+
+    # Before the message is even built: the credentials this stage would use
+    # are installation-wide, so on a multi-tenant installation there is no
+    # correct recipient for them (#351).
+    if not single_tenant_alerts_enabled():
+        result["skipped_reason"] = MULTI_TENANT_SKIP_REASON
+        logging.info(
+            "Alerts skipped: %s is not set, so the installation-wide Slack / "
+            "Telegram / SMTP credentials are not used. Configure per-tenant "
+            "notification channels through the API, or set %s=true on a "
+            "single-tenant installation.",
+            SINGLE_TENANT_ENV,
+            SINGLE_TENANT_ENV,
+        )
         return result
 
     if config.on_diff_only and (diff is None or not diff.get("has_changes")):

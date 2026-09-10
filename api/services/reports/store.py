@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import workflow_events
 from api.services.compliance import frameworks as catalog
 from api.services.reports import content as content_builder
 from api.services.reports import render as renderer
@@ -570,7 +571,32 @@ def generate(
         session.add(row)
         session.commit()
         session.refresh(row)
-        return _report_dict(row)
+        result = _report_dict(row)
+
+    # Emitted for the failed render too, with ``status`` saying which: a
+    # scheduled report that never arrived is exactly the case somebody needs
+    # told, and a "report_generated" that only ever fires on success would
+    # leave that silent (#349). Outside the session, after the commit.
+    workflow_events.emit(
+        settings,
+        "report_generated",
+        tenant_id=tenant_id,
+        subject_id=report_id,
+        data={
+            "report_id": report_id,
+            "template_id": template_id,
+            "schedule_id": schedule_id,
+            "kind": result.get("kind"),
+            "format": result.get("format"),
+            "status": result.get("status"),
+            "title": result.get("title"),
+            "size_bytes": result.get("size_bytes"),
+            "generated_by": result.get("generated_by"),
+            "error": result.get("error"),
+        },
+        occurred_at=now,
+    )
+    return result
 
 
 def list_reports(

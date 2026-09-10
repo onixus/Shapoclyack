@@ -107,6 +107,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import agents as agents_service
     from api.services import audit as audit_service
     from api.services import auth_audit
+    from api.services import idempotency as idempotency_service
     from api.services import oidc as oidc_service
     from api.services import scan_schedules
     from api.services import service_tokens as service_tokens_service
@@ -114,6 +115,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import users as users_service
     from api.services import wordlists as wordlists_service
     from api.services.crypto import envelope as crypto_envelope
+    from api.services.integrations import channels as channels_service
     from api.services.integrations import webhooks as webhooks_service
 
     # The KEK provider is process-global (#310). Clearing it here means a test
@@ -128,6 +130,10 @@ def reset_service_state(settings: "Settings") -> None:
     # and a later, unrelated test failed.
     assert agent_deployer.join_workers(), "a deployment worker outlived its test"
     agent_deployer.configure(settings)
+    # Same reasoning for the notification fan-out (#351): since it moved off
+    # the request thread, a send still recording ``last_status`` would race
+    # this truncation and the next test's channels.
+    assert channels_service.join_senders(), "a notification fan-out outlived its test"
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     # Users are cleared here and re-seeded by create_app()'s bootstrap, which
@@ -150,6 +156,10 @@ def reset_service_state(settings: "Settings") -> None:
     # DELETE is refused by migration 0037's trigger, which is the point of it.
     audit_service.configure(settings)
     audit_service.reset_for_tests()
+    # Idempotency records (#346) have no foreign key to ``tenants``, so they do
+    # not vanish with the truncation above: a key one test used would 409 the
+    # next test that reached for the same name.
+    idempotency_service.reset_for_tests(settings)
     # Service tokens are rows on the tenants the reset above truncated, and the
     # OIDC caches are process-global — a discovery document or an in-flight
     # authorization request from a previous test would otherwise leak into this

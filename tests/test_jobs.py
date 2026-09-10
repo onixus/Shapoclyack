@@ -325,6 +325,20 @@ class _NoopThread:
     def join(self, timeout: float | None = None) -> None:
         """`_run_job` also spawns a lease-renewal thread (P1.4) and joins it."""
 
+    def is_alive(self) -> bool:
+        """Nothing was started, so nothing is running.
+
+        ``monkeypatch.setattr(jobs_service.threading, "Thread", ...)`` replaces
+        the attribute on the *threading module*, so every thread any code
+        starts during this test is one of these. The notification fan-out
+        (#351) keeps its handles for ``channels.join_senders`` and asks them
+        this — from a *later* test, by which time the patch is long undone but
+        the stand-in is still in the set. Without this method that later test
+        died on an AttributeError from a double that never claimed to be a
+        Thread.
+        """
+        return False
+
 
 def test_failed_asset_upsert_is_recorded_on_the_job(settings, monkeypatch):
     """The Phase 7 asset upsert is best-effort and must not fail the scan -- but

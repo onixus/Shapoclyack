@@ -83,6 +83,10 @@ _ACTION_SEVERITY = {
     "provisioning_key.create": 8,
     "agent.delete": 8,
     "config.update": 8,
+    # Same weight as a config change: it redirects where exposure data goes.
+    "notification_channel.create": 8,
+    "notification_channel.update": 8,
+    "notification_channel.delete": 6,
     # Revocations and lifecycle: still worth an alert, but they narrow access
     # rather than widening it.
     "user.create": 6,
