@@ -14,6 +14,15 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # document nobody edits.
 _JSON_DOC = JSON().with_variant(JSONB(), "postgresql")
 
+# The same document type, but with Python ``None`` stored as SQL NULL rather
+# than as the JSON scalar ``null`` — which is what SQLAlchemy's JSON does by
+# default, and which makes ``WHERE col IS NULL`` silently match nothing. Only
+# ``IdempotencyRecord.response`` uses it, and it has to: "reserved, not yet
+# answered" is expressed as NULL and is queried for by the release path.
+_JSON_DOC_NULLABLE = JSON(none_as_null=True).with_variant(
+    JSONB(none_as_null=True), "postgresql"
+)
+
 
 class Base(DeclarativeBase):
     pass
@@ -1019,6 +1028,26 @@ class Vulnerability(Base):
     ticket_system: Mapped[str | None] = mapped_column(default=None)
     ticket_key: Mapped[str | None] = mapped_column(default=None)
     ticket_url: Mapped[str | None] = mapped_column(default=None)
+    # The inbound sync worker's cursor (#347): when this finding's ticket was
+    # last *read*, whether or not the read succeeded. It is the attempt and not
+    # the success on purpose — a tracker answering 404 for one key must not put
+    # that finding at the head of every batch forever, starving the rest. Which
+    # of the two it was is in ``ticket_sync_error``, and the worker's `lag`
+    # metric is the age of the oldest cursor still due.
+    ticket_synced_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The tracker's own status string as of that read ("Done", "6", "Active").
+    # The poller applies a suggestion only when this *changes*, which is what
+    # keeps it from re-imposing a state an operator has just overruled: if a
+    # human reopens a finding whose Jira issue is still Done — and the outbound
+    # reflection could not move it, because the workflow offers no Reopen —
+    # then without this the next tick would close it again, every interval,
+    # forever. The manual button is not subject to it: a person clicking Sync
+    # is asking for the tracker's current word regardless.
+    ticket_remote_status: Mapped[str | None] = mapped_column(default=None)
+    # The last read's failure, or NULL after one that worked. Kept on the row
+    # rather than only in the log because "the ticket link is broken" is a
+    # property of this finding that an operator has to be able to see.
+    ticket_sync_error: Mapped[str | None] = mapped_column(default=None)
     # Closed-loop remediation (#183). ``machine_verified`` is only ever set by
     # the ingest path in api/services/vulnerabilities.py, never from a request
     # body: the whole value of the metric is that it cannot be self-attested.
@@ -1067,6 +1096,14 @@ class Vulnerability(Base):
         # Adoption: one tenant's closures inside a window, by reason.
         Index("ix_vulnerabilities_fp", "tenant_id", "closure_reason", "closed_at"),
         Index("ix_vulnerabilities_closed", "tenant_id", "state", "closed_at"),
+        # The ticket-sync worker's due read: one tenant's findings on one
+        # tracker, oldest cursor first (#347).
+        Index(
+            "ix_vulnerabilities_ticket_sync",
+            "tenant_id",
+            "ticket_system",
+            "ticket_synced_at",
+        ),
     )
 
 
@@ -1823,4 +1860,64 @@ class WorkflowEventMarker(Base):
         UniqueConstraint(
             "tenant_id", "kind", "subject_id", "marker", name="uq_workflow_event_marker"
         ),
+    )
+
+
+class IdempotencyRecord(Base):
+    """One write request a client gave a name to, and what it answered (#346).
+
+    ``Job.idempotency_key`` already does this for scan starts, and it can do it
+    because a start *creates a row* — the unique index on
+    ``(tenant_id, idempotency_key)`` lives on the thing the request produced, so
+    the replay is the row itself. A bulk action produces no such row: it edits
+    findings that already exist, and its answer is a per-id report. There is
+    nowhere on the tenant's findings to hang the key, so the key gets a table.
+
+    ``endpoint`` namespaces the key, so ``Idempotency-Key: nightly`` on
+    ``/vulnerabilities/bulk`` and on ``/assets/bulk`` are two different
+    promises rather than one collision. ``request_digest`` is what makes a
+    replay checkable: a key on its own only says "the client called this
+    request X", and reusing it for a *different* batch is a 409
+    (:class:`~api.services.idempotency.IdempotencyMismatch`), never a replay of
+    somebody else's answer.
+
+    ``response`` is NULL while the request is in flight — the row is inserted
+    before the work starts, so two concurrent sends of one key cannot both do
+    it, and the second is told the first is still running. A request that
+    *failed* deletes its own row, so a key is never burned by an answer the
+    caller never got.
+
+    Rows are disposable: they are the memory of a retry window, not a record of
+    anything, and :func:`api.services.idempotency.purge_expired` drops them
+    once past their TTL.
+    """
+
+    __tablename__ = "idempotency_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # No FK to tenants: a key outliving its tenant is harmless, and a cascade
+    # delete on this table buys nothing worth the constraint.
+    tenant_id: Mapped[str]
+    # Which endpoint the key was presented to, e.g. "vulnerabilities.bulk".
+    endpoint: Mapped[str]
+    key: Mapped[str]
+    request_digest: Mapped[str] = mapped_column(default="", server_default="")
+    # NULL = still in flight. See the class docstring, and ``_JSON_DOC_NULLABLE``
+    # for why this one column does not share ``_JSON_DOC``.
+    response: Mapped[dict | None] = mapped_column(_JSON_DOC_NULLABLE, default=None)
+    created_at: Mapped[datetime]
+
+    __table_args__ = (
+        # The whole point of the table: one key means one execution per tenant
+        # per endpoint, enforced by the database rather than by a lookup that
+        # two replicas can both pass.
+        Index(
+            "uq_idempotency_tenant_endpoint_key",
+            "tenant_id",
+            "endpoint",
+            "key",
+            unique=True,
+        ),
+        # The purge's only query.
+        Index("ix_idempotency_created_at", "created_at"),
     )

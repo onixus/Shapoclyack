@@ -63,6 +63,28 @@ JOB_IDEMPOTENT_REPLAYS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+IDEMPOTENT_REPLAYS_TOTAL = Counter(
+    "octo_idempotent_replays_total",
+    "Write requests answered from a stored Idempotency-Key record instead of "
+    "being executed again, by endpoint (#346). Separate from "
+    "octo_job_idempotent_replays_total, which counts the scan-start and "
+    "results paths that hang their key on the job row itself.",
+    ["endpoint"],
+    registry=REGISTRY,
+)
+
+BULK_ACTION_ITEMS_TOTAL = Counter(
+    "octo_bulk_action_items_total",
+    "Ids processed by a bulk write, by endpoint, action and per-id outcome "
+    "(ok, not_found, conflict, invalid) — #346. A batch is a partial success "
+    "by design, so the ratio here is what says whether an operator's "
+    "selection matched what they may act on. There is no 'forbidden': an id "
+    "outside the caller's write scope is reported missing, never refused, for "
+    "the same reason the single-id routes 404 it.",
+    ["endpoint", "action", "outcome"],
+    registry=REGISTRY,
+)
+
 AUTH_ATTEMPTS_TOTAL = Counter(
     "octo_auth_attempts_total",
     "Access decisions, by outcome (success, failure, locked, denied). "
@@ -223,6 +245,33 @@ WEBHOOK_DELIVERY_QUEUE = Gauge(
     "Webhook deliveries currently in the table, by status. Cluster-wide (every "
     "replica reports the same query), so aggregate with max(), not sum().",
     ["status"],
+    registry=REGISTRY,
+)
+TICKET_SYNC_LAG_SECONDS = Gauge(
+    "octo_ticket_sync_lag_seconds",
+    "How long the oldest still-due linked ticket has waited to be read back "
+    "(#347), as of the last tick of the inbound sync worker. It grows when a "
+    "tracker is unreachable, when one tick cannot drain the estate, and when "
+    "no replica holds the leader lock — which is the case the manual button "
+    "used to hide entirely. Reported only by the leader; followers leave it at "
+    "0, so aggregate with max(), not sum().",
+    ["transport"],
+    registry=REGISTRY,
+)
+TICKET_SYNC_POLLS_TOTAL = Counter(
+    "octo_ticket_sync_polls_total",
+    "Tickets read back by the inbound sync worker, by transport and outcome. "
+    "outcome=applied means the tracker's status moved the finding, "
+    "outcome=unchanged that it agreed with the finding's state, and "
+    "outcome=failed that the ticket could not be read at all.",
+    ["transport", "outcome"],
+    registry=REGISTRY,
+)
+TICKET_SYNC_IS_LEADER = Gauge(
+    "octo_ticket_sync_is_leader",
+    "1 when this replica holds the ticket-sync advisory lock (#347). Sums to "
+    "1 across a healthy cluster; 0 everywhere means nothing is reading "
+    "trackers back and every ticket-driven closure is waiting on a human.",
     registry=REGISTRY,
 )
 ENDPOINT_RETENTION_RUN_DURATION_SECONDS = Histogram(

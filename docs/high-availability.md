@@ -235,7 +235,8 @@ What is still a brief interruption:
   than resumes.
 
 Background workers are safe across replicas by construction, not by luck: the
-scheduler dispatcher, the report dispatcher and the software-match worker take a
+scheduler dispatcher, the report dispatcher, the software-match worker and the
+inbound ticket-sync poller take a
 Postgres advisory lock (`api/services/leader_lock.py`), webhook delivery claims
 rows `FOR UPDATE`, and the ClickHouse ingest worker is a durable JetStream
 consumer. `tests/test_multi_replica_load.py` is the regression suite for that.

@@ -56,6 +56,7 @@ from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
 from api.services.crypto import startup as crypto_startup
+from api.services.integrations import ticket_sync_worker
 from api.services.integrations import webhook_worker
 from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
@@ -111,9 +112,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # and claims are taken with FOR UPDATE SKIP LOCKED, so every replica may
     # dispatch (ROADMAP Phase 10.3).
     webhook_worker.start_worker(settings)
+    # Leader-locked, unlike the webhook dispatcher above: reading a tracker
+    # back takes no per-row claim, so every replica would poll the same tenant's
+    # tickets and write the same lifecycle events (#347).
+    ticket_sync_worker.start_worker(settings)
     try:
         yield
     finally:
+        ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
         sla_escalation.stop_worker()

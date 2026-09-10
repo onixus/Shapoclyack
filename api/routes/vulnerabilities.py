@@ -16,6 +16,11 @@ needs ``operator``. Two things need tenant ``admin``:
 
 Same reasoning as ``webhooks.py`` requiring ``admin`` to create a subscription:
 the role follows what the action can commit the tenant to, not how hard it is.
+
+``POST /bulk`` (#346) applies one of those verbs to many findings and inherits
+that table exactly — see ``_BULK_ROLES``. A batch is a partial success by
+design and answers 200 with a per-id report; the only 422s are the ones that
+apply to no id at all.
 """
 
 from __future__ import annotations
@@ -25,9 +30,14 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from api.auth import Role, TenantPrincipal, get_settings, require_tenant
+from api.auth import ROLE_RANK, Role, TenantPrincipal, get_settings, require_tenant
+from api.routes import _idempotency as idempotency
+from api.routes._audit import AuditDep
+from api.routes._idempotency import IdempotencyKeyHeader
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
+    BulkActionReport,
+    BulkVulnerabilityRequest,
     Page,
     RiskScoreSnapshotInfo,
     SlaEscalationPolicyInfo,
@@ -44,6 +54,8 @@ from api.schemas import (
     VulnerabilityTicketRequest,
     VulnerabilityTransitionRequest,
 )
+from api.services import audit as audit_service
+from api.services import bulk_actions
 from api.services import risk_snapshots
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
@@ -226,6 +238,142 @@ def list_all_events(
         settings, tenant_id=_scope(principal), offset=page.offset, limit=page.limit
     )
     return build_page(items, total, page)
+
+
+# The role each bulk verb needs, which is exactly the role its single-finding
+# route needs: ``operator`` to move work along, ``admin`` to commit the tenant
+# to accepting a risk or to suppressing a finding. Doing two hundred of a thing
+# must never be cheaper than doing one of it — a bulk endpoint that took the
+# lowest role of its members would be a way around the admin gate on
+# ``/exception`` and ``/false-positive``.
+_BULK_ROLES: dict[str, Role] = {
+    "assign": Role.operator,
+    "transition": Role.operator,
+    "ticket": Role.operator,
+    "exception": Role.admin,
+    "false_positive": Role.admin,
+}
+
+
+def _record_bulk_audit(
+    audit: Any,
+    principal: TenantPrincipal,
+    report: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    action: str,
+) -> None:
+    """The batch's audit row, filed in the tenant whose findings it changed.
+
+    Which is not always the caller's: a platform admin writes with no scope
+    (``_write_scope``), so ``?tenant_id=acme`` reads to a human like a boundary
+    and is not one. Filing that batch's only row under the admin's own tenant
+    left the affected customer's trail — and the SIEM forward, which filters by
+    tenant — with no record of their finding being edited. So a batch that
+    crossed tenants is one row per tenant it touched; see
+    ``bulk_actions.audit_rows``.
+    """
+    for tenant_id, document in bulk_actions.audit_rows(
+        report,
+        payload,
+        write_scope=_write_scope(principal),
+        caller_tenant=principal.tenant_id,
+    ):
+        audit_service.record_standalone(
+            audit,
+            action=audit_service.ACTION_VULN_BULK,
+            resource_type="vulnerability",
+            resource_id=f"bulk:{action}",
+            tenant_id=tenant_id,
+            after=document,
+        )
+
+
+@router.post("/bulk", response_model=BulkActionReport)
+def bulk_action(
+    body: BulkVulnerabilityRequest,
+    # ``operator`` is the floor; the per-action check below raises it to
+    # ``admin`` where the verb needs one. The dependency cannot express it —
+    # it runs before the body is parsed, so it does not know the verb yet.
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+    audit: AuditDep,
+    idempotency_key: IdempotencyKeyHeader = None,
+) -> dict[str, Any]:
+    """Apply one lifecycle verb to many findings, reporting on each id (#346).
+
+    200 even when some ids failed: a batch is a partial success by design. One
+    finding that has since closed, or one id belonging to a tenant this caller
+    cannot write in, must not refuse the other hundred and ninety-nine — see
+    ``BulkActionReport``, and :mod:`api.services.bulk_actions` for what each
+    outcome means. 422 is reserved for a request that could not be applied to
+    *anything*: an empty or oversized id list.
+
+    Recorded as **one** ``audit_events`` row listing the ids, not one row per
+    id: this was one decision, and two hundred rows that each look like a hand
+    edit would bury that.
+    """
+    required = _BULK_ROLES[body.action]
+    if ROLE_RANK[principal.role] < ROLE_RANK[required]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Role '{required.value}' or higher required in tenant "
+                f"'{principal.tenant_id}' for bulk '{body.action}'"
+            ),
+        )
+    # ``exclude_unset`` for the same reason the single ``/assign`` route uses
+    # it: `{"assignee": null}` unassigns, an omitted key leaves the field alone.
+    payload = body.payload.model_dump(exclude_unset=True)
+    guard = idempotency.begin(
+        settings,
+        tenant_id=principal.tenant_id,
+        endpoint="vulnerabilities.bulk",
+        key=idempotency_key,
+        # Sorted ids: a retry that reshuffles its selection is the same batch,
+        # and calling it a different one would 409 an honest retry.
+        payload={"action": body.action, "ids": sorted(set(body.vuln_ids)), "payload": payload},
+    )
+    if guard.replay is not None:
+        return {**guard.replay, "replayed": True}
+    try:
+        report = bulk_actions.apply_vulnerability_action(
+            settings,
+            tenant_id=_write_scope(principal),
+            vuln_ids=body.vuln_ids,
+            action=body.action,
+            payload=payload,
+            actor=principal.username,
+        )
+    except ValueError as exc:
+        # Request-level, not per-id: nothing was applied, so there is no
+        # partial report to hand back and the key must not be burned.
+        guard.release()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except bulk_actions.BulkActionAborted as exc:
+        # The batch died part-way and every id before that is committed. The
+        # row goes in *before* the 500 leaves: findings changed with nothing in
+        # `audit_events` is the silent change the trail exists to make
+        # impossible, and a partial report is still a report.
+        _record_bulk_audit(audit, principal, exc.report, payload, action=body.action)
+        if exc.report["succeeded"]:
+            # The key is deliberately *not* given back. A retry with it would
+            # be a second pass over the ids that did apply — for `transition`
+            # a hundred conflicts, for `false_positive` a second suppression
+            # window — so what the retry gets is this partial report, which
+            # tells it exactly which ids are left to send.
+            guard.store(exc.report)
+        else:
+            guard.release()
+        raise
+    except Exception:
+        guard.release()
+        raise
+    _record_bulk_audit(audit, principal, report, payload, action=body.action)
+    guard.store(report)
+    return report
 
 
 @router.get("", response_model=Page[VulnerabilityInfo])

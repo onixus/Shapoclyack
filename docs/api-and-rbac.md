@@ -357,6 +357,7 @@ One row per administrative change, with the resource before and after it:
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
 | `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
+| `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
 
 Every row carries the actor and what kind of principal it is (`user`,
 `service_token`, `agent`, `system`), the client address resolved the same way
@@ -367,11 +368,19 @@ matches a value that was on the wire.
 **The row is written in the transaction that makes the change.** A membership
 granted but not recorded is a silent change; a membership recorded but not
 granted is a trail that lies. Both are impossible for every action that *is* a
-database write. `report.download` is the exception, and the only one: a download
-is a file read with no transaction to join, so its row is committed on its own
-before the streaming response starts. A transfer that dies mid-stream therefore
-leaves a row saying the report was downloaded — which is the direction that
-error should point.
+database write. `report.download` and the two bulk actions are the exceptions,
+and each records in a transaction of its own. A download is a file read with no
+transaction to join, and its row is committed *before* the streaming response
+starts: a transfer that dies mid-stream therefore leaves a row saying the report
+was downloaded, which is the direction that error should point. A bulk request
+is *many* transactions — one per id, by design, so that one illegal transition
+does not roll back the other hundred and ninety-nine — with no single one for
+the row to join; its row is committed after the work, and says which ids the
+work reached. **Including a batch that died part-way**: the ids before the
+failure are committed, so the row is written with `aborted: true` and the
+partial `applied` list *before* the 500 leaves the handler. Ninety-nine
+findings changed and no row is the silent change this section says cannot
+happen.
 
 **Secrets never reach `before`/`after`.** Every field whose name reads like a
 credential — `password`, `*_hash`, `token`, `*_secret`, `*_key` — is replaced by
@@ -714,6 +723,81 @@ platform admin. The absence of a policy does **not** silence the
 disables only the part that writes to somebody's work queue. `422` on
 `enabled: true` with no action set, and on a grace period outside 0–365 days.
 See [vulnerability-lifecycle.md](vulnerability-lifecycle.md#workflow-events-and-sla-escalation).
+**Bulk actions.** `POST /api/vulnerabilities/bulk` applies one of five verbs
+to many findings in one request
+([#346](https://github.com/onixus/Shapoclyack/issues/346)); triaging four
+hundred findings used to be four hundred requests. The body names the verb and
+carries the same payload its single-finding endpoint takes:
+
+```json
+{"action": "assign", "vuln_ids": ["vln_a", "vln_b"], "payload": {"assignee": "ada@example.com"}}
+```
+
+`action` is one of `assign`, `transition`, `ticket` (each `operator`) or
+`exception`, `false_positive` (each tenant **`admin`**, exactly as one at a
+time — bulk is not a cheaper door to risk acceptance or suppression, and the
+route answers `403` naming the role it wanted). At most **200** ids per
+request; more is `422`, as is an empty list.
+
+The answer is **200 with a per-id report**, even when some ids failed:
+
+```json
+{"action": "assign", "requested": 3, "succeeded": 2, "failed": 1,
+ "results": [{"id": "vln_a", "ok": true, "outcome": "ok", "error": null},
+             {"id": "vln_x", "ok": false, "outcome": "not_found",
+              "error": "not found in this tenant"}],
+ "replayed": false}
+```
+
+`outcome` is the single-id endpoint's status code in words — `not_found` is its
+`404` (which is also what another tenant's id gets: a write scope never
+confirms existence), `conflict` its `409`, `invalid` its `422`. A batch is a
+partial success by design: one finding that closed since the operator loaded
+the page must not refuse the other hundred and ninety-nine. A caller wanting
+all-or-nothing checks `failed == 0`. `422` is reserved for a request that
+applies to nothing at all. Duplicate ids are applied once.
+
+`POST /api/assets/bulk` (`operator`) is the same shape for the asset registry
+and has one verb, `context` — `PATCH /api/assets/{id}`'s body applied to a
+selection, including its "an explicit `null` clears the field, an omitted key
+leaves it untouched" contract. An empty payload is `422`.
+
+Both record **one** `audit_events` row per request (`vulnerability.bulk`,
+`asset.bulk`) whose `after` lists the ids applied and maps the rejected ones to
+their outcome — one decision, one row, rather than two hundred rows that each
+look like a hand edit. A platform admin's batch that crossed tenants is one row
+per tenant it changed, filed in *that* tenant. The per-finding
+`vulnerability_events` and per-asset `asset_context_events` rows are still
+written, unchanged. Ids are capped at 48 characters as well as 200 per request,
+which is what keeps the row naming every one of them; see the audit section
+above for what gives way when a body is too big to fit beside them.
+
+**`Idempotency-Key` on the bulk endpoints.** Both accept the header, and it
+matters most here: a bulk request is the slowest, so it is the one that times
+out, and a blind retry would apply two hundred transitions twice. Semantics
+match `POST /api/jobs`: the same key with the same body replays the stored
+report (`200`, with `"replayed": true`), the same key with a *different* body is
+`409` (pick another key), and a retry arriving while the first request is still
+running is `409` — retry once it finishes.
+
+"Still running" is believed for **15 minutes** (`RESERVATION_LEASE_SECONDS`) and
+no longer. The reservation is dropped by the handler, so a replica the OOM
+killer took, an evicted pod or a worker a sync timeout killed would otherwise
+leave the key unanswerable until the 24-hour purge — a day of `409`s for a key
+nobody holds. Past the lease a retry takes the key over (with a conditional
+`UPDATE`, so two simultaneous retries do not both execute) and runs. The lease
+is deliberately longer than any legitimate batch: one that expired *under* a
+request still running would let a retry apply the work twice.
+
+A request that *failed* releases its key, so a batch that died on a 500 can be
+retried with the same key — **unless it applied part of itself**. Then the key
+is kept and the partial report (`aborted: true`) is stored as its answer:
+releasing it would let the retry re-apply the ids that landed (for `transition`
+a hundred `conflict`s, for `false_positive` a second suppression window),
+whereas replaying tells the caller which ids are still to send. Keys are
+namespaced per endpoint and per tenant, capped at 200 characters, and remembered
+for 24 hours (`api/services/idempotency.py`); the scan-start path is unchanged
+and keeps hanging its key on the job row it creates.
 
 ### Agent fleet, deployment and upgrade
 
@@ -936,9 +1020,21 @@ timestamp being the `X-Shapoclyack-Timestamp` header) and should treat
 `servicenow` / `defectdojo`. Ticket transports POST the native create-issue
 body to the instance URL, then link `ticket_key` on the matching tracked
 finding. An operator-set link is not overwritten. `transport_config` holds
-non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`).
-Credentials stay in `secret` or `Authorization`. Needs NATS, like any other
-asset-event consumer.
+non-secret knobs (`project_key` / `issue_type`, `table`, `test_id`) plus two
+that every ticket transport takes ([#347](https://github.com/onixus/Shapoclyack/issues/347)):
+
+- `auth_mode`: `bearer` (default; Jira Data Center PATs), `basic` (Jira Cloud —
+  `secret` is then `email:api_token` and is base64'd for the request, never
+  stored decoded) or `token` (DefectDojo's default). `422` on anything else. An
+  `Authorization` header set in `headers` still wins over all three.
+- `sync_interval_seconds`: how often the inbound poller re-reads *this*
+  tenant's tickets. `0` (default) means the platform's
+  `OCTO_TICKET_SYNC_INTERVAL_SECONDS`; anything else must be ≥ 60, and a
+  smaller number is `422` rather than a tracker quietly being hammered.
+
+Credentials stay in `secret` or `Authorization`. Ticket *creation* needs NATS,
+like any other asset-event consumer; reading tickets back does not — it works
+from the subscription and the linked findings alone.
 
 ## Operational endpoints
 
