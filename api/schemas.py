@@ -593,6 +593,95 @@ class ScheduleInfo(BaseModel):
     created_by: str | None = None
 
 
+class MaintenanceWindowBase(BaseModel):
+    """The writable half of a maintenance window (#352).
+
+    ``dtstart_local`` is a naive ISO date-time — wall clock in ``timezone``,
+    never UTC — so it is a plain string here rather than a ``datetime``: a
+    pydantic ``datetime`` would happily accept an offset and the service has to
+    refuse one (see ``api/services/maintenance.py``).
+    """
+
+    name: str = Field(min_length=1, max_length=128)
+    kind: Literal["blackout", "allowed"] = "blackout"
+    enabled: bool = True
+    timezone: str = Field(default="UTC", max_length=64)
+    rrule: str = Field(min_length=1, max_length=500)
+    dtstart_local: str = Field(min_length=1, max_length=32)
+    duration_minutes: int = Field(default=60, ge=1)
+    scope_kind: Literal["tenant", "asset_group"] = "tenant"
+    asset_group: str | None = Field(default=None, max_length=128)
+    scope_targets: list[str] = Field(default_factory=list)
+    note: str = Field(default="", max_length=500)
+
+
+class CreateMaintenanceWindowRequest(MaintenanceWindowBase):
+    tenant_id: str | None = None
+
+
+class UpdateMaintenanceWindowRequest(BaseModel):
+    """Every field optional: an unset one is left as stored."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    kind: Literal["blackout", "allowed"] | None = None
+    enabled: bool | None = None
+    timezone: str | None = Field(default=None, max_length=64)
+    rrule: str | None = Field(default=None, min_length=1, max_length=500)
+    dtstart_local: str | None = Field(default=None, min_length=1, max_length=32)
+    duration_minutes: int | None = Field(default=None, ge=1)
+    scope_kind: Literal["tenant", "asset_group"] | None = None
+    asset_group: str | None = Field(default=None, max_length=128)
+    scope_targets: list[str] | None = None
+    note: str | None = Field(default=None, max_length=500)
+
+
+class MaintenanceWindowInfo(MaintenanceWindowBase):
+    window_id: str
+    tenant_id: str
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
+    # Only in the calendar view: whether this window is open right now and
+    # when it next opens. Absent from a plain create/update response, which
+    # answers "what is stored", not "what is happening".
+    open_now: bool | None = None
+    open_until: str | None = None
+    next_start_at: str | None = None
+
+
+class MaintenanceAdmission(BaseModel):
+    """Why a scan would be refused right now, and when that lifts."""
+
+    allowed: bool
+    reason: str = ""
+    detail: str = ""
+    window_id: str = ""
+    window_name: str = ""
+    retry_at: str | None = None
+
+
+class ChangeFreezeRequest(BaseModel):
+    change_freeze: bool
+    note: str = Field(default="", max_length=500)
+
+
+class ChangeFreezeInfo(BaseModel):
+    tenant_id: str
+    change_freeze: bool
+    change_freeze_note: str = ""
+    change_freeze_at: str | None = None
+    change_freeze_by: str | None = None
+
+
+class MaintenanceCalendarInfo(ChangeFreezeInfo):
+    """The tenant's whole calendar plus the verdict it produces right now —
+    one request for the banner the console shows above its schedules."""
+
+    admission: MaintenanceAdmission
+    windows: list[MaintenanceWindowInfo]
+
+
 class CreateWebhookRequest(BaseModel):
     """New outbound webhook subscription (ROADMAP Phase 10.3)."""
 

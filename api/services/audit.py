@@ -88,6 +88,16 @@ ACTION_AGENT_DELETE = "agent.delete"
 ACTION_REPORT_DOWNLOAD = "report.download"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
 ACTION_CONFIG_UPDATE = "config.update"
+# The maintenance calendar (#352). The three window actions are administrative
+# edits; the fourth is not an edit at all but a refusal — the platform
+# declining to scan because a window or a freeze said so. It is in this trail
+# rather than only in the logs because "why did nothing run last night" is
+# asked days later, by somebody reading the tenant's history.
+ACTION_MAINTENANCE_WINDOW_CREATE = "maintenance_window.create"
+ACTION_MAINTENANCE_WINDOW_UPDATE = "maintenance_window.update"
+ACTION_MAINTENANCE_WINDOW_DELETE = "maintenance_window.delete"
+ACTION_TENANT_CHANGE_FREEZE = "tenant.change_freeze"
+ACTION_SCAN_MAINTENANCE_BLOCK = "scan.maintenance_block"
 
 #: The value stored in place of a secret. Not the empty string and not a
 #: dropped key: "this field was set, and its value is not in the audit trail"

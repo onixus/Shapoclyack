@@ -26,6 +26,7 @@ from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
+from api.routes import maintenance as maintenance_routes
 from api.routes import mfa as mfa_routes
 from api.routes import promoted_domains as promoted_domains_routes
 from api.routes import adoption as adoption_routes
@@ -307,6 +308,12 @@ def create_app() -> FastAPI:
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
     app.include_router(schedules_routes.router, prefix="/api")
+    # Three routers from one module (#352): the calendar as its own
+    # collection, the per-tenant change freeze, and the provider's read-only
+    # view of one customer's calendar.
+    app.include_router(maintenance_routes.router, prefix="/api")
+    app.include_router(maintenance_routes.freeze_router, prefix="/api")
+    app.include_router(maintenance_routes.tenant_router, prefix="/api")
     app.include_router(wordlists_routes.router, prefix="/api")
     app.include_router(users_routes.router, prefix="/api")
     app.include_router(mfa_routes.router, prefix="/api")

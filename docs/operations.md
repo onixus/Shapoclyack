@@ -71,6 +71,10 @@ its advisory lock, so multiple replicas need no special configuration — see
 replica leads with `octo_scheduler_is_leader` on `/metrics`; the fleet-wide sum
 should always be exactly 1.
 
+A tick the tenant's maintenance calendar forbids is deferred to the moment the
+block lifts rather than skipped — see
+[Maintenance windows and the change freeze](#maintenance-windows-and-the-change-freeze).
+
 ## Diffs and events
 
 Run diffs compare current and previous compatible results. Normalized events
@@ -226,6 +230,113 @@ One limit remains: deny entries for addresses that must never be reached still
 belong in the agent's network policy as well, not only here. The pipeline
 filter runs in the same process as the scan and is a control over what that
 process aims at, not a boundary around what it can reach.
+
+## Maintenance windows and the change freeze
+
+Since #352 a tenant has a calendar (`maintenance_windows`, migration `0048`)
+and a switch (`tenants.change_freeze`). Both are checked at scan admission, in
+`jobs_service.start_scan` — so the console, the recurring dispatcher and the
+platform's own re-scans are held to them equally, and none of them can be
+walked past at 02:00.
+
+A window is a recurrence, not a single period:
+
+```http
+POST /api/maintenance-windows
+{
+  "name": "Saturday night change window",
+  "kind": "blackout",
+  "timezone": "Europe/Berlin",
+  "rrule": "FREQ=WEEKLY;BYDAY=SA",
+  "dtstart_local": "2026-09-12T22:00",
+  "duration_minutes": 240
+}
+```
+
+**The window is in the tenant's timezone, never the server's.** `timezone` is
+an IANA name and `dtstart_local` is wall clock with **no offset** (an offset is
+refused rather than converted — a series pinned to one UTC offset would drift
+by an hour at every DST change). `duration_minutes` is then added in *absolute*
+time, so a four-hour window over the night the clocks jump lasts four real
+hours: it ends at 04:00 local on a spring-forward morning, not 03:00. A wall
+clock the jump skipped (02:30 on that morning) resolves with the
+pre-transition offset — the occurrence happens half an hour late rather than
+silently not happening at all.
+
+### The supported RRULE subset
+
+No new dependency was added for this (`python-dateutil` is not in
+`requirements.txt`; the repo already hand-parses cron in `scanner/scheduler.py`).
+The parser in `api/services/maintenance.py` takes:
+
+| Part | Values |
+|---|---|
+| `FREQ` | `DAILY`, `WEEKLY`, `MONTHLY` — required |
+| `INTERVAL` | positive integer, default 1, counted from `dtstart` |
+| `BYDAY` | `WEEKLY` only: `MO,TU,WE,TH,FR,SA,SU` (defaults to `dtstart`'s day) |
+| `BYMONTHDAY` | `MONTHLY` only: 1–31 (defaults to `dtstart`'s day; a month without that day simply has no occurrence, as in RFC 5545) |
+| `UNTIL` | `YYYYMMDDTHHMMSSZ` or `YYYYMMDD`, inclusive, in UTC |
+
+Everything else — `COUNT`, `BYHOUR`, `BYSETPOS`, `BYMONTH`, an ordinal `BYDAY`
+such as `-1SU` — is **refused with `422` naming the unsupported part**. A rule
+accepted and then read as something narrower than what was typed would be a
+blackout that does not blackout on the nights somebody was counting on, and
+nothing would say so. If you need one of those forms, express it as several
+windows.
+
+### Blackout, allowed, and the freeze
+
+- `kind=blackout` — no scan is **admitted** while it is open (see the limit
+  below). A blackout beats an open `allowed` window, for the reason deny beats
+  allow in the scan scope.
+- `kind=allowed` — scans start **only** inside one. A single such window turns
+  the whole tenant opt-in, so add one deliberately.
+- `PUT /api/change-freeze {"change_freeze": true, "note": "…"}` — refuses every
+  scan until an admin lifts it. Use it for the period with no end date yet; use
+  a window for the one that repeats. Do **not** deactivate the tenant to stop
+  its scans: that takes the customer's own data away from them, and the freeze
+  exists so it does not have to be done.
+- `scope_kind=asset_group` narrows a window to the CIDRs and domains in
+  `scope_targets` (matched by *overlap*, so a `/16` sweep is inside a window
+  covering a `/24` of it). A scan with no explicit targets runs on the
+  installation defaults and is covered by every window of the tenant.
+
+### What an operator sees when it refuses
+
+A manual start answers `409` with the window's name and, when the block has a
+knowable end, `Retry-After`; under a freeze there is no `Retry-After`, because
+there is no end to name. Every refusal is a `scan.maintenance_block` row in
+`audit_events` with the reason, the window and the retry time — that filter is
+the answer to "why did nothing run last night", days later.
+
+**The calendar is checked at admission, not at claim time.** In agent
+execution mode a job admitted at 21:50 stays queued until a worker claims it,
+and `claim_job` does not consult the calendar — a worker that was busy or
+offline can therefore pick up that job after the blackout has opened. The
+control is over what the platform *accepts*, not a kill switch over work
+already queued. If a window has to hold in the data plane as well, cancel the
+queued jobs (`POST /api/jobs/{id}/cancel`) or stop the agents for its duration;
+#352 stays open for the claim-time gate.
+
+A refused **schedule** is deferred rather than skipped: `next_run_at` moves to
+the end of the blackout (or the start of the next allowed window), so the
+nightly scan runs when the window closes. Under a freeze there is nothing to
+defer to, so the schedule advances by its own cadence — which is what keeps the
+dispatcher from re-refusing and re-auditing the same tick every 30 seconds for
+as long as the freeze lasts. Neither path writes `last_run_at`: no scan ran, and
+the schedule's history must not claim one did. Watch `deferred_maintenance` in
+the dispatcher stats to tell "nothing was due" from "everything was blacked
+out".
+
+### On upgrade
+
+Migration `0048` is **expand only**: the table is new and empty and
+`tenants.change_freeze` arrives with a server default of false, so an
+installation that writes no calendar behaves exactly as it did on `0043` — no
+windows and no freeze admits every scan. There is nothing to backfill and no
+contract phase to schedule. The downgrade drops the calendar and the freeze
+flags, which loses the windows an operator wrote; they are the feature, not a
+cache of something else.
 
 ## Alerts and exports
 
