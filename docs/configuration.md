@@ -500,6 +500,142 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
+### Notification channels
+
+Where a **finished run** is announced, per tenant
+([#351](https://github.com/onixus/Shapoclyack/issues/351)). Managed through
+`POST /api/notification-channels` — see
+[api-and-rbac.md](api-and-rbac.md#notification-channels) — not through
+environment variables, because the destination is a property of a tenant and
+not of the installation.
+
+Five kinds: `slack`, `msteams`, `mattermost` (a JSON POST to an incoming
+webhook, whose URL is the credential and is encrypted at rest), `email` (the
+tenant's recipients through the installation's `OCTO_REPORT_SMTP_*` relay) and
+`defectdojo` (the bulk Generic Findings Import into *this tenant's* product).
+
+| Variable | Read by | Default | Purpose |
+|---|---|---|---|
+| `OCTO_NOTIFICATION_CHANNELS_ENABLED` | API | `true` | Register `/api/notification-channels` and announce finished runs. Off means no channels and no sending; unlike webhooks the two cannot be split across replicas, because the send is started by the process that finished the job |
+| `OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT` | API | `10` | Bound on the destinations one tenant's runs can reach |
+| `OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS` | API | `30` | Per-send budget, for every kind including `email`. Longer than the webhook timeout because a DefectDojo import deduplicates inside the request. The send runs on a background thread, so a channel spending the whole budget delays no request |
+| `OCTO_SINGLE_TENANT_ALERTS` | **scanner** | `false` | Declare this installation single-tenant, which is what re-enables the **installation-wide** alert credentials below |
+
+`OCTO_SINGLE_TENANT_ALERTS` is the one row above that the API never reads: the
+stages it gates are `scanner/pipeline/alerts.py` and
+`scanner/pipeline/defectdojo.py`, which run in the *scanner* process. On the
+API host that is the scan subprocess and it inherits the Deployment's
+environment; in Kubernetes a scheduled scan is a separate CronJob pod, so the
+variable has to be set **there** — it belongs in the `shapoclyack-alerts`
+Secret the CronJob already mounts
+(`k8s/shapoclyack/examples/api-secrets.example.yaml`), not on the API
+Deployment. Set on the API alone it changes nothing at all, silently.
+
+`OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` also governs channel URLs: a Slack or
+DefectDojo target resolving to a loopback, private or link-local address is
+refused under the same SSRF boundary, at creation and again at send time.
+
+#### Migrating off the installation-wide alert variables
+
+Before #351 the scanner's alert stage read `OCTO_SLACK_WEBHOOK`,
+`OCTO_TELEGRAM_BOT_TOKEN` / `OCTO_TELEGRAM_CHAT_ID` and `OCTO_SMTP_*`, and the
+bulk export read `OCTO_DEFECTDOJO_URL` / `OCTO_DEFECTDOJO_API_KEY`. All of them
+are installation-wide, and nothing at that point in the pipeline knew which
+tenant the run belonged to — so on a multi-tenant installation every tenant's
+scan announced itself in one Slack channel and every tenant's findings were
+imported into one DefectDojo product.
+
+They still work, and **only** for an installation that declares itself
+single-tenant:
+
+* set `OCTO_SINGLE_TENANT_ALERTS=true` and nothing changes — the config file's
+  `alerts:` and `defectdojo:` sections behave exactly as before. This is the
+  answer for the standalone scanner CLI, which has no API and no database;
+* leave it unset (the default) and both stages skip with
+  `skipped_reason: multi_tenant_use_notification_channels` in `alerts.json` /
+  `defectdojo.json`, without opening a connection. Nothing is sent to the wrong
+  tenant, which is the direction this had to fail in.
+
+To move a multi-tenant installation across, per tenant:
+
+1. `POST /api/notification-channels` with `kind: "slack"` and the incoming
+   webhook URL from `OCTO_SLACK_WEBHOOK` as `secret` (a chat webhook URL *is* a
+   credential, so it goes in the column that is encrypted, not in `endpoint`);
+2. for mail, `kind: "email"` with `config.to` holding what was in
+   `OCTO_SMTP_TO`. The relay stays installation-wide — it is infrastructure,
+   like Postgres, and was never the part that crossed tenants — so keep
+   `OCTO_REPORT_SMTP_HOST` / `OCTO_REPORT_SMTP_FROM` set;
+3. for DefectDojo, `kind: "defectdojo"` with `endpoint` = the instance URL,
+   `secret` = the API token and `config.product_name` = a product **per
+   tenant**. `product_name` is required for exactly that reason;
+4. clear the old Secret (`shapoclyack-alerts`, `shapoclyack-defectdojo` in
+   `k8s/shapoclyack/examples/api-secrets.example.yaml`) and leave
+   `OCTO_SINGLE_TENANT_ALERTS` unset — **but read the next paragraph first if
+   any of your scans are CronJob scans**, because for those this step turns
+   alerting off and channels do not replace it.
+
+> **Channels only cover runs the API knows about.** The fan-out hangs off job
+> completion (`jobs.complete_job` for an agent upload, `jobs._run_job` for a
+> local scan), so it fires for a scan started through `POST /api/jobs`, a
+> schedule, or a remote agent. A `k8s/shapoclyack/base/cronjob.yaml` scan and a
+> bare `python -m scanner.main` run create no job row, reach neither function,
+> and are therefore **never** announced through a notification channel. For
+> those the installation-wide stages are still the only alerting there is:
+> keep `shapoclyack-alerts` populated and set `OCTO_SINGLE_TENANT_ALERTS=true`
+> on the CronJob — accepting that those alerts are installation-wide — or move
+> the schedule into `POST /api/schedules`, where the scan gets a job row, a
+> tenant and its tenant's channels. Giving CronJob scans per-tenant channels is
+> [#351](https://github.com/onixus/Shapoclyack/issues/351)'s explicit
+> non-goal, not an oversight.
+
+Two things this does **not** do. There is no Telegram channel kind: Telegram
+was never a per-tenant destination in any installation we know of, and a kind
+with no user is a wire format to keep working forever — a tenant that wants it
+uses a `webhook` subscription. And a channel send is **not** queued or
+retried the way a webhook delivery is: a run summary is only interesting while
+it is fresh, so a failure is recorded on the channel (`last_status`, visible in
+`GET /api/notification-channels`) and in the job log instead of being replayed.
+For the DefectDojo import that is a real limitation — a `503` from the tracker
+loses that run's import, and the next scan's import is what recovers it.
+Remediation-workflow events and SLA escalation
+([#349](https://github.com/onixus/Shapoclyack/issues/349), see
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#workflow-events-and-sla-escalation)).
+The events are opt-in per subscription, so turning these on does not by itself
+send anything anywhere:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_WORKFLOW_EVENTS_ENABLED` | `true` | Emit the eight workflow kinds at all. Off means a subscription naming them simply never matches, and the SLA worker does not start |
+| `OCTO_SLA_ESCALATION_ENABLED` | `true` | Run the worker that derives `sla_due_soon`, `sla_breached`, `exception_expiring` and `agent_offline`. Leader-locked, so it is safe to leave on in every replica. Set it to `false` **before** an upgrade if the installation would rather not have its whole existing breach backlog announced by the first tick |
+| `OCTO_SLA_ESCALATION_INTERVAL_SECONDS` | `900` | Worker tick (floored at 30). An SLA is measured in days, so a tighter tick buys nothing; a longer one delays a notification rather than losing it, because the marker table decides what has already been said |
+| `OCTO_SLA_ESCALATION_MAX_FINDINGS` | `500` | Findings one tenant's tick may announce, oldest deadline first. A tenant that imports a backlog of overdue findings must not turn one tick into that many webhook deliveries. A **window**, not a ceiling: the worker keeps a cursor per tenant and the next tick continues after the last deadline this one reached, so a backlog of 600 findings at the default is drained in two ticks (30 minutes) rather than stopping at 500 |
+| `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` | `365` | Age past which an "already announced" marker is deleted. Deleting one **re-arms its event**, so this is also the period after which a still-breached finding is raised a second time; `0` disables both the sweep and the re-announcement. A claim taken for a fan-out that then failed is released immediately rather than waiting for this sweep, so a database hiccup delays a notification by one tick |
+
+The owner digest uses the report relay (`OCTO_REPORT_SMTP_*` below): with no
+relay configured the digest is skipped with a logged reason and the webhook
+events still go out.
+Inbound ticket sync — the poller that reads Jira / ServiceNow / DefectDojo
+back onto the findings ([#347](https://github.com/onixus/Shapoclyack/issues/347),
+see [vulnerability-lifecycle.md](vulnerability-lifecycle.md#inbound-ticket-sync)).
+It polls only tickets linked to a finding whose tenant has an enabled
+subscription for that transport; the credential and the base URL are that
+subscription's:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_TICKET_SYNC_ENABLED` | `true` | Run the poller in *this* replica. Off keeps the manual `POST /api/vulnerabilities/{id}/ticket/sync` button and the outbound reflection; only the cadence goes away. Leader-locked, so only one replica of those that run it ever polls |
+| `OCTO_TICKET_SYNC_POLL_INTERVAL_SECONDS` | `60` | How often the thread wakes to look for due findings. Not the poll cadence — floored at 5 |
+| `OCTO_TICKET_SYNC_INTERVAL_SECONDS` | `900` | Default seconds between two reads of the *same* ticket. Overridden per subscription by `transport_config.sync_interval_seconds` (`0` = use this; otherwise ≥ 60). Floored at 60: the poll is one GET per linked finding |
+| `OCTO_TICKET_SYNC_BATCH_SIZE` | `200` | Findings polled per subscription per tick, oldest cursor first. The rest stay due for the next tick; raise it if `octo_ticket_sync_lag_seconds` grows while trackers are healthy |
+| `OCTO_TICKET_SYNC_RETRY_BASE_SECONDS` | `120` | First hold-off after a *retryable* failure (5xx, timeout); doubles per consecutive failure. The whole subscription is held off, not one ticket — a tracker that is down fails identically for every ticket on it |
+| `OCTO_TICKET_SYNC_RETRY_MAX_SECONDS` | `3600` | Hold-off cap |
+| `OCTO_TICKET_SYNC_REOPEN_WINDOW_DAYS` | `30` | How long after a `ticket_resolved` closure the tracker may still reopen the finding. Closed findings stay pollable for that path to exist and leave the queue afterwards, or every closure accumulates forever and a year of dead tickets fills the batch ahead of live work. `0` drops the reopen path |
+
+The per-request timeout and the private-target rule are the webhook ones
+(`OCTO_WEBHOOK_TIMEOUT_SECONDS`, `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS`): it is
+the same wire to the same tracker, and giving the poller its own copies would
+be two places to change when a self-hosted Jira moves inside the cluster.
+
 Report factory (see
 [reports-and-compliance.md](reports-and-compliance.md#configuration)). The
 report relay is separate from the scanner's alert SMTP on purpose: an alert

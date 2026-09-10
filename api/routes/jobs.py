@@ -9,6 +9,7 @@ from api.routes._pagination import PageParams, build_page
 from api.schemas import JobInfo, JobSummary, Page, StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
+from api.services import maintenance
 from api.services import quotas
 from api.services import scan_scopes
 from api.settings import Settings
@@ -167,6 +168,24 @@ def start_job(
         # 403, not 422: the targets are well-formed, this tenant is simply not
         # approved for them (#226). The refusal is already in the audit trail.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except maintenance.MaintenanceBlocked as exc:
+        # 409, neither 403 nor 429 (#352): the caller is entitled to this scan
+        # and has asked for nothing too often — the tenant's own calendar is in
+        # a state that forbids it, and that state changes. `Retry-After` is set
+        # when the block has a knowable end (a blackout closes, an allowed
+        # window opens) and deliberately omitted under a change freeze, where a
+        # retry time would be an invention. The window that said no is named in
+        # the body, and the refusal is already in audit_events.
+        blocked_headers = (
+            {"Retry-After": str(exc.retry_after_seconds)}
+            if exc.retry_after_seconds is not None
+            else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+            headers=blocked_headers,
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:

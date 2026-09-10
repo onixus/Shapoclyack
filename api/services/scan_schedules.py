@@ -318,6 +318,39 @@ def record_skipped_dispatch(schedule_id: str, *, ran_at: datetime) -> dict[str, 
         return _to_dict(row)
 
 
+def defer_dispatch(
+    schedule_id: str, *, ran_at: datetime, until: datetime | None
+) -> dict[str, Any] | None:
+    """Move a tick the tenant's maintenance calendar refused (#352) to when it
+    is allowed again — deferred, never dropped.
+
+    ``until`` is the moment the refusal lifts: the end of the blackout, or the
+    start of the next allowed window. The schedule's ``next_run_at`` becomes
+    that moment, so a nightly scan blacked out tonight runs when the window
+    closes rather than disappearing until tomorrow's tick. When the refusal has
+    no knowable end — a change freeze — ``until`` is None and the schedule
+    advances by its own cadence instead, which keeps the dispatcher from
+    re-attempting (and re-refusing, and re-auditing) the same tick every 30
+    seconds for as long as the freeze lasts.
+
+    ``last_run_at``/``last_job_id`` are left alone for the reason
+    :func:`record_skipped_dispatch` leaves them alone: no scan ran, and saying
+    one did would put a scan in the customer's history that never happened.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.ScanSchedule, schedule_id)
+        if row is None:
+            return None
+        cadence_next = _compute_next_run(row.cron, row.interval_seconds, after=ran_at)
+        # `until` in the past (a window that closed between the refusal and this
+        # write) must not park the schedule behind the dispatcher's poll — the
+        # cadence is the floor for that case, not a retry loop.
+        row.next_run_at = until if (until and until > ran_at) else cadence_next
+        session.flush()
+        return _to_dict(row)
+
+
 def record_dispatch(schedule_id: str, *, job_id: str, ran_at: datetime) -> dict[str, Any] | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:

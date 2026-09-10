@@ -33,6 +33,9 @@ export const queryKeys = {
   jobSummary: ["jobs", "summary"] as const,
   wordlists: (tenantId: string | null) => ["wordlists", tenantId] as const,
   schedules: ["schedules"] as const,
+  /** The maintenance calendar plus the verdict it produces right now (#352).
+   * One key for both, because the API answers them in one response. */
+  maintenanceCalendar: (tenantId: string | null) => ["maintenance", tenantId ?? null] as const,
   schedulesPage: (tenantId: string | undefined, page?: PageParams) =>
     ["schedules", tenantId ?? null, pageKey(page)] as const,
   agents: ["agents"] as const,

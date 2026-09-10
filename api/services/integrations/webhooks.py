@@ -31,7 +31,7 @@ from sqlalchemy import delete, func, or_, select
 
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
-from api.services import asset_events, audit_events, metrics, pagination
+from api.services import asset_events, audit_events, metrics, pagination, workflow_events
 from api.services import tenants as tenants_service
 from api.services import vulnerabilities as vulns_service
 from api.services.crypto import envelope as crypto
@@ -48,7 +48,10 @@ _settings: Settings | None = None
 # Every other kind is delivered regardless of the filter: "critical only" is a
 # statement about vulnerabilities, and silently swallowing a decommission or a
 # newly opened port because it has no CVSS would be a filter nobody asked for.
-_SEVERITY_BEARING_KINDS = ("new_cve",)
+# The #349 workflow kinds that are about a finding join it for exactly that
+# reason; the three that are not (a failed scan, a generated report, an offline
+# agent) deliberately do not.
+_SEVERITY_BEARING_KINDS = ("new_cve", *workflow_events.SEVERITY_BEARING_KINDS)
 
 DELIVERY_STATUSES = ("pending", "delivered", "dead")
 
@@ -243,10 +246,15 @@ def _validate_event_kinds(kinds: list[str] | None) -> list[str]:
     cleaned: list[str] = []
     for raw in kinds:
         kind = str(raw).strip()
-        if kind not in asset_events.EVENT_KINDS and not _is_audit_kind(kind):
+        if (
+            kind not in asset_events.EVENT_KINDS
+            and kind not in workflow_events.WORKFLOW_EVENT_KINDS
+            and not _is_audit_kind(kind)
+        ):
             raise ValueError(
                 f"unknown event kind {kind!r}; known kinds: "
                 f"{', '.join(asset_events.EVENT_KINDS)}, "
+                f"{', '.join(workflow_events.WORKFLOW_EVENT_KINDS)}, "
                 f"{audit_events.KIND_WILDCARD} (or one action, e.g. "
                 f"{audit_events.event_kind('user.role_change')})"
             )
@@ -551,6 +559,11 @@ def matches(subscription: dict[str, Any], envelope: dict[str, Any]) -> bool:
     address, to a receiver somebody configured for CVE alerts would be a
     disclosure introduced by a version bump. The trail is opt-in: name
     ``audit.*`` or one action.
+
+    The #349 workflow kinds are opt-in on the same terms, for the milder
+    version of the same argument: a receiver configured for new criticals must
+    not start taking a message every time an operator reassigns a finding
+    because a version was bumped.
     """
     if not subscription.get("enabled"):
         return False
@@ -560,7 +573,7 @@ def matches(subscription: dict[str, Any], envelope: dict[str, Any]) -> bool:
     if not kinds:
         # "Every kind" ends at the asset events; see above. Falls through to the
         # severity filter for anything else, which is what it always did.
-        if is_audit:
+        if is_audit or kind in workflow_events.WORKFLOW_EVENT_KINDS:
             return False
     elif kind not in kinds:
         wildcarded = audit_events.KIND_WILDCARD in kinds and is_audit

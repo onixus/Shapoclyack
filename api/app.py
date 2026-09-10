@@ -27,6 +27,7 @@ from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
+from api.routes import maintenance as maintenance_routes
 from api.routes import mfa as mfa_routes
 from api.routes import promoted_domains as promoted_domains_routes
 from api.routes import adoption as adoption_routes
@@ -40,6 +41,7 @@ from api.routes import service_tokens as service_tokens_routes
 from api.routes import system as system_routes
 from api.routes import users as users_routes
 from api.routes import vulnerabilities as vulnerabilities_routes
+from api.routes import notification_channels as notification_channels_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse, SsoStatus
@@ -53,11 +55,14 @@ from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
 from api.services import health as health_service
 from api.services import screenshot_retention
+from api.services import sla_escalation
 from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
 from api.services.crypto import startup as crypto_startup
+from api.services.integrations import ticket_sync_worker
 from api.services.integrations import webhook_worker
+from api.services.integrations import channels as channels_service
 from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
@@ -100,6 +105,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # reason: a duplicate scan is wasted work, a duplicate report is a
     # second PDF in a customer's inbox.
     report_dispatcher.start_worker(settings)
+    # Leader-locked for the same reason as the report dispatcher: every replica
+    # would otherwise wake for the same overdue finding. The notifications are
+    # de-duplicated by ``workflow_event_markers`` on top of that, because the
+    # lock is not fenced (#349).
+    sla_escalation.start_worker(settings)
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
@@ -107,11 +117,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # and claims are taken with FOR UPDATE SKIP LOCKED, so every replica may
     # dispatch (ROADMAP Phase 10.3).
     webhook_worker.start_worker(settings)
+    # Leader-locked, unlike the webhook dispatcher above: reading a tracker
+    # back takes no per-row claim, so every replica would poll the same tenant's
+    # tickets and write the same lifecycle events (#347).
+    ticket_sync_worker.start_worker(settings)
     try:
         yield
     finally:
+        ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
+        sla_escalation.stop_worker()
         report_dispatcher.stop_worker()
         software_match_worker.stop_worker()
         risk_snapshots.stop_worker()
@@ -174,6 +190,7 @@ def create_app() -> FastAPI:
     service_tokens_service.configure(settings)
     endpoint_inventory_service.configure(settings)
     webhooks_service.configure(settings)
+    channels_service.configure(settings)
     wordlists_service.configure(settings)
 
     # Unmounted rather than authenticated when disabled (#319): FastAPI builds
@@ -310,6 +327,12 @@ def create_app() -> FastAPI:
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
     app.include_router(schedules_routes.router, prefix="/api")
+    # Three routers from one module (#352): the calendar as its own
+    # collection, the per-tenant change freeze, and the provider's read-only
+    # view of one customer's calendar.
+    app.include_router(maintenance_routes.router, prefix="/api")
+    app.include_router(maintenance_routes.freeze_router, prefix="/api")
+    app.include_router(maintenance_routes.tenant_router, prefix="/api")
     app.include_router(wordlists_routes.router, prefix="/api")
     app.include_router(users_routes.router, prefix="/api")
     app.include_router(mfa_routes.router, prefix="/api")
@@ -326,6 +349,8 @@ def create_app() -> FastAPI:
         app.include_router(reports_routes.router, prefix="/api")
     if settings.webhooks_enabled:
         app.include_router(webhooks_routes.router, prefix="/api")
+    if settings.notification_channels_enabled:
+        app.include_router(notification_channels_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:
         app.include_router(endpoint_inventory_routes.router, prefix="/api")
 

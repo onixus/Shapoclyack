@@ -47,6 +47,7 @@ from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import config_override as config_override_service
 from api.services import job_states
+from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
@@ -54,6 +55,7 @@ from api.services import quotas
 from api.services import promoted_domains
 from api.services import auth_audit
 from api.services import results_ingest
+from api.services.integrations import channels as channels_service
 from api.services import runs as runs_service
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
@@ -61,6 +63,7 @@ from api.services import scan_intents
 from api.services import scan_surface
 from api.services import vulnerabilities as vulns_service
 from api.services import wordlists as wordlists_service
+from api.services import workflow_events
 from api.services.targets import parse_target_payload
 from api.settings import Settings
 from scanner.pipeline import scan_scope
@@ -412,8 +415,50 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
             if "status" in fields
             else None
         )
+        # Snapshotted here rather than re-read after the commit: the row is
+        # loaded and locked, and a job that failed is terminal, so this is the
+        # one moment it moved into ``failed``.
+        failure = (
+            _scan_failure_event(row)
+            if fields.get("status") == job_states.FAILED
+            else None
+        )
     if snapshot is not None:
         _record_job_metrics(settings, *snapshot)
+    if failure is not None:
+        # After the commit: an event announcing a failure that then rolled back
+        # would be a notification about something that did not happen (#349).
+        workflow_events.emit(settings, "scan_failed", **failure)
+
+
+def _scan_failure_event(row: models.Job) -> dict[str, Any]:
+    """``workflow_events.emit`` keyword arguments for one failed job (#349).
+
+    ``marker`` is the attempt count, not the job id alone: an agent job whose
+    lease expired is requeued and may fail again on a later attempt, and those
+    are two failures somebody has to hear about separately. The error string
+    is truncated because it is a scanner's stderr and ends up in a webhook
+    payload column.
+    """
+    return {
+        "tenant_id": row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
+        "subject_id": row.job_id,
+        "marker": str(row.attempts or 0),
+        "data": {
+            "job_id": row.job_id,
+            "run_id": row.run_id,
+            "execution": row.execution,
+            "mode": row.mode,
+            # The scan's surface, not its target list: a target list can be a
+            # /16 and this payload is stored per delivery.
+            "surface": (row.scan_options or {}).get("surface"),
+            "attempts": row.attempts,
+            "assigned_agent_id": row.assigned_agent_id,
+            "exit_code": row.exit_code,
+            "requested_by": row.requested_by,
+            "error": (row.error or "")[:1000] or None,
+        },
+    }
 
 
 def force_status(settings: Settings, job_id: str, status: str, **fields: Any) -> None:
@@ -774,6 +819,46 @@ def _publish_asset_events_best_effort(
         logging.exception("Asset event publish failed for run %s (tenant=%s)", run_id, tenant_id)
 
 
+def _notify_channels_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+) -> None:
+    """Announce a finished run to the tenant's notification channels (#351).
+
+    Called from the same two points as the asset-event publish above, and that
+    is the fix: those are the only places where a finished run's artifacts are
+    on disk *under a known tenant*. The alert used to be a scanner stage, which
+    ran with installation-wide credentials and no tenant id at all, so on an
+    MSSP installation every tenant's scan announced itself in one Slack channel.
+
+    Quiet on failure like the event publish, and for a stronger reason: an
+    unreachable Slack must not turn a successful scan into a failed job. The
+    per-channel outcome is recorded on the channel row (``last_status``), which
+    is where an operator looks when a channel goes silent.
+
+    Asynchronous, unlike the hooks above it, because it is the only one that
+    dials a third party. ``complete_job`` runs inside ``async def
+    upload_results``, so a blocking send there stalls the API's event loop for
+    the timeout budget of every channel in turn — see the note in
+    ``channels.notify_run_complete_async``. The hooks above touch Postgres and
+    the local NATS and are left alone.
+    """
+    if not run_id or not settings.notification_channels_enabled:
+        return
+    try:
+        channels_service.notify_run_complete_async(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            run_dir=settings.output_dir / "runs" / run_id,
+        )
+    except Exception:  # noqa: BLE001 - a thread that would not start
+        logging.exception(
+            "Notification fan-out failed for run %s (tenant=%s, job=%s)",
+            run_id,
+            tenant_id,
+            job_id,
+        )
+
+
 def _requested_by(settings: Settings, job_id: str) -> str:
     """Who asked for this scan, or "" when the row is gone."""
     job = get_job(settings, job_id)
@@ -908,6 +993,11 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
     # sees them once the transaction commits. Without this, giving up on a job
     # would be invisible to SLO 3 exactly when executors are dying.
     failed_for_metrics: list[tuple[str, datetime | None]] = []
+    # Same shape, for the #349 event. This path does not go through
+    # ``_update_job`` — it writes the status on a row it already holds — so the
+    # emitter there does not see it, and a lease that expired is exactly the
+    # failure nobody is watching a console for.
+    failed_events: list[dict[str, Any]] = []
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(models.Job)
@@ -947,6 +1037,7 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
                 )
                 outcome["failed"] += 1
                 failed_for_metrics.append((row.execution or "local", row.started_at))
+                failed_events.append(_scan_failure_event(row))
                 _log.warning(
                     "Failed job %s: lease expired after %d attempt(s) (execution=%s)",
                     row.job_id,
@@ -958,6 +1049,8 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
             metrics_service.JOB_LEASE_EXPIRED_TOTAL.labels(outcome=name).inc(count)
     for execution, started_at in failed_for_metrics:
         _record_job_metrics(settings, job_states.FAILED, execution, started_at, now)
+    for failure in failed_events:
+        workflow_events.emit(settings, "scan_failed", **failure)
     if outcome["requeued"] or outcome["failed"]:
         _refresh_job_gauges(settings)
     # Republished after the transaction commits, so an agent cannot claim the
@@ -1041,6 +1134,11 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
             _publish_asset_events_best_effort(
+                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
+            )
+            # Last of the post-run hooks: the summary it sends describes the
+            # tracker and the registry as they are *after* the folds above.
+            _notify_channels_best_effort(
                 settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
             )
     except Exception as exc:  # noqa: BLE001
@@ -1291,6 +1389,31 @@ def start_scan(
                 job_id,
                 ", ".join(promoted_refused[:8]),
             )
+
+    # What the tenant consented to *right now* (#352): a blackout window or a
+    # change freeze. In start_scan rather than in the route for the same reason
+    # the quota is here — the recurring dispatcher never touches a route, and a
+    # blackout the scheduler walks through at 02:00 is not a blackout.
+    #
+    # Below the promoted-domain widening on purpose: a promoted related domain
+    # is a target of every scan the tenant starts, so an asset-group window
+    # covering it has to see it. Checking the operator's typed targets alone
+    # would let a scan of an unrelated domain carry the promoted one straight
+    # into the group the window was protecting.
+    #
+    # Deliberately not exempted for `quota_exempt` dispatches: a verification
+    # re-scan still reaches the customer's network, and the calendar is about
+    # the network rather than the invoice.
+    try:
+        maintenance.assert_scan_admitted(
+            settings,
+            tenant_id=tenant_id,
+            ranges_text=request.ranges,
+            domains_text="\n".join([request.domains or "", *promoted_admitted]),
+        )
+    except maintenance.MaintenanceBlocked as blocked:
+        maintenance.record_block(username=username, blocked=blocked)
+        raise
 
     try:
         _, target_counts, target_args = _prepare_target_inputs(
@@ -1889,6 +2012,16 @@ def complete_job(
     # After the _update_job above, so a raise in ingestion leaves them for the
     # agent's retry rather than deleting what the retry needs.
     _discard_job_inputs(settings, job_id)
+    # Last, and after the status is written — the asymmetry with the local path
+    # (``_run_job``, which already announced *after* ``_update_job``) is what
+    # made this bite: a fan-out that hung held the terminal status hostage, so
+    # the agent's retry met its own in-flight reservation and got a 409 for an
+    # upload that had in fact landed. The send itself is on a thread, so this
+    # line costs the request one ``Thread.start``.
+    if archive_bytes and status == job_states.SUCCEEDED:
+        _notify_channels_best_effort(
+            settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
+        )
     result = get_job(settings, job_id)
     assert result is not None
     return result

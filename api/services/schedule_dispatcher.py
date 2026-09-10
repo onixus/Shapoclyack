@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from api.schemas import StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
+from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import quotas
 from api.services import scan_schedules
@@ -56,6 +57,7 @@ class ScheduleDispatcher:
             "skipped_overlap": 0,
             "skipped_not_leader": 0,
             "skipped_quota": 0,
+            "deferred_maintenance": 0,
             "errors": 0,
         }
 
@@ -154,6 +156,24 @@ class ScheduleDispatcher:
             self._stats["skipped_quota"] += 1
             LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], exc)
             scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
+            return
+        except maintenance.MaintenanceBlocked as blocked:
+            # The tenant's calendar said not now (#352). Expected, like the
+            # quota refusal above, and *deferred rather than skipped*: the tick
+            # is moved to the moment the block lifts, so a nightly scan blacked
+            # out tonight runs when the window closes instead of waiting for
+            # tomorrow. The refusal is already in audit_events — start_scan
+            # records it for every caller, so there is nothing to write here.
+            self._stats["deferred_maintenance"] += 1
+            LOG.info(
+                "Schedule %s deferred until %s: %s",
+                sched["schedule_id"],
+                blocked.retry_at.isoformat() if blocked.retry_at else "its next cadence tick",
+                blocked,
+            )
+            scan_schedules.defer_dispatch(
+                sched["schedule_id"], ran_at=now, until=blocked.retry_at
+            )
             return
         except jobs_service.IdempotentReplay as replay:
             # Another replica won this tick. Its job is the tick's job; record

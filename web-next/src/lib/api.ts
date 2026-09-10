@@ -1648,6 +1648,100 @@ export async function deleteSchedule(scheduleId: string) {
   }
 }
 
+// --------------------------------------------------------------------------
+// Maintenance windows and the change freeze (#352)
+// --------------------------------------------------------------------------
+
+export type MaintenanceWindowKind = "blackout" | "allowed";
+export type MaintenanceScopeKind = "tenant" | "asset_group";
+
+/** One recurring period in which scanning is forbidden (`blackout`) or the
+ * only one in which it is allowed (`allowed`).
+ *
+ * `dtstart_local` is wall clock in `timezone` and carries no offset on
+ * purpose — it is "22:00 where the customer is", which is a different instant
+ * in January and in July. The fields the console renders as instants are
+ * `open_until` and `next_start_at`, which the API has already resolved to UTC. */
+export type MaintenanceWindow = {
+  window_id: string;
+  tenant_id: string;
+  name: string;
+  kind: MaintenanceWindowKind;
+  enabled: boolean;
+  timezone: string;
+  rrule: string;
+  dtstart_local: string;
+  duration_minutes: number;
+  scope_kind: MaintenanceScopeKind;
+  asset_group: string | null;
+  scope_targets: string[];
+  note: string;
+  created_at: string | null;
+  created_by: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+  /** Only in the calendar view (`GET /maintenance-windows`). */
+  open_now?: boolean | null;
+  open_until?: string | null;
+  next_start_at?: string | null;
+};
+
+/** What a scan started right now would be told. `retry_at` is null when the
+ * block has no knowable end — a change freeze — which is why the banner says
+ * "until an admin lifts it" rather than naming a time. */
+export type MaintenanceAdmission = {
+  allowed: boolean;
+  reason: string;
+  detail: string;
+  window_id: string;
+  window_name: string;
+  retry_at: string | null;
+};
+
+export type MaintenanceCalendar = {
+  tenant_id: string;
+  change_freeze: boolean;
+  change_freeze_note: string;
+  change_freeze_at: string | null;
+  change_freeze_by: string | null;
+  admission: MaintenanceAdmission;
+  windows: MaintenanceWindow[];
+};
+
+export async function fetchMaintenanceCalendar(tenantId?: string) {
+  try {
+    const { data } = await api.get<MaintenanceCalendar>("/maintenance-windows", {
+      params: tenantId ? { tenant_id: tenantId } : undefined,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type ChangeFreezeState = Pick<
+  MaintenanceCalendar,
+  "tenant_id" | "change_freeze" | "change_freeze_note" | "change_freeze_at" | "change_freeze_by"
+>;
+
+/** Freezes or thaws the caller's tenant. Admin-only on the API; the note is
+ * what the refusal quotes back at whoever tries to start a scan. */
+export async function setChangeFreeze(
+  body: { change_freeze: boolean; note?: string },
+  tenantId?: string,
+) {
+  try {
+    const { data } = await api.put<ChangeFreezeState>(
+      "/change-freeze",
+      { change_freeze: body.change_freeze, note: body.note ?? "" },
+      { params: tenantId ? { tenant_id: tenantId } : undefined },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 /** Cross-run asset inventory (Phase 7) — distinct from the per-run hosts/ports/vulns above. */
 export async function fetchAssets(
   opts?: {
@@ -1974,6 +2068,17 @@ export type TrackedVulnerability = {
   ticket_system: string | null;
   ticket_key: string | null;
   ticket_url: string | null;
+  /** When the linked ticket was last read back by the sync poller or the Sync
+   * button — the attempt, not necessarily a success (#347). */
+  ticket_synced_at?: string | null;
+  /** Why the last read failed, or null after one that worked. A broken link
+   * (renamed key, revoked token) is visible here instead of only in the
+   * server's log. */
+  ticket_sync_error?: string | null;
+  /** The tracker's own status at that read ("Done", "6", "Active"). The poller
+   * applies a suggestion only when it changes, so it is also the answer to
+   * "why did the last poll leave this finding where it was". */
+  ticket_remote_status?: string | null;
   /** Set by the ingest path when a dispatched verification run did not
    * re-observe the finding. Never settable through the API. */
   machine_verified?: boolean;
@@ -2094,6 +2199,98 @@ export type VulnerabilityFalsePositiveBody = {
   suppress_days?: number;
   evidence?: Record<string, unknown>;
 };
+
+/** Ids one bulk request may carry — `bulk_actions.MAX_BULK_IDS` on the server,
+ * which refuses more with a 422. Mirrored here so the table's select-all stops
+ * at the ceiling instead of building a request that cannot be sent. */
+export const MAX_BULK_IDS = 200;
+
+/** One id's fate inside a batch. `outcome` is the single-id endpoint's status
+ * code in words: `not_found` is its 404 (which is also what another tenant's id
+ * gets — a write scope never confirms existence), `conflict` its 409, `invalid`
+ * its 422. */
+export type BulkActionItemResult = {
+  id: string;
+  ok: boolean;
+  outcome: "ok" | "not_found" | "conflict" | "invalid";
+  error: string | null;
+};
+
+/** A batch is a partial success by design, so the response is a report and the
+ * status is 200 even when `failed` is nonzero. `replayed` means the answer came
+ * from the `Idempotency-Key` record of an earlier identical request. */
+export type BulkActionReport = {
+  action: string;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  results: BulkActionItemResult[];
+  replayed: boolean;
+};
+
+/** The verbs `POST /vulnerabilities/bulk` accepts, each carrying the same body
+ * its single-finding endpoint takes. `exception` and `false_positive` need
+ * tenant admin there and here — bulk is not a cheaper door. */
+export type BulkVulnerabilityBody =
+  | { action: "assign"; vuln_ids: string[]; payload: VulnerabilityAssignBody }
+  | { action: "transition"; vuln_ids: string[]; payload: VulnerabilityTransitionBody }
+  | { action: "exception"; vuln_ids: string[]; payload: VulnerabilityExceptionBody }
+  | { action: "ticket"; vuln_ids: string[]; payload: VulnerabilityTicketBody }
+  | {
+      action: "false_positive";
+      vuln_ids: string[];
+      payload: VulnerabilityFalsePositiveBody;
+    };
+
+export type BulkAssetBody = {
+  action: "context";
+  asset_ids: string[];
+  payload: UpdateAssetBody;
+};
+
+/** A fresh `Idempotency-Key` for one bulk submission. Called once per
+ * submission and not once per attempt — see `useSubmissionKey` in
+ * `hooks/use-bulk-actions.ts`, which holds the value against the body it names
+ * so a retried click carries the key the first attempt did. Every call here
+ * returns a new value, so calling it per attempt would name every attempt a
+ * different batch. */
+export function newBulkIdempotencyKey(): string {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  return `console:bulk:${random}`;
+}
+
+export async function bulkVulnerabilityAction(
+  body: BulkVulnerabilityBody,
+  options?: { idempotencyKey?: string },
+) {
+  try {
+    const headers = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    const { data } = await api.post<BulkActionReport>("/vulnerabilities/bulk", body, { headers });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function bulkAssetAction(
+  body: BulkAssetBody,
+  options?: { idempotencyKey?: string },
+) {
+  try {
+    const headers = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    const { data } = await api.post<BulkActionReport>("/assets/bulk", body, { headers });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
 
 export async function fetchTrackedVulnerabilities(
   filters?: VulnerabilityListFilters,
@@ -3052,19 +3249,31 @@ export async function deleteTenantQuota(tenantId: string) {
  * create-issue call for the tracker (api/services/integrations/tickets.py). */
 export type WebhookTransport = "webhook" | "jira" | "servicenow" | "defectdojo";
 
-/** Event kinds a subscription may filter on. An empty list means "every kind".
+/** Event kinds a subscription may filter on. An empty list means "every *asset*
+ * kind" — the audit trail and the workflow events are opt-in, so an existing
+ * unfiltered subscription does not start receiving them on upgrade.
  *
  * The first five are the asset events (`api/services/asset_events.py`
- * EVENT_KINDS). `audit.*` is the whole administrative trail (#328) — the API
- * also accepts one exact action (`audit.user.role_change`), which the console
- * deliberately does not offer as twenty-odd more checkboxes; a subscription
- * that names one is shown and preserved, just not composed here. */
+ * EVENT_KINDS). The next eight are the remediation-workflow events (#349,
+ * `api/services/workflow_events.py` WORKFLOW_EVENT_KINDS). `audit.*` is the
+ * whole administrative trail (#328) — the API also accepts one exact action
+ * (`audit.user.role_change`), which the console deliberately does not offer as
+ * twenty-odd more checkboxes; a subscription that names one is shown and
+ * preserved, just not composed here. */
 export const WEBHOOK_EVENT_KINDS = [
   "new_asset",
   "new_open_port",
   "new_cve",
   "cert_expiring",
   "decommissioned_host",
+  "sla_due_soon",
+  "sla_breached",
+  "exception_expiring",
+  "vuln_state_changed",
+  "vuln_assigned",
+  "scan_failed",
+  "report_generated",
+  "agent_offline",
   "audit.*",
 ] as const;
 

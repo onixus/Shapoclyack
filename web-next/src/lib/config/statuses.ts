@@ -9,6 +9,7 @@ import type {
   AuthEventOutcome,
   EndpointReconciliationStatus,
   JobInfo,
+  MaintenanceWindowKind,
   NistRiskLevel,
   Role,
   ScanScopeEffect,
@@ -94,6 +95,15 @@ export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
 export const SCAN_SCOPE_EFFECT: Record<ScanScopeEffect, StatusStyle> = {
   allow: { label: "allow", className: SUCCESS },
   deny: { label: "deny", variant: "destructive", className: DANGER },
+};
+
+/** The polarity of a maintenance window (#352). A blackout forbids scanning
+ * while it is open, so it reads as the danger colour; an `allowed` window is
+ * the inverse — the only time scanning is permitted — and reads as success
+ * even though its effect outside the window is a refusal. */
+export const MAINTENANCE_WINDOW_KIND: Record<MaintenanceWindowKind, StatusStyle> = {
+  blackout: { label: "blackout", variant: "destructive", className: DANGER },
+  allowed: { label: "allowed", className: SUCCESS },
 };
 
 export const ASSET_STATUS: Record<AssetStatus, StatusStyle> = {

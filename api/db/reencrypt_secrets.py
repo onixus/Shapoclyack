@@ -1,9 +1,11 @@
 """Online (re-)encryption of the secrets this platform stores in Postgres (#310).
 
-Two tables: ``webhook_subscriptions`` (the integration credentials this command
-was written for) and ``users.mfa_secret`` (the TOTP seeds, #315). One tally
-covers both, because an operator rotating a key wants one answer to "is the old
-key still needed", not one per feature.
+Three tables: ``webhook_subscriptions`` (the integration credentials this
+command was written for), ``users.mfa_secret`` (the TOTP seeds, #315) and
+``notification_channels.secret`` (the per-tenant Slack/Teams/Mattermost
+incoming-webhook URLs and DefectDojo tokens, #351). One tally covers all of
+them, because an operator rotating a key wants one answer to "is the old key
+still needed", not one per feature.
 
 Three passes over the same rows, chosen by flag:
 
@@ -40,6 +42,7 @@ from sqlalchemy import select
 from api.db import models
 from api.db.engine import get_session
 from api.services.crypto import envelope
+from api.services.integrations import channels as channels_service
 from api.services.integrations import webhooks as webhooks_service
 
 _log = logging.getLogger("api.db.reencrypt_secrets")
@@ -93,11 +96,13 @@ def _target(value: str | None, *, context: str, rotate: bool, decrypt: bool) -> 
 def run(url: str, *, rotate: bool = False, decrypt: bool = False, dry_run: bool = False) -> Outcome:
     """Bring every stored secret to the target form, in one tally.
 
-    Two tables, because two tables hold credentials: ``webhook_subscriptions``
-    (the integration secrets #310 was about) and, since #315, the TOTP seeds in
-    ``users.mfa_secret``. A rotation that covered only the first would leave
-    every enrolled admin's seed under a key the operator believes they have
-    retired, which is the failure mode this command exists to prevent.
+    Three tables, because three tables hold credentials: ``webhook_subscriptions``
+    (the integration secrets #310 was about), the TOTP seeds in
+    ``users.mfa_secret`` since #315, and the per-tenant notification channels
+    since #351. A rotation that covered only the first would leave every
+    enrolled admin's seed — and every tenant's Slack URL — under a key the
+    operator believes they have retired, which is the failure mode this command
+    exists to prevent.
     """
     outcome = Outcome()
 
@@ -169,7 +174,66 @@ def run(url: str, *, rotate: bool = False, decrypt: bool = False, dry_run: bool 
             row.key_id = key_id
 
     _run_user_secrets(url, outcome, rotate=rotate, decrypt=decrypt, dry_run=dry_run)
+    _run_channel_secrets(url, outcome, rotate=rotate, decrypt=decrypt, dry_run=dry_run)
     return outcome
+
+
+def _run_channel_secrets(
+    url: str, outcome: Outcome, *, rotate: bool, decrypt: bool, dry_run: bool
+) -> None:
+    """The same pass over ``notification_channels.secret`` (#351).
+
+    One column rather than two, so no ``headers`` loop — but the same per-row
+    ``FOR UPDATE`` and the same per-row failure handling: a Slack URL written
+    under a key nobody kept must not stop the rows that can be rewrapped.
+    Channels with no credential (email, whose recipients are not a secret) are
+    not scanned at all, for the same reason accounts that never enrolled are
+    not: counting them would report a pass over rows where nothing was at
+    stake.
+    """
+    with get_session(url) as session:
+        channel_ids = list(
+            session.scalars(
+                select(models.NotificationChannel.channel_id)
+                .where(models.NotificationChannel.secret.is_not(None))
+                .order_by(models.NotificationChannel.channel_id)
+            )
+        )
+
+    for channel_id in channel_ids:
+        outcome.scanned += 1
+        with get_session(url) as session:
+            row = session.scalar(
+                select(models.NotificationChannel)
+                .where(models.NotificationChannel.channel_id == channel_id)
+                .with_for_update()
+            )
+            if row is None or not row.secret:  # deleted between the two transactions
+                outcome.scanned -= 1
+                continue
+            try:
+                target = _target(
+                    row.secret,
+                    context=channels_service.SECRET_CONTEXT,
+                    rotate=rotate,
+                    decrypt=decrypt,
+                )
+            except envelope.SecretDecryptionError as exc:
+                outcome.failed += 1
+                _log.warning("Channel %s left unchanged: %s", channel_id, exc)
+                continue
+            # Derived from the value just as the subscription pass derives it,
+            # never assumed to be the current key: a default pass leaves rows on
+            # an older KEK alone and the mirror has to keep saying so.
+            key_id = envelope.key_id_of(target) if target else None
+            if (target, key_id) == (row.secret, row.key_id):
+                outcome.skipped += 1
+                continue
+            outcome.changed += 1
+            if dry_run:
+                continue
+            row.secret = target
+            row.key_id = key_id
 
 
 def _run_user_secrets(

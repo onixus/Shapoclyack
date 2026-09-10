@@ -4,6 +4,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
 import { Pencil, Plus, Timer, Trash2 } from "lucide-react";
+import { MaintenancePanel } from "@/components/scans/maintenance-panel";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
 import { scheduleSurface, type ScanSurface } from "@/lib/scan-surface";
 import { useT } from "@/lib/i18n";
@@ -537,6 +538,11 @@ export default function SchedulesPage() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {/* Above the schedules, not beside them: "why did nothing run last
+          night" is a question about the calendar, and the answer has to be on
+          the page where the missing run is (#352). */}
+      <MaintenancePanel canRead={canOperate} canAdmin={isAdmin} />
 
       <DataTable
         columns={columns}

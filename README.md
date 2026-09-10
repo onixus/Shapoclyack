@@ -254,7 +254,7 @@ The Next.js operations console provides specialized operational surfaces for ope
 | **Report Factory** | `/reports` | Branded report generation (Executive, Technical, Compliance) in PDF/HTML and schedule management | Operator |
 | **Compliance Posture** | `/compliance` | Control pass/fail evidence mapping for PCI DSS 4.0, CIS Controls v8, and ISO 27001 | Viewer |
 | **Adoption & Noise** | `/adoption` | Verification rates, MTTR, SLA adherence, scanner noise analytics, detector suppression tracking | Viewer |
-| **Integrations** | `/integrations` | Outbound HMAC webhooks and two-way ticket synchronization (Jira, ServiceNow, DefectDojo) | Operator |
+| **Integrations** | `/integrations` | Outbound HMAC webhooks and two-way ticket synchronization — transitions pushed to the tracker, the tracker's status polled back onto findings (Jira, ServiceNow, DefectDojo) | Operator |
 | **Agent Fleet** | `/agents` | Health tiles and management for distributed remote scanner workers across VPCs and DMZs | Operator |
 
 For UI screenshots and walkthroughs, see [Web Interface Documentation](docs/ui.md).
