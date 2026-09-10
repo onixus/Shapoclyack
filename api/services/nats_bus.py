@@ -38,6 +38,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from api.services import egress
+
 LOG = logging.getLogger("shapoclyack.nats")
 
 # Job offers are published per tenant: jobs.scan.{tenant_token}. One shared
@@ -96,17 +98,26 @@ def tls_connect_options() -> dict[str, Any]:
     a ``tls://`` URL still gets a default context against the system trust
     store, a ``nats://`` URL still connects in the clear. Set them to pin a
     private CA (the cert-manager case) or to present a client certificate.
+
+    ``OCTO_CA_BUNDLE`` is added on top of whatever ``OCTO_NATS_TLS_CA`` (or the
+    system store) already trusts, exactly as ``agent.worker.tls_connect_options``
+    does it — an installation with one internal root names it once and both
+    ends of the NATS connection honour it. Additive, never a replacement: a
+    broker with a publicly issued certificate keeps verifying.
     """
     ca = os.environ.get("OCTO_NATS_TLS_CA", "").strip()
     cert = os.environ.get("OCTO_NATS_TLS_CERT", "").strip()
     key = os.environ.get("OCTO_NATS_TLS_KEY", "").strip()
     hostname = os.environ.get("OCTO_NATS_TLS_HOSTNAME", "").strip()
-    if not (ca or cert or hostname):
+    bundle = egress.ca_bundle()
+    if not (ca or cert or hostname or bundle):
         return {}
     # create_default_context keeps hostname checking and certificate
     # verification on; cafile=None means "system trust store", so naming only a
     # client certificate does not silently disable verification of the broker.
     context = ssl.create_default_context(cafile=ca or None)
+    if bundle:
+        context.load_verify_locations(cafile=bundle)
     if cert:
         context.load_cert_chain(certfile=cert, keyfile=key or None)
     options: dict[str, Any] = {"tls": context}

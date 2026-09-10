@@ -50,6 +50,9 @@ _DECIDING_VARS = (
     "OCTO_DB_POOL_SIZE",
     "OCTO_DB_MAX_OVERFLOW",
     "OCTO_DB_POOL_TIMEOUT",
+    "OCTO_JWT_SECRET_PREVIOUS",
+    "OCTO_AGENT_JWT_SECRET",
+    "OCTO_AGENT_JWT_SECRET_PREVIOUS",
 )
 
 
@@ -103,6 +106,72 @@ def test_console_accounts_are_not_checked_here(clean_env: pytest.MonkeyPatch) ->
     settings = load_settings()
 
     assert settings.env == ENV_PROD
+
+
+def test_prod_refuses_a_rotation_window_holding_the_published_secret(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """A window that trusts the development key is not a rotation (#314)."""
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_JWT_SECRET_PREVIOUS", f"an-older-real-key,{DEFAULT_JWT_SECRET}")
+
+    with pytest.raises(InsecureConfigurationError) as excinfo:
+        load_settings()
+
+    message = str(excinfo.value)
+    assert "OCTO_JWT_SECRET_PREVIOUS" in message
+    assert DEFAULT_JWT_SECRET not in message
+
+
+def test_prod_refuses_a_rotation_window_repeating_the_current_key(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """Otherwise a half-finished rotation reads as a finished one (#314)."""
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_JWT_SECRET_PREVIOUS", "a-real-and-sufficiently-long-secret")
+
+    with pytest.raises(InsecureConfigurationError) as excinfo:
+        load_settings()
+
+    assert "OCTO_JWT_SECRET_PREVIOUS" in str(excinfo.value)
+
+
+def test_a_rotation_window_of_real_retired_keys_starts(clean_env: pytest.MonkeyPatch) -> None:
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_JWT_SECRET_PREVIOUS", " an-older-real-key , older-still ,")
+
+    settings = load_settings()
+
+    # Parsed, deduplicated, and stripped of the trailing empty entry — an empty
+    # string left in the list would be a key that verifies nothing honestly.
+    assert settings.jwt_secret_previous == ["an-older-real-key", "older-still"]
+    assert settings.jwt_verification_secrets() == [
+        "a-real-and-sufficiently-long-secret",
+        "an-older-real-key",
+        "older-still",
+    ]
+
+
+def test_an_explicit_agent_key_gets_its_own_rotation_window(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """Derived agent keys follow the operator window; an explicit one does not."""
+    from api.core.security import derive_agent_jwt_secret
+
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_JWT_SECRET_PREVIOUS", "an-older-real-key")
+
+    derived = load_settings()
+    assert derived.agent_signing_secrets() == [
+        derive_agent_jwt_secret("a-real-and-sufficiently-long-secret"),
+        derive_agent_jwt_secret("an-older-real-key"),
+    ]
+
+    clean_env.setenv("OCTO_AGENT_JWT_SECRET", "a-real-agent-key")
+    clean_env.setenv("OCTO_AGENT_JWT_SECRET_PREVIOUS", "an-older-agent-key")
+
+    explicit = load_settings()
+    assert explicit.agent_signing_secrets() == ["a-real-agent-key", "an-older-agent-key"]
 
 
 def test_refusal_never_echoes_configured_values(clean_env: pytest.MonkeyPatch) -> None:

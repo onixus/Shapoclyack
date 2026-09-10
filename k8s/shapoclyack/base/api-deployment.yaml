@@ -133,6 +133,17 @@ spec:
                 secretKeyRef:
                   name: shapoclyack-api
                   key: jwt_secret
+            # Absent except while a signing-key rotation is in flight (#314):
+            # the retired key(s), comma-separated, still verified until the
+            # tokens they signed expire. Optional, so base needs no such key
+            # and adding one is the whole of step 2 in
+            # docs/operations.md § Rotating the JWT signing key.
+            - name: OCTO_JWT_SECRET_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-api
+                  key: jwt_secret_previous
+                  optional: true
           envFrom:
             - secretRef:
                 name: shapoclyack-api-users

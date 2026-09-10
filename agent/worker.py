@@ -9,7 +9,15 @@ Register, heartbeat, and results upload remain HTTP.
 
 TLS for the NATS connection is configured with OCTO_NATS_TLS_CA,
 OCTO_NATS_TLS_CERT, OCTO_NATS_TLS_KEY and OCTO_NATS_TLS_HOSTNAME; a ``tls://``
-URL with none of them set verifies against the system trust store.
+URL with none of them set verifies against the system trust store. ``wss://``
+reaches the same broker over a WebSocket on 443, for a network whose egress
+firewall knows one port.
+
+Every HTTP call above leaves through ``agent.egress``: OCTO_HTTP_PROXY,
+OCTO_HTTPS_PROXY, OCTO_NO_PROXY and OCTO_CA_BUNDLE. NATS does not — no HTTP
+proxy carries it — so an agent whose only way out is the proxy leaves
+OCTO_NATS_URL unset and polls the HTTP claim instead
+(docs/network-requirements.md).
 """
 
 from __future__ import annotations
@@ -38,7 +46,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from agent import __version__
+from agent import __version__, egress
+from agent import logging_setup
 
 LOG = logging.getLogger("octo-agent")
 
@@ -82,20 +91,52 @@ def jobs_consumer_name(tenant_id: str) -> str:
 
 
 def tls_connect_options() -> dict[str, Any]:
-    """``nats.connect`` TLS kwargs from OCTO_NATS_TLS_* (mirrors the API side)."""
+    """``nats.connect`` TLS kwargs from OCTO_NATS_TLS_* (mirrors the API side).
+
+    OCTO_CA_BUNDLE is added on top of whatever OCTO_NATS_TLS_CA (or the system
+    store) already trusts, so an installation with one internal root names it
+    once for HTTP and NATS both. It is additive, never a replacement: a broker
+    with a publicly issued certificate keeps verifying.
+    """
     ca = os.environ.get("OCTO_NATS_TLS_CA", "").strip()
     cert = os.environ.get("OCTO_NATS_TLS_CERT", "").strip()
     key = os.environ.get("OCTO_NATS_TLS_KEY", "").strip()
     hostname = os.environ.get("OCTO_NATS_TLS_HOSTNAME", "").strip()
-    if not (ca or cert or hostname):
+    bundle = egress.ca_bundle()
+    if not (ca or cert or hostname or bundle):
         return {}
     context = ssl.create_default_context(cafile=ca or None)
+    if bundle:
+        context.load_verify_locations(cafile=bundle)
     if cert:
         context.load_cert_chain(certfile=cert, keyfile=key or None)
     options: dict[str, Any] = {"tls": context}
     if hostname:
         options["tls_hostname"] = hostname
     return options
+
+
+def check_nats_transport(nats_url: str) -> None:
+    """Refuse a NATS URL this build cannot dial, while the message still helps.
+
+    ``wss://`` is the answer for a network that lets 443 out and nothing else,
+    and nats-py speaks it — but only through ``aiohttp``, which the agent image
+    does not carry by default. Without this the failure is an ImportError from
+    inside a background event-loop thread, minutes after start and nowhere near
+    the setting that caused it.
+    """
+    scheme = urllib.parse.urlsplit((nats_url or "").strip()).scheme
+    if scheme not in ("ws", "wss"):
+        return
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            f"OCTO_NATS_URL uses {scheme}:// (NATS over WebSocket), which nats-py "
+            "implements with aiohttp. Install it on this host (pip install aiohttp), "
+            "or use tls:// through a TCP ingress on 443 — see "
+            "docs/network-requirements.md"
+        ) from exc
 
 
 def _collect_system_metrics() -> dict[str, Any]:
@@ -138,6 +179,130 @@ def _collect_system_metrics() -> dict[str, Any]:
     return metrics
 
 
+class TokenBucket:
+    """Bytes-per-second cap on a stream, refilled continuously.
+
+    ``kbps <= 0`` disables it entirely and :meth:`consume` never sleeps, which
+    is the default: shaping is opt-in because most agents sit on a link where
+    the archive is the least of the traffic. Where it is on, the bucket holds
+    one second's worth, so a burst up to the rate goes out immediately and only
+    a sustained stream is held back — the shape a link actually needs.
+
+    ``monotonic`` and ``sleep`` are injectable so the tests can assert what was
+    waited for instead of waiting for it.
+    """
+
+    def __init__(
+        self,
+        kbps: float,
+        *,
+        monotonic: Any = time.monotonic,
+        sleep: Any = time.sleep,
+    ) -> None:
+        self.rate = max(0.0, float(kbps)) * 1024.0
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._capacity = self.rate
+        self._tokens = self.rate
+        self._updated = monotonic()
+
+    @property
+    def enabled(self) -> bool:
+        return self.rate > 0
+
+    def consume(self, count: int) -> None:
+        """Block until ``count`` bytes may be sent."""
+        if not self.enabled or count <= 0:
+            return
+        remaining = float(count)
+        while remaining > 0:
+            now = self._monotonic()
+            self._tokens = min(
+                self._capacity, self._tokens + (now - self._updated) * self.rate
+            )
+            self._updated = now
+            taken = min(remaining, self._tokens)
+            self._tokens -= taken
+            remaining -= taken
+            if remaining <= 0:
+                return
+            # Drained in instalments rather than granted whole: a chunk larger
+            # than one bucketful would otherwise never be granted at all, and
+            # the upload would hang instead of going slowly.
+            self._sleep(min(remaining, self._capacity) / self.rate)
+
+
+class _ThrottledBody:
+    """The results multipart as a file-like stream, shaped by a token bucket.
+
+    Streamed rather than assembled in memory for two reasons: the archive is
+    the one part of this request that has no bound, and a rate limit applied to
+    a buffer that was already read is a limit on nothing. ``read`` is the only
+    method ``http.client`` calls on a body object.
+    """
+
+    def __init__(
+        self,
+        prefix: bytes,
+        archive_path: Path | None,
+        suffix: bytes,
+        *,
+        bucket: TokenBucket,
+        chunk_size: int = 65536,
+    ) -> None:
+        self._prefix = prefix
+        self._archive_path = archive_path
+        self._suffix = suffix
+        self._bucket = bucket
+        self._chunk_size = chunk_size
+        self._archive_size = (
+            archive_path.stat().st_size if archive_path is not None else 0
+        )
+        self._handle: Any = None
+        self._offset = 0
+
+    def __len__(self) -> int:
+        return len(self._prefix) + self._archive_size + len(self._suffix)
+
+    def reset(self) -> None:
+        self.close()
+        self._offset = 0
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+    def _slice(self, size: int) -> bytes:
+        """The next ``size`` bytes of prefix + archive + suffix, unthrottled."""
+        prefix_end = len(self._prefix)
+        archive_end = prefix_end + self._archive_size
+        if self._offset < prefix_end:
+            return self._prefix[self._offset : self._offset + size]
+        if self._offset < archive_end:
+            if self._handle is None:
+                self._handle = self._archive_path.open("rb")
+                self._handle.seek(self._offset - prefix_end)
+            return self._handle.read(min(size, archive_end - self._offset))
+        start = self._offset - archive_end
+        return self._suffix[start : start + size]
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = self._chunk_size
+        size = min(size, self._chunk_size)
+        if self._offset >= len(self):
+            self.close()
+            return b""
+        chunk = self._slice(size)
+        if not chunk:  # pragma: no cover - a truncated archive mid-upload
+            self.close()
+            return b""
+        self._bucket.consume(len(chunk))
+        self._offset += len(chunk)
+        return chunk
+
+
 class AgentTokenRejected(RuntimeError):
     """The API refused this agent's bearer token (401).
 
@@ -150,6 +315,31 @@ class AgentTokenRejected(RuntimeError):
     """
 
 
+class AgentDisabled(RuntimeError):
+    """An operator disabled or quarantined this agent server-side (#308).
+
+    Distinguished from every other 403 because the answer is to wait, not to
+    retry: the state is changed by a person in the console, so polling at the
+    normal interval would fill the journal with one refusal per second and put
+    a pointless request per second on the API for however long the agent stays
+    disabled. The loop backs off to
+    ``DISABLED_BACKOFF_SECONDS`` and keeps heartbeating, which is what keeps it
+    visible in the fleet view — and what lets it notice being re-enabled.
+    """
+
+
+# Five minutes: long enough that a quarantined fleet is not a load source,
+# short enough that re-enabling an agent from the console is felt while the
+# operator is still looking at the page.
+DISABLED_BACKOFF_SECONDS = 300.0
+
+# Substrings of the API's own refusal (api/services/agents.py::lifecycle_message).
+# Matched on the message because a 403 also covers cross-tenant access and the
+# agent-id binding, and those two are misconfiguration to be logged loudly, not
+# a state to wait out.
+_DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operator")
+
+
 class AgentUpgradeRequired(RuntimeError):
     """The API refused the claim because this agent is below its version floor.
 
@@ -160,18 +350,52 @@ class AgentUpgradeRequired(RuntimeError):
 
 
 class AgentClient:
-    def __init__(self, base_url: str, token: str, *, timeout: float = 60.0) -> None:
+    """Every HTTP call this agent makes, over one proxy-aware opener (#359).
+
+    ``upload_rate_limit_kbps`` is 0 for "as fast as the link goes". Anything
+    above that shapes the results upload: a run archive is the largest thing an
+    agent sends, and on a branch office's uplink an unshaped one is the reason
+    the site's voice traffic stutters for two minutes after every scan.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        timeout: float = 60.0,
+        upload_rate_limit_kbps: float = 0.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.upload_rate_limit_kbps = max(0.0, upload_rate_limit_kbps)
+        # Built once from the base URL: the proxy decision depends on the host
+        # and scheme, and every path this client opens shares both.
+        self._opener = egress.build_opener(self.base_url)
 
     def set_token(self, token: str) -> None:
         self.token = token
 
-    def exchange_provisioning_key(self, provisioning_key: str) -> dict[str, Any]:
-        """POST /api/auth/agent/token — no bearer required."""
+    def exchange_provisioning_key(
+        self,
+        provisioning_key: str,
+        *,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /api/auth/agent/token — no bearer required.
+
+        ``agent_id`` is sent on every exchange, including the periodic refresh
+        (#308). Omitting it makes the server mint a *fresh* random id and put
+        it in the token, after which registering or heartbeating as the id this
+        process already has is refused as impersonation — an agent that
+        re-exchanged on a timer used to lose its own identity that way.
+        """
         url = f"{self.base_url}/api/auth/agent/token"
-        body = json.dumps({"provisioning_key": provisioning_key}).encode("utf-8")
+        payload: dict[str, Any] = {"provisioning_key": provisioning_key}
+        if agent_id:
+            payload["agent_id"] = agent_id
+        body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=body,
@@ -179,10 +403,18 @@ class AgentClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self._opener.open(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            # The exchange refuses a disabled or quarantined agent_id too, so
+            # it needs the same classification the bearer calls get: without
+            # it, the state an operator set would reach the run loop as a bare
+            # RuntimeError and be retried at the poll interval forever.
+            if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
+                raise AgentDisabled(
+                    f"POST /api/auth/agent/token -> 403: {detail}"
+                ) from exc
             raise RuntimeError(f"POST /api/auth/agent/token -> {exc.code}: {detail}") from exc
 
     def _request(
@@ -190,7 +422,7 @@ class AgentClient:
         method: str,
         path: str,
         *,
-        body: bytes | None = None,
+        body: bytes | _ThrottledBody | None = None,
         content_type: str | None = "application/json",
         expect_json: bool = True,
         max_retries: int = 2,
@@ -199,11 +431,21 @@ class AgentClient:
         headers = {"Authorization": f"Bearer {self.token}"}
         if body is not None and content_type:
             headers["Content-Type"] = content_type
+        if isinstance(body, _ThrottledBody):
+            # A streamed body has no len(), and without this urllib falls back
+            # to chunked transfer — which the results route answers 411 to,
+            # because it checks Content-Length before buffering the multipart.
+            headers["Content-Length"] = str(len(body))
 
         for attempt in range(max_retries + 1):
+            if isinstance(body, _ThrottledBody):
+                # A retry re-sends from the beginning; a stream already read to
+                # its end would otherwise post an empty body and look like the
+                # scan produced nothing.
+                body.reset()
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with self._opener.open(req, timeout=self.timeout) as resp:
                     raw = resp.read()
                     if resp.status == 204 or not raw:
                         return None
@@ -211,6 +453,10 @@ class AgentClient:
                         return json.loads(raw.decode("utf-8"))
                     return raw
             except urllib.error.HTTPError as exc:
+                # 413 is absent from the retry list on purpose: the API refuses
+                # on Content-Length, before it reads a byte, so the same body
+                # gets the same answer — and on a shaped uplink resending it is
+                # minutes of the site's bandwidth spent to be told twice more.
                 if exc.code in (429, 502, 503, 504) and attempt < max_retries:
                     time.sleep(0.5 * (2**attempt))
                     continue
@@ -219,8 +465,28 @@ class AgentClient:
                     raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
                 if exc.code == 426:
                     raise AgentUpgradeRequired(f"{method} {path} -> 426: {detail}") from exc
+                if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
+                    raise AgentDisabled(f"{method} {path} -> 403: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                # urllib wraps a socket error from the write side in URLError,
+                # so the refusal is one attribute down.
+                cause = getattr(exc, "reason", exc)
+                if isinstance(body, _ThrottledBody) and isinstance(
+                    cause, (BrokenPipeError, ConnectionResetError)
+                ):
+                    # The API stopped reading while the multipart was still
+                    # going out. That is what a 413 looks like from this side:
+                    # it answers on Content-Length, never drains the body, and
+                    # the status line is lost with the socket. Re-reading the
+                    # archive off disk and re-shaping it through the token
+                    # bucket only spends the site's uplink on the same refusal.
+                    raise RuntimeError(
+                        f"{method} {path} -> the API closed the connection while the body "
+                        f"was being sent ({cause}); a body over "
+                        "OCTO_AGENT_RESULTS_MAX_BODY_BYTES is refused this way, so this "
+                        "is not retried"
+                    ) from exc
                 if attempt < max_retries:
                     time.sleep(0.5 * (2**attempt))
                     continue
@@ -315,8 +581,8 @@ class AgentClient:
         if error:
             add_field("error", error[:2000])
 
-        if archive_path is not None and archive_path.is_file():
-            data = archive_path.read_bytes()
+        archive = archive_path if archive_path is not None and archive_path.is_file() else None
+        if archive is not None:
             parts.append(
                 (
                     f"--{boundary}\r\n"
@@ -324,17 +590,26 @@ class AgentClient:
                     f"Content-Type: application/gzip\r\n\r\n"
                 ).encode("utf-8")
             )
-            parts.append(data)
-            parts.append(b"\r\n")
 
-        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
-        body = b"".join(parts)
-        return self._request(
-            "POST",
-            f"/api/agent/jobs/{job_id}/results",
-            body=body,
-            content_type=f"multipart/form-data; boundary={boundary}",
+        # The archive sits between the two, read from disk as the socket takes
+        # it rather than buffered here — see _ThrottledBody.
+        prefix = b"".join(parts)
+        suffix = (b"\r\n" if archive is not None else b"") + f"--{boundary}--\r\n".encode("utf-8")
+        body = _ThrottledBody(
+            prefix,
+            archive,
+            suffix,
+            bucket=TokenBucket(self.upload_rate_limit_kbps),
         )
+        try:
+            return self._request(
+                "POST",
+                f"/api/agent/jobs/{job_id}/results",
+                body=body,
+                content_type=f"multipart/form-data; boundary={boundary}",
+            )
+        finally:
+            body.close()
 
 
 def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
@@ -761,7 +1036,15 @@ class AgentNatsSession:
                 await msg.term()
                 return None
             job_id = str(payload["job_id"])
-            claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+            try:
+                claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
+            except (AgentDisabled, AgentUpgradeRequired, AgentTokenRejected):
+                # This agent cannot take the offer, but another one in the
+                # tenant can: NAK now rather than hold the message until
+                # ack_wait expires, and let the run loop decide what to do
+                # about the refusal (#308).
+                await msg.nak()
+                raise
             if claimed is None:
                 LOG.warning("NATS offer %s not claimable; NAK", job_id)
                 await msg.nak()
@@ -772,6 +1055,12 @@ class AgentNatsSession:
         try:
             fut = asyncio.run_coroutine_threadsafe(_once(), self._loop)
             return fut.result(timeout=timeout + 30)
+        except (AgentDisabled, AgentUpgradeRequired, AgentTokenRejected):
+            # Raised by the HTTP claim above, not by NATS. Swallowing these as
+            # "will reconnect" tore down a healthy session on every poll and
+            # cost the agent the backoff and the token re-exchange the HTTP
+            # path gets — the NATS half of the fleet never had either (#308).
+            raise
         except Exception:  # noqa: BLE001
             LOG.exception("NATS pull/claim failed; will reconnect")
             self.close()
@@ -779,18 +1068,20 @@ class AgentNatsSession:
 
 
 def run_loop(args: argparse.Namespace) -> int:
-    client = AgentClient(args.api_url, args.token or "pending", timeout=args.timeout)
-    tenant_id = ""
-    if args.provisioning_key:
-        exchanged = client.exchange_provisioning_key(args.provisioning_key)
-        client.set_token(str(exchanged["access_token"]))
-        tenant_id = str(exchanged.get("tenant_id") or "")
-        LOG.info(
-            "Exchanged provisioning key for agent JWT (tenant=%s expires_in=%ss)",
-            exchanged.get("tenant_id"),
-            exchanged.get("expires_in"),
-        )
-    elif not args.token:
+    client = AgentClient(
+        args.api_url,
+        args.token or "pending",
+        timeout=args.timeout,
+        upload_rate_limit_kbps=getattr(args, "upload_rate_limit_kbps", 0.0),
+    )
+    # Logged once at start because "the agent cannot reach the API" is answered
+    # by this line and by nothing else on the box.
+    LOG.info("Egress to %s: %s", args.api_url, egress.describe(args.api_url))
+    if args.nats_url:
+        check_nats_transport(args.nats_url)
+    # The provisioning-key exchange itself happens inside the run loop below,
+    # where a refusal is backed off instead of killing the process (#308).
+    if not args.provisioning_key and not args.token:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
 
@@ -801,37 +1092,26 @@ def run_loop(args: argparse.Namespace) -> int:
                 key, value = item.split("=", 1)
                 labels[key.strip()] = value.strip()
 
-    info = client.register(
-        agent_id=args.agent_id,
-        hostname=args.hostname or socket.gethostname(),
-        labels=labels,
-    )
-    agent_id = str(info["agent_id"])
-    # The registration response is authoritative for the legacy shared token,
-    # which is exchanged for nothing and whose tenant the agent cannot know on
-    # its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
-    tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
-    LOG.info(
-        "Registered agent %s (%s) tenant=%s",
-        agent_id,
-        info.get("hostname"),
-        info.get("tenant_id"),
-    )
+    hostname = args.hostname or socket.gethostname()
 
+    # The identity this process keeps for the rest of its life. Seeded from
+    # OCTO_AGENT_ID when the installer wrote one, adopted from the first
+    # exchange when it did not, and from then on sent with *every* exchange —
+    # a refresh that omitted it used to hand the process a token for a
+    # different agent, after which its own heartbeat was 403 (#308).
+    agent_id: str = (args.agent_id or "").strip()
+    tenant_id = ""
     nats_session: AgentNatsSession | None = None
-    if args.nats_url:
-        LOG.info(
-            "NATS pull enabled (%s) subject=%s",
-            args.nats_url,
-            jobs_scan_subject(tenant_id),
-        )
-        nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
-        nats_session.start()
-
-    token_refresh_at = time.time() + max(60, (args.jwt_refresh_seconds or 1800))
+    registered = False
+    # Due immediately with a provisioning key (the bootstrap exchange happens
+    # inside the loop, so a refusal is backed off instead of killing the
+    # process); never with a legacy shared token, which is not exchanged.
+    token_refresh_at = 0.0 if args.provisioning_key else float("inf")
 
     shutdown_event = threading.Event()
     last_upgrade_message = ""
+    last_lifecycle_message = ""
+    last_backoff_message = ""
 
     def _sig_handler(signum: int, frame: Any) -> None:
         LOG.info("Received signal %s, initiating graceful shutdown", signum)
@@ -844,15 +1124,71 @@ def run_loop(args: argparse.Namespace) -> int:
             except (ValueError, AttributeError):
                 pass
 
+    def _exchange() -> None:
+        nonlocal agent_id, tenant_id, token_refresh_at, registered
+        exchanged = client.exchange_provisioning_key(
+            args.provisioning_key, agent_id=agent_id or None
+        )
+        client.set_token(str(exchanged["access_token"]))
+        expires = int(exchanged.get("expires_in") or 3600)
+        token_refresh_at = time.time() + max(
+            60, args.jwt_refresh_seconds or (expires // 2)
+        )
+        tenant_id = str(exchanged.get("tenant_id") or "") or tenant_id
+        minted = str(exchanged.get("agent_id") or "")
+        if minted and minted != agent_id:
+            # Only reachable on the bootstrap exchange of an agent with no
+            # OCTO_AGENT_ID: the server minted one, and this process is that
+            # agent from here on.
+            agent_id = minted
+            registered = False
+        LOG.info(
+            "Exchanged provisioning key for agent JWT (agent=%s tenant=%s expires_in=%ss)",
+            agent_id,
+            exchanged.get("tenant_id"),
+            exchanged.get("expires_in"),
+        )
+
+    def _register() -> None:
+        nonlocal agent_id, tenant_id, registered
+        info = client.register(
+            agent_id=agent_id or None,
+            hostname=hostname,
+            labels=labels,
+        )
+        agent_id = str(info["agent_id"])
+        # The registration response is authoritative for the legacy shared
+        # token, which is exchanged for nothing and whose tenant the agent
+        # cannot know on its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
+        tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
+        registered = True
+        LOG.info(
+            "Registered agent %s (%s) tenant=%s",
+            agent_id,
+            info.get("hostname"),
+            info.get("tenant_id"),
+        )
+
     try:
         while not shutdown_event.is_set():
             try:
                 if args.provisioning_key and time.time() >= token_refresh_at:
-                    exchanged = client.exchange_provisioning_key(args.provisioning_key)
-                    client.set_token(str(exchanged["access_token"]))
-                    expires = int(exchanged.get("expires_in") or 3600)
-                    token_refresh_at = time.time() + max(60, expires // 2)
-                    LOG.info("Refreshed agent JWT (tenant=%s)", exchanged.get("tenant_id"))
+                    _exchange()
+                if not registered:
+                    # Inside the loop, and inside the same handlers as every
+                    # other call: a quarantined agent is refused *here*, and
+                    # before #308 that refusal escaped run_loop and killed the
+                    # process — which systemd Restart=always then repeated
+                    # every five seconds for the whole fleet.
+                    _register()
+                if nats_session is None and args.nats_url:
+                    LOG.info(
+                        "NATS pull enabled (%s) subject=%s",
+                        args.nats_url,
+                        jobs_scan_subject(tenant_id),
+                    )
+                    nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
+                    nats_session.start()
 
                 beat = client.heartbeat(agent_id, status="idle")
                 message = str((beat or {}).get("upgrade_message") or "")
@@ -862,6 +1198,13 @@ def run_loop(args: argparse.Namespace) -> int:
                     # otherwise fill its journal with one line per poll.
                     LOG.error("%s", message)
                 last_upgrade_message = message
+                # The heartbeat is answered even while an agent is disabled or
+                # quarantined (#308), so this is where it finds out — before
+                # the claim below is refused, and with the operator's reason.
+                lifecycle_message = str((beat or {}).get("lifecycle_message") or "")
+                if lifecycle_message and lifecycle_message != last_lifecycle_message:
+                    LOG.error("%s", lifecycle_message)
+                last_lifecycle_message = lifecycle_message
                 job: dict[str, Any] | None = None
                 if nats_session is not None:
                     job = nats_session.pull_and_claim(
@@ -899,6 +1242,22 @@ def run_loop(args: argparse.Namespace) -> int:
             except AgentUpgradeRequired as exc:
                 LOG.error("Job claim refused: %s", exc)
                 time.sleep(args.poll_interval)
+            except AgentDisabled as exc:
+                # Logged on change only, for the reason upgrade_message is: the
+                # API repeats the refusal on every poll, and at the normal
+                # interval that is one journal line per second for as long as
+                # an operator leaves the agent disabled.
+                message = str(exc)
+                if message != last_backoff_message:
+                    LOG.error(
+                        "Refused by the control plane; backing off %.0fs: %s",
+                        DISABLED_BACKOFF_SECONDS,
+                        message,
+                    )
+                last_backoff_message = message
+                # Interruptible, so SIGTERM still stops the agent promptly
+                # instead of after however much of the backoff is left.
+                shutdown_event.wait(DISABLED_BACKOFF_SECONDS)
             except Exception:  # noqa: BLE001
                 LOG.exception("Agent loop error")
                 time.sleep(args.poll_interval)
@@ -963,7 +1322,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--nats-url",
         default=os.environ.get("OCTO_NATS_URL", ""),
-        help="NATS JetStream URL for job pull (or OCTO_NATS_URL); empty = HTTP claim poll",
+        help=(
+            "NATS JetStream URL for job pull (or OCTO_NATS_URL); nats://, tls:// or "
+            "wss://. Empty = HTTP claim poll, which is the only mode that goes "
+            "through an HTTP proxy"
+        ),
+    )
+    parser.add_argument(
+        "--upload-rate-limit-kbps",
+        type=float,
+        default=float(os.environ.get("OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS", "0")),
+        help=(
+            "Shape the results upload to this many KiB/s (or "
+            "OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS); 0 = no limit"
+        ),
     )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -972,10 +1344,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # --verbose still wins over OCTO_LOG_LEVEL: it is the flag an operator
+    # reaches for while watching one run, and having the environment override
+    # it would make the flag look broken (#330).
+    logging_setup.configure_logging(level=logging.DEBUG if args.verbose else None)
     if not args.token and not args.provisioning_key:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2

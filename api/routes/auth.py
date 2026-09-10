@@ -44,7 +44,9 @@ from api.schemas import (
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
+from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
+from api.services import agents as agents_service
 from api.services import auth as auth_service
 from api.services import auth_audit
 from api.services import memberships as memberships_service
@@ -52,6 +54,7 @@ from api.services import oidc as oidc_service
 from api.services import promoted_domains
 from api.services import quotas
 from api.services import scan_scopes
+from api.services import sessions as sessions_service
 from api.services import tenant_posture
 from api.services import tenants as tenants_service
 from api.services import users as users_service
@@ -105,8 +108,75 @@ def login(
     user = outcome.user
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    token = create_access_token(settings, user)
+    try:
+        token = create_access_token(settings, user)
+    except LookupError as exc:
+        # The account was deleted between the credential check and here. The
+        # same refusal as a wrong password: a race with a deletion is not a
+        # server fault, and the answer must not distinguish the two.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        ) from exc
     return TokenResponse(access_token=token, role=user.role, username=user.username)
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(
+    user: Annotated[TokenUser, Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """End *this* session and no other (#314).
+
+    The presented token's ``jti`` goes on the denylist until its own ``exp``,
+    so signing out on a laptop leaves the phone signed in. "Everywhere" is the
+    next endpoint down.
+
+    Refused rather than answered with a 204 that did nothing when the presented
+    credential has no ``jti`` to deny. In practice that is a console token
+    minted before #314: those hold their authority until they expire, and
+    saying so is more use than pretending. A service token never reaches this
+    branch at all — ``auth`` is a resource no service token may touch
+    (``FORBIDDEN_RESOURCES``), so the scope layer answers 403 first, which is
+    right: a service token is a credential, revoked with
+    ``POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke``, not a
+    session.
+    """
+    if user.jti is None or user.expires_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This session carries no token id and cannot be ended one at a "
+                "time. End every session of the account with "
+                "POST /api/auth/sessions/revoke-all."
+            ),
+        )
+    sessions_service.revoke_token(
+        settings, jti=user.jti, username=user.username, expires_at=user.expires_at
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/auth/sessions/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_own_sessions(
+    user: Annotated[TokenUser, Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """Sign out of every session of the caller's own account, this one included.
+
+    The "I left it logged in somewhere" button, and the only way to end a
+    session whose token predates #314 and therefore carries no ``jti``: the
+    account's token generation moves on and every token quoting the old one
+    stops verifying at once.
+
+    Unlike logout it accepts a token with no ``jti``, because the generation
+    bump does not need one — which is what makes it the answer for a session
+    that predates #314.
+    """
+    try:
+        sessions_service.revoke_all(settings, user.username)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/auth/events", response_model=Page[AuthEventInfo])
@@ -296,7 +366,12 @@ def oidc_callback(
     auth_audit.record_sso_login(
         username=token_user.username, client_ip=client_ip, action=action
     )
-    token = create_access_token(settings, token_user)
+    try:
+        token = create_access_token(settings, token_user)
+    except LookupError as exc:  # the account was deleted mid-callback
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed"
+        ) from exc
 
     destination = settings.oidc_post_login_redirect.strip()
     if destination:
@@ -320,13 +395,21 @@ def agent_token(
     body: AgentTokenRequest,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentTokenResponse:
-    """Exchange a provisioning key for a short-lived agent JWT (tenant_id in claims)."""
+    """Exchange a provisioning key for a short-lived agent JWT (tenant_id in claims).
+
+    A good key and a free ``agent_id`` are two different questions, and they
+    get two different answers (#308): 401 when the key is not exchangeable,
+    403 when it is but the id belongs to another tenant, to another live key,
+    or to an agent an operator has disabled.
+    """
     try:
         result = auth_service.exchange_provisioning_key(
             settings,
             body.provisioning_key,
             agent_id=body.agent_id,
         )
+    except agents_service.AgentIdentityConflict as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     return AgentTokenResponse.model_validate(result)
@@ -345,6 +428,8 @@ def auth_exchange(
             agent_id=body.agent_id,
             expires_minutes=DEFAULT_EXCHANGE_TTL_MINUTES,
         )
+    except agents_service.AgentIdentityConflict as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     return AuthExchangeResponse.model_validate(result)
@@ -408,6 +493,7 @@ def grant_membership(
     username: str,
     body: GrantMembershipRequest,
     user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> MembershipInfo:
     """Grant (or re-grant) one user access to one tenant. Idempotent."""
     try:
@@ -416,6 +502,7 @@ def grant_membership(
             tenant_id=tenant_id,
             role=body.role,
             created_by=user.username,
+            audit=audit,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -427,8 +514,9 @@ def revoke_membership(
     tenant_id: str,
     username: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> None:
-    if not memberships_service.revoke(username=username, tenant_id=tenant_id):
+    if not memberships_service.revoke(username=username, tenant_id=tenant_id, audit=audit):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membership not found")
 
 
@@ -453,9 +541,12 @@ def create_provisioning_key(
     tenant_id: str,
     body: CreateProvisioningKeyRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> ProvisioningKeyInfo:
     try:
-        created = tenants_service.create_provisioning_key(tenant_id=tenant_id, label=body.label)
+        created = tenants_service.create_provisioning_key(
+            tenant_id=tenant_id, label=body.label, audit=audit
+        )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
@@ -484,8 +575,9 @@ def revoke_provisioning_key(
     tenant_id: str,
     key_id: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    audit: AuditDep,
 ) -> ProvisioningKeyInfo:
-    revoked = tenants_service.revoke_provisioning_key(key_id)
+    revoked = tenants_service.revoke_provisioning_key(key_id, audit=audit)
     if revoked is None or revoked.get("tenant_id") != tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="key not found")
     return ProvisioningKeyInfo.model_validate(revoked)
@@ -618,6 +710,7 @@ def replace_scan_scope(
     body: ReplaceScanScopeRequest,
     user: Annotated[TokenUser, Depends(require_role(Role.admin))],
     settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
 ) -> list[ScanScopeEntryInfo]:
     """Approve the scope this tenant may scan, replacing whatever it had.
 
@@ -632,6 +725,7 @@ def replace_scan_scope(
             tenant_id=tenant_id,
             entries=[entry.model_dump() for entry in body.entries],
             approved_by=user.username,
+            audit=audit,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

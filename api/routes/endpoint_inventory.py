@@ -29,6 +29,7 @@ from api.schemas import (
     SoftwareCveMatchTenantRunSummary,
     TenantPatchGap,
 )
+from api.services import agents as agents_service
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import metrics as metrics_service
 from api.services import patch_gap as patch_gap_service
@@ -53,6 +54,15 @@ def submit_inventory(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="agent_id does not match the authenticated agent JWT",
         )
+    # A disabled or quarantined agent must not keep feeding the inventory
+    # either (#308). It is the same refusal the job routes give, on purpose:
+    # an operator who quarantines a host expects it to stop writing, not to
+    # stop only the half of its traffic that carries a job id.
+    try:
+        agents_service.require_active(body.agent_id)
+    except PermissionError as exc:
+        metrics_service.ENDPOINT_SUBMISSIONS_TOTAL.labels("invalid").inc()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     started = time.perf_counter()
     try:
         result = endpoint_inventory_service.ingest_snapshot(

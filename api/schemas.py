@@ -399,6 +399,29 @@ class AgentInfo(BaseModel):
     min_version: str = ""
     upgrade_required: bool = False
     upgrade_message: str | None = None
+    # The operator's verdict on this agent, separate from ``status`` above,
+    # which is what the agent reports about itself (#308). ``lifecycle_message``
+    # is the same sentence the agent meets on a refused claim, carried on the
+    # heartbeat response so it lands in the agent's own journal.
+    lifecycle_status: Literal["active", "disabled", "quarantined"] = "active"
+    lifecycle_reason: str | None = None
+    lifecycle_message: str | None = None
+    # How many *other* agents registered with the same provisioning key — the
+    # blast radius of ``DELETE …?revoke_key=true``, which stops every one of
+    # them (#308). Counted only on the single-agent read, which is where the
+    # delete is confirmed; the fleet list leaves it at 0.
+    other_agents_on_key: int = 0
+
+
+class UpdateAgentStatusRequest(BaseModel):
+    """Move one agent between lifecycle states (#308).
+
+    ``reason`` is optional but is what the refused agent is told and what the
+    next operator reads, so the console asks for it.
+    """
+
+    status: Literal["active", "disabled", "quarantined"]
+    reason: str = Field(default="", max_length=512)
 
 
 class AgentFleetSummary(BaseModel):
@@ -700,6 +723,36 @@ class AuthEventInfo(BaseModel):
     detail: str | None = None
 
 
+class AuditEventInfo(BaseModel):
+    """One recorded administrative change (#327).
+
+    ``action`` is ``resource.verb`` (``user.create``, ``membership.revoke``,
+    ``scan_scope.replace``); ``actor_type`` says what kind of principal made
+    it, since a service token and the account that minted it can share a name.
+    ``tenant_id`` is NULL for a platform-level act — creating a console
+    account, editing the installation-wide scanner config — and set for
+    anything done inside a tenant.
+
+    ``before``/``after`` are the resource either side of the change, with every
+    credential-looking field replaced by ``[redacted]`` before storage: a
+    creation has no ``before``, a deletion no ``after``.
+    """
+
+    id: int
+    occurred_at: str | None = None
+    tenant_id: str | None = None
+    actor: str
+    actor_type: Literal["user", "service_token", "agent", "system"]
+    action: str
+    resource_type: str
+    resource_id: str
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+    client_ip: str = ""
+    user_agent: str = ""
+    request_id: str | None = None
+
+
 class UserInfo(BaseModel):
     """A console account (#156). Carries no password material by construction."""
 
@@ -841,6 +894,13 @@ class ProvisioningKeyInfo(BaseModel):
     created_at: str | None = None
     revoked_at: str | None = None
     last_used_at: str | None = None
+    # ``None`` means the key never expires — the state of every key minted
+    # before #308 and of every key minted with OCTO_PROVISIONING_KEY_TTL_DAYS=0.
+    # ``expires_soon`` is derived on read, and is false once the key is already
+    # expired or revoked: "soon" is a warning, and neither of those is a
+    # warning any more.
+    expires_at: str | None = None
+    expires_soon: bool = False
     # Present only on create (one-time plaintext).
     key: str | None = None
 

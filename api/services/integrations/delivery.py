@@ -13,13 +13,12 @@ import ipaddress
 import json
 import logging
 import socket
-import ssl
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from api.services import outbound_targets
+from api.services import egress, outbound_targets
 
 LOG = logging.getLogger("shapoclyack.webhooks")
 
@@ -192,7 +191,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             server_hostname,
             port=port,
             timeout=timeout,
-            context=ssl.create_default_context(),
+            context=egress.ssl_context(),
         )
         self._connect_host = connect_host
 
@@ -272,6 +271,76 @@ def _send_to_address(
         connection.close()
 
 
+def _send_via_proxy(
+    target: _ResolvedTarget,
+    proxy: egress.Proxy,
+    body: bytes,
+    headers: dict[str, str],
+    *,
+    method: str,
+    deadline: float,
+    capture_body: bool = False,
+) -> tuple[int, str]:
+    """Send through an HTTP proxy, which resolves the name for the second time.
+
+    The SSRF boundary still ran: ``_parse_target`` refused the scheme, the port
+    and every address the name resolved to here, so a subscription pointing at
+    ``169.254.169.254`` or a cluster Service never reaches this function. What
+    a proxy takes away is the *pinning* — the proxy performs its own lookup, so
+    a name that answered publicly for us and privately for it would slip
+    through. That is inherent to proxied egress and is why
+    ``docs/network-requirements.md`` says the proxy must be the boundary that
+    decides where the network's traffic may land; it is not a reason to send
+    the request unvalidated. A name that resolves to *nothing* here never gets
+    this far at all — :func:`request` refuses it, because an unresolved name is
+    an unchecked one.
+
+    HTTPS still gets end-to-end TLS: ``set_tunnel`` makes the proxy open a
+    ``CONNECT`` and the certificate is verified against ``target.hostname``,
+    against the system store plus ``OCTO_CA_BUNDLE`` — which is where an
+    inspecting proxy's own root goes.
+    """
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        raise TimeoutError("webhook delivery deadline exceeded before connect")
+
+    proxy_auth = egress.proxy_headers(proxy)
+    if target.scheme == "https":
+        connection: http.client.HTTPConnection = http.client.HTTPSConnection(
+            proxy.host,
+            port=proxy.port,
+            timeout=remaining,
+            context=egress.ssl_context(),
+        )
+        connection.set_tunnel(target.hostname, target.port, headers=proxy_auth or None)
+        request_target = target.request_target
+        request_headers = dict(headers)
+    else:
+        connection = http.client.HTTPConnection(proxy.host, proxy.port, timeout=remaining)
+        # A proxied plain-HTTP request carries the absolute URI, and the
+        # credentials ride on the request itself rather than on a CONNECT.
+        request_target = f"http://{target.host_header}{target.request_target}"
+        request_headers = {**headers, **proxy_auth}
+
+    request_headers["Host"] = target.host_header
+    try:
+        connection.request(method, request_target, body=body, headers=request_headers)
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("webhook delivery deadline exceeded waiting for response")
+        if connection.sock is not None:
+            connection.sock.settimeout(remaining)
+        response = connection.getresponse()
+        code = response.status
+        excerpt = (
+            "" if 200 <= code < 300 and not capture_body
+            else _read_error_excerpt(response, deadline=deadline)
+        )
+        return code, excerpt
+    finally:
+        connection.close()
+
+
 def request(
     method: str,
     url: str,
@@ -289,6 +358,11 @@ def request(
     PATCH against the same trackers, and they must not get there over a plain
     HTTP client: the base URL comes from a stored subscription, so it is
     exactly the kind of value the SSRF guard exists for.
+
+    Where ``OCTO_HTTPS_PROXY``/``OCTO_HTTP_PROXY`` names a proxy for this
+    target (and ``OCTO_NO_PROXY`` does not exempt it) the request goes through
+    it instead — validated the same way, but dialed by the proxy rather than
+    pinned here; see :func:`_send_via_proxy`.
     """
     started = time.perf_counter()
     deadline = started + max(1.0, float(timeout_seconds))
@@ -303,27 +377,68 @@ def request(
             duration_seconds=time.perf_counter() - started,
         )
 
+    proxy = egress.proxy_for(target.scheme, target.hostname, target.port)
+
     if not target.addresses:
+        # Refused on the proxied path too, and this is the security-relevant
+        # half. The addresses are *what the #151 boundary inspects*: with none
+        # of them, nothing about this host has been checked, and handing the
+        # bare name to a proxy that can resolve it turns the proxy into an SSRF
+        # oracle — any internal name a tenant admin cares to guess gets dialed
+        # and up to 500 characters of the answer come back in the DLQ. So a
+        # target must resolve on this side even when the proxy is the one that
+        # dials it; a resolver with no view of the receiver is a deployment
+        # problem with a deployment fix (a forwarder, or OCTO_NO_PROXY).
+        detail = (
+            " — a proxied target must still resolve here, because that lookup "
+            "is the address check"
+            if proxy is not None
+            else ""
+        )
         return DeliveryResult(
             ok=False,
             status_code=None,
-            error=f"DNS resolution failed for webhook host {target.hostname}",
+            error=f"DNS resolution failed for webhook host {target.hostname}{detail}",
             retryable=True,
             duration_seconds=time.perf_counter() - started,
         )
 
-    last_error: Exception | None = None
-    for address in target.addresses:
-        try:
-            code, excerpt = _send_to_address(
+    if proxy is not None:
+        # One attempt, not one per address: the proxy dials, so the addresses
+        # this side resolved are a check that ran, not a connection plan. That
+        # the check ran at all is guaranteed above — an unresolvable name never
+        # reaches here.
+        attempts = [
+            lambda: _send_via_proxy(
                 target,
-                address,
+                proxy,
                 body,
                 headers,
                 method=method,
                 deadline=deadline,
                 capture_body=capture_body,
             )
+        ]
+    else:
+        attempts = [
+            (
+                lambda address=address: _send_to_address(
+                    target,
+                    address,
+                    body,
+                    headers,
+                    method=method,
+                    deadline=deadline,
+                    capture_body=capture_body,
+                )
+            )
+            for address in target.addresses
+        ]
+
+    last_error: Exception | None = None
+    for attempt in attempts:
+        try:
+            code, excerpt = attempt()
         except Exception as exc:  # noqa: BLE001 - socket/ssl/http.client family
             last_error = exc
             if time.perf_counter() >= deadline:

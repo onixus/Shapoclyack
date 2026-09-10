@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hmac
+import uuid
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Any
 
 import jwt
 from fastapi import Depends, HTTPException, Query, Request, status
@@ -35,8 +36,19 @@ ROLE_RANK = {
 
 
 class TokenUser(BaseModel):
+    """The authenticated console principal for one request.
+
+    ``jti`` and ``expires_at`` are carried so ``POST /api/auth/logout`` can put
+    *this* token on the denylist without decoding the header a second time.
+    Both are ``None`` for a service token, which is revoked as a credential
+    rather than as a session
+    (``POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke``).
+    """
+
     username: str
     role: Role
+    jti: str | None = None
+    expires_at: datetime | None = None
 
 
 class TenantPrincipal(BaseModel):
@@ -123,20 +135,120 @@ def authenticate_user(settings: Settings, username: str, password: str) -> Token
 
 
 def create_access_token(settings: Settings, user: TokenUser) -> str:
+    """Mint a console session token (#314).
+
+    Two claims beyond the pre-#314 set, and one header:
+
+    * ``ver`` — the account's ``token_version`` *at this moment*, read from the
+      table rather than carried from the login lookup, so a revocation racing a
+      login wins. :func:`decode_token` refuses a token whose ``ver`` has since
+      moved on, which is how a disable, a demotion or a password change reaches
+      a token already in somebody's browser.
+    * ``jti`` — a per-token identifier, so one session can be logged out
+      without ending the others.
+    * ``kid`` — which key signed this, so a rotation window verifies against
+      the right one first instead of trying each in turn.
+
+    An account that vanished between authentication and here is mint-refused
+    rather than issued a version-0 token: a missing row is exactly what a
+    concurrent delete looks like.
+    """
+    from api.core.security import jwt_kid
+    from api.services import sessions as sessions_service
+
     expire = datetime.now(UTC) + timedelta(minutes=settings.jwt_expire_minutes)
     payload = {
         "sub": user.username,
         "role": user.role.value,
         "typ": "user",
+        "ver": sessions_service.current_version(settings, user.username),
+        "jti": uuid.uuid4().hex,
         "exp": expire,
         "iat": datetime.now(UTC),
     }
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return jwt.encode(
+        payload,
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        headers={"kid": jwt_kid(settings.jwt_secret)},
+    )
+
+
+def verify_signature(
+    settings: Settings,
+    token: str,
+    secrets: list[str],
+    *,
+    leeway: float = 0,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Verify ``token`` against a rotation window, newest key first (#314).
+
+    When the token names a ``kid`` this installation knows, that key is the
+    only one tried: a token that says which key signed it and then does not
+    verify under it is forged, and trying the rest would only make the refusal
+    slower. An unknown or absent ``kid`` — every token issued before this
+    change has none — falls back to trying the whole window in order.
+
+    ``leeway`` and ``options`` are passed straight to ``jwt.decode``: the OIDC
+    login state is signed with the same key and must verify against the same
+    window (otherwise a rotation breaks SSO mid-rollout), but it asks for
+    required claims and a clock skew allowance the console token does not.
+
+    Raises ``jwt.PyJWTError`` like ``jwt.decode`` does, so the callers keep
+    their existing single ``except``.
+    """
+    from api.core.security import jwt_kid
+
+    candidates = secrets
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except jwt.PyJWTError:
+        kid = None
+    if kid:
+        matched = [secret for secret in secrets if jwt_kid(secret) == kid]
+        if matched:
+            candidates = matched
+
+    last_error: jwt.PyJWTError | None = None
+    for secret in candidates:
+        try:
+            return jwt.decode(
+                token,
+                secret,
+                algorithms=[settings.jwt_algorithm],
+                leeway=leeway,
+                options=options or {},
+            )
+        except jwt.ExpiredSignatureError:
+            # Expiry is a property of the token, not of the key: another key in
+            # the window cannot make an expired token fresh, and continuing
+            # would report the last key's "signature mismatch" instead.
+            raise
+        except jwt.PyJWTError as exc:
+            last_error = exc
+    raise last_error if last_error is not None else jwt.InvalidTokenError("no signing key configured")
 
 
 def decode_token(settings: Settings, token: str) -> TokenUser:
+    """Verify a console JWT **and** confirm the session behind it still exists.
+
+    Before #314 this function was the whole check: the role was read out of the
+    claims and the database was never asked, so disabling, deleting or demoting
+    an account left the token in that person's browser working for the rest of
+    its eight-hour life. Every request now costs two primary-key lookups
+    (:func:`api.services.sessions.check_session`) and revocation is immediate.
+
+    The role that reaches the request is the one in the table, not the one in
+    the claim — the row has already been read, so it is free, and it is the
+    difference between a demotion applying now and applying at the next login.
+    The claim is still parsed and rejected when it names a role that does not
+    exist, so a malformed or invented token is refused exactly as before.
+    """
+    from api.services import sessions as sessions_service
+
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        payload = verify_signature(settings, token, settings.jwt_verification_secrets())
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -152,10 +264,55 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
     if not username or not role_raw:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
     try:
-        role = Role(str(role_raw))
+        Role(str(role_raw))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid role") from exc
-    return TokenUser(username=str(username), role=role)
+
+    # A token minted before #314 carries no ``ver``; migration 0038 backfills
+    # every account at 0, so those sessions keep working until they expire
+    # rather than the upgrade signing the console out. See the migration.
+    try:
+        state = sessions_service.check_session(
+            settings,
+            username=str(username),
+            token_version=int(payload.get("ver") or 0),
+            jti=str(payload["jti"]) if payload.get("jti") else None,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload"
+        ) from exc
+    except PermissionError as exc:
+        # One message for all four reasons (gone, disabled, stale version,
+        # logged out): which one applies is of interest only to whoever is
+        # holding the dead token.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session is no longer valid",
+        ) from exc
+    except sessions_service.SessionStoreUnavailable as exc:
+        # Not a 401: the session was not refused, it could not be checked. A
+        # 401 here would sign every console in the fleet out over a Postgres
+        # restart — and they would not be able to sign back in either.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Session store is unavailable, try again",
+            headers={"Retry-After": "5"},
+        ) from exc
+    try:
+        role = Role(state.role)
+    except ValueError as exc:
+        # A role the table cannot spell is a broken row, not a viewer — the
+        # same reading authenticate_user() takes.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid role") from exc
+
+    expires_at = payload.get("exp")
+    return TokenUser(
+        username=state.username,
+        role=role,
+        jti=str(payload["jti"]) if payload.get("jti") else None,
+        expires_at=datetime.fromtimestamp(int(expires_at), UTC) if expires_at else None,
+    )
 
 
 def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
@@ -166,9 +323,15 @@ def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
     signature meant every one of those checks was load-bearing on its own. With
     separate keys an operator token does not verify here at all, and an agent
     token does not verify in :func:`decode_token`.
+
+    Verified against the same rotation window as a console token (#314): when
+    the agent key is derived from ``jwt_secret`` a retired operator key derives
+    a retired agent key, so one ``OCTO_JWT_SECRET_PREVIOUS`` covers both
+    audiences and an agent fleet is not locked out mid-rotation. Nothing is
+    ever *signed* with a retired key.
     """
     try:
-        payload = jwt.decode(token, settings.agent_signing_secret(), algorithms=[settings.jwt_algorithm])
+        payload = verify_signature(settings, token, settings.agent_signing_secrets())
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -343,11 +506,40 @@ def require_tenant(minimum: Role):
     return _checker
 
 
+def _revalidate_agent_credential(principal: AgentPrincipal) -> None:
+    """Re-check a verified agent JWT against the database, or refuse it (#308).
+
+    Imported inside the function, like every other service this module reaches
+    for: ``api.services`` imports settings and models, and importing it at
+    module scope would make the auth layer part of that cycle.
+    """
+    from api.services import agents as agents_service
+
+    try:
+        agents_service.check_credential(
+            agent_id=principal.agent_id,
+            tenant_id=principal.tenant_id,
+            key_id=principal.key_id,
+        )
+    except agents_service.AgentCredentialRevoked as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
 def require_agent(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentPrincipal:
-    """Authenticate remote agent via agent JWT, or legacy OCTO_AGENT_TOKEN."""
+    """Authenticate remote agent via agent JWT, or legacy OCTO_AGENT_TOKEN.
+
+    A verified signature is no longer the whole answer (#308): an agent JWT
+    lives for two hours, and revoking its provisioning key, deleting the agent
+    or moving it between tenants used to do nothing until it expired. The
+    database is consulted on every request, so those acts land immediately —
+    see :func:`api.services.agents.check_credential` for exactly which two
+    things are checked and why a missing agent row is not one of them.
+    """
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     token = credentials.credentials
@@ -368,7 +560,9 @@ def require_agent(
         unverified = {}
 
     if unverified.get("typ") == AGENT_TOKEN_TYP:
-        return decode_agent_token(settings, token)
+        principal = decode_agent_token(settings, token)
+        _revalidate_agent_credential(principal)
+        return principal
 
     if settings.agent_token:
         provided = token.encode("utf-8")

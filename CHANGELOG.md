@@ -6,6 +6,222 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **An agent token can only act as the agent it was minted for**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). The `agent_id` in
+  an agent JWT was never compared with the one in the request — body, form or
+  query string — only the tenant was, so a token lifted off one worker could
+  heartbeat as, claim jobs for and upload results as every other agent in that
+  tenant, which for an MSSP customer is its whole fleet. All four agent routes
+  now answer `403` for a mismatch — including `POST /api/endpoint/inventory`,
+  which a quarantined host was otherwise still free to feed — and registering
+  without an `agent_id` uses the token's own rather than minting a random one.
+  The binding starts one step earlier than the register: `POST
+  /api/auth/agent/token` refuses (`403`) to mint a token for an `agent_id` that
+  belongs to another tenant, to an agent registered with a *different key that
+  is still active*, or to a `disabled`/`quarantined` agent. Without that, a
+  holder of any valid key in the tenant could take a live agent's identity, and
+  quarantine lasted only until the host restarted and asked for a fresh id.
+  Revoking the old key releases the id, which is the documented rotation order.
+  A legacy `OCTO_AGENT_TOKEN` agent has no identity to bind to and is
+  unchanged — one more reason that variable is deprecated.
+- **Agents can be disabled or quarantined, and it survives a restart**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). New
+  `PATCH /api/agents/{id}` (tenant **admin**) moves an agent between `active`,
+  `disabled` and `quarantined`, with a reason that reaches the agent itself.
+  A non-`active` agent is refused job claims and result uploads with `403` and
+  cannot re-register its way back to `active`; its heartbeat is still answered,
+  so it learns why and backs off to one poll every five minutes instead of one
+  per second. The state is a new column and does not disturb the reported
+  `idle`/`busy`/`error` status. Shown, and settable, in the agent drawer on
+  `/agents`.
+- **Deleting an agent can now revoke its credential**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)).
+  `DELETE /api/agents/{id}` removed the row and nothing else: the host kept its
+  provisioning key and a JWT valid for up to two hours, and re-registered on
+  its next poll, so "delete" was a pause. `?revoke_key=true` revokes the key the
+  agent registered with — a link that is now recorded — and the response reports
+  whether anything was revoked rather than implying it. Both the response and
+  `GET /api/agents/{id}` carry `other_agents_on_key`, the number of other agents
+  that revocation would stop, and the drawer puts it in front of the operator
+  when the checkbox is ticked rather than in the answer afterwards. Every authenticated
+  agent request re-checks its provisioning key against the database, so
+  revoking a key (by this route or the tenant one) stops the JWTs already
+  minted from it at once instead of after their remaining lifetime.
+- **Taking an agent out of the fleet is in the audit trail**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308),
+  [#327](https://github.com/onixus/Shapoclyack/issues/327)). The lifecycle
+  routes above recorded their change in a log line, which is the record that is
+  gone with the pod. `PATCH /api/agents/{id}` now writes `agent.disable`,
+  `agent.enable` or `agent.quarantine` — one action per resulting state, so
+  "who took this host out of the fleet" is a filter rather than a read — and
+  `DELETE /api/agents/{id}` writes `agent.delete` with the hostname, the
+  lifecycle state and the `provisioning_key_id` that went with it. Each is
+  written **in the transaction that makes the change**, like every other action
+  in the trail; with `?revoke_key=true` a second row, `provisioning_key.revoke`,
+  follows under the same actor and `X-Request-Id`, because the key is a
+  separate resource that outlives the agent. `agent.register` also records
+  which key bought the place in the fleet. The console's `/audit` filter lists
+  the four new actions.
+- **Provisioning keys expire** ([#308](https://github.com/onixus/Shapoclyack/issues/308)).
+  New `OCTO_PROVISIONING_KEY_TTL_DAYS` (default `90`, `0` = perpetual) stamps
+  `expires_at` at mint time; an exchange after it answers `401`, and the key
+  list carries `expires_at` and an `expires_soon` flag. **Keys minted before
+  this stay perpetual** — nothing back-dates them, because a deadline nobody was
+  told about would strand whichever fleets are already past it; the list is how
+  they are found and rotated.
+  Migration `0039_agent_status_key_expiry` (expand only, nothing backfilled).
+  Registration, lifecycle changes, deletion and key revocation are logged with
+  their fields today; the audit trail
+  ([#327](https://github.com/onixus/Shapoclyack/issues/327)) will pick them up.
+
+- **The agent keeps one identity for its whole life, and refusals back off**
+  ([#308](https://github.com/onixus/Shapoclyack/issues/308)). `agent/worker.py`
+  exchanged its provisioning key without naming an `agent_id`, so the server
+  minted a random one into the token and the register that followed — carrying
+  the `OCTO_AGENT_ID` the installer always writes — was refused as
+  impersonation. Registration sat outside the loop's error handling, so that
+  `403` killed the process and `Restart=always` repeated it every five seconds.
+  The id is now sent on every exchange including the periodic refresh, adopted
+  from the first exchange when the deployment sets none, and registration
+  happens inside the loop: a refused agent — quarantined, disabled, or holding
+  a rejected token — waits out the same five-minute backoff every other refusal
+  gets, and keeps heartbeating so it stays visible in the fleet view. A claim
+  refused over NATS now reaches that backoff too, and NAKs the offer so another
+  agent in the tenant can take it, instead of being swallowed as a reconnect.
+
+- **An administrative audit trail, and one the application cannot edit**
+  ([#327](https://github.com/onixus/Shapoclyack/issues/327),
+  [#329](https://github.com/onixus/Shapoclyack/issues/329)). Creating,
+  promoting, disabling and deleting an account; granting and revoking a
+  membership; minting and revoking a service token or a provisioning key; a
+  password reset and a self-service rotation; an agent's first registration; a
+  report download; a scan scope replaced; a config override changed — each is
+  now a row in `audit_events` with the actor, what kind of principal it is, the
+  resolved client address, the user agent, the request's `X-Request-Id`, and the
+  resource before and after the change. Every action that is itself a database
+  write records **in the transaction that makes the change**, so a change
+  without a record and a record without a change are both impossible;
+  `report.download` is the one exception, because a file read has no transaction
+  to join and its row is committed before the stream starts. Every
+  credential-shaped field (`password`, `*_hash`, `token`, `*_secret`, `*_key`)
+  is replaced by `[redacted]` before storage. `GET /api/audit` reads it back —
+  admin *in the tenant*, never a service token, filters on actor/action/resource
+  and a time window, and `?format=csv|ndjson` streams every matching event
+  rather than the page. Migration `0037_audit_events` makes the table
+  append-only in Postgres: triggers refuse every `UPDATE`, `DELETE` and
+  `TRUNCATE`, and the only way past them is `audit_events_prune`, a `SECURITY
+  DEFINER` function the recommended `GRANT` layout in `docs/operations.md`
+  withholds from the API's role. That layout — which includes moving the table
+  off the API's role with `ALTER TABLE … OWNER TO` — is what makes the trail
+  proof against the API's *credentials* rather than only against its bugs; the
+  shipped `k8s/` base runs both as one role, and the docs now say so. Retention
+  is a separate privileged job, `python -m api.services.audit_retention --days
+  365` (`OCTO_AUDIT_EVENT_RETENTION_DAYS`), with a CronJob example in
+  `k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`. The console
+  gets `/audit` — the same list with the filters and the two export buttons.
+  Login attempts stay in `auth_events` and are not mirrored: they are the same
+  fact in two tables, and that one is also the rate limiter's counter.
+
+- **Console sessions can be revoked** ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
+  A JWT was believed on its own for its whole eight-hour life: the role came
+  out of the claims and the database was never asked, so disabling, deleting or
+  demoting an account changed nothing for the token already in that person's
+  browser. Every request now verifies the signature and then reads the account
+  row — the role comes from the table, and the session ends the moment the
+  account is disabled, deleted, demoted or has its password changed. Migration
+  `0038` adds `users.token_version` (the generation every token quotes in a new
+  `ver` claim) and `revoked_tokens` (one `jti` denied until its own `exp`).
+  New routes: `POST /api/auth/logout` (this session), `POST /api/auth/sessions/revoke-all`
+  (your account, everywhere) and `POST /api/users/{username}/sessions/revoke-all`
+  (platform admin). Service tokens and agent tokens are unchanged — a service
+  token was never a session and is still revoked as a credential.
+  **On upgrade, tokens minted before this keep working until they expire.**
+  They carry no `ver` and the migration backfills every account at generation
+  0, which is what those tokens implicitly claim; the alternative — signing the
+  whole console out mid-rollout — was the worse default. An operator who wants
+  that runs `revoke-all` for every account once the rollout is done
+  ([operations.md](docs/operations.md#sessions-and-revocation) has the loop).
+- **The JWT signing key can be rotated without a fleet-wide logout**
+  ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
+  `OCTO_JWT_SECRET_PREVIOUS` is a comma-separated list of retired keys that are
+  still verified while the tokens they signed expire; nothing is ever signed
+  with one. Every token now carries a `kid` header (a domain-separated `sha256`
+  prefix of the key), so the verifier tries the named key rather than each in
+  turn — and a token naming one key of the window but signed with another is
+  refused. While `OCTO_AGENT_JWT_SECRET` is unset the agent key is derived from
+  the operator key, so one list rotates both audiences;
+  `OCTO_AGENT_JWT_SECRET_PREVIOUS` covers the case where it is set explicitly.
+  A `prod` start refuses a list that carries the shipped development secret or
+  repeats the current key. Procedure in
+  [operations.md](docs/operations.md#rotating-the-jwt-signing-key).
+  The OIDC login state is signed with the same key and is now verified against
+  the same window, so an SSO login started just before a rotating deploy still
+  completes instead of failing with "invalid or expired login state".
+- **A session store that cannot be reached answers `503`, not `401`**
+  ([#314](https://github.com/onixus/Shapoclyack/issues/314)). The per-request
+  account lookup turns an unreachable Postgres into `503` with `Retry-After`
+  rather than into a refusal: a `401` would sign every console in the fleet out
+  over a database restart, with no way back in.
+- **`PUT /api/users/{username}/role` and `.../disabled` end sessions only when
+  they change something** ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
+  Re-asserting the role or the disabled flag an account already has used to
+  bump its token generation, so a reconciling IaC run or a directory sync
+  signed the whole tenant out on every pass.
+- **Integration secrets are encrypted at rest**
+  ([#310](https://github.com/onixus/Shapoclyack/issues/310)). A webhook's HMAC
+  signing key and the header values that carry a Jira / ServiceNow /
+  DefectDojo API token sat in `webhook_subscriptions` as typed, so a database
+  dump, a base backup or a read replica yielded every tenant's tracker tokens
+  at once — the redaction in `secure_webhooks.py` only ever answered what an
+  API *caller* may read. Both columns are now envelope-encrypted: a fresh
+  256-bit data key per write under AES-256-GCM, wrapped by a KEK from
+  `OCTO_MASTER_KEY`, stored as `v1:<kek_id>:<wrapped dek>:<nonce>:<ciphertext>`
+  and bound to its column so a ciphertext moved between the two fails its tag.
+  The API responses are unchanged: the secret is still write-only and header
+  values still redact to `***`. Reading a subscription needs no key at all —
+  the values that would be redacted are never decrypted to be redacted — and
+  neither does the fan-out, which routes on `enabled` / `event_kinds` /
+  `min_severity`. The one function that turns a stored envelope back into a
+  credential is `endpoint_credentials`, called by the delivery loop and by the
+  ticket reflection immediately before the wire call.
+
+  A row whose KEK is not configured — a rotation window closed one step early,
+  a backup restored against another key — is therefore contained: it is listed
+  and edited like any other, it does not stop the event that fans out to its
+  neighbours, and its deliveries dead-letter on the first attempt with
+  `SecretDecryptionError` rather than spending `OCTO_WEBHOOK_MAX_ATTEMPTS` on a
+  retry that cannot succeed. `--rotate` leaves such a row exactly as it is,
+  counts it, and exits non-zero.
+
+  Nothing is re-encrypted by a migration. The stored form names the key that
+  opens it and the read path still accepts plaintext, so encrypting a live
+  installation is an online, resumable operator step
+  (`python -m api.db.reencrypt_secrets`), and a KEK rotation is
+  `OCTO_MASTER_KEY_PREVIOUS` plus the same pass with `--rotate`. Migration
+  `0040_encrypted_secrets` only adds `webhook_subscriptions.key_id`, the
+  queryable mirror of the id inside each ciphertext.
+
+  Without a key: under `OCTO_ENV=prod` the API **refuses to start** if any
+  subscription already holds a secret or a configured header — those rows are
+  either plaintext, which is the defect, or encrypted and unreadable — and
+  starts with a warning when there are none, so a deployment with no
+  integrations is not made to invent a key it does not need. That warning is
+  not a licence: an installation which came up with nothing stored and then
+  had a webhook created **refuses the write**, because the startup answer is
+  about the rows that existed at boot and the first integration is exactly
+  what changes it. Under `dev` it is
+  always a warning and the values stay plaintext, which is what keeps a laptop
+  and the test suite working unchanged. Console passwords, service tokens and
+  provisioning keys are unaffected: they are hashes, not secrets we can read
+  back. `OCTO_OIDC_CLIENT_SECRET` and `OCTO_REPORT_SMTP_PASSWORD` are also
+  unaffected — they never reach the database, and encrypting an environment
+  value with a key from the same environment buys nothing.
+
+  `OCTO_MASTER_KEY_PROVIDER` names where the KEK lives. Only `local` ships;
+  `vault-transit`, `aws-kms` and `gcp-kms` are the **interface**
+  (`KeyProvider`, two methods) and refuse startup rather than falling back to a
+  local key. See `docs/operations.md` § Secrets at rest and the
+  `OCTO_MASTER_KEY` examples in `k8s/shapoclyack/examples/`.
 - **A results upload now confirms the job's `run_id` instead of choosing it.**
   `POST /api/agent/jobs/{job_id}/results` took `run_id` from the multipart
   form and preferred it over the value the server minted at `start_scan` or
@@ -40,6 +256,16 @@ All notable changes to Shapoclyack are documented in this file.
   variable at all. `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`
   adds the server-side `tls {}` block and the cert-manager `Certificate` to
   copy. Base is unchanged — the kind stand has no CA and stays plaintext.
+
+### Fixed
+
+- **A webhook delivery whose send raised counted as two attempts** in the
+  dispatch tick's own report while the delivery row recorded one
+  ([#310](https://github.com/onixus/Shapoclyack/issues/310)). The counter was
+  incremented at the wire call and again in the handler that caught it, so the
+  `attempted` figure the worker logs disagreed with the queue whenever a
+  receiver refused a connection. It is now counted once, where the outcome is
+  written back.
 
 ### Added
 
@@ -102,6 +328,118 @@ All notable changes to Shapoclyack are documented in this file.
   the software-match worker each hold one connection for the life of the process
   for their session-scoped advisory lock, so a pool of one or two would have
   left a worker unable to become leader at all, in every replica, silently.
+- **One outbound HTTP client, with a proxy and an internal CA**
+  ([#359](https://github.com/onixus/Shapoclyack/issues/359)). Nothing in this
+  repository read a proxy variable, and webhook/ticket delivery on raw
+  `http.client` could not have used one anyway — on a network whose only egress
+  is a proxy, no webhook ever left and no remote agent ever registered.
+  `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`, `OCTO_NO_PROXY` and `OCTO_CA_BUNDLE`
+  now decide the control-plane HTTP calls on both sides: `api/services/egress.py`
+  for webhook and ticket delivery, OIDC and advisory feeds, and its deliberate
+  mirror `agent/egress.py` for the agent's token exchange, registration,
+  heartbeat, claim and results upload (a copy, not an import — the agent ships
+  without the `api` package; a test asserts the two agree). The scanner's own
+  external lookups — RIPEstat in `asn_discovery`, the three object stores in
+  `cloud_discovery` — read the same two variables through
+  `scanner/pipeline/egress_env.py`; the remaining outbound stages (`hostnames`,
+  `ownership`, `alerts`) do not, and
+  [docs/network-requirements.md](docs/network-requirements.md) now lists every
+  direction and says which is which rather than claiming all of them. Each
+  variable falls back to the conventional `HTTPS_PROXY`/`NO_PROXY`, and for the
+  plain-HTTP direction to the **lowercase** `http_proxy` only: a CGI-shaped
+  environment derives uppercase `HTTP_PROXY` from an incoming `Proxy:` request
+  header, so that is the spelling an untrusted caller can write (httpoxy), and
+  curl reads only the lowercase one for the same reason. A proxy URL must
+  itself be `http://` — nothing here wraps the hop to the proxy in TLS, so
+  `https://` is refused by name instead of promising an encrypted hop that
+  `Proxy-Authorization: Basic` would then cross in the clear.
+  `OCTO_CA_BUNDLE` is *added* to the system trust store — HTTPS, the SMTP relay
+  and the NATS connection on **both** ends read it, so one internal root is
+  named once — and a path that does not resolve to a usable PEM is an error
+  rather than a silent fallback. The SSRF boundary (#151) is unchanged: a
+  proxied webhook target is still parsed, port-checked and address-checked
+  before anything is sent, a host whose name resolves to nothing here is
+  refused rather than handed to the proxy to resolve, and a host
+  `OCTO_NO_PROXY` exempts keeps the pinned direct dial. What proxying
+  necessarily gives up is that pinning, which
+  [docs/network-requirements.md](docs/network-requirements.md) says plainly.
+- **NATS on 443, and an honest answer about proxies**
+  ([#359](https://github.com/onixus/Shapoclyack/issues/359)). `wss://` in
+  `OCTO_NATS_URL` now works where `aiohttp` is installed — nats-py implements
+  the WebSocket transport with it, the agent image does not carry it, and the
+  agent refuses at start naming the package instead of failing later inside its
+  event-loop thread. `k8s/shapoclyack/examples/nats-443-ingress.example.yaml`
+  has both routes onto 443: a raw-TCP (stream) ingress with `tls://`, which
+  keeps TLS end to end and is the recommended one, and the `wss://` listener
+  with an ordinary Ingress. **No HTTP proxy carries NATS** in any of its
+  transports; where the proxy is the only way out, leave `OCTO_NATS_URL` unset
+  and the agent polls `POST /api/agent/jobs/claim` — a supported mode, not a
+  degraded one. `k8s/shapoclyack/examples/agent-proxy-ca-patch.yaml` is that
+  deployment.
+- **`OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS`** ([#359](https://github.com/onixus/Shapoclyack/issues/359)).
+  Shapes the agent's results upload to a token bucket, `0` (the default) for no
+  limit. The multipart body is now streamed from disk rather than assembled in
+  memory, so the limit bounds the wire rate rather than the size of a buffer
+  that was already filled — and a run archive stops being why a branch office's
+  uplink saturates for two minutes after every scan. `Content-Length` is set
+  explicitly so the streamed body does not fall through to chunked encoding,
+  which the results route answers `411` to. An upload the API cuts off
+  mid-body — how `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` looks from the agent's
+  side, since the refusal is decided on `Content-Length` and the status line is
+  lost with the socket — is not retried: re-shaping the same archive through
+  the token bucket only spends the site's uplink to be refused twice more.
+- **[docs/network-requirements.md](docs/network-requirements.md)** — ports,
+  directions and protocols for the agent, the cluster and the API's own egress;
+  the proxy and CA variables with their exact `NO_PROXY` dialect; what TLS
+  inspection does and does not change; and the bandwidth section. Linked from
+  [operations.md](docs/operations.md#transport-encryption) and the wiki portal.
+  The transport-encryption table in `operations.md` also stops saying NATS is
+  unencrypted, which has not been true since `tls://` landed.
+- **Structured logging, a request id, and secret redaction**
+  ([#330](https://github.com/onixus/Shapoclyack/issues/330)). `OCTO_LOG_FORMAT`
+  (`text` by default, `json` for a shipper) and `OCTO_LOG_LEVEL` configure the
+  API and the agent alike; the API hands the same formatter to uvicorn, so
+  `uvicorn.access` stops being the one stream in a different shape. JSON lines
+  carry `ts`, `level`, `logger`, `msg`, `request_id`, and `exc` on a traceback,
+  and the formatter is built on the standard library — no new dependency.
+  `RequestIdMiddleware` binds a correlation id per request: `X-Request-Id` from
+  the caller when it is safe to echo and to log (128 characters of a narrow
+  set, so a uuid, a ULID or a `traceparent` passes and a CRLF injection does
+  not), a fresh uuid4 otherwise. It wraps the whole ASGI stack — outside
+  Starlette's own `ServerErrorMiddleware`, which `add_middleware` cannot reach
+  — so the 500 for an unhandled exception carries the header like every other
+  response, and the record about it is written under the id rather than by
+  uvicorn after the context is gone. The value comes back in the response
+  header (named in the CORS `expose_headers`, so the console can read it
+  cross-origin and shows it in the toast for a server-side failure), appears in
+  every log line the request produces, and is set on the OpenTelemetry span as
+  `shapoclyack.request_id`. Both formats print UTC.
+  A `logging.Filter` on both processes masks keyed
+  `password=`/`token=`/`secret=` pairs (JSON spelling included), the whole
+  `Authorization` header whatever its scheme, bare `Bearer` credentials,
+  passwords inside `scheme://user:pass@host` URLs — an empty user, as Redis
+  writes them, included — and JWTs, in the message and in the formatted
+  traceback of either format; `%s` arguments are covered, which is how this
+  repository logs. `sqlalchemy.engine`, `paramiko`, `httpx`/`httpcore` and
+  `nats` are held at a floor, so `OCTO_LOG_LEVEL=DEBUG` does not turn on the
+  SQL statement log with its bound parameters, and `OCTO_LOG_LEVEL=NOTSET` is
+  refused rather than silently meaning "everything". `docs/operations.md`
+  now describes the filter and its limits instead of instructing operators not
+  to log secrets. Head trace sampling is configurable with
+  `OCTO_OTEL_TRACES_SAMPLER_RATIO` (default `1.0`, parent-based).
+
+- **The console warns before a session ends, and signing out ends it on the
+  server** ([#314](https://github.com/onixus/Shapoclyack/issues/314)). Five
+  minutes out, a banner above the header says how long is left and offers "Sign
+  in again"; the countdown is read from the token's own `exp` and decides
+  nothing. **Sign out** now calls `POST /api/auth/logout` before forgetting the
+  token locally, so a copied token stops working rather than outliving the
+  sign-out. A sign-out the server did not confirm is retried as "end every
+  session" and, if that fails too, said out loud instead of reported as done.
+  The account menu gained **End all sessions** for the explicit case. There is
+  still no silent renewal — refresh tokens remain open on #314 — so an expired
+  session still ends in the redirect to `/login`; the banner now stays and
+  turns red at that point rather than disappearing at zero.
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426

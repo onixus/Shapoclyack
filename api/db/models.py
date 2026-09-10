@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import JSON, ForeignKey, Index, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# ``jsonb`` on Postgres, plain ``json`` on the SQLite dev fallback, which has
+# neither. Only the audit trail's before/after use it: they are stored and read
+# whole, so what jsonb buys here is dropping the key order and whitespace of a
+# document nobody edits.
+_JSON_DOC = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Base(DeclarativeBase):
@@ -78,6 +85,14 @@ class User(Base):
     email_verified: Mapped[bool] = mapped_column(default=False)
     oidc_issuer: Mapped[str | None] = mapped_column(default=None)
     oidc_subject: Mapped[str | None] = mapped_column(default=None)
+    # Session generation (migration 0038, #314). Every console JWT carries the
+    # value this column held when it was issued, and a token whose ``ver`` no
+    # longer matches is refused at decode. Bumped by every change that should
+    # end the sessions issued before it -- password, role, disable/enable --
+    # and by the explicit "sign me out everywhere". A row that predates the
+    # migration starts at 0, which is also what a token minted before the
+    # upgrade implicitly claims, so an upgrade does not sign the console out.
+    token_version: Mapped[int] = mapped_column(default=0)
 
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
@@ -159,6 +174,37 @@ class UserTenant(Base):
     )
 
 
+class RevokedToken(Base):
+    """One console token refused before its own ``exp`` -- the logout denylist (#314).
+
+    ``User.token_version`` ends *every* session of an account at once; this
+    table ends exactly one, which is what a logout is: signing out on a laptop
+    should not sign the same person out of the phone next to it.
+
+    A row is never longer-lived than the token it refuses, so the table is
+    bounded by "sessions logged out while still valid" rather than by history.
+    ``api/services/sessions.py`` deletes the expired rows on every write, and
+    the index on ``expires_at`` is what that sweep reads.
+
+    ``username`` is a real FK with ``ON DELETE CASCADE``, unlike
+    :class:`AuthEvent`'s: a deleted account's tokens are already refused for
+    the missing user row, so there is nothing left for the denylist to guard.
+    """
+
+    __tablename__ = "revoked_tokens"
+
+    # The token's own ``jti``. Primary key, so revoking twice is idempotent
+    # rather than a second row.
+    jti: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    revoked_at: Mapped[datetime]
+    # The ``exp`` of the token this row refuses. Naive UTC like every other
+    # timestamp in this schema.
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
 class AuthEvent(Base):
     """One console-authentication attempt: the audit trail *and* the rate limiter (#157).
 
@@ -204,6 +250,70 @@ class AuthEvent(Base):
         Index("ix_auth_events_pair", "username", "client_ip", "occurred_at"),
         # The per-IP limiter and the "what is this address doing" audit query.
         Index("ix_auth_events_ip", "client_ip", "occurred_at"),
+    )
+
+
+class AuditEvent(Base):
+    """One administrative change this platform made, and who made it (#327).
+
+    :class:`AuthEvent` next door answers "who signed in and what was refused";
+    this one answers "what was changed" — the accounts, memberships,
+    credentials, scan scopes and configuration an operator altered, with the
+    value before and the value after. They stay two tables because they are two
+    lifetimes: the login trail is also the rate limiter's counter and is pruned
+    on the login path, while these rows are append-only (#329) and outlive it.
+
+    ``tenant_id`` is NULL for a platform-level act (creating a console account,
+    changing the installation-wide scanner config) and set for anything done
+    *inside* a tenant. It is deliberately **not** a foreign key: deleting a
+    tenant must not delete the record of what was done in it, which is the one
+    moment the record matters most.
+
+    ``before``/``after`` are the resource's public shape, never its secrets —
+    :func:`api.services.audit.redact` drops password hashes, token plaintexts,
+    provisioning keys and webhook secrets by field name before either is
+    stored, so a reader of this table cannot recover a credential from it.
+    """
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime]
+    # NULL for a platform-level act; see the class docstring.
+    tenant_id: Mapped[str | None] = mapped_column(default=None)
+    # Console username, service-token name, agent id, or "system" — whatever
+    # ``actor_type`` says this is. Not a FK, for the reason auth_events.username
+    # is not one: the actor may be gone by the time the row is read.
+    actor: Mapped[str] = mapped_column(default="")
+    # user | service_token | agent | system
+    actor_type: Mapped[str] = mapped_column(default="user")
+    # Dotted verb, e.g. "user.create", "membership.revoke". See ACTIONS in
+    # api/services/audit.py.
+    action: Mapped[str] = mapped_column(default="")
+    resource_type: Mapped[str] = mapped_column(default="")
+    resource_id: Mapped[str] = mapped_column(default="")
+    # Redacted snapshots. NULL rather than {} where the action has no such
+    # side: a creation has no "before", a deletion has no "after".
+    before: Mapped[dict | None] = mapped_column(_JSON_DOC, default=None)
+    after: Mapped[dict | None] = mapped_column(_JSON_DOC, default=None)
+    # Resolved through api/core/client_ip.py, like auth_events.client_ip — never
+    # a raw X-Forwarded-For, which the client writes itself.
+    client_ip: Mapped[str] = mapped_column(default="")
+    user_agent: Mapped[str] = mapped_column(default="")
+    # The X-Request-Id of the request that made the change, when it carried
+    # one, so a row here can be joined to the API log line that produced it.
+    request_id: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        # The list endpoint's default query: one tenant's rows, newest first.
+        Index("ix_audit_events_tenant_time", "tenant_id", "occurred_at"),
+        Index("ix_audit_events_action", "action"),
+        # "everything that happened to this object", the question an incident
+        # asks about one account, token or scope.
+        Index("ix_audit_events_resource", "resource_type", "resource_id"),
+        # The platform-admin listing and the export, which are not filtered by
+        # tenant at all.
+        Index("ix_audit_events_time", "occurred_at"),
     )
 
 
@@ -257,6 +367,11 @@ class ProvisioningKey(Base):
     created_at: Mapped[datetime]
     revoked_at: Mapped[datetime | None] = mapped_column(default=None)
     last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    # When the key stops being exchangeable, from OCTO_PROVISIONING_KEY_TTL_DAYS
+    # at mint time (#308). NULL means "never", which is what every key minted
+    # before this column has and what a TTL of 0 mints — the column adds an
+    # expiry to new keys, it does not retroactively expire old ones.
+    expires_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class Asset(Base):
@@ -571,11 +686,15 @@ class WebhookSubscription(Base):
     API without touching the broker, and what makes the per-tenant scoping the
     same scoping every other table here uses.
 
-    ``secret`` is the HMAC key the receiver verifies with; it is stored in
-    plaintext because a signature has to be *computed*, not compared — a hash
-    would make it unusable — and it is redacted on every read path (see
-    ``api/services/integrations/webhooks.py``). It is a shared secret for a
-    URL the operator controls, not a credential for this system.
+    ``secret`` is the HMAC key the receiver verifies with — for a ticket
+    transport, the tracker's API token. It cannot be hashed: a signature is
+    *computed*, not compared, and a token has to be replayed to Jira as issued.
+    So since #310 it is encrypted at rest instead, as are the ``headers``
+    values, which is where an ``Authorization`` header for the same tracker
+    lives. ``api/services/crypto`` holds the envelope; redaction on the read
+    paths (``secure_webhooks.py``) is unchanged and still the answer to a
+    different question — what an API *caller* may see, rather than what a dump
+    of this table yields.
     """
 
     __tablename__ = "webhook_subscriptions"
@@ -599,6 +718,19 @@ class WebhookSubscription(Base):
     # Adapter knobs that are not credentials: Jira project_key / issue_type,
     # ServiceNow table, DefectDojo test_id. Tokens stay in secret/headers.
     transport_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    # KEK id every encrypted value in this row is wrapped with; NULL means the
+    # row holds nothing secret, or predates #310 and is still plaintext. Each
+    # ciphertext already names its own key, so this is a queryable mirror
+    # rather than the authority — the two readers that want the question
+    # answered in SQL rather than by parsing every column: the startup check
+    # (api/services/crypto/startup.py), which asks whether this installation
+    # stores integration secrets at all, and the operator confirming a rotation
+    # is finished (docs/operations.md § Secrets at rest, GROUP BY key_id).
+    # `reencrypt_secrets` deliberately does not trust it: it derives the label
+    # from the values it just wrote. Keeping it true is why a write re-encrypts
+    # all of the row's secret material, not only the fields the request touched
+    # (api/services/integrations/webhooks.py).
+    key_id: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
     updated_at: Mapped[datetime | None] = mapped_column(default=None)
@@ -998,6 +1130,24 @@ class Agent(Base):
     version: Mapped[str] = mapped_column(default="")
     labels: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(default="idle")
+    # What an *operator* decided about this agent (active | disabled |
+    # quarantined), as distinct from ``status`` above, which is what the agent
+    # last said about itself. Two columns rather than one because the two
+    # answer different questions and are written by different parties: an
+    # agent reporting "busy" must not overwrite an operator's "quarantined",
+    # and the fleet view needs both at once (#308).
+    lifecycle_status: Mapped[str] = mapped_column(default="active", server_default="active")
+    # Free text from the operator who moved it out of ``active`` — it is what
+    # the refused agent is told and what the next operator reads.
+    lifecycle_reason: Mapped[str | None] = mapped_column(default=None)
+    # The provisioning key this agent registered with, so deleting the agent
+    # can also revoke the credential that would let the same host register
+    # itself straight back (#308). Nullable: legacy shared-token agents were
+    # never minted from a key, and rows that predate this column have no
+    # record of which key they used.
+    provisioning_key_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provisioning_keys.key_id"), default=None, index=True
+    )
     current_job_id: Mapped[str | None] = mapped_column(default=None)
     detail: Mapped[str | None] = mapped_column(default=None)
     registered_at: Mapped[datetime]

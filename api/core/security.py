@@ -33,6 +33,15 @@ AGENT_TOKEN_TYP = "agent"
 # HKDF-SHA256 ``info`` for the agent signing key. Fixed forever: changing it
 # rotates every agent token at once.
 AGENT_JWT_HKDF_INFO = b"shapoclyack-agent-jwt"
+# Domain-separated prefix of sha256 over the signing key, published as the
+# ``kid`` header so a verifier knows which key of a rotation window signed a
+# token before it tries any of them. Sixteen hex characters: wide enough that
+# two keys in one window do not collide, short enough to read in a log. It is a
+# digest, so it does not carry the key — but a *guessable* key is still
+# recoverable from it, which is one more reason OCTO_JWT_SECRET is 32 random
+# bytes rather than a phrase (#314).
+JWT_KID_DOMAIN = b"shapoclyack-jwt-kid:"
+JWT_KID_LENGTH = 16
 # Plan default for provisioning-key exchange TTL.
 DEFAULT_EXCHANGE_TTL_MINUTES = 120
 DEFAULT_DECODE_LEEWAY_SECONDS = 10
@@ -86,6 +95,16 @@ def derive_agent_jwt_secret(operator_secret: str) -> str:
     return okm.hex()
 
 
+def jwt_kid(secret: str) -> str:
+    """The ``kid`` header for one signing key (#314).
+
+    A pure function of the key, so every replica computes the same value with
+    nothing to configure and nothing to keep in step — which is what makes a
+    rotation window work across a rolling deploy.
+    """
+    return hashlib.sha256(JWT_KID_DOMAIN + secret.encode("utf-8")).hexdigest()[:JWT_KID_LENGTH]
+
+
 def get_jwt_algorithm() -> str:
     """The single configured JWT algorithm.
 
@@ -114,10 +133,15 @@ def encode_jwt(
     algo = algorithm or get_jwt_algorithm()
     if algo not in ALLOWED_ALGORITHMS:
         raise ValueError(f"Insecure or unsupported JWT algorithm: {algo!r}")
+    key = secret or get_api_secret_key()
+    # ``kid`` on agent tokens too (#314), for the same reason as on console
+    # ones: mid-rotation the verifier has more than one key and should not have
+    # to try each of them.
     return jwt.encode(
         payload,
-        secret or get_api_secret_key(),
+        key,
         algorithm=algo,
+        headers={"kid": jwt_kid(key)},
     )
 
 

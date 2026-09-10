@@ -241,7 +241,7 @@ Retention must cover all stateful layers:
 | Layer | Retain/backup |
 |---|---|
 | Run filesystem/PVC | Raw artifacts, reports, checkpoints |
-| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots |
+| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail |
 | ClickHouse | Analytical vulnerability and port history |
 | NATS | Pending jobs and ingest messages |
 
@@ -277,6 +277,141 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 - Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
 - `0` days disables the reaper.
 - Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+
+### Audit-trail immutability and retention (#327, #329)
+
+`audit_events` is the administrative trail: what was changed, by whom, with the
+value before and after. Migration `0037_audit_events` installs triggers that
+refuse every `UPDATE`, `DELETE` and `TRUNCATE` on it:
+
+```
+ERROR:  audit_events is append-only: DELETE refused (#329)
+```
+
+(`TRUNCATE` has its own statement-level trigger. A row trigger never fires for
+it, so a `DELETE`-only guard would leave the whole trail removable in one
+statement.)
+
+**Read what that buys carefully.** Out of the box it stops *a bug in the API*,
+unconditionally. It stops *someone holding the API's database credential* only
+once `audit_events` is owned by a role the API does not run as — an owner may
+drop its own triggers, and the owner check below is satisfied by whoever owns
+the table. The manifests in `k8s/` connect the API, the migration initContainer
+and the retention example to the same superuser role (`octo`), so on a stock
+deployment the property is "the API cannot rewrite its own trail by accident",
+not "cannot rewrite it at all". The GRANT layout below is what turns the second
+into a true statement, and the verification after it is how you prove it landed.
+
+The one way past it is `audit_events_prune(cutoff timestamp)`, a `SECURITY
+DEFINER` function. It sets a transaction-local GUC that the trigger honours, and
+the trigger *also* requires the effective user to be the table's owner — true
+inside the definer function, false for anyone who merely sets the GUC
+themselves. So the escape hatch is the function, and **`EXECUTE` on the function
+is the privilege to guard**. (The alternative, `ALTER TABLE … DISABLE TRIGGER`
+around the delete, was rejected: it needs ownership anyway, takes an ACCESS
+EXCLUSIVE lock for the length of the sweep, and opens the table to *every*
+session while it is off.)
+
+Retention is therefore a **separate job with its own credentials**, not the API:
+
+```
+python -m api.services.audit_retention --days 365
+```
+
+`--days` defaults to `OCTO_AUDIT_EVENT_RETENTION_DAYS` (365). `0` is refused
+rather than read as "delete everything" — the value that means "keep forever" in
+the configuration must not become "keep nothing" because a variable was unset in
+the job's environment. Run it from a `CronJob` (weekly is plenty; the sweep is
+idempotent) using the retention role, not the API role. A worked example —
+CronJob plus the separate Secret holding that role's DSN — is
+[`k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`](../k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml);
+it is not in the base kustomization, because applying it before the GRANT layout
+above would either fail on every run or run as the API's role and prove nothing.
+
+#### Recommended GRANT layout
+
+The migration does not create roles — it does not know what this installation
+calls them, and a migration that invents them fails on every installation whose
+names differ. Apply this once, substituting your own role names:
+
+```sql
+-- FIRST, and the step the rest depends on: move the table and both functions
+-- off the API's role. A migration cannot do this — it runs as the role that
+-- would have to be given up — and without it every REVOKE below is undone by
+-- the fact that an owner may re-GRANT and drop triggers at will.
+CREATE ROLE shapoclyack_audit_owner NOLOGIN;
+ALTER TABLE audit_events OWNER TO shapoclyack_audit_owner;
+ALTER SEQUENCE audit_events_id_seq OWNER TO shapoclyack_audit_owner;
+-- The prune function is SECURITY DEFINER: it runs as *its* owner, and the
+-- trigger's owner check is what makes that the only way to delete a row. Owned
+-- by the API's role, it would run as the API.
+ALTER FUNCTION audit_events_prune(timestamp without time zone)
+  OWNER TO shapoclyack_audit_owner;
+ALTER FUNCTION audit_events_immutable() OWNER TO shapoclyack_audit_owner;
+
+-- The API may append to the trail and read it back. Nothing else — TRUNCATE
+-- named explicitly because REVOKE ALL is easy to narrow later by accident.
+REVOKE ALL ON TABLE audit_events FROM shapoclyack_api;
+REVOKE TRUNCATE ON TABLE audit_events FROM shapoclyack_api, PUBLIC;
+GRANT SELECT, INSERT ON TABLE audit_events TO shapoclyack_api;
+GRANT USAGE, SELECT ON SEQUENCE audit_events_id_seq TO shapoclyack_api;
+
+-- And it may not reach the escape hatch. (REVOKE … FROM PUBLIC is already done
+-- by the migration; this is the explicit statement of the same thing.)
+REVOKE EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
+  FROM shapoclyack_api;
+
+-- The retention job, and only it, may prune.
+GRANT EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
+  TO shapoclyack_audit_retention;
+```
+
+The migration initContainer runs as the API's role in the shipped manifests, so
+re-run the ownership statements after any future migration that recreates the
+table or the functions.
+
+A superuser can still do anything at all; what this layout buys is that the
+credential in the API's Secret is not enough.
+
+#### Verifying it after a deploy
+
+Two checks, and the first is the one that matters — it is what separates a real
+split from an installation where nothing changed:
+
+```sql
+-- 1. As anyone: who owns the table? This must NOT be the API's role.
+SELECT pg_get_userbyid(relowner) AS owner
+  FROM pg_class WHERE relname = 'audit_events';
+--   owner
+-- ------------------------
+--  shapoclyack_audit_owner
+
+-- 2. As the API's role, with the escape hatch's GUC deliberately set — this is
+--    what an attacker holding the API's credential would try, and a plain
+--    DELETE without the SET proves nothing, because it fails for the table's
+--    owner too:
+BEGIN;
+SET LOCAL shapoclyack.audit_retention = 'on';
+DELETE FROM audit_events WHERE id = (SELECT min(id) FROM audit_events);
+-- expected: ERROR ... audit_events is append-only: DELETE refused (#329)
+TRUNCATE audit_events;
+-- expected: ERROR ... audit_events is append-only: TRUNCATE refused (#329)
+ROLLBACK;
+```
+
+If check 1 returns the API's role, check 2 will still fail — the trigger's owner
+test is against the *table's* owner — but it is not evidence: that role can drop
+the trigger and repeat the delete. Proof for an auditor is check 1, then check 2,
+then the grants in `\dp audit_events` and the function ACL in
+`\df+ audit_events_prune`.
+
+**Not done here, deliberately:** a hash chain over the rows (`prev_hash`/`hash`).
+It only detects tampering by someone who could bypass the trigger *and* the
+grants — i.e. the database's owner or a superuser — and to be a chain at all it
+would have to serialise every audit write behind one lock, which is a
+throughput cost paid on every administrative request. If an installation needs
+tamper-evidence against its own DBA, ship the rows off-box (the NDJSON export
+into a WORM bucket or a log pipeline) rather than hashing them in place.
 
 ### ClickHouse ingest consumer subjects (#230)
 
@@ -475,6 +610,78 @@ there now, so both `python -m agent` and `python -m agent.worker` run the
 agent, but the flags in an old unit are still wrong: **an agent installed by an
 older installer needs a re-run of this one.**
 
+### Agent lifecycle: disable, quarantine, deregister
+
+An agent has two states at once, and they answer different questions
+([#308](https://github.com/onixus/Shapoclyack/issues/308)):
+
+- **What it reports** — `idle` / `busy` / `error`, with `stale` derived from
+  `last_seen_at` against `OCTO_AGENT_STALE_SECONDS`. Written by the agent.
+- **What you decided** — `lifecycle_status`: `active`, `disabled` or
+  `quarantined`. Written only by a tenant **admin**, through
+  `PATCH /api/agents/{id}` or the **Agent State** controls in the agent's
+  drawer on `/agents`.
+
+A `disabled` or `quarantined` agent is refused job claims, result uploads and
+inventory submissions with `403` and the reason you typed. Its **heartbeat is
+still accepted**: the heartbeat response is the only channel that reaches a
+running agent, so it is where the agent learns why it is being refused, and
+refusing it too would drop the agent out of the fleet view at the moment you
+are watching it. The agent logs the reason once and backs off to one poll every
+five minutes rather than one per second — over NATS as well as over HTTP, and
+at start-up as well as mid-run.
+
+The state survives re-registration *and* a re-exchange of the provisioning key:
+the exchange reads the lifecycle state too, so a restarted host is refused a
+fresh token rather than coming back under a new id. Only `PATCH … {"status":
+"active"}` puts it back, and that clears the reason.
+
+**What quarantine does not stop.** A job the agent claimed *before* you
+quarantined it keeps running on the host — nothing on the target is killed —
+and its results upload is then refused, so the archive is lost and the job
+stays `running` until its lease expires and it is requeued for another agent.
+That is deliberate: accepting the upload would mean a quarantined host still
+writes scan output into the tenant. If the run matters more than the
+quarantine, wait for the job to finish before switching the state.
+
+**Deregistering is weaker than it looks.** `DELETE /api/agents/{id}` removes
+the row; it does not stop the remote process, and it does not revoke anything.
+The host still holds its provisioning key and a JWT valid for up to
+`OCTO_AGENT_JWT_EXPIRE_MINUTES`, so it re-registers on its next poll and the
+delete was a pause. Two ways to make it stick, depending on what you mean:
+
+| You want | Do this |
+|---|---|
+| This host must stop working, the rest of the fleet must not | `PATCH /api/agents/{id}` → `quarantined`. Survives restarts; the host keeps its credential but can claim nothing |
+| This host is gone and its credential must die with it | `DELETE /api/agents/{id}?revoke_key=true` — revokes the key it registered with, which also invalidates the JWTs already minted from it, at once. **Check `other_agents_on_key` first**: one key commonly provisions a fleet, and revoking it stops every one of them |
+| The key itself is compromised | `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke` — every agent that registered with it is refused on its next request |
+
+The delete response says which of these happened, and both it and `GET
+/api/agents/{id}` carry `other_agents_on_key` — how many *other* agents hold
+the same key, which is exactly what `revoke_key=true` would strand. The agent
+drawer shows that number the moment the checkbox is ticked, before the delete. `provisioning_key_id: null,
+key_revoked: false` means there was no key on record to revoke: an agent that
+registered before this was tracked, or a legacy `OCTO_AGENT_TOKEN` one, which
+has no per-agent credential at all. Those agents record a key the first time
+they re-register.
+
+**Rotating provisioning keys.** Keys minted from now on expire after
+`OCTO_PROVISIONING_KEY_TTL_DAYS` (90 by default). `GET
+/api/tenants/{tenant_id}/provisioning-keys` reports `expires_at` and
+`expires_soon` (within 14 days), which is the list to work from. **Keys minted
+before this feature have `expires_at: null` and never expire** — nothing
+back-dates them, because stranding a fleet on a deadline nobody was told about
+is worse than a key that outlives its usefulness. Find them in that list,
+re-install the agents against a fresh key, then revoke the old one.
+
+**Revoke before you re-provision, not after.** An `agent_id` is bound to the
+key it first registered with, so an exchange asking for that id under a
+*different* key answers `403` while the old key is still active — that refusal
+is what stops one key's holder impersonating another key's agent. Revoking the
+old key releases the id (and stops its live JWTs in the same move), after which
+the new key adopts the host under its own name. Re-provisioning first leaves
+the agent unable to authenticate until you get to the revocation.
+
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
@@ -604,10 +811,174 @@ with `--docker` (or roll the Kubernetes deployment).
 registration. Stop `shapoclyack-agent.service` (or the container) on the host
 first, otherwise the next heartbeat registers it again.
 
+## Sessions and revocation
+
+Since [#314](https://github.com/onixus/Shapoclyack/issues/314) a console token
+is checked against the account row on every request, so revocation is
+immediate rather than "when it expires":
+
+| You want | Do |
+|---|---|
+| One person out of everything, now | `PUT /api/users/{username}/disabled {"disabled": true}` |
+| One person's sessions ended, account untouched | `POST /api/users/{username}/sessions/revoke-all` (admin) |
+| Your own sessions ended everywhere | `POST /api/auth/sessions/revoke-all` |
+| This browser signed out | `POST /api/auth/logout` — the console does it for you |
+
+Disabling, deleting, demoting and a password change already end that account's
+sessions on their own — when they actually change something: a `PUT` that
+re-asserts the role or the disabled flag an account already has leaves its
+sessions alone, so a reconcile loop against a directory does not sign the
+tenant out on every pass. The route list is in
+[api-and-rbac.md](api-and-rbac.md#sessions-logout-and-revocation).
+
+**If Postgres is unreachable**, the check cannot be made and authenticated
+requests answer `503` with `Retry-After: 5`, not `401`. That distinction is
+operational: a 401 would sign every console in the fleet out over a database
+restart, and the consoles could not sign back in either. Nothing is revoked by
+an outage — sessions resume as they were once the store answers again.
+
+**After the upgrade to #314.** Tokens minted before it carry no version claim
+and keep working until they expire (up to `OCTO_JWT_EXPIRE_MINUTES`, 8 hours by
+default) — the migration deliberately does not sign everyone out mid-rollout.
+If your threat model does not allow that, run `revoke-all` for every account
+once the rollout is complete:
+
+```bash
+# every account but yours, from a platform-admin token
+ME=admin  # the account $TOKEN belongs to
+for u in $(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/users \
+             | python3 -c 'import json,sys; print(" ".join(u["username"] for u in json.load(sys.stdin)))'); do
+  [ "$u" = "$ME" ] && continue
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8080/api/users/$u/sessions/revoke-all" || echo "FAILED: $u"
+done
+# last, and only now: your own sessions, this token included
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/auth/sessions/revoke-all || echo "FAILED: $ME"
+```
+
+The order matters and the skip is not cosmetic. `/api/users` is sorted by
+username, so an `admin` running the loop over itself would revoke its own
+token on the first iteration and every call after it would answer 401 — which
+`curl -sf` reports by exiting non-zero and printing nothing, leaving a run that
+signed out one account looking exactly like a run that signed out all of them.
+Hence `|| echo "FAILED: $u"` as well: a silent loop is the failure mode here.
+
+### Rotating the JWT signing key
+
+`OCTO_JWT_SECRET` used to be unrotatable in practice: changing it invalidated
+every console session at the moment of the rollout, and (while
+`OCTO_AGENT_JWT_SECRET` is unset, which is the default) every agent token with
+them. `OCTO_JWT_SECRET_PREVIOUS` makes it a window instead.
+
+1. **Generate the new key** — `openssl rand -hex 32`.
+2. **Deploy both.** Set `OCTO_JWT_SECRET` to the new value and
+   `OCTO_JWT_SECRET_PREVIOUS` to the old one (comma-separated if you are
+   retiring more than one). From this deploy on, new tokens are signed with the
+   new key and old ones still verify.
+3. **Wait out the window.** `OCTO_JWT_EXPIRE_MINUTES` for console sessions
+   (default 8 hours) and `OCTO_AGENT_JWT_EXPIRE_MINUTES` for agents (default 2
+   hours). Every replica must carry the same pair throughout — a replica
+   missing the previous key refuses the tokens its neighbours accept.
+4. **Deploy again with `OCTO_JWT_SECRET_PREVIOUS` removed.** The old key stops
+   being trusted. To end the window early instead of waiting, revoke every
+   account's sessions as above and then remove the variable.
+
+Both `OCTO_JWT_SECRET_PREVIOUS` entries and the current key are checked at
+startup: a `prod` API refuses to start if the list carries the shipped
+development secret or repeats the current key.
+
+Rolling back to a pre-#314 image mid-window costs the sessions signed with the
+retired key: that build knows only `OCTO_JWT_SECRET`, which by then holds the
+new value, so the tokens signed with it keep working and the older ones do not.
+Nobody is locked out — they log in again — but plan the rollback for the same
+reason you planned the rotation.
+
 ## Logs and observability
 
-Use structured application logs and correlate by tenant, `job_id`, `run_id`,
-and `agent_id`. Do not log secrets or full authorization headers.
+### Log format, level, and the request id
+
+`OCTO_LOG_FORMAT=json` puts the API and the agent on one line-per-object
+format; `text` (the default) keeps them readable in a terminal.
+`OCTO_LOG_LEVEL` sets the level for both — see
+[configuration.md](configuration.md#environment-variables). The API hands the
+same formatter to uvicorn, so `uvicorn.access` is in the chosen format too
+instead of uvicorn's own colourised one.
+
+```json
+{"ts":"2026-09-09T11:04:21.318452Z","level":"INFO","logger":"uvicorn.access","msg":"10.42.0.7:53114 - \"GET /api/runs?token=*** HTTP/1.1\" 200","request_id":"3f9c1a7be0d4472f8a1e6b2c5d8e0f11"}
+```
+
+Every request carries a correlation id. `X-Request-Id` is taken from the
+caller when it is safe to echo and to log — at most 128 characters of
+`[A-Za-z0-9._:@=+/-]`, so a uuid, a ULID, a W3C `traceparent` or nginx's
+`$request_id` all pass — and a fresh uuid4 is minted otherwise. An id that
+fails that check is *replaced*, not escaped: a client whose id we had to
+rewrite cannot correlate on it anyway. The value comes back in the response's
+`X-Request-Id`, appears in the `request_id` field of every log line the request
+produces, and is set on the OpenTelemetry span as `shapoclyack.request_id` when
+tracing is on.
+
+Following one request from a user report:
+
+```bash
+# the id the console (or your ingress) reported — the console appends it to
+# the error toast for a 5xx, and it is on the response as `X-Request-Id`
+kubectl -n network-scan logs deployment/shapoclyack-api --tail=-1 \
+  | grep '"request_id":"3f9c1a7be0d4472f8a1e6b2c5d8e0f11"'
+
+# text format: the id is the bracketed field after the logger name
+kubectl -n network-scan logs deployment/shapoclyack-api | grep '\[3f9c1a7b'
+```
+
+Both formats timestamp in **UTC**: `json` writes an ISO string ending in `Z`,
+`text` a `%Y-%m-%d %H:%M:%S,mmm` followed by a literal `Z`. Neither reads the
+pod's `/etc/localtime`, so a text line and a JSON one line up with each other
+and with everything else in the cluster.
+
+`OCTO_LOG_LEVEL=DEBUG` raises the application's loggers, not every library's.
+`sqlalchemy.engine` and `sqlalchemy.pool` stay at `WARNING`, `paramiko`,
+`httpx`, `httpcore` and `nats` at `INFO` — the SQL statement log prints every
+statement *with its bound parameters*, and on this schema those are bcrypt
+hashes, `token_hash` values and session ids. Chasing a bug at DEBUG must not
+write the credential store to stdout. The floor only holds the level down: a
+quieter `OCTO_LOG_LEVEL` still applies to them. `OCTO_LOG_LEVEL=NOTSET` is
+refused (it would mean "no level check at all") and reads as `INFO`.
+
+Beyond the request id, correlate by tenant, `job_id`, `run_id`, and `agent_id`
+— a scan outlives the request that started it, and those are the keys that
+follow it into the agent's own logs.
+
+### Secret redaction, and what it does not cover
+
+A `logging.Filter` on the process's handler rewrites each record's **rendered**
+message before it is formatted, on both the API and the agent. It renders the
+record first (so a secret passed as a `%s` argument is masked exactly like one
+written into the format string) and masks four shapes:
+
+| Shape | Example in, example out |
+|---|---|
+| Keyed pairs — `password`, `passwd`, `pwd`, `token`, `secret`, `api_key`, with `=` or `:`, quoted or not | `token=abc123` → `token=***`, `{"password": "hunter2"}` → `{"password": "***"}` |
+| The `Authorization` header, scheme word included (`Bearer`, `Basic`, `Token`, `ApiKey`, `Digest`, `Negotiate`), however it was written | `Authorization: Token abc` → `Authorization: ***`, `{"Authorization": "Bearer abc"}` → `{"Authorization": "***"}` |
+| A bare `Bearer` credential with no header name | `Bearer abc.def` → `Bearer ***` |
+| Credentials in a URL, empty user included | `postgresql://octo:s3cret@db/octo` → `postgresql://octo:***@db/octo`, `redis://:s3cret@cache` → `redis://:***@cache` |
+| JWTs in compact serialization | `eyJhbGciOi….payload.sig` → `eyJ***` |
+
+A separator is *required* for the keyed pairs, so "the token is invalid"
+survives intact — a redaction that eats the only line saying what went wrong
+protects nothing.
+
+This is a backstop, not a licence to log credentials. Its limits, stated
+plainly:
+
+- It masks the log **message** (a `logging.Filter`) and the **formatted
+  traceback** (the formatter, in both `text` and `json`). Anything written to
+  stdout by something other than the `logging` module — a subprocess the
+  scanner runs, a library printing directly — never passes through it.
+- It is syntactic. A secret logged with no key, no scheme and no recognisable
+  shape (`LOG.info(value)`) looks like ordinary text and is emitted as it is.
+- It runs on the handlers this process installs. A sidecar or an operator that
+  adds its own handler to the root logger gets unfiltered records.
 
 Useful checks:
 
@@ -1345,10 +1716,17 @@ every row of scan data. As of
 | API → Postgres | Only if you ask for it | `?sslmode=verify-full` in `OCTO_POSTGRES_URL`; a `prod` start without any `sslmode=` logs a warning |
 | API → ClickHouse | Only if you ask for it | `https://` in `OCTO_CLICKHOUSE_URL`. The scheme decides, not the port |
 | API → SMTP relay | Yes, verified | `OCTO_REPORT_SMTP_STARTTLS` (default on) with certificate verification; `OCTO_REPORT_SMTP_VERIFY_TLS=false` downgrades it deliberately |
-| API / agents ↔ NATS | **No** | Tracked in [#309](https://github.com/onixus/Shapoclyack/issues/309) and [#359](https://github.com/onixus/Shapoclyack/issues/359). Until it lands, keep NATS on the cluster network and do not expose `:4222` across an untrusted segment |
+| API / agents ↔ NATS | Yes, when you configure it | `tls://` in `OCTO_NATS_URL` plus `OCTO_NATS_TLS_*`; the broker side is `examples/nats-tls-configmap-patch.yaml`. Plain `nats://` is still accepted and still plaintext — do not expose `:4222` across an untrusted segment without `tls://` |
 
 There is no mTLS anywhere yet: nothing in this repository issues or checks a
 client certificate. Where the README once said "mTLS", read "TLS, one-way".
+
+Which ports have to be open for any of it, how egress goes through a corporate
+proxy (`OCTO_HTTPS_PROXY`, `OCTO_NO_PROXY`), and where an internal root goes
+(`OCTO_CA_BUNDLE`) are in
+[network-requirements.md](network-requirements.md) — including why NATS is the
+one link a proxy cannot carry, and what an agent does instead
+([#359](https://github.com/onixus/Shapoclyack/issues/359)).
 
 **Postgres with a private CA.** `verify-full` needs the CA in the pod, not in
 the operator's laptop:
@@ -1386,3 +1764,171 @@ ExternalSecrets' `refreshInterval` rewrites the Secret and restarts nothing.
 There is no overlap window: between steps 2 and 3 the old clients are rejected.
 Schedule it like a short maintenance window rather than expecting a seamless
 rotation.
+
+## Secrets at rest
+
+The credentials this installation holds *for other systems* — a webhook's HMAC
+signing key, and the header values that carry a Jira / ServiceNow / DefectDojo
+API token — are stored in `webhook_subscriptions`. Until
+[#310](https://github.com/onixus/Shapoclyack/issues/310) they were stored as
+typed, so a dump, a base backup, a read replica or a shell in the API pod
+yielded every tenant's tracker tokens at once. The API-level redaction that was
+already there answers a different question: what an API *caller* may read.
+
+They are now envelope-encrypted. Each write mints a 256-bit data key, encrypts
+the value with it under AES-256-GCM, and stores that key wrapped by the
+key-encryption key (KEK) from `OCTO_MASTER_KEY`:
+
+```
+v1:<kek_id>:<b64 wrapped dek>:<b64 nonce>:<b64 ciphertext>
+```
+
+`kek_id` is a non-secret label derived from the key, so a row states which key
+opens it — which is what makes a rotation resumable and a half-rotated table a
+working one.
+
+### What is and is not covered
+
+| Value | Where it lives | At rest |
+|-------|----------------|---------|
+| Webhook HMAC secret, ticket API token (`webhook_subscriptions.secret`) | Postgres | Encrypted (#310) |
+| Configured header values, e.g. `Authorization` (`webhook_subscriptions.headers`) | Postgres | Encrypted (#310) |
+| Console passwords, service tokens, agent provisioning keys | Postgres | bcrypt / SHA-256 hashes — never reversible, so nothing to encrypt |
+| SSH host keys pinned for agent deployment | Postgres | Public keys; not secret |
+| `OCTO_OIDC_CLIENT_SECRET`, `OCTO_REPORT_SMTP_PASSWORD`, `OCTO_JWT_SECRET`, the data-plane URLs | Environment (Secret / ExternalSecret) | Not in the database at all — protected by Kubernetes Secret handling, not by this |
+
+The last row is the deliberate boundary: encrypting a value the process reads
+from its own environment with a key it reads from the same environment adds
+nothing. If one of those ever moves into Postgres, it moves through
+`api/services/crypto` on the way.
+
+Encryption protects a *reader* of the database — a dump, a backup, a replica.
+It does not protect against someone who can write to it or who can read the
+API pod's environment: both have the key.
+
+### Generating the key
+
+```
+openssl rand -base64 32     # or: openssl rand -hex 32
+```
+
+Put it in `OCTO_MASTER_KEY` in the `shapoclyack-api-users` Secret (see
+`k8s/shapoclyack/examples/api-secrets.example.yaml`) or in the matching
+ExternalSecret, and roll the API. Every replica must carry the same value.
+
+Under `OCTO_ENV=prod` the API **refuses to start** without it if any
+subscription already holds a secret or a configured header — either those rows
+are plaintext, which is the problem, or they are encrypted and unreadable. An
+installation with no integrations starts with a warning instead, so this does
+not demand a key of a deployment that has nothing to protect. Under
+`OCTO_ENV=dev` it is always a warning and the values stay plaintext.
+
+That startup answer is about the rows that existed at boot, so it is asked
+again on the way in: in `prod` with no key configured, creating or editing a
+subscription that carries a secret or a header value is refused (`500`, with
+the refusal in the API log) rather than writing the first integration as
+typed.
+
+### Encrypting an existing installation
+
+The read path accepts both forms, so this is an online step with no maintenance
+window and no migration hook. Deploy the key first, then:
+
+```
+kubectl -n network-scan exec deploy/shapoclyack-api -- \
+  python -m api.db.reencrypt_secrets --dry-run
+kubectl -n network-scan exec deploy/shapoclyack-api -- \
+  python -m api.db.reencrypt_secrets
+```
+
+Each row is rewritten in its own short transaction under `SELECT … FOR UPDATE`,
+and `PATCH /api/webhooks/{id}` takes the same lock, so a concurrent edit from
+the console is serialised against the pass rather than lost. An interrupted
+pass is resumed by running it again.
+
+### Rotating the KEK
+
+Unlike the data-plane credentials above, this one *does* have an overlap
+window — that is what `OCTO_MASTER_KEY_PREVIOUS` is for.
+
+1. Put the new key in `OCTO_MASTER_KEY` and move the current one to
+   `OCTO_MASTER_KEY_PREVIOUS` (comma-separated; more than one is allowed).
+2. Roll the API. Rows on the old key still decrypt; new writes use the new key.
+3. Rewrap what is already stored:
+   `python -m api.db.reencrypt_secrets --rotate`. A row whose key is in neither
+   variable is left exactly as it was and counted at the end; the command exits
+   non-zero and names how many, so the rest of the table is still rotated and
+   the exception is visible rather than an abort on the first one.
+4. Confirm nothing is left behind, then remove `OCTO_MASTER_KEY_PREVIOUS` and
+   roll again:
+
+   ```sql
+   SELECT key_id, count(*) FROM webhook_subscriptions
+    WHERE secret IS NOT NULL OR headers::text <> '{}' GROUP BY key_id;
+   ```
+
+   One row, with the current `kek_id`, means the rotation is complete. A `NULL`
+   `key_id` means those rows are still plaintext — run the pass without
+   `--rotate` first.
+
+Skipping step 1 and simply replacing the key makes every stored secret
+unreadable, which the next section is about. Recovery is putting the old key
+back into `OCTO_MASTER_KEY_PREVIOUS`.
+
+### When a row cannot be decrypted
+
+`OCTO_MASTER_KEY_PREVIOUS` dropped one step too early, or a database restored
+against a different key: the row names a `kek_id` this process does not have.
+That is contained to the row rather than to the tenant.
+
+* the console still lists and edits it — the read path holds no key, because
+  the header values are redacted rather than decrypted-then-redacted;
+* an event that fans out to it is still queued for every other subscription:
+  routing reads `enabled` / `event_kinds` / `min_severity` only;
+* its own deliveries **dead-letter on the first attempt** with
+  `SecretDecryptionError` instead of consuming `OCTO_WEBHOOK_MAX_ATTEMPTS`.
+  They are in the DLQ view (`status=dead`), which is where you find out.
+
+Recovery is the key, not the data: put the key that wrote it back into
+`OCTO_MASTER_KEY_PREVIOUS`, roll the API, run
+`python -m api.db.reencrypt_secrets --rotate`, then retry the dead letters. If
+the key is genuinely gone, nothing can read those values — set the secret and
+the header again through `PATCH /api/webhooks/{id}`, which rewrites the row
+under the current key.
+
+The `GROUP BY key_id` query in step 4 above finds them before a delivery does:
+a `kek_id` that is neither the current key nor one of the previous ones.
+
+### Rolling back to a pre-#310 image
+
+Older code reads `secret` and the header values as opaque strings and would
+sign with — or send — the ciphertext. Decrypt first, while the key is still
+configured.
+
+Unlike the encrypting passes, this one is **not** an online step: the running
+API re-encrypts on every write, so a `PATCH` of a subscription — or a
+console edit — after the pass has walked past that row puts it straight back
+under the key you are about to remove. Scale the API to zero first, or take it
+out of the Ingress and confirm no writes are in flight:
+
+```
+kubectl -n network-scan scale deploy/shapoclyack-api --replicas=0
+kubectl -n network-scan run reencrypt --rm -it --restart=Never \
+  --image=<the image the API runs> --env-from=secret/shapoclyack-api-users \
+  --env OCTO_POSTGRES_URL=... -- python -m api.db.reencrypt_secrets --decrypt
+```
+
+then roll back the image, scale up again, and apply
+`alembic downgrade 0036_oidc_pending_states`, which drops only the `key_id`
+column.
+
+### Vault Transit and cloud KMS
+
+`OCTO_MASTER_KEY_PROVIDER` selects where the KEK lives. Only `local` (the
+default, `OCTO_MASTER_KEY`) is implemented; `vault-transit`, `aws-kms` and
+`gcp-kms` are **named but not built** — setting one refuses at startup with a
+message saying so, rather than silently falling back to a local key. What
+exists is the interface (`KeyProvider` in `api/services/crypto/envelope.py`):
+two methods, wrap and unwrap, which a Transit or KMS client fills in without
+any call site changing. Do not plan a deployment around them until an issue
+says they ship.

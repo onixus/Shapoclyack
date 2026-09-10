@@ -3,6 +3,28 @@
 The API is served under `/api`. The Web UI uses the same API and stores the
 access token in browser local storage.
 
+## Request correlation
+
+Every response carries an **`X-Request-Id`** header
+([#330](https://github.com/onixus/Shapoclyack/issues/330)). Send one and it is
+echoed back, provided it is at most 128 characters of `[A-Za-z0-9._:@=+/-]` —
+a uuid, a ULID, a W3C `traceparent` or nginx's `$request_id` all qualify. Send
+anything else, or nothing, and the API mints a uuid4 and returns that instead:
+an id it had to rewrite would not correlate anyway.
+
+Every response means every response, the `500` for an unhandled exception
+included: the middleware wraps the whole ASGI stack rather than being added to
+it, so the error response Starlette itself writes still goes out through this
+layer. The header is named in the CORS `expose_headers`, so a console served
+from another origin can read it — it appends the id to the error toast for a
+server-side failure.
+
+The same value appears in the `request_id` field of every log line the request
+produces — the record about that `500` included — and, when tracing is enabled,
+on the span as `shapoclyack.request_id`, so an id from a user's bug report is
+enough to find the request in the logs. See
+[operations.md](operations.md#logs-and-observability).
+
 ## Authentication
 
 User login:
@@ -35,6 +57,84 @@ does not verify on `/api/auth/me`, so no single missed `typ` check is enough to
 turn one into the other. The agent key sits on every scanner host, which is a
 much wider blast radius than the API's own secret — see
 [configuration.md](configuration.md#environment-variables) for rotating it.
+
+## Sessions, logout and revocation
+
+A console token is no longer believed on its own
+([#314](https://github.com/onixus/Shapoclyack/issues/314)). Every request
+verifies the signature and then reads the account row: the session dies the
+moment the account is disabled, deleted, demoted or has its password changed —
+"a disabled user loses access in under a minute" is in practice "on the next
+request". The role that reaches the request is the one in the table, not the
+one in the claim, so a demotion applies immediately rather than at the next
+login. The claim is still parsed, and a token naming a role that does not exist
+is still refused.
+
+Two claims and one header carry this:
+
+| Field | Where | What it does |
+|---|---|---|
+| `ver` | claim | The account's `token_version` when the token was minted. A mismatch is a 401 |
+| `jti` | claim | Per-token id. What `POST /api/auth/logout` puts on the denylist |
+| `kid` | header | Which signing key signed it — see [Key rotation](#jwt-signing-key-rotation) |
+
+```http
+POST /api/auth/logout                           # any role — ends this session only
+POST /api/auth/sessions/revoke-all              # any role — ends every session of your account
+POST /api/users/{username}/sessions/revoke-all  # admin   — ends every session of that account
+```
+
+All three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
+until its own `exp` and is idempotent; the two `revoke-all` routes increment
+`users.token_version`, which invalidates every token quoting the old value —
+including the caller's own, which is the point. `revoke-all` on an account that
+does not exist is a `404`.
+
+Tenant memberships need no version bump: the role *inside* a tenant is
+resolved from `user_tenants` on every request and was never in the token, so
+granting or revoking a membership already applies immediately.
+
+`PUT /api/users/{username}/role` and `PUT /api/users/{username}/disabled` bump
+the version only when the value actually moves. Re-asserting the state an
+account is already in — what a reconciling IaC run or a directory sync does on
+every pass — is a no-op and leaves that account's sessions alone.
+
+When Postgres is unreachable the check cannot be made, and an authenticated
+request answers `503` with `Retry-After`, not `401`: the session was not
+refused, it was undecided. See
+[operations.md](operations.md#sessions-and-revocation).
+
+A session with no `jti` cannot be logged out one at a time and says so with a
+`400` rather than a `204` that did nothing. That is only reachable for tokens
+minted before #314; `revoke-all` ends those.
+
+Service tokens are not sessions. They never reach these routes at all — `auth`
+is a resource no service token may touch — and are revoked as credentials with
+`POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke`.
+
+Changing your own password (`POST /api/auth/password`) ends **every** session
+of the account, the one making the request included: the console lands back on
+the login form. That is deliberate — a rotation is usually "somebody may have
+my password", and the session that survives it is the one that mattered.
+
+### JWT signing key rotation
+
+`OCTO_JWT_SECRET_PREVIOUS` is a comma-separated list of retired keys that are
+still accepted while the tokens they signed expire. Nothing is ever signed with
+one. Every token carries a `kid` — a domain-separated `sha256` prefix of the
+key — so the verifier tries the named key rather than each in turn; a token
+naming one key of the window and signed with another is refused, and a token
+with no `kid` (anything minted before #314) is tried against the whole window.
+
+While `OCTO_AGENT_JWT_SECRET` is unset the agent key is derived from the
+operator key, so the same list rotates both audiences and an agent fleet is not
+locked out mid-rotation. The OIDC login state (`api/services/oidc.py`) is
+signed with the same key and verified against the same window, so an SSO login
+started just before a rotating deploy still completes on a replica that has
+already moved on. When it is set explicitly the two are independent and
+so are their windows — see `OCTO_AGENT_JWT_SECRET_PREVIOUS` in
+[configuration.md](configuration.md#environment-variables) and the procedure in
+[operations.md](operations.md#rotating-the-jwt-signing-key).
 
 ## Login rate limiting and the auth audit trail
 
@@ -102,6 +202,88 @@ independently and a short retention must not quietly weaken the lockout.
 A locked-out client keeps retrying, and recording each retry would make the
 audit trail an amplifier for unauthenticated writes — so one `locked` row is
 written per window and the rest are counted only in `/metrics`.
+
+## Administrative audit trail
+
+`auth_events` above answers "who signed in and what was refused". `audit_events`
+answers the other half — **what was changed** ([#327](https://github.com/onixus/Shapoclyack/issues/327)).
+One row per administrative change, with the resource before and after it:
+
+| Action | Recorded on |
+|---|---|
+| `user.create`, `user.role_change`, `user.disable`, `user.delete` | `POST /api/users`, `PUT /api/users/{u}/role`, `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` |
+| `user.password_reset` | `PUT /api/users/{u}/password` — an admin resetting someone else's password is one request away from acting as them. `before`/`after` carry the `password_changed_at` that moved, never the password |
+| `user.password_change` | `POST /api/auth/password` — the owner rotating their own, kept a separate action so a reset performed *on* an account is not buried under everyone's routine rotations |
+| `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
+| `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
+| `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
+| `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
+| `agent.disable`, `agent.enable`, `agent.quarantine` | `PATCH /api/agents/{id}` — one action per resulting state, so "who took this host out of the fleet" is a filter on the action rather than a read of every lifecycle row. `before` carries the state the agent was moved out of, `after` the new state and the operator's reason |
+| `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the agent |
+| `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
+| `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
+| `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
+
+Every row carries the actor and what kind of principal it is (`user`,
+`service_token`, `agent`, `system`), the client address resolved the same way
+the login limiter resolves it, the user agent, and the `X-Request-Id` of the
+request when it carried one — nothing invents one, so the value in a row always
+matches a value that was on the wire.
+
+**The row is written in the transaction that makes the change.** A membership
+granted but not recorded is a silent change; a membership recorded but not
+granted is a trail that lies. Both are impossible for every action that *is* a
+database write. `report.download` is the exception, and the only one: a download
+is a file read with no transaction to join, so its row is committed on its own
+before the streaming response starts. A transfer that dies mid-stream therefore
+leaves a row saying the report was downloaded — which is the direction that
+error should point.
+
+**Secrets never reach `before`/`after`.** Every field whose name reads like a
+credential — `password`, `*_hash`, `token`, `*_secret`, `*_key` — is replaced by
+`[redacted]` before storage, so a table every tenant admin can read cannot be
+mined for one. Login attempts stay in `auth_events` and are not mirrored here:
+they are the same fact in two tables, and the login trail is the one the rate
+limiter counts.
+
+```http
+GET /api/audit?action=user.role_change&resource_id=amy&from=2026-09-01T00:00:00Z
+GET /api/audit?tenant_id=acme&format=csv
+```
+
+| Parameter | Meaning |
+|---|---|
+| `tenant_id` | Narrows to one tenant. A tenant admin may only name their own (403 otherwise); a platform admin who names none reads every tenant |
+| `actor`, `action`, `resource_type`, `resource_id` | Exact matches — "every change to *this* token" is the question, and a substring match is how the wrong row gets read as the right one |
+| `from`, `to` | ISO instants, inclusive; an offset is honoured and converted to UTC |
+| `offset`, `limit` | `Page` envelope like the other lists. Always newest first: this is a log, so there is no `sort`/`order` |
+| `format=csv\|ndjson` | Streams **every** matching event rather than the current page, as an attachment. An export bounded by `limit` would be a page with a filename |
+
+Reading requires **admin in the tenant**: the people who administer a customer
+are the ones who have to review its changes. Rows with no tenant at all —
+creating a console account, editing the installation-wide scanner config — are
+platform-level acts and appear only in the platform admin's answer.
+
+A service token can never read this endpoint, whatever role or scopes it was
+minted with (`audit` is in `FORBIDDEN_RESOURCES` alongside `auth`, `users` and
+`tenants`): the trail records the acts of the humans who administer the
+installation, addresses included, and `?format=ndjson` makes a year of that one
+request.
+
+`before`/`after` are capped at 16 KiB of serialised JSON each. Past that the
+side is stored as `{"truncated": true, "bytes": …}` and the API logs a warning
+naming the resource — the two actions that could plausibly reach it record a
+diff rather than a snapshot, so this is a backstop rather than the normal case.
+
+The rows are **append-only in the database itself**
+([#329](https://github.com/onixus/Shapoclyack/issues/329)): triggers refuse
+every `UPDATE`, `DELETE` and `TRUNCATE`, so a bug in the API cannot rewrite
+history. Whether *an operator holding the API's credentials* can is a
+deployment question, not a code one — it depends on `audit_events` being owned
+by a role the API does not run as, which the shipped `k8s/` manifests do **not**
+do and the GRANT layout in
+[operations.md](operations.md#audit-trail-immutability-and-retention) does.
+Retention is a separate privileged job, documented in the same place.
 
 ## Single sign-on (OIDC)
 
@@ -232,6 +414,7 @@ not an authorization control.
 | Prefix | Purpose |
 |---|---|
 | `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
+| `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (admin in the tenant; CSV/NDJSON export) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |
@@ -309,7 +492,11 @@ exactly as before.
 group and carries contract-specific limits: `411` when `Content-Length` is
 absent, `413` when the body or a bounded field exceeds its limit, `429` on the
 per-agent hourly rate limit, `409` when a `snapshot_id` is resubmitted with
-different content, and `200` (rather than `201`) for an exact replay. Read
+different content, and `200` (rather than `201`) for an exact replay. Since
+[#308](https://github.com/onixus/Shapoclyack/issues/308) it also answers `403`
+for a `disabled` or `quarantined` agent, like the job routes: quarantining a
+host is meant to stop it writing, not to stop only the half of its traffic that
+carries a job id. Read
 routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
 filter.
@@ -378,8 +565,9 @@ only source the Risk Overview trend chart reads
 |---|---|---|
 | `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin, as for `/jobs` |
 | `GET /api/agents/summary` | viewer | Fleet rollup: total / online / busy / stale / error / outdated, `latest_version`, and a per-tenant count |
-| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities and `upgrade_requested`; `404` outside the tenant |
-| `DELETE /api/agents/{id}` | operator | Forgets the registration. It does **not** stop the remote process — an agent that is still running re-registers on its next heartbeat |
+| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities, `upgrade_requested`, and `other_agents_on_key` — how many other agents share its provisioning key, which is what `?revoke_key=true` below would stop; `404` outside the tenant |
+| `PATCH /api/agents/{id}` | **admin** | Moves the agent between `active`, `disabled` and `quarantined` (`{"status": …, "reason": …}`), and answers the agent as it now stands. A non-`active` agent is refused job claims and result uploads with `403`; its heartbeat is still accepted so the reason reaches it. The state survives re-registration — a restart is not an appeal ([#308](https://github.com/onixus/Shapoclyack/issues/308)) |
+| `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the agent registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (an agent registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* agents that revocation stopped |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
 | `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
@@ -396,6 +584,68 @@ for the former and `404` for the latter told a caller which ids are real
 elsewhere in the installation, which is the only thing an opaque id is worth. A
 platform admin without a requested tenant sees the whole fleet, the same rule
 as `/api/jobs`.
+
+**An agent token may only act as itself**
+([#308](https://github.com/onixus/Shapoclyack/issues/308)). The JWT a
+provisioning key is exchanged for carries an `agent_id`, and every agent route
+that takes one from the caller — `agent_id` in the body of
+`/api/agent/register`, `/api/agent/heartbeat` and `/api/endpoint/inventory`, in
+the query string of `/api/agent/jobs/claim`, in the form of
+`/api/agent/jobs/{id}/results` — now requires it to be the token's own, or
+answers `403`. Before this the id was
+checked only against the tenant, so one compromised agent could heartbeat as,
+claim for and upload results as every other agent in the tenant, which for an
+MSSP customer is its whole fleet. Registering with no `agent_id` uses the
+token's rather than minting a random one, so a restarted agent comes back as
+itself.
+
+**And a valid key is not a right to be a particular agent.** The check above
+runs after the token exists, which left the exchange itself open: `POST
+/api/auth/agent/token` (and `/api/auth/exchange`) minted a token for whatever
+`agent_id` was asked for. Two things followed from that, and both are now
+`403` — a *different* status from the `401` a bad key gets, because the key is
+fine and the identity is not available:
+
+- **Impersonation by a peer.** A holder of any valid key in the tenant could
+  ask for a live agent's id and get a token that passes every check above,
+  rewriting that agent's hostname and labels. An `agent_id` already registered
+  with a *different provisioning key that is still active* is refused.
+- **Walking out of quarantine.** A `disabled` or `quarantined` agent could
+  exchange for a token under a fresh id and register as a second, `active` row.
+  The exchange now reads the lifecycle state and answers with the same sentence
+  the claim does, so the agent's own loop recognises it and backs off.
+
+Rotating a key is still one procedure and not a trap: **revoke the old key
+first**, which already stops the JWTs minted from it, and the id is released to
+whichever key re-provisions the host. An `agent_id` that has never registered
+is always free — that is how every agent starts.
+
+**The boundary this does not fix.** Two of them, and both are the shape of the
+credential rather than an oversight:
+
+- A legacy `OCTO_AGENT_TOKEN` agent has *no* identity to bind to — the shared
+  token is one credential for every agent in the `default` tenant by
+  construction — so it keeps behaving exactly as before, and the tenant check
+  remains the only boundary it has. That is another reason the variable is
+  deprecated and refused in `prod` from 2027-03-01
+  (see [configuration.md](configuration.md)).
+- **One provisioning key deployed to several hosts is one identity for all of
+  them.** The exchange refuses a *different* key asking for an agent's id, but
+  not the key that agent registered with — it cannot, because that is the same
+  key the host itself re-exchanges on every refresh. Whoever holds a fleet key
+  can therefore be any agent provisioned from it. Mint a key per host (`POST
+  /api/tenants/{tenant_id}/provisioning-keys` is cheap, and the SSH deployment
+  already does exactly that) where that matters.
+
+**A verified signature is not the whole check.** Every authenticated agent
+request re-reads two things from the database, so revocation lands at once
+instead of after the token's remaining lifetime: the provisioning key behind
+the token must still exist, be unrevoked and be unexpired (`401` otherwise),
+and the agent row, when there is one, must belong to the token's tenant
+(`403`). A *missing* row is not refused — the first request an agent ever makes
+is the registration that creates it, and a deleted agent is indistinguishable
+from a never-registered one. Making a delete permanent is therefore
+`?revoke_key=true`, not the delete alone.
 
 **Who may mint a provisioning key** ([#231](https://github.com/onixus/Shapoclyack/issues/231)).
 A provisioning key registers agents into the tenant, which makes handing one
@@ -428,6 +678,21 @@ returned exactly once, so an existing key cannot be re-embedded in a snippet —
 a fresh mint is the only way to fill the placeholder in, and the operator asks
 for it explicitly rather than getting one per dialog open. Revoke unused keys
 via `POST /api/tenants/{tenant_id}/provisioning-keys/{key_id}/revoke`.
+
+**Keys expire** ([#308](https://github.com/onixus/Shapoclyack/issues/308)). A
+key minted from now on carries an `expires_at`, set at mint time from
+`OCTO_PROVISIONING_KEY_TTL_DAYS` (90 days by default; `0` mints perpetual
+keys). An exchange after that time answers `401`, with the same message as an
+unknown or revoked key — presenting a guessed key learns nothing about which
+half was wrong. The key list reports `expires_at` and an `expires_soon` flag,
+`true` within 14 days of the expiry and `false` once the key is already expired
+or revoked: those are conclusions, not deadlines.
+
+**Keys minted before this are perpetual and stay perpetual** — `expires_at` is
+`null` on every one of them and nothing back-dates it. Stamping a TTL onto keys
+an operator was never told had one would strand whichever fleets are already
+past it; expiring an old key is a deliberate revoke, and the list is what finds
+the ones still carrying no expiry.
 
 **Agent version, and the floor** ([#363](https://github.com/onixus/Shapoclyack/issues/363)).
 The agent ships in the same release as the API and carries the same version, so
@@ -637,8 +902,15 @@ PUT    /api/users/{username}/role               # admin
 PUT    /api/users/{username}/email              # admin  {"email": …, "verified": bool}
 PUT    /api/users/{username}/disabled           # admin  {"disabled": true}
 DELETE /api/users/{username}                    # admin
+POST   /api/users/{username}/sessions/revoke-all # admin — sign that account out everywhere
 POST   /api/auth/password                       # any role — change your own
 ```
+
+Disabling, demoting and resetting a password already end that account's
+sessions (see [Sessions, logout and revocation](#sessions-logout-and-revocation)).
+`POST /api/users/{username}/sessions/revoke-all` is for the case where none of
+those is the right answer — a laptop left in a taxi, a token pasted into a chat
+— and the account should simply start over.
 
 `POST /api/auth/password` re-verifies the current password even though the
 caller already holds a valid token: a token proves "can act as this user right

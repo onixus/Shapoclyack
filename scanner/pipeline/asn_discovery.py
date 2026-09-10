@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from .config_schema import AsnDiscoveryConfig
+from .egress_env import httpx_kwargs
 from .utils import save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.asn-discovery")
@@ -131,7 +132,7 @@ def discover_asn_ranges(
     total_ips = 0
     truncated = False
 
-    with httpx.Client(headers={"User-Agent": USER_AGENT}) as client:
+    with httpx.Client(headers={"User-Agent": USER_AGENT}, **httpx_kwargs()) as client:
         for domain in seeds:
             if truncated:
                 break

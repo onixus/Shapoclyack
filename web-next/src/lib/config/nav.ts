@@ -14,6 +14,7 @@ import {
   Network,
   Play,
   Radar,
+  ScrollText,
   Server,
   Share2,
   ShieldAlert,
@@ -194,6 +195,16 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: UserCog,
         minRole: "admin",
         hintKey: "nav.hint.users",
+      },
+      {
+        // No minRole, unlike /users next door: "admin" on GET /api/audit means
+        // admin *in the tenant*, which the JWT does not carry, so filtering on
+        // the global role would hide the page from exactly the tenant admin
+        // it is for. The API is the boundary; the page renders its 403.
+        href: "/audit",
+        labelKey: "nav.audit",
+        icon: ScrollText,
+        hintKey: "nav.hint.audit",
       },
       {
         href: "/integrations",

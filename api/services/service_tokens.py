@@ -44,6 +44,7 @@ from sqlalchemy import select
 from api.auth import pwd_context
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit as audit_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -66,8 +67,12 @@ READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # further tokens is a token that can outlive and out-scope its own revocation.
 # ``tenants`` is in the list for that last reason — every route under it is
 # administrative, and a token is already pinned to one tenant, so the read
-# side of it has nothing to tell one.
-FORBIDDEN_RESOURCES = frozenset({"auth", "users", "tenants"})
+# side of it has nothing to tell one. ``audit`` joins them because the
+# administrative trail records the acts of the humans who administer the
+# installation, addresses included: a token minted for a CI pipeline that can
+# stream a year of that is an exfiltration path with a long life and no
+# password behind it, and the export makes it one request (#327).
+FORBIDDEN_RESOURCES = frozenset({"audit", "auth", "users", "tenants"})
 
 # Resources a service token may read but never write. These are the routes that
 # are *not* tenant-scoped — they hang off :func:`api.auth.require_role`, so the
@@ -216,6 +221,7 @@ def create_token(
     role: str = "viewer",
     created_by: str | None = None,
     expires_in_days: int | None = None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any]:
     """Mint one token. The returned dict carries ``token`` — the only time it exists."""
     resolved = settings or _require_settings()
@@ -258,6 +264,18 @@ def create_token(
         session.add(row)
         session.flush()
         out = _to_dict(row)
+        # ``_to_dict`` has no field for the plaintext — it is added below, after
+        # the session closes — so the recorded snapshot cannot carry the
+        # credential even before audit's own redaction (#327).
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_SERVICE_TOKEN_CREATE,
+            resource_type="service_token",
+            resource_id=row.token_id,
+            tenant_id=tenant_id,
+            after=out,
+        )
     out["token"] = plaintext
     return out
 
@@ -277,7 +295,11 @@ def list_tokens(
 
 
 def revoke_token(
-    settings: Settings | None = None, *, token_id: str, tenant_id: str | None = None
+    settings: Settings | None = None,
+    *,
+    token_id: str,
+    tenant_id: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any] | None:
     """Revoke one token. Idempotent — re-revoking keeps the original timestamp."""
     resolved = settings or _require_settings()
@@ -285,10 +307,25 @@ def revoke_token(
         row = session.get(models.ServiceToken, token_id)
         if row is None or (tenant_id is not None and row.tenant_id != tenant_id):
             return None
+        was_revoked = row.revoked_at is not None
         if row.revoked_at is None:
             row.revoked_at = _now()
             session.flush()
-        return _to_dict(row)
+        revoked = _to_dict(row)
+        if not was_revoked:
+            # The repeat of an idempotent revoke is not a change, and recording
+            # it would let anyone with the route fill the trail with rows that
+            # describe nothing.
+            audit_service.record(
+                session,
+                audit,
+                action=audit_service.ACTION_SERVICE_TOKEN_REVOKE,
+                resource_type="service_token",
+                resource_id=token_id,
+                tenant_id=row.tenant_id,
+                after=revoked,
+            )
+        return revoked
 
 
 # --------------------------------------------------------------------------- #

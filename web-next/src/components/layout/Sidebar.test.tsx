@@ -110,6 +110,21 @@ describe("Sidebar", () => {
     expect(screen.queryByTestId("quick-launch")).not.toBeInTheDocument();
   });
 
+  it("keeps the audit trail reachable for a tenant admin signed in as a global viewer", () => {
+    // "admin" on GET /api/audit means admin *in the tenant*, which the JWT does
+    // not carry. A minRole on this entry hid the page from exactly the account
+    // it exists for; the API is the boundary, and the page renders its 403.
+    signIn({ role: "viewer", tenants: ["acme"] });
+    renderSidebar();
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(within(nav).getByRole("link", { name: "Audit trail" })).toHaveAttribute(
+      "href",
+      "/audit",
+    );
+    // The neighbouring page really is global-admin-only, so it stays hidden.
+    expect(within(nav).queryByRole("link", { name: "Users" })).not.toBeInTheDocument();
+  });
+
   it("offers an operator one click to each surface's launcher", () => {
     signIn({ role: "operator" });
     renderSidebar();
