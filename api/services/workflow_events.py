@@ -37,18 +37,28 @@ time an operator reassigns a finding because a version was bumped. Naming a
 kind is how a tenant asks for these — the same rule #328 set for the audit
 trail, for the same reason.
 
-**Nothing here can fail its caller.** :func:`emit` is called from inside an
-operator's request (a transition, an assignment) and from a worker tick; the
-change it describes is already committed by the time it runs. Every failure is
-counted on ``octo_workflow_events_total`` and logged, and none of them
-propagates — a missed notification is not a reason to answer 500 for a
-transition that happened.
+**Nothing here can fail its caller, and nothing here can make it wait.**
+:func:`emit` is called from inside an operator's request (a transition, an
+assignment) and from a worker tick; the change it describes is already
+committed by the time it runs. Every failure is counted on
+``octo_workflow_events_total`` and logged, and none of them propagates — a
+missed notification is not a reason to answer 500 for a transition that
+happened. Cost matters as much as propagation: a broker that will not answer
+is *remembered* for :data:`_BROKER_RETRY_SECONDS`, because re-establishing a
+connection that is not there costs ten seconds and an operator's request has
+none to spend (the guard #328 wrote for the audit events, ``audit_events``).
+
+**A claim covers work that happened.** :func:`emit_once` claims an occurrence
+before announcing it and gives the claim back with :func:`release` if the
+fan-out failed, so a notification lost to a database hiccup is retried by the
+next tick rather than suppressed until the marker is pruned.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -94,10 +104,35 @@ SEVERITY_BEARING_KINDS = (
 #: constraint with.
 MARKER_KIND_DIGEST = "owner_digest"
 
+#: Marker ``kind`` used by the escalation worker for the escalation *write*
+#: (reassign, severity bump), as opposed to the ``sla_breached`` event that
+#: reports it. Also not an event kind: it exists so the write happens once per
+#: breached deadline rather than on every tick, which is the difference between
+#: "escalated once" and "taken back off whoever picked it up, every fifteen
+#: minutes".
+MARKER_KIND_ESCALATION = "sla_escalated"
+
 # One retry, as in ``asset_events``: the delivery row is already durable and
 # the envelope is content-deduped by JetStream, so a slow retry ladder buys
 # nothing an operator would notice.
 _PUBLISH_RETRIES = 1
+
+#: How long an unreachable broker is remembered, and the same guard #328 put in
+#: ``audit_events.publish_envelopes`` — for a sharper reason here. Every
+#: emitter in this module sits on a write path: an operator's transition, an
+#: agent posting its results, a report, and a worker tick with up to
+#: ``OCTO_SLA_ESCALATION_MAX_FINDINGS`` findings in it. ``nats_bus.get_bus``
+#: caches only success, so with ``OCTO_NATS_URL`` set and the broker down every
+#: single publish would re-run ``NatsBus.start()`` and spend
+#: ``connect_timeout + _STREAM_BUDGET + 5`` seconds on it — ten seconds an
+#: operator's request does not have, and 500 of them in one tick that holds the
+#: leader lock. So the first failure is remembered and the publishes in the
+#: window after it are skipped without retrying. The webhook queue row is
+#: written before this and is unaffected.
+_BROKER_RETRY_SECONDS = 30.0
+
+#: ``(url, monotonic deadline)`` of the last broker that would not answer.
+_broker_down: tuple[str, float] = ("", 0.0)
 
 
 def _now() -> datetime:
@@ -174,14 +209,44 @@ def emit(
     ordinary answer for a tenant with no matching subscription and no broker,
     which is not a failure. Never raises — see the module docstring.
     """
+    return _emit(
+        settings,
+        kind,
+        tenant_id=tenant_id,
+        subject_id=subject_id,
+        marker=marker,
+        data=data,
+        source=source,
+        occurred_at=occurred_at,
+    )[0]
+
+
+def _emit(
+    settings: Settings,
+    kind: str,
+    *,
+    tenant_id: str | None,
+    subject_id: str,
+    marker: str = "",
+    data: dict[str, Any] | None = None,
+    source: str = "workflow",
+    occurred_at: datetime | None = None,
+) -> tuple[bool, bool]:
+    """The body of :func:`emit`, reporting the fan-out failure separately.
+
+    Returns ``(delivered, failed)``. :func:`emit_once` needs the second half:
+    a claim it has taken for an event that then failed to reach the queue has
+    to be given back, or the occurrence is suppressed until the marker is
+    pruned.
+    """
     tenant = (tenant_id or "").strip()
     if not settings.workflow_events_enabled or not tenant:
-        return False
+        return False, False
     if kind not in WORKFLOW_EVENT_KINDS:
         # A subject token is built from this value, so an unvalidated kind
         # would let a caller's typo create its own subject tree.
         LOG.error("Refusing to emit unknown workflow event kind %r", kind)
-        return False
+        return False, False
 
     envelope = build_envelope(
         kind=kind,
@@ -201,7 +266,7 @@ def emit(
     else:
         outcome = "no_subscription"
     metrics.WORKFLOW_EVENTS_TOTAL.labels(kind=kind, outcome=outcome).inc()
-    return bool(queued or published)
+    return bool(queued or published), queued is None
 
 
 def _enqueue(envelope: dict[str, Any]) -> int | None:
@@ -237,17 +302,39 @@ def _publish(settings: Settings, envelope: dict[str, Any]) -> bool:
 
     Off the notification path on purpose (the queue row above is the
     notification), so an unreachable broker costs an off-bus consumer one
-    event and costs the tenant's webhooks nothing.
+    event and costs the tenant's webhooks nothing — provided it does not cost
+    the caller ten seconds per event, which is what :data:`_BROKER_RETRY_SECONDS`
+    is for.
     """
+    global _broker_down
     nats_url = (settings.nats_url or "").strip()
     if not nats_url:
+        return False
+    down_url, down_until = _broker_down
+    if nats_url == down_url and time.monotonic() < down_until:
+        LOG.debug(
+            "Skipping the bus copy of workflow event %s: the broker was "
+            "unreachable less than %.0fs ago",
+            envelope.get("event_id"),
+            _BROKER_RETRY_SECONDS,
+        )
         return False
     try:
         bus = nats_bus.get_bus(nats_url)
         if bus is None:
+            _broker_down = (nats_url, time.monotonic() + _BROKER_RETRY_SECONDS)
+            LOG.warning(
+                "NATS is configured but unavailable; workflow event %s was not "
+                "published and the next %.0fs of them will be skipped without "
+                "retrying (the webhook deliveries are queued regardless)",
+                envelope.get("event_id"),
+                _BROKER_RETRY_SECONDS,
+            )
             return False
+        _broker_down = ("", 0.0)
         return bool(bus.publish_workflow_event(envelope, retries=_PUBLISH_RETRIES))
     except Exception:  # noqa: BLE001 - see the module docstring
+        _broker_down = (nats_url, time.monotonic() + _BROKER_RETRY_SECONDS)
         LOG.warning(
             "Workflow event %s was not published to the bus; it is queued for webhooks",
             envelope.get("event_id"),
@@ -276,7 +363,12 @@ def claim(
     constraint decides, so two replicas that both believe they lead announce it
     once between them. Raising here would abort the worker's tick, so a
     database error is treated as "somebody else has it" — the failure direction
-    that under-notifies rather than the one that pages a tenant in a loop.
+    that under-notifies rather than the one that pages a tenant in a loop. That
+    is not a lasting loss: an INSERT that failed left no marker, so the next
+    tick asks again.
+
+    A claim taken for work that then did not happen is given back with
+    :func:`release`.
     """
     stamp = now or _now()
     row = models.WorkflowEventMarker(
@@ -297,6 +389,45 @@ def claim(
         return False
 
 
+def release(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    kind: str,
+    subject_id: str,
+    marker: str = "",
+) -> bool:
+    """Give a claim back, so a later tick may take it again. Rows deleted > 0.
+
+    The counterpart to :func:`claim`, for the two places where the work the
+    claim covers did not happen: a fan-out that raised (:func:`emit_once`) and
+    a digest the relay refused (``sla_escalation._send_digests``). Without it
+    the table records "already announced" for something nobody was told about,
+    and the occurrence stays suppressed until ``prune_markers`` reaches it —
+    ``OCTO_WORKFLOW_MARKER_RETENTION_DAYS`` later, a year by default.
+
+    Never raises, for the same reason :func:`claim` does not; a release that
+    fails leaves the claim standing, which is the direction that repeats
+    nothing.
+    """
+    try:
+        with get_session(settings.postgres_url) as session:
+            result = session.execute(
+                delete(models.WorkflowEventMarker).where(
+                    models.WorkflowEventMarker.tenant_id == tenant_id,
+                    models.WorkflowEventMarker.kind == kind,
+                    models.WorkflowEventMarker.subject_id == subject_id,
+                    models.WorkflowEventMarker.marker == marker,
+                )
+            )
+    except Exception:  # noqa: BLE001 - see above
+        LOG.exception(
+            "Could not release workflow marker %s/%s for %s", kind, marker, subject_id
+        )
+        return False
+    return bool(result.rowcount or 0)
+
+
 def emit_once(
     settings: Settings,
     kind: str,
@@ -312,9 +443,13 @@ def emit_once(
 
     Claim first, then emit. The other order would announce the event and then
     discover it had already been announced, which is the duplicate this table
-    exists to prevent; the cost of this order is that a process killed between
-    the two loses one notification, and a lost notification is the cheaper
-    failure.
+    exists to prevent.
+
+    A fan-out that *failed* gives the claim back, so the occurrence is
+    announced by the next tick instead of staying suppressed for
+    ``OCTO_WORKFLOW_MARKER_RETENTION_DAYS``. What remains uncovered is a
+    process killed between the claim and the emit — one notification, and a
+    lost notification is the cheaper failure than a loop of duplicates.
     """
     if not claim(
         settings,
@@ -325,7 +460,7 @@ def emit_once(
         now=now,
     ):
         return False
-    return emit(
+    delivered, failed = _emit(
         settings,
         kind,
         tenant_id=tenant_id,
@@ -335,6 +470,15 @@ def emit_once(
         source=source,
         occurred_at=now,
     )
+    if failed:
+        # The queue never took it, so nothing was announced and the marker is
+        # a lie. Releasing it costs at most a duplicate bus copy (JetStream
+        # de-duplicates the envelope by its ``event_id`` inside the stream's
+        # window) and buys the retry the docs promise.
+        release(
+            settings, tenant_id=tenant_id, kind=kind, subject_id=subject_id, marker=marker
+        )
+    return delivered
 
 
 def marker_exists(
@@ -377,5 +521,7 @@ def prune_markers(settings: Settings, *, now: datetime | None = None) -> int:
 
 
 def reset_for_tests(settings: Settings) -> None:
+    global _broker_down
+    _broker_down = ("", 0.0)
     with get_session(settings.postgres_url) as session:
         session.query(models.WorkflowEventMarker).delete()

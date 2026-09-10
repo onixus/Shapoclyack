@@ -38,12 +38,17 @@ without a durable record this thread would page a tenant's on-call in a loop.
 key includes the deadline, so a clock that restarts is announced again and the
 same deadline is not.
 
+The escalation *write* is claimed the same way, under its own marker kind
+(``workflow_events.MARKER_KIND_ESCALATION``), because "already assigned where
+the policy points" is not a durable no-op: an operator who takes a breached
+finding off the escalation address would otherwise have it taken back on the
+next tick, with another ``escalated`` row in the trail each time.
+
 **Leader-locked**, by the pattern of ``api/services/reports/dispatcher.py``:
 every replica would otherwise wake for the same due finding. The lock is not
-fenced, which for the notifications does not matter (the marker's unique
-constraint decides between two leaders) and for the escalation writes does not
-either — ``vulnerabilities.escalate`` is a no-op the second time, because the
-finding is already assigned where the policy points.
+fenced, which does not matter for either half — the markers' unique constraint
+decides between two brief leaders for the notifications and for the escalation
+alike.
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 
 from api.db import models
 from api.db.engine import get_session
@@ -126,6 +131,17 @@ class SlaEscalationWorker:
             "last_run_at": None,
         }
         self._last_prune: datetime | None = None
+        #: Per-tenant keyset cursor over the due-finding window, see
+        #: :meth:`_due_findings`. In memory rather than in a table: a worker
+        #: that restarts (or a lock that moves to another replica) starts the
+        #: sweep from the oldest deadline again, which the markers make
+        #: harmless — the claims are already taken and nothing is announced
+        #: twice.
+        self._due_cursor: dict[str, tuple[datetime, str] | None] = {}
+        #: The same cursor over the expiring-exception window, and for the same
+        #: reason: an exception stays inside the 30-day horizon for a month, so
+        #: a re-read window would warn about the first N and starve the rest.
+        self._exception_cursor: dict[str, tuple[datetime, str] | None] = {}
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -200,7 +216,6 @@ class SlaEscalationWorker:
         # as the writes: a tenant that turned escalation off did not ask to keep
         # receiving its digests.
         digest_on = policy["enabled"] and policy["digest_enabled"]
-        digest: dict[str, list[dict[str, Any]]] = {}
         for finding, owner_email in candidates:
             state = finding["sla_state"]
             if state not in ("breached", "due_soon"):  # pragma: no cover
@@ -227,14 +242,9 @@ class SlaEscalationWorker:
             )
             if emitted:
                 self._stats["breached" if state == "breached" else "due_soon"] += 1
-            # Digested whether or not the event was new: the digest is "what is
-            # on your plate today", not a change feed, and a breach announced
-            # yesterday is still overdue this morning.
-            if digest_on and owner_email:
-                digest.setdefault(owner_email, []).append(finding)
         self._exceptions(tenant_id, now)
-        if digest:
-            self._send_digests(tenant_id, digest, now)
+        if digest_on:
+            self._send_digests(tenant_id, self._digest_population(tenant_id, now), now)
 
     # ----------------------------------------------------------------------
     # Candidates
@@ -243,13 +253,25 @@ class SlaEscalationWorker:
     def _due_findings(
         self, tenant_id: str, now: datetime
     ) -> list[tuple[dict[str, Any], str | None]]:
-        """Active findings at or inside their deadline, with the asset's owner.
+        """One window of active findings at or inside their deadline, with the
+        asset's owner.
 
-        Ordered by deadline so the tick budget
+        Ordered by deadline, so the tick budget
         (``OCTO_SLA_ESCALATION_MAX_FINDINGS``) spends itself on the oldest
         breaches: a tenant that imports a backlog of ten thousand overdue
-        findings must not turn one tick into ten thousand deliveries, and the
-        rest are announced by the ticks that follow.
+        findings must not turn one tick into ten thousand deliveries.
+
+        The budget is a *window*, not a ceiling, and the cursor is what makes
+        the difference. Nothing drops out of this query once it has been
+        announced — the finding is still open, still past its deadline and
+        still the oldest — so a query that re-read the first N rows every tick
+        would announce those N and nothing else, ever: the (N+1)th breach would
+        wait for somebody to close one of the first N by hand. Instead each
+        tick continues after the last row the previous one saw (a keyset cursor
+        on ``(due_at, vuln_id)`` — the pair, because deadlines tie). A tick
+        that does not fill its window has reached the end of the backlog and
+        resets, so the next one starts from the oldest deadline again and picks
+        up whatever became due meanwhile; the markers make that pass silent.
 
         Accepted risk is excluded here rather than filtered afterwards. An
         acceptance suspends the clock, so a suspended finding is not breached —
@@ -258,21 +280,21 @@ class SlaEscalationWorker:
         """
         limit = max(1, int(self._settings.sla_escalation_max_findings))
         naive_now = _naive(now)
-        horizon = naive_now + timedelta(days=vulns_service.DUE_SOON_DAYS)
+        after = self._due_cursor.get(tenant_id)
+        query = (
+            select(models.Vulnerability, models.Asset.owner_email)
+            .join(models.Asset, models.Asset.asset_id == models.Vulnerability.asset_id)
+            .where(*self._due_clause(tenant_id, naive_now))
+        )
+        if after is not None:
+            query = query.where(
+                tuple_(models.Vulnerability.due_at, models.Vulnerability.vuln_id) > after
+            )
         with get_session(self._settings.postgres_url) as session:
             rows = session.execute(
-                select(models.Vulnerability, models.Asset.owner_email)
-                .join(models.Asset, models.Asset.asset_id == models.Vulnerability.asset_id)
-                .where(
-                    models.Vulnerability.tenant_id == tenant_id,
-                    models.Vulnerability.state != vuln_states.CLOSED,
-                    models.Vulnerability.due_at.is_not(None),
-                    models.Vulnerability.due_at <= horizon,
-                    (models.Vulnerability.exception_until.is_(None))
-                    | (models.Vulnerability.exception_until <= naive_now),
-                )
-                .order_by(models.Vulnerability.due_at.asc())
-                .limit(limit)
+                query.order_by(
+                    models.Vulnerability.due_at.asc(), models.Vulnerability.vuln_id.asc()
+                ).limit(limit)
             ).all()
             out: list[tuple[dict[str, Any], str | None]] = []
             for row, owner_email in rows:
@@ -283,7 +305,60 @@ class SlaEscalationWorker:
                 # value said twice.
                 finding["_due_at"] = row.due_at
                 out.append((finding, owner_email))
+            self._due_cursor[tenant_id] = (
+                (rows[-1][0].due_at, rows[-1][0].vuln_id) if len(rows) == limit else None
+            )
         return out
+
+    def _due_clause(self, tenant_id: str, naive_now: datetime) -> tuple[Any, ...]:
+        """What "at or inside the deadline" means, for the two queries that ask.
+
+        Shared rather than repeated: the announcement window and the digest
+        population have to describe the same set of findings, and two copies of
+        this predicate would eventually describe two.
+        """
+        horizon = naive_now + timedelta(days=vulns_service.DUE_SOON_DAYS)
+        return (
+            models.Vulnerability.tenant_id == tenant_id,
+            models.Vulnerability.state != vuln_states.CLOSED,
+            models.Vulnerability.due_at.is_not(None),
+            models.Vulnerability.due_at <= horizon,
+            (models.Vulnerability.exception_until.is_(None))
+            | (models.Vulnerability.exception_until <= naive_now),
+        )
+
+    def _digest_population(
+        self, tenant_id: str, now: datetime
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Everything on each asset owner's plate today, grouped by owner.
+
+        Read separately from the announcement window on purpose. The digest is
+        "what is overdue for you", not a change feed — a breach announced
+        yesterday is still overdue this morning — so it must not shrink to the
+        findings this particular tick happened to announce, which is what
+        sharing the cursored query of :meth:`_due_findings` would do. Bounded
+        by the same ``OCTO_SLA_ESCALATION_MAX_FINDINGS``, oldest deadline
+        first; the mail itself lists ``DIGEST_MAX_ROWS`` and counts the rest.
+        """
+        naive_now = _naive(now)
+        digest: dict[str, list[dict[str, Any]]] = {}
+        with get_session(self._settings.postgres_url) as session:
+            rows = session.execute(
+                select(models.Vulnerability, models.Asset.owner_email)
+                .join(models.Asset, models.Asset.asset_id == models.Vulnerability.asset_id)
+                .where(
+                    *self._due_clause(tenant_id, naive_now),
+                    models.Asset.owner_email.is_not(None),
+                    models.Asset.owner_email != "",
+                )
+                .order_by(models.Vulnerability.due_at.asc())
+                .limit(max(1, int(self._settings.sla_escalation_max_findings)))
+            ).all()
+            for row, owner_email in rows:
+                finding = vulns_service._to_dict(row, now=naive_now)  # noqa: SLF001
+                if finding["sla_state"] in ("breached", "due_soon"):
+                    digest.setdefault(owner_email, []).append(finding)
+        return digest
 
     def _exceptions(self, tenant_id: str, now: datetime) -> None:
         """Announce accepted risk that is about to lapse, once per threshold.
@@ -292,26 +367,40 @@ class SlaEscalationWorker:
         it are claimed silently: an exception granted for five days would
         otherwise trip 30, 14 and 7 on its first tick and send three mails
         about one decision.
+
+        Windowed by the same cursor as :meth:`_due_findings`, for the reason
+        given there.
         """
+        limit = max(1, int(self._settings.sla_escalation_max_findings))
         naive_now = _naive(now)
         horizon = naive_now + timedelta(days=max(EXCEPTION_WARN_DAYS))
+        after = self._exception_cursor.get(tenant_id)
+        query = select(models.Vulnerability).where(
+            models.Vulnerability.tenant_id == tenant_id,
+            models.Vulnerability.state != vuln_states.CLOSED,
+            models.Vulnerability.exception_until.is_not(None),
+            models.Vulnerability.exception_until > naive_now,
+            models.Vulnerability.exception_until <= horizon,
+        )
+        if after is not None:
+            query = query.where(
+                tuple_(models.Vulnerability.exception_until, models.Vulnerability.vuln_id)
+                > after
+            )
         with get_session(self._settings.postgres_url) as session:
             rows = session.execute(
-                select(models.Vulnerability)
-                .where(
-                    models.Vulnerability.tenant_id == tenant_id,
-                    models.Vulnerability.state != vuln_states.CLOSED,
-                    models.Vulnerability.exception_until.is_not(None),
-                    models.Vulnerability.exception_until > naive_now,
-                    models.Vulnerability.exception_until <= horizon,
-                )
-                .order_by(models.Vulnerability.exception_until.asc())
-                .limit(max(1, int(self._settings.sla_escalation_max_findings)))
+                query.order_by(
+                    models.Vulnerability.exception_until.asc(),
+                    models.Vulnerability.vuln_id.asc(),
+                ).limit(limit)
             ).scalars().all()
             pending = [
                 (vulns_service._to_dict(row, now=naive_now), row.exception_until)  # noqa: SLF001
                 for row in rows
             ]
+            self._exception_cursor[tenant_id] = (
+                (rows[-1].exception_until, rows[-1].vuln_id) if len(rows) == limit else None
+            )
 
         for finding, until in pending:
             days_left = _days_between(until, now, ceiling=True)
@@ -408,6 +497,10 @@ class SlaEscalationWorker:
     ) -> dict[str, Any] | None:
         """Apply the tenant's escalation to one breached finding, if it applies.
 
+        Once per missed deadline, claimed in ``workflow_event_markers`` like
+        the events: the write is not idempotent against a human being, only
+        against itself.
+
         Returns what changed, so the event that follows carries it — an
         ``sla_breached`` that quietly reassigned the finding, and did not say
         so, would leave the receiver's copy of the owner wrong.
@@ -417,6 +510,21 @@ class SlaEscalationWorker:
         grace = timedelta(days=int(policy["escalate_after_days"] or 0))
         due = finding["_due_at"]
         if due is not None and _naive(now) < due + grace:
+            return None
+        if not workflow_events.claim(
+            self._settings,
+            tenant_id=finding["tenant_id"],
+            kind=workflow_events.MARKER_KIND_ESCALATION,
+            subject_id=finding["vuln_id"],
+            marker=_stamp(due),
+            now=now,
+        ):
+            # This deadline has already been escalated. Claimed rather than
+            # inferred from the row's current state: "already assigned where
+            # the policy points" stops being true the moment an operator picks
+            # the finding up, and re-applying the policy then would take it
+            # back off them every fifteen minutes and write an ``escalated``
+            # row in the trail each time. Once per missed deadline means once.
             return None
         result = vulns_service.escalate(
             self._settings,
@@ -444,7 +552,9 @@ class SlaEscalationWorker:
 
         Claimed through the marker table like the events, keyed on the calendar
         day: a worker ticking every fifteen minutes must not mail somebody
-        ninety-six times. The recipient is ``Asset.owner_email`` — who runs the
+        ninety-six times. A relay that refuses releases the claim again, so the
+        failure costs a quarter of an hour rather than the day. The recipient
+        is ``Asset.owner_email`` — who runs the
         box — deliberately, not ``Vulnerability.assignee``: the assignee gets
         the ``sla_breached`` event on whatever channel their tenant configured,
         while the digest exists for the person whose machine it is and who has
@@ -469,6 +579,17 @@ class SlaEscalationWorker:
             )
             if error:
                 self._stats["digest_failures"] += 1
+                # Give the day back. The claim exists so a fifteen-minute tick
+                # does not mail somebody ninety-six times, not so that one
+                # "421 too many connections" at 00:07 costs the owner the whole
+                # day's digest; the next tick tries again.
+                workflow_events.release(
+                    self._settings,
+                    tenant_id=tenant_id,
+                    kind=workflow_events.MARKER_KIND_DIGEST,
+                    subject_id=owner_email,
+                    marker=day,
+                )
                 LOG.warning("SLA digest to %s was not sent: %s", owner_email, error)
             else:
                 self._stats["digests_sent"] += 1

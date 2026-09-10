@@ -349,8 +349,11 @@ class Settings:
     sla_escalation_interval_seconds: int = 900
     # Bound on how many findings one tenant's tick may announce. A tenant that
     # imports a backlog of ten thousand overdue findings should not turn one
-    # tick into ten thousand webhook deliveries; the rest are announced by the
-    # ticks that follow, oldest deadline first.
+    # tick into ten thousand webhook deliveries. It is a *window*, not a
+    # ceiling: the worker keeps a cursor and each tick continues after the last
+    # deadline the previous one reached, so a backlog of N findings is drained
+    # over ceil(N / this) ticks rather than stopping at the first batch (see
+    # ``sla_escalation.SlaEscalationWorker._due_findings``).
     sla_escalation_max_findings: int = 500
     # How long a "already announced" marker is kept. Deleting one re-arms its
     # event, so this is also the period after which a still-breached finding is

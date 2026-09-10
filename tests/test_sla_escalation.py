@@ -107,6 +107,39 @@ def _set_last_seen(settings: Settings, agent_id: str, last_seen: datetime) -> No
         session.get(models.Agent, agent_id).last_seen_at = last_seen.replace(tzinfo=None)
 
 
+def _seed_second_finding(settings: Settings, vuln_id: str, due_at: datetime) -> str:
+    """A second finding on the same asset, breaching at ``due_at``.
+
+    Inserted rather than scanned in: the registration path derives ``due_at``
+    from the SLA table and this test is about the order two deadlines are
+    announced in.
+    """
+    key = vulns.finding_key(asset_id="x", cve="CVE-2026-0002", script_id=None, port="80")
+    with get_session(settings.postgres_url) as session:
+        template = session.get(models.Vulnerability, vuln_id)
+        session.add(
+            models.Vulnerability(
+                vuln_id="vln_second",
+                tenant_id="default",
+                asset_id=template.asset_id,
+                finding_key=key,
+                cve="CVE-2026-0002",
+                port="80",
+                title="second",
+                severity="high",
+                state=vuln_states.OPEN,
+                state_changed_at=template.state_changed_at,
+                due_at=due_at.replace(tzinfo=None),
+                first_seen_at=template.first_seen_at,
+                last_seen_at=template.last_seen_at,
+                sla_started_at=template.sla_started_at,
+                created_at=template.created_at,
+                updated_at=template.updated_at,
+            )
+        )
+    return "vln_second"
+
+
 def _worker(settings: Settings) -> sla_escalation.SlaEscalationWorker:
     return sla_escalation.SlaEscalationWorker(settings=settings)
 
@@ -237,35 +270,12 @@ def test_a_closed_finding_has_no_deadline_to_miss(settings):
 
 def test_one_tick_announces_at_most_the_configured_number_of_findings(settings):
     """A tenant importing a backlog must not turn one tick into a delivery
-    storm; the rest are announced by the ticks that follow."""
+    storm."""
     settings.sla_escalation_max_findings = 1
     _subscribe(["sla_breached"])
     vuln_id = _seed_finding(settings)
     _set_due(settings, vuln_id, _NOW - timedelta(days=3))
-    # A second finding on the same asset, breaching later.
-    second = vulns.finding_key(asset_id="x", cve="CVE-2026-0002", script_id=None, port="80")
-    with get_session(settings.postgres_url) as session:
-        template = session.get(models.Vulnerability, vuln_id)
-        session.add(
-            models.Vulnerability(
-                vuln_id="vln_second",
-                tenant_id="default",
-                asset_id=template.asset_id,
-                finding_key=second,
-                cve="CVE-2026-0002",
-                port="80",
-                title="second",
-                severity="high",
-                state=vuln_states.OPEN,
-                state_changed_at=template.state_changed_at,
-                due_at=(_NOW - timedelta(days=1)).replace(tzinfo=None),
-                first_seen_at=template.first_seen_at,
-                last_seen_at=template.last_seen_at,
-                sla_started_at=template.sla_started_at,
-                created_at=template.created_at,
-                updated_at=template.updated_at,
-            )
-        )
+    _seed_second_finding(settings, vuln_id, _NOW - timedelta(days=1))
 
     _worker(settings).tick(now=_NOW)
 
@@ -273,6 +283,35 @@ def test_one_tick_announces_at_most_the_configured_number_of_findings(settings):
     events = _queued(settings, "sla_breached")
     assert len(events) == 1
     assert events[0]["event"]["data"]["vuln_id"] == vuln_id
+
+
+def test_the_ticks_that_follow_announce_the_rest_of_the_backlog(settings):
+    """The budget is a window, not a ceiling.
+
+    Nothing drops out of the candidate query once it has been announced — the
+    finding is still open, still overdue, still the oldest — so a tick that
+    re-read the first N rows would announce those N and never the (N+1)th: a
+    tenant with six hundred overdue findings would get five hundred events and
+    then silence until somebody closed one of them by hand.
+    """
+    settings.sla_escalation_max_findings = 1
+    _subscribe(["sla_breached"])
+    first = _seed_finding(settings)
+    _set_due(settings, first, _NOW - timedelta(days=3))
+    second = _seed_second_finding(settings, first, _NOW - timedelta(days=1))
+    worker = _worker(settings)
+
+    worker.tick(now=_NOW)
+    worker.tick(now=_NOW + timedelta(minutes=15))
+
+    announced = [
+        item["event"]["data"]["vuln_id"] for item in _queued(settings, "sla_breached")
+    ]
+    assert announced == [first, second]
+    # And once the backlog is drained the window starts over without saying
+    # anything a second time.
+    worker.tick(now=_NOW + timedelta(minutes=30))
+    assert len(_queued(settings, "sla_breached")) == 2
 
 
 # --------------------------------------------------------------------------
@@ -408,6 +447,48 @@ def test_an_enabled_policy_reassigns_and_bumps_severity_once(settings):
     assert vulns.get_vulnerability(settings, tenant_id="default", vuln_id=vuln_id)[
         "severity"
     ] == "critical"
+    assert worker.stats["escalated"] == 1
+
+
+def test_a_finding_an_operator_picked_up_is_not_taken_back_every_tick(settings):
+    """Escalation is once per missed deadline, by record and not by accident.
+
+    "Already assigned where the policy points" stops being true the moment
+    somebody takes the finding, and re-applying the policy then would move it
+    back to the SOC address every fifteen minutes and write an ``escalated``
+    row in the trail each time.
+    """
+    _subscribe(["sla_breached"])
+    vuln_id = _seed_finding(settings)
+    _set_due(settings, vuln_id, _NOW - timedelta(days=1))
+    vulns.upsert_escalation_policy(
+        settings,
+        tenant_id="default",
+        enabled=True,
+        escalate_to="soc@example.com",
+        bump_severity=True,
+        updated_by="admin",
+    )
+    worker = _worker(settings)
+    worker.tick(now=_NOW)
+    assert vulns.get_vulnerability(settings, tenant_id="default", vuln_id=vuln_id)[
+        "assignee"
+    ] == "soc@example.com"
+
+    vulns.assign(
+        settings,
+        tenant_id="default",
+        vuln_id=vuln_id,
+        assignee="alice@example.com",
+        actor="alice",
+    )
+    worker.tick(now=_NOW + timedelta(minutes=15))
+    worker.tick(now=_NOW + timedelta(minutes=30))
+
+    row = vulns.get_vulnerability(settings, tenant_id="default", vuln_id=vuln_id)
+    assert row["assignee"] == "alice@example.com"
+    events, _ = vulns.list_events(settings, tenant_id="default", vuln_id=vuln_id)
+    assert len([item for item in events if item["kind"] == "escalated"]) == 1
     assert worker.stats["escalated"] == 1
 
 
@@ -594,6 +675,82 @@ def test_a_relay_failure_is_counted_and_does_not_stop_the_tick(settings, monkeyp
     assert worker.stats["digest_failures"] == 1
     # The webhook event went out regardless: two channels, one of which failed.
     assert len(_queued(settings, "sla_breached")) == 1
+
+
+def test_a_relay_failure_does_not_cost_the_owner_the_whole_day(settings, monkeypatch):
+    """The day marker exists so a fifteen-minute tick does not mail somebody
+    ninety-six times, not so that one ``421 too many connections`` at 00:07
+    costs the owner their digest until tomorrow."""
+    outcomes = ["SMTPException: 421 too many connections", None]
+    sent: list[str] = []
+
+    def _relay(_settings, *, to, subject, body):
+        error = outcomes.pop(0) if outcomes else None
+        if not error:
+            sent.append(to)
+        return error
+
+    monkeypatch.setattr(sla_escalation.mail, "send_notice", _relay)
+    vuln_id = _seed_finding(settings, owner_email="owner@example.com")
+    _set_due(settings, vuln_id, _NOW - timedelta(days=2))
+    vulns.upsert_escalation_policy(
+        settings, tenant_id="default", enabled=True, digest_enabled=True, updated_by="admin"
+    )
+    worker = _worker(settings)
+
+    worker.tick(now=_NOW)
+    assert sent == []
+    assert worker.stats["digest_failures"] == 1
+
+    # The relay comes back a quarter of an hour later, on the same day.
+    worker.tick(now=_NOW + timedelta(minutes=15))
+    assert sent == ["owner@example.com"]
+    # And that success is claimed: the rest of the day stays quiet.
+    worker.tick(now=_NOW + timedelta(minutes=30))
+    assert sent == ["owner@example.com"]
+
+
+def test_the_digest_lists_what_is_overdue_and_not_only_what_this_tick_said(
+    settings, monkeypatch
+):
+    """The digest is "what is on your plate", not a change feed.
+
+    It is read separately from the announcement window for that reason: a
+    breach announced on an earlier tick is still overdue this morning, while
+    the events have already been claimed and will not be said again.
+    """
+    sent: list[str] = []
+    monkeypatch.setattr(
+        sla_escalation.mail,
+        "send_notice",
+        lambda _settings, *, to, subject, body: sent.append(body) or None,
+    )
+    _subscribe(["sla_breached"])
+    first = _seed_finding(settings, owner_email="owner@example.com")
+    _set_due(settings, first, _NOW - timedelta(days=3))
+    second = _seed_second_finding(settings, first, _NOW - timedelta(days=1))
+    vulns.upsert_escalation_policy(
+        settings, tenant_id="default", enabled=True, digest_enabled=True, updated_by="admin"
+    )
+    # The older breach was announced yesterday, so this tick has one event to
+    # send and two findings to list.
+    assert workflow_events.claim(
+        settings,
+        tenant_id="default",
+        kind="sla_breached",
+        subject_id=first,
+        marker=(_NOW - timedelta(days=3)).replace(tzinfo=None).isoformat(),
+    ) is True
+
+    _worker(settings).tick(now=_NOW)
+
+    announced = [
+        item["event"]["data"]["vuln_id"] for item in _queued(settings, "sla_breached")
+    ]
+    assert announced == [second]
+    assert len(sent) == 1
+    assert "CVE-2026-0001" in sent[0]
+    assert "CVE-2026-0002" in sent[0]
 
 
 # --------------------------------------------------------------------------

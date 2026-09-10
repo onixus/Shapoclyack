@@ -9,6 +9,7 @@ needs (``requires_postgres``).
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -311,6 +312,131 @@ def test_retention_of_zero_days_keeps_every_marker(tmp_path):
     settings = _settings(tmp_path, workflow_marker_retention_days=0)
     workflow_events.claim(settings, tenant_id="default", kind="sla_breached", subject_id="v", marker="d")
     assert workflow_events.prune_markers(settings) == 0
+
+
+@requires_postgres
+def test_the_marker_and_not_the_delivery_index_is_what_makes_it_once(tmp_path, monkeypatch):
+    """The claim has to carry the de-duplication, not the delivery table.
+
+    ``webhook_deliveries`` has a unique index on
+    ``(subscription_id, event_id)``, so a *subscribed* tenant would look
+    de-duplicated even if the claim were ignored. A tenant with no
+    subscription has no such index behind it: the only thing standing between
+    one occurrence and a bus copy on every tick is the marker.
+    """
+    settings = _settings(tmp_path, nats_url="nats://broker:4222")
+    workflow_events.reset_for_tests(settings)
+    published: list[str] = []
+
+    class _Bus:
+        def publish_workflow_event(self, envelope, *, retries=1):
+            published.append(envelope["event_id"])
+            return True
+
+    monkeypatch.setattr(workflow_events.nats_bus, "get_bus", lambda url: _Bus())
+    args = dict(tenant_id="default", subject_id="vln_1", marker="due-1")
+
+    assert workflow_events.emit_once(settings, "sla_breached", **args) is True
+    assert workflow_events.emit_once(settings, "sla_breached", **args) is False
+    assert workflow_events.emit_once(settings, "sla_breached", **args) is False
+
+    assert len(published) == 1
+    assert _queued(settings) == []
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.WorkflowEventMarker).count() == 1
+
+
+@requires_postgres
+def test_two_leaders_claim_one_occurrence_between_them(tmp_path):
+    """The advisory lock is not fenced, so two replicas can briefly both lead.
+
+    What decides then is the unique constraint on the marker, and the losing
+    INSERT must come back as "somebody else has it" rather than as an error
+    that aborts the tick around it.
+    """
+    settings = _settings(tmp_path)
+    workflow_events.reset_for_tests(settings)
+    workers = 8
+    ready = threading.Barrier(workers)
+    won: list[bool] = []
+    guard = threading.Lock()
+
+    def _race() -> None:
+        ready.wait(timeout=10)
+        outcome = workflow_events.claim(
+            settings, tenant_id="default", kind="sla_breached", subject_id="v", marker="d"
+        )
+        with guard:
+            won.append(outcome)
+
+    threads = [threading.Thread(target=_race) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert won.count(True) == 1, won
+    assert len(won) == workers
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.WorkflowEventMarker).count() == 1
+
+
+@requires_postgres
+def test_a_fan_out_that_failed_is_announced_by_the_next_tick(tmp_path, monkeypatch):
+    """A claim covers work that happened; this one did not.
+
+    Keeping the marker after a failed fan-out would suppress the occurrence
+    until ``OCTO_WORKFLOW_MARKER_RETENTION_DAYS`` pruned it — a year, for a
+    breach nobody was ever told about.
+    """
+    settings = _settings(tmp_path)
+    _subscribe(["sla_breached"])
+    workflow_events.reset_for_tests(settings)
+    fan_out = webhooks.enqueue_event
+    calls: list[int] = []
+
+    def _flaky(envelope):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("connection reset during the fan-out")
+        return fan_out(envelope)
+
+    monkeypatch.setattr(webhooks, "enqueue_event", _flaky)
+    args = dict(tenant_id="default", subject_id="vln_1", marker="due-1")
+
+    assert workflow_events.emit_once(settings, "sla_breached", **args) is False
+    assert workflow_events.marker_exists(
+        settings, tenant_id="default", kind="sla_breached", subject_id="vln_1", marker="due-1"
+    ) is False
+
+    assert workflow_events.emit_once(settings, "sla_breached", **args) is True
+    assert len(_queued(settings, "sla_breached")) == 1
+
+
+@requires_postgres
+def test_an_unreachable_broker_is_not_re_dialled_for_every_event(tmp_path, monkeypatch):
+    """Ten seconds is what a broker that will not answer costs, and these
+    emitters are on an operator's request and on a 500-finding worker tick.
+
+    ``nats_bus.get_bus`` caches only success — it re-runs ``NatsBus.start()``
+    and spends its connect and stream budget again on every call — so without
+    the window in ``_publish`` a restarting broker adds that to every
+    transition, every assignment and every job update. #328 made the same
+    guard for the audit events.
+    """
+    settings = _settings(tmp_path, nats_url="nats://down:4222")
+    workflow_events.reset_for_tests(settings)
+    attempts: list[str] = []
+    monkeypatch.setattr(
+        workflow_events.nats_bus, "get_bus", lambda url: attempts.append(url) or None
+    )
+
+    for index in range(4):
+        workflow_events.emit(
+            settings, "sla_breached", tenant_id="default", subject_id=f"vln_{index}"
+        )
+
+    assert attempts == ["nats://down:4222"]
 
 
 @requires_postgres

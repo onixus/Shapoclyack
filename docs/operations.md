@@ -595,6 +595,16 @@ deadline is not. The unique constraint is the claim, so a brief double-leader
 (the advisory lock is not fenced) sends one notification between the two
 replicas.
 
+A claim covers work that happened. If the fan-out into `webhook_deliveries`
+fails — a database hiccup, an unconfigured webhook service — the claim is
+**released** and the occurrence is announced by the next tick; the only hole
+left is a process killed between the claim and the fan-out, which costs one
+notification. What is *not* retried is the bus copy: it is off the notification
+path by design, and an unreachable broker is remembered for 30 seconds rather
+than re-dialled per event (`nats_bus.get_bus` caches only success and spends
+its whole connect budget on each attempt, which is ten seconds an operator's
+transition cannot afford — the same guard the audit events got in #328).
+
 `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` (365) prunes those markers hourly from
 the same thread. Note what that means: **deleting a marker re-arms its event**,
 so a finding still breached a year later is raised a second time. `0` disables
@@ -602,25 +612,37 @@ both.
 
 **Rolling into it.** Nothing is backfilled — the markers for past breaches were
 never written down, and inventing them would suppress the first announcement of
-every breach the installation already has. So the first tick after the upgrade
-announces the tenant's *current* breaches, once. On an estate with a large
-overdue backlog, set `OCTO_SLA_ESCALATION_ENABLED=false` before the upgrade,
-check `OCTO_SLA_ESCALATION_MAX_FINDINGS` (500 per tenant per tick) and turn it
-on when the receivers are ready.
+every breach the installation already has. So the ticks after the upgrade
+announce the tenant's *current* breaches, once each,
+`OCTO_SLA_ESCALATION_MAX_FINDINGS` (500) per tenant per tick: the budget is a
+window and the worker keeps a per-tenant cursor, so a 600-finding backlog is
+announced over two ticks rather than the first 500 and then silence. On an
+estate with a large overdue backlog set `OCTO_SLA_ESCALATION_ENABLED=false`
+before the upgrade and turn it on when the receivers are ready. The cursor
+lives in the worker's memory: a restart, or the leader lock moving to another
+replica, starts the sweep from the oldest deadline again — which the markers
+make silent, at the cost of one pass of losing claims.
 
 **Escalation writes rows.** Reassignment and the severity bump happen only for
 tenants with an `sla_escalation_policies` row that enables them
 (`PUT /api/vulnerabilities/sla-escalation`, tenant admin), and each is recorded
 as an `escalated` event in the finding's trail with no actor — the platform did
-it, on a policy. The severity bump does not survive the next observation of the
-finding, which re-copies the scanner's severity; the trail entry is the durable
-record.
+it, on a policy. It happens **once per missed deadline**, claimed in the marker
+table under its own kind (`sla_escalated`): an operator who assigns a breached
+finding to themselves keeps it, rather than having the policy move it back to
+the escalation address on the next tick. The severity bump does not survive the
+next observation of the finding, which re-copies the scanner's severity; the
+trail entry is the durable record, and it is not written a second time when the
+next scan puts the severity back.
 
 **The owner digest** is one plain-text mail per asset `owner_email` per day
 through the report relay (`OCTO_REPORT_SMTP_*`), claimed in the same marker
 table keyed on the calendar day, so a 15-minute tick cannot mail somebody
 ninety-six times. A relay that refuses is logged and counted
-(`digest_failures`) and does not stop the tick.
+(`digest_failures`), does not stop the tick, and **releases the day's claim**:
+a `421` at 00:07 costs the owner a quarter of an hour, not the day. The digest
+lists what is overdue for that owner now, not what this tick announced — it is
+read separately from the announcement window for exactly that reason.
 
 Worker counters live on `octo_workflow_events_total{kind,outcome}` and
 `octo_sla_escalations_total{action}`; `outcome="no_subscription"` is the
