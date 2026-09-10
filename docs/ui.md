@@ -154,6 +154,16 @@ token already in the browser — no sign-out in the middle. The banner hides
 itself on `/security` — standing over the form telling somebody to open the form
 is noise.
 
+When an operation needs a fresher second factor than the session has, the API's
+403 raises a code dialog anywhere in the console — the axios interceptor in
+`src/lib/api.ts` recognises that one 403 and nothing else, so an ordinary "your
+role does not reach this" is still just a toast. The refused request is not
+replayed: the dialog says to repeat the action, because a `POST` nobody saw
+succeed is not a thing to repeat silently. That covers the whole step-up set,
+which is wider than the credential screens — creating an account, resetting a
+password, changing a role, setting a verified address, resetting somebody's
+MFA, replacing a scan scope, and the **Deploy agent** button.
+
 The login form also reads `local_login` from `GET /api/auth/sso` and says when
 password sign-in is disabled or reserved for break-glass accounts. It still
 renders the form under the notice: a break-glass operator has to be able to type

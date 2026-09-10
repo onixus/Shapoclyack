@@ -127,12 +127,34 @@ def _state(row: models.User, settings: Settings) -> dict[str, Any]:
         "recovery_codes_remaining": _remaining(row.mfa_recovery_codes),
         "required": required_for_role(settings, row.role),
         "stepup_minutes": settings.mfa_stepup_minutes,
-        # Whether confirming an enrolment will ask for the password. An
-        # SSO-provisioned account has none, and a form that demanded one from
-        # it would be a form it could never submit — so the console reads this
-        # rather than guessing from the sign-in method.
-        "password_required": bool(row.password_hash),
+        # Whether confirming an enrolment will ask for the password. See
+        # :func:`password_required`.
+        "password_required": password_required(settings, row.username, row.password_hash),
     }
+
+
+def password_required(settings: Settings, username: str, password_hash: str | None) -> bool:
+    """Whether this account can be asked for its password at all.
+
+    Two ways it cannot. It may have none — an account provisioned by the
+    identity provider never had one — and it may have one the installation has
+    stopped accepting: under ``OCTO_LOCAL_LOGIN=disabled``, or ``break-glass``
+    for an account not on the list, a password is no longer a way in and a
+    *linked* local account's owner may never have known theirs.
+
+    Demanding it anyway would be a form that account can never submit, on the
+    one page a session confined by ``OCTO_MFA_REQUIRED_ROLES`` is allowed to
+    reach — an admin locked out by the control meant to guide them in.
+    """
+    from api.services import local_login
+
+    if not password_hash:
+        return False
+    try:
+        local_login.check_allowed(settings, username)
+    except local_login.LocalLoginRefused:
+        return False
+    return True
 
 
 def status(settings: Settings, username: str) -> dict[str, Any]:
@@ -195,7 +217,7 @@ def confirm_setup(
     username: str,
     code: str,
     *,
-    password: str | None = None,
+    password_verified: bool,
     audit: "audit_service.AuditContext | None" = None,
 ) -> list[str]:
     """Turn MFA on once a code proves the authenticator holds the same secret.
@@ -207,22 +229,20 @@ def confirm_setup(
     console until an admin reset it. Enrolling a factor has to cost at least
     what removing one does.
 
-    Skipped for an account that has no password at all: an SSO-provisioned
-    identity has none to present, and demanding one would mean the accounts
-    most likely to be admins are the ones that cannot enrol.
+    Skipped for an account that cannot be asked for one — see
+    :func:`password_required`.
+
+    ``password_verified`` is the route's assertion that it has already checked
+    it, and it is the route's job because the check has to be counted: the
+    login limiter (#157) is what stops this endpoint being a password oracle
+    for a stolen session, and it lives at the HTTP edge with the client IP.
 
     Returns the ten recovery codes **in plaintext, once**. Only their hashes
     are stored, so this return value is the single moment they exist; a caller
     that drops it has cost the user their recovery codes and must reset.
     """
-    from api.services import users as users_service
-
-    record = users_service.get_user(username)
-    if record is None:
-        raise LookupError(f"user '{username}' not found")
-    if record.get("has_password"):
-        if not password or users_service.authenticate(username, password) is None:
-            raise PermissionError("password is incorrect")
+    if not password_verified:
+        raise PermissionError("password is incorrect")
 
     now = _now()
     with get_session(settings.postgres_url) as session:
@@ -263,6 +283,26 @@ def confirm_setup(
         )
         metrics_service.MFA_VERIFICATIONS_TOTAL.labels("setup_success").inc()
         return plaintext
+
+
+def check_password(settings: Settings, username: str, password: str | None) -> None:
+    """Re-verify the account's own password, or raise ``PermissionError``.
+
+    Accounts that cannot be asked for one (:func:`password_required`) pass
+    without presenting anything: there is nothing to present, and the second
+    factor is the whole of what the operation costs them.
+    """
+    from api.services import users as users_service
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.User, username)
+        if row is None:
+            raise LookupError(f"user '{username}' not found")
+        stored = row.password_hash
+    if not password_required(settings, username, stored):
+        return
+    if not password or users_service.authenticate(username, password) is None:
+        raise PermissionError("password is incorrect")
 
 
 def verify(
@@ -390,26 +430,22 @@ def disable(
     settings: Settings,
     username: str,
     *,
-    password: str,
-    code: str | None = None,
-    recovery_code: str | None = None,
+    factors_verified: bool,
     audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any]:
     """Turn MFA off for one's own account: password **and** a live factor.
 
     Both, because either alone is exactly the thing the other protects against.
     A stolen session holds neither; a stolen password holds one; a shoulder-read
-    code holds the other. The password is re-verified here rather than trusted
-    from the session for the same reason ``POST /api/auth/password`` does it.
-    """
-    from api.services import users as users_service
+    code holds the other.
 
-    if users_service.authenticate(username, password) is None:
-        raise PermissionError("password is incorrect")
-    # Outside the transaction below, and deliberately before it: verify() takes
-    # its own row lock, and nesting the two would hold a lock across a bcrypt
-    # verification of up to ten recovery hashes.
-    verify(settings, username, code=code, recovery_code=recovery_code)
+    Both are checked by the route, under the login limiter, before this is
+    called: ``factors_verified`` is that assertion. Doing it here would put a
+    password check behind an endpoint the limiter cannot see, which is a
+    password oracle with a session token as its only cost.
+    """
+    if not factors_verified:
+        raise PermissionError("that code is not valid")
 
     now = _now()
     with get_session(settings.postgres_url) as session:

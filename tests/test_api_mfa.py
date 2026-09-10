@@ -202,21 +202,41 @@ def test_enrolment_costs_the_password_too(tmp_path, monkeypatch, clock):
     assert client.get("/api/auth/mfa", headers=headers).json()["enabled"] is False
 
 
-def test_a_recovery_code_is_spent_once_under_a_race(tmp_path, monkeypatch, clock):
-    # The bcrypt comparison happens outside the row lock, so the second
-    # transaction is what has to catch a duplicate. Two verifications of the
-    # same code back to back exercise exactly that re-check.
-    client = configured_client(tmp_path, monkeypatch)
+def test_a_recovery_code_spent_mid_check_is_refused_by_the_locked_re_read(
+    tmp_path, monkeypatch, clock
+):
+    # The bcrypt comparison deliberately runs *outside* the row lock, so the
+    # only thing standing between two requests holding the same code and both
+    # winning is the re-check inside the second transaction. Two sequential
+    # calls never reach it — the first one is already marked used by the time
+    # the second reads its snapshot — so the race is staged inside the
+    # comparison itself, which is exactly where the window is.
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
     _, codes = enrol(client, auth_headers(client, "admin"), clock)
 
-    outcomes = [
-        client.post(
-            "/api/auth/mfa/verify",
-            json={"mfa_token": password_login(client)["mfa_token"], "recovery_code": codes[0]},
-        ).status_code
-        for _ in range(2)
-    ]
-    assert outcomes == [200, 401]
+    from api.services import mfa as mfa_service
+
+    real_verify_password = mfa_service.verify_password
+    raced = {"done": False}
+
+    def racing(secret: str, hashed: str) -> bool:
+        matched = real_verify_password(secret, hashed)
+        if matched and not raced["done"]:
+            raced["done"] = True
+            # A competing request completes the whole spend while this one is
+            # still comparing hashes against a snapshot taken before it.
+            assert mfa_service.verify(settings, "admin", recovery_code=codes[0]) == "recovery"
+        return matched
+
+    monkeypatch.setattr(mfa_service, "verify_password", racing)
+    with pytest.raises(PermissionError):
+        mfa_service.verify(settings, "admin", recovery_code=codes[0])
+    assert raced["done"], "the staged race never happened; the test proved nothing"
+
+    # Exactly one of the ten was spent, not two: the refused call left the
+    # list as the winner wrote it.
+    assert mfa_service.status(settings, "admin")["recovery_codes_remaining"] == 9
 
 
 def test_the_stored_secret_is_encrypted_when_a_master_key_is_configured(

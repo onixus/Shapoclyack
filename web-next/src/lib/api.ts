@@ -1,4 +1,5 @@
 import axios from "axios";
+import { isStepUpRefusal, useStepUpStore } from "@/lib/step-up";
 import type { AxiosError } from "axios";
 
 const TOKEN_KEY = "shapoclyack_access_token";
@@ -75,6 +76,14 @@ api.interceptors.response.use(
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
       }
+    }
+    // A 403 that means "prove the second factor again" (#315), rather than
+    // "your role does not reach this". The session is fine and nothing about
+    // signing out would help, so this raises the re-verify dialog instead —
+    // and still rejects, because the request itself did not happen.
+    const detail = error?.response?.data?.detail;
+    if (isStepUpRefusal(error?.response?.status, detail)) {
+      useStepUpStore.getState().request(String(detail));
     }
     return Promise.reject(error);
   },

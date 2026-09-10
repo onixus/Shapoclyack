@@ -44,9 +44,14 @@ All notable changes to Shapoclyack are documented in this file.
   revoking a service token or a provisioning key, and replacing a tenant's scan
   scope, now require a second factor proved within `OCTO_MFA_STEPUP_MINUTES`
   (15) — as do creating an account, setting somebody's password, changing a role
-  and resetting somebody's MFA, each of which is otherwise a one-request way to
-  end up holding an admin account that carries no factor. Only for accounts that
-  have MFA enabled, so an installation that has not adopted it is unchanged.
+  setting a verified address and resetting somebody's MFA, each of which is
+  otherwise a one-request way to end up holding an admin account that carries no
+  factor. Only for accounts that have MFA enabled, so an installation that has
+  not adopted it is unchanged. A service token cannot be challenged and is
+  exempt, so the routes behind step-up are refused it by scope instead —
+  `agent` joins `config` in `FORBIDDEN_WRITE_RESOURCES`, which closes
+  `POST /api/agent/deployment-command` (a provisioning key) to service tokens.
+  The console raises a code dialog on that 403 wherever it happens.
 - **SSO is not a way around the second factor**
   ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
   `GET /api/auth/oidc/callback` challenges an enrolled account exactly as
@@ -57,7 +62,11 @@ All notable changes to Shapoclyack are documented in this file.
   ([#315](https://github.com/onixus/Shapoclyack/issues/315)).
   `POST /api/auth/mfa/totp/confirm` verifies it, symmetrically with `disable`:
   without that, a stolen session could enrol its own authenticator and lock out
-  an owner who still knows the password. Skipped for an account that has none.
+  an owner who still knows the password. Skipped for an account that cannot be
+  asked for one — provisioned by the identity provider, or one whose password
+  `OCTO_LOCAL_LOGIN` no longer accepts. Both checks run inside the login limiter
+  and land in `auth_events`, so neither endpoint is a password oracle for a
+  stolen session.
 - **Password login on an SSO installation is a decision, not a default**
   ([#315](https://github.com/onixus/Shapoclyack/issues/315)). `OCTO_LOCAL_LOGIN`
   is `enabled` (as before), `break-glass` (only `OCTO_BREAK_GLASS_USERS`) or

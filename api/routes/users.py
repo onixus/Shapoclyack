@@ -132,6 +132,13 @@ def set_user_email(
     username: str,
     body: SetUserEmailRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # A *verified* address is what an SSO identity is linked to an existing
+    # account by, so setting one decides whose identity-provider account ends
+    # up owning this one — the same class of act as setting a password, and
+    # behind the same recent second factor (#315). Without it, an admin session
+    # with a stale step-up could point an account it controls at a colleague's
+    # login and walk in through the door step-up had just closed.
+    __: StepUpDep,
 ) -> UserInfo:
     """Set an account's address, and whether this platform treats it as verified.
 

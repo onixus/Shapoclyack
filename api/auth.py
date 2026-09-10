@@ -590,8 +590,11 @@ def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
     Asked per request rather than once at login, and gated on the policy being
     configured at all so that an installation which has not adopted MFA pays
     nothing for it: with ``OCTO_MFA_REQUIRED_ROLES`` empty this is a comparison
-    against an empty list and no query. When it is set, the extra read is one
-    lookup by primary key on a row this request has already touched.
+    against an empty list and no query. When it is set it costs one extra
+    ``SELECT`` by primary key per request — a second short transaction, not a
+    re-read of the one ``decode_token`` already opened. That is the price of
+    the policy applying to sessions that predate it; the alternative was a
+    claim, and a claim is a promise made once about a fact that changes.
     """
     if not settings.mfa_required_roles:
         return False
@@ -684,10 +687,15 @@ def require_step_up(
 
     if getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is not None:
         # A service token is a credential with its own expiry and revocation,
-        # not a session somebody left open, and there is no human to challenge.
-        # It is already refused these routes by scope (``tenants`` and ``auth``
-        # are in FORBIDDEN_RESOURCES); this is the second reading of the same
-        # decision, not a hole.
+        # not a session somebody left open, and there is no human at it to
+        # challenge — so step-up cannot be the control that stops one. The
+        # control that does is the scope layer, which must refuse the route
+        # outright: ``auth``, ``users``, ``tenants`` and ``audit`` are in
+        # FORBIDDEN_RESOURCES, and ``config`` and ``agent`` in
+        # FORBIDDEN_WRITE_RESOURCES. A route put behind this dependency has to
+        # be in one of those two lists as well, or a service token walks past
+        # it — which is exactly what ``POST /api/agent/deployment-command`` did
+        # until ``agent`` was added.
         return user
     if not mfa_service.is_enabled(settings, user.username):
         return user

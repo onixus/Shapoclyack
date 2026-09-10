@@ -877,7 +877,23 @@ curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost:8080/api/users/$USER/mfa/reset
 ```
 
-or the **Reset MFA** action on the account in *Users*. It deletes the secret
+**The reset is itself behind a step-up** (#315): if the admin running it has a
+second factor of their own and has not proved it in the last
+`OCTO_MFA_STEPUP_MINUTES`, the call is refused with `403` — and `curl -sf`
+reports that by exiting non-zero and printing nothing, which at three in the
+morning reads as "the database is broken". Prove it first and use the token
+that comes back:
+
+```bash
+TOKEN=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"code":"123456"}' \
+  http://localhost:8080/api/auth/mfa/verify | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+```
+
+The console does this for you: a refused action raises a dialog asking for a
+code, after which you repeat the action.
+
+It deletes the secret
 and the recovery codes and bumps the account's `token_version`, so every
 session that account has open ends — including any opened by whoever has the
 phone. It is recorded as `user.mfa_reset` in the administrative trail, which is

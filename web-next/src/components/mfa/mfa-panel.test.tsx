@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { AxiosResponse, InternalAxiosRequestConfig } from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MfaPanel } from "@/components/mfa/mfa-panel";
-import { api, type MfaStatus } from "@/lib/api";
+import { api, setAccessToken, type MfaStatus } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -37,6 +37,14 @@ const SETUP = {
 
 const RECOVERY = Array.from({ length: 10 }, (_, i) => `abcde-${String(i).repeat(5)}`);
 
+const ME = {
+  username: "admin",
+  role: "admin" as const,
+  tenants: ["default"],
+  default_tenant: "default",
+  is_platform_admin: true,
+};
+
 type Reply = { status: number; data: unknown };
 
 let client: QueryClient;
@@ -45,14 +53,19 @@ let originalAdapter: typeof api.defaults.adapter;
 /** Only the transport is stubbed, so the request bodies `api.ts` builds — which
  * is where "is this a recovery code or an authenticator code" is decided — stay
  * under test. Every POST is recorded with its URL. */
-function installTransport(get: Reply, posts: Record<string, Reply>) {
-  const sent: { url: string; body: unknown }[] = [];
+function installTransport(get: Reply, posts: Record<string, Reply>, gets: Record<string, Reply> = {}) {
+  const sent: { method: string; url: string; body: unknown }[] = [];
   api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
     const method = (config.method ?? "get").toLowerCase();
     const url = String(config.url);
     const reply =
-      method === "get" ? get : (posts[url] ?? { status: 404, data: { detail: "no stub" } });
-    if (method === "post") sent.push({ url, body: config.data ? JSON.parse(String(config.data)) : null });
+      method === "get"
+        ? (gets[url] ?? get)
+        : (posts[url] ?? { status: 404, data: { detail: "no stub" } });
+    // GETs are recorded too: whether the principal is re-read after an
+    // enrolment is the difference between a confined session lifting itself
+    // and a console that looks finished while every other page 403s.
+    sent.push({ method, url, body: config.data ? JSON.parse(String(config.data)) : null });
     const response = { data: reply.data, status: reply.status, statusText: "", headers: {}, config } as AxiosResponse;
     if (reply.status >= 400) {
       throw Object.assign(new Error(`Request failed with status code ${reply.status}`), {
@@ -89,19 +102,12 @@ function renderPanel() {
 
 beforeEach(() => {
   installLocalStorage();
+  // hydrate() is a no-op without a stored token, and the enrolment flow ends
+  // by calling it — so the token has to be there for that half to be under test.
+  setAccessToken("session.jwt");
   originalAdapter = api.defaults.adapter;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  useAuthStore.setState({
-    user: {
-      username: "admin",
-      role: "admin",
-      tenants: ["default"],
-      default_tenant: "default",
-      is_platform_admin: true,
-    },
-    hydrated: true,
-    loading: false,
-  });
+  useAuthStore.setState({ user: { ...ME, mfa_pending: true }, hydrated: true, loading: false });
 });
 
 afterEach(() => {
@@ -116,8 +122,8 @@ describe("MfaPanel", () => {
       {
         "/auth/mfa/totp/setup": { status: 200, data: SETUP },
         "/auth/mfa/totp/confirm": { status: 200, data: { recovery_codes: RECOVERY } },
-        "/auth/me": { status: 200, data: null },
       },
+      { "/auth/me": { status: 200, data: { ...ME, mfa_pending: false } } },
     );
     renderPanel();
 
@@ -141,6 +147,11 @@ describe("MfaPanel", () => {
       code: "123456",
       password: "hunter2",
     });
+    // And the principal is re-read: the API decides `mfa_pending` per request,
+    // so a session that was confined to this page is free the moment the
+    // factor is on — but only if the console asks again.
+    await waitFor(() => expect(sent.some((entry) => entry.url === "/auth/me")).toBe(true));
+    expect(useAuthStore.getState().user?.mfa_pending).toBe(false);
   });
 
   it("routes six digits as a code and anything else as a recovery code when turning it off", async () => {
@@ -154,11 +165,14 @@ describe("MfaPanel", () => {
     await userEvent.type(screen.getByLabelText(/code from the app, or a recovery code/i), "abcde-fghjk");
     await userEvent.click(screen.getByRole("button", { name: /^turn off$/i }));
 
-    await waitFor(() => expect(sent).toHaveLength(1));
+    await waitFor(() => expect(sent.filter((entry) => entry.method === "post")).toHaveLength(1));
     // The distinction matters at the API: `code` goes to the TOTP verifier and
     // `recovery_code` to the ten hashes, and a recovery code sent as `code`
     // is simply refused.
-    expect(sent[0]?.body).toEqual({ password: "hunter2", recovery_code: "abcde-fghjk" });
+    expect(sent.find((entry) => entry.method === "post")?.body).toEqual({
+      password: "hunter2",
+      recovery_code: "abcde-fghjk",
+    });
   });
 
   it("sends six digits as an authenticator code, not as a recovery code", async () => {
@@ -178,8 +192,11 @@ describe("MfaPanel", () => {
     await userEvent.type(screen.getByLabelText(/code from the app, or a recovery code/i), "123456");
     await userEvent.click(screen.getByRole("button", { name: /^turn off$/i }));
 
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]?.body).toEqual({ password: "hunter2", code: "123456" });
+    await waitFor(() => expect(sent.filter((entry) => entry.method === "post")).toHaveLength(1));
+    expect(sent.find((entry) => entry.method === "post")?.body).toEqual({
+      password: "hunter2",
+      code: "123456",
+    });
   });
 
   it("states the policy, the codes left and the step-up window while it is on", async () => {

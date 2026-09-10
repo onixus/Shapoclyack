@@ -22,6 +22,7 @@ and exactly one that carries the shared secret).
 from __future__ import annotations
 
 import urllib.parse
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -83,6 +84,45 @@ def _client_ip(request: Request, settings: Settings) -> str:
     )
 
 
+def _check_under_limiter(
+    request: Request, settings: Settings, username: str, check: "Callable[[], None]"
+) -> bool:
+    """Run one credential check inside the login limiter, and report the answer.
+
+    Returns ``True`` when ``check`` did not raise. A refusal is **not** raised
+    here: the caller passes the answer to the service, which is what decides
+    what a failed check means for the operation it was asked to do. What is
+    not optional is the counting — every route in this module that verifies a
+    password or a code is reachable by a session, and a session is exactly what
+    the second factor exists to survive.
+
+    ``429`` on lockout, with the same ``Retry-After`` the login form gets.
+    """
+    def _attempt() -> str | None:
+        try:
+            check()
+        except (PermissionError, LookupError):
+            # LookupError is the account having gone away between the
+            # dependency that authenticated it and here. Answered like a wrong
+            # code: a race with a deletion is not the caller's business.
+            return None
+        return username
+
+    outcome = auth_audit.attempt_login(
+        username=username,
+        client_ip=_client_ip(request, settings),
+        verify=_attempt,
+        failure_reason=auth_audit.REASON_MFA_FAILED,
+    )
+    if outcome.lockout is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed attempts. Try again later.",
+            headers={"Retry-After": str(outcome.lockout.retry_after_seconds)},
+        )
+    return outcome.user is not None
+
+
 def _not_found(username: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND, detail=f"user '{username}' not found"
@@ -131,6 +171,7 @@ def setup_totp(
 @router.post("/auth/mfa/totp/confirm", response_model=MfaRecoveryCodesResponse)
 def confirm_totp(
     body: MfaConfirmRequest,
+    request: Request,
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
@@ -142,13 +183,24 @@ def confirm_totp(
     and lock the owner out of their own console. Accounts with no password
     (SSO-provisioned) are asked only for the code.
 
+    The password check is counted by the login limiter (#157) under the
+    account's own key, exactly as a login is: this endpoint is reachable by a
+    session confined by ``mfa_pending``, and an uncounted password check behind
+    a stolen token is a password oracle.
+
     Returns the ten recovery codes. They are stored as bcrypt hashes, so this
     response is the only moment they exist: a client that fails to show them
     has cost the user their recovery path, and the fix is an admin reset.
     """
+    verified = _check_under_limiter(
+        request,
+        settings,
+        user.username,
+        lambda: mfa_service.check_password(settings, user.username, body.password),
+    )
     try:
         codes = mfa_service.confirm_setup(
-            settings, user.username, body.code, password=body.password, audit=audit
+            settings, user.username, body.code, password_verified=verified, audit=audit
         )
     except LookupError as exc:
         raise _not_found(user.username) from exc
@@ -209,29 +261,15 @@ def verify_mfa(
         )
 
     client_ip = _client_ip(request, settings)
-
-    def _check() -> str | None:
-        try:
-            mfa_service.verify(
-                settings, username, code=body.code, recovery_code=body.recovery_code
-            )
-        except PermissionError:
-            return None
-        return username
-
-    outcome = auth_audit.attempt_login(
-        username=username,
-        client_ip=client_ip,
-        verify=_check,
-        failure_reason=auth_audit.REASON_MFA_FAILED,
+    accepted = _check_under_limiter(
+        request,
+        settings,
+        username,
+        lambda: mfa_service.verify(
+            settings, username, code=body.code, recovery_code=body.recovery_code
+        ),
     )
-    if outcome.lockout is not None:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many failed attempts. Try again later.",
-            headers={"Retry-After": str(outcome.lockout.retry_after_seconds)},
-        )
-    if outcome.user is None:
+    if not accepted:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="that code is not valid"
         )
@@ -262,6 +300,7 @@ def verify_mfa(
 @router.post("/auth/mfa/disable", response_model=MfaStatus)
 def disable_mfa(
     body: MfaDisableRequest,
+    request: Request,
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
@@ -278,15 +317,18 @@ def disable_mfa(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="supply either 'code' or 'recovery_code'",
         )
-    try:
-        state = mfa_service.disable(
-            settings,
-            user.username,
-            password=body.password,
-            code=body.code,
-            recovery_code=body.recovery_code,
-            audit=audit,
+
+    def _both() -> None:
+        mfa_service.check_password(settings, user.username, body.password)
+        mfa_service.verify(
+            settings, user.username, code=body.code, recovery_code=body.recovery_code
         )
+
+    # One counted attempt for both halves. Counting them separately would let
+    # an attacker spend the window on whichever half they already hold.
+    verified = _check_under_limiter(request, settings, user.username, _both)
+    try:
+        state = mfa_service.disable(settings, user.username, factors_verified=verified, audit=audit)
     except LookupError as exc:
         raise _not_found(user.username) from exc
     except PermissionError as exc:

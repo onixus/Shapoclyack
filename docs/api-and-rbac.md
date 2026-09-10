@@ -171,6 +171,14 @@ allowlists `typ=user`, so presenting it as a session is a 401. It carries the
 account's `token_version`, so revoking sessions kills an in-flight challenge
 too.
 
+Every password or code check in this module runs inside the login limiter
+(#157) under the account's own key and lands in `auth_events`: `confirm` and
+`disable` are reachable by a session, and an uncounted password check behind a
+stolen token would be a password oracle. An account that cannot be asked for a
+password — provisioned by the identity provider, or one whose password
+`OCTO_LOCAL_LOGIN` no longer accepts — is asked only for the factor
+(`MfaStatus.password_required` says which).
+
 `POST /api/auth/mfa/verify` takes `{"mfa_token":…, "code":…}` or
 `{"mfa_token":…, "recovery_code":…}` and returns the ordinary session token.
 Refusals go through the same limiter as a password (#157) under the account's
@@ -219,16 +227,26 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
   `POST /api/agent/deployment-command`, which mints the same key and is the one
   the console uses
 - `PUT /api/tenants/{id}/scan-scope`
-- `POST /api/users`, `PUT /api/users/{u}/password`, `PUT /api/users/{u}/role`
-  and `POST /api/users/{u}/mfa/reset` — each of them a way to end up holding an
-  admin account that carries no second factor, which would otherwise be a
-  one-request path around every line above
+- `POST /api/users`, `PUT /api/users/{u}/password`, `PUT /api/users/{u}/role`,
+  `PUT /api/users/{u}/email` and `POST /api/users/{u}/mfa/reset` — each of them
+  a way to end up holding an admin account that carries no second factor
+  (a verified address is what an SSO identity is linked to an account by),
+  which would otherwise be a one-request path around every line above
+
+A **service token** is exempt from step-up: there is no human at one to
+challenge. That is why every route in the list above must also be refused a
+service token by scope — `auth`, `users`, `tenants` and `audit` are forbidden
+outright, `config` and `agent` for writes — and why adding a route here means
+checking that list too.
 
 The check applies **only to accounts that have MFA enabled**; an installation
 that has not adopted MFA behaves exactly as before. A stale session gets a 403
 naming `POST /api/auth/mfa/verify`; calling it *without* `mfa_token` while
 signed in returns a fresh session token whose `mfa_verified_at` restarts the
-window.
+window. The console raises a code dialog on that 403 and asks the user to
+repeat the action — the refused request is **not** replayed, because it never
+reached the server and silently repeating a `POST` nobody saw succeed is worse
+than asking again.
 
 ### Break-glass local login
 
