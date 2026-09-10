@@ -20,6 +20,7 @@ import { useT } from "@/lib/i18n";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
+import { useBulkSelection } from "@/hooks/use-bulk-actions";
 import { usePagination } from "@/hooks/use-pagination";
 import { useTrackedVulnerabilities, useVulnerabilitySummary } from "@/hooks/use-vulnerabilities";
 import { MAX_BULK_IDS } from "@/lib/api";
@@ -76,8 +77,9 @@ function VulnerabilitiesInner() {
   const [exposure, setExposure] = useState<NetworkExposure | "">(initialExposure);
   // Selected finding ids (#346). Held here rather than in the table so paging,
   // the poll and a filter change do not drop a selection somebody is still
-  // building; ``useAuthStore``-gated verbs live in the bulk bar itself.
-  const [selected, setSelected] = useState<string[]>([]);
+  // building — a tenant switch does, since the ids belong to the tenant they
+  // were ticked in. ``useAuthStore``-gated verbs live in the bulk bar itself.
+  const [selected, setSelected] = useBulkSelection();
   const assetId = initialAssetId;
 
   const pagination = usePagination({

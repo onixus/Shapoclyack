@@ -1633,6 +1633,13 @@ class BulkActionReport(BaseModel):
     record of an earlier identical request rather than from work done now. The
     status code says so too (200 on a replay, where a fresh batch answers 200
     as well), so the flag is what a client actually reads.
+
+    ``aborted`` is true when the batch stopped on something no per-id outcome
+    describes — a deadlock, a tracker call that timed out — after applying part
+    of itself. That request itself answered 500; this report is only ever seen
+    as the *replay* of one, which is how a retry learns which ids landed
+    instead of sending them again. ``requested`` then still counts every id
+    given, so ``requested - len(results)`` is what the batch never reached.
     """
 
     action: str
@@ -1641,6 +1648,7 @@ class BulkActionReport(BaseModel):
     failed: int
     results: list[BulkActionItemResult]
     replayed: bool = False
+    aborted: bool = False
 
 
 # One body per verb, selected by ``action`` — a discriminated union rather than
@@ -1650,12 +1658,15 @@ class BulkActionReport(BaseModel):
 # hand-applied must validate identically, and re-declaring the fields here is
 # how the two would drift.
 #
-# ``max_length`` mirrors ``bulk_actions.MAX_BULK_IDS``. Spelled as a literal
-# because a schema field's constraint has to be a constant for the OpenAPI
-# document to carry it; ``bulk_actions.validate_ids`` re-checks the same bound
-# so a caller reaching the service directly is refused too.
+# ``max_length`` mirrors ``bulk_actions.MAX_BULK_IDS``, and the per-id one
+# ``bulk_actions.MAX_BULK_ID_LENGTH`` — the count bounds the batch, the length
+# bounds the audit row that has to name every id inside a 16 KiB document.
+# Both spelled as literals because a schema field's constraint has to be a
+# constant for the OpenAPI document to carry it; ``bulk_actions.validate_ids``
+# re-checks the same bounds so a caller reaching the service directly is
+# refused too.
 class _BulkVulnerabilityBase(BaseModel):
-    vuln_ids: list[str] = Field(min_length=1, max_length=200)
+    vuln_ids: list[Annotated[str, Field(max_length=48)]] = Field(min_length=1, max_length=200)
 
 
 class BulkVulnerabilityAssign(_BulkVulnerabilityBase):
@@ -1708,7 +1719,7 @@ class BulkAssetRequest(BaseModel):
     """
 
     action: Literal["context"] = "context"
-    asset_ids: list[str] = Field(min_length=1, max_length=200)
+    asset_ids: list[Annotated[str, Field(max_length=48)]] = Field(min_length=1, max_length=200)
     payload: UpdateAssetRequest
 
 

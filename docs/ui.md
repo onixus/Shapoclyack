@@ -304,7 +304,7 @@ and the verbs:
 
 | Button | Role | What it sends |
 |---|---|---|
-| **Assign** | operator | assignee and owner team; a blank field means *unassign*, and an untouched one is left alone |
+| **Assign** | operator | assignee and owner team. A field left blank is **not sent**, so the finding keeps what it has; clearing one is its own checkbox (*Unassign every selected finding*, *Clear the owning team*), because "I only wanted to set the assignee" must never be read as "and drop the owning team of all two hundred". Apply stays disabled until at least one of the four decisions is made |
 | **Move to…** | operator | one button per lifecycle state; the API refuses the states a given finding cannot reach and says so per id |
 | **Link ticket** | operator | tracker, key and URL |
 | **Accept risk** | tenant admin | expiry and reason, both required before Apply enables |
@@ -317,14 +317,20 @@ button would only produce a 403 after the form had been filled in.
 The select-all box stops at **200** ids, which is the API's own batch ceiling —
 a larger selection is two submissions rather than a request the server refuses.
 Rows beyond the ceiling are disabled, but an already-ticked row never is, so the
-limit cannot be a trap.
+limit cannot be a trap. **Switching tenant clears the selection**, which is the
+one change it does not survive: ids ticked in one tenant are `not_found` in the
+next, and at the ceiling they would disable every checkbox on a page where
+nothing is selected at all.
 
 A batch is a partial success by design, and the console says so rather than
 claiming a clean run: the toast reports `N updated, M skipped` with the distinct
 reasons, and **the ids that failed stay selected** so the operator can see which
 ones are left. A retried submission that the server recognised as a replay says
-`already applied — replayed`; each submission carries its own
-`Idempotency-Key`, so a click that timed out is not applied twice.
+`already applied — replayed`: the `Idempotency-Key` is minted once per
+submission and held against the body it names until that submission is
+answered, so clicking Apply again after a timeout sends the *same* request and
+the server replays it instead of applying two hundred transitions twice. The
+operator's next, different batch mints its own key.
 
 `/vulnerabilities/view?vulnId=…` is the remediation card:
 

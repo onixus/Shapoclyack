@@ -92,15 +92,7 @@ def bulk_action(
     )
     if guard.replay is not None:
         return {**guard.replay, "replayed": True}
-    try:
-        report = bulk_actions.apply_asset_action(
-            settings,
-            tenant_id=principal.tenant_id,
-            asset_ids=body.asset_ids,
-            action=body.action,
-            payload=payload,
-            actor=principal.username,
-        )
+    def record(report: dict) -> None:
         # One row for the batch, listing the ids. The per-asset
         # ``asset_context_events`` rows that ``update_asset`` writes are still
         # there — this is the record that one operator changed all of them at
@@ -115,12 +107,33 @@ def bulk_action(
                 report, payload, write_scope=principal.tenant_id
             ),
         )
+
+    try:
+        report = bulk_actions.apply_asset_action(
+            settings,
+            tenant_id=principal.tenant_id,
+            asset_ids=body.asset_ids,
+            action=body.action,
+            payload=payload,
+            actor=principal.username,
+        )
     except ValueError as exc:
         guard.release()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except bulk_actions.BulkActionAborted as exc:
+        # Same contract as the findings batch: the assets before the failure
+        # are committed, so the row is written before the 500 and the key is
+        # kept when anything applied. See ``routes/vulnerabilities.py``.
+        record(exc.report)
+        if exc.report["succeeded"]:
+            guard.store(exc.report)
+        else:
+            guard.release()
+        raise
     except Exception:
         guard.release()
         raise
+    record(report)
     guard.store(report)
     return report
 

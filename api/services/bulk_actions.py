@@ -49,6 +49,7 @@ of a thing must never be cheaper than doing one of it.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable, Iterable
 
@@ -75,9 +76,10 @@ ASSET_ACTIONS = ("context",)
 #:
 #: * the audit trail. #346 asks for one ``audit_events`` row **listing the
 #:   ids**, and ``audit.record`` stores a document over 16 KiB as a marker that
-#:   says a change happened but not what it was. Two hundred ids plus their
-#:   outcomes fit with room to spare; a thousand would silently turn the one
-#:   row this endpoint owes into that marker.
+#:   says a change happened but not what it was. Two hundred ids of at most
+#:   :data:`MAX_BULK_ID_LENGTH` characters fit; the count alone does not
+#:   guarantee it, which is what that ceiling and
+#:   :data:`AUDIT_DOCUMENT_BUDGET_BYTES` are for.
 #: * the request's own duration. Each id is its own transaction (see the module
 #:   docstring), so the batch size is also how long somebody's HTTP request is.
 #:
@@ -85,10 +87,58 @@ ASSET_ACTIONS = ("context",)
 #: problem and not a data-integrity one.
 MAX_BULK_IDS = 200
 
+#: Longest id a batch may name. Ids here are prefixed hex — ``vln_`` plus
+#: sixteen characters, twenty in all — so this is more than twice what any of
+#: them needs and refuses nothing real. It exists because :data:`MAX_BULK_IDS`
+#: bounds the *count* while the audit row has to be bounded in *bytes*: two
+#: hundred ids a client made 120 characters long were a 27 KiB document, which
+#: is the "something happened" marker with not one id left in it. With this
+#: ceiling, two hundred ids and their outcomes are at most ~13 KiB and the row
+#: names every one of them.
+MAX_BULK_ID_LENGTH = 48
+
+#: What one bulk audit document may weigh. Under ``audit.record``'s own 16 KiB
+#: cap on purpose: past that cap the document is replaced wholesale by a
+#: truncation marker, so the row this endpoint owes has to be brought inside
+#: the cap *here*, where what gives way can be chosen (see
+#: :func:`audit_document`) instead of being everything at once.
+AUDIT_DOCUMENT_BUDGET_BYTES = 15 * 1024
+
+#: Longest a single ``payload`` value is carried into the audit document. The
+#: bodies these verbs take are small, except the two that are not bounded by
+#: their schema at all: ``false_positive``'s ``evidence`` is a free dict, and a
+#: 20 KiB one turned the audit row into that marker on a batch of *two*
+#: findings. A long string is truncated (the beginning of a reason is still
+#: worth reading); anything else bulky is replaced by its size.
+MAX_AUDIT_PAYLOAD_VALUE_CHARS = 512
+
 OUTCOME_OK = "ok"
 OUTCOME_NOT_FOUND = "not_found"
 OUTCOME_CONFLICT = "conflict"
 OUTCOME_INVALID = "invalid"
+
+
+class BulkActionAborted(Exception):
+    """A batch that died part-way, carrying the report of what it did reach.
+
+    ``_apply_one`` classifies every refusal a verb is *expected* to produce, so
+    reaching here means something else broke — a deadlock, a tracker call that
+    timed out, the pool going away. The ids before it are already committed:
+    each is its own transaction, which is what makes a batch a partial success
+    in the first place. So the failure cannot be handed up bare, or the caller
+    would have to answer 500 having no idea what changed — and would write no
+    audit row for changes that happened, which is the one thing the trail may
+    not do. ``report`` is that partial report; the failure it wrapped stays on
+    ``__cause__``, so the 500 the route still answers carries both in its
+    traceback.
+    """
+
+    def __init__(self, report: dict[str, Any]) -> None:
+        super().__init__(
+            f"bulk {report['action']} aborted after {report['succeeded']} of "
+            f"{report['requested']} ids"
+        )
+        self.report = report
 
 
 def _dedupe(ids: Iterable[str]) -> list[str]:
@@ -124,6 +174,14 @@ def validate_ids(ids: Iterable[str]) -> list[str]:
         raise ValueError(
             f"a bulk action may name at most {MAX_BULK_IDS} ids, got {len(cleaned)}"
         )
+    if any(len(value) > MAX_BULK_ID_LENGTH for value in cleaned):
+        # Request-level, like the count: an id longer than any id this
+        # installation issues resolves to nothing anyway, and the reason to
+        # refuse it rather than report it ``not_found`` is the audit row —
+        # see :data:`MAX_BULK_ID_LENGTH`.
+        raise ValueError(
+            f"a bulk action id may be at most {MAX_BULK_ID_LENGTH} characters"
+        )
     return cleaned
 
 
@@ -138,8 +196,10 @@ def _apply_one(
     here, ``ValueError`` is the 422 there and ``invalid`` here, and a service
     returning ``None`` is the 404 there and ``not_found`` here.
     """
+    row: dict[str, Any] | None = None
     try:
         result = verb(item_id)
+        row = result if isinstance(result, dict) else None
         outcome = OUTCOME_OK if result is not None else OUTCOME_NOT_FOUND
         error = None if result is not None else "not found in this tenant"
     except vuln_states.InvalidVulnTransition as exc:
@@ -154,18 +214,65 @@ def _apply_one(
         "ok": outcome == OUTCOME_OK,
         "outcome": outcome,
         "error": error,
+        # The tenant the *row* lives in, which for a platform admin's batch is
+        # not the tenant they resolved into: the audit trail is filed per
+        # tenant touched (:func:`audit_rows`). Not part of the HTTP answer —
+        # ``BulkActionItemResult`` does not carry it.
+        "tenant_id": (row or {}).get("tenant_id"),
     }
 
 
-def _report(action: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+def _report(
+    action: str,
+    results: list[dict[str, Any]],
+    *,
+    requested: int | None = None,
+    aborted: bool = False,
+) -> dict[str, Any]:
+    """The report envelope. ``requested`` is the id count when it is not the
+    number of results — a batch that aborted part-way reached fewer ids than it
+    was given, and saying ``requested: 99`` of two hundred would hide that."""
     succeeded = sum(1 for item in results if item["ok"])
-    return {
+    report = {
         "action": action,
-        "requested": len(results),
+        "requested": len(results) if requested is None else requested,
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
         "results": results,
     }
+    if aborted:
+        report["aborted"] = True
+    return report
+
+
+def _apply_each(
+    endpoint: str,
+    action: str,
+    ids: list[str],
+    verb: Callable[[str], Any],
+) -> list[dict[str, Any]]:
+    """Every id's outcome, or :class:`BulkActionAborted` holding what was done.
+
+    The loop is where "one transaction per id" becomes visible: an unclassified
+    failure on the hundredth id does not undo the ninety-nine before it, so it
+    must not be raised as though nothing had happened either.
+    """
+    results: list[dict[str, Any]] = []
+    for item_id in ids:
+        try:
+            results.append(_apply_one(endpoint, action, item_id, verb))
+        except Exception as exc:
+            LOG.exception(
+                "bulk %s action=%s aborted on id=%s after %d applied",
+                endpoint,
+                action,
+                item_id,
+                sum(1 for item in results if item["ok"]),
+            )
+            raise BulkActionAborted(
+                _report(action, results, requested=len(ids), aborted=True)
+            ) from exc
+    return results
 
 
 def apply_vulnerability_action(
@@ -196,7 +303,7 @@ def apply_vulnerability_action(
     verb = _vulnerability_verb(
         settings, tenant_id=tenant_id, action=action, payload=payload, actor=actor
     )
-    results = [_apply_one("vulnerabilities.bulk", action, vuln_id, verb) for vuln_id in ids]
+    results = _apply_each("vulnerabilities.bulk", action, ids, verb)
     report = _report(action, results)
     LOG.info(
         "bulk vulnerabilities action=%s tenant=%s requested=%d succeeded=%d failed=%d actor=%s",
@@ -305,7 +412,7 @@ def apply_asset_action(
             settings, tenant_id, asset_id, dict(payload), actor=actor
         )
 
-    results = [_apply_one("assets.bulk", action, asset_id, verb) for asset_id in ids]
+    results = _apply_each("assets.bulk", action, ids, verb)
     report = _report(action, results)
     LOG.info(
         "bulk assets action=%s tenant=%s requested=%d succeeded=%d failed=%d actor=%s",
@@ -319,25 +426,53 @@ def apply_asset_action(
     return report
 
 
+def _audit_value(value: Any) -> Any:
+    """One ``payload`` value, bounded. See :data:`MAX_AUDIT_PAYLOAD_VALUE_CHARS`."""
+    if isinstance(value, str):
+        if len(value) <= MAX_AUDIT_PAYLOAD_VALUE_CHARS:
+            return value
+        return value[:MAX_AUDIT_PAYLOAD_VALUE_CHARS] + "…[truncated]"
+    encoded = json.dumps(value, default=str)
+    if len(encoded) <= MAX_AUDIT_PAYLOAD_VALUE_CHARS:
+        return value
+    return f"[{len(encoded)} bytes omitted]"
+
+
+def _document_bytes(document: dict[str, Any]) -> int:
+    """What ``audit.record`` will weigh this document as."""
+    return len(json.dumps(document, default=str).encode("utf-8"))
+
+
 def audit_document(
-    report: dict[str, Any], payload: dict[str, Any], *, write_scope: str | None = None
+    report: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    write_scope: str | None = None,
+    aborted: bool = False,
 ) -> dict[str, Any]:
-    """The ``after`` document for the single audit row a bulk request owes.
+    """The ``after`` document for the audit row a bulk request owes.
 
     #346 asks for one row per bulk operation, listing the ids — not one row per
     id, which would bury the fact that this was *one decision* under two
     hundred rows that look like hand edits. ``applied`` is the ids that changed
     and is the answer to "what did this act on"; ``rejected`` maps the rest to
-    their outcome *code* rather than its message, so a batch of two hundred
-    refusals still fits inside the audit document's 16 KiB cap and the row
-    still names every id.
+    their outcome *code* rather than its message.
+
+    **The ids are what the row owes, so everything else gives way first.** Past
+    :data:`AUDIT_DOCUMENT_BUDGET_BYTES` the body goes, and only if that is not
+    enough does the ``rejected`` map collapse to a count per outcome; each step
+    says in the document that it happened. Two hundred ids of
+    :data:`MAX_BULK_ID_LENGTH` never reach the second step, so in practice the
+    row always names them. The alternative to giving something up is not a
+    longer document — it is ``audit.record`` replacing the whole thing with
+    ``{"truncated": true}``, a row that says a batch happened and not what to.
 
     ``write_scope`` is recorded because the row's own ``tenant_id`` is the
     tenant the *caller* resolved into, which for an unscoped platform admin is
     not the tenant every id belongs to. ``"*"`` says so rather than leaving a
     reader of the row to assume a batch was confined to one customer.
     """
-    return {
+    document: dict[str, Any] = {
         "action": report["action"],
         "requested": report["requested"],
         "succeeded": report["succeeded"],
@@ -347,5 +482,64 @@ def audit_document(
         "rejected": {
             item["id"]: item["outcome"] for item in report["results"] if not item["ok"]
         },
-        "payload": payload,
+        "payload": {key: _audit_value(value) for key, value in payload.items()},
     }
+    if aborted or report.get("aborted"):
+        # The batch stopped on something the per-id outcomes do not describe.
+        # ``applied`` is still every id that changed, and ``requested`` still
+        # the id count, so the two together say how far it got.
+        document["aborted"] = True
+    if _document_bytes(document) > AUDIT_DOCUMENT_BUDGET_BYTES:
+        document["payload"] = "[omitted: the ids left no room for it]"
+    if _document_bytes(document) > AUDIT_DOCUMENT_BUDGET_BYTES:
+        counts: dict[str, int] = {}
+        for outcome in document["rejected"].values():
+            counts[outcome] = counts.get(outcome, 0) + 1
+        document["rejected"] = counts
+        document["rejected_collapsed"] = True
+    return document
+
+
+def audit_rows(
+    report: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    write_scope: str | None,
+    caller_tenant: str,
+    aborted: bool = False,
+) -> list[tuple[str, dict[str, Any]]]:
+    """The ``(tenant_id, document)`` pairs a batch's audit trail owes.
+
+    One row for everyone pinned to a tenant, which is everyone but a platform
+    admin: ``write_scope`` *is* the tenant every id was resolved in.
+
+    A platform admin writes with no scope, so their two hundred ids may belong
+    to two hundred tenants, and one row filed under the tenant *they* resolved
+    into is a row the affected customer's trail never shows — nor their SIEM
+    feed, which is filtered by tenant. So that batch is one row per tenant it
+    actually touched, each naming only that tenant's ids. Ids that resolved to
+    nothing have no tenant to be filed under and stay with the caller's, where
+    a reader looking for "what did this admin do" finds them.
+    """
+    if write_scope is not None:
+        return [
+            (
+                write_scope,
+                audit_document(report, payload, write_scope=write_scope, aborted=aborted),
+            )
+        ]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in report["results"]:
+        grouped.setdefault(item.get("tenant_id") or caller_tenant, []).append(item)
+    return [
+        (
+            tenant_id,
+            audit_document(
+                _report(report["action"], results, aborted=bool(report.get("aborted"))),
+                payload,
+                write_scope=None,
+                aborted=aborted,
+            ),
+        )
+        for tenant_id, results in grouped.items()
+    ]

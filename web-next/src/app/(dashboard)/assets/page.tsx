@@ -19,6 +19,7 @@ import { AssetBulkContext } from "@/components/asset/bulk-context";
 import { useT } from "@/lib/i18n";
 import { StatusBadge } from "@/components/status-badge";
 import { useAssets } from "@/hooks/use-assets";
+import { useBulkSelection } from "@/hooks/use-bulk-actions";
 import { usePagination } from "@/hooks/use-pagination";
 import { MAX_BULK_IDS, type AssetStatus, type AssetSummary } from "@/lib/api";
 import { assetRiskLabel } from "@/lib/asset-context";
@@ -51,7 +52,8 @@ function AssetsInner() {
   const [unowned, setUnowned] = useState(searchParams.get("unowned") === "1");
   // Selected asset ids (#346), held outside the table for the same reason the
   // findings page holds its own: the list polls and pages under the operator.
-  const [selected, setSelected] = useState<string[]>([]);
+  // Cleared on a tenant switch — see ``useBulkSelection``.
+  const [selected, setSelected] = useBulkSelection();
 
   // Server-side paging/search/sort (ROADMAP P3.3) — the registry is the one
   // list expected to reach 50k rows, so nothing here is filtered client-side.

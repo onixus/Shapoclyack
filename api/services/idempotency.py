@@ -20,7 +20,10 @@ established, spelled the same way:
   never sent, and executing would break the promise the key was given for;
 * a key whose first request is **still running** is :class:`IdempotencyInFlight`
   → 409. Two concurrent sends of one key must not both execute, and the honest
-  answer to the loser is "the first one has not finished".
+  answer to the loser is "the first one has not finished". "Still running" is
+  believed for :data:`RESERVATION_LEASE_SECONDS` and no longer: a process that
+  died without releasing its key would otherwise make that 409 permanent for a
+  day, which is not a retry window but an outage.
 
 **The unique index is the mechanism, not an optimisation.** Look-then-insert is
 something two API replicas can both pass; the second INSERT here fails, and
@@ -30,7 +33,12 @@ that is where the second request learns it lost. So :func:`reserve` inserts
 **A failed request does not burn its key.** :func:`release` drops the
 reservation when the handler raised, so a caller whose batch died on a 500 can
 retry with the same key. Only a reservation that never got an answer is
-released — a completed record is the answer.
+released — a completed record is the answer. A handler that never got to run
+its own failure path (the pod was killed) leaves the reservation behind, and
+the lease above is what still frees it. The one case that deliberately does
+*not* release is a bulk request that died having applied part of itself: it
+stores the partial report instead, so the retry is told which ids landed rather
+than applying them again (``routes/vulnerabilities.py``).
 
 Rows are disposable: they are the memory of a retry window, not a record of
 anything. :func:`purge_expired` drops them past :data:`RETENTION_SECONDS` and
@@ -48,7 +56,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from api.db import models
@@ -62,6 +70,23 @@ LOG = logging.getLogger("shapoclyack.idempotency")
 #: comes back a day later with the same key is asking for the batch to be
 #: applied again, and at that distance that is the likelier intent.
 RETENTION_SECONDS = 24 * 3600
+
+#: How long a reservation with no answer stored against it is believed to be
+#: running. Past this, a retry takes the key over and executes.
+#:
+#: Without a lease, "in flight" is forever: the reservation is dropped by
+#: :func:`release` in the handler, so a replica the OOM killer took, a pod
+#: Kubernetes evicted or a worker a sync timeout killed leaves ``response``
+#: NULL for good — and every retry is answered "still being processed" for a
+#: whole :data:`RETENTION_SECONDS`, for a key nobody holds.
+#:
+#: Generous on purpose. It has to exceed the longest a legitimate request can
+#: take (200 ids, each its own transaction, each possibly one outbound tracker
+#: call), because a lease that expires *under* a request still running would
+#: let a retry apply the batch a second time — the one outcome the key exists
+#: to prevent. Any proxy in front of the API gives up on the client long
+#: before this.
+RESERVATION_LEASE_SECONDS = 15 * 60
 
 #: How often one process bothers to sweep. The purge is a single DELETE on an
 #: indexed column, but it runs inside somebody's request, so it does not run
@@ -176,14 +201,69 @@ def reserve(
             # our INSERT and this read. Nobody holds the key and nobody has an
             # answer, so this request executes.
             return None
+        if row.response is None:
+            # Checked before the digest: an abandoned reservation holds a key
+            # nobody is using, and answering a different body "that key is
+            # taken" would keep it hostage for the lease as well.
+            if (_now() - row.created_at).total_seconds() < RESERVATION_LEASE_SECONDS:
+                raise IdempotencyInFlight(endpoint, key)
+            if not _claim_expired(
+                session,
+                tenant_id=tenant_id,
+                endpoint=endpoint,
+                key=key,
+                request_digest=request_digest,
+            ):
+                # Another retry took it over between the read and the write.
+                # It is the one executing now, so this one waits, exactly as it
+                # would have on the original request.
+                raise IdempotencyInFlight(endpoint, key)
+            LOG.warning(
+                "Idempotency reservation on %s for key %r (tenant %s) outlived its "
+                "%ds lease and was taken over; the request that made it never answered",
+                endpoint,
+                key,
+                tenant_id,
+                RESERVATION_LEASE_SECONDS,
+            )
+            return None
         if row.request_digest and row.request_digest != request_digest:
             raise IdempotencyMismatch(endpoint, key)
-        if row.response is None:
-            raise IdempotencyInFlight(endpoint, key)
         stored = dict(row.response)
     metrics_service.IDEMPOTENT_REPLAYS_TOTAL.labels(endpoint=endpoint).inc()
     LOG.info("Idempotent replay on %s for key %r (tenant %s)", endpoint, key, tenant_id)
     return stored
+
+
+def _claim_expired(
+    session: Any,
+    *,
+    tenant_id: str,
+    endpoint: str,
+    key: str,
+    request_digest: str,
+) -> bool:
+    """Take over a reservation whose lease is up. True when this call won it.
+
+    A conditional UPDATE rather than a read-then-write, for the same reason the
+    INSERT in :func:`reserve` is the mechanism and not an optimisation: two
+    retries arriving together on a dead key must not both decide they may
+    execute. The row's ``created_at`` moves, so the takeover gets a full lease
+    of its own.
+    """
+    result = session.execute(
+        update(models.IdempotencyRecord)
+        .where(
+            models.IdempotencyRecord.tenant_id == tenant_id,
+            models.IdempotencyRecord.endpoint == endpoint,
+            models.IdempotencyRecord.key == key,
+            models.IdempotencyRecord.response.is_(None),
+            models.IdempotencyRecord.created_at
+            < _now() - timedelta(seconds=RESERVATION_LEASE_SECONDS),
+        )
+        .values(request_digest=request_digest, created_at=_now())
+    )
+    return bool(result.rowcount)
 
 
 def complete(

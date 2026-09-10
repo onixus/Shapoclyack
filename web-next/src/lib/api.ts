@@ -2126,10 +2126,12 @@ export type BulkAssetBody = {
   payload: UpdateAssetBody;
 };
 
-/** A fresh `Idempotency-Key` for one bulk submission. Regenerated per attempt
- * by the caller *on success*: the point of the key is that a retry of the same
- * click is not a second batch, and reusing it for the operator's next,
- * different selection would be a 409. */
+/** A fresh `Idempotency-Key` for one bulk submission. Called once per
+ * submission and not once per attempt — see `useSubmissionKey` in
+ * `hooks/use-bulk-actions.ts`, which holds the value against the body it names
+ * so a retried click carries the key the first attempt did. Every call here
+ * returns a new value, so calling it per attempt would name every attempt a
+ * different batch. */
 export function newBulkIdempotencyKey(): string {
   const random =
     typeof crypto !== "undefined" && "randomUUID" in crypto

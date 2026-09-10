@@ -71,7 +71,14 @@ def _audit_rows(settings, action: str) -> list[models.AuditEvent]:
         ).scalars().all()
         # Detached copies of the two fields the assertions read: the session
         # closes with the ``with`` block.
-        return [{"resource_id": row.resource_id, "after": dict(row.after or {})} for row in rows]
+        return [
+            {
+                "tenant_id": row.tenant_id,
+                "resource_id": row.resource_id,
+                "after": dict(row.after or {}),
+            }
+            for row in rows
+        ]
 
 
 # --------------------------------------------------------------------------
@@ -371,6 +378,43 @@ def test_the_batch_size_is_capped_by_the_schema_and_by_the_service(tmp_path, mon
     )
 
 
+def test_an_over_long_id_is_refused_by_the_schema_and_by_the_service(tmp_path, monkeypatch):
+    """The count is not the only bound the audit row needs.
+
+    ``MAX_BULK_IDS`` caps how *many* ids a batch names; nothing capped how long
+    one was, and two hundred 120-character ids were a 27 KiB document — stored
+    as the marker that says a change happened but not what it was, with not one
+    id left in it.
+    """
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    long_id = "vln_" + "a" * bulk_actions.MAX_BULK_ID_LENGTH
+
+    response = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": [long_id], "payload": {"assignee": "ada"}},
+        headers=auth_headers(client, "operator"),
+    )
+    assert response.status_code == 422, response.text
+
+    try:
+        bulk_actions.validate_ids([long_id])
+    except ValueError as exc:
+        assert str(bulk_actions.MAX_BULK_ID_LENGTH) in str(exc)
+    else:  # pragma: no cover - the assertion above is the test
+        raise AssertionError("an over-long id was accepted by the service")
+
+    # An id at the ceiling is still accepted — it simply does not exist, which
+    # is the ordinary ``not_found`` and not a refusal of the batch.
+    at_ceiling = "v" * bulk_actions.MAX_BULK_ID_LENGTH
+    ok = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": [at_ceiling], "payload": {"assignee": "ada"}},
+        headers=auth_headers(client, "operator"),
+    )
+    assert ok.status_code == 200, ok.text
+    assert _outcomes(ok.json()) == {at_ceiling: "not_found"}
+
+
 # --------------------------------------------------------------------------
 # The audit trail: one row, listing the ids
 # --------------------------------------------------------------------------
@@ -400,6 +444,200 @@ def test_a_batch_is_one_audit_row_listing_the_ids(tmp_path, monkeypatch):
     assert after["rejected"] == {"vln_never_existed": "not_found"}
     assert (after["requested"], after["succeeded"], after["failed"]) == (3, 2, 1)
     assert after["payload"] == {"assignee": "ada"}
+
+
+def _crash_on_second_assign(monkeypatch):
+    """``vulns.assign`` applied for real once, then a failure nothing classifies.
+
+    Stands in for what actually kills a batch part-way: a deadlock, a pool that
+    went away, a tracker call that timed out. The point is that the id before it
+    is *committed* — one transaction per id is the design — so the batch cannot
+    be treated as though it had not happened.
+    """
+    real = vulns.assign
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("the tracker call hung and the pool gave up")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(vulns, "assign", flaky)
+
+
+def test_a_batch_that_dies_part_way_records_what_it_applied(tmp_path, monkeypatch):
+    """The audit row is written *before* the 500 leaves.
+
+    A batch that assigned ninety-nine findings and recorded nothing is exactly
+    the silent change ``docs/api-and-rbac.md`` says is impossible for anything
+    that is a database write. A partial report is still a report.
+    """
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+
+    with monkeypatch.context() as patched:
+        _crash_on_second_assign(patched)
+        try:
+            client.post(
+                _VULN_URL,
+                json={"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}},
+                headers=auth_headers(client, "operator"),
+            )
+        except bulk_actions.BulkActionAborted:
+            pass  # TestClient re-raises the handler's exception; that is the 500.
+        else:  # pragma: no cover - the batch is rigged to abort
+            raise AssertionError("the rigged batch did not abort")
+
+    # The first id really was applied, so the trail has to say so.
+    applied_id = ids[0]
+    detail = client.get(
+        f"/api/vulnerabilities/{applied_id}", headers=auth_headers(client, "viewer")
+    ).json()
+    assert detail["assignee"] == "ada"
+
+    rows = _audit_rows(settings, "vulnerability.bulk")
+    assert len(rows) == 1, "a batch that changed a finding and recorded nothing"
+    after = rows[0]["after"]
+    assert after["applied"] == [applied_id]
+    # ``requested`` stays the id count, so how far the batch got is readable:
+    # two asked for, one reached.
+    assert (after["requested"], after["succeeded"]) == (2, 1)
+    assert after["aborted"] is True
+
+
+def test_a_partly_applied_batch_keeps_its_key_and_replays_its_partial_report(
+    tmp_path, monkeypatch
+):
+    """A failed request gives its key back — unless it did half the work.
+
+    Releasing here would let the retry apply the ids that landed a second time:
+    for ``transition`` a hundred conflicts, for ``false_positive`` a second
+    suppression window. So the retry is answered with what happened instead,
+    which is also how it learns which ids are still to send.
+    """
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    headers = {**auth_headers(client, "operator"), "Idempotency-Key": "half-done"}
+    body = {"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}}
+
+    with monkeypatch.context() as patched:
+        _crash_on_second_assign(patched)
+        try:
+            client.post(_VULN_URL, json=body, headers=headers)
+        except bulk_actions.BulkActionAborted:
+            pass
+
+    retried = client.post(_VULN_URL, json=body, headers=headers)
+
+    assert retried.status_code == 200, retried.text
+    report = retried.json()
+    assert report["replayed"] is True
+    assert report["aborted"] is True
+    # One id, not two: the replay is the partial report, and the second finding
+    # was never touched — by this request or the one it retries.
+    assert (report["requested"], report["succeeded"]) == (2, 1)
+    assert _outcomes(report) == {ids[0]: "ok"}
+    # And the retry applied nothing, so the trail still has exactly one row.
+    assert len(_audit_rows(settings, "vulnerability.bulk")) == 1
+
+
+def test_a_platform_admins_batch_is_audited_in_the_tenant_it_changed(tmp_path, monkeypatch):
+    """The row belongs to the customer whose finding moved, not to the admin.
+
+    ``_write_scope`` is ``None`` for a platform admin however they arrived, so
+    ``?tenant_id=default`` reads to a human like a boundary and is not one. One
+    row filed under the caller's tenant left the affected tenant's audit read —
+    and the SIEM forward, which filters by tenant — with no record of the edit.
+    """
+    from api.services import tenants as tenants_service
+
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    victim = tenants_service.create_tenant(tenant_id="ten_victim", name="Victim")[
+        "tenant_id"
+    ]
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Vulnerability, ids[1]).tenant_id = victim
+    victim_id = ids[1]
+
+    response = client.post(
+        _VULN_URL,
+        params={"tenant_id": tenant_id},
+        json={"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}},
+        headers=auth_headers(client, "admin"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["succeeded"] == 2
+    rows = {row["tenant_id"]: row["after"] for row in _audit_rows(settings, "vulnerability.bulk")}
+    # One row per tenant touched, each naming only that tenant's ids.
+    assert rows[victim]["applied"] == [victim_id]
+    assert rows[tenant_id]["applied"] == [ids[0]]
+    # And the row says the caller was not confined to one tenant, so a reader
+    # does not take it for an ordinary in-tenant edit.
+    assert rows[victim]["write_scope"] == "*"
+    # The HTTP report does not carry the tenant of somebody else's finding.
+    assert all("tenant_id" not in item for item in response.json()["results"])
+
+
+def test_a_bulky_payload_never_costs_the_audit_row_its_ids(tmp_path, monkeypatch):
+    """``false_positive``'s ``evidence`` is a free dict with no size bound.
+
+    Twenty kilobytes of it on a batch of *two* findings was enough to push the
+    document past the 16 KiB cap, and the row then said only that something had
+    happened. The ids are what the row owes, so the body is what gives way.
+    """
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+
+    response = client.post(
+        _VULN_URL,
+        json={
+            "action": "false_positive",
+            "vuln_ids": ids,
+            "payload": {
+                "reason": "the scanner matched a backported package version",
+                "evidence": {"log": "y" * 20_000},
+            },
+        },
+        headers=auth_headers(client, "admin"),
+    )
+
+    assert response.status_code == 200, response.text
+    after = _audit_rows(settings, "vulnerability.bulk")[0]["after"]
+    assert "truncated" not in after
+    assert sorted(after["applied"]) == sorted(ids)
+    # The reason survives, because the reason is small; the 20 KiB dict is
+    # recorded as its size, which is what a reader of the row can act on.
+    assert after["payload"]["reason"].startswith("the scanner matched")
+    assert "bytes omitted" in after["payload"]["evidence"]
+
+
+def test_two_hundred_ids_at_full_length_still_fit_the_audit_document():
+    """The bound the ceilings exist for, checked on the document itself.
+
+    Two hundred ids of ``MAX_BULK_ID_LENGTH``, every one of them rejected —
+    the worst case, since a rejected id costs its outcome too — plus a payload.
+    It has to come out under the budget *with the ids still in it*.
+    """
+    ids = [f"vln_{index:0{bulk_actions.MAX_BULK_ID_LENGTH - 4}d}" for index in range(200)]
+    report = {
+        "action": "transition",
+        "requested": len(ids),
+        "succeeded": 0,
+        "failed": len(ids),
+        "results": [
+            {"id": vuln_id, "ok": False, "outcome": "conflict", "error": "already CLOSED"}
+            for vuln_id in ids
+        ],
+    }
+
+    document = bulk_actions.audit_document(report, {"state": "CLOSED"}, write_scope="acme")
+
+    assert bulk_actions._document_bytes(document) <= bulk_actions.AUDIT_DOCUMENT_BUDGET_BYTES
+    assert sorted(document["rejected"]) == sorted(ids)
+    assert "rejected_collapsed" not in document
 
 
 # --------------------------------------------------------------------------
@@ -518,6 +756,57 @@ def test_a_key_still_in_flight_is_a_conflict(tmp_path, monkeypatch):
 
     assert response.status_code == 409, response.text
     assert "still being processed" in response.json()["detail"]
+
+
+def test_a_reservation_whose_process_died_is_retryable_once_its_lease_expires(
+    tmp_path, monkeypatch
+):
+    """"Still being processed" has to stop being true at some point.
+
+    ``release()`` runs in the handler, so a replica the OOM killer took — or a
+    pod that was evicted — leaves ``response`` NULL for good. Before the lease,
+    the retry was answered 409 an hour later and six hours later, until the
+    24-hour purge; the batch was never applied and never reported.
+    """
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    body = {"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}}
+    assert (
+        idempotency_service.reserve(
+            settings,
+            tenant_id=tenant_id,
+            endpoint="vulnerabilities.bulk",
+            key="abandoned",
+            request_digest=idempotency_service.digest(
+                {"action": "assign", "ids": sorted(ids), "payload": {"assignee": "ada"}}
+            ),
+        )
+        is None
+    )
+    # The process that made the reservation is gone. Age the row rather than
+    # sleeping out the lease.
+    with get_session(settings.postgres_url) as session:
+        row = session.execute(select(models.IdempotencyRecord)).scalars().one()
+        row.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            seconds=idempotency_service.RESERVATION_LEASE_SECONDS + 60
+        )
+
+    response = client.post(
+        _VULN_URL,
+        json=body,
+        headers={**auth_headers(client, "operator"), "Idempotency-Key": "abandoned"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["succeeded"] == 2
+    assert response.json()["replayed"] is False
+    # And the key is now answered: the retry that took it over owns it.
+    replay = client.post(
+        _VULN_URL,
+        json=body,
+        headers={**auth_headers(client, "operator"), "Idempotency-Key": "abandoned"},
+    )
+    assert replay.json()["replayed"] is True
 
 
 def test_a_failed_request_gives_its_key_back(tmp_path, monkeypatch):

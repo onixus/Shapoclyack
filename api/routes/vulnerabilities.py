@@ -209,6 +209,40 @@ _BULK_ROLES: dict[str, Role] = {
 }
 
 
+def _record_bulk_audit(
+    audit: Any,
+    principal: TenantPrincipal,
+    report: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    action: str,
+) -> None:
+    """The batch's audit row, filed in the tenant whose findings it changed.
+
+    Which is not always the caller's: a platform admin writes with no scope
+    (``_write_scope``), so ``?tenant_id=acme`` reads to a human like a boundary
+    and is not one. Filing that batch's only row under the admin's own tenant
+    left the affected customer's trail — and the SIEM forward, which filters by
+    tenant — with no record of their finding being edited. So a batch that
+    crossed tenants is one row per tenant it touched; see
+    ``bulk_actions.audit_rows``.
+    """
+    for tenant_id, document in bulk_actions.audit_rows(
+        report,
+        payload,
+        write_scope=_write_scope(principal),
+        caller_tenant=principal.tenant_id,
+    ):
+        audit_service.record_standalone(
+            audit,
+            action=audit_service.ACTION_VULN_BULK,
+            resource_type="vulnerability",
+            resource_id=f"bulk:{action}",
+            tenant_id=tenant_id,
+            after=document,
+        )
+
+
 @router.post("/bulk", response_model=BulkActionReport)
 def bulk_action(
     body: BulkVulnerabilityRequest,
@@ -265,16 +299,6 @@ def bulk_action(
             payload=payload,
             actor=principal.username,
         )
-        audit_service.record_standalone(
-            audit,
-            action=audit_service.ACTION_VULN_BULK,
-            resource_type="vulnerability",
-            resource_id=f"bulk:{body.action}",
-            tenant_id=principal.tenant_id,
-            after=bulk_actions.audit_document(
-                report, payload, write_scope=_write_scope(principal)
-            ),
-        )
     except ValueError as exc:
         # Request-level, not per-id: nothing was applied, so there is no
         # partial report to hand back and the key must not be burned.
@@ -282,9 +306,26 @@ def bulk_action(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    except bulk_actions.BulkActionAborted as exc:
+        # The batch died part-way and every id before that is committed. The
+        # row goes in *before* the 500 leaves: findings changed with nothing in
+        # `audit_events` is the silent change the trail exists to make
+        # impossible, and a partial report is still a report.
+        _record_bulk_audit(audit, principal, exc.report, payload, action=body.action)
+        if exc.report["succeeded"]:
+            # The key is deliberately *not* given back. A retry with it would
+            # be a second pass over the ids that did apply — for `transition`
+            # a hundred conflicts, for `false_positive` a second suppression
+            # window — so what the retry gets is this partial report, which
+            # tells it exactly which ids are left to send.
+            guard.store(exc.report)
+        else:
+            guard.release()
+        raise
     except Exception:
         guard.release()
         raise
+    _record_bulk_audit(audit, principal, report, payload, action=body.action)
     guard.store(report)
     return report
 
