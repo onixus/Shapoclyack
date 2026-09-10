@@ -156,6 +156,12 @@ export type Me = {
   tenants: string[];
   default_tenant: string;
   is_platform_admin: boolean;
+  /** Second-factor state (#315): whether the account has enrolled, whether
+   * this installation requires it of the account's role, and whether *this
+   * session* is confined to the enrolment flow until it does. */
+  mfa_enabled?: boolean;
+  mfa_required?: boolean;
+  mfa_pending?: boolean;
 };
 
 /** The API resolves the tenant from the caller's memberships when the request
@@ -902,14 +908,134 @@ export type SystemStatus = {
   endpoint_inventory: EndpointInventoryStatus;
 };
 
-export async function login(username: string, password: string) {
+/** What `POST /auth/login` answers, which is now one of two things (#315).
+ *
+ * A completed login carries `access_token`; one that still owes a second
+ * factor carries `mfa_required` and `mfa_token` and *no* session token. The
+ * third shape is a completed login of an account this installation requires a
+ * factor of and which has not enrolled: a session **and** `mfa_required`, which
+ * the console reads as "go straight to the setup page". */
+export type LoginResult = {
+  access_token: string | null;
+  role: Role | null;
+  username: string;
+  mfa_required: boolean;
+  mfa_token: string | null;
+  /** Seconds the challenge token is good for. */
+  expires_in: number | null;
+};
+
+export async function login(username: string, password: string): Promise<LoginResult> {
   try {
-    const { data } = await api.post<{
-      access_token: string;
-      role: Role;
-      username: string;
-    }>("/auth/login", { username, password });
-    setAccessToken(data.access_token);
+    const { data } = await api.post<LoginResult>("/auth/login", { username, password });
+    // Only a real session is stored. Storing the challenge token would put a
+    // credential that opens one endpoint into the slot every request reads
+    // from, and every one of those requests would 401.
+    if (data.access_token) setAccessToken(data.access_token);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Present the second factor: the login's second leg, or a step-up (#315).
+ *
+ * With `mfa_token` this completes a login; without it the current session is
+ * re-verified and the token it returns carries a fresh `mfa_verified_at`,
+ * which is what the credential-issuing endpoints check. Either way the session
+ * token that comes back replaces the one this browser holds. */
+export async function verifyMfa(body: {
+  mfa_token?: string | null;
+  code?: string;
+  recovery_code?: string;
+}): Promise<LoginResult> {
+  try {
+    const { data } = await api.post<LoginResult>("/auth/mfa/verify", {
+      mfa_token: body.mfa_token ?? undefined,
+      code: body.code || undefined,
+      recovery_code: body.recovery_code || undefined,
+    });
+    if (data.access_token) setAccessToken(data.access_token);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Second-factor state of one account. Carries nothing secret (#315). */
+export type MfaStatus = {
+  username: string;
+  enabled: boolean;
+  enabled_at: string | null;
+  setup_pending: boolean;
+  recovery_codes_remaining: number;
+  required: boolean;
+  stepup_minutes: number;
+};
+
+export type MfaSetup = {
+  secret: string;
+  otpauth_uri: string;
+  algorithm: string;
+  digits: number;
+  period: number;
+};
+
+export async function fetchMfaStatus(): Promise<MfaStatus> {
+  try {
+    const { data } = await api.get<MfaStatus>("/auth/mfa");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Start enrolment. The response is the only place the secret is readable, so
+ * the caller must render it (or its URI) rather than fetching it again. */
+export async function setupTotp(): Promise<MfaSetup> {
+  try {
+    const { data } = await api.post<MfaSetup>("/auth/mfa/totp/setup");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Confirm enrolment with a code. Returns the ten recovery codes, once. */
+export async function confirmTotp(code: string): Promise<string[]> {
+  try {
+    const { data } = await api.post<{ recovery_codes: string[] }>("/auth/mfa/totp/confirm", {
+      code,
+    });
+    return data.recovery_codes ?? [];
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function disableMfa(body: {
+  password: string;
+  code?: string;
+  recovery_code?: string;
+}): Promise<MfaStatus> {
+  try {
+    const { data } = await api.post<MfaStatus>("/auth/mfa/disable", {
+      password: body.password,
+      code: body.code || undefined,
+      recovery_code: body.recovery_code || undefined,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Clear another account's second factor and end its sessions. Admin only. */
+export async function resetUserMfa(username: string): Promise<MfaStatus> {
+  try {
+    const { data } = await api.post<MfaStatus>(
+      `/users/${encodeURIComponent(username)}/mfa/reset`,
+    );
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
@@ -2184,6 +2310,9 @@ export async function triggerRiskSnapshot() {
 export type SsoStatus = {
   enabled: boolean;
   login_url: string;
+  /** What password login is for on this installation (#315). Only ever a
+   * mode — the break-glass account names stay server-side. */
+  local_login: "enabled" | "break-glass" | "disabled";
 };
 
 /** An API that predates SSO answers 404, and an unreachable one answers
@@ -2191,10 +2320,16 @@ export type SsoStatus = {
  * form. The button is an enhancement — password login has to keep working when
  * this call fails. */
 export async function fetchSsoStatus(): Promise<SsoStatus> {
-  const fallback: SsoStatus = { enabled: false, login_url: "/api/auth/oidc/login" };
+  const fallback: SsoStatus = {
+    enabled: false,
+    login_url: "/api/auth/oidc/login",
+    // An API that predates #315 does not answer this field, and its password
+    // form works: "enabled" is the reading that keeps the login page usable.
+    local_login: "enabled",
+  };
   try {
     const { data } = await api.get<SsoStatus>("/auth/sso");
-    return data ?? fallback;
+    return { ...fallback, ...(data ?? {}) };
   } catch {
     return fallback;
   }

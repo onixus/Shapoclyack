@@ -19,6 +19,14 @@ ENV_PROD = "prod"
 ENV_DEV = "dev"
 VALID_ENVS = (ENV_DEV, ENV_PROD)
 
+# What ``OCTO_LOCAL_LOGIN`` may say about password login on an SSO
+# installation (#315). Constants rather than literals because the login route,
+# the settings loader and the console's SSO status all switch on them.
+LOCAL_LOGIN_ENABLED = "enabled"
+LOCAL_LOGIN_BREAK_GLASS = "break-glass"
+LOCAL_LOGIN_DISABLED = "disabled"
+VALID_LOCAL_LOGIN = (LOCAL_LOGIN_ENABLED, LOCAL_LOGIN_BREAK_GLASS, LOCAL_LOGIN_DISABLED)
+
 # Referenced by the dataclass default *and* the fail-closed check, so it lives
 # here rather than being retyped in both places — a check comparing against a
 # stale copy of the literal would pass while the insecure default stayed live.
@@ -531,6 +539,39 @@ class Settings:
     # driving a busy integration does not turn every request into a write.
     service_token_last_used_interval_seconds: int = 300
 
+    # --- Enterprise IAM: multi-factor authentication (#315) ------------------
+    # Roles that must carry a second factor, e.g. ["admin"]. **Empty by
+    # default**, which is the only setting that leaves an upgrade behaving
+    # exactly as before: enrolment is available to everyone from the first
+    # boot, and nobody is required to have done it. An account in a listed role
+    # that has not enrolled still signs in, but its session carries
+    # ``mfa_pending`` and can reach nothing but the MFA setup routes and logout
+    # (api/auth.py), so the requirement is a guided enrolment rather than a
+    # lockout.
+    mfa_required_roles: list[str] = field(default_factory=list)
+    # How recently the second factor must have been proved for an operation
+    # that mints or revokes a credential — service tokens, provisioning keys —
+    # and for approving a tenant's scanning scope. Fifteen minutes is long
+    # enough to do a piece of administration without re-entering a code per
+    # click, short enough that a session left open on a desk is not a standing
+    # authority to issue credentials. Applies only to accounts that have MFA
+    # enabled; an installation with no MFA is unchanged.
+    mfa_stepup_minutes: int = 15
+    # What local (password) login is for when SSO is configured:
+    #   enabled      — the default and the pre-#315 behaviour;
+    #   break-glass  — only the accounts in OCTO_BREAK_GLASS_USERS may use it,
+    #                  and each such login is its own audit action and its own
+    #                  metric, so using the emergency door is visible;
+    #   disabled     — no password login at all; SSO is the only way in.
+    # Ignored entirely when OIDC is not configured: an installation with no
+    # identity provider that turned password login off would have no way in.
+    local_login: str = LOCAL_LOGIN_ENABLED
+    # Accounts allowed to log in with a password under ``break-glass``. Names,
+    # not roles: the point of a break-glass account is that it is a specific,
+    # named, closely watched credential rather than a property somebody can
+    # acquire by being promoted.
+    break_glass_users: list[str] = field(default_factory=list)
+
     def agent_signing_secret(self) -> str:
         """The key agent JWTs are signed and verified with (#312).
 
@@ -683,6 +724,55 @@ def _oidc_role_map() -> dict[str, str]:
     return mapping
 
 
+def _mfa_required_roles() -> list[str]:
+    """Roles that must carry a second factor, from ``OCTO_MFA_REQUIRED_ROLES``.
+
+    Comma-separated, and an unknown value is dropped with a warning rather than
+    raising: the same reasoning as :func:`_oidc_role_map`. Dropping a role only
+    ever *relaxes* the requirement, which is a state an operator can see in the
+    console (an admin whose account says "MFA not required") — where raising
+    would take the API down for every tenant over a typo.
+    """
+    raw = os.environ.get("OCTO_MFA_REQUIRED_ROLES", "").strip()
+    if not raw:
+        return []
+    roles: list[str] = []
+    for item in raw.split(","):
+        role = item.strip().lower()
+        if not role:
+            continue
+        if role not in VALID_CONSOLE_ROLES:
+            logger.warning(
+                "OCTO_MFA_REQUIRED_ROLES names an unknown role %r; ignoring it. "
+                "Valid roles: %s.",
+                role,
+                ", ".join(VALID_CONSOLE_ROLES),
+            )
+            continue
+        if role not in roles:
+            roles.append(role)
+    return roles
+
+
+def _local_login() -> str:
+    """``OCTO_LOCAL_LOGIN``, defaulting to the pre-#315 behaviour.
+
+    An unrecognised value keeps password login *enabled* rather than closing
+    it. That is the opposite of how the other unknown-value readers fail, and
+    deliberately so: this one's closed direction locks every operator out of an
+    installation whose SSO may itself be the thing that is broken, which is
+    exactly the situation break-glass exists for.
+    """
+    raw = os.environ.get("OCTO_LOCAL_LOGIN", LOCAL_LOGIN_ENABLED).strip().lower()
+    if raw not in VALID_LOCAL_LOGIN:
+        logger.warning(
+            "OCTO_LOCAL_LOGIN must be one of %s; keeping password login enabled.",
+            ", ".join(VALID_LOCAL_LOGIN),
+        )
+        return LOCAL_LOGIN_ENABLED
+    return raw
+
+
 def _is_sqlite_url(url: str) -> bool:
     return url.strip().lower().startswith("sqlite")
 
@@ -767,6 +857,18 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
                 "without verifying its certificate, which stops a passive listener and nobody "
                 "else. Trust the relay's CA system-wide instead of turning this off."
             )
+
+    if settings.local_login == LOCAL_LOGIN_BREAK_GLASS and not settings.break_glass_users:
+        # A warning and not a refusal: with no names, break-glass behaves as
+        # ``disabled``, which is a legitimate destination — but it is almost
+        # never the one an operator who typed "break-glass" meant, and finding
+        # out during an SSO outage is the worst possible moment (#315).
+        logger.warning(
+            "OCTO_LOCAL_LOGIN=break-glass with an empty OCTO_BREAK_GLASS_USERS: no "
+            "account may sign in with a password, so the emergency door this mode "
+            "exists to keep open is shut. Name the break-glass accounts, or set "
+            "OCTO_LOCAL_LOGIN=disabled to say so deliberately."
+        )
 
     problems: list[str] = []
 
@@ -1200,6 +1302,17 @@ def load_settings() -> Settings:
         service_token_last_used_interval_seconds=max(
             0, int(os.environ.get("OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS", "300"))
         ),
+        mfa_required_roles=_mfa_required_roles(),
+        # At least a minute: zero would demand a fresh code for every single
+        # request in a burst of administration, which is a way of teaching
+        # people to keep an authenticator open next to the console.
+        mfa_stepup_minutes=max(1, int(os.environ.get("OCTO_MFA_STEPUP_MINUTES", "15"))),
+        local_login=_local_login(),
+        break_glass_users=[
+            item.strip()
+            for item in os.environ.get("OCTO_BREAK_GLASS_USERS", "").split(",")
+            if item.strip()
+        ],
     )
 
     if settings.env == ENV_PROD:

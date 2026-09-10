@@ -18,7 +18,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.auth import Role, TokenUser, get_settings, require_role
+from api.auth import Role, StepUpDep, TokenUser, get_settings, require_role
 from api.routes._audit import AuditDep
 from api.schemas import CreateServiceTokenRequest, ServiceTokenInfo
 from api.services import service_tokens as service_tokens_service
@@ -42,6 +42,11 @@ def create_service_token(
     tenant_id: str,
     body: CreateServiceTokenRequest,
     admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Minting a credential that outlives the session minting it is exactly the
+    # act #315 puts behind a recent second factor. No effect on an admin who
+    # has not enabled MFA, and none on a service token, which cannot reach
+    # this route at all (``tenants`` is a forbidden scope resource).
+    _: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> ServiceTokenInfo:
@@ -93,6 +98,7 @@ def revoke_service_token(
     tenant_id: str,
     token_id: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    __: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> ServiceTokenInfo:

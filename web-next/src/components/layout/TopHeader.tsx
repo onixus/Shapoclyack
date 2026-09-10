@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { LogOut, UserRound, Shield, Search, MonitorX } from "lucide-react";
+import { LogOut, UserRound, Shield, ShieldCheck, Search, MonitorX } from "lucide-react";
 import { toast } from "sonner";
 import { AppearanceControls } from "@/components/appearance-controls";
 import { CommandPalette, useCommandPalette } from "@/components/command-palette";
@@ -123,6 +123,13 @@ export function TopHeader() {
             >
               <Shield className="mr-2 h-3.5 w-3.5 text-sky-500" />
               {t("header.role", { role: user?.role || "—" })}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="cursor-pointer text-xs text-foreground focus:bg-muted"
+              onClick={() => router.push("/security")}
+            >
+              <ShieldCheck className="mr-2 h-3.5 w-3.5 text-emerald-500" />
+              {t("header.security")}
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-border" />
             <DropdownMenuItem

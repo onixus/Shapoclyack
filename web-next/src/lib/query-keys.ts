@@ -43,6 +43,10 @@ export const queryKeys = {
   deployStatus: (deployId: string) => ["agents", "deploy", deployId] as const,
   tenants: ["tenants"] as const,
   users: ["users"] as const,
+  /** The signed-in account's own second-factor state (#315). Not keyed by
+   * username: it is always "mine", and a key that named the user would
+   * survive a sign-out into the next person's session. */
+  mfa: ["auth", "mfa"] as const,
   authEvents: (page?: PageParams, outcome?: string) =>
     ["auth", "events", outcome ?? null, pageKey(page)] as const,
   auditEvents: (page?: PageParams, filters?: Record<string, string | undefined>) =>

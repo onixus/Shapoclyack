@@ -136,6 +136,97 @@ so are their windows — see `OCTO_AGENT_JWT_SECRET_PREVIOUS` in
 [configuration.md](configuration.md#environment-variables) and the procedure in
 [operations.md](operations.md#rotating-the-jwt-signing-key).
 
+## Multi-factor authentication
+
+A console account can carry a second factor: a TOTP authenticator (RFC 6238,
+HMAC-SHA-1, six digits, thirty seconds) plus ten single-use recovery codes
+([#315](https://github.com/onixus/Shapoclyack/issues/315)). It is **off by
+default and enrolled by the account itself** — an upgrade changes nothing until
+somebody enrols or an operator sets `OCTO_MFA_REQUIRED_ROLES`.
+
+WebAuthn / passkeys, the other half of #315, are **not** implemented.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/auth/mfa` | session | The caller's own state: enabled, setup pending, recovery codes left, whether policy requires it |
+| `POST /api/auth/mfa/totp/setup` | session | Mints an unconfirmed secret and returns it with its `otpauth://` URI. Nothing is enabled yet |
+| `POST /api/auth/mfa/totp/confirm` | session | `{"code":"123456"}`. Turns the factor on and returns the ten recovery codes **once** |
+| `POST /api/auth/mfa/verify` | challenge token *or* session | Second leg of a login, or a step-up on a live session |
+| `POST /api/auth/mfa/disable` | session | `{"password":…, "code"\|"recovery_code":…}`. Both are required |
+| `POST /api/users/{username}/mfa/reset` | platform admin | Clears the factor, bumps `token_version` (ends the account's sessions), audited as `user.mfa_reset` |
+
+### The two-leg login
+
+`POST /api/auth/login` answers 200 with one of two shapes. For an account with
+no second factor it is the object it has always been. For an enrolled account
+there is **no** `access_token`:
+
+```json
+{"username":"admin","mfa_required":true,"mfa_token":"<challenge>","expires_in":300}
+```
+
+The challenge token is `typ=mfa`, lives five minutes, carries no role, and is
+accepted by `POST /api/auth/mfa/verify` and by nothing else — `decode_token`
+allowlists `typ=user`, so presenting it as a session is a 401. It carries the
+account's `token_version`, so revoking sessions kills an in-flight challenge
+too.
+
+`POST /api/auth/mfa/verify` takes `{"mfa_token":…, "code":…}` or
+`{"mfa_token":…, "recovery_code":…}` and returns the ordinary session token.
+Refusals go through the same limiter as a password (#157) under the account's
+own key and land in `auth_events` with `reason=mfa_failed`.
+
+A TOTP code is accepted within ±1 step (±30 s) and **spent**: the step it
+belonged to is written to `users.mfa_last_step` in the same transaction, and a
+step at or before it is refused, so an observed code cannot be replayed inside
+its own thirty seconds. A recovery code is bcrypt-hashed like a password and
+stamped `used_at` when it is spent.
+
+### Required roles, and the confined session
+
+`OCTO_MFA_REQUIRED_ROLES` (empty by default) names roles that must carry a
+factor. An account in such a role that has not enrolled still signs in — a
+refusal would leave nobody able to enrol — but its session carries
+`mfa_pending`, and `get_current_user` then answers **403** on everything except
+`/api/auth/mfa*`, `/api/auth/me`, `/api/auth/logout` and
+`/api/auth/sessions/revoke-all`. `GET /api/auth/me` reports `mfa_enabled`,
+`mfa_required` and `mfa_pending` so the console can say why.
+
+### Step-up
+
+Operations that create or destroy a credential, or widen what a tenant may
+scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
+(default 15):
+
+- `POST`/`DELETE /api/tenants/{id}/service-tokens…`
+- `POST`/`DELETE /api/tenants/{id}/provisioning-keys…`
+- `PUT /api/tenants/{id}/scan-scope`
+
+The check applies **only to accounts that have MFA enabled**; an installation
+that has not adopted MFA behaves exactly as before. A stale session gets a 403
+naming `POST /api/auth/mfa/verify`; calling it *without* `mfa_token` while
+signed in returns a fresh session token whose `mfa_verified_at` restarts the
+window.
+
+### Break-glass local login
+
+`OCTO_LOCAL_LOGIN` decides what password login is for once SSO is configured.
+It is **ignored entirely when no identity provider is set** — an installation
+with neither SSO nor password login is one nobody can reach.
+
+| Value | Effect |
+|---|---|
+| `enabled` (default) | Password login for everyone, as before |
+| `break-glass` | Only the accounts in `OCTO_BREAK_GLASS_USERS` may present a password. Each such login is audited as `auth.break_glass_login`, recorded in `auth_events` with `reason=break_glass_login`, counted in `octo_break_glass_logins_total` and logged at WARNING |
+| `disabled` | No password login at all |
+
+A refusal is the same `401 Invalid credentials` a wrong password gets: naming
+the policy to an unauthenticated caller would hand over the shortlist of
+accounts worth attacking. The *mode* is public in `GET /api/auth/sso` as
+`local_login`, which names nobody, so the login form knows what to offer. The
+reason (`local_login_disabled`, `local_login_not_break_glass`) is in
+`auth_events`.
+
 ## Login rate limiting and the auth audit trail
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
@@ -295,7 +386,7 @@ so it is reported as off rather than failing at the first redirect.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/auth/sso` | none | `{"enabled": …, "login_url": …}`. The login form has to render before anyone is signed in. Also embedded in `GET /api/health` as `sso` |
+| `GET /api/auth/sso` | none | `{"enabled": …, "login_url": …, "local_login": …}`. The login form has to render before anyone is signed in. Also embedded in `GET /api/health` as `sso`. `local_login` is the `OCTO_LOCAL_LOGIN` mode and names no account |
 | `GET /api/auth/oidc/login` | none | 307 to the provider's authorize URL. `?redirect=false` returns the URL as JSON; `?next=/path` is carried through the flow and is dropped unless it is a path on this console |
 | `GET /api/auth/oidc/callback` | none | Exchanges the code and issues **the platform's ordinary session token** — same JWT, same claims, same expiry as password login |
 

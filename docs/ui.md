@@ -51,6 +51,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | Admin |
 | `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog and on-request provisioning keys | Operator |
+| `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
 
 ## Application shell
@@ -109,6 +110,45 @@ done on a `401`, taking any open form with it.
 
 Changing your own password on **My account** ends every session of the account,
 this one included, so the console lands on the login form.
+
+### Two-factor authentication
+
+`/security` manages the signed-in account's own second factor
+([#315](https://github.com/onixus/Shapoclyack/issues/315)) — reachable from the
+account menu and from the **Security** entry in the sidebar's administration
+group, which every role sees because every account has one of these pages.
+
+Enrolment shows the `otpauth://` link and the base32 secret **as text**, side by
+side with a copy button. There is deliberately no QR image: drawing one would
+mean either a new dependency or posting every administrator's TOTP seed to an
+external chart service, and every authenticator worth using accepts a pasted
+link or a typed secret. Confirming a code returns the ten recovery codes, which
+are shown once, in the component's own state — never in the query cache, never
+in a toast, never in `localStorage` — because that is exactly how long the API
+has them in readable form.
+
+Turning it off asks for the password **and** a live factor in one field: six
+digits are sent as `code`, anything else as `recovery_code`, so nobody has to
+tell the form which kind of thing they are holding.
+
+Logging in as an enrolled account is two steps. The password form is replaced
+by a code step; the challenge token lives in the page's state and never reaches
+the token slot the rest of the console reads from, so walking away at the code
+prompt leaves a browser that is signed out rather than half signed in. **Use a
+recovery code instead** switches the field, and **Start again** drops the
+challenge rather than reusing it.
+
+When `OCTO_MFA_REQUIRED_ROLES` names your role and you have not enrolled, the
+API confines the session to the enrolment flow. An amber banner above the header
+says so and offers the one route that works; the login form sends such a session
+straight to `/security` rather than to a dashboard of 403s. The banner hides
+itself on `/security` — standing over the form telling somebody to open the form
+is noise.
+
+The login form also reads `local_login` from `GET /api/auth/sso` and says when
+password sign-in is disabled or reserved for break-glass accounts. It still
+renders the form under the notice: a break-glass operator has to be able to type
+into it, and the API — not the console — is what refuses everyone else.
 
 ## Scan operations: external and internal
 
@@ -620,8 +660,11 @@ role, set email, disable, reset password, delete — never offered for the
 signed-in account), **Tenant membership** (grant, change, revoke per tenant;
 a platform admin needs no rows), **Provisioning keys** (list and revoke; the
 key is *created* on `/agents`), **Sign-in audit** (`GET /api/auth/events`,
-paged, filter by outcome) and **My account** (own password), which is the
-only tab a non-admin sees. The Users table shows each account's tenant
+paged, filter by outcome) and **My account** (own password, and a link to
+`/security` for the second factor), which is the
+only tab a non-admin sees. The Users table also carries **Reset MFA**, the
+admin-only clearing of somebody else's second factor — it ends that account's
+sessions and is recorded as `user.mfa_reset` (#315). The Users table shows each account's tenant
 memberships from `UserInfo.tenants`.
 
 ## Audit trail

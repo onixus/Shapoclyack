@@ -31,6 +31,12 @@ def test_login_and_me():
         "tenants": ["default"],
         "default_tenant": "default",
         "is_platform_admin": False,
+        # Second-factor state of the account and of this session (#315). All
+        # three false on an installation that has not configured MFA, which is
+        # what "nothing changes on upgrade" looks like from the console's side.
+        "mfa_enabled": False,
+        "mfa_required": False,
+        "mfa_pending": False,
     }
 
 

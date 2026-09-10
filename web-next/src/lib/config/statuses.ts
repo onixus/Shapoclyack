@@ -249,6 +249,15 @@ export const ACCOUNT_STATUS: Record<"active" | "disabled", StatusStyle> = {
   disabled: { label: "disabled", variant: "secondary", className: MUTED },
 };
 
+/** The account's second factor (#315). "pending" is a setup that was started
+ * and never confirmed: the account still signs in with its password alone, so
+ * it is a warning rather than a success. */
+export const MFA_STATUS: Record<"on" | "off" | "pending", StatusStyle> = {
+  on: { label: "mfa on", className: SUCCESS },
+  off: { label: "mfa off", variant: "secondary", className: MUTED },
+  pending: { label: "setup unfinished", className: IN_PROGRESS },
+};
+
 /** One decision in the auth trail (#157, #226, #241). `locked` is the rate
  * limiter refusing before the credentials were even checked, `denied` an
  * authenticated principal refused an action, `trust_change` an SSH host-key

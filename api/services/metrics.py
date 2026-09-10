@@ -74,6 +74,26 @@ AUTH_ATTEMPTS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+MFA_VERIFICATIONS_TOTAL = Counter(
+    "octo_mfa_verifications_total",
+    "Second-factor checks, by outcome (success, failure, recovery, "
+    "setup_success, setup_failure). 'recovery' is a sign-in that spent a "
+    "recovery code rather than an authenticator code (#315): it is a success, "
+    "and a rate worth watching — a user burning codes has lost their phone, "
+    "and a spike across accounts is an incident.",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
+BREAK_GLASS_LOGINS_TOTAL = Counter(
+    "octo_break_glass_logins_total",
+    "Password logins accepted on an installation where SSO is configured and "
+    "OCTO_LOCAL_LOGIN=break-glass (#315). Every increment is an operator "
+    "deliberately using the emergency door, so this is the series to alert on "
+    "rather than to graph — see docs/operations.md § Break-glass local login.",
+    registry=REGISTRY,
+)
+
 QUOTA_DENIED_TOTAL = Counter(
     "octo_quota_denied_total",
     "Actions refused because a tenant's purchased limit was reached, by "

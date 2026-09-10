@@ -86,6 +86,9 @@ def test_sso_is_reported_off_and_the_routes_404_when_unconfigured(tmp_path, monk
     assert client.get("/api/auth/sso").json() == {
         "enabled": False,
         "login_url": "/api/auth/oidc/login",
+        # With no provider configured, OCTO_LOCAL_LOGIN has nothing to say and
+        # the password form is the only way in (#315).
+        "local_login": "enabled",
     }
     assert client.get("/api/health").json()["sso"]["enabled"] is False
     assert client.get("/api/auth/oidc/login").status_code == 404

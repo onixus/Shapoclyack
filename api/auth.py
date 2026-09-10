@@ -20,6 +20,15 @@ bearer_scheme = HTTPBearer(auto_error=False)
 # Legacy shared-token agents map to this tenant until they migrate to provisioning keys.
 LEGACY_AGENT_TENANT_ID = "default"
 AGENT_TOKEN_TYP = "agent"
+#: ``typ`` of an ordinary console session. Every token minted for a browser has
+#: carried it since the first release; :func:`decode_token` refuses any other
+#: value outright since #315, because the pre-authentication token below is a
+#: second thing signed with the same key and must never be one of these.
+USER_TOKEN_TYP = "user"
+#: ``typ`` of the token issued when a password was right and the second factor
+#: is still outstanding. It authenticates nothing: the only endpoint that
+#: accepts it is ``POST /api/auth/mfa/verify`` (:func:`decode_pre_auth_token`).
+MFA_TOKEN_TYP = "mfa"
 
 
 class Role(str, Enum):
@@ -49,6 +58,14 @@ class TokenUser(BaseModel):
     role: Role
     jti: str | None = None
     expires_at: datetime | None = None
+    # Multi-factor state carried by the session (#315). ``mfa_pending`` marks a
+    # session issued to an account this installation requires a second factor
+    # of, which has not enrolled yet: it authenticates, and
+    # :func:`get_current_user` then refuses it everything but the enrolment
+    # routes and logout. ``mfa_verified_at`` is when the factor was last proved
+    # and is what the step-up dependency measures against.
+    mfa_pending: bool = False
+    mfa_verified_at: datetime | None = None
 
 
 class TenantPrincipal(BaseModel):
@@ -91,6 +108,31 @@ class TokenResponse(BaseModel):
     username: str
 
 
+class LoginResponse(BaseModel):
+    """What ``POST /api/auth/login`` answers, which is now one of two things (#315).
+
+    A completed login is the same object it has always been: ``access_token``,
+    ``role``, ``username``. A login that still owes a second factor carries
+    ``mfa_required`` and ``mfa_token`` instead, and **no** session token — the
+    challenge token is not a credential, it opens exactly one endpoint
+    (``POST /api/auth/mfa/verify``).
+
+    One model rather than two so that the status code stays 200 and a client
+    that has not been updated cannot mistake a challenge for a session: the
+    field it reads, ``access_token``, is simply not there.
+    """
+
+    access_token: str | None = None
+    token_type: str = "bearer"
+    role: Role | None = None
+    username: str
+    mfa_required: bool = False
+    mfa_token: str | None = None
+    #: Lifetime of ``mfa_token`` in seconds, so the console can show the clock
+    #: it is racing rather than discovering the expiry as a 401.
+    expires_in: int | None = None
+
+
 class MeResponse(BaseModel):
     username: str
     role: Role
@@ -99,6 +141,13 @@ class MeResponse(BaseModel):
     tenants: list[str] = Field(default_factory=list)
     default_tenant: str = "default"
     is_platform_admin: bool = False
+    # Second-factor state of the signed-in account (#315), so the console can
+    # render the "set up MFA" banner and the security page without a second
+    # call on every page load. ``mfa_pending`` is a property of this session,
+    # the other two of the account.
+    mfa_enabled: bool = False
+    mfa_required: bool = False
+    mfa_pending: bool = False
 
 
 def hash_password(password: str) -> str:
@@ -134,7 +183,13 @@ def authenticate_user(settings: Settings, username: str, password: str) -> Token
     return TokenUser(username=str(record["username"]), role=role)
 
 
-def create_access_token(settings: Settings, user: TokenUser) -> str:
+def create_access_token(
+    settings: Settings,
+    user: TokenUser,
+    *,
+    mfa_pending: bool = False,
+    mfa_verified_at: datetime | None = None,
+) -> str:
     """Mint a console session token (#314).
 
     Two claims beyond the pre-#314 set, and one header:
@@ -152,6 +207,11 @@ def create_access_token(settings: Settings, user: TokenUser) -> str:
     An account that vanished between authentication and here is mint-refused
     rather than issued a version-0 token: a missing row is exactly what a
     concurrent delete looks like.
+
+    Two more optional claims since #315, both absent from an ordinary session:
+    ``mfa_pending`` for a session that may do nothing but enrol a second
+    factor, and ``mfa_verified_at`` for one that has just proved it — the claim
+    the step-up checks read.
     """
     from api.core.security import jwt_kid
     from api.services import sessions as sessions_service
@@ -160,12 +220,16 @@ def create_access_token(settings: Settings, user: TokenUser) -> str:
     payload = {
         "sub": user.username,
         "role": user.role.value,
-        "typ": "user",
+        "typ": USER_TOKEN_TYP,
         "ver": sessions_service.current_version(settings, user.username),
         "jti": uuid.uuid4().hex,
         "exp": expire,
         "iat": datetime.now(UTC),
     }
+    if mfa_pending:
+        payload["mfa_pending"] = True
+    if mfa_verified_at is not None:
+        payload["mfa_verified_at"] = int(mfa_verified_at.timestamp())
     return jwt.encode(
         payload,
         settings.jwt_secret,
@@ -259,6 +323,16 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Agent token cannot be used for operator APIs",
         )
+    if payload.get("typ") != USER_TOKEN_TYP:
+        # Anything else signed with the console key is not a session — today
+        # that is the pre-authentication token (#315), which carries a username
+        # and would otherwise have been read as one here. An allowlist rather
+        # than a second denylist entry: the next token type minted with this
+        # key must be refused by default, not by somebody remembering to add it.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not a console session token",
+        )
     username = payload.get("sub")
     role_raw = payload.get("role")
     if not username or not role_raw:
@@ -307,12 +381,115 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid role") from exc
 
     expires_at = payload.get("exp")
+    verified_at = payload.get("mfa_verified_at")
     return TokenUser(
         username=state.username,
         role=role,
         jti=str(payload["jti"]) if payload.get("jti") else None,
         expires_at=datetime.fromtimestamp(int(expires_at), UTC) if expires_at else None,
+        mfa_pending=bool(payload.get("mfa_pending")),
+        # Read out of the claim rather than from the row: it is a property of
+        # *this* session — when the person holding this token last proved the
+        # factor — not of the account, and two sessions of one account are
+        # legitimately at different points in that.
+        mfa_verified_at=(
+            datetime.fromtimestamp(int(verified_at), UTC)
+            if isinstance(verified_at, (int, float))
+            else None
+        ),
     )
+
+
+class PreAuthChallenge(BaseModel):
+    """A verified pre-authentication token, unpacked.
+
+    ``break_glass`` rides along rather than being recomputed at the second leg:
+    whether this login used the emergency door was decided when the password
+    was accepted, and re-deriving it from the settings later would silently
+    change the answer if the policy were edited in between.
+    """
+
+    username: str
+    break_glass: bool = False
+
+
+def create_pre_auth_token(
+    settings: Settings, username: str, *, ttl_minutes: int, break_glass: bool = False
+) -> str:
+    """Mint the short-lived token that stands between a password and a session.
+
+    It carries the same ``ver`` an ordinary session would, so revoking the
+    account's sessions kills an in-flight challenge too, and ``typ=mfa``, which
+    :func:`decode_token` refuses outright — the only function that accepts one
+    is :func:`decode_pre_auth_token`, called by ``POST /api/auth/mfa/verify``
+    and nothing else. It carries no role: it is not a principal, it is a
+    receipt for the first factor.
+    """
+    from api.core.security import jwt_kid
+    from api.services import sessions as sessions_service
+
+    now = datetime.now(UTC)
+    payload = {
+        "sub": username,
+        "typ": MFA_TOKEN_TYP,
+        "ver": sessions_service.current_version(settings, username),
+        "jti": uuid.uuid4().hex,
+        "exp": now + timedelta(minutes=ttl_minutes),
+        "iat": now,
+    }
+    if break_glass:
+        payload["bg"] = True
+    return jwt.encode(
+        payload,
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        headers={"kid": jwt_kid(settings.jwt_secret)},
+    )
+
+
+def decode_pre_auth_token(settings: Settings, token: str) -> PreAuthChallenge:
+    """The account a valid, unexpired pre-authentication token names.
+
+    Everything a session token is checked for is checked here as well — the
+    signature against the rotation window, the account still existing and being
+    enabled, the generation still matching — because five minutes is long
+    enough for an account to be disabled between the two legs of a login, and
+    that disable has to win.
+    """
+    from api.services import sessions as sessions_service
+
+    try:
+        payload = verify_signature(settings, token, settings.jwt_verification_secrets())
+    except jwt.PyJWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired multi-factor challenge",
+        ) from exc
+    if payload.get("typ") != MFA_TOKEN_TYP or not payload.get("sub"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not a multi-factor challenge token",
+        )
+    username = str(payload["sub"])
+    try:
+        sessions_service.check_session(
+            settings,
+            username=username,
+            token_version=int(payload.get("ver") or 0),
+            jti=None,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired multi-factor challenge",
+        ) from exc
+    except sessions_service.SessionStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Session store is unavailable, try again",
+            headers={"Retry-After": "5"},
+        ) from exc
+    return PreAuthChallenge(username=username, break_glass=bool(payload.get("bg")))
 
 
 def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
@@ -401,6 +578,40 @@ def _authenticate_service_token(request: Request, settings: Settings, token: str
     return TokenUser(username=principal.username, role=role)
 
 
+# What a session carrying ``mfa_pending`` may reach: the enrolment flow, the
+# principal it needs to render the page, and the two ways out. Prefixes rather
+# than exact paths so that every ``/api/auth/mfa/...`` route is covered as the
+# flow grows, and so that the mount prefix stays in one place.
+_MFA_PENDING_ALLOWED_PATHS = (
+    "/api/auth/mfa",
+    "/api/auth/me",
+    "/api/auth/logout",
+    "/api/auth/sessions/revoke-all",
+)
+
+
+def _enforce_mfa_enrolment(request: Request) -> None:
+    """Confine a session that owes this installation a second factor (#315).
+
+    The account is in a role ``OCTO_MFA_REQUIRED_ROLES`` names and has not
+    enrolled. Refusing the *login* would leave nobody able to enrol, so the
+    session exists and is worth exactly one thing: setting up MFA. Everything
+    else is a 403 that names the endpoint to go to, which is what the console
+    turns into its banner.
+    """
+    path = request.url.path.rstrip("/") or request.url.path
+    if any(path == allowed or path.startswith(f"{allowed}/") for allowed in _MFA_PENDING_ALLOWED_PATHS):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "This installation requires multi-factor authentication for your role. "
+            "Enrol an authenticator with POST /api/auth/mfa/totp/setup before using "
+            "the rest of the API."
+        ),
+    )
+
+
 def get_current_user(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -420,7 +631,10 @@ def get_current_user(
     token = credentials.credentials
     if service_tokens.looks_like_service_token(token):
         return _authenticate_service_token(request, settings, token)
-    return decode_token(settings, token)
+    user = decode_token(settings, token)
+    if user.mfa_pending:
+        _enforce_mfa_enrolment(request)
+    return user
 
 
 def require_role(minimum: Role):
@@ -433,6 +647,51 @@ def require_role(minimum: Role):
         return user
 
     return _checker
+
+
+def require_step_up(
+    request: Request,
+    user: Annotated[TokenUser, Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TokenUser:
+    """Demand a *recently* proved second factor for one operation (#315).
+
+    Declared alongside ``require_role(Role.admin)`` on the routes that create
+    or destroy a credential — service tokens, provisioning keys — and on scan
+    scope approval. Holding an eight-hour session is "this browser was signed
+    in this morning"; minting a credential that outlives the session, or
+    widening what a tenant may scan, should cost the person at the keyboard a
+    code.
+
+    Only for accounts that have MFA enabled. An installation that has not
+    adopted MFA behaves exactly as it did, which is what makes this safe to
+    turn on for everyone at once rather than behind a flag.
+    """
+    from api.services import mfa as mfa_service
+
+    if getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is not None:
+        # A service token is a credential with its own expiry and revocation,
+        # not a session somebody left open, and there is no human to challenge.
+        # It is already refused these routes by scope (``tenants`` and ``auth``
+        # are in FORBIDDEN_RESOURCES); this is the second reading of the same
+        # decision, not a hole.
+        return user
+    if not mfa_service.is_enabled(settings, user.username):
+        return user
+    deadline = mfa_service.stepup_deadline(user.mfa_verified_at, settings)
+    if deadline is not None and deadline > datetime.now(UTC):
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "This operation needs a recent multi-factor verification. Re-verify "
+            "with POST /api/auth/mfa/verify and retry with the token it returns "
+            f"(valid for {settings.mfa_stepup_minutes} minutes)."
+        ),
+    )
+
+
+StepUpDep = Annotated[TokenUser, Depends(require_step_up)]
 
 
 def require_tenant(minimum: Role):
