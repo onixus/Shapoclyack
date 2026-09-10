@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.settings import Settings
-from tests.conftest import auth_headers, login, requires_postgres
+from tests.conftest import POSTGRES_URL, auth_headers, login, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -141,7 +141,10 @@ def _client(tmp_path: Path) -> TestClient:
     state.mkdir()
     _write_run(output, "run-a")
 
-    settings = Settings(output_dir=output, state_dir=state)
+    # postgres_url matters even though nothing here reads a table: since #314
+    # authenticating a console token looks the account up, so a Settings built
+    # only to point output_dir at a tmp_path would 500 every request.
+    settings = Settings(output_dir=output, state_dir=state, postgres_url=POSTGRES_URL)
 
     app = create_app()
     app.dependency_overrides = {}
@@ -304,7 +307,7 @@ def test_vulnerabilities_carry_prioritisation_and_an_explanation(tmp_path: Path)
         encoding="utf-8",
     )
 
-    settings = Settings(output_dir=output, state_dir=state)
+    settings = Settings(output_dir=output, state_dir=state, postgres_url=POSTGRES_URL)
     app = create_app()
     from api.auth import get_settings
 
@@ -400,7 +403,7 @@ def test_vulnerabilities_name_an_on_path_waf_from_fingerprint(tmp_path: Path):
         encoding="utf-8",
     )
 
-    settings = Settings(output_dir=output, state_dir=state)
+    settings = Settings(output_dir=output, state_dir=state, postgres_url=POSTGRES_URL)
     app = create_app()
     from api.auth import get_settings
 
@@ -451,7 +454,7 @@ def test_path_traversal_blocked(tmp_path: Path):
     from api.settings import Settings
 
     output = tmp_path / "output"
-    settings = Settings(output_dir=output, state_dir=tmp_path / "state")
+    settings = Settings(output_dir=output, state_dir=tmp_path / "state", postgres_url=POSTGRES_URL)
     assert read_artifact_text(settings, "run-a", "../secret.txt") is None
     assert read_artifact_text(settings, "run-a", "/etc/passwd") is None
 

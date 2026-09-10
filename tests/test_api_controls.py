@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.settings import Settings
-from tests.conftest import auth_headers, requires_postgres
+from tests.conftest import POSTGRES_URL, auth_headers, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -79,7 +79,7 @@ def _client(tmp_path: Path) -> TestClient:
     _setup_test_run(output, "run-with-controls", with_controls=True)
     _setup_test_run(output, "run-without-controls", with_controls=False)
 
-    settings = Settings(output_dir=output, state_dir=state)
+    settings = Settings(output_dir=output, state_dir=state, postgres_url=POSTGRES_URL)
     app = create_app()
     from api.auth import get_settings
 
