@@ -47,6 +47,11 @@ class Outcome:
     scanned: int = 0
     changed: int = 0
     skipped: int = 0
+    #: Rows left as they were because their key is not configured. A rotation
+    #: is precisely the moment a table legitimately holds several KEK ids, so
+    #: one row written under a key nobody kept must not end the pass before the
+    #: rows that *can* be rewrapped — it must be named at the end instead.
+    failed: int = 0
 
 
 def _database_url() -> str:
@@ -105,21 +110,34 @@ def run(url: str, *, rotate: bool = False, decrypt: bool = False, dry_run: bool 
                 outcome.scanned -= 1
                 continue
 
-            secret = _target(
-                row.secret,
-                context=webhooks_service.SECRET_CONTEXT,
-                rotate=rotate,
-                decrypt=decrypt,
-            )
-            headers = {
-                str(name): _target(
-                    str(value),
-                    context=webhooks_service.HEADERS_CONTEXT,
+            try:
+                secret = _target(
+                    row.secret,
+                    context=webhooks_service.SECRET_CONTEXT,
                     rotate=rotate,
                     decrypt=decrypt,
                 )
-                for name, value in (row.headers or {}).items()
-            }
+                headers = {
+                    str(name): _target(
+                        str(value),
+                        context=webhooks_service.HEADERS_CONTEXT,
+                        rotate=rotate,
+                        decrypt=decrypt,
+                    )
+                    for name, value in (row.headers or {}).items()
+                }
+            except envelope.SecretDecryptionError as exc:
+                # Per row, not per pass: the whole point of walking the table is
+                # to move the rows that can move. Aborting on the first row
+                # written under a key nobody kept would leave the operator with
+                # a partial pass and no idea which rows it managed. The row is
+                # left exactly as it was and named in the tally; the command
+                # exits non-zero so a script does not read this as success.
+                outcome.failed += 1
+                _log.warning(
+                    "Subscription %s left unchanged: %s", subscription_id, exc
+                )
+                continue
             # Derived from the values rather than assumed to be the current key:
             # a default pass leaves rows on an older KEK alone, and the mirror
             # has to keep saying so. A row that somehow carries two keys reports
@@ -194,6 +212,15 @@ def main(argv: list[str] | None = None) -> int:
         "to change" if args.dry_run else "rewritten",
         outcome.skipped,
     )
+    if outcome.failed:
+        _log.error(
+            "%d subscription(s) could not be read and were left as they are. Put the "
+            "key that wrote them in %s and run this again; until then their "
+            "deliveries dead-letter.",
+            outcome.failed,
+            envelope.PREVIOUS_KEYS_ENV,
+        )
+        return 1
     return 0
 
 

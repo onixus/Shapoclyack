@@ -604,12 +604,17 @@ class WebhookSubscription(Base):
     # ServiceNow table, DefectDojo test_id. Tokens stay in secret/headers.
     transport_config: Mapped[dict] = mapped_column(JSON, default=dict)
     # KEK id every encrypted value in this row is wrapped with; NULL means the
-    # row predates #310 and is still plaintext. Each ciphertext already names
-    # its own key, so this is a queryable mirror rather than the authority: it
-    # is what lets the startup check and `reencrypt_secrets --rotate` find the
-    # rows that need work without parsing every column. Keeping it true is why
-    # a write re-encrypts all of the row's secret material, not only the fields
-    # the request touched (api/services/integrations/webhooks.py).
+    # row holds nothing secret, or predates #310 and is still plaintext. Each
+    # ciphertext already names its own key, so this is a queryable mirror
+    # rather than the authority — the two readers that want the question
+    # answered in SQL rather than by parsing every column: the startup check
+    # (api/services/crypto/startup.py), which asks whether this installation
+    # stores integration secrets at all, and the operator confirming a rotation
+    # is finished (docs/operations.md § Secrets at rest, GROUP BY key_id).
+    # `reencrypt_secrets` deliberately does not trust it: it derives the label
+    # from the values it just wrote. Keeping it true is why a write re-encrypts
+    # all of the row's secret material, not only the fields the request touched
+    # (api/services/integrations/webhooks.py).
     key_id: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)

@@ -24,13 +24,17 @@ from sqlalchemy import select
 from api.db import models
 from api.db.engine import get_session
 from api.services import metrics
+from api.services.crypto import envelope as crypto
 from api.services.integrations import delivery as delivery_transport
 from api.services.integrations import tickets as ticket_transport
 
 _base = importlib.import_module("api.services.integrations.webhooks")
 LOG = logging.getLogger("shapoclyack.webhooks")
 
-_REDACTED = "***"
+# One marker, defined where the read path already applies it: the base module
+# never puts a header value in a dict, and this facade covers anything else
+# that reaches it (#310).
+_REDACTED = _base.HEADER_VALUE_REDACTED
 
 
 def __getattr__(name: str) -> Any:
@@ -231,13 +235,18 @@ def dispatch_once(
         while remaining:
             claim = remaining.pop(0)
             delivery_id, subscription_id, payload, tenant_id, event_kind, event_id = claim
-            snapshot = _subscription_snapshot(subscription_id)
-            if snapshot is None:
-                _release_claim(delivery_id, now=_base._now())
-                continue
-
-            url, secret, headers, transport, transport_config = snapshot
+            # Bound before the try because the outcome bookkeeping below reads
+            # it, and the snapshot that sets it is now inside: loading it is a
+            # decryption, and a row whose KEK is absent used to raise out here
+            # and abort the batch — with no result recorded, no attempt spent
+            # and the row pending for ever (#310).
+            transport = "webhook"
             try:
+                snapshot = _subscription_snapshot(subscription_id)
+                if snapshot is None:
+                    _release_claim(delivery_id, now=_base._now())
+                    continue
+                url, secret, headers, transport, transport_config = snapshot
                 # Narrow the remaining disable race to the actual wire call.  We do
                 # not keep a database transaction open across network I/O: that
                 # would turn a receiver timeout into a pool-exhaustion primitive.
@@ -245,7 +254,6 @@ def dispatch_once(
                     _release_claim(delivery_id, now=_base._now())
                     continue
 
-                outcome["attempted"] += 1
                 if transport in ticket_transport.TICKET_TRANSPORTS:
                     result = ticket_transport.deliver(
                         transport=transport,
@@ -275,9 +283,26 @@ def dispatch_once(
                         timeout_seconds=settings.webhook_timeout_seconds,
                         allow_private=settings.webhook_allow_private_targets,
                     )
+            except crypto.SecretDecryptionError as exc:
+                # No key, no signature. Retrying cannot help until an operator
+                # changes the environment, so the row is dead-lettered at once
+                # instead of spending max_attempts to arrive at the same place
+                # — and the dead letter is what says so. The message names the
+                # key id, never a value.
+                LOG.error(
+                    "Webhook delivery %s cannot be sent: its stored credentials do not "
+                    "decrypt (%s)",
+                    delivery_id,
+                    exc,
+                )
+                result = delivery_transport.DeliveryResult(
+                    ok=False,
+                    status_code=None,
+                    error=f"{type(exc).__name__}: {exc}"[:500],
+                    retryable=False,
+                )
             except Exception as exc:  # noqa: BLE001 - one bad receiver must not stall the queue
                 LOG.exception("Webhook delivery %s raised before/while sending", delivery_id)
-                outcome["attempted"] += 1
                 result = delivery_transport.DeliveryResult(
                     ok=False,
                     status_code=None,
@@ -285,6 +310,12 @@ def dispatch_once(
                     retryable=False,
                 )
 
+            # Counted once, here: every path that produced a result reaches
+            # this line and the two `continue`s above — released claims — do
+            # not. Incrementing at the wire call *and* in the handler that
+            # catches it made a raising receiver two attempts in the tick's
+            # own report, while the row it describes recorded one.
+            outcome["attempted"] += 1
             metrics.WEBHOOK_DELIVERY_DURATION_SECONDS.observe(result.duration_seconds)
             status = _base._record_result(delivery_id=delivery_id, result=result, now=_base._now())
             if status == "delivered":

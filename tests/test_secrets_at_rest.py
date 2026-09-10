@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from sqlalchemy import select
+
 from api.db import models
 from api.db.engine import get_session
 from api.db import reencrypt_secrets
@@ -59,7 +61,14 @@ def test_roundtrip_produces_the_documented_shape():
     version, kek_id, wrapped, nonce, ciphertext = stored.split(":")
     assert version == envelope.FORMAT_VERSION
     assert kek_id == envelope.current_key_id()
-    assert all(base64.b64decode(part, validate=True) for part in (wrapped, nonce, ciphertext))
+    # Each field for what it is, not merely for being non-empty base64: a
+    # nonce of the wrong width and a ciphertext that happens to be the
+    # plaintext would both survive a truthiness check.
+    assert len(base64.b64decode(nonce, validate=True)) == envelope._NONCE_BYTES
+    assert len(base64.b64decode(wrapped, validate=True)) == envelope._NONCE_BYTES + 32 + 16
+    body = base64.b64decode(ciphertext, validate=True)
+    assert len(body) == len(b"jira-api-token") + 16  # AES-GCM adds only its tag
+    assert b"jira-api-token" not in body
     assert "jira-api-token" not in stored
     assert envelope.is_encrypted(stored)
     assert envelope.decrypt_secret(stored, context=CONTEXT) == "jira-api-token"
@@ -214,10 +223,14 @@ def test_stored_row_holds_no_plaintext_secret_or_header(settings):
     assert row.key_id == envelope.current_key_id()
 
     # The service surface is unchanged: the secret comes back once, from the
-    # request that set it, and the header values decrypt to what was entered.
+    # request that set it. What was entered is readable exactly where an
+    # outbound call needs it, and nowhere on the read path.
     assert created["secret"] == "hmac-key"
-    fetched = webhooks._base.get_subscription(created["subscription_id"])
-    assert fetched["headers"] == {"Authorization": "Bearer jira-api-token"}
+    secret, headers = webhooks._base.endpoint_credentials(row)
+    assert (secret, headers) == ("hmac-key", {"Authorization": "Bearer jira-api-token"})
+    assert webhooks._base.get_subscription(created["subscription_id"])["headers"] == {
+        "Authorization": "***"
+    }
 
 
 @requires_postgres
@@ -307,6 +320,151 @@ def test_reencrypt_command_encrypts_rotates_and_decrypts(settings):
 
 
 # --------------------------------------------------------------------------
+# A row nobody can read
+# --------------------------------------------------------------------------
+#
+# The state every path below has to survive: a subscription written under a key
+# this process does not have. It is not exotic — an operator who dropped
+# ``OCTO_MASTER_KEY_PREVIOUS`` one step too early in a rotation, or a database
+# restored against a different key, produces exactly this. What must not happen
+# is one such row taking the tenant's other subscriptions down with it.
+
+
+def _unreadable_subscription(settings: Settings, **overrides) -> dict:
+    """Write a row under ``KEY_B``, then leave the process holding only ``KEY_A``.
+
+    Both columns carry something: a path that decrypts only the headers and a
+    path that decrypts only the signing secret are each broken by exactly one
+    of them, and a helper that covers one of the two hides the other.
+    """
+    payload = {"secret": "lost-hmac-key", "headers": {"X-Api-Key": "gateway-token"}}
+    payload.update(overrides)
+    _use(KEY_B)
+    created = _subscribe(settings, name="lost", **payload)
+    _use(KEY_A)
+    with pytest.raises(envelope.SecretDecryptionError):
+        webhooks._base.endpoint_credentials(_row(settings, created["subscription_id"]))
+    return created
+
+
+@requires_postgres
+def test_fan_out_does_not_read_secrets_and_keeps_the_event(settings):
+    """Routing asks about enabled/kinds/severity, none of which is encrypted."""
+    lost = _unreadable_subscription(settings)
+    healthy = _subscribe(settings, name="healthy", secret="hmac-key")
+
+    queued = webhooks.enqueue_event(_event())
+
+    assert len(queued) == 2
+    with get_session(settings.postgres_url) as session:
+        targets = set(
+            session.scalars(
+                select(models.WebhookDelivery.subscription_id).where(
+                    models.WebhookDelivery.delivery_id.in_(queued)
+                )
+            )
+        )
+    assert targets == {lost["subscription_id"], healthy["subscription_id"]}
+
+
+@requires_postgres
+def test_an_undecryptable_row_dead_letters_without_stalling_the_batch(settings):
+    lost = _unreadable_subscription(settings)
+    _subscribe(settings, name="healthy", secret="hmac-key")
+    webhooks.enqueue_event(_event())
+
+    sent: list[str] = []
+
+    def _capture(url, body, headers, **kwargs):
+        sent.append(url)
+        return delivery_transport.DeliveryResult(
+            ok=True, status_code=204, error=None, retryable=False
+        )
+
+    outcome = webhooks.dispatch_once(post=_capture)
+
+    # The healthy subscription is delivered in the same batch, and the row that
+    # cannot be signed goes to the DLQ at once rather than spending
+    # `webhook_max_attempts` to arrive at the same place.
+    assert (outcome["delivered"], outcome["dead"], outcome["retrying"]) == (1, 1, 0)
+    assert len(sent) == 1
+
+    dead, total = webhooks.list_deliveries(status="dead")
+    assert total == 1
+    assert dead[0]["subscription_id"] == lost["subscription_id"]
+    assert dead[0]["attempts"] == 1
+    # The dead letter says why without saying what: no ciphertext, no secret.
+    assert "SecretDecryptionError" in dead[0]["last_error"]
+    assert "lost-hmac-key" not in repr(dead)
+    assert envelope.FORMAT_VERSION + ":" not in repr(dead)
+
+    # And the queue is genuinely empty afterwards, not holding a released claim.
+    assert webhooks.dispatch_once(post=_capture)["attempted"] == 0
+
+
+@requires_postgres
+def test_the_read_path_holds_no_key_at_all(settings):
+    """List and get answer for a row they could not decrypt — they never try."""
+    lost = _unreadable_subscription(settings)
+    healthy = _subscribe(settings, name="healthy", secret="hmac-key")
+    envelope.reset_for_tests()  # not even KEY_A now
+
+    items, total = webhooks.list_subscriptions("default")
+    assert total == 2
+    assert {item["subscription_id"] for item in items} == {
+        lost["subscription_id"],
+        healthy["subscription_id"],
+    }
+
+    fetched = webhooks.get_subscription(lost["subscription_id"])
+    assert fetched["headers"] == {"X-Api-Key": "***"}
+    assert fetched["has_secret"] is True
+    assert "gateway-token" not in repr(items)
+    assert envelope.FORMAT_VERSION + ":" not in repr(items)
+
+
+@requires_postgres
+def test_rotation_leaves_an_unreadable_row_alone_and_reports_it(settings):
+    lost = _unreadable_subscription(settings)
+    _subscribe(settings, name="healthy", secret="hmac-key")
+    before = _row(settings, lost["subscription_id"]).secret
+
+    outcome = reencrypt_secrets.run(settings.postgres_url, rotate=True)
+
+    # One row rotated (the healthy one is already current, so: skipped), one
+    # named as failed — and the pass reached the second row at all, which is
+    # the defect: it used to abort on the first row it could not read.
+    assert (outcome.scanned, outcome.changed, outcome.skipped, outcome.failed) == (2, 0, 1, 1)
+    assert _row(settings, lost["subscription_id"]).secret == before
+    assert reencrypt_secrets.main(["--rotate"]) == 1
+
+
+@requires_postgres
+def test_prod_refuses_to_store_a_new_secret_without_a_key(settings):
+    """The startup check answered for the rows that existed at boot, only."""
+    settings.env = ENV_PROD
+
+    with pytest.raises(InsecureConfigurationError) as excinfo:
+        _subscribe(settings, name="new-in-prod", secret="hmac-key")
+    assert envelope.MASTER_KEY_ENV in str(excinfo.value)
+    assert webhooks.list_subscriptions("default")[1] == 0
+
+    # Configured, the very same call is fine — the refusal is about the key.
+    _use(KEY_A)
+    created = _subscribe(settings, name="new-in-prod", secret="hmac-key")
+    assert envelope.is_encrypted(_row(settings, created["subscription_id"]).secret)
+
+    # An edit that would add a header value to an unprotected installation is
+    # refused on the same terms, and changes nothing.
+    envelope.reset_for_tests()
+    with pytest.raises(InsecureConfigurationError):
+        webhooks.update_subscription(
+            created["subscription_id"], headers={"X-Api-Key": "gateway-token"}
+        )
+    assert _row(settings, created["subscription_id"]).headers == {}
+
+
+# --------------------------------------------------------------------------
 # Startup
 # --------------------------------------------------------------------------
 
@@ -321,7 +479,13 @@ def test_prod_without_a_key_refuses_once_a_secret_is_stored(settings, caplog):
         crypto_startup.bootstrap(settings)
     assert envelope.MASTER_KEY_ENV in caplog.text
 
+    # The row this check is about is one an older build wrote as typed, so it
+    # is planted under `dev` — a `prod` write of it is refused outright, which
+    # is the test below.
+    settings.env = "dev"
     _subscribe(settings, secret="hmac-key")
+    settings.env = ENV_PROD
+
     with pytest.raises(InsecureConfigurationError) as excinfo:
         crypto_startup.bootstrap(settings)
     assert envelope.MASTER_KEY_ENV in str(excinfo.value)
@@ -341,8 +505,10 @@ def test_dev_without_a_key_warns_and_keeps_running(settings, caplog):
 def test_configured_key_is_accepted_in_prod(settings, monkeypatch):
     settings.env = ENV_PROD
     monkeypatch.setenv(envelope.MASTER_KEY_ENV, KEY_A)
-    _subscribe(settings, secret="hmac-key")
+    crypto_startup.bootstrap(settings)
+    assert envelope.encryption_enabled()
 
+    _subscribe(settings, secret="hmac-key")
     crypto_startup.bootstrap(settings)
     assert envelope.encryption_enabled()
 

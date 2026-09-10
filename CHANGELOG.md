@@ -17,8 +17,20 @@ All notable changes to Shapoclyack are documented in this file.
   `OCTO_MASTER_KEY`, stored as `v1:<kek_id>:<wrapped dek>:<nonce>:<ciphertext>`
   and bound to its column so a ciphertext moved between the two fails its tag.
   The API responses are unchanged: the secret is still write-only and header
-  values still redact to `***`. Decryption happens in exactly one place, the
-  moment before an outbound call.
+  values still redact to `***`. Reading a subscription needs no key at all —
+  the values that would be redacted are never decrypted to be redacted — and
+  neither does the fan-out, which routes on `enabled` / `event_kinds` /
+  `min_severity`. The one function that turns a stored envelope back into a
+  credential is `endpoint_credentials`, called by the delivery loop and by the
+  ticket reflection immediately before the wire call.
+
+  A row whose KEK is not configured — a rotation window closed one step early,
+  a backup restored against another key — is therefore contained: it is listed
+  and edited like any other, it does not stop the event that fans out to its
+  neighbours, and its deliveries dead-letter on the first attempt with
+  `SecretDecryptionError` rather than spending `OCTO_WEBHOOK_MAX_ATTEMPTS` on a
+  retry that cannot succeed. `--rotate` leaves such a row exactly as it is,
+  counts it, and exits non-zero.
 
   Nothing is re-encrypted by a migration. The stored form names the key that
   opens it and the read path still accepts plaintext, so encrypting a live
@@ -32,7 +44,11 @@ All notable changes to Shapoclyack are documented in this file.
   subscription already holds a secret or a configured header — those rows are
   either plaintext, which is the defect, or encrypted and unreadable — and
   starts with a warning when there are none, so a deployment with no
-  integrations is not made to invent a key it does not need. Under `dev` it is
+  integrations is not made to invent a key it does not need. That warning is
+  not a licence: an installation which came up with nothing stored and then
+  had a webhook created **refuses the write**, because the startup answer is
+  about the rows that existed at boot and the first integration is exactly
+  what changes it. Under `dev` it is
   always a warning and the values stay plaintext, which is what keeps a laptop
   and the test suite working unchanged. Console passwords, service tokens and
   provisioning keys are unaffected: they are hashes, not secrets we can read
@@ -79,6 +95,16 @@ All notable changes to Shapoclyack are documented in this file.
   variable at all. `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`
   adds the server-side `tls {}` block and the cert-manager `Certificate` to
   copy. Base is unchanged — the kind stand has no CA and stays plaintext.
+
+### Fixed
+
+- **A webhook delivery whose send raised counted as two attempts** in the
+  dispatch tick's own report while the delivery row recorded one
+  ([#310](https://github.com/onixus/Shapoclyack/issues/310)). The counter was
+  incremented at the wire call and again in the handler that caught it, so the
+  `attempted` figure the worker logs disagreed with the queue whenever a
+  receiver refused a connection. It is now counted once, where the outcome is
+  written back.
 
 ### Added
 

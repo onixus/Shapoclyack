@@ -37,7 +37,7 @@ from api.services import vulnerabilities as vulns_service
 from api.services.crypto import envelope as crypto
 from api.services.integrations import delivery as delivery_transport
 from api.services.integrations import tickets as ticket_transport
-from api.settings import Settings
+from api.settings import ENV_PROD, InsecureConfigurationError, Settings
 from scanner.pipeline.report import SEVERITY_ORDER
 
 LOG = logging.getLogger("shapoclyack.webhooks")
@@ -91,6 +91,25 @@ def reset_for_tests() -> None:
 SECRET_CONTEXT = "webhook_subscriptions.secret"
 HEADERS_CONTEXT = "webhook_subscriptions.headers"
 
+# What a read path shows instead of a configured header value. The value is
+# write-only exactly like the signing secret, so decrypting it to build a dict
+# whose values are replaced before the response is serialised would be a key
+# operation with no reader — and one row under a missing KEK would then fail a
+# list of every other subscription in the tenant (#310). The names are the part
+# of the mapping a caller can act on; ``secure_webhooks`` applies the same
+# marker to whatever else reaches it.
+HEADER_VALUE_REDACTED = "***"
+
+_PLAINTEXT_WRITE_REFUSAL = (
+    "Refusing to store an integration secret in plaintext: {key} is unset.\n\n"
+    "  This subscription carries a signing secret or a configured header value,\n"
+    "  which would be written to Postgres as typed — the defect #310 closed. The\n"
+    "  startup check only sees the rows that existed when the process came up, so\n"
+    "  the write path refuses in its own right.\n\n"
+    "  Generate a key with: openssl rand -base64 32\n"
+    "  Put it in {key} and roll the API — see docs/operations.md § Secrets at rest."
+)
+
 
 def _rewrap(value: str | None, *, context: str) -> str | None:
     """Bring one value to the current KEK: encrypt plaintext, rewrap stale keys.
@@ -117,7 +136,18 @@ def _encrypt_row_secrets(row: models.WebhookSubscription) -> None:
     ``key_id`` is one label for the whole row, so a PATCH of the headers must
     leave the signing secret under the same key it claims. That also means an
     ordinary edit opportunistically finishes a rotation the operator started.
+
+    Under ``OCTO_ENV=prod`` a write with no key configured is refused rather
+    than stored as typed. ``crypto/startup.py`` asks that question once, of the
+    rows that existed at boot: an installation that came up with no
+    integrations got a warning, and the first webhook an operator then created
+    landed in plaintext with nothing said (#310).
     """
+    has_secrets = bool(row.secret) or bool(row.headers)
+    if has_secrets and not crypto.encryption_enabled() and _require_settings().env == ENV_PROD:
+        raise InsecureConfigurationError(
+            _PLAINTEXT_WRITE_REFUSAL.format(key=crypto.MASTER_KEY_ENV)
+        )
     row.secret = _rewrap(row.secret, context=SECRET_CONTEXT)
     row.headers = {
         name: _rewrap(value, context=HEADERS_CONTEXT)
@@ -125,9 +155,9 @@ def _encrypt_row_secrets(row: models.WebhookSubscription) -> None:
     }
     # NULL when the row carries nothing secret: the startup check reads a
     # non-NULL key_id as "this installation has secrets at rest", and a webhook
-    # with neither a secret nor a header is not one.
-    has_secrets = bool(row.secret) or bool(row.headers)
-    row.key_id = crypto.current_key_id() if has_secrets else None
+    # with neither a secret nor a header is not one. Re-derived, because
+    # ``_rewrap`` of an empty value leaves it empty.
+    row.key_id = crypto.current_key_id() if (bool(row.secret) or bool(row.headers)) else None
 
 
 def _decrypt_headers(row: models.WebhookSubscription) -> dict[str, str]:
@@ -167,11 +197,11 @@ def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
     secret an operator pastes into a form. It is shown exactly once, in the
     response to the request that set it (see ``create_subscription``).
 
-    ``headers`` is decrypted here so the field keeps meaning "the values that
-    were configured" — ``secure_webhooks`` redacts it to ``***`` before it can
-    reach a caller, and a field that sometimes held ciphertext instead would be
-    a trap for the next reader of it. ``has_secret`` needs no key: whether a
-    column is NULL is the same question either way (#310).
+    ``headers`` carries the configured *names* against
+    :data:`HEADER_VALUE_REDACTED`: the values never leave the service, so this
+    path holds no key and cannot fail on a row it has no key for.
+    ``has_secret`` needs no key either — whether a column is NULL is the same
+    question encrypted or not (#310).
     """
     return {
         "subscription_id": row.subscription_id,
@@ -182,7 +212,7 @@ def _subscription_to_dict(row: models.WebhookSubscription) -> dict[str, Any]:
         "event_kinds": list(row.event_kinds or []),
         "min_severity": row.min_severity,
         "has_secret": bool(row.secret),
-        "headers": _decrypt_headers(row),
+        "headers": {str(name): HEADER_VALUE_REDACTED for name in (row.headers or {})},
         "transport": row.transport or "webhook",
         "transport_config": dict(row.transport_config or {}),
         "created_at": _iso(row.created_at),
@@ -371,7 +401,17 @@ def update_subscription(subscription_id: str, **fields: Any) -> dict[str, Any] |
     settings = _require_settings()
     rotated: str | None = None
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.WebhookSubscription, subscription_id)
+        # Locked, not merely fetched: ``reencrypt_secrets`` rewrites the same
+        # row under ``SELECT … FOR UPDATE`` and the runbook promises a
+        # concurrent edit is serialised against that pass rather than lost.
+        # Without the lock here the two read the same row and the later commit
+        # wins, which during a ``--decrypt`` means an encrypted value written
+        # back over a decrypted one (#310).
+        row = session.scalar(
+            select(models.WebhookSubscription)
+            .where(models.WebhookSubscription.subscription_id == subscription_id)
+            .with_for_update()
+        )
         if row is None:
             return None
         if "name" in fields:
@@ -459,6 +499,23 @@ def event_severity(envelope: dict[str, Any]) -> str | None:
         return None
     severity = data.get("severity")
     return str(severity).strip().lower() if severity else None
+
+
+def routing_fields(row: models.WebhookSubscription) -> dict[str, Any]:
+    """The three fields :func:`matches` reads, taken without touching a secret.
+
+    The fan-out asks "does this event belong to this subscription", which is a
+    question about ``enabled``/``event_kinds``/``min_severity`` alone. Handing
+    it a full ``_subscription_to_dict`` was the expensive way to ask it and,
+    once #310 encrypted the columns, the fragile one too: a single row whose
+    KEK is missing would raise inside the loop and lose the event for every
+    other subscription in the tenant.
+    """
+    return {
+        "enabled": bool(row.enabled),
+        "event_kinds": list(row.event_kinds or []),
+        "min_severity": row.min_severity,
+    }
 
 
 def matches(subscription: dict[str, Any], envelope: dict[str, Any]) -> bool:
@@ -554,7 +611,7 @@ def enqueue_event(envelope: dict[str, Any]) -> list[str]:
         for row in rows:
             if row.subscription_id in existing:
                 continue
-            if not matches(_subscription_to_dict(row), envelope):
+            if not matches(routing_fields(row), envelope):
                 continue
             delivery_id = f"whd_{uuid.uuid4().hex[:16]}"
             queued = models.WebhookDelivery(

@@ -1427,6 +1427,12 @@ installation with no integrations starts with a warning instead, so this does
 not demand a key of a deployment that has nothing to protect. Under
 `OCTO_ENV=dev` it is always a warning and the values stay plaintext.
 
+That startup answer is about the rows that existed at boot, so it is asked
+again on the way in: in `prod` with no key configured, creating or editing a
+subscription that carries a secret or a header value is refused (`500`, with
+the refusal in the API log) rather than writing the first integration as
+typed.
+
 ### Encrypting an existing installation
 
 The read path accepts both forms, so this is an online step with no maintenance
@@ -1440,8 +1446,9 @@ kubectl -n network-scan exec deploy/shapoclyack-api -- \
 ```
 
 Each row is rewritten in its own short transaction under `SELECT … FOR UPDATE`,
-so a concurrent edit from the console is serialised rather than lost, and an
-interrupted pass is resumed by running it again.
+and `PATCH /api/webhooks/{id}` takes the same lock, so a concurrent edit from
+the console is serialised against the pass rather than lost. An interrupted
+pass is resumed by running it again.
 
 ### Rotating the KEK
 
@@ -1452,7 +1459,10 @@ window — that is what `OCTO_MASTER_KEY_PREVIOUS` is for.
    `OCTO_MASTER_KEY_PREVIOUS` (comma-separated; more than one is allowed).
 2. Roll the API. Rows on the old key still decrypt; new writes use the new key.
 3. Rewrap what is already stored:
-   `python -m api.db.reencrypt_secrets --rotate`.
+   `python -m api.db.reencrypt_secrets --rotate`. A row whose key is in neither
+   variable is left exactly as it was and counted at the end; the command exits
+   non-zero and names how many, so the rest of the table is still rotated and
+   the exception is visible rather than an abort on the first one.
 4. Confirm nothing is left behind, then remove `OCTO_MASTER_KEY_PREVIOUS` and
    roll again:
 
@@ -1466,21 +1476,55 @@ window — that is what `OCTO_MASTER_KEY_PREVIOUS` is for.
    `--rotate` first.
 
 Skipping step 1 and simply replacing the key makes every stored secret
-unreadable: deliveries fail and the console cannot list webhooks. Recovery is
-putting the old key back into `OCTO_MASTER_KEY_PREVIOUS`.
+unreadable, which the next section is about. Recovery is putting the old key
+back into `OCTO_MASTER_KEY_PREVIOUS`.
+
+### When a row cannot be decrypted
+
+`OCTO_MASTER_KEY_PREVIOUS` dropped one step too early, or a database restored
+against a different key: the row names a `kek_id` this process does not have.
+That is contained to the row rather than to the tenant.
+
+* the console still lists and edits it — the read path holds no key, because
+  the header values are redacted rather than decrypted-then-redacted;
+* an event that fans out to it is still queued for every other subscription:
+  routing reads `enabled` / `event_kinds` / `min_severity` only;
+* its own deliveries **dead-letter on the first attempt** with
+  `SecretDecryptionError` instead of consuming `OCTO_WEBHOOK_MAX_ATTEMPTS`.
+  They are in the DLQ view (`status=dead`), which is where you find out.
+
+Recovery is the key, not the data: put the key that wrote it back into
+`OCTO_MASTER_KEY_PREVIOUS`, roll the API, run
+`python -m api.db.reencrypt_secrets --rotate`, then retry the dead letters. If
+the key is genuinely gone, nothing can read those values — set the secret and
+the header again through `PATCH /api/webhooks/{id}`, which rewrites the row
+under the current key.
+
+The `GROUP BY key_id` query in step 4 above finds them before a delivery does:
+a `kek_id` that is neither the current key nor one of the previous ones.
 
 ### Rolling back to a pre-#310 image
 
 Older code reads `secret` and the header values as opaque strings and would
 sign with — or send — the ciphertext. Decrypt first, while the key is still
-configured:
+configured.
+
+Unlike the encrypting passes, this one is **not** an online step: the running
+API re-encrypts on every write, so a `PATCH` of a subscription — or a
+console edit — after the pass has walked past that row puts it straight back
+under the key you are about to remove. Scale the API to zero first, or take it
+out of the Ingress and confirm no writes are in flight:
 
 ```
-python -m api.db.reencrypt_secrets --decrypt
+kubectl -n network-scan scale deploy/shapoclyack-api --replicas=0
+kubectl -n network-scan run reencrypt --rm -it --restart=Never \
+  --image=<the image the API runs> --env-from=secret/shapoclyack-api-users \
+  --env OCTO_POSTGRES_URL=... -- python -m api.db.reencrypt_secrets --decrypt
 ```
 
-then roll back and apply `alembic downgrade 0036_oidc_pending_states`, which
-drops only the `key_id` column.
+then roll back the image, scale up again, and apply
+`alembic downgrade 0036_oidc_pending_states`, which drops only the `key_id`
+column.
 
 ### Vault Transit and cloud KMS
 
