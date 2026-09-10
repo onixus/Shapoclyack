@@ -324,10 +324,19 @@ def endpoint_inventory_status(settings: Settings) -> dict[str, Any]:
     }
 
 
-def inventory_counts() -> dict[str, int | None]:
+def inventory_counts(*, include_fleet_counts: bool = True) -> dict[str, int | None]:
+    """Installation-wide tenant and agent counts, or nulls.
+
+    ``include_fleet_counts=False`` is the caller saying "this principal may not
+    see across tenants" (#318) and returns the same all-null shape a
+    Postgres-less installation gets, rather than a different one — a consumer
+    that already handles "the counts are unavailable" needs no second branch.
+    """
     tenants: int | None
     agents_total: int | None
     agents_online: int | None
+    if not include_fleet_counts:
+        return {"tenants": None, "agents_total": None, "agents_online": None}
     try:
         from api.services import tenants as tenants_service
 
@@ -347,7 +356,7 @@ def inventory_counts() -> dict[str, int | None]:
     return {"tenants": tenants, "agents_total": agents_total, "agents_online": agents_online}
 
 
-def build_status(settings: Settings) -> dict[str, Any]:
+def build_status(settings: Settings, *, include_fleet_counts: bool = True) -> dict[str, Any]:
     config = _load_config(settings)
     return {
         "app_version": __version__,
@@ -355,6 +364,6 @@ def build_status(settings: Settings) -> dict[str, Any]:
         "enrichment": enrichment_status(config),
         "scan_config": scan_config_summary(config, _effective_overrides(settings)),
         "runtime": runtime_info(settings),
-        "inventory": inventory_counts(),
+        "inventory": inventory_counts(include_fleet_counts=include_fleet_counts),
         "endpoint_inventory": endpoint_inventory_status(settings),
     }

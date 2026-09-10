@@ -24,7 +24,8 @@ from typing import Annotated, Any, Iterator
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from api.auth import Role, TenantPrincipal, require_tenant
+from api.auth import TenantPrincipal, require_permission
+from api.core import permissions as permission_catalog
 from api.routes._pagination import PageQuery, build_page
 from api.schemas import AuditEventInfo, Page
 from api.services import audit as audit_service
@@ -115,7 +116,9 @@ def _ndjson_rows(events: Iterator[dict[str, Any]]) -> Iterator[str]:
 
 @router.get("/audit", response_model=None)
 def list_audit_events(
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.AUDIT_READ))
+    ],
     offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
     limit: Annotated[int, Query(ge=1, le=MAX_LIMIT, description="Rows per page")] = DEFAULT_LIMIT,
     actor: Annotated[str | None, Query(description="Exact actor (username, token or agent)")] = None,
@@ -133,7 +136,12 @@ def list_audit_events(
         Query(alias="format", pattern="^(csv|ndjson)$", description="Stream an export instead"),
     ] = None,
 ) -> Page[AuditEventInfo] | StreamingResponse:
-    """Recorded changes, newest first. Admin in the tenant; platform admin sees all.
+    """Recorded changes, newest first. ``audit.read`` in the tenant; platform admin sees all.
+
+    The permission, not the rank, since #318: an ``auditor`` reads this and can
+    write nothing anywhere, which is the whole point of having the role — before
+    it, the only way to let somebody review a tenant's changes was to make them
+    an administrator of it.
 
     Takes ``offset``/``limit`` but not the ``q``/``sort``/``order`` of the other
     paginated lists, and does not advertise them: this is a log, so the only

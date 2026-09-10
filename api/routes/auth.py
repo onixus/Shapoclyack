@@ -14,12 +14,15 @@ from api.auth import (
     MeResponse,
     Role,
     StepUpDep,
+    TenantPrincipal,
     TokenUser,
     authenticate_user,
     create_access_token,
     create_pre_auth_token,
     get_current_user,
     get_settings,
+    require_path_tenant_permission,
+    require_platform_permission,
     require_role,
 )
 from api.schemas import (
@@ -44,6 +47,7 @@ from api.schemas import (
     TenantQuotaInfo,
     TenantQuotaRequest,
 )
+from api.core import permissions as permission_catalog
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
 from api.routes._audit import AuditDep
@@ -284,14 +288,32 @@ def me(
     tenants = memberships_service.tenants_for_user(
         user.username, is_platform_admin=is_platform_admin
     )
+    default_tenant = memberships_service.default_tenant_for_user(
+        user.username, is_platform_admin=is_platform_admin
+    )
+    # The role in the default tenant, which is what the console is about to
+    # render for (#318). Falls back to the global role exactly as
+    # ``resolve_tenant`` does for a user with no memberships, so the answer
+    # here and the answer a request gets cannot disagree.
+    tenant_role = memberships_service.roles_for_user(user.username).get(
+        default_tenant, user.role.value
+    )
+    try:
+        effective_role = Role(tenant_role)
+    except ValueError:
+        effective_role = Role.viewer
     return MeResponse(
         username=user.username,
         role=user.role,
         tenants=tenants,
-        default_tenant=memberships_service.default_tenant_for_user(
-            user.username, is_platform_admin=is_platform_admin
-        ),
+        default_tenant=default_tenant,
         is_platform_admin=is_platform_admin,
+        tenant_role=effective_role,
+        permissions=sorted(
+            permission_catalog.permissions_for(
+                effective_role.value, is_platform_admin=is_platform_admin
+            )
+        ),
         # Reachable by a session that owes an enrolment: this route is on the
         # ``mfa_pending`` allowlist precisely so the console can render the
         # banner that sends the user to the setup page (#315).
@@ -587,8 +609,18 @@ def list_tenant_posture(
 @router.get("/tenants/{tenant_id}/members", response_model=list[MembershipInfo])
 def list_members(
     tenant_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_READ)),
+    ],
 ) -> list[MembershipInfo]:
+    """Who may act in this tenant. The tenant's own admin, not only the platform's.
+
+    Tenant self-service (#318): before this, adding a colleague to a tenant was
+    a ticket to whoever holds the global admin account, which is neither how an
+    MSSP customer expects to work nor a separation of duties — it made the
+    platform operator the only administrator of every customer.
+    """
     if tenants_service.get_tenant(tenant_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
     return [
@@ -605,16 +637,26 @@ def grant_membership(
     tenant_id: str,
     username: str,
     body: GrantMembershipRequest,
-    user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
+    ],
     audit: AuditDep,
 ) -> MembershipInfo:
-    """Grant (or re-grant) one user access to one tenant. Idempotent."""
+    """Grant (or re-grant) one user access to one tenant. Idempotent.
+
+    ``role`` is one of the eight tenant roles since #318
+    (``GET /api/rbac/roles`` lists them with what each may do). The grant is
+    recorded in the audit trail with the role before and after, which is what
+    makes a promotion inside a tenant reviewable — the one thing tenant
+    self-service must not cost.
+    """
     try:
         granted = memberships_service.grant(
             username=username,
             tenant_id=tenant_id,
             role=body.role,
-            created_by=user.username,
+            created_by=principal.username,
             audit=audit,
         )
     except ValueError as exc:
@@ -626,7 +668,10 @@ def grant_membership(
 def revoke_membership(
     tenant_id: str,
     username: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
+    ],
     audit: AuditDep,
 ) -> None:
     if not memberships_service.revoke(username=username, tenant_id=tenant_id, audit=audit):
@@ -636,8 +681,12 @@ def revoke_membership(
 @router.post("/tenants", response_model=TenantInfo, status_code=status.HTTP_201_CREATED)
 def create_tenant(
     body: CreateTenantRequest,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_TENANT_MANAGE)),
+    ],
 ) -> TenantInfo:
+    """Create a tenant. Platform admin — a tenant does not create tenants."""
     try:
         created = tenants_service.create_tenant(name=body.name, tenant_id=body.tenant_id)
     except ValueError as exc:
@@ -653,13 +702,24 @@ def create_tenant(
 def create_provisioning_key(
     tenant_id: str,
     body: CreateProvisioningKeyRequest,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     # A provisioning key enrols agents into a tenant and outlives the session
     # that made it, so an account with a second factor must have proved it
     # recently to mint one (#315). No effect on an account without MFA.
     __: StepUpDep,
     audit: AuditDep,
 ) -> ProvisioningKeyInfo:
+    """Mint a provisioning key for this tenant's agents.
+
+    ``tenant.credential.manage`` since #318, which the tenant's own admin and
+    the ``token-admin`` role hold: rotating the key an installer uses is
+    routine, and routing it through the platform operator made the rotation
+    something a tenant put off rather than did. The step-up above is unchanged
+    — who may do it moved, what it costs did not.
+    """
     try:
         created = tenants_service.create_provisioning_key(
             tenant_id=tenant_id, label=body.label, audit=audit
@@ -674,7 +734,10 @@ def create_provisioning_key(
 @router.get("/tenants/{tenant_id}/provisioning-keys", response_model=list[ProvisioningKeyInfo])
 def list_provisioning_keys(
     tenant_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
 ) -> list[ProvisioningKeyInfo]:
     if tenants_service.get_tenant(tenant_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
@@ -691,7 +754,10 @@ def list_provisioning_keys(
 def revoke_provisioning_key(
     tenant_id: str,
     key_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     # Step-up on the revoke as well as the create (#315): cutting a tenant's
     # agents off the platform is as much a credential decision as issuing them.
     __: StepUpDep,
@@ -706,10 +772,18 @@ def revoke_provisioning_key(
 @router.get("/tenants/{tenant_id}/quota", response_model=TenantQuotaInfo)
 def get_tenant_quota(
     tenant_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_QUOTA_READ)),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TenantQuotaInfo:
-    """What this tenant was sold (Track E). Platform admin only.
+    """What this tenant was sold (Track E).
+
+    Readable by the tenant's own admin and auditor since #318 — "how many
+    assets am I allowed" is not a platform secret, and a customer who cannot
+    see their own limit discovers it as a refused scan. Changing it stays
+    platform-only; see ``PUT`` below.
 
     ``quota_source`` distinguishes a limit somebody wrote for this customer
     from the platform default they merely inherited — a distinction that
@@ -734,15 +808,20 @@ def get_tenant_quota(
 def set_tenant_quota(
     tenant_id: str,
     body: TenantQuotaRequest,
-    user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    user: Annotated[
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_QUOTA_MANAGE)),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TenantQuotaInfo:
     """Set this tenant's limits, replacing whatever applied before.
 
-    Platform admin, for the reason scan-scope approval is: a tenant operator
-    who could raise their own quota is the control removing itself. The
-    caller's username and the moment are stamped on the row, so "who sold them
-    5,000 assets" has an answer that is not a memory.
+    Platform admin, for the reason scan-scope approval is: a tenant admin who
+    could raise their own quota is the control removing itself. This is the one
+    place #318's tenant self-service deliberately stops short of what the issue
+    asked for — the read above moved, the write did not. The caller's username
+    and the moment are stamped on the row, so "who sold them 5,000 assets" has
+    an answer that is not a memory.
     """
     if tenants_service.get_tenant(tenant_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
@@ -768,7 +847,10 @@ def set_tenant_quota(
 @router.delete("/tenants/{tenant_id}/quota", status_code=status.HTTP_204_NO_CONTENT)
 def clear_tenant_quota(
     tenant_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_QUOTA_MANAGE)),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
     """Return this tenant to the platform default.
@@ -787,10 +869,18 @@ def clear_tenant_quota(
 @router.get("/tenants/{tenant_id}/scan-scope", response_model=list[ScanScopeEntryInfo])
 def list_scan_scope(
     tenant_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.SCAN_SCOPE_READ)),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[ScanScopeEntryInfo]:
-    """What this tenant is allowed to scan (#226). Platform admin only.
+    """What this tenant is allowed to scan (#226).
+
+    Readable by the ``scope-approver`` who decides it, by the tenant's own
+    admin and auditor, and by the platform admin. Writing it is the separate
+    permission below — reading what you are allowed to scan and widening it are
+    the two halves #318 pulled apart.
 
     An empty list is a meaningful answer, not a missing one: the tenant scans
     nothing until a scope is approved.
@@ -806,7 +896,10 @@ def list_scan_scope(
 @router.get("/tenants/{tenant_id}/promoted-domains", response_model=list[PromotedDomainInfo])
 def list_promoted_domains(
     tenant_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.SCAN_SCOPE_READ)),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[PromotedDomainInfo]:
     """Related domains this tenant's operators promoted into scope (org_profile M4).
@@ -828,17 +921,23 @@ def list_promoted_domains(
 def replace_scan_scope(
     tenant_id: str,
     body: ReplaceScanScopeRequest,
-    user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.SCAN_SCOPE_APPROVE)),
+    ],
     _: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> list[ScanScopeEntryInfo]:
     """Approve the scope this tenant may scan, replacing whatever it had.
 
-    Platform admin, like provisioning-key creation (#231): deciding that a
-    tenant may point the platform at a network is an administrative act, and
-    an operator who could widen their own scope would be the control removing
-    itself. The caller's username is stamped on every resulting row.
+    ``scan_scope.approve`` (#318), which the platform admin and the
+    ``scope-approver`` role hold and no role that can start a scan does — not
+    ``operator``, not ``scan-operator``, not the tenant's own ``admin``.
+    Deciding that a tenant may point the platform at a network is an
+    administrative act about somebody else's property, and an operator who
+    could widen their own scope would be the control removing itself. The
+    caller's username is stamped on every resulting row.
 
     Behind a step-up since #315, for the same reason the credential routes are:
     widening what the platform may scan is the one administrative act whose
@@ -850,7 +949,7 @@ def replace_scan_scope(
             settings,
             tenant_id=tenant_id,
             entries=[entry.model_dump() for entry in body.entries],
-            approved_by=user.username,
+            approved_by=principal.username,
             audit=audit,
         )
     except LookupError as exc:
