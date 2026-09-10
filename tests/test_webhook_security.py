@@ -148,3 +148,20 @@ def test_disable_winning_after_claim_releases_attempt_without_sending(settings, 
     assert row is not None
     assert row["status"] == "pending"
     assert row["attempts"] == 0
+
+
+@requires_postgres
+def test_a_receiver_that_raises_is_one_attempt_not_two(settings):
+    """The tick's report has to agree with the row it just wrote."""
+    _subscribe(settings)
+    delivery_id = webhooks.enqueue_event(_event("ev-raise"))[0]
+
+    def _explode(*args, **kwargs):
+        raise RuntimeError("connection reset")
+
+    outcome = webhooks.dispatch_once(post=_explode)
+    assert outcome["attempted"] == 1
+
+    row = webhooks.get_delivery(delivery_id)
+    assert row is not None
+    assert row["attempts"] == 1

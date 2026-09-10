@@ -1221,7 +1221,12 @@ def _ticket_endpoint(
     The tracker is addressed through the subscription that configured it, not
     by string-splitting the stored ``ticket_url``: that is where the credential
     lives, and a URL we did not configure is a URL we should not be calling.
+
+    Imported here rather than at module scope because ``webhooks`` imports this
+    module — the credential lives in its table, so it owns decrypting it (#310).
     """
+    from api.services.integrations import webhooks as webhooks_service
+
     row = session.scalar(
         select(models.WebhookSubscription)
         .where(
@@ -1233,7 +1238,8 @@ def _ticket_endpoint(
     )
     if row is None:
         return None
-    return str(row.url), row.secret, {str(k): str(v) for k, v in (row.headers or {}).items()}
+    secret, headers = webhooks_service.endpoint_credentials(row)
+    return str(row.url), secret, headers
 
 
 def _verification_target(session: Any, row: models.Vulnerability) -> tuple[str | None, bool]:
