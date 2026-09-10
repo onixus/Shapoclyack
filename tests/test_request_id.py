@@ -52,8 +52,13 @@ def _probe_app() -> FastAPI:
 
 
 def _probe_client() -> TestClient:
-    """A client over :func:`_probe_app`, echoing the bound id."""
-    return TestClient(_probe_app())
+    """A client over :func:`_probe_app`, echoing the bound id.
+
+    ``raise_server_exceptions=False`` because the middleware re-raises after
+    logging, exactly as a real server would see it; the tests below want the
+    500 the way a browser gets it, not the traceback the way uvicorn gets it.
+    """
+    return TestClient(_probe_app(), raise_server_exceptions=False)
 
 
 @pytest.mark.parametrize(
