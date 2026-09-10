@@ -1495,6 +1495,16 @@ class VulnerabilityInfo(BaseModel):
     ticket_system: str | None = None
     ticket_key: str | None = None
     ticket_url: str | None = None
+    # Inbound sync bookkeeping (#347), read-only. ``ticket_synced_at`` is the
+    # last *attempt*, and ``ticket_sync_error`` says whether it worked — the
+    # pair is how a link that broke (a renamed key, a revoked token) is
+    # visible on the finding instead of only in the worker's log.
+    ticket_synced_at: str | None = None
+    ticket_sync_error: str | None = None
+    # The tracker's own status as of that read ("Done", "6", "Active"). The
+    # poller applies a suggestion only when it changes, so this is also the
+    # answer to "why did the last poll not move this finding".
+    ticket_remote_status: str | None = None
     # Closed-loop remediation (#183). Read-only: ``machine_verified`` is set by
     # the ingest path when a dispatched verification run failed to re-observe
     # the finding, never by a request body.

@@ -653,8 +653,17 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
         ) : null}
       </div>
       <p className="mt-1 text-[11px] text-slate-500">
-        Records where the work lives. 2-way sync reflects resolution status automatically.
+        Records where the work lives. Transitions are pushed to the ticket immediately; the
+        ticket&apos;s own status is read back on a cadence, and Sync reads it now.
       </p>
+      {vuln.ticket_sync_error ? (
+        // A link that has stopped working — a renamed key, a revoked token —
+        // is otherwise only in the worker's log, which is where "why is this
+        // finding not updating?" goes unanswered.
+        <p className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-300">
+          Last read failed: {vuln.ticket_sync_error}
+        </p>
+      ) : null}
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <Select value={system} onValueChange={(value) => setSystem(value as TicketSystem)}>
           <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">

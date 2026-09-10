@@ -1078,6 +1078,9 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "ticket_system": row.ticket_system,
         "ticket_key": row.ticket_key,
         "ticket_url": row.ticket_url,
+        "ticket_synced_at": _iso(row.ticket_synced_at),
+        "ticket_sync_error": row.ticket_sync_error,
+        "ticket_remote_status": row.ticket_remote_status,
         "machine_verified": bool(row.machine_verified),
         "verification_job_id": row.verification_job_id,
         "last_verified_at": _iso(row.last_verified_at),
@@ -1215,8 +1218,12 @@ def transition(
 
 def _ticket_endpoint(
     session: Any, *, tenant_id: str, ticket_system: str
-) -> tuple[str, str | None, dict[str, str]] | None:
-    """``(base_url, secret, headers)`` for the tenant's tracker, or ``None``.
+) -> tuple[str, str | None, dict[str, str], dict[str, Any]] | None:
+    """``(base_url, secret, headers, config)`` for the tenant's tracker, or ``None``.
+
+    ``config`` is the subscription's ``transport_config`` — non-secret adapter
+    knobs, of which ``auth_mode`` is the one both directions of the sync need
+    (#347): a Jira Cloud token presented as ``Bearer`` is a 401.
 
     The tracker is addressed through the subscription that configured it, not
     by string-splitting the stored ``ticket_url``: that is where the credential
@@ -1239,7 +1246,7 @@ def _ticket_endpoint(
     if row is None:
         return None
     secret, headers = webhooks_service.endpoint_credentials(row)
-    return str(row.url), secret, headers
+    return str(row.url), secret, headers, dict(row.transport_config or {})
 
 
 def _verification_target(session: Any, row: models.Vulnerability) -> tuple[str | None, bool]:
@@ -1290,7 +1297,7 @@ def push_ticket_state(
                 ticket_key,
             )
             return False
-        base_url, secret, headers = endpoint
+        base_url, secret, headers, config = endpoint
         return ticket_sync.push_status_update(
             transport=ticket_system,
             base_url=base_url,
@@ -1298,6 +1305,7 @@ def push_ticket_state(
             to_state=to_state,
             secret=secret,
             extra_headers=headers,
+            auth_mode=config.get("auth_mode"),
         )
     except Exception:  # noqa: BLE001 - a foreign tracker must not fail the move
         LOG.warning(
@@ -1437,13 +1445,17 @@ def sync_ticket_status(
     vuln_id: str,
     actor: str | None = None,
 ) -> dict[str, Any] | None:
-    """Poll the linked ticket and reconcile the finding's state.
+    """Poll the linked ticket and reconcile the finding's state, now.
+
+    The operator's button. The same reconciliation runs on a cadence in
+    ``api/services/integrations/ticket_sync_worker.py`` (#347); both end in
+    :func:`apply_ticket_status`, so there is one place where a tracker's answer
+    turns into a lifecycle move.
 
     A tracker can say the work is done or that it is under way. It cannot say
     the finding is *verified* gone — only a scan says that — so a closure from
     here is recorded as ``ticket_resolved`` and never as machine-verified.
     """
-    now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
@@ -1461,29 +1473,96 @@ def sync_ticket_status(
 
     from api.services.integrations import ticket_sync
 
-    base_url, secret, headers = endpoint
-    suggested_state, raw_status, _ = ticket_sync.fetch_ticket_status(
+    base_url, secret, headers, config = endpoint
+    suggested_state, raw_status, payload = ticket_sync.fetch_ticket_status(
         transport=ticket_system,
         base_url=base_url,
         ticket_key=ticket_key,
         secret=secret,
         extra_headers=headers,
+        auth_mode=config.get("auth_mode"),
+    )
+    return apply_ticket_status(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=vuln_id,
+        suggested_state=suggested_state,
+        raw_status=raw_status,
+        error=payload.get("error") if isinstance(payload, dict) else None,
+        actor=actor,
     )
 
+
+def apply_ticket_status(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    suggested_state: str | None,
+    raw_status: str | None,
+    error: str | None = None,
+    actor: str | None = None,
+    record_unchanged: bool = True,
+    only_on_remote_change: bool = False,
+) -> dict[str, Any] | None:
+    """Reconcile one finding against what its tracker just said.
+
+    Split out of :func:`sync_ticket_status` for #347: the worker reads the
+    subscription once and then polls many findings through it, so the part that
+    needs a subscription and the part that needs a row had to stop being one
+    function. No HTTP happens here.
+
+    Two flags separate the two callers, and both exist because a poller may do
+    things a button may not.
+
+    ``record_unchanged``: the button always writes a ``ticket_synced`` event —
+    an operator clicked, and "I checked and the tracker still says To Do" is
+    exactly what the audit trail is for. The worker passes ``False``, because at
+    one poll per linked finding per interval it would otherwise write a row per
+    finding per tick into ``vulnerability_events``, which has no retention
+    sweep, to record that nothing happened. It still writes the event whenever
+    something *did* — a move, or the link starting or stopping to fail.
+
+    ``only_on_remote_change``: the worker applies a suggestion only when the
+    tracker's own status string differs from the one recorded at the last read
+    (``ticket_remote_status``). Without it the poller re-imposes its own last
+    verdict on any operator who disagreed with it: reopen a finding whose Jira
+    issue is still ``Done`` — which is the normal case, since the outbound
+    reflection cannot reopen an issue whose workflow has no reopen step — and
+    the next tick closes it again, and the one after that, indefinitely. The
+    button passes ``False``: a person clicking Sync is asking for the tracker's
+    current word whatever it is.
+    """
+    now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
             return None
+        if not row.ticket_system or not row.ticket_key:
+            # Unlinked between the poller's due read and this write. Returning
+            # here rather than recording is what keeps ``clear_ticket``'s reset
+            # of the sync bookkeeping from being undone by a read that was
+            # already in flight.
+            return _to_dict(row, now=now)
+        ticket_system = row.ticket_system
+        ticket_key = row.ticket_key
         previous = row.state
         applied = False
         # A ticket coming back is a re-open like any other, so the verdict on
         # the row has to go with it — see ``drop_fp_verdict_on_reopen``.
         dropped_fp = False
+        # Whether the tracker has said something new since the last read. A
+        # never-polled finding counts as changed: the first read is the first
+        # thing the tracker has ever told us.
+        remote_changed = row.ticket_synced_at is None or raw_status != row.ticket_remote_status
         # Only a legal move is applied. An unreachable tracker returns no
         # suggestion at all, and that is recorded as a sync that changed
         # nothing rather than as progress.
-        if suggested_state and suggested_state != previous and vuln_states.can_transition(
-            previous, suggested_state
+        if (
+            suggested_state
+            and suggested_state != previous
+            and (remote_changed or not only_on_remote_change)
+            and vuln_states.can_transition(previous, suggested_state)
         ):
             row.state = suggested_state
             row.state_changed_at = now
@@ -1508,25 +1587,43 @@ def sync_ticket_status(
                 row.due_at = now + timedelta(days=days)
                 row.reopen_count += 1
 
-        _record_event(
-            session,
-            vuln_id=row.vuln_id,
-            tenant_id=row.tenant_id,
-            kind="ticket_synced",
-            occurred_at=now,
-            from_state=previous,
-            to_state=row.state,
-            actor=actor or f"ticket_sync:{ticket_system}",
-            note=f"Ticket {ticket_key} reports '{raw_status or 'unknown'}'",
-            detail={
-                "ticket_system": ticket_system,
-                "ticket_key": ticket_key,
-                "remote_status": raw_status,
-                "suggested_state": suggested_state,
-                "applied": applied,
-                **({"after_fp_suppression": True} if dropped_fp else {}),
-            },
-        )
+        # The cursor moves on every attempt, including a failed one — see the
+        # column's comment in api/db/models.py for why the alternative starves
+        # the queue.
+        was_failing = row.ticket_sync_error is not None
+        row.ticket_synced_at = now
+        row.ticket_sync_error = error or None
+        if error is None:
+            # Only a read that actually reached the tracker moves this. A
+            # failed read must not record "the tracker now says nothing",
+            # or recovering from an outage would look like a status change and
+            # re-apply a verdict the operator had already overruled.
+            row.ticket_remote_status = raw_status
+        if record_unchanged or applied or was_failing != (error is not None):
+            _record_event(
+                session,
+                vuln_id=row.vuln_id,
+                tenant_id=row.tenant_id,
+                kind="ticket_synced",
+                occurred_at=now,
+                from_state=previous,
+                to_state=row.state,
+                actor=actor or f"ticket_sync:{ticket_system}",
+                note=(
+                    f"Ticket {ticket_key} could not be read: {error}"
+                    if error
+                    else f"Ticket {ticket_key} reports '{raw_status or 'unknown'}'"
+                ),
+                detail={
+                    "ticket_system": ticket_system,
+                    "ticket_key": ticket_key,
+                    "remote_status": raw_status,
+                    "suggested_state": suggested_state,
+                    "applied": applied,
+                    **({"error": error} if error else {}),
+                    **({"after_fp_suppression": True} if dropped_fp else {}),
+                },
+            )
         session.flush()
         return _to_dict(row, now=now)
 
@@ -1920,6 +2017,13 @@ def set_ticket(
         row.ticket_system = system
         row.ticket_key = key
         row.ticket_url = url
+        # A new link has never been read, so the sync bookkeeping from the old
+        # one is not about it (#347). Leaving it would show "Last read failed:
+        # HTTP 404" on a freshly corrected link until the next poll, which is
+        # exactly the state re-linking is the documented fix for.
+        row.ticket_synced_at = None
+        row.ticket_sync_error = None
+        row.ticket_remote_status = None
         row.updated_at = now
         _record_event(
             session,
@@ -1958,6 +2062,11 @@ def clear_ticket(
         row.ticket_system = None
         row.ticket_key = None
         row.ticket_url = None
+        # Same reason as in ``set_ticket``: with no link there is nothing for a
+        # stale sync error to be about, and the console would keep rendering it.
+        row.ticket_synced_at = None
+        row.ticket_sync_error = None
+        row.ticket_remote_status = None
         row.updated_at = now
         _record_event(
             session,

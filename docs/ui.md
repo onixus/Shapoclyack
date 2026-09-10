@@ -259,9 +259,14 @@ the work lives in Jira, ServiceNow, SMAX or DefectDojo. The platform does
 **not** create that ticket from this form: native create is a `transport` on a
 webhook subscription (migration `0022`) — the queue opens the ticket over the
 same validated wire as the event webhooks and then writes this link back.
-Status flows the other way too: syncing a linked ticket reconciles the finding,
-and a closure that came from the tracker is recorded as `ticket_resolved`
-rather than as verified.
+Status flows the other way too, and since
+[#347](https://github.com/onixus/Shapoclyack/issues/347) without anybody
+clicking: a background poller reads each linked ticket on a per-subscription
+cadence and reconciles the finding, while the **Sync** button on this panel is
+the same reconciliation asked for now. A closure that came from the tracker is
+recorded as `ticket_resolved` rather than as verified. When a link stops
+working — a renamed key, a revoked token — the last failure is on the finding
+as `ticket_sync_error`.
 
 Verification is not a drag: the finding detail page has a **Verify** action that
 dispatches a targeted re-scan and parks the card in `VERIFYING`. The card leaves

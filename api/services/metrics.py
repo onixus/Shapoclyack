@@ -230,6 +230,33 @@ WEBHOOK_DELIVERY_QUEUE = Gauge(
     ["status"],
     registry=REGISTRY,
 )
+TICKET_SYNC_LAG_SECONDS = Gauge(
+    "octo_ticket_sync_lag_seconds",
+    "How long the oldest still-due linked ticket has waited to be read back "
+    "(#347), as of the last tick of the inbound sync worker. It grows when a "
+    "tracker is unreachable, when one tick cannot drain the estate, and when "
+    "no replica holds the leader lock — which is the case the manual button "
+    "used to hide entirely. Reported only by the leader; followers leave it at "
+    "0, so aggregate with max(), not sum().",
+    ["transport"],
+    registry=REGISTRY,
+)
+TICKET_SYNC_POLLS_TOTAL = Counter(
+    "octo_ticket_sync_polls_total",
+    "Tickets read back by the inbound sync worker, by transport and outcome. "
+    "outcome=applied means the tracker's status moved the finding, "
+    "outcome=unchanged that it agreed with the finding's state, and "
+    "outcome=failed that the ticket could not be read at all.",
+    ["transport", "outcome"],
+    registry=REGISTRY,
+)
+TICKET_SYNC_IS_LEADER = Gauge(
+    "octo_ticket_sync_is_leader",
+    "1 when this replica holds the ticket-sync advisory lock (#347). Sums to "
+    "1 across a healthy cluster; 0 everywhere means nothing is reading "
+    "trackers back and every ticket-driven closure is waiting on a human.",
+    registry=REGISTRY,
+)
 ENDPOINT_RETENTION_RUN_DURATION_SECONDS = Histogram(
     "octo_endpoint_retention_run_duration_seconds",
     "Duration of one endpoint-inventory retention sweep in seconds.",

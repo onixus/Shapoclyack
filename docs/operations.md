@@ -721,6 +721,65 @@ deleting a tenant row removes its devices, identifiers, snapshots, software
 rows, and change events; a linked asset being deleted only nulls the device's
 `asset_id`.
 
+### Inbound ticket sync ([#347](https://github.com/onixus/Shapoclyack/issues/347))
+
+The poller that reads Jira / ServiceNow / DefectDojo back onto the findings
+runs in-process, is leader-locked, and is described in
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#inbound-ticket-sync).
+It polls one `GET` per linked finding per subscription per cadence, so the load
+it puts on somebody else's tracker is roughly `linked_findings / interval` —
+worth sizing before enabling it on an estate with thousands of tickets. It is
+**on by default**, so the first tick after the upgrade to migration `0045` has
+every linked ticket due at once: pace it with the per-subscription
+`sync_interval_seconds`, or set `OCTO_TICKET_SYNC_ENABLED=false` and enable it
+deliberately.
+
+Runbook:
+
+- **A tracker's status is not reaching findings** — read
+  `octo_ticket_sync_is_leader`. If it sums to 0 across the replicas, nothing is
+  polling: `OCTO_TICKET_SYNC_ENABLED` is off everywhere, or every replica lost
+  the advisory lock evaluation (a Postgres outage leaves everyone a follower by
+  design). If it sums to 1, read `octo_ticket_sync_lag_seconds{transport}`.
+- **`octo_ticket_sync_lag_seconds` climbing** — three causes, in order of
+  likelihood. The tracker is refusing: `octo_ticket_sync_polls_total{outcome="failed"}`
+  is rising and the log carries `subscription … held off Ns`. One tick cannot
+  drain the estate: `failed` is flat, `unchanged` is rising, and the fix is
+  `OCTO_TICKET_SYNC_BATCH_SIZE`. Or the cadence is simply longer than the
+  alert threshold — a subscription with `sync_interval_seconds: 3600` will sit
+  at a lag near an hour and that is correct.
+- **One finding stuck** — its `ticket_sync_error` says why (`HTTP 404` for a
+  renamed or deleted issue, `HTTP 401` for a credential the tracker no longer
+  accepts). A 404 is fixed by re-linking or clearing the ticket
+  (`DELETE /api/vulnerabilities/{id}/ticket`); a 401 across a whole
+  subscription usually means Jira Cloud with `auth_mode` left at `bearer` —
+  set it to `basic` and store the secret as `email:api_token`.
+- **The tracker is being hammered** — raise that subscription's
+  `transport_config.sync_interval_seconds`, which takes effect on the next
+  tick without a restart. `OCTO_TICKET_SYNC_ENABLED=false` on every replica is
+  the stop button; the manual sync route and the outbound reflection keep
+  working.
+- **A ticket-driven closure was wrong** — the closure is `ticket_resolved` and
+  never `machine_verified`, so it is distinguishable from a verified fix in
+  `vulnerability_events` and in the adoption metrics. Reopen it through
+  `POST /api/vulnerabilities/{id}/transition` and it stays reopened: the worker
+  applies a suggestion only when the tracker's own status string changes, which
+  it has not (the issue is still `Done`, and the outbound push could not move
+  it because the workflow has no reopen step). The **Sync** button is the
+  exception and will re-close it — it exists to take the tracker's current word
+  on request.
+- **A finding is not moving and there is no error** — compare its
+  `ticket_remote_status` with the tracker. Equal means the poller is
+  deliberately holding still, per the rule above. A `null` there with a
+  non-null `ticket_synced_at` means the tracker answered with a status this
+  build has no mapping for; the last `ticket_synced` event's
+  `detail.remote_status` names it.
+
+Backoff state lives in the worker's memory, so a restart re-learns an outage
+at the cost of one request per subscription. That is deliberate: persisting it
+would mean a table whose only reader is a thread that already has to handle a
+cold start.
+
 ## Agent installation and upgrade
 
 An agent can be installed three ways: by hand from the snippets on `/agents`
@@ -1768,6 +1827,7 @@ read first.
 | `0033_software_match_queue_marker` | Only the matcher's queue marker. Every device becomes due at once, so the first tick after the downgrade re-folds the estate. The fold is idempotent, so this is a load spike and not a correctness problem |
 | `0035_asset_scan_coverage` | **Every asset's scan-coverage history**: when it was last actually scanned, by which run, and when it was last assessed for vulnerabilities. There is no backfill and there cannot be one — nothing else in the schema records which past run covered which asset — so a downgrade followed by a re-upgrade does not restore them: the whole Coverage block on `/adoption` reads `n/a` again until every asset has been reached by a *new* run, which on a monthly scan cadence is a month of no coverage reading. Nothing else breaks; the findings and the assets themselves are untouched. |
 | `0034_vuln_false_positive` | Every false-positive verdict on `vulnerabilities`: the reason, who made it, its evidence, when the suppression expires, and how many times the finding was seen while suppressed. Nothing else in the schema holds them, so they cannot be reconstructed. The affected findings stay `CLOSED`; the downgrade rewrites their `closure_reason` to `manual`, because the older code does not know the `false_positive` value. The `vulnerability_events` trail (`false_positive_set`, `fp_reobserved`, `fp_overridden`) survives, so *that a verdict existed* is still auditable — only the live suppression is gone, and the next scan re-opens the finding. |
+| `0045_vuln_ticket_sync_cursor` | The ticket-sync poller's cursor and its last error per finding. The old code has no poller, so nothing happens until a re-upgrade — and then every linked ticket is due at once and the first tick re-reads all of them. The load lands on somebody else's Jira rather than on this installation, which is what makes it worth knowing before running this on an estate with thousands of links (raise the subscriptions' `sync_interval_seconds` first, or keep `OCTO_TICKET_SYNC_ENABLED=false` for the first minutes). Nothing about the findings is lost: the reconciliation is idempotent and the `ticket_synced` events stay. |
 | `0036_oidc_pending_states` | Every **in-flight** SSO login: the nonce and the PKCE verifier of an authorization request the browser has not come back from yet. Nothing is lost that matters — a row lives for at most `OCTO_OIDC_STATE_TTL_SECONDS` (10 minutes) and a login whose record is gone is refused and retried. The same is true of the *upgrade*: during the rolling deploy in either direction the old and the new code disagree about where a pending login is kept, so logins begun before the switch and finished after it are refused. No account, membership or session is touched. |
 
 ### Legacy JSON state import

@@ -336,6 +336,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **"Two-way ticket sync" was one direction plus a refresh button**
+  ([#347](https://github.com/onixus/Shapoclyack/issues/347)). Nothing read a
+  tracker back unless an operator clicked `POST /api/vulnerabilities/{id}/ticket/sync`,
+  so a fix marked Done in Jira stayed `FIXING` here, inside its SLA, until a
+  human opened that finding's page. A leader-locked poller now reads every
+  linked ticket on a per-subscription cadence
+  (`transport_config.sync_interval_seconds`, default
+  `OCTO_TICKET_SYNC_INTERVAL_SECONDS`), with per-subscription backoff so a
+  tracker that is down is asked once and not once per finding, and
+  `octo_ticket_sync_lag_seconds` to say how far behind it is. A suggestion is
+  applied only when the tracker's status actually *changes*, so the poller
+  cannot re-impose its own verdict every interval on an operator who overruled
+  it. The outbound map stopped being a boolean — every lifecycle state now maps
+  to the tracker's own states, and a closed Jira issue is reopened through a
+  `Reopen` transition instead of failing silently; the maps are constrained so
+  that what is pushed cannot read back as a move nobody asked for, which is
+  also why an *active* DefectDojo finding no longer suggests `FIXING`.
+  `transport_config.auth_mode` adds `basic`, which is what Jira Cloud accepts
+  and what previously had to be hand-written into `headers`. Migration `0045`
+  adds the poller's cursor; the poller is **on by default**, so the first tick
+  after the upgrade reads every linked ticket — see
+  `docs/operations.md` § Inbound ticket sync to pace it. Reflecting a
+  *machine-verified* closure onto the ticket is still not done — that path
+  writes from the run ingest, not from an operator transition — so #347 keeps
+  that half open.
 - **A webhook delivery whose send raised counted as two attempts** in the
   dispatch tick's own report while the delivery row recorded one
   ([#310](https://github.com/onixus/Shapoclyack/issues/310)). The counter was

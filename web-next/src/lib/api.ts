@@ -1957,6 +1957,17 @@ export type TrackedVulnerability = {
   ticket_system: string | null;
   ticket_key: string | null;
   ticket_url: string | null;
+  /** When the linked ticket was last read back by the sync poller or the Sync
+   * button — the attempt, not necessarily a success (#347). */
+  ticket_synced_at?: string | null;
+  /** Why the last read failed, or null after one that worked. A broken link
+   * (renamed key, revoked token) is visible here instead of only in the
+   * server's log. */
+  ticket_sync_error?: string | null;
+  /** The tracker's own status at that read ("Done", "6", "Active"). The poller
+   * applies a suggestion only when it changes, so it is also the answer to
+   * "why did the last poll leave this finding where it was". */
+  ticket_remote_status?: string | null;
   /** Set by the ingest path when a dispatched verification run did not
    * re-observe the finding. Never settable through the API. */
   machine_verified?: boolean;

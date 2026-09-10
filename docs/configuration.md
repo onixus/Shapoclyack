@@ -500,6 +500,28 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
+Inbound ticket sync — the poller that reads Jira / ServiceNow / DefectDojo
+back onto the findings ([#347](https://github.com/onixus/Shapoclyack/issues/347),
+see [vulnerability-lifecycle.md](vulnerability-lifecycle.md#inbound-ticket-sync)).
+It polls only tickets linked to a finding whose tenant has an enabled
+subscription for that transport; the credential and the base URL are that
+subscription's:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_TICKET_SYNC_ENABLED` | `true` | Run the poller in *this* replica. Off keeps the manual `POST /api/vulnerabilities/{id}/ticket/sync` button and the outbound reflection; only the cadence goes away. Leader-locked, so only one replica of those that run it ever polls |
+| `OCTO_TICKET_SYNC_POLL_INTERVAL_SECONDS` | `60` | How often the thread wakes to look for due findings. Not the poll cadence — floored at 5 |
+| `OCTO_TICKET_SYNC_INTERVAL_SECONDS` | `900` | Default seconds between two reads of the *same* ticket. Overridden per subscription by `transport_config.sync_interval_seconds` (`0` = use this; otherwise ≥ 60). Floored at 60: the poll is one GET per linked finding |
+| `OCTO_TICKET_SYNC_BATCH_SIZE` | `200` | Findings polled per subscription per tick, oldest cursor first. The rest stay due for the next tick; raise it if `octo_ticket_sync_lag_seconds` grows while trackers are healthy |
+| `OCTO_TICKET_SYNC_RETRY_BASE_SECONDS` | `120` | First hold-off after a *retryable* failure (5xx, timeout); doubles per consecutive failure. The whole subscription is held off, not one ticket — a tracker that is down fails identically for every ticket on it |
+| `OCTO_TICKET_SYNC_RETRY_MAX_SECONDS` | `3600` | Hold-off cap |
+| `OCTO_TICKET_SYNC_REOPEN_WINDOW_DAYS` | `30` | How long after a `ticket_resolved` closure the tracker may still reopen the finding. Closed findings stay pollable for that path to exist and leave the queue afterwards, or every closure accumulates forever and a year of dead tickets fills the batch ahead of live work. `0` drops the reopen path |
+
+The per-request timeout and the private-target rule are the webhook ones
+(`OCTO_WEBHOOK_TIMEOUT_SECONDS`, `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS`): it is
+the same wire to the same tracker, and giving the poller its own copies would
+be two places to change when a self-hosted Jira moves inside the cluster.
+
 Report factory (see
 [reports-and-compliance.md](reports-and-compliance.md#configuration)). The
 report relay is separate from the scanner's alert SMTP on purpose: an alert
