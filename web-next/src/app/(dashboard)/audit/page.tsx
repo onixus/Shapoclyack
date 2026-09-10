@@ -41,6 +41,8 @@ const ACTIONS = [
   "notification_channel.create",
   "notification_channel.update",
   "notification_channel.delete",
+  "vulnerability.bulk",
+  "asset.bulk",
 ] as const;
 
 /** ISO instant from a `datetime-local` value, or undefined when it is empty.

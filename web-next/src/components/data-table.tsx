@@ -14,6 +14,7 @@ import {
 import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -55,7 +56,34 @@ interface DataTableProps<TData> {
    * to be loaded.
    */
   serverPagination?: ServerPagination;
+  /**
+   * Turns on the leading checkbox column and the bulk bar above the table
+   * (#346). Omit it and the table renders exactly as it did.
+   */
+  selection?: TableSelection<TData>;
 }
+
+export type TableSelection<TData> = {
+  /**
+   * The row's stable server id. Selection is held as a list of *ids* rather
+   * than of row indexes, because the ids have to survive what the indexes do
+   * not: a poll that reorders the page, a filter change, and paging to the
+   * next page and back — all of which happen while somebody is ticking boxes.
+   */
+  rowId: (row: TData) => string;
+  selected: string[];
+  onChange: (ids: string[]) => void;
+  /** Rendered in place of the toolbar while at least one row is selected. */
+  actions?: (ids: string[]) => React.ReactNode;
+  /**
+   * Ids one action may carry, mirroring the API's own batch ceiling. The
+   * header checkbox stops there rather than building a request the server
+   * answers 422 to.
+   */
+  max?: number;
+  /** Accessible name for the header checkbox. */
+  selectAllLabel?: string;
+};
 
 export type ServerPagination = {
   offset: number;
@@ -85,6 +113,7 @@ export function DataTable<TData>({
   pageSize = DEFAULT_PAGE_SIZE,
   meta,
   serverPagination,
+  selection,
 }: DataTableProps<TData>) {
   const t = useT();
   const resolvedEmpty = emptyMessage ?? t("table.empty");
@@ -102,9 +131,82 @@ export function DataTable<TData>({
     return () => clearTimeout(timer);
   }, [searchDraft, server]);
 
+  // Ids on the page the operator is looking at. Selection may hold ids from
+  // pages they have left; those stay selected and are still submitted, which
+  // is the point of holding ids rather than rows.
+  const selectedIds = selection?.selected ?? [];
+  const selectedSet = new Set(selectedIds);
+  const pageIds = selection ? data.map(selection.rowId) : [];
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedSet.has(id));
+  const somePageSelected = pageIds.some((id) => selectedSet.has(id));
+  const selectionLimit = selection?.max;
+
+  const toggleRow = (id: string, checked: boolean) => {
+    if (!selection) return;
+    if (!checked) {
+      selection.onChange(selectedIds.filter((current) => current !== id));
+      return;
+    }
+    if (selectedSet.has(id)) return;
+    if (selectionLimit !== undefined && selectedIds.length >= selectionLimit) return;
+    selection.onChange([...selectedIds, id]);
+  };
+
+  const togglePage = (checked: boolean) => {
+    if (!selection) return;
+    if (!checked) {
+      // Only this page's ids are cleared: a "select none" that also dropped
+      // the selection made on other pages would lose work silently.
+      selection.onChange(selectedIds.filter((id) => !pageIds.includes(id)));
+      return;
+    }
+    const merged = [...selectedIds];
+    for (const id of pageIds) {
+      if (merged.includes(id)) continue;
+      if (selectionLimit !== undefined && merged.length >= selectionLimit) break;
+      merged.push(id);
+    }
+    selection.onChange(merged);
+  };
+
+  const selectionColumn: ColumnDef<TData, unknown> = {
+    id: "__select",
+    enableSorting: false,
+    header: () => (
+      <Checkbox
+        checked={allPageSelected}
+        onCheckedChange={(value) => togglePage(value === true)}
+        aria-label={selection?.selectAllLabel ?? "Select all rows on this page"}
+        // Indeterminate is deliberately not used: Radix renders it as
+        // unchecked with a different glyph, and the useful behaviour for a
+        // half-selected page is "one click selects the rest".
+        className={somePageSelected && !allPageSelected ? "border-sky-400" : undefined}
+      />
+    ),
+    cell: ({ row }) => {
+      const id = selection!.rowId(row.original);
+      const checked = selectedSet.has(id);
+      return (
+        <Checkbox
+          checked={checked}
+          onCheckedChange={(value) => toggleRow(id, value === true)}
+          aria-label={`Select ${id}`}
+          // Disabled only for rows that would exceed the ceiling, never for
+          // ones already selected — otherwise the box that put you over the
+          // limit could not be unticked.
+          disabled={
+            !checked && selectionLimit !== undefined && selectedIds.length >= selectionLimit
+          }
+        />
+      );
+    },
+  };
+
+  const tableColumns = selection ? [selectionColumn, ...columns] : columns;
+
   const table = useReactTable({
     data,
-    columns,
+    columns: tableColumns,
     state: server ? { sorting } : { sorting, globalFilter },
     onSortingChange: (updater) => {
       const next = typeof updater === "function" ? updater(sorting) : updater;
@@ -147,6 +249,28 @@ export function DataTable<TData>({
 
   return (
     <div className="space-y-3.5">
+      {selection && selectedIds.length > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-500/40 bg-sky-500/5 px-3 py-2">
+          <div className="flex items-center gap-3">
+            <p className="text-xs font-semibold text-sky-300">
+              {selectedIds.length} selected
+              {selectionLimit !== undefined && selectedIds.length >= selectionLimit
+                ? ` (max ${selectionLimit} per action)`
+                : ""}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => selection.onChange([])}
+            >
+              Clear
+            </Button>
+          </div>
+          {selection.actions ? selection.actions(selectedIds) : null}
+        </div>
+      ) : null}
+
       {showSearch || toolbar || meta ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-1 flex-wrap items-center gap-3">
@@ -205,7 +329,7 @@ export function DataTable<TData>({
           <TableBody className="divide-y divide-border/60">
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={columns.length} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={tableColumns.length} className="py-10 text-center text-sm text-muted-foreground">
                   <div className="flex items-center justify-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                     <span>{resolvedLoading}</span>
@@ -215,7 +339,7 @@ export function DataTable<TData>({
             ) : rows.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={columns.length}
+                  colSpan={tableColumns.length}
                   className="py-12 text-center text-sm text-muted-foreground font-medium"
                 >
                   {resolvedEmpty}

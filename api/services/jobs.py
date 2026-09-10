@@ -62,6 +62,7 @@ from api.services import scan_intents
 from api.services import scan_surface
 from api.services import vulnerabilities as vulns_service
 from api.services import wordlists as wordlists_service
+from api.services import workflow_events
 from api.services.targets import parse_target_payload
 from api.settings import Settings
 from scanner.pipeline import scan_scope
@@ -413,8 +414,50 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
             if "status" in fields
             else None
         )
+        # Snapshotted here rather than re-read after the commit: the row is
+        # loaded and locked, and a job that failed is terminal, so this is the
+        # one moment it moved into ``failed``.
+        failure = (
+            _scan_failure_event(row)
+            if fields.get("status") == job_states.FAILED
+            else None
+        )
     if snapshot is not None:
         _record_job_metrics(settings, *snapshot)
+    if failure is not None:
+        # After the commit: an event announcing a failure that then rolled back
+        # would be a notification about something that did not happen (#349).
+        workflow_events.emit(settings, "scan_failed", **failure)
+
+
+def _scan_failure_event(row: models.Job) -> dict[str, Any]:
+    """``workflow_events.emit`` keyword arguments for one failed job (#349).
+
+    ``marker`` is the attempt count, not the job id alone: an agent job whose
+    lease expired is requeued and may fail again on a later attempt, and those
+    are two failures somebody has to hear about separately. The error string
+    is truncated because it is a scanner's stderr and ends up in a webhook
+    payload column.
+    """
+    return {
+        "tenant_id": row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
+        "subject_id": row.job_id,
+        "marker": str(row.attempts or 0),
+        "data": {
+            "job_id": row.job_id,
+            "run_id": row.run_id,
+            "execution": row.execution,
+            "mode": row.mode,
+            # The scan's surface, not its target list: a target list can be a
+            # /16 and this payload is stored per delivery.
+            "surface": (row.scan_options or {}).get("surface"),
+            "attempts": row.attempts,
+            "assigned_agent_id": row.assigned_agent_id,
+            "exit_code": row.exit_code,
+            "requested_by": row.requested_by,
+            "error": (row.error or "")[:1000] or None,
+        },
+    }
 
 
 def force_status(settings: Settings, job_id: str, status: str, **fields: Any) -> None:
@@ -949,6 +992,11 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
     # sees them once the transaction commits. Without this, giving up on a job
     # would be invisible to SLO 3 exactly when executors are dying.
     failed_for_metrics: list[tuple[str, datetime | None]] = []
+    # Same shape, for the #349 event. This path does not go through
+    # ``_update_job`` — it writes the status on a row it already holds — so the
+    # emitter there does not see it, and a lease that expired is exactly the
+    # failure nobody is watching a console for.
+    failed_events: list[dict[str, Any]] = []
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(models.Job)
@@ -988,6 +1036,7 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
                 )
                 outcome["failed"] += 1
                 failed_for_metrics.append((row.execution or "local", row.started_at))
+                failed_events.append(_scan_failure_event(row))
                 _log.warning(
                     "Failed job %s: lease expired after %d attempt(s) (execution=%s)",
                     row.job_id,
@@ -999,6 +1048,8 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
             metrics_service.JOB_LEASE_EXPIRED_TOTAL.labels(outcome=name).inc(count)
     for execution, started_at in failed_for_metrics:
         _record_job_metrics(settings, job_states.FAILED, execution, started_at, now)
+    for failure in failed_events:
+        workflow_events.emit(settings, "scan_failed", **failure)
     if outcome["requeued"] or outcome["failed"]:
         _refresh_job_gauges(settings)
     # Republished after the transaction commits, so an agent cannot claim the

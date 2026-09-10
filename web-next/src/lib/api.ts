@@ -1957,6 +1957,17 @@ export type TrackedVulnerability = {
   ticket_system: string | null;
   ticket_key: string | null;
   ticket_url: string | null;
+  /** When the linked ticket was last read back by the sync poller or the Sync
+   * button — the attempt, not necessarily a success (#347). */
+  ticket_synced_at?: string | null;
+  /** Why the last read failed, or null after one that worked. A broken link
+   * (renamed key, revoked token) is visible here instead of only in the
+   * server's log. */
+  ticket_sync_error?: string | null;
+  /** The tracker's own status at that read ("Done", "6", "Active"). The poller
+   * applies a suggestion only when it changes, so it is also the answer to
+   * "why did the last poll leave this finding where it was". */
+  ticket_remote_status?: string | null;
   /** Set by the ingest path when a dispatched verification run did not
    * re-observe the finding. Never settable through the API. */
   machine_verified?: boolean;
@@ -2077,6 +2088,98 @@ export type VulnerabilityFalsePositiveBody = {
   suppress_days?: number;
   evidence?: Record<string, unknown>;
 };
+
+/** Ids one bulk request may carry — `bulk_actions.MAX_BULK_IDS` on the server,
+ * which refuses more with a 422. Mirrored here so the table's select-all stops
+ * at the ceiling instead of building a request that cannot be sent. */
+export const MAX_BULK_IDS = 200;
+
+/** One id's fate inside a batch. `outcome` is the single-id endpoint's status
+ * code in words: `not_found` is its 404 (which is also what another tenant's id
+ * gets — a write scope never confirms existence), `conflict` its 409, `invalid`
+ * its 422. */
+export type BulkActionItemResult = {
+  id: string;
+  ok: boolean;
+  outcome: "ok" | "not_found" | "conflict" | "invalid";
+  error: string | null;
+};
+
+/** A batch is a partial success by design, so the response is a report and the
+ * status is 200 even when `failed` is nonzero. `replayed` means the answer came
+ * from the `Idempotency-Key` record of an earlier identical request. */
+export type BulkActionReport = {
+  action: string;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  results: BulkActionItemResult[];
+  replayed: boolean;
+};
+
+/** The verbs `POST /vulnerabilities/bulk` accepts, each carrying the same body
+ * its single-finding endpoint takes. `exception` and `false_positive` need
+ * tenant admin there and here — bulk is not a cheaper door. */
+export type BulkVulnerabilityBody =
+  | { action: "assign"; vuln_ids: string[]; payload: VulnerabilityAssignBody }
+  | { action: "transition"; vuln_ids: string[]; payload: VulnerabilityTransitionBody }
+  | { action: "exception"; vuln_ids: string[]; payload: VulnerabilityExceptionBody }
+  | { action: "ticket"; vuln_ids: string[]; payload: VulnerabilityTicketBody }
+  | {
+      action: "false_positive";
+      vuln_ids: string[];
+      payload: VulnerabilityFalsePositiveBody;
+    };
+
+export type BulkAssetBody = {
+  action: "context";
+  asset_ids: string[];
+  payload: UpdateAssetBody;
+};
+
+/** A fresh `Idempotency-Key` for one bulk submission. Called once per
+ * submission and not once per attempt — see `useSubmissionKey` in
+ * `hooks/use-bulk-actions.ts`, which holds the value against the body it names
+ * so a retried click carries the key the first attempt did. Every call here
+ * returns a new value, so calling it per attempt would name every attempt a
+ * different batch. */
+export function newBulkIdempotencyKey(): string {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  return `console:bulk:${random}`;
+}
+
+export async function bulkVulnerabilityAction(
+  body: BulkVulnerabilityBody,
+  options?: { idempotencyKey?: string },
+) {
+  try {
+    const headers = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    const { data } = await api.post<BulkActionReport>("/vulnerabilities/bulk", body, { headers });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function bulkAssetAction(
+  body: BulkAssetBody,
+  options?: { idempotencyKey?: string },
+) {
+  try {
+    const headers = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    const { data } = await api.post<BulkActionReport>("/assets/bulk", body, { headers });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
 
 export async function fetchTrackedVulnerabilities(
   filters?: VulnerabilityListFilters,
@@ -3035,19 +3138,31 @@ export async function deleteTenantQuota(tenantId: string) {
  * create-issue call for the tracker (api/services/integrations/tickets.py). */
 export type WebhookTransport = "webhook" | "jira" | "servicenow" | "defectdojo";
 
-/** Event kinds a subscription may filter on. An empty list means "every kind".
+/** Event kinds a subscription may filter on. An empty list means "every *asset*
+ * kind" — the audit trail and the workflow events are opt-in, so an existing
+ * unfiltered subscription does not start receiving them on upgrade.
  *
  * The first five are the asset events (`api/services/asset_events.py`
- * EVENT_KINDS). `audit.*` is the whole administrative trail (#328) — the API
- * also accepts one exact action (`audit.user.role_change`), which the console
- * deliberately does not offer as twenty-odd more checkboxes; a subscription
- * that names one is shown and preserved, just not composed here. */
+ * EVENT_KINDS). The next eight are the remediation-workflow events (#349,
+ * `api/services/workflow_events.py` WORKFLOW_EVENT_KINDS). `audit.*` is the
+ * whole administrative trail (#328) — the API also accepts one exact action
+ * (`audit.user.role_change`), which the console deliberately does not offer as
+ * twenty-odd more checkboxes; a subscription that names one is shown and
+ * preserved, just not composed here. */
 export const WEBHOOK_EVENT_KINDS = [
   "new_asset",
   "new_open_port",
   "new_cve",
   "cert_expiring",
   "decommissioned_host",
+  "sla_due_soon",
+  "sla_breached",
+  "exception_expiring",
+  "vuln_state_changed",
+  "vuln_assigned",
+  "scan_failed",
+  "report_generated",
+  "agent_offline",
   "audit.*",
 ] as const;
 

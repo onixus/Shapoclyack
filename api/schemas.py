@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -1549,6 +1549,16 @@ class VulnerabilityInfo(BaseModel):
     ticket_system: str | None = None
     ticket_key: str | None = None
     ticket_url: str | None = None
+    # Inbound sync bookkeeping (#347), read-only. ``ticket_synced_at`` is the
+    # last *attempt*, and ``ticket_sync_error`` says whether it worked — the
+    # pair is how a link that broke (a renamed key, a revoked token) is
+    # visible on the finding instead of only in the worker's log.
+    ticket_synced_at: str | None = None
+    ticket_sync_error: str | None = None
+    # The tracker's own status as of that read ("Done", "6", "Active"). The
+    # poller applies a suggestion only when it changes, so this is also the
+    # answer to "why did the last poll not move this finding".
+    ticket_remote_status: str | None = None
     # Closed-loop remediation (#183). Read-only: ``machine_verified`` is set by
     # the ingest path when a dispatched verification run failed to re-observe
     # the finding, never by a request body.
@@ -1658,6 +1668,125 @@ class VulnerabilityTicketRequest(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+class BulkActionItemResult(BaseModel):
+    """What one id in a bulk request got (#346).
+
+    ``outcome`` is the single-id route's status code, said in words: ``ok`` is
+    its 200, ``not_found`` its 404 (no such id *in the scope this caller writes
+    in* — a foreign tenant's id is reported missing, never forbidden),
+    ``conflict`` its 409, ``invalid`` its 422. ``error`` carries the refusal's
+    own message so an operator does not have to guess which of a batch's
+    hundred ids was already closed.
+    """
+
+    id: str
+    ok: bool
+    outcome: Literal["ok", "not_found", "conflict", "invalid"]
+    error: str | None = None
+
+
+class BulkActionReport(BaseModel):
+    """The answer a bulk request gets: what happened to each id (#346).
+
+    A batch is a partial success by design — one closed finding in a selection
+    of two hundred must not refuse the other hundred and ninety-nine — so the
+    envelope is a report and the status is 200 even when ``failed`` is nonzero.
+    A caller wanting all-or-nothing checks ``failed == 0``.
+
+    ``replayed`` is true when this answer came out of the ``Idempotency-Key``
+    record of an earlier identical request rather than from work done now. The
+    status code says so too (200 on a replay, where a fresh batch answers 200
+    as well), so the flag is what a client actually reads.
+
+    ``aborted`` is true when the batch stopped on something no per-id outcome
+    describes — a deadlock, a tracker call that timed out — after applying part
+    of itself. That request itself answered 500; this report is only ever seen
+    as the *replay* of one, which is how a retry learns which ids landed
+    instead of sending them again. ``requested`` then still counts every id
+    given, so ``requested - len(results)`` is what the batch never reached.
+    """
+
+    action: str
+    requested: int
+    succeeded: int
+    failed: int
+    results: list[BulkActionItemResult]
+    replayed: bool = False
+    aborted: bool = False
+
+
+# One body per verb, selected by ``action`` — a discriminated union rather than
+# one model with five optional payloads, so that a ``transition`` batch missing
+# its ``state`` is a 422 from the schema instead of a KeyError from the service.
+# ``payload`` nests the *existing* single-verb request model unchanged: bulk and
+# hand-applied must validate identically, and re-declaring the fields here is
+# how the two would drift.
+#
+# ``max_length`` mirrors ``bulk_actions.MAX_BULK_IDS``, and the per-id one
+# ``bulk_actions.MAX_BULK_ID_LENGTH`` — the count bounds the batch, the length
+# bounds the audit row that has to name every id inside a 16 KiB document.
+# Both spelled as literals because a schema field's constraint has to be a
+# constant for the OpenAPI document to carry it; ``bulk_actions.validate_ids``
+# re-checks the same bounds so a caller reaching the service directly is
+# refused too.
+class _BulkVulnerabilityBase(BaseModel):
+    vuln_ids: list[Annotated[str, Field(max_length=48)]] = Field(min_length=1, max_length=200)
+
+
+class BulkVulnerabilityAssign(_BulkVulnerabilityBase):
+    action: Literal["assign"]
+    # Defaulted, unlike the others: an assign with no fields set is the
+    # "unassign these" the single route already accepts.
+    payload: VulnerabilityAssignRequest = Field(default_factory=VulnerabilityAssignRequest)
+
+
+class BulkVulnerabilityTransition(_BulkVulnerabilityBase):
+    action: Literal["transition"]
+    payload: VulnerabilityTransitionRequest
+
+
+class BulkVulnerabilityException(_BulkVulnerabilityBase):
+    action: Literal["exception"]
+    payload: VulnerabilityExceptionRequest
+
+
+class BulkVulnerabilityTicket(_BulkVulnerabilityBase):
+    action: Literal["ticket"]
+    payload: VulnerabilityTicketRequest
+
+
+class BulkVulnerabilityFalsePositive(_BulkVulnerabilityBase):
+    action: Literal["false_positive"]
+    payload: VulnerabilityFalsePositiveRequest
+
+
+BulkVulnerabilityRequest = Annotated[
+    BulkVulnerabilityAssign
+    | BulkVulnerabilityTransition
+    | BulkVulnerabilityException
+    | BulkVulnerabilityTicket
+    | BulkVulnerabilityFalsePositive,
+    Field(discriminator="action"),
+]
+
+
+class BulkAssetRequest(BaseModel):
+    """Body for ``POST /api/assets/bulk`` — one context update, many assets.
+
+    ``action`` has a single member and is still there: it makes the body the
+    same shape as the vulnerability batch, and an asset verb added later is a
+    new member rather than a new endpoint.
+
+    ``payload`` is ``PATCH /api/assets/{id}``'s body unchanged, including its
+    "an explicit null clears the field, an omitted key leaves it untouched"
+    contract — which is why the route sends ``exclude_unset``.
+    """
+
+    action: Literal["context"] = "context"
+    asset_ids: list[Annotated[str, Field(max_length=48)]] = Field(min_length=1, max_length=200)
+    payload: UpdateAssetRequest
+
+
 class SlaPolicyInfo(BaseModel):
     policy_id: str
     tenant_id: str
@@ -1676,6 +1805,37 @@ class SlaPolicyRequest(BaseModel):
     severity: Literal["critical", "high", "medium", "low", "unknown"]
     remediation_days: int = Field(ge=1, le=3650)
     asset_criticality: int | None = Field(default=None, ge=0, le=4)
+
+
+class SlaEscalationPolicyInfo(BaseModel):
+    """The tenant's SLA escalation policy (#349).
+
+    ``configured`` distinguishes "a tenant admin turned this off" from "nobody
+    has set it up", which read identically otherwise — every other field is at
+    its all-off default in both cases.
+    """
+
+    tenant_id: str
+    enabled: bool
+    escalate_after_days: int
+    escalate_to: str | None = None
+    escalate_owner_team: str | None = None
+    bump_severity: bool
+    digest_enabled: bool
+    configured: bool
+    updated_at: str | None = None
+    updated_by: str = ""
+
+
+class SlaEscalationPolicyRequest(BaseModel):
+    """Body for ``PUT /vulnerabilities/sla-escalation``. One row per tenant."""
+
+    enabled: bool = False
+    escalate_after_days: int = Field(default=0, ge=0, le=365)
+    escalate_to: str | None = Field(default=None, max_length=320)
+    escalate_owner_team: str | None = Field(default=None, max_length=200)
+    bump_severity: bool = False
+    digest_enabled: bool = False
 
 
 class VulnerabilitySummary(BaseModel):

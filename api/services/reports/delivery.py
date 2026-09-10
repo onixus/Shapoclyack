@@ -110,6 +110,18 @@ def _send_email(
     maintype, subtype = _MIME.get(str(report.get("format")), ("application", "octet-stream"))
     message.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
 
+    error = _smtp_send(settings, message)
+    return _entry(recipient, "failed", error) if error else _entry(recipient, "delivered")
+
+
+def _smtp_send(settings: Settings, message: EmailMessage) -> str | None:
+    """Hand one message to the configured relay. Returns an error, or ``None``.
+
+    Extracted from :func:`_send_email` when #349 added a second kind of mail
+    (the SLA owner digest) — the TLS discipline below is the part that must not
+    exist in two copies, because a second copy is where the downgrade gets
+    reintroduced.
+    """
     try:
         with smtplib.SMTP(
             settings.report_smtp_host,
@@ -133,19 +145,44 @@ def _send_email(
                     # unauthenticated relay is a relay we cannot tell from the
                     # attacker sitting in front of it.
                     LOG.warning("SMTP relay %s refused STARTTLS", settings.report_smtp_host)
-                    return _entry(
-                        recipient,
-                        "failed",
+                    return (
                         f"relay refused STARTTLS ({type(exc).__name__}); refusing to send "
-                        "the report in cleartext. Set OCTO_REPORT_SMTP_STARTTLS=false to "
-                        "accept an unencrypted relay.",
+                        "the message in cleartext. Set OCTO_REPORT_SMTP_STARTTLS=false to "
+                        "accept an unencrypted relay."
                     )
             if settings.report_smtp_username:
                 smtp.login(settings.report_smtp_username, settings.report_smtp_password)
             smtp.send_message(message)
     except (smtplib.SMTPException, OSError, TimeoutError) as exc:
-        return _entry(recipient, "failed", f"{type(exc).__name__}: {exc}"[:300])
-    return _entry(recipient, "delivered")
+        return f"{type(exc).__name__}: {exc}"[:300]
+    return None
+
+
+def send_notice(
+    settings: Settings, *, to: str, subject: str, body: str
+) -> str | None:
+    """Send one plain-text operational mail. Returns an error, or ``None``.
+
+    The SLA owner digest (#349) goes out through here rather than through a
+    mailer of its own: it is the same relay, the same sender and the same TLS
+    rules, and an installation that configured
+    ``OCTO_REPORT_SMTP_*`` has already said where its outbound mail goes.
+
+    **The seam #351 replaces.** Per-tenant notification channels are that
+    issue's subject: when a tenant has one configured, the digest should leave
+    through it instead of through this installation-wide relay. Callers pass
+    the recipient and the text and nothing else, so swapping the transport is a
+    change here and at the one call site in
+    ``api/services/sla_escalation.py``, not a change to what a digest is.
+    """
+    if not settings.report_smtp_host or not settings.report_smtp_from:
+        return "email delivery needs OCTO_REPORT_SMTP_HOST and OCTO_REPORT_SMTP_FROM"
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = settings.report_smtp_from
+    message["To"] = to
+    message.set_content(body)
+    return _smtp_send(settings, message)
 
 
 def _send_webhook(

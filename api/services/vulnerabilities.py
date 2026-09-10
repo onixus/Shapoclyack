@@ -47,11 +47,13 @@ from sqlalchemy import func, or_, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import exploit_evidence
+from api.services import metrics
 from api.services import nist_risk
 from api.services import pagination
 from api.services import runs as runs_service
 from api.services import scan_surface
 from api.services import vuln_states
+from api.services import workflow_events
 from scanner.pipeline.cvss4 import normalize_cwes
 from api.services.risk_scoring import (
     FOOTHOLD,
@@ -106,6 +108,12 @@ VULN_EVENT_KINDS = (
     "verification_passed",
     "verification_failed",
     "ticket_synced",
+    # SLA escalation (#349): the worker reassigned the finding or raised its
+    # severity because its deadline passed. Recorded as an event of its own
+    # rather than as an ``assigned`` one, because the actor is the platform
+    # acting on a policy — "who moved this to the platform team" has to have a
+    # different answer from "somebody did".
+    "escalated",
     # False-positive verdicts (Track E).
     "false_positive_set",
     "false_positive_cleared",
@@ -500,6 +508,190 @@ def delete_sla_policy(settings: Settings, *, tenant_id: str, policy_id: str) -> 
             return False
         session.delete(row)
         return True
+
+
+#: What a tenant with no ``sla_escalation_policies`` row gets (#349). Every
+#: action is off: the breach *events* need no policy, and rewriting somebody's
+#: assignments or mailing their asset owners is not a default to inherit from a
+#: version bump. ``configured`` tells a caller which of the two it is looking
+#: at, so the console can say "not set up" rather than "disabled".
+ESCALATION_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "escalate_after_days": 0,
+    "escalate_to": None,
+    "escalate_owner_team": None,
+    "bump_severity": False,
+    "digest_enabled": False,
+}
+
+#: Cap on the grace period past ``due_at``. A year of grace is a deadline
+#: nobody has, and the column is read into a ``timedelta``.
+MAX_ESCALATE_AFTER_DAYS = 365
+
+
+def _escalation_to_dict(row: models.SlaEscalationPolicy | None, tenant_id: str) -> dict[str, Any]:
+    if row is None:
+        return {
+            "tenant_id": tenant_id,
+            **ESCALATION_DEFAULTS,
+            "configured": False,
+            "updated_at": None,
+            "updated_by": "",
+        }
+    return {
+        "tenant_id": row.tenant_id,
+        "enabled": bool(row.enabled),
+        "escalate_after_days": int(row.escalate_after_days or 0),
+        "escalate_to": row.escalate_to,
+        "escalate_owner_team": row.escalate_owner_team,
+        "bump_severity": bool(row.bump_severity),
+        "digest_enabled": bool(row.digest_enabled),
+        "configured": True,
+        "updated_at": _iso(row.updated_at),
+        "updated_by": row.updated_by or "",
+    }
+
+
+def get_escalation_policy(settings: Settings, *, tenant_id: str) -> dict[str, Any]:
+    """The tenant's escalation policy, or the all-off defaults if it has none."""
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.SlaEscalationPolicy, tenant_id)
+        return _escalation_to_dict(row, tenant_id)
+
+
+def upsert_escalation_policy(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    enabled: bool,
+    escalate_after_days: int = 0,
+    escalate_to: str | None = None,
+    escalate_owner_team: str | None = None,
+    bump_severity: bool = False,
+    digest_enabled: bool = False,
+    updated_by: str | None = None,
+) -> dict[str, Any]:
+    """Replace the tenant's escalation policy. One row per tenant, so ``PUT``.
+
+    Refuses ``enabled`` with nothing to do: a policy that reassigns to nobody,
+    bumps nothing and mails nobody is a switch an operator would reasonably
+    read as "escalation is on", and it would do precisely nothing.
+    """
+    days = int(escalate_after_days or 0)
+    if days < 0 or days > MAX_ESCALATE_AFTER_DAYS:
+        raise ValueError(
+            f"escalate_after_days must be between 0 and {MAX_ESCALATE_AFTER_DAYS}"
+        )
+    assignee = (escalate_to or "").strip() or None
+    team = (escalate_owner_team or "").strip() or None
+    if enabled and not (assignee or team or bump_severity or digest_enabled):
+        raise ValueError(
+            "escalation is enabled but has no action: set escalate_to, "
+            "escalate_owner_team, bump_severity or digest_enabled"
+        )
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.SlaEscalationPolicy, tenant_id)
+        if row is None:
+            row = models.SlaEscalationPolicy(tenant_id=tenant_id, updated_at=now)
+            session.add(row)
+        row.enabled = bool(enabled)
+        row.escalate_after_days = days
+        row.escalate_to = assignee
+        row.escalate_owner_team = team
+        row.bump_severity = bool(bump_severity)
+        row.digest_enabled = bool(digest_enabled)
+        row.updated_at = now
+        row.updated_by = updated_by or ""
+        session.flush()
+        return _escalation_to_dict(row, tenant_id)
+
+
+def escalate(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    vuln_id: str,
+    assignee: str | None = None,
+    owner_team: str | None = None,
+    bump_severity: bool = False,
+) -> dict[str, Any] | None:
+    """Apply a tenant's escalation to one breached finding (#349).
+
+    Called only by ``api/services/sla_escalation.py``, and deliberately narrow:
+    it writes ownership and severity, records an ``escalated`` event, and does
+    not touch the lifecycle state. A finding whose deadline passed is not in a
+    different state — it is the same work, late, and moving it would erase
+    whatever its owner had recorded about it.
+
+    Returns the finding with a ``escalation`` key naming what changed, or
+    ``None`` if there was nothing left to do (already assigned there, already
+    critical). ``None`` is not a failure: the worker uses it to decide whether
+    the event it is about to send should claim an escalation happened.
+    """
+    now = _now()
+    changed: dict[str, Any] = {}
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        target_assignee = (assignee or "").strip() or None
+        if target_assignee and row.assignee != target_assignee:
+            changed["assignee_from"] = row.assignee
+            row.assignee = target_assignee
+            changed["assignee_to"] = target_assignee
+        target_team = (owner_team or "").strip() or None
+        if target_team and row.owner_team != target_team:
+            changed["owner_team_from"] = row.owner_team
+            row.owner_team = target_team
+            changed["owner_team_to"] = target_team
+        if bump_severity:
+            raised = _raise_severity(row.severity)
+            if raised != row.severity:
+                changed["severity_from"] = row.severity
+                row.severity = raised
+                changed["severity_to"] = raised
+        if not changed:
+            return None
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="escalated",
+            occurred_at=now,
+            to_state=row.state,
+            # No actor: the platform did this because the tenant's policy said
+            # so, and naming a user would put somebody's name on a decision
+            # they did not make today.
+            actor=None,
+            note="SLA breach escalation",
+            detail=changed,
+        )
+        session.flush()
+        result = _to_dict(row, now=now)
+    if "severity_to" in changed:
+        metrics.SLA_ESCALATIONS_TOTAL.labels(action="severity_bumped").inc()
+    if "assignee_to" in changed or "owner_team_to" in changed:
+        metrics.SLA_ESCALATIONS_TOTAL.labels(action="reassigned").inc()
+    result["escalation"] = changed
+    return result
+
+
+def _raise_severity(current: str | None) -> str:
+    """One step up the severity ladder, capped at ``critical``.
+
+    ``unknown`` becomes ``medium`` rather than ``low``: the point of the bump
+    is to make a missed deadline more visible, and an unrated finding that
+    nobody fixed in time is not evidence that it is mild.
+    """
+    ladder = ("low", "medium", "high", "critical")
+    value = (current or "unknown").strip().lower()
+    if value == "unknown":
+        return "medium"
+    if value not in ladder:
+        return value
+    return ladder[min(ladder.index(value) + 1, len(ladder) - 1)]
 
 
 def _resolve_sla_days(
@@ -1078,6 +1270,9 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "ticket_system": row.ticket_system,
         "ticket_key": row.ticket_key,
         "ticket_url": row.ticket_url,
+        "ticket_synced_at": _iso(row.ticket_synced_at),
+        "ticket_sync_error": row.ticket_sync_error,
+        "ticket_remote_status": row.ticket_remote_status,
         "machine_verified": bool(row.machine_verified),
         "verification_job_id": row.verification_job_id,
         "last_verified_at": _iso(row.last_verified_at),
@@ -1090,6 +1285,45 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "fp_observations": row.fp_observations,
         "fp_suppressed": _fp_suppressed(row, now),
     }
+
+
+#: What a workflow event (#349) carries about a finding. A deliberate subset of
+#: :func:`_to_dict`: a webhook payload crosses the trust boundary and is stored
+#: in ``webhook_deliveries``, so it names the finding, says how bad it is and
+#: who owns it, and leaves the false-positive evidence and the observation
+#: bookkeeping where they are.
+WORKFLOW_EVENT_FIELDS = (
+    "vuln_id",
+    "asset_id",
+    "cve",
+    "script_id",
+    "port",
+    "title",
+    "severity",
+    "risk_level",
+    "cvss",
+    "in_kev",
+    "state",
+    "assignee",
+    "owner_team",
+    "due_at",
+    "sla_days",
+    "sla_state",
+    "ticket_system",
+    "ticket_key",
+)
+
+
+def workflow_event_data(row: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    """The finding fields one workflow event carries, plus its own extras.
+
+    Shared by the write paths here and by ``api/services/sla_escalation.py`` so
+    that ``sla_breached`` and ``vuln_state_changed`` describe a finding the same
+    way — a receiver should not need two parsers for two events about one row.
+    """
+    data = {key: row.get(key) for key in WORKFLOW_EVENT_FIELDS}
+    data.update(extra)
+    return data
 
 
 def _event_to_dict(row: models.VulnerabilityEvent) -> dict[str, Any]:
@@ -1210,13 +1444,41 @@ def transition(
             ticket_key=ticket[1],
             to_state=to_state,
         )
+    # Also after the commit, and for the stronger version of the same reason:
+    # the fan-out writes rows of its own, and an event announcing a transition
+    # that then rolled back would be a notification about something that did
+    # not happen. One kind for the move and the reopen alike — ``reopened`` is
+    # a move whose ``from_state`` says so, and a receiver filtering on the kind
+    # should not have to know both spellings (#349).
+    workflow_events.emit(
+        settings,
+        "vuln_state_changed",
+        tenant_id=result["tenant_id"],
+        subject_id=vuln_id,
+        # The change's own timestamp: two moves of one finding are two events,
+        # a retried publish of one move is not.
+        marker=str(result["state_changed_at"] or ""),
+        data=workflow_event_data(
+            result,
+            from_state=previous,
+            to_state=to_state,
+            reopened=kind == "reopened",
+            actor=actor,
+            note=note,
+        ),
+        occurred_at=now,
+    )
     return result
 
 
 def _ticket_endpoint(
     session: Any, *, tenant_id: str, ticket_system: str
-) -> tuple[str, str | None, dict[str, str]] | None:
-    """``(base_url, secret, headers)`` for the tenant's tracker, or ``None``.
+) -> tuple[str, str | None, dict[str, str], dict[str, Any]] | None:
+    """``(base_url, secret, headers, config)`` for the tenant's tracker, or ``None``.
+
+    ``config`` is the subscription's ``transport_config`` — non-secret adapter
+    knobs, of which ``auth_mode`` is the one both directions of the sync need
+    (#347): a Jira Cloud token presented as ``Bearer`` is a 401.
 
     The tracker is addressed through the subscription that configured it, not
     by string-splitting the stored ``ticket_url``: that is where the credential
@@ -1239,7 +1501,7 @@ def _ticket_endpoint(
     if row is None:
         return None
     secret, headers = webhooks_service.endpoint_credentials(row)
-    return str(row.url), secret, headers
+    return str(row.url), secret, headers, dict(row.transport_config or {})
 
 
 def _verification_target(session: Any, row: models.Vulnerability) -> tuple[str | None, bool]:
@@ -1290,7 +1552,7 @@ def push_ticket_state(
                 ticket_key,
             )
             return False
-        base_url, secret, headers = endpoint
+        base_url, secret, headers, config = endpoint
         return ticket_sync.push_status_update(
             transport=ticket_system,
             base_url=base_url,
@@ -1298,6 +1560,7 @@ def push_ticket_state(
             to_state=to_state,
             secret=secret,
             extra_headers=headers,
+            auth_mode=config.get("auth_mode"),
         )
     except Exception:  # noqa: BLE001 - a foreign tracker must not fail the move
         LOG.warning(
@@ -1437,13 +1700,17 @@ def sync_ticket_status(
     vuln_id: str,
     actor: str | None = None,
 ) -> dict[str, Any] | None:
-    """Poll the linked ticket and reconcile the finding's state.
+    """Poll the linked ticket and reconcile the finding's state, now.
+
+    The operator's button. The same reconciliation runs on a cadence in
+    ``api/services/integrations/ticket_sync_worker.py`` (#347); both end in
+    :func:`apply_ticket_status`, so there is one place where a tracker's answer
+    turns into a lifecycle move.
 
     A tracker can say the work is done or that it is under way. It cannot say
     the finding is *verified* gone — only a scan says that — so a closure from
     here is recorded as ``ticket_resolved`` and never as machine-verified.
     """
-    now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
@@ -1461,29 +1728,96 @@ def sync_ticket_status(
 
     from api.services.integrations import ticket_sync
 
-    base_url, secret, headers = endpoint
-    suggested_state, raw_status, _ = ticket_sync.fetch_ticket_status(
+    base_url, secret, headers, config = endpoint
+    suggested_state, raw_status, payload = ticket_sync.fetch_ticket_status(
         transport=ticket_system,
         base_url=base_url,
         ticket_key=ticket_key,
         secret=secret,
         extra_headers=headers,
+        auth_mode=config.get("auth_mode"),
+    )
+    return apply_ticket_status(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=vuln_id,
+        suggested_state=suggested_state,
+        raw_status=raw_status,
+        error=payload.get("error") if isinstance(payload, dict) else None,
+        actor=actor,
     )
 
+
+def apply_ticket_status(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    suggested_state: str | None,
+    raw_status: str | None,
+    error: str | None = None,
+    actor: str | None = None,
+    record_unchanged: bool = True,
+    only_on_remote_change: bool = False,
+) -> dict[str, Any] | None:
+    """Reconcile one finding against what its tracker just said.
+
+    Split out of :func:`sync_ticket_status` for #347: the worker reads the
+    subscription once and then polls many findings through it, so the part that
+    needs a subscription and the part that needs a row had to stop being one
+    function. No HTTP happens here.
+
+    Two flags separate the two callers, and both exist because a poller may do
+    things a button may not.
+
+    ``record_unchanged``: the button always writes a ``ticket_synced`` event —
+    an operator clicked, and "I checked and the tracker still says To Do" is
+    exactly what the audit trail is for. The worker passes ``False``, because at
+    one poll per linked finding per interval it would otherwise write a row per
+    finding per tick into ``vulnerability_events``, which has no retention
+    sweep, to record that nothing happened. It still writes the event whenever
+    something *did* — a move, or the link starting or stopping to fail.
+
+    ``only_on_remote_change``: the worker applies a suggestion only when the
+    tracker's own status string differs from the one recorded at the last read
+    (``ticket_remote_status``). Without it the poller re-imposes its own last
+    verdict on any operator who disagreed with it: reopen a finding whose Jira
+    issue is still ``Done`` — which is the normal case, since the outbound
+    reflection cannot reopen an issue whose workflow has no reopen step — and
+    the next tick closes it again, and the one after that, indefinitely. The
+    button passes ``False``: a person clicking Sync is asking for the tracker's
+    current word whatever it is.
+    """
+    now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
             return None
+        if not row.ticket_system or not row.ticket_key:
+            # Unlinked between the poller's due read and this write. Returning
+            # here rather than recording is what keeps ``clear_ticket``'s reset
+            # of the sync bookkeeping from being undone by a read that was
+            # already in flight.
+            return _to_dict(row, now=now)
+        ticket_system = row.ticket_system
+        ticket_key = row.ticket_key
         previous = row.state
         applied = False
         # A ticket coming back is a re-open like any other, so the verdict on
         # the row has to go with it — see ``drop_fp_verdict_on_reopen``.
         dropped_fp = False
+        # Whether the tracker has said something new since the last read. A
+        # never-polled finding counts as changed: the first read is the first
+        # thing the tracker has ever told us.
+        remote_changed = row.ticket_synced_at is None or raw_status != row.ticket_remote_status
         # Only a legal move is applied. An unreachable tracker returns no
         # suggestion at all, and that is recorded as a sync that changed
         # nothing rather than as progress.
-        if suggested_state and suggested_state != previous and vuln_states.can_transition(
-            previous, suggested_state
+        if (
+            suggested_state
+            and suggested_state != previous
+            and (remote_changed or not only_on_remote_change)
+            and vuln_states.can_transition(previous, suggested_state)
         ):
             row.state = suggested_state
             row.state_changed_at = now
@@ -1508,25 +1842,43 @@ def sync_ticket_status(
                 row.due_at = now + timedelta(days=days)
                 row.reopen_count += 1
 
-        _record_event(
-            session,
-            vuln_id=row.vuln_id,
-            tenant_id=row.tenant_id,
-            kind="ticket_synced",
-            occurred_at=now,
-            from_state=previous,
-            to_state=row.state,
-            actor=actor or f"ticket_sync:{ticket_system}",
-            note=f"Ticket {ticket_key} reports '{raw_status or 'unknown'}'",
-            detail={
-                "ticket_system": ticket_system,
-                "ticket_key": ticket_key,
-                "remote_status": raw_status,
-                "suggested_state": suggested_state,
-                "applied": applied,
-                **({"after_fp_suppression": True} if dropped_fp else {}),
-            },
-        )
+        # The cursor moves on every attempt, including a failed one — see the
+        # column's comment in api/db/models.py for why the alternative starves
+        # the queue.
+        was_failing = row.ticket_sync_error is not None
+        row.ticket_synced_at = now
+        row.ticket_sync_error = error or None
+        if error is None:
+            # Only a read that actually reached the tracker moves this. A
+            # failed read must not record "the tracker now says nothing",
+            # or recovering from an outage would look like a status change and
+            # re-apply a verdict the operator had already overruled.
+            row.ticket_remote_status = raw_status
+        if record_unchanged or applied or was_failing != (error is not None):
+            _record_event(
+                session,
+                vuln_id=row.vuln_id,
+                tenant_id=row.tenant_id,
+                kind="ticket_synced",
+                occurred_at=now,
+                from_state=previous,
+                to_state=row.state,
+                actor=actor or f"ticket_sync:{ticket_system}",
+                note=(
+                    f"Ticket {ticket_key} could not be read: {error}"
+                    if error
+                    else f"Ticket {ticket_key} reports '{raw_status or 'unknown'}'"
+                ),
+                detail={
+                    "ticket_system": ticket_system,
+                    "ticket_key": ticket_key,
+                    "remote_status": raw_status,
+                    "suggested_state": suggested_state,
+                    "applied": applied,
+                    **({"error": error} if error else {}),
+                    **({"after_fp_suppression": True} if dropped_fp else {}),
+                },
+            )
         session.flush()
         return _to_dict(row, now=now)
 
@@ -1572,7 +1924,21 @@ def assign(
             detail=detail,
         )
         session.flush()
-        return _to_dict(row, now=now)
+        result = _to_dict(row, now=now)
+
+    workflow_events.emit(
+        settings,
+        "vuln_assigned",
+        tenant_id=result["tenant_id"],
+        subject_id=vuln_id,
+        # ``updated_at`` rather than the new assignee: unassigning is an
+        # assignment event too, and two people handed the same finding in turn
+        # are two events even if the second hands it back.
+        marker=now.isoformat(),
+        data=workflow_event_data(result, **detail, actor=actor, note=note),
+        occurred_at=now,
+    )
+    return result
 
 
 def set_exception(
@@ -1920,6 +2286,13 @@ def set_ticket(
         row.ticket_system = system
         row.ticket_key = key
         row.ticket_url = url
+        # A new link has never been read, so the sync bookkeeping from the old
+        # one is not about it (#347). Leaving it would show "Last read failed:
+        # HTTP 404" on a freshly corrected link until the next poll, which is
+        # exactly the state re-linking is the documented fix for.
+        row.ticket_synced_at = None
+        row.ticket_sync_error = None
+        row.ticket_remote_status = None
         row.updated_at = now
         _record_event(
             session,
@@ -1958,6 +2331,11 @@ def clear_ticket(
         row.ticket_system = None
         row.ticket_key = None
         row.ticket_url = None
+        # Same reason as in ``set_ticket``: with no link there is nothing for a
+        # stale sync error to be about, and the console would keep rendering it.
+        row.ticket_synced_at = None
+        row.ticket_sync_error = None
+        row.ticket_remote_status = None
         row.updated_at = now
         _record_event(
             session,

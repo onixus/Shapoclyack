@@ -395,6 +395,66 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Five ways the workflow-event worker under-delivered, found by review of
+  #349** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). All five
+  were reproduced against a live Postgres before the fix. (1)
+  `OCTO_SLA_ESCALATION_MAX_FINDINGS` was a ceiling, not a window: an announced
+  finding does not drop out of the candidate query, so a tenant with 600
+  overdue findings got 500 events on the first tick and **silence for ever**
+  after it. The worker now keeps a per-tenant keyset cursor on
+  `(due_at, vuln_id)` and each tick continues after the last deadline the
+  previous one reached; the expiring-exception sweep is windowed the same way.
+  (2) With `OCTO_NATS_URL` set and the broker down, every emit re-dialled it —
+  `nats_bus.get_bus` caches only success — for a measured 10 seconds each,
+  inside an operator's `POST /api/vulnerabilities/{id}/transition` and 500
+  times per worker tick. An unreachable broker is now remembered for 30
+  seconds, the guard #328 wrote for the audit events. (3) The escalation write
+  ran on every tick: an operator who assigned a breached finding to themselves
+  had it moved back to the escalation address within fifteen minutes, with
+  another `escalated` row in the trail each time (4 rows in 3 ticks). It is now
+  claimed once per missed deadline under its own marker kind. (4) The owner
+  digest claimed the day *before* calling the relay and did not release it, so
+  one `421` at 00:07 cost the owner the whole day's mail; a refusal now
+  releases the claim and the next tick retries. (5) An `emit_once` whose
+  fan-out raised kept its marker, suppressing that breach until the marker was
+  pruned — `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` days later, **a year** by
+  default. A failed fan-out now releases the claim, which is what the docs
+  already promised ("a longer tick delays a notification rather than losing
+  it").
+- **The workflow-event tests now fail when the marker table stops working**
+  ([#349](https://github.com/onixus/Shapoclyack/issues/349)). Review's mutation
+  run passed 48/48 with the claim result in `emit_once` ignored: the
+  de-duplication was actually being enforced by the unique index on
+  `webhook_deliveries`, and the marker table — the heart of the issue — carried
+  no test weight. Two tests close that: one emits for a tenant with **no**
+  subscription (no unique index to hide behind) and counts the bus copies, and
+  one races eight threads onto a single claim and asserts one winner, which is
+  the double-leader case three docstrings and `docs/operations.md` promise.
+- **"Two-way ticket sync" was one direction plus a refresh button**
+  ([#347](https://github.com/onixus/Shapoclyack/issues/347)). Nothing read a
+  tracker back unless an operator clicked `POST /api/vulnerabilities/{id}/ticket/sync`,
+  so a fix marked Done in Jira stayed `FIXING` here, inside its SLA, until a
+  human opened that finding's page. A leader-locked poller now reads every
+  linked ticket on a per-subscription cadence
+  (`transport_config.sync_interval_seconds`, default
+  `OCTO_TICKET_SYNC_INTERVAL_SECONDS`), with per-subscription backoff so a
+  tracker that is down is asked once and not once per finding, and
+  `octo_ticket_sync_lag_seconds` to say how far behind it is. A suggestion is
+  applied only when the tracker's status actually *changes*, so the poller
+  cannot re-impose its own verdict every interval on an operator who overruled
+  it. The outbound map stopped being a boolean — every lifecycle state now maps
+  to the tracker's own states, and a closed Jira issue is reopened through a
+  `Reopen` transition instead of failing silently; the maps are constrained so
+  that what is pushed cannot read back as a move nobody asked for, which is
+  also why an *active* DefectDojo finding no longer suggests `FIXING`.
+  `transport_config.auth_mode` adds `basic`, which is what Jira Cloud accepts
+  and what previously had to be hand-written into `headers`. Migration `0045`
+  adds the poller's cursor; the poller is **on by default**, so the first tick
+  after the upgrade reads every linked ticket — see
+  `docs/operations.md` § Inbound ticket sync to pace it. Reflecting a
+  *machine-verified* closure onto the ticket is still not done — that path
+  writes from the run ingest, not from an operator transition — so #347 keeps
+  that half open.
 - **A webhook delivery whose send raised counted as two attempts** in the
   dispatch tick's own report while the delivery row recorded one
   ([#310](https://github.com/onixus/Shapoclyack/issues/310)). The counter was
@@ -405,6 +465,63 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **The remediation workflow has events, and a missed deadline reaches
+  somebody** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). The
+  webhook machine carried five discovery kinds; SLA breach was derived on read,
+  so it existed only while somebody had the console open on it. Eight kinds
+  join it — `sla_due_soon`, `sla_breached`, `exception_expiring`,
+  `vuln_state_changed`, `vuln_assigned`, `scan_failed`, `report_generated`,
+  `agent_offline` — opt-in per subscription, so an upgrade sends nothing new to
+  an existing receiver. A leader-locked worker derives the four that are
+  predicates over the clock and claims each occurrence once in
+  `workflow_event_markers` (migration `0046`), keyed on the deadline, so a
+  15-minute tick announces a breach once and a reopened finding is announced
+  again. Per-tenant `sla_escalation_policies` add the optional actions —
+  reassign, one severity step, a daily digest to the asset owner — off until a
+  tenant admin sets them (`PUT /api/vulnerabilities/sla-escalation`). Workflow
+  events queue for webhooks directly, so they work with no broker configured;
+  the bus copy goes to `events.workflow.{tenant}.{kind}`. The digest goes
+  through the existing report relay: per-tenant notification channels are
+  [#351](https://github.com/onixus/Shapoclyack/issues/351) and are **not**
+  implemented here. No console UI for the escalation policy yet — it is API and
+  docs only.
+- **Bulk actions in the console; one request for a whole selection**
+  ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Triaging a scan's
+  four hundred findings was four hundred clicks and four hundred POSTs. The
+  findings and asset tables now have a multi-select whose state is held as ids —
+  so it survives paging, the poll and a filter change — and
+  `POST /api/vulnerabilities/bulk` applies `assign`, `transition`, `ticket`
+  (operator) or `exception`, `false_positive` (tenant admin, exactly as one at a
+  time) to up to 200 ids. `POST /api/assets/bulk` does the same for asset
+  context. Each id is applied through the *same* service call the single-finding
+  route uses and gets its own outcome: the answer is 200 with a per-id report,
+  so one finding that has since closed, or one id from a tenant the caller
+  cannot write in, no longer refuses the other hundred and ninety-nine. One
+  `audit_events` row per request lists the ids — written **before** a 500 when
+  a batch dies part-way, since the ids it already applied are committed, and
+  filed in the tenant whose findings changed rather than the caller's when a
+  platform admin's batch crosses tenants. Ids are capped at 48 characters as
+  well as 200 per request, and an oversized request body gives way inside the
+  audit document before the ids do: the row names what was touched or it is
+  worth nothing. In the console, a blank Assign field is **not sent** — the
+  finding keeps what it has — and clearing an assignee or an owning team is its
+  own checkbox; the selection is cleared when the tenant changes.
+- **`Idempotency-Key` on the bulk write endpoints**
+  ([#346](https://github.com/onixus/Shapoclyack/issues/346)). A bulk request is
+  the slowest, so it is the one that times out, and a blind retry would apply
+  two hundred transitions twice. The new `idempotency_records` table
+  (migration `0044`) gives a key the same contract `POST /api/jobs` already had
+  — same body replays the stored report, different body is 409, a retry while
+  the first is still running is 409 — for the endpoints that create no row of
+  their own to hang it on. "Still running" lasts a 15-minute lease and not the
+  full retention, so a replica killed mid-batch does not leave the key
+  answerable to nobody for a day. A request that *failed* releases its key,
+  unless it applied part of itself: then the partial report is stored as the
+  answer, because releasing would let the retry re-apply what landed. Records
+  self-expire after 24 hours. The console mints one key per submission and holds
+  it against that body until it is answered, so clicking Apply again after a
+  proxy timeout replays instead of applying the batch twice. The scan-start path
+  is unchanged.
 - **`overlays/prod-ha` — a Kubernetes profile that survives a node loss**
   ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `overlays/prod`
   ran one API replica pinned to a scanner node, the in-cluster single-pod

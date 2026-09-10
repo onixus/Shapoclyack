@@ -241,7 +241,7 @@ Retention must cover all stateful layers:
 | Layer | Retain/backup |
 |---|---|
 | Run filesystem/PVC | Raw artifacts, reports, checkpoints |
-| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail |
+| PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail. `idempotency_records` is the one table that needs *no* retention decision — it self-expires in 24h, see below |
 | ClickHouse | Analytical vulnerability and port history |
 | NATS | Pending jobs and ingest messages |
 
@@ -277,6 +277,29 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 - Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
 - `0` days disables the reaper.
 - Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+
+### Idempotency records (#346)
+
+`idempotency_records` remembers which `Idempotency-Key` a bulk write has already
+answered, so a retry after a timeout replays the first report instead of
+applying two hundred transitions twice. One row per key per endpoint per
+tenant, holding the request digest and the report.
+
+**Nothing operational to schedule.** Rows expire 24 hours after they are
+written (`RETENTION_SECONDS` in `api/services/idempotency.py`) and are deleted
+by a sweep the write path itself runs, at most once every five minutes per API
+process — the same shape as the login trail being pruned on the login path. A
+failed sweep is logged at WARNING and retried by the next request; it never
+fails the write it was riding on.
+
+The table is therefore bounded by *bulk request volume in the last day*, not by
+history: on a console-only installation it is tens of rows. It holds no secrets
+and no findings — the key, a digest, and the per-id report — and it is safe to
+truncate at any time. The only consequence is that a client mid-retry
+re-executes its batch, so prefer letting the sweep do it.
+
+The scan-start and results-upload paths are **not** in this table and are
+unchanged: they hang their key on the `jobs` row the request produced.
 
 ### Audit-trail immutability and retention (#327, #329)
 
@@ -565,6 +588,89 @@ the taxonomy: `suser` → `subject.account.name`, `src` → `subject.ip`, `act` 
 `action in (user.role_change, membership.grant, service_token.create)` is the
 rule an audit review usually asks for first.
 
+### Workflow events and the SLA escalation worker (#349)
+
+Eight event kinds describe the remediation *workflow* rather than discovery:
+`sla_due_soon`, `sla_breached`, `exception_expiring`, `vuln_state_changed`,
+`vuln_assigned`, `scan_failed`, `report_generated`, `agent_offline`. Four are
+emitted at the write that causes them; the other four are derived by a
+leader-locked worker started with the API
+(`OCTO_SLA_ESCALATION_ENABLED`, tick `OCTO_SLA_ESCALATION_INTERVAL_SECONDS`).
+
+**They reach webhooks without a broker.** Unlike an asset event, which is built
+by the scanner and travels JetStream, a workflow event is produced inside the
+API and its emitter writes `webhook_deliveries` directly — so an installation
+with `OCTO_NATS_URL` unset still gets these notifications. The bus copy is
+published to `events.workflow.{tenant}.{kind}` for consumers that are not
+webhooks, and there is deliberately **no third fan-out consumer to deploy**:
+widening `octo-webhook-fanout`'s filter subject would mean deleting it and
+resetting its cursor, which replays retained events at every receiver (#152).
+
+**Opt-in.** A subscription with an empty `event_kinds` does not start taking
+these on upgrade, for the same reason the audit trail does not (above). Name
+the kinds.
+
+**Announced once, by a marker.** `sla_breached` is a predicate over `due_at`
+and the clock, true again on every tick, so the worker claims each occurrence
+in `workflow_event_markers` before announcing it. The claim key carries the
+deadline: a reopen recomputes `due_at` and is announced again, the same
+deadline is not. The unique constraint is the claim, so a brief double-leader
+(the advisory lock is not fenced) sends one notification between the two
+replicas.
+
+A claim covers work that happened. If the fan-out into `webhook_deliveries`
+fails — a database hiccup, an unconfigured webhook service — the claim is
+**released** and the occurrence is announced by the next tick; the only hole
+left is a process killed between the claim and the fan-out, which costs one
+notification. What is *not* retried is the bus copy: it is off the notification
+path by design, and an unreachable broker is remembered for 30 seconds rather
+than re-dialled per event (`nats_bus.get_bus` caches only success and spends
+its whole connect budget on each attempt, which is ten seconds an operator's
+transition cannot afford — the same guard the audit events got in #328).
+
+`OCTO_WORKFLOW_MARKER_RETENTION_DAYS` (365) prunes those markers hourly from
+the same thread. Note what that means: **deleting a marker re-arms its event**,
+so a finding still breached a year later is raised a second time. `0` disables
+both.
+
+**Rolling into it.** Nothing is backfilled — the markers for past breaches were
+never written down, and inventing them would suppress the first announcement of
+every breach the installation already has. So the ticks after the upgrade
+announce the tenant's *current* breaches, once each,
+`OCTO_SLA_ESCALATION_MAX_FINDINGS` (500) per tenant per tick: the budget is a
+window and the worker keeps a per-tenant cursor, so a 600-finding backlog is
+announced over two ticks rather than the first 500 and then silence. On an
+estate with a large overdue backlog set `OCTO_SLA_ESCALATION_ENABLED=false`
+before the upgrade and turn it on when the receivers are ready. The cursor
+lives in the worker's memory: a restart, or the leader lock moving to another
+replica, starts the sweep from the oldest deadline again — which the markers
+make silent, at the cost of one pass of losing claims.
+
+**Escalation writes rows.** Reassignment and the severity bump happen only for
+tenants with an `sla_escalation_policies` row that enables them
+(`PUT /api/vulnerabilities/sla-escalation`, tenant admin), and each is recorded
+as an `escalated` event in the finding's trail with no actor — the platform did
+it, on a policy. It happens **once per missed deadline**, claimed in the marker
+table under its own kind (`sla_escalated`): an operator who assigns a breached
+finding to themselves keeps it, rather than having the policy move it back to
+the escalation address on the next tick. The severity bump does not survive the
+next observation of the finding, which re-copies the scanner's severity; the
+trail entry is the durable record, and it is not written a second time when the
+next scan puts the severity back.
+
+**The owner digest** is one plain-text mail per asset `owner_email` per day
+through the report relay (`OCTO_REPORT_SMTP_*`), claimed in the same marker
+table keyed on the calendar day, so a 15-minute tick cannot mail somebody
+ninety-six times. A relay that refuses is logged and counted
+(`digest_failures`), does not stop the tick, and **releases the day's claim**:
+a `421` at 00:07 costs the owner a quarter of an hour, not the day. The digest
+lists what is overdue for that owner now, not what this tick announced — it is
+read separately from the announcement window for exactly that reason.
+
+Worker counters live on `octo_workflow_events_total{kind,outcome}` and
+`octo_sla_escalations_total{action}`; `outcome="no_subscription"` is the
+ordinary case for a tenant that has not opted in, not a failure.
+
 ### ClickHouse ingest consumer subjects (#230)
 
 Stream `INGEST` carries the whole `ingest.>` tree, but the ClickHouse worker
@@ -697,6 +803,65 @@ chain cascades from `tenants` (migration `0006_endpoint_fk_cascade`), so
 deleting a tenant row removes its devices, identifiers, snapshots, software
 rows, and change events; a linked asset being deleted only nulls the device's
 `asset_id`.
+
+### Inbound ticket sync ([#347](https://github.com/onixus/Shapoclyack/issues/347))
+
+The poller that reads Jira / ServiceNow / DefectDojo back onto the findings
+runs in-process, is leader-locked, and is described in
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#inbound-ticket-sync).
+It polls one `GET` per linked finding per subscription per cadence, so the load
+it puts on somebody else's tracker is roughly `linked_findings / interval` —
+worth sizing before enabling it on an estate with thousands of tickets. It is
+**on by default**, so the first tick after the upgrade to migration `0045` has
+every linked ticket due at once: pace it with the per-subscription
+`sync_interval_seconds`, or set `OCTO_TICKET_SYNC_ENABLED=false` and enable it
+deliberately.
+
+Runbook:
+
+- **A tracker's status is not reaching findings** — read
+  `octo_ticket_sync_is_leader`. If it sums to 0 across the replicas, nothing is
+  polling: `OCTO_TICKET_SYNC_ENABLED` is off everywhere, or every replica lost
+  the advisory lock evaluation (a Postgres outage leaves everyone a follower by
+  design). If it sums to 1, read `octo_ticket_sync_lag_seconds{transport}`.
+- **`octo_ticket_sync_lag_seconds` climbing** — three causes, in order of
+  likelihood. The tracker is refusing: `octo_ticket_sync_polls_total{outcome="failed"}`
+  is rising and the log carries `subscription … held off Ns`. One tick cannot
+  drain the estate: `failed` is flat, `unchanged` is rising, and the fix is
+  `OCTO_TICKET_SYNC_BATCH_SIZE`. Or the cadence is simply longer than the
+  alert threshold — a subscription with `sync_interval_seconds: 3600` will sit
+  at a lag near an hour and that is correct.
+- **One finding stuck** — its `ticket_sync_error` says why (`HTTP 404` for a
+  renamed or deleted issue, `HTTP 401` for a credential the tracker no longer
+  accepts). A 404 is fixed by re-linking or clearing the ticket
+  (`DELETE /api/vulnerabilities/{id}/ticket`); a 401 across a whole
+  subscription usually means Jira Cloud with `auth_mode` left at `bearer` —
+  set it to `basic` and store the secret as `email:api_token`.
+- **The tracker is being hammered** — raise that subscription's
+  `transport_config.sync_interval_seconds`, which takes effect on the next
+  tick without a restart. `OCTO_TICKET_SYNC_ENABLED=false` on every replica is
+  the stop button; the manual sync route and the outbound reflection keep
+  working.
+- **A ticket-driven closure was wrong** — the closure is `ticket_resolved` and
+  never `machine_verified`, so it is distinguishable from a verified fix in
+  `vulnerability_events` and in the adoption metrics. Reopen it through
+  `POST /api/vulnerabilities/{id}/transition` and it stays reopened: the worker
+  applies a suggestion only when the tracker's own status string changes, which
+  it has not (the issue is still `Done`, and the outbound push could not move
+  it because the workflow has no reopen step). The **Sync** button is the
+  exception and will re-close it — it exists to take the tracker's current word
+  on request.
+- **A finding is not moving and there is no error** — compare its
+  `ticket_remote_status` with the tracker. Equal means the poller is
+  deliberately holding still, per the rule above. A `null` there with a
+  non-null `ticket_synced_at` means the tracker answered with a status this
+  build has no mapping for; the last `ticket_synced` event's
+  `detail.remote_status` names it.
+
+Backoff state lives in the worker's memory, so a restart re-learns an outage
+at the cost of one request per subscription. That is deliberate: persisting it
+would mean a table whose only reader is a thread that already has to handle a
+cold start.
 
 ## Agent installation and upgrade
 
@@ -1745,6 +1910,7 @@ read first.
 | `0033_software_match_queue_marker` | Only the matcher's queue marker. Every device becomes due at once, so the first tick after the downgrade re-folds the estate. The fold is idempotent, so this is a load spike and not a correctness problem |
 | `0035_asset_scan_coverage` | **Every asset's scan-coverage history**: when it was last actually scanned, by which run, and when it was last assessed for vulnerabilities. There is no backfill and there cannot be one — nothing else in the schema records which past run covered which asset — so a downgrade followed by a re-upgrade does not restore them: the whole Coverage block on `/adoption` reads `n/a` again until every asset has been reached by a *new* run, which on a monthly scan cadence is a month of no coverage reading. Nothing else breaks; the findings and the assets themselves are untouched. |
 | `0034_vuln_false_positive` | Every false-positive verdict on `vulnerabilities`: the reason, who made it, its evidence, when the suppression expires, and how many times the finding was seen while suppressed. Nothing else in the schema holds them, so they cannot be reconstructed. The affected findings stay `CLOSED`; the downgrade rewrites their `closure_reason` to `manual`, because the older code does not know the `false_positive` value. The `vulnerability_events` trail (`false_positive_set`, `fp_reobserved`, `fp_overridden`) survives, so *that a verdict existed* is still auditable — only the live suppression is gone, and the next scan re-opens the finding. |
+| `0045_vuln_ticket_sync_cursor` | The ticket-sync poller's cursor and its last error per finding. The old code has no poller, so nothing happens until a re-upgrade — and then every linked ticket is due at once and the first tick re-reads all of them. The load lands on somebody else's Jira rather than on this installation, which is what makes it worth knowing before running this on an estate with thousands of links (raise the subscriptions' `sync_interval_seconds` first, or keep `OCTO_TICKET_SYNC_ENABLED=false` for the first minutes). Nothing about the findings is lost: the reconciliation is idempotent and the `ticket_synced` events stay. |
 | `0036_oidc_pending_states` | Every **in-flight** SSO login: the nonce and the PKCE verifier of an authorization request the browser has not come back from yet. Nothing is lost that matters — a row lives for at most `OCTO_OIDC_STATE_TTL_SECONDS` (10 minutes) and a login whose record is gone is refused and retried. The same is true of the *upgrade*: during the rolling deploy in either direction the old and the new code disagree about where a pending login is kept, so logins begun before the switch and finished after it are refused. No account, membership or session is touched. |
 
 ### Legacy JSON state import
