@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import __version__, egress
+from agent import logging_setup
 
 LOG = logging.getLogger("octo-agent")
 
@@ -1219,10 +1220,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # --verbose still wins over OCTO_LOG_LEVEL: it is the flag an operator
+    # reaches for while watching one run, and having the environment override
+    # it would make the flag look broken (#330).
+    logging_setup.configure_logging(level=logging.DEBUG if args.verbose else None)
     if not args.token and not args.provisioning_key:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2

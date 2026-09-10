@@ -13,7 +13,12 @@ from fastapi.staticfiles import StaticFiles
 
 from api import __version__
 from api.auth import get_settings
-from api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
+from api.middleware import (
+    BodySizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+    install_request_id_middleware,
+)
+from api.request_context import REQUEST_ID_HEADER
 from api.routes import agents as agents_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
@@ -198,6 +203,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Without this the console cannot read `X-Request-Id` off a cross-origin
+        # response at all — a browser hides every response header that is not on
+        # the CORS-safelist unless the server names it — and docs/operations.md
+        # telling an operator to grep for "the id the console reported" would be
+        # asking for an id nothing could report (#330).
+        expose_headers=[REQUEST_ID_HEADER],
     )
 
     @app.middleware("http")
@@ -343,6 +354,12 @@ def create_app() -> FastAPI:
             # other unknown route: the client-side router owns 404 rendering.
             return FileResponse(web_dist / "index.html")
 
+    # Last, and deliberately not `add_middleware`: the correlation id has to be
+    # bound before anything else can log — the body-size rejections that never
+    # reach a route, the CORS preflight answers, and the 500 that Starlette's
+    # own ServerErrorMiddleware writes from outside the user middleware stack
+    # (#330). Nothing may add middleware after this point.
+    install_request_id_middleware(app)
     return app
 
 

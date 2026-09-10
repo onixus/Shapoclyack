@@ -90,12 +90,12 @@ describe("error messages", () => {
   });
 
   /** Answers every request with one failure, the way axios reports it. */
-  function failWith(status: number, data: unknown) {
+  function failWith(status: number, data: unknown, headers: Record<string, string> = {}) {
     api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
       throw Object.assign(new Error(`Request failed with status code ${status}`), {
         isAxiosError: true,
         config,
-        response: { data, status, statusText: "", headers: {}, config } as AxiosResponse,
+        response: { data, status, statusText: "", headers, config } as AxiosResponse,
       });
     };
   }
@@ -132,5 +132,22 @@ describe("error messages", () => {
   it("falls back to the raw body for a detail that is neither", async () => {
     failWith(500, { detail: { code: 17 } });
     await expect(fetchScanScope("default")).rejects.toThrow('{"code":17}');
+  });
+
+  it("appends the request id a server-side failure came back with", async () => {
+    // The one actionable thing a 500 carries: the token an operator greps the
+    // API logs for (#330). Readable cross-origin because the API names the
+    // header in its CORS `expose_headers`.
+    failWith(500, { detail: "Internal Server Error" }, { "x-request-id": "corr-12345" });
+    await expect(fetchScanScope("default")).rejects.toThrow(
+      "Internal Server Error (request id: corr-12345)",
+    );
+  });
+
+  it("leaves a client-side refusal's message alone", async () => {
+    // A 422 already says what the request got wrong; the id would be noise.
+    failWith(422, { detail: "not an IP or CIDR: '10.0.0'" }, { "x-request-id": "corr-12345" });
+    await expect(fetchScanScope("default")).rejects.toThrow("not an IP or CIDR: '10.0.0'");
+    await expect(fetchScanScope("default")).rejects.not.toThrow("corr-12345");
   });
 });

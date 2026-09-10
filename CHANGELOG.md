@@ -110,6 +110,39 @@ All notable changes to Shapoclyack are documented in this file.
   [operations.md](docs/operations.md#transport-encryption) and the wiki portal.
   The transport-encryption table in `operations.md` also stops saying NATS is
   unencrypted, which has not been true since `tls://` landed.
+- **Structured logging, a request id, and secret redaction**
+  ([#330](https://github.com/onixus/Shapoclyack/issues/330)). `OCTO_LOG_FORMAT`
+  (`text` by default, `json` for a shipper) and `OCTO_LOG_LEVEL` configure the
+  API and the agent alike; the API hands the same formatter to uvicorn, so
+  `uvicorn.access` stops being the one stream in a different shape. JSON lines
+  carry `ts`, `level`, `logger`, `msg`, `request_id`, and `exc` on a traceback,
+  and the formatter is built on the standard library — no new dependency.
+  `RequestIdMiddleware` binds a correlation id per request: `X-Request-Id` from
+  the caller when it is safe to echo and to log (128 characters of a narrow
+  set, so a uuid, a ULID or a `traceparent` passes and a CRLF injection does
+  not), a fresh uuid4 otherwise. It wraps the whole ASGI stack — outside
+  Starlette's own `ServerErrorMiddleware`, which `add_middleware` cannot reach
+  — so the 500 for an unhandled exception carries the header like every other
+  response, and the record about it is written under the id rather than by
+  uvicorn after the context is gone. The value comes back in the response
+  header (named in the CORS `expose_headers`, so the console can read it
+  cross-origin and shows it in the toast for a server-side failure), appears in
+  every log line the request produces, and is set on the OpenTelemetry span as
+  `shapoclyack.request_id`. Both formats print UTC.
+  A `logging.Filter` on both processes masks keyed
+  `password=`/`token=`/`secret=` pairs (JSON spelling included), the whole
+  `Authorization` header whatever its scheme, bare `Bearer` credentials,
+  passwords inside `scheme://user:pass@host` URLs — an empty user, as Redis
+  writes them, included — and JWTs, in the message and in the formatted
+  traceback of either format; `%s` arguments are covered, which is how this
+  repository logs. `sqlalchemy.engine`, `paramiko`, `httpx`/`httpcore` and
+  `nats` are held at a floor, so `OCTO_LOG_LEVEL=DEBUG` does not turn on the
+  SQL statement log with its bound parameters, and `OCTO_LOG_LEVEL=NOTSET` is
+  refused rather than silently meaning "everything". `docs/operations.md`
+  now describes the filter and its limits instead of instructing operators not
+  to log secrets. Head trace sampling is configurable with
+  `OCTO_OTEL_TRACES_SAMPLER_RATIO` (default `1.0`, parent-based).
+
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426

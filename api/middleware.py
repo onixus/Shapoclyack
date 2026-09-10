@@ -2,18 +2,30 @@
 
 Kept as raw ASGI (not ``BaseHTTPMiddleware``) precisely because the body cap
 below has to be decided from the request headers, before Starlette/FastAPI
-buffers and JSON-parses the payload.
+buffers and JSON-parses the payload. The request-id layer at the bottom is raw
+ASGI for the neighbouring reason: it has to bind the correlation id before any
+other layer can log, the body-cap rejections that never reach a route included.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from api.request_context import (
+    REQUEST_ID_HEADER,
+    new_request_id,
+    reset_request_id,
+    sanitize_request_id,
+    set_request_id,
+)
 from api.services import metrics as metrics_service
+
+LOG = logging.getLogger("shapoclyack.api")
 
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
@@ -188,3 +200,112 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, _send_with_headers)
+
+
+class RequestIdMiddleware:
+    """Bind a correlation id to the request and echo it back (#330).
+
+    Reads ``X-Request-Id`` from the caller when it is a value we are willing to
+    put in a log line and a response header (see
+    :func:`api.request_context.sanitize_request_id`), and mints a uuid4 hex
+    otherwise. An id that fails validation is *replaced*, not escaped: a client
+    whose id we had to rewrite cannot correlate on it anyway.
+
+    Raw ASGI rather than ``BaseHTTPMiddleware``, like the two classes above.
+    Installed by :func:`install_request_id_middleware` rather than by
+    ``app.add_middleware``, because "outermost" has to mean outside Starlette's
+    own ``ServerErrorMiddleware`` too — see that function.
+
+    The OTel span attribute is set from the ``http.response.start`` hook rather
+    than on the way in: ``FastAPIInstrumentor`` is installed *inside* this
+    middleware (``tracing.configure`` runs before ``create_app`` adds this one),
+    so on the way in there is no server span yet, while the response-start
+    message is sent from within it.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        supplied: str | None = None
+        wanted = REQUEST_ID_HEADER.lower().encode("ascii")
+        for name, value in scope.get("headers", []):
+            if name.lower() == wanted:
+                supplied = value.decode("latin-1", "replace")
+                break
+        request_id = sanitize_request_id(supplied) or new_request_id()
+
+        async def _send_with_id(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                _annotate_span(request_id)
+                raw_headers: list[tuple[bytes, bytes]] = list(message.get("headers", []))
+                header_name = REQUEST_ID_HEADER.encode("ascii")
+                if not any(k.lower() == wanted for k, _ in raw_headers):
+                    raw_headers.append((header_name, request_id.encode("ascii")))
+                message["headers"] = raw_headers
+            await send(message)
+
+        token = set_request_id(request_id)
+        try:
+            await self.app(scope, receive, _send_with_id)
+        except Exception:
+            # By the time an unhandled exception reaches here, the 500 for it
+            # has already been written by ``ServerErrorMiddleware`` — which
+            # this layer wraps, so it went out through ``_send_with_id`` and
+            # carries the header like every other response. What is left is the
+            # log line: re-raising would hand it to uvicorn's
+            # "Exception in ASGI application", one frame above this contextvar,
+            # i.e. with ``request_id=""`` — the one record about the request
+            # that could not be found by its id. So it is written here, where
+            # the id is still bound, and not raised again (#330).
+            LOG.exception(
+                "unhandled exception serving %s %s",
+                scope.get("method", "?"),
+                scope.get("path", "?"),
+            )
+        finally:
+            reset_request_id(token)
+
+
+def install_request_id_middleware(app: Any) -> None:
+    """Wrap ``app``'s middleware stack in :class:`RequestIdMiddleware` (#330).
+
+    ``app.add_middleware`` cannot express what this layer needs. Starlette
+    builds ``ServerErrorMiddleware`` *outside* everything added that way, and
+    that is where an unhandled exception becomes a 500 — sent through the send
+    callable of whatever wraps it, which with ``add_middleware`` is uvicorn's
+    own. So the single response in the API that most needs a correlation id was
+    the only one without an ``X-Request-Id`` header, and
+    docs/api-and-rbac.md's "every response carries" was false for it.
+
+    Building the stack here rather than letting the first request build it is
+    the price: ``add_middleware`` raises afterwards, so this is called last in
+    ``create_app``.
+    """
+    app.middleware_stack = RequestIdMiddleware(app.build_middleware_stack())
+
+
+# Resolved once, not per response: OpenTelemetry is an optional dependency of
+# this install (``api/services/tracing.py`` degrades to a warning without it),
+# and a missing package must not turn every response into a 500 — nor an
+# ImportError into per-request work.
+try:  # pragma: no cover - depends on the install's extras
+    from opentelemetry import trace as _otel_trace
+except ImportError:  # pragma: no cover - depends on the install's extras
+    _otel_trace = None  # type: ignore[assignment]
+
+
+def _annotate_span(request_id: str) -> None:
+    """Put the correlation id on the active span, when tracing is on.
+
+    With tracing off but the package present, ``get_current_span()`` answers the
+    non-recording span and ``set_attribute`` is a no-op, so this costs one
+    attribute lookup on an installation that exports nothing.
+    """
+    if _otel_trace is None:  # pragma: no cover - depends on the install's extras
+        return
+    _otel_trace.get_current_span().set_attribute("shapoclyack.request_id", request_id)
