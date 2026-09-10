@@ -346,6 +346,29 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Bulk actions in the console; one request for a whole selection**
+  ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Triaging a scan's
+  four hundred findings was four hundred clicks and four hundred POSTs. The
+  findings and asset tables now have a multi-select whose state is held as ids —
+  so it survives paging, the poll and a filter change — and
+  `POST /api/vulnerabilities/bulk` applies `assign`, `transition`, `ticket`
+  (operator) or `exception`, `false_positive` (tenant admin, exactly as one at a
+  time) to up to 200 ids. `POST /api/assets/bulk` does the same for asset
+  context. Each id is applied through the *same* service call the single-finding
+  route uses and gets its own outcome: the answer is 200 with a per-id report,
+  so one finding that has since closed, or one id from a tenant the caller
+  cannot write in, no longer refuses the other hundred and ninety-nine. One
+  `audit_events` row per request lists the ids.
+- **`Idempotency-Key` on the bulk write endpoints**
+  ([#346](https://github.com/onixus/Shapoclyack/issues/346)). A bulk request is
+  the slowest, so it is the one that times out, and a blind retry would apply
+  two hundred transitions twice. The new `idempotency_records` table
+  (migration `0044`) gives a key the same contract `POST /api/jobs` already had
+  — same body replays the stored report, different body is 409, a retry while
+  the first is still running is 409 — for the endpoints that create no row of
+  their own to hang it on. A request that *failed* releases its key, and records
+  self-expire after 24 hours. The scan-start path is unchanged.
+
 - **`overlays/prod-ha` — a Kubernetes profile that survives a node loss**
   ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `overlays/prod`
   ran one API replica pinned to a scanner node, the in-cluster single-pod

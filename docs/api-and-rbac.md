@@ -357,6 +357,7 @@ One row per administrative change, with the resource before and after it:
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
 | `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
+| `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code, so a batch of 200 still names every id inside the 16 KiB document cap. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
 
 Every row carries the actor and what kind of principal it is (`user`,
 `service_token`, `agent`, `system`), the client address resolved the same way
@@ -367,11 +368,15 @@ matches a value that was on the wire.
 **The row is written in the transaction that makes the change.** A membership
 granted but not recorded is a silent change; a membership recorded but not
 granted is a trail that lies. Both are impossible for every action that *is* a
-database write. `report.download` is the exception, and the only one: a download
-is a file read with no transaction to join, so its row is committed on its own
-before the streaming response starts. A transfer that dies mid-stream therefore
-leaves a row saying the report was downloaded — which is the direction that
-error should point.
+database write. `report.download` and the two bulk actions are the exceptions,
+and each records in a transaction of its own. A download is a file read with no
+transaction to join, and its row is committed *before* the streaming response
+starts: a transfer that dies mid-stream therefore leaves a row saying the report
+was downloaded, which is the direction that error should point. A bulk request
+is *many* transactions — one per id, by design, so that one illegal transition
+does not roll back the other hundred and ninety-nine — with no single one for
+the row to join; its row is committed after the work, and says which ids the
+work reached.
 
 **Secrets never reach `before`/`after`.** Every field whose name reads like a
 credential — `password`, `*_hash`, `token`, `*_secret`, `*_key` — is replaced by
@@ -703,6 +708,63 @@ their own tenant.
 immediately and answers `201` with it. Snapshots are per tenant and are the
 only source the Risk Overview trend chart reads
 ([#144](https://github.com/onixus/Shapoclyack/issues/144), Track C).
+
+**Bulk actions.** `POST /api/vulnerabilities/bulk` applies one of five verbs
+to many findings in one request
+([#346](https://github.com/onixus/Shapoclyack/issues/346)); triaging four
+hundred findings used to be four hundred requests. The body names the verb and
+carries the same payload its single-finding endpoint takes:
+
+```json
+{"action": "assign", "vuln_ids": ["vln_a", "vln_b"], "payload": {"assignee": "ada@example.com"}}
+```
+
+`action` is one of `assign`, `transition`, `ticket` (each `operator`) or
+`exception`, `false_positive` (each tenant **`admin`**, exactly as one at a
+time — bulk is not a cheaper door to risk acceptance or suppression, and the
+route answers `403` naming the role it wanted). At most **200** ids per
+request; more is `422`, as is an empty list.
+
+The answer is **200 with a per-id report**, even when some ids failed:
+
+```json
+{"action": "assign", "requested": 3, "succeeded": 2, "failed": 1,
+ "results": [{"id": "vln_a", "ok": true, "outcome": "ok", "error": null},
+             {"id": "vln_x", "ok": false, "outcome": "not_found",
+              "error": "not found in this tenant"}],
+ "replayed": false}
+```
+
+`outcome` is the single-id endpoint's status code in words — `not_found` is its
+`404` (which is also what another tenant's id gets: a write scope never
+confirms existence), `conflict` its `409`, `invalid` its `422`. A batch is a
+partial success by design: one finding that closed since the operator loaded
+the page must not refuse the other hundred and ninety-nine. A caller wanting
+all-or-nothing checks `failed == 0`. `422` is reserved for a request that
+applies to nothing at all. Duplicate ids are applied once.
+
+`POST /api/assets/bulk` (`operator`) is the same shape for the asset registry
+and has one verb, `context` — `PATCH /api/assets/{id}`'s body applied to a
+selection, including its "an explicit `null` clears the field, an omitted key
+leaves it untouched" contract. An empty payload is `422`.
+
+Both record **one** `audit_events` row per request (`vulnerability.bulk`,
+`asset.bulk`) whose `after` lists the ids applied and maps the rejected ones to
+their outcome — one decision, one row, rather than two hundred rows that each
+look like a hand edit. The per-finding `vulnerability_events` and per-asset
+`asset_context_events` rows are still written, unchanged.
+
+**`Idempotency-Key` on the bulk endpoints.** Both accept the header, and it
+matters most here: a bulk request is the slowest, so it is the one that times
+out, and a blind retry would apply two hundred transitions twice. Semantics
+match `POST /api/jobs`: the same key with the same body replays the stored
+report (`200`, with `"replayed": true`), the same key with a *different* body is
+`409` (pick another key), and a retry arriving while the first request is still
+running is `409` — retry once it finishes. A request that *failed* releases its
+key, so a batch that died on a 500 can be retried with the same key. Keys are
+namespaced per endpoint and per tenant, capped at 200 characters, and remembered
+for 24 hours (`api/services/idempotency.py`); the scan-start path is unchanged
+and keeps hanging its key on the job row it creates.
 
 ### Agent fleet, deployment and upgrade
 
