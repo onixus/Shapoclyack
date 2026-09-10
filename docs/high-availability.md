@@ -130,6 +130,25 @@ handshake joins the cluster and sees every subject, whatever the per-user
 permissions say. Keep this ConfigMap out of anywhere a plain manifest is
 world-readable, or move NATS to `nkeys`/operator mode.
 
+### One `OCTO_MASTER_KEY` for every replica
+
+The integration secrets in Postgres are encrypted under a key-encryption key
+read from the environment at startup ([#310](https://github.com/onixus/Shapoclyack/issues/310)),
+and every replica of this Deployment reads the same `shapoclyack-api-users`
+Secret — so the requirement is met by construction here, and broken the moment
+a replica is given a key of its own. The failure is not an obvious one: the
+console lists and edits those subscriptions from every replica, because the read
+path holds no key, and only the webhook deliveries that happen to land on the
+odd replica dead-letter with `SecretDecryptionError`
+([operations.md](operations.md#when-a-row-cannot-be-decrypted)) — a tenant
+losing some of its notifications and none of the others.
+
+Rotation ([operations.md](operations.md#rotating-the-kek)) is for the same
+reason one Secret and one rollout rather than a per-pod step:
+`OCTO_MASTER_KEY_PREVIOUS` has to be on every replica before any of them starts
+writing under the new key, or a row written by an already-rolled pod is one an
+un-rolled pod cannot read.
+
 ### metrics-server
 
 The HPA reads `metrics.k8s.io`. Without a provider it reports `unknown` for the
