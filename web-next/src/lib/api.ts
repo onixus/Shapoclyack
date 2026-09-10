@@ -2882,14 +2882,20 @@ export async function deleteTenantQuota(tenantId: string) {
  * create-issue call for the tracker (api/services/integrations/tickets.py). */
 export type WebhookTransport = "webhook" | "jira" | "servicenow" | "defectdojo";
 
-/** Asset-event kinds a subscription may filter on (api/services/asset_events.py
- * EVENT_KINDS). An empty list on a subscription means "every kind". */
+/** Event kinds a subscription may filter on. An empty list means "every kind".
+ *
+ * The first five are the asset events (`api/services/asset_events.py`
+ * EVENT_KINDS). `audit.*` is the whole administrative trail (#328) — the API
+ * also accepts one exact action (`audit.user.role_change`), which the console
+ * deliberately does not offer as twenty-odd more checkboxes; a subscription
+ * that names one is shown and preserved, just not composed here. */
 export const WEBHOOK_EVENT_KINDS = [
   "new_asset",
   "new_open_port",
   "new_cve",
   "cert_expiring",
   "decommissioned_host",
+  "audit.*",
 ] as const;
 
 export type WebhookEventKind = (typeof WEBHOOK_EVENT_KINDS)[number];

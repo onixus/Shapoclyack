@@ -317,6 +317,38 @@ class AuditEvent(Base):
     )
 
 
+class AuditForwardCursor(Base):
+    """How far a SIEM forwarder has read into :class:`AuditEvent` (#328).
+
+    Only the ``db`` source of ``api.services.audit_syslog_forwarder`` uses this:
+    the ``nats`` source keeps its position in a JetStream durable consumer,
+    where it belongs. An installation with no broker has neither, and a cursor
+    in a file would have meant a PersistentVolume for one integer and a
+    forwarder that re-sent everything whenever a pod moved.
+
+    One row per forwarder name, so a second destination added later gets its
+    own place rather than fighting over this one. The position is the *pair*
+    ``(last_occurred_at, last_id)``, and the next pass reads everything after
+    it in that order: a cursor on ``id`` alone would skip a row whose
+    transaction committed after a higher-id one, permanently.
+
+    Deliberately **not** in ``audit_events``' immutability regime (#329): this
+    is bookkeeping about the trail, not part of it, and it must be updatable by
+    the API's own role.
+    """
+
+    __tablename__ = "audit_forward_cursors"
+
+    forwarder: Mapped[str] = mapped_column(primary_key=True)
+    # The id half of the position: the id of the last row written to the
+    # destination's socket. Breaks the tie between two rows sharing a timestamp.
+    last_id: Mapped[int] = mapped_column(default=0)
+    # The timestamp half, and the one the ordering leads with. NULL on a
+    # forwarder that has sent nothing yet, which reads as "before every row".
+    last_occurred_at: Mapped[datetime | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime]
+
+
 class OidcPendingState(Base):
     """One in-flight SSO authorization request, between the redirect and the callback (#321).
 
@@ -706,7 +738,10 @@ class WebhookSubscription(Base):
     name: Mapped[str]
     url: Mapped[str]
     enabled: Mapped[bool] = mapped_column(default=True)
-    # [] means "every kind"; validated against asset_events.EVENT_KINDS on write.
+    # [] means "every asset kind" — the administrative trail (audit.*, #328) is
+    # opt-in, so an upgrade does not start posting it to receivers configured
+    # before it could leave the platform. Validated on write against
+    # asset_events.EVENT_KINDS plus the audit forms.
     event_kinds: Mapped[list] = mapped_column(JSON, default=list)
     min_severity: Mapped[str | None] = mapped_column(default=None)
     secret: Mapped[str | None] = mapped_column(default=None)

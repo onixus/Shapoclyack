@@ -49,7 +49,18 @@ function timestamp(value: string | null) {
 
 function eventKindsLabel(kinds: string[], t: Translate) {
   if (kinds.length === 0) return t("integrations.allEvents");
-  return kinds.map((kind) => t(`integrations.event.${kind}` as MsgKey)).join(", ");
+  return kinds
+    .map((kind) => {
+      // A subscription may name one exact audit action (`audit.user.delete`,
+      // #328), which the API accepts and the console has no message for.
+      // `translate` falls back to the key itself, so without this the cell
+      // would read "integrations.event.audit.user.delete" — showing the kind
+      // as the server has it is both shorter and true.
+      const key = `integrations.event.${kind}` as MsgKey;
+      const label = t(key);
+      return label === key ? kind : label;
+    })
+    .join(", ");
 }
 
 /**

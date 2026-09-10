@@ -131,3 +131,64 @@ def test_live_an_agent_never_sees_another_tenants_offer(bus):
         assert session.pull_and_claim(_RefusingClient(), "agent-b", timeout=2.0) is None
     finally:
         session.close()
+
+
+def test_live_audit_events_land_on_their_own_tenant_subject(bus):
+    """A tenant's audit trail must be readable only under its own subject (#328).
+
+    Against a real broker rather than a stub, because the guarantee is a
+    property of JetStream's subject matching as much as of the encoder: a
+    platform-level row falling back to ``default`` — the way the pre-#328 asset
+    fallback would have had it — is a real tenant's subject, and the mistake is
+    invisible to a unit test of the string.
+    """
+    from api.services import audit_events
+
+    tenant = f"live{uuid.uuid4().hex[:10]}"
+    envelope = {
+        "kind": "audit.user.role_change",
+        "tenant_id": tenant,
+        "event_id": f"live-audit-{uuid.uuid4().hex[:12]}",
+        "occurred_at": "2026-09-10T10:00:00Z",
+        "source": "audit",
+        "data": {"action": "user.role_change", "actor": "admin"},
+    }
+    assert bus.publish_audit_event(envelope) is True
+    # The platform-level copy: a distinct event id, or JetStream's duplicate
+    # window would drop it and the assertion below would pass for the wrong
+    # reason.
+    platform_envelope = dict(
+        envelope, tenant_id=None, event_id=f"live-audit-plat-{uuid.uuid4().hex[:12]}"
+    )
+    assert audit_events.publish_envelopes(NATS_URL, [platform_envelope]) == 1
+
+    async def _subjects(subject: str) -> list[str]:
+        from nats.errors import TimeoutError as NatsTimeout
+
+        assert bus._js is not None  # noqa: SLF001
+        sub = await bus._js.pull_subscribe(  # noqa: SLF001
+            subject, durable=f"liveaudit{uuid.uuid4().hex[:8]}"
+        )
+        try:
+            try:
+                msgs = await sub.fetch(10, timeout=2.0)
+            except NatsTimeout:
+                return []
+            seen = []
+            for msg in msgs:
+                seen.append(msg.subject)
+                await msg.ack()
+            return seen
+        finally:
+            await sub.unsubscribe()
+
+    assert bus._call(_subjects(f"events.audit.{tenant}")) == [  # noqa: SLF001
+        f"events.audit.{tenant}"
+    ]
+    platform = bus._call(  # noqa: SLF001
+        _subjects(f"events.audit.{nats_bus.PLATFORM_SUBJECT_TENANT}")
+    )
+    assert platform, "the platform-level event was not published at all"
+    assert all(
+        subject.endswith(f".{nats_bus.PLATFORM_SUBJECT_TENANT}") for subject in platform
+    )
