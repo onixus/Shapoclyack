@@ -1,10 +1,19 @@
 """Service-token administration (ROADMAP Track E).
 
-Platform admin only, and tenant-scoped in the path — the same shape as the
+``tenant.credential.manage`` on the tenant in the path — the same shape as the
 provisioning-key routes next door, and for the same reason (#231): deciding
 that a non-human may act inside a tenant is an administrative act, and an
 operator who could mint their own credential would be the control removing
-itself.
+itself. Since #318 that permission is held by the tenant's own admin and by
+the ``token-admin`` role as well as by the platform admin, so a customer
+rotates its own integration credentials instead of asking the platform
+operator to — but an ``operator`` still cannot, which is the part that matters.
+
+Holding the permission is not the same as holding the authority to *delegate*:
+``token-admin`` is rank 1, so the role it asks for is capped at its own
+(:func:`api.services.service_tokens._refuse_escalation`, `403`). A token
+outlives the session that minted it and carries no password, so a credential
+stronger than its issuer is the issuer promoting itself.
 
 The plaintext is in the create response and nowhere else. ``GET`` never
 returns it, no log line carries it, and no error message quotes it — only a
@@ -18,7 +27,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.auth import Role, StepUpDep, TokenUser, get_settings, require_role
+from api.auth import (
+    StepUpDep,
+    TenantPrincipal,
+    get_settings,
+    require_path_tenant_permission,
+)
+from api.core import permissions as permission_catalog
 from api.routes._audit import AuditDep
 from api.schemas import CreateServiceTokenRequest, ServiceTokenInfo
 from api.services import service_tokens as service_tokens_service
@@ -41,7 +56,10 @@ def _require_tenant(tenant_id: str) -> None:
 def create_service_token(
     tenant_id: str,
     body: CreateServiceTokenRequest,
-    admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    admin: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     # Minting a credential that outlives the session minting it is exactly the
     # act #315 puts behind a recent second factor. No effect on an admin who
     # has not enabled MFA, and none on a service token, which cannot reach
@@ -50,7 +68,12 @@ def create_service_token(
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> ServiceTokenInfo:
-    """Issue one token. The response is the only place its plaintext ever exists."""
+    """Issue one token. The response is the only place its plaintext ever exists.
+
+    ``403`` when the requested ``role`` is stronger than the caller's own role
+    in this tenant; ``404`` for an unknown tenant; ``422`` for a malformed
+    scope or lifetime.
+    """
     try:
         created = service_tokens_service.create_token(
             settings,
@@ -60,10 +83,14 @@ def create_service_token(
             role=body.role,
             created_by=admin.username,
             expires_in_days=body.expires_in_days,
+            issuer_role=admin.role.value,
+            issuer_is_platform_admin=admin.is_platform_admin,
             audit=audit,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -74,7 +101,10 @@ def create_service_token(
 @router.get("/tenants/{tenant_id}/service-tokens", response_model=list[ServiceTokenInfo])
 def list_service_tokens(
     tenant_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[ServiceTokenInfo]:
     """Every token issued for this tenant, newest first, without their secrets.
@@ -97,7 +127,10 @@ def list_service_tokens(
 def revoke_service_token(
     tenant_id: str,
     token_id: str,
-    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     __: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,

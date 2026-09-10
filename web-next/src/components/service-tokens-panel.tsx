@@ -28,15 +28,20 @@ function formatDate(value: string | null) {
  * unrecoverable the moment this component drops it. It is never written to
  * localStorage and never put in a toast — both outlive the moment the admin is
  * looking at the screen.
+ *
+ * `canManage` is `tenant.credential.manage` in the selected tenant (#318), not
+ * the global admin role: the tenant's own admin and a `token-admin` hold it,
+ * and telling either of them that their credentials "are managed by a platform
+ * administrator" was false the moment tenant self-service landed.
  */
 export function ServiceTokensPanel({
   tenantId,
-  isAdmin,
+  canManage,
 }: {
   tenantId: string;
-  isAdmin: boolean;
+  canManage: boolean;
 }) {
-  const { data = [], isLoading, error } = useServiceTokens(tenantId, isAdmin);
+  const { data = [], isLoading, error } = useServiceTokens(tenantId, canManage);
   const createMutation = useCreateServiceToken(tenantId);
   const revokeMutation = useRevokeServiceToken(tenantId);
 
@@ -45,10 +50,11 @@ export function ServiceTokensPanel({
   const [role, setRole] = useState<Role>("viewer");
   const [issued, setIssued] = useState<ServiceTokenInfo | null>(null);
 
-  if (!isAdmin) {
+  if (!canManage) {
     return (
       <p className="text-sm text-muted-foreground">
-        Service tokens are managed by a platform administrator.
+        Managing this tenant&apos;s service tokens needs the{" "}
+        <code>tenant.credential.manage</code> permission — its admin or a token-admin.
       </p>
     );
   }

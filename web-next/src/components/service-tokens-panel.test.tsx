@@ -24,11 +24,11 @@ function token(overrides: Partial<ServiceTokenInfo> = {}): ServiceTokenInfo {
   };
 }
 
-function renderPanel(isAdmin = true) {
+function renderPanel(canManage = true) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <ServiceTokensPanel tenantId="acme" isAdmin={isAdmin} />
+      <ServiceTokensPanel tenantId="acme" canManage={canManage} />
     </QueryClientProvider>,
   );
   return queryClient;
@@ -39,10 +39,15 @@ describe("ServiceTokensPanel", () => {
     vi.restoreAllMocks();
   });
 
-  it("says who manages tokens instead of showing the form to a non-admin", () => {
+  it("names the permission instead of showing the form without it", () => {
+    // Not "managed by a platform administrator": since #318 the tenant's own
+    // admin and its token-admin manage these, so that sentence sent exactly
+    // the people who can do this to file a ticket with somebody who need not
+    // be involved.
     const list = vi.spyOn(apiModule, "fetchServiceTokens");
     renderPanel(false);
-    expect(screen.getByText(/platform administrator/i)).toBeInTheDocument();
+    expect(screen.getByText(/tenant\.credential\.manage/)).toBeInTheDocument();
+    expect(screen.queryByText(/platform administrator/i)).not.toBeInTheDocument();
     expect(list).not.toHaveBeenCalled();
   });
 

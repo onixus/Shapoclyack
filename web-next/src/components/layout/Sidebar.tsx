@@ -43,7 +43,10 @@ export function Sidebar() {
     setCollapsed(readCollapsed());
   }, []);
 
-  const groups = useMemo(() => visibleNavGroups(user?.role), [user?.role]);
+  const groups = useMemo(
+    () => visibleNavGroups(user?.role, user?.permissions),
+    [user?.role, user?.permissions],
+  );
   const active = activeNavHref(pathname, NAV);
 
   const toggleGroup = useCallback((id: string) => {

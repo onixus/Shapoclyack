@@ -52,8 +52,31 @@ describe("role gating", () => {
     expect(operator).toContain("/integrations");
   });
 
+  it("gates /service-tokens on the permission, not on the global role", () => {
+    // docs/ui.md promises this page to a tenant admin and a token-admin, whose
+    // *global* role is whatever it is — usually viewer. Gating on the global
+    // role hid it from both, so the promise was false in the one direction it
+    // was made in (#318).
+    const tokenAdmin = visibleNavGroups("viewer", ["tenant.credential.manage"]).flatMap((g) =>
+      g.items.map((i) => i.href),
+    );
+    expect(tokenAdmin).toContain("/service-tokens");
+
+    // ...and a global admin who holds nothing in the selected tenant does not
+    // get it, which is the other half: an empty list is an answer, not a gap.
+    const elsewhere = visibleNavGroups("admin", []).flatMap((g) => g.items.map((i) => i.href));
+    expect(elsewhere).not.toContain("/service-tokens");
+
+    // No list at all is an API older than #318: fall back to the role the
+    // entry used to be gated on rather than losing the page on upgrade.
+    expect(canSee({ permission: "tenant.credential.manage" }, "admin")).toBe(true);
+    expect(canSee({ permission: "tenant.credential.manage" }, "operator")).toBe(false);
+  });
+
   it("shows an admin everything and drops empty groups for others", () => {
-    const admin = visibleNavGroups("admin").flatMap((g) => g.items.map((i) => i.href));
+    const admin = visibleNavGroups("admin", [
+      "tenant.credential.manage",
+    ]).flatMap((g) => g.items.map((i) => i.href));
     expect(admin).toEqual(NAV.map((i) => i.href));
     expect(canSee({ minRole: "admin" }, undefined)).toBe(false);
     expect(canSee({}, undefined)).toBe(true);

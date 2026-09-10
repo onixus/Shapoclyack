@@ -1,11 +1,14 @@
 import type { AxiosResponse, InternalAxiosRequestConfig } from "axios";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { api, getAccessToken } from "@/lib/api";
+import { api, getAccessToken, setAccessToken, setActiveTenant } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 type Reply = { status: number; data: unknown };
 
 let originalAdapter: typeof api.defaults.adapter;
+/** Every request the transport saw, GETs included, with the params the
+ * interceptor put on it — which is where the tenant scope lives. */
+let seen: { url: string; params: Record<string, unknown> }[] = [];
 
 /** Answers each URL from its own queue; the last answer stands for repeats. */
 function installTransport(routes: Record<string, Reply[]>) {
@@ -13,8 +16,10 @@ function installTransport(routes: Record<string, Reply[]>) {
   const queues: Record<string, Reply[]> = Object.fromEntries(
     Object.entries(routes).map(([url, replies]) => [url, [...replies]]),
   );
+  seen = [];
   api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
     const url = String(config.url);
+    seen.push({ url, params: (config.params ?? {}) as Record<string, unknown> });
     if ((config.method ?? "get").toLowerCase() === "post") {
       sent.push({ url, body: config.data ? JSON.parse(String(config.data)) : null });
     }
@@ -114,6 +119,80 @@ describe("login with a second factor (#315)", () => {
     expect(sent[0]?.body).toEqual({ mfa_token: "challenge.jwt", code: "123456" });
     expect(getAccessToken()).toBe("session.jwt");
     expect(useAuthStore.getState().user?.username).toBe("admin");
+  });
+
+  it("re-reads the principal for the tenant it switches to", async () => {
+    // `tenant_role` and `permissions` are per tenant (#318) and every request
+    // carries the selected tenant, so a switch that only moved the scope left
+    // the console gating its pages on the authority of the tenant it left:
+    // the /system config panel hidden in a tenant where the API serves it, and
+    // rendered in one where the API answers 403.
+    installTransport({
+      "/auth/me": [
+        { status: 200, data: { ...ME, role: "viewer", is_platform_admin: false,
+                               tenants: ["acme", "globex"], default_tenant: "acme",
+                               scoped_tenant: "acme", tenant_role: "auditor",
+                               permissions: ["audit.read", "config.read"] } },
+        { status: 200, data: { ...ME, role: "viewer", is_platform_admin: false,
+                               tenants: ["acme", "globex"], default_tenant: "acme",
+                               scoped_tenant: "globex", tenant_role: "viewer",
+                               permissions: [] } },
+      ],
+    });
+    setAccessToken("session.jwt");
+
+    await useAuthStore.getState().hydrate();
+    expect(useAuthStore.getState().user?.permissions).toContain("config.read");
+
+    await useAuthStore.getState().selectTenant("globex");
+
+    // The second /auth/me was asked about globex, not about the default.
+    const meCalls = seen.filter((entry) => entry.url === "/auth/me");
+    expect(meCalls).toHaveLength(2);
+    expect(meCalls[1]?.params.tenant_id).toBe("globex");
+    // ...and the gate every page reads now says what globex says.
+    expect(useAuthStore.getState().user?.scoped_tenant).toBe("globex");
+    expect(useAuthStore.getState().user?.permissions).toEqual([]);
+    expect(useAuthStore.getState().activeTenant).toBe("globex");
+  });
+
+  it("keeps the tenant selected when the re-read fails", async () => {
+    // The scope moved before the request went out, so the API is already being
+    // asked in the right tenant; the cost of the failure is a stale gate, not
+    // a wrong answer, and unselecting the tenant would be the wrong one.
+    installTransport({
+      "/auth/me": [
+        { status: 200, data: ME },
+        { status: 500, data: {} },
+      ],
+    });
+    setAccessToken("session.jwt");
+    await useAuthStore.getState().hydrate();
+
+    await useAuthStore.getState().selectTenant("globex");
+
+    expect(useAuthStore.getState().activeTenant).toBe("globex");
+    expect(useAuthStore.getState().user?.username).toBe("admin");
+  });
+
+  it("does not carry a previous session's tenant into a login", async () => {
+    // /auth/me is scoped by the request interceptor like everything else, so a
+    // stale selection from whoever used this browser last would ask the API
+    // about a tenant this account may hold nothing in — and be answered 403
+    // where a principal should be.
+    installTransport({
+      "/auth/login": [
+        { status: 200, data: { username: "admin", access_token: "session.jwt", role: "admin" } },
+      ],
+      "/auth/me": [{ status: 200, data: ME }],
+    });
+    setActiveTenant("someone-elses-tenant");
+
+    await useAuthStore.getState().login("admin", "pw");
+
+    const me = seen.find((entry) => entry.url === "/auth/me");
+    expect(me?.params.tenant_id).toBeUndefined();
+    expect(useAuthStore.getState().activeTenant).toBeNull();
   });
 
   it("signs a required-but-unenrolled account in, flagged as pending", async () => {

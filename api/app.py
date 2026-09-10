@@ -22,6 +22,7 @@ from api.middleware import (
 from api.request_context import REQUEST_ID_HEADER
 from api.routes import agents as agents_routes
 from api.routes import audit as audit_routes
+from api.routes import rbac as rbac_routes
 from api.routes import assets as assets_routes
 from api.routes import auth as auth_routes
 from api.routes import endpoint_inventory as endpoint_inventory_routes
@@ -47,6 +48,7 @@ from api.schemas import HealthResponse, SsoStatus
 from api.services import agent_deployer
 from api.services import agents as agents_service
 from api.services import audit as audit_service
+from api.services import rbac as rbac_service
 from api.services import auth_audit
 from api.services import ch_ingest_worker
 from api.services import endpoint_inventory as endpoint_inventory_service
@@ -184,6 +186,7 @@ def create_app() -> FastAPI:
     memberships_service.configure(settings)
     auth_audit.configure(settings)
     audit_service.configure(settings)
+    rbac_service.configure(settings)
     service_tokens_service.configure(settings)
     endpoint_inventory_service.configure(settings)
     webhooks_service.configure(settings)
@@ -334,6 +337,7 @@ def create_app() -> FastAPI:
     app.include_router(users_routes.router, prefix="/api")
     app.include_router(mfa_routes.router, prefix="/api")
     app.include_router(audit_routes.router, prefix="/api")
+    app.include_router(rbac_routes.router, prefix="/api")
     if settings.service_tokens_enabled:
         app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(vulnerabilities_routes.router, prefix="/api")

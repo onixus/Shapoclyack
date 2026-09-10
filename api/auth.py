@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
+from api.core import permissions as permission_catalog
 from api.settings import Settings, load_settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -32,16 +33,31 @@ MFA_TOKEN_TYP = "mfa"
 
 
 class Role(str, Enum):
+    """A role name that can reach a request.
+
+    The first three are also the *global* roles an account can hold
+    (``users.role``); the rest are tenant roles, granted on a membership since
+    #318 and never on an account. They are members of this enum because
+    :class:`TenantPrincipal` carries the role a caller holds *inside* a tenant,
+    and that is now one of eight names.
+    """
+
     viewer = "viewer"
     operator = "operator"
     admin = "admin"
+    auditor = "auditor"
+    scan_operator = "scan-operator"
+    scope_approver = "scope-approver"
+    token_admin = "token-admin"
+    risk_approver = "risk-approver"
 
 
-ROLE_RANK = {
-    Role.viewer: 1,
-    Role.operator: 2,
-    Role.admin: 3,
-}
+#: The coarse read/write gate ``require_role``/``require_tenant`` compare
+#: against, sourced from the role table in :mod:`api.core.permissions` so a
+#: role's rank and its permissions are declared in one place. Read the note
+#: there about why the separation-of-duties roles sit at rank 1: a
+#: ``scope-approver`` at rank 2 would pass every operator gate in the API.
+ROLE_RANK = {role: permission_catalog.rank_for(role.value) for role in Role}
 
 
 class TokenUser(BaseModel):
@@ -88,6 +104,14 @@ class TenantPrincipal(BaseModel):
     # lists (jobs, agents) keep showing a platform admin everything by default
     # while still honouring an explicit tenant filter.
     tenant_requested: bool = False
+    # What this principal may do here (#318), derived from the role above and
+    # from being (or not being) the platform admin — never from the token, for
+    # the same reason the role is not: a session minted before a demotion must
+    # not carry the old authority for the rest of its life.
+    permissions: frozenset[str] = frozenset()
+
+    def allows(self, permission: str) -> bool:
+        return permission in self.permissions
 
 
 class AgentPrincipal(BaseModel):
@@ -138,6 +162,22 @@ class MeResponse(BaseModel):
     tenants: list[str] = Field(default_factory=list)
     default_tenant: str = "default"
     is_platform_admin: bool = False
+    # The caller's role inside ``scoped_tenant`` and what it lets them do
+    # (#318). ``role`` above is the global one, which since #318 is no longer
+    # the whole answer: a global viewer can be an auditor in one tenant and a
+    # scope-approver in another. The console reads this to decide which pages
+    # to render rather than keeping its own copy of the role table — and, like
+    # every other field here, it is re-derived per request.
+    tenant_role: Role = Role.viewer
+    permissions: list[str] = Field(default_factory=list)
+    #: Which tenant ``tenant_role`` and ``permissions`` above describe. The
+    #: console attaches the tenant its switcher is on to every request
+    #: (``web-next/src/lib/api.ts``), this route included, so answering only
+    #: for ``default_tenant`` gated each page on a tenant the user might not
+    #: be looking at — hiding a panel the API would have served, and offering
+    #: one it refuses. Echoed rather than assumed so a client can tell a
+    #: scoped answer from a stale one.
+    scoped_tenant: str = "default"
     # Second-factor state of the signed-in account (#315), so the console can
     # render the "set up MFA" banner and the security page without a second
     # call on every page load. ``mfa_pending`` is a property of this session,
@@ -719,12 +759,99 @@ def require_step_up(
 StepUpDep = Annotated[TokenUser, Depends(require_step_up)]
 
 
+def resolve_tenant_principal(
+    request: Request, user: TokenUser, requested_tenant: str | None
+) -> TenantPrincipal:
+    """Which tenant this request acts in, with which role and permissions.
+
+    The one place tenant context is derived, shared by every gate below
+    (:func:`require_tenant` and the three permission dependencies), so that
+    "which tenant am I in" and "what may I do here" cannot drift apart between
+    two routes. It authenticates nothing itself and refuses nothing but a
+    tenant the caller has no claim to — the *authority* check is the caller's.
+
+    ``requested_tenant`` is whatever the route offered: the ``tenant_id`` query
+    parameter for the ordinary tenant-scoped routes, the path parameter for the
+    ``/tenants/{tenant_id}/…`` administration ones. Either way it can only
+    select among the tenants the caller is already entitled to.
+    """
+    from api.services import memberships as memberships_service
+    from api.services import tenants as tenants_service
+
+    service_principal = getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None)
+    if service_principal is not None:
+        # A service token is issued *for* a tenant, so there is nothing to
+        # resolve: naming another one is refused rather than ignored, and
+        # no membership row can raise the role it was issued with.
+        requested = (requested_tenant or "").strip()
+        if requested and requested != service_principal.tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"No access to tenant {requested}",
+            )
+        role = Role(service_principal.role)
+        principal = TenantPrincipal(
+            username=user.username,
+            tenant_id=service_principal.tenant_id,
+            role=role,
+            # Never: an admin-role token administers its own tenant, not
+            # the fleet, so the cross-tenant listings stay closed to it.
+            is_platform_admin=False,
+            tenant_requested=True,
+            permissions=permission_catalog.permissions_for(role.value),
+        )
+    else:
+        try:
+            resolved, role_value = memberships_service.resolve_tenant(
+                user.username, requested_tenant, global_role=user.role.value
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        try:
+            role = Role(role_value)
+        except ValueError:
+            # A membership naming a role this build does not know — a row
+            # written by a newer replica during a rollout, or a custom role
+            # (#318 leaves those unimplemented) — resolves to the lowest
+            # authority rather than to an error or to a guess.
+            role = Role.viewer
+        is_platform_admin = user.role == Role.admin
+        principal = TenantPrincipal(
+            username=user.username,
+            tenant_id=resolved,
+            role=role,
+            is_platform_admin=is_platform_admin,
+            tenant_requested=bool((requested_tenant or "").strip()),
+            permissions=permission_catalog.permissions_for(
+                role.value, is_platform_admin=is_platform_admin
+            ),
+        )
+
+    if not principal.is_platform_admin:
+        # A suspended tenant stopped its agents and its provisioning keys
+        # (api/services/tenants.py) and nothing else: its people kept working
+        # as if nothing had happened, which made "suspended" a word about
+        # machines rather than about a customer (#318). The platform admin is
+        # exempt on purpose — somebody has to be able to look at, and
+        # un-suspend, a tenant in that state.
+        try:
+            tenants_service.require_active(principal.tenant_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return principal
+
+
 def require_tenant(minimum: Role):
     """Authenticate, resolve the request's tenant, and enforce the role *in it*.
 
     Routes keep accepting a ``tenant_id`` query parameter, but it can now only
     select among the tenants the caller is entitled to; anything else is a 403
     rather than a silent cross-tenant read.
+
+    The rank gate. Since #318 the finer-grained authorities are named
+    permissions and checked by :func:`require_permission` next door; this stays
+    what it has always been — "may this caller write here at all" — and the two
+    read the same role table (:mod:`api.core.permissions`).
     """
 
     def _checker(
@@ -732,60 +859,129 @@ def require_tenant(minimum: Role):
         user: Annotated[TokenUser, Depends(get_current_user)],
         tenant_id: Annotated[str | None, Query(description="Tenant to act in")] = None,
     ) -> TenantPrincipal:
-        from api.services import memberships as memberships_service
-
-        service_principal = getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None)
-        if service_principal is not None:
-            # A service token is issued *for* a tenant, so there is nothing to
-            # resolve: naming another one is refused rather than ignored, and
-            # no membership row can raise the role it was issued with.
-            requested = (tenant_id or "").strip()
-            if requested and requested != service_principal.tenant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"No access to tenant {requested}",
-                )
-            role = Role(service_principal.role)
-            if ROLE_RANK[role] < ROLE_RANK[minimum]:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        f"Role '{minimum.value}' or higher required in tenant "
-                        f"'{service_principal.tenant_id}'"
-                    ),
-                )
-            return TenantPrincipal(
-                username=user.username,
-                tenant_id=service_principal.tenant_id,
-                role=role,
-                # Never: an admin-role token administers its own tenant, not
-                # the fleet, so the cross-tenant listings stay closed to it.
-                is_platform_admin=False,
-                tenant_requested=True,
-            )
-
-        try:
-            resolved, role_value = memberships_service.resolve_tenant(
-                user.username, tenant_id, global_role=user.role.value
-            )
-        except PermissionError as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-        try:
-            role = Role(role_value)
-        except ValueError:
-            role = Role.viewer
-        if ROLE_RANK[role] < ROLE_RANK[minimum]:
+        principal = resolve_tenant_principal(request, user, tenant_id)
+        if ROLE_RANK[principal.role] < ROLE_RANK[minimum]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{minimum.value}' or higher required in tenant '{resolved}'",
+                detail=(
+                    f"Role '{minimum.value}' or higher required in tenant "
+                    f"'{principal.tenant_id}'"
+                ),
             )
-        return TenantPrincipal(
-            username=user.username,
-            tenant_id=resolved,
-            role=role,
-            is_platform_admin=user.role == Role.admin,
-            tenant_requested=bool((tenant_id or "").strip()),
-        )
+        return principal
+
+    return _checker
+
+
+def _refuse(permission: str, tenant_id: str | None = None) -> HTTPException:
+    """The one 403 every permission check raises, naming what was missing.
+
+    Naming the permission rather than a role: with eight roles and custom ones
+    to come, "admin required" would be a lie in most of the cases where it is
+    the fix, and an operator reading the message needs to know what to grant.
+    """
+    where = f" in tenant '{tenant_id}'" if tenant_id else ""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Permission '{permission}' required{where}",
+    )
+
+
+def _assert_known(permission: str) -> str:
+    """Fail at import time on a permission nobody can hold.
+
+    A route asking for a misspelled permission would otherwise be a route
+    nobody can reach, discovered by whoever needed it most.
+    """
+    assert permission in permission_catalog.PERMISSIONS, f"unknown permission: {permission}"
+    return permission
+
+
+def require_permission(permission: str):
+    """Authenticate, resolve the tenant, and demand one named permission in it.
+
+    The tenant-scoped counterpart of :func:`require_role`'s rank check, and the
+    only thing routes should reach for when the authority they need is narrower
+    than "operator or higher" — reading the audit trail, approving a scanning
+    scope, managing a tenant's credentials.
+    """
+    _assert_known(permission)
+
+    def _checker(
+        request: Request,
+        user: Annotated[TokenUser, Depends(get_current_user)],
+        tenant_id: Annotated[str | None, Query(description="Tenant to act in")] = None,
+    ) -> TenantPrincipal:
+        principal = resolve_tenant_principal(request, user, tenant_id)
+        if not principal.allows(permission):
+            raise _refuse(permission, principal.tenant_id)
+        return principal
+
+    return _checker
+
+
+def require_path_tenant_permission(permission: str):
+    """Same check, for a route whose tenant is in the path.
+
+    ``/api/tenants/{tenant_id}/…`` is where tenant administration lives, and
+    before #318 all of it was global-admin-only: a tenant admin could not add
+    their own member or rotate their own provisioning key. The tenant comes
+    from the path rather than the query string, so the request cannot name one
+    tenant in the URL and act in another.
+    """
+    _assert_known(permission)
+
+    def _checker(
+        request: Request,
+        tenant_id: str,
+        user: Annotated[TokenUser, Depends(get_current_user)],
+    ) -> TenantPrincipal:
+        principal = resolve_tenant_principal(request, user, tenant_id)
+        if not principal.allows(permission):
+            raise _refuse(permission, principal.tenant_id)
+        return principal
+
+    return _checker
+
+
+def platform_permissions(request: Request, user: TokenUser) -> frozenset[str]:
+    """What this caller may do outside any tenant, from its global role.
+
+    Exposed because one route needs the answer without being gated on it:
+    ``GET /api/system`` stays open to every role and drops the cross-tenant
+    counters instead of refusing the page (#318).
+
+    A service token carries a role but is never the platform admin — the same
+    rule ``resolve_tenant_principal`` applies, restated here rather than
+    inferred from the role, because an admin-role token administers the tenant
+    it was issued for and not the installation.
+    """
+    is_platform_admin = (
+        user.role == Role.admin
+        and getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is None
+    )
+    return permission_catalog.permissions_for(
+        user.role.value, is_platform_admin=is_platform_admin
+    )
+
+
+def require_platform_permission(permission: str):
+    """Demand a permission of the caller's *global* role, with no tenant.
+
+    For the handful of acts that are not inside a tenant at all — editing the
+    installation-wide scanner configuration, creating a tenant, setting
+    somebody's quota. Derived from ``users.role``, so a tenant admin does not
+    reach these however many tenants they administer.
+    """
+    _assert_known(permission)
+
+    def _checker(
+        request: Request,
+        user: Annotated[TokenUser, Depends(get_current_user)],
+    ) -> TokenUser:
+        if permission not in platform_permissions(request, user):
+            raise _refuse(permission)
+        return user
 
     return _checker
 

@@ -200,6 +200,26 @@ def get_tenant(tenant_id: str) -> dict[str, Any] | None:
         return _tenant_to_dict(row) if row else None
 
 
+def require_active(tenant_id: str) -> None:
+    """Raise ``PermissionError`` unless this tenant is still active (#318).
+
+    Suspending a tenant used to reach its machines only: an agent could not
+    exchange a provisioning key and a key could not be minted, while every
+    person in the tenant kept scanning, editing and downloading exactly as
+    before. This is the same check for the human side, called once per request
+    from :func:`api.auth.resolve_tenant_principal`.
+
+    A tenant row that has gone missing is *not* an error here: the platform has
+    always let a caller with no memberships act in ``default``, and an
+    installation whose default row was never created would otherwise stop
+    serving. Whether a named tenant exists is the route's 404 to raise, not
+    this function's 403.
+    """
+    row = get_tenant(tenant_id)
+    if row is not None and row["status"] != "active":
+        raise PermissionError(f"Tenant {tenant_id} is {row['status']}")
+
+
 def _validate_tenant_id(tid: str) -> None:
     """Constrain tenant ids to what a NATS subject token can carry verbatim.
 

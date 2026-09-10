@@ -6,6 +6,52 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Named permissions, an auditor role, and a tenant admin that is not the
+  platform admin** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
+  Three ranked roles could not express "reads the audit trail and writes
+  nothing" or "approves what we may scan but runs no scans", and every
+  tenant-administration route belonged to the global admin alone. A role now
+  carries a set of named permissions alongside its rank (`api/core/permissions.py`,
+  published by `GET /api/rbac/permissions` and `GET /api/rbac/roles`, seeded by
+  migration 0049), and five roles join the original three: `auditor`,
+  `scan-operator`, `scope-approver`, `token-admin` and `risk-approver` (defined
+  for #348; the approval workflow itself is not implemented here). The existing
+  three keep exactly the authority they had, so no administrator has to do
+  anything after the upgrade. A tenant's own admin now manages its members,
+  provisioning keys and service tokens and reads its quota and scope, while
+  approving the scope (`scan_scope.approve`) and changing the quota stay
+  platform admin — an administrator who could widen their own scope is the
+  control removing itself. `GET /api/config` needs `config.read`, so a viewer
+  no longer reads the installation's scanning posture, and the cross-tenant
+  counters in `GET /api/system` need `platform.fleet.read`. A suspended tenant
+  now refuses its people and not only its agents — including in
+  `GET /api/tenants` and `GET /api/tenants/posture`, which resolve their own
+  tenant set and so had kept answering with a suspended tenant's risk metrics.
+  The word for that state is **`suspended`** everywhere: the column, the
+  `TenantInfo` schema, the refusal and the docs. `disabled` is an account and an
+  agent, never a tenant, and the `TenantInfo` literal that still said so turned
+  the console's tenant switcher into a `500` the moment anything wrote the real
+  value. `GET /api/auth/me` now takes `tenant_id` and echoes `scoped_tenant`,
+  so `tenant_role`/`permissions` describe the tenant the console is acting in
+  rather than always the default one — the console re-reads the principal when
+  its switcher moves, and `/service-tokens` is gated on
+  `tenant.credential.manage` instead of on the global admin role, which had
+  hidden the page from the tenant admins and token-admins it is for.
+  **Custom roles per tenant are not implemented** — the schema and the read
+  side hold them, there is no way to create one — so #318 stays open, and the
+  console's own copy of the role table means the five new roles can only be
+  granted over the API.
+
+- **A `token-admin` can no longer mint a credential stronger than itself**
+  ([#318](https://github.com/onixus/Shapoclyack/issues/318)). Handing
+  `tenant.credential.manage` to a rank-1 role opened an escalation with it:
+  `POST /api/tenants/{id}/service-tokens` took the requested `role` on trust,
+  so an account that could not start a scan could issue itself a `role: admin`
+  service token and then start one — plus assets, reports, webhooks and
+  wordlists — with a credential that needs no password and outlives the session
+  that minted it. The requested role is now capped at the caller's own role in
+  that tenant, on rank *and* on permission set, and over the cap is a `403`. A
+  tenant `admin` keeps the whole ladder and a platform admin has no cap.
 - **Run alerts and the DefectDojo bulk export are per tenant, not per
   installation** ([#351](https://github.com/onixus/Shapoclyack/issues/351)).
   The scanner's alert stage read `OCTO_SLACK_WEBHOOK` / `OCTO_TELEGRAM_*` /

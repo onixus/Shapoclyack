@@ -47,12 +47,12 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/schedules` | Tenant-scoped recurring scan schedules, with the tenant's maintenance calendar and change freeze above them | Operator; admin to freeze or thaw |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
 | `/users` | Users & access: accounts and roles, tenant membership, provisioning-key revocation, sign-in audit; every role gets **My account** (own password) | Admin; any role for own password |
-| `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | Admin in the tenant |
+| `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | `audit.read` in the tenant — its admin or its auditor |
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
-| `/service-tokens` | Non-interactive API credentials for the selected tenant | Admin |
+| `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
 | `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog and on-request provisioning keys | Operator |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
-| `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; admin for edits |
+| `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/agent counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
 
 ## Application shell
 
@@ -63,7 +63,11 @@ geo), **Internal surface** (internal scans, endpoints, agents), **Operations**
 **Administration**. Groups collapse and remember it per browser
 (`shapoclyack.nav.collapsed`); a collapsed group still shows the current page.
 Entries below the signed-in role are hidden — presentation only, the API
-enforces every request (`src/lib/config/nav.ts`).
+enforces every request (`src/lib/config/nav.ts`). Panels gated on a *named*
+permission rather than on the role read it from `GET /api/auth/me`'s
+`permissions` (`holdsPermission` in `src/lib/auth-store.ts`), and fall back to
+the role when talking to an API older than #318 so an upgrade in two steps does
+not empty a page.
 
 The header carries **Search & jump** (`Ctrl`/`⌘` + `K`): pages the role may
 see, "start an external / internal scan", and typed ids — a run id opens the
@@ -810,9 +814,15 @@ under an existing name replaces it; deleting one does not affect a scan already
 running.
 
 `/service-tokens` issues and revokes non-interactive API credentials for the
-selected tenant. It is admin-only, and a platform admin has to have a tenant
-selected: the token is confined to that tenant, a role, and its scopes. The
-secret is shown once, at creation. See
+selected tenant. The menu entry and the panel are gated on
+`tenant.credential.manage` **in the selected tenant** — its own admin or a
+`token-admin`, not the global admin role, which is what the gate compared
+against before #318 and which hid the page from exactly the people it is for.
+Without the permission the panel names it instead of showing the form. A
+platform admin has to have a tenant selected: the token is confined to that
+tenant, a role, and its scopes — and the role it may be issued with is capped
+at the issuer's own, so a `token-admin` can mint a `viewer` token and not an
+`admin` one. The secret is shown once, at creation. See
 [api-and-rbac.md](api-and-rbac.md#service-tokens).
 
 ## Finding presentation
