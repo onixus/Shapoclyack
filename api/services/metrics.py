@@ -208,6 +208,23 @@ AUDIT_EVENTS_PUBLISHED_TOTAL = Counter(
     ["outcome"],
     registry=REGISTRY,
 )
+WORKFLOW_EVENTS_TOTAL = Counter(
+    "octo_workflow_events_total",
+    "Remediation-workflow events by kind and outcome (#349). outcome=queued "
+    "means at least one subscription took it, no_subscription that the tenant "
+    "has none matching (the ordinary case, not a failure), and error that the "
+    "fan-out itself failed — in which case the notification is lost while the "
+    "change that produced it is committed.",
+    ["kind", "outcome"],
+    registry=REGISTRY,
+)
+SLA_ESCALATIONS_TOTAL = Counter(
+    "octo_sla_escalations_total",
+    "Findings escalated by the SLA worker, by action (reassigned, "
+    "severity_bumped) (#349).",
+    ["action"],
+    registry=REGISTRY,
+)
 WEBHOOK_DELIVERIES_TOTAL = Counter(
     "octo_webhook_deliveries_total",
     "Webhook deliveries by outcome (queued, delivered, retrying, dead) "

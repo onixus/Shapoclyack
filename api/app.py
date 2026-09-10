@@ -51,6 +51,7 @@ from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_retention
 from api.services import health as health_service
 from api.services import screenshot_retention
+from api.services import sla_escalation
 from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
@@ -99,6 +100,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # reason: a duplicate scan is wasted work, a duplicate report is a
     # second PDF in a customer's inbox.
     report_dispatcher.start_worker(settings)
+    # Leader-locked for the same reason as the report dispatcher: every replica
+    # would otherwise wake for the same overdue finding. The notifications are
+    # de-duplicated by ``workflow_event_markers`` on top of that, because the
+    # lock is not fenced (#349).
+    sla_escalation.start_worker(settings)
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
@@ -116,6 +122,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
         job_reaper.stop_worker()
+        sla_escalation.stop_worker()
         report_dispatcher.stop_worker()
         software_match_worker.stop_worker()
         risk_snapshots.stop_worker()

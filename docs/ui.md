@@ -780,11 +780,21 @@ tracker token via `secret`, left empty to keep the current one) and Delete.
 **Deliveries**: the paged delivery log with Retry on dead deliveries.
 Operators read, admins change.
 
-The event-kind checkboxes carry a sixth entry, *Audit trail (every action)* —
-the `audit.*` kind ([#328](https://github.com/onixus/Shapoclyack/issues/328)),
-which delivers every administrative change in the tenant. It has to be ticked:
+The event-kind checkboxes carry, after the five asset events, the eight
+remediation-workflow kinds — *SLA due soon*, *SLA breached*, *Risk acceptance
+expiring*, *Finding state changed*, *Finding reassigned*, *Scan failed*,
+*Report generated*, *Agent offline*
+([#349](https://github.com/onixus/Shapoclyack/issues/349)) — and last *Audit
+trail (every action)*, the `audit.*` kind
+([#328](https://github.com/onixus/Shapoclyack/issues/328)), which delivers
+every administrative change in the tenant. All nine have to be ticked:
 leaving every box clear still means every *asset* event, so a subscription made
-before the trail could leave the platform does not start receiving it. The API
+before the trail or the workflow events existed does not start receiving them.
+What the platform *does* about a missed deadline — reassign, raise the
+severity, mail the asset owner — has no console page yet and is configured
+through `PUT /api/vulnerabilities/sla-escalation`
+([vulnerability-lifecycle.md](vulnerability-lifecycle.md#workflow-events-and-sla-escalation)).
+The API
 also accepts a single action (`audit.user.role_change`); the console does not
 offer twenty-odd more checkboxes for that, but a subscription that names one
 keeps it through an edit and is listed with the kind exactly as the server holds

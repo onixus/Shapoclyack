@@ -6,7 +6,9 @@ needs ``operator``. Two things need tenant ``admin``:
 * **accepting risk** (``POST /{id}/exception``) — it suspends an SLA the
   organisation set, which is a decision about what this tenant is willing to
   live with rather than a step in someone's remediation work;
-* **editing SLA policy** — it changes every future deadline in the tenant;
+* **editing SLA policy** — it changes every future deadline in the tenant, and
+  the escalation policy next to it (#349) decides what the platform does to a
+  finding whose deadline passed and whose asset owner is mailed about it;
 * **marking a false positive** (``POST /{id}/false-positive``) — it closes the
   finding *and* stops the scanner re-opening it, which is strictly stronger
   than accepting the risk. Withdrawing one is ``operator``: it only ever puts
@@ -38,6 +40,8 @@ from api.schemas import (
     BulkVulnerabilityRequest,
     Page,
     RiskScoreSnapshotInfo,
+    SlaEscalationPolicyInfo,
+    SlaEscalationPolicyRequest,
     SlaPolicyInfo,
     SlaPolicyRequest,
     VulnerabilityAssignRequest,
@@ -179,6 +183,48 @@ def delete_sla_policy(
         settings, tenant_id=principal.tenant_id, policy_id=policy_id
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SLA policy not found")
+
+
+@router.get("/sla-escalation", response_model=SlaEscalationPolicyInfo)
+def get_sla_escalation(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """The tenant's escalation policy, or the all-off defaults if it has none.
+
+    Always one tenant, unlike ``/sla-policies``: there is one row per tenant,
+    so a platform admin's cross-tenant view would be a list of unrelated
+    policies with no way to say which is being edited.
+    """
+    return vulns_service.get_escalation_policy(settings, tenant_id=principal.tenant_id)
+
+
+@router.put("/sla-escalation", response_model=SlaEscalationPolicyInfo)
+def upsert_sla_escalation(
+    body: SlaEscalationPolicyRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Replace it. ``admin`` for the same reason editing SLA policy is: this
+    decides what the platform does to the tenant's findings and who is mailed
+    about them, which is a decision about the tenant rather than a step in
+    somebody's remediation work."""
+    try:
+        return vulns_service.upsert_escalation_policy(
+            settings,
+            tenant_id=principal.tenant_id,
+            enabled=body.enabled,
+            escalate_after_days=body.escalate_after_days,
+            escalate_to=body.escalate_to,
+            escalate_owner_team=body.escalate_owner_team,
+            bump_severity=body.bump_severity,
+            digest_enabled=body.digest_enabled,
+            updated_by=principal.username,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 @router.get("/events", response_model=Page[VulnerabilityEventInfo])

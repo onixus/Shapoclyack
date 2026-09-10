@@ -500,6 +500,23 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
+Remediation-workflow events and SLA escalation
+([#349](https://github.com/onixus/Shapoclyack/issues/349), see
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#workflow-events-and-sla-escalation)).
+The events are opt-in per subscription, so turning these on does not by itself
+send anything anywhere:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_WORKFLOW_EVENTS_ENABLED` | `true` | Emit the eight workflow kinds at all. Off means a subscription naming them simply never matches, and the SLA worker does not start |
+| `OCTO_SLA_ESCALATION_ENABLED` | `true` | Run the worker that derives `sla_due_soon`, `sla_breached`, `exception_expiring` and `agent_offline`. Leader-locked, so it is safe to leave on in every replica. Set it to `false` **before** an upgrade if the installation would rather not have its whole existing breach backlog announced by the first tick |
+| `OCTO_SLA_ESCALATION_INTERVAL_SECONDS` | `900` | Worker tick (floored at 30). An SLA is measured in days, so a tighter tick buys nothing; a longer one delays a notification rather than losing it, because the marker table decides what has already been said |
+| `OCTO_SLA_ESCALATION_MAX_FINDINGS` | `500` | Findings one tenant's tick may announce, oldest deadline first. A tenant that imports a backlog of overdue findings must not turn one tick into that many webhook deliveries. A **window**, not a ceiling: the worker keeps a cursor per tenant and the next tick continues after the last deadline this one reached, so a backlog of 600 findings at the default is drained in two ticks (30 minutes) rather than stopping at 500 |
+| `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` | `365` | Age past which an "already announced" marker is deleted. Deleting one **re-arms its event**, so this is also the period after which a still-breached finding is raised a second time; `0` disables both the sweep and the re-announcement. A claim taken for a fan-out that then failed is released immediately rather than waiting for this sweep, so a database hiccup delays a notification by one tick |
+
+The owner digest uses the report relay (`OCTO_REPORT_SMTP_*` below): with no
+relay configured the digest is skipped with a logged reason and the webhook
+events still go out.
 Inbound ticket sync — the poller that reads Jira / ServiceNow / DefectDojo
 back onto the findings ([#347](https://github.com/onixus/Shapoclyack/issues/347),
 see [vulnerability-lifecycle.md](vulnerability-lifecycle.md#inbound-ticket-sync)).

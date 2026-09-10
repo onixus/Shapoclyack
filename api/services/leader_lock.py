@@ -56,6 +56,9 @@ SOFTWARE_MATCH_LOCK_ID = 3
 # for its whole life and every rolling update waited on it until the new pod's
 # init container timed out (``tests/test_lock_ids.py``).
 MIGRATION_LOCK_ID = 4
+# Taken after the migration id rather than before it, so the registry reads in
+# the order the ids were handed out (#349).
+SLA_ESCALATION_LOCK_ID = 5
 # The inbound ticket-sync poller (#347). Leader-locked for the same reason the
 # software matcher is: it takes no per-row claim, so every replica would read
 # the same tenant's tickets and write the same lifecycle events. Id 5 went to

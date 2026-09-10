@@ -336,6 +336,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Five ways the workflow-event worker under-delivered, found by review of
+  #349** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). All five
+  were reproduced against a live Postgres before the fix. (1)
+  `OCTO_SLA_ESCALATION_MAX_FINDINGS` was a ceiling, not a window: an announced
+  finding does not drop out of the candidate query, so a tenant with 600
+  overdue findings got 500 events on the first tick and **silence for ever**
+  after it. The worker now keeps a per-tenant keyset cursor on
+  `(due_at, vuln_id)` and each tick continues after the last deadline the
+  previous one reached; the expiring-exception sweep is windowed the same way.
+  (2) With `OCTO_NATS_URL` set and the broker down, every emit re-dialled it —
+  `nats_bus.get_bus` caches only success — for a measured 10 seconds each,
+  inside an operator's `POST /api/vulnerabilities/{id}/transition` and 500
+  times per worker tick. An unreachable broker is now remembered for 30
+  seconds, the guard #328 wrote for the audit events. (3) The escalation write
+  ran on every tick: an operator who assigned a breached finding to themselves
+  had it moved back to the escalation address within fifteen minutes, with
+  another `escalated` row in the trail each time (4 rows in 3 ticks). It is now
+  claimed once per missed deadline under its own marker kind. (4) The owner
+  digest claimed the day *before* calling the relay and did not release it, so
+  one `421` at 00:07 cost the owner the whole day's mail; a refusal now
+  releases the claim and the next tick retries. (5) An `emit_once` whose
+  fan-out raised kept its marker, suppressing that breach until the marker was
+  pruned — `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` days later, **a year** by
+  default. A failed fan-out now releases the claim, which is what the docs
+  already promised ("a longer tick delays a notification rather than losing
+  it").
+- **The workflow-event tests now fail when the marker table stops working**
+  ([#349](https://github.com/onixus/Shapoclyack/issues/349)). Review's mutation
+  run passed 48/48 with the claim result in `emit_once` ignored: the
+  de-duplication was actually being enforced by the unique index on
+  `webhook_deliveries`, and the marker table — the heart of the issue — carried
+  no test weight. Two tests close that: one emits for a tenant with **no**
+  subscription (no unique index to hide behind) and counts the bus copies, and
+  one races eight threads onto a single claim and asserts one winner, which is
+  the double-leader case three docstrings and `docs/operations.md` promise.
 - **"Two-way ticket sync" was one direction plus a refresh button**
   ([#347](https://github.com/onixus/Shapoclyack/issues/347)). Nothing read a
   tracker back unless an operator clicked `POST /api/vulnerabilities/{id}/ticket/sync`,
@@ -371,6 +406,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **The remediation workflow has events, and a missed deadline reaches
+  somebody** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). The
+  webhook machine carried five discovery kinds; SLA breach was derived on read,
+  so it existed only while somebody had the console open on it. Eight kinds
+  join it — `sla_due_soon`, `sla_breached`, `exception_expiring`,
+  `vuln_state_changed`, `vuln_assigned`, `scan_failed`, `report_generated`,
+  `agent_offline` — opt-in per subscription, so an upgrade sends nothing new to
+  an existing receiver. A leader-locked worker derives the four that are
+  predicates over the clock and claims each occurrence once in
+  `workflow_event_markers` (migration `0046`), keyed on the deadline, so a
+  15-minute tick announces a breach once and a reopened finding is announced
+  again. Per-tenant `sla_escalation_policies` add the optional actions —
+  reassign, one severity step, a daily digest to the asset owner — off until a
+  tenant admin sets them (`PUT /api/vulnerabilities/sla-escalation`). Workflow
+  events queue for webhooks directly, so they work with no broker configured;
+  the bus copy goes to `events.workflow.{tenant}.{kind}`. The digest goes
+  through the existing report relay: per-tenant notification channels are
+  [#351](https://github.com/onixus/Shapoclyack/issues/351) and are **not**
+  implemented here. No console UI for the escalation policy yet — it is API and
+  docs only.
 - **Bulk actions in the console; one request for a whole selection**
   ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Triaging a scan's
   four hundred findings was four hundred clicks and four hundred POSTs. The
@@ -408,7 +463,6 @@ All notable changes to Shapoclyack are documented in this file.
   it against that body until it is answered, so clicking Apply again after a
   proxy timeout replays instead of applying the batch twice. The scan-start path
   is unchanged.
-
 - **`overlays/prod-ha` — a Kubernetes profile that survives a node loss**
   ([#335](https://github.com/onixus/Shapoclyack/issues/335)). `overlays/prod`
   ran one API replica pinned to a scanner node, the in-cluster single-pod
