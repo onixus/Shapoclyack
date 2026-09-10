@@ -13,6 +13,7 @@ neither side can reproduce.
 from __future__ import annotations
 
 import ssl
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,7 @@ def _clean_proxy_env(monkeypatch):
         "OCTO_NO_PROXY",
         "OCTO_CA_BUNDLE",
         "HTTP_PROXY",
+        "http_proxy",
         "HTTPS_PROXY",
         "https_proxy",
         "NO_PROXY",
@@ -100,12 +102,24 @@ def test_the_ambient_variable_is_the_fallback(module, monkeypatch):
 
 
 @MODULES
-def test_the_lowercase_http_proxy_is_not_read(module, monkeypatch):
-    """httpoxy: in a CGI-shaped environment lowercase ``http_proxy`` is the
-    caller's own ``Proxy:`` header, and this process reads request headers from
-    untrusted callers."""
-    monkeypatch.setenv("http_proxy", "http://attacker.example:3128")
+def test_the_uppercase_http_proxy_is_not_read(module, monkeypatch):
+    """httpoxy, in the direction it actually runs.
+
+    A CGI-shaped environment derives ``HTTP_PROXY`` from an incoming ``Proxy:``
+    request header — uppercase, prefixed, underscored — so the *uppercase*
+    spelling is the one an untrusted caller can write. curl reads only the
+    lowercase name for exactly this reason, and this reads it the same way.
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://attacker.example:3128")
     assert module.proxy_for_url("http://api.example.com/x") is None
+
+
+@MODULES
+def test_the_lowercase_http_proxy_is_the_ambient_fallback(module, monkeypatch):
+    """The other half of the same rule: ``http_proxy`` is the conventional name
+    no request header can spell, so it is the one honoured."""
+    monkeypatch.setenv("http_proxy", "http://ambient.corp:3128")
+    assert module.proxy_for_url("http://api.example.com/x").host == "ambient.corp"
 
 
 @MODULES
@@ -133,8 +147,26 @@ def test_no_proxy_dialect(module, monkeypatch, no_proxy, url, bypassed):
 @MODULES
 def test_a_proxy_url_that_is_not_http_is_refused(module, monkeypatch):
     monkeypatch.setenv("OCTO_HTTPS_PROXY", "socks5://proxy.corp:1080")
-    with pytest.raises(module.EgressConfigError, match="http or https"):
+    with pytest.raises(module.EgressConfigError, match="must be http"):
         module.proxy_for_url("https://api.example.com/x")
+
+
+@MODULES
+def test_an_https_proxy_url_is_refused_rather_than_downgraded(module, monkeypatch):
+    """Accepting ``https://`` was a promise the client does not keep: the hop
+    to the proxy is a plaintext ``CONNECT`` carrying ``Proxy-Authorization:
+    Basic``, so the credentials would go out in the clear under a scheme that
+    says they do not."""
+    monkeypatch.setenv("OCTO_HTTPS_PROXY", "https://svc:s3cret@proxy.corp:3128")
+    with pytest.raises(module.EgressConfigError, match="must be http://"):
+        module.proxy_for_url("https://api.example.com/x")
+
+
+@MODULES
+def test_a_bare_proxy_authority_is_read_as_http(module, monkeypatch):
+    monkeypatch.setenv("OCTO_HTTPS_PROXY", "proxy.corp")
+    proxy = module.proxy_for_url("https://api.example.com/x")
+    assert (proxy.scheme, proxy.host, proxy.port) == ("http", "proxy.corp", 80)
 
 
 @MODULES
@@ -289,6 +321,40 @@ def test_the_nats_ca_bundle_rides_along_with_the_http_one(monkeypatch, tmp_path:
 
     options = worker.tls_connect_options()
     assert len(options["tls"].get_ca_certs()) == system_roots + 1
+
+
+def test_the_api_side_nats_connection_reads_the_same_ca_bundle(monkeypatch, tmp_path: Path):
+    """``OCTO_CA_BUNDLE`` is documented as "API **and** agent", and the API's
+    NATS client is the end that used to ignore it: the agent trusted the
+    internal root, the API did not, and the broker behind the same
+    cert-manager issuer answered one of them."""
+    from api.services import nats_bus
+
+    bundle = tmp_path / "corp-root.pem"
+    bundle.write_text(_CA_PEM, encoding="utf-8")
+    system_roots = len(ssl.create_default_context().get_ca_certs())
+    monkeypatch.setenv("OCTO_CA_BUNDLE", str(bundle))
+    for name in ("OCTO_NATS_TLS_CA", "OCTO_NATS_TLS_CERT", "OCTO_NATS_TLS_HOSTNAME"):
+        monkeypatch.delenv(name, raising=False)
+
+    options = nats_bus.tls_connect_options()
+    assert len(options["tls"].get_ca_certs()) == system_roots + 1
+
+
+def test_the_api_side_nats_connection_stays_default_without_any_variable(monkeypatch):
+    """A `nats://` deployment with nothing set must keep connecting in the
+    clear, not acquire a TLS context because the bundle lookup ran."""
+    from api.services import nats_bus
+
+    for name in (
+        "OCTO_CA_BUNDLE",
+        "OCTO_NATS_TLS_CA",
+        "OCTO_NATS_TLS_CERT",
+        "OCTO_NATS_TLS_KEY",
+        "OCTO_NATS_TLS_HOSTNAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert nats_bus.tls_connect_options() == {}
 
 
 def test_a_websocket_nats_url_without_aiohttp_says_what_to_install(monkeypatch):
@@ -466,3 +532,96 @@ def test_the_upload_declares_a_content_length(monkeypatch, tmp_path: Path):
 
     assert seen["length"] is not None
     assert int(seen["length"]) > 4096
+
+
+def test_a_body_cut_off_mid_upload_is_not_re_sent(monkeypatch, tmp_path: Path):
+    """``OCTO_AGENT_RESULTS_MAX_BODY_BYTES`` is answered on ``Content-Length``,
+    so the API never drains the multipart and the status line is lost with the
+    socket — the agent only sees a broken pipe. Retrying that spends the
+    branch office's uplink twice more to be refused three times."""
+    archive = tmp_path / "run.tar.gz"
+    archive.write_bytes(b"x" * 4096)
+    attempts = []
+
+    def _open(req, timeout):
+        attempts.append(req)
+        raise urllib.error.URLError(BrokenPipeError(32, "Broken pipe"))
+
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: pytest.fail("no backoff wanted"))
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", _open)  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="OCTO_AGENT_RESULTS_MAX_BODY_BYTES"):
+        client.upload_results(
+            "job-1",
+            agent_id="agent-1",
+            exit_code=0,
+            run_id="run-1",
+            error=None,
+            archive_path=archive,
+        )
+    assert len(attempts) == 1
+
+
+def test_a_transport_error_that_is_not_a_cut_off_body_still_retries(monkeypatch, tmp_path: Path):
+    """The narrow rule must stay narrow: an upload that never reached the API
+    at all is the case retries exist for."""
+    archive = tmp_path / "run.tar.gz"
+    archive.write_bytes(b"x" * 4096)
+    attempts = []
+
+    def _open(req, timeout):
+        attempts.append(req)
+        raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: None)
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", _open)  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="network error"):
+        client.upload_results(
+            "job-1",
+            agent_id="agent-1",
+            exit_code=0,
+            run_id="run-1",
+            error=None,
+            archive_path=archive,
+        )
+    assert len(attempts) == 3
+
+
+# --------------------------------------------------------------------------- #
+# The pipeline's own lookups (RIPEstat, S3/GCS/Azure)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_pipeline_lookups_are_unconfigured_by_default():
+    """No variables, no keyword arguments: ``httpx`` keeps its own defaults
+    rather than being handed ``proxy=None`` and ``verify=None``."""
+    from scanner.pipeline.egress_env import httpx_kwargs
+
+    assert httpx_kwargs() == {}
+
+
+def test_the_pipeline_lookups_go_through_the_proxy_and_the_internal_root(
+    monkeypatch, tmp_path: Path
+):
+    """``asn_discovery`` asks RIPEstat and ``cloud_discovery`` asks S3, GCS and
+    Azure — always-external services, on a network whose only way out is the
+    proxy. Both stages failed there without naming a setting."""
+    from scanner.pipeline.egress_env import httpx_kwargs
+
+    bundle = tmp_path / "corp-root.pem"
+    bundle.write_text(_CA_PEM, encoding="utf-8")
+    monkeypatch.setenv("OCTO_HTTPS_PROXY", "proxy.corp:3128")
+    monkeypatch.setenv("OCTO_CA_BUNDLE", str(bundle))
+
+    assert httpx_kwargs() == {"proxy": "http://proxy.corp:3128", "verify": str(bundle)}
+
+
+def test_a_missing_pipeline_ca_bundle_is_an_error_not_a_silent_fallback(monkeypatch, tmp_path):
+    from scanner.pipeline.egress_env import httpx_kwargs
+
+    monkeypatch.setenv("OCTO_CA_BUNDLE", str(tmp_path / "absent.pem"))
+    with pytest.raises(ValueError, match="not a readable file"):
+        httpx_kwargs()

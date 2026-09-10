@@ -270,6 +270,7 @@ def _no_proxy_env(monkeypatch):
         "OCTO_HTTPS_PROXY",
         "OCTO_NO_PROXY",
         "HTTP_PROXY",
+        "http_proxy",
         "HTTPS_PROXY",
         "https_proxy",
         "NO_PROXY",
@@ -334,7 +335,12 @@ def test_the_ssrf_boundary_still_refuses_an_internal_target_behind_a_proxy(
     monkeypatch, _no_proxy_env
 ):
     """A proxy changes who opens the socket, not what may be reached: an
-    internal receiver is refused before any wire call, proxied or not."""
+    internal receiver is refused before any wire call, proxied or not.
+
+    The address literal only exercises the parser. The two tests below are the
+    ones that matter behind a proxy, where a *name* is what the tenant admin
+    controls and the proxy is what resolves it.
+    """
     monkeypatch.setenv("OCTO_HTTPS_PROXY", "http://proxy.corp:3128")
     monkeypatch.setattr(
         delivery,
@@ -347,20 +353,50 @@ def test_the_ssrf_boundary_still_refuses_an_internal_target_behind_a_proxy(
     assert "non-public address" in (result.error or "")
 
 
-def test_a_name_the_local_resolver_cannot_see_is_still_delivered_via_proxy(
+def test_a_name_resolving_to_an_internal_address_is_refused_behind_a_proxy(
     monkeypatch, _no_proxy_env
 ):
-    """Behind a proxy the local resolver frequently has no view of the outside,
-    and a DNS failure here says nothing about whether the proxy can reach the
-    receiver. Direct delivery still treats it as a retryable failure."""
+    """The realistic shape of the attack: the subscription holds a name, not a
+    literal, and it answers with an internal address. The #151 policy runs on
+    what the name resolved to, proxy or no proxy."""
+    monkeypatch.setattr(
+        outbound_targets, "resolve", lambda host: [ipaddress.ip_address("10.0.0.5")]
+    )
+    monkeypatch.setenv("OCTO_HTTPS_PROXY", "http://proxy.corp:3128")
+    monkeypatch.setattr(
+        delivery,
+        "_send_via_proxy",
+        lambda *a, **kw: pytest.fail("an internal name reached the proxy"),
+    )
+    result = delivery.post("https://internal.corp/hook", b"{}", {})
+    assert result.ok is False
+    assert result.retryable is False
+    assert "non-public address" in (result.error or "")
+
+
+def test_a_name_the_local_resolver_cannot_see_is_refused_even_behind_a_proxy(
+    monkeypatch, _no_proxy_env
+):
+    """The addresses are *what the boundary inspects*. With none of them
+    nothing about the host has been checked, so handing the bare name to a
+    proxy that can resolve it would make the proxy an SSRF oracle: any internal
+    name a tenant admin guesses gets dialed, and the DLQ hands them the answer.
+
+    A resolver with no view of the receiver is a deployment problem with a
+    deployment fix, not a reason to skip the check.
+    """
     monkeypatch.setattr(outbound_targets, "resolve", lambda host: [])
     monkeypatch.setenv("OCTO_HTTPS_PROXY", "http://proxy.corp:3128")
     monkeypatch.setattr(
         delivery,
         "_send_via_proxy",
-        lambda target, proxy, body, headers, *, method, deadline, capture_body=False: (200, ""),
+        lambda *a, **kw: pytest.fail("an unresolved name reached the proxy"),
     )
-    assert delivery.post("https://receiver.example/hook", b"{}", {}).ok is True
+    proxied = delivery.post("https://receiver.example/hook", b"{}", {})
+    assert proxied.ok is False
+    assert proxied.retryable is True
+    assert "DNS resolution failed" in (proxied.error or "")
+    assert "must still resolve here" in (proxied.error or "")
 
     monkeypatch.delenv("OCTO_HTTPS_PROXY")
     direct = delivery.post("https://receiver.example/hook", b"{}", {})

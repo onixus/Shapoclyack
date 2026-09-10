@@ -291,7 +291,9 @@ def _send_via_proxy(
     through. That is inherent to proxied egress and is why
     ``docs/network-requirements.md`` says the proxy must be the boundary that
     decides where the network's traffic may land; it is not a reason to send
-    the request unvalidated.
+    the request unvalidated. A name that resolves to *nothing* here never gets
+    this far at all — :func:`request` refuses it, because an unresolved name is
+    an unchecked one.
 
     HTTPS still gets end-to-end TLS: ``set_tunnel`` makes the proxy open a
     ``CONNECT`` and the certificate is verified against ``target.hostname``,
@@ -377,20 +379,35 @@ def request(
 
     proxy = egress.proxy_for(target.scheme, target.hostname, target.port)
 
-    if not target.addresses and proxy is None:
+    if not target.addresses:
+        # Refused on the proxied path too, and this is the security-relevant
+        # half. The addresses are *what the #151 boundary inspects*: with none
+        # of them, nothing about this host has been checked, and handing the
+        # bare name to a proxy that can resolve it turns the proxy into an SSRF
+        # oracle — any internal name a tenant admin cares to guess gets dialed
+        # and up to 500 characters of the answer come back in the DLQ. So a
+        # target must resolve on this side even when the proxy is the one that
+        # dials it; a resolver with no view of the receiver is a deployment
+        # problem with a deployment fix (a forwarder, or OCTO_NO_PROXY).
+        detail = (
+            " — a proxied target must still resolve here, because that lookup "
+            "is the address check"
+            if proxy is not None
+            else ""
+        )
         return DeliveryResult(
             ok=False,
             status_code=None,
-            error=f"DNS resolution failed for webhook host {target.hostname}",
+            error=f"DNS resolution failed for webhook host {target.hostname}{detail}",
             retryable=True,
             duration_seconds=time.perf_counter() - started,
         )
 
     if proxy is not None:
         # One attempt, not one per address: the proxy dials, so the addresses
-        # this side resolved are a check that ran, not a connection plan. A
-        # name that does not resolve here is not fatal either — behind a proxy
-        # the local resolver frequently has no view of the outside at all.
+        # this side resolved are a check that ran, not a connection plan. That
+        # the check ran at all is guaranteed above — an unresolvable name never
+        # reaches here.
         attempts = [
             lambda: _send_via_proxy(
                 target,

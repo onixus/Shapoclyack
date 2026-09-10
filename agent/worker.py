@@ -404,6 +404,10 @@ class AgentClient:
                         return json.loads(raw.decode("utf-8"))
                     return raw
             except urllib.error.HTTPError as exc:
+                # 413 is absent from the retry list on purpose: the API refuses
+                # on Content-Length, before it reads a byte, so the same body
+                # gets the same answer — and on a shaped uplink resending it is
+                # minutes of the site's bandwidth spent to be told twice more.
                 if exc.code in (429, 502, 503, 504) and attempt < max_retries:
                     time.sleep(0.5 * (2**attempt))
                     continue
@@ -414,6 +418,24 @@ class AgentClient:
                     raise AgentUpgradeRequired(f"{method} {path} -> 426: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                # urllib wraps a socket error from the write side in URLError,
+                # so the refusal is one attribute down.
+                cause = getattr(exc, "reason", exc)
+                if isinstance(body, _ThrottledBody) and isinstance(
+                    cause, (BrokenPipeError, ConnectionResetError)
+                ):
+                    # The API stopped reading while the multipart was still
+                    # going out. That is what a 413 looks like from this side:
+                    # it answers on Content-Length, never drains the body, and
+                    # the status line is lost with the socket. Re-reading the
+                    # archive off disk and re-shaping it through the token
+                    # bucket only spends the site's uplink on the same refusal.
+                    raise RuntimeError(
+                        f"{method} {path} -> the API closed the connection while the body "
+                        f"was being sent ({cause}); a body over "
+                        "OCTO_AGENT_RESULTS_MAX_BODY_BYTES is refused this way, so this "
+                        "is not retried"
+                    ) from exc
                 if attempt < max_retries:
                     time.sleep(0.5 * (2**attempt))
                     continue

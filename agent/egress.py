@@ -8,13 +8,18 @@ reach the API" has one answer instead of four.
 
 The variables and their semantics are a byte-for-byte mirror of
 ``api/services/egress.py``: ``OCTO_HTTP_PROXY``, ``OCTO_HTTPS_PROXY``,
-``OCTO_NO_PROXY`` with a fallback to the conventional ``HTTP_PROXY`` /
+``OCTO_NO_PROXY`` with a fallback to the conventional ``http_proxy`` /
 ``HTTPS_PROXY`` / ``NO_PROXY``, and ``OCTO_CA_BUNDLE`` added to (never
 replacing) the system trust store. A copy rather than an import because the
 agent is deployed on its own — there is no ``api`` package on the box — and
 ``tests/test_agent_proxy_ca.py`` asserts the two agree, because an agent that
 reads ``NO_PROXY`` differently from the API is a support call nobody can
 reproduce from either side.
+
+Two details the mirror carries with it: the proxy URL must be ``http://``,
+because this client never wraps the hop to the proxy in TLS, and the plain-HTTP
+direction reads lowercase ``http_proxy`` rather than uppercase ``HTTP_PROXY``
+(httpoxy). Both are argued at length in ``api/services/egress.py``.
 
 **NATS is not covered.** An HTTP proxy carries HTTP; ``nats://``, ``tls://``
 and even ``wss://`` through ``CONNECT`` are not something nats-py asks a proxy
@@ -33,7 +38,9 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-_HTTP_PROXY_VARS = ("OCTO_HTTP_PROXY", "HTTP_PROXY")
+#: Uppercase ``HTTP_PROXY`` is absent on purpose: httpoxy. See the module
+#: docstring — an operator sets ``OCTO_HTTP_PROXY``.
+_HTTP_PROXY_VARS = ("OCTO_HTTP_PROXY", "http_proxy")
 _HTTPS_PROXY_VARS = ("OCTO_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy")
 _NO_PROXY_VARS = ("OCTO_NO_PROXY", "NO_PROXY", "no_proxy")
 CA_BUNDLE_VAR = "OCTO_CA_BUNDLE"
@@ -76,11 +83,22 @@ def _first_env(names: tuple[str, ...]) -> str:
 
 
 def parse_proxy(raw: str) -> Proxy:
-    """Parse ``[scheme://][user:pass@]host[:port]`` the way every client does."""
+    """Parse ``[http://][user:pass@]host[:port]`` the way every client does.
+
+    ``https://`` is refused rather than accepted-and-downgraded: see the module
+    docstring. A bare ``host:port`` is read as ``http://``, which is what every
+    other client does with it.
+    """
     candidate = raw if "://" in raw else f"http://{raw}"
     parts = urlsplit(candidate)
-    if parts.scheme not in ("http", "https"):
-        raise EgressConfigError(f"proxy URL must be http or https, got {parts.scheme!r}")
+    if parts.scheme == "https":
+        raise EgressConfigError(
+            "proxy URL must be http://; this client talks to the proxy in the clear "
+            "and would send Proxy-Authorization over it, so https:// would promise "
+            "an encrypted hop that does not exist"
+        )
+    if parts.scheme != "http":
+        raise EgressConfigError(f"proxy URL must be http, got {parts.scheme!r}")
     if not parts.hostname:
         raise EgressConfigError("proxy URL must include a host")
     try:
@@ -90,7 +108,7 @@ def parse_proxy(raw: str) -> Proxy:
     return Proxy(
         scheme=parts.scheme,
         host=parts.hostname,
-        port=port or (443 if parts.scheme == "https" else 80),
+        port=port or 80,
         username=parts.username or "",
         password=parts.password or "",
     )

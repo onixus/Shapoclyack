@@ -56,20 +56,54 @@ Every one of these goes through the HTTP proxy when one is configured.
 SMTP is the exception: an HTTP proxy does not carry it, so the relay is dialed
 directly and only the CA setting applies.
 
+### Scanner → outside
+
+The scan itself goes to the tenant's own targets and is never proxied — routing
+it through a corporate proxy would break the scan and hand the proxy a copy of
+it. Several pipeline stages are different: they ask a *fixed, always-external*
+service a question of their own, and on a proxy-only network those are the ones
+that fail.
+
+| Stage | To | Port | What it asks | Honours `OCTO_HTTPS_PROXY` / `OCTO_CA_BUNDLE` |
+|---|---|---|---|---|
+| `asn_discovery` | `stat.ripe.net` | 443 | ASN and announced prefixes for a seed domain | **Yes** |
+| `cloud_discovery` | `*.s3.amazonaws.com`, `*.storage.googleapis.com`, `*.blob.core.windows.net` | 443 | Whether a guessed bucket name exists | **Yes** |
+| `hostnames` | `crt.sh`, `api.certspotter.com`, `otx.alienvault.com` | 443 | Passive certificate and DNS sources | No — on `urllib`, so the ambient `HTTPS_PROXY` applies and the `OCTO_` names do not |
+| `ownership` | `data.iana.org`, `rdap.org` and the registry it redirects to | 443 | RDAP registration data | No — `safe_http` pins the address it validated, and a proxy would resolve the name a second time |
+| `alerts` | `cloudflare-dns.com`, Slack, Telegram | 443 | DoH lookup, run notifications | No — same pinning, and the webhook host is operator-supplied |
+| `fingerprint`, `nuclei`, port scan | scan targets | as scoped | The scan | No, deliberately |
+
+`OCTO_NO_PROXY` is not consulted by the two stages that do honour the proxy:
+RIPEstat and the three object stores are never on the inside, so there is no
+exemption to express, and honouring half the dialect would be worse than
+honouring none of it. `scanner/pipeline/egress_env.py` is where this lives,
+deliberately narrower than the API's and the agent's egress modules rather than
+a third copy of them.
+
 ## Proxy and CA variables
 
 | Variable | Applies to | Meaning |
 |---|---|---|
-| `OCTO_HTTPS_PROXY` | API, agent | Proxy for `https://` targets. `[scheme://][user:pass@]host[:port]`; `http://` and `https://` proxies only, no SOCKS |
+| `OCTO_HTTPS_PROXY` | API, agent, scanner | Proxy for `https://` targets. `[http://][user:pass@]host[:port]` — the proxy URL itself must be `http://`, no `https://` and no SOCKS |
 | `OCTO_HTTP_PROXY` | API, agent | The same for `http://` targets |
 | `OCTO_NO_PROXY` | API, agent | Comma-separated exemptions. `*` bypasses everything; a bare name matches it and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`); `host:port` pins the port; a CIDR matches an address literal inside it |
-| `OCTO_CA_BUNDLE` | API, agent | PEM file **added to** the system trust store, for HTTPS, SMTP and NATS alike. Verification is never turned off |
+| `OCTO_CA_BUNDLE` | API, agent, scanner | PEM file **added to** the system trust store, for HTTPS, SMTP and NATS alike — on the API's NATS connection as well as the agent's. Verification is never turned off |
 
-Each falls back to the conventional `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
-(and their lowercase spellings) when unset — with one exception: the
-lowercase-only `http_proxy` is not read, because in a CGI-shaped environment it
-is the caller's own `Proxy:` request header wearing an environment variable's
-name (httpoxy).
+Each falls back to the conventional `HTTPS_PROXY` / `NO_PROXY` (and their
+lowercase spellings) when unset — with one exception, and it runs the other way
+round from the one most people expect. For the plain-HTTP direction only the
+**lowercase** `http_proxy` is read; uppercase `HTTP_PROXY` is ignored. A
+CGI-shaped environment derives `HTTP_PROXY` from an incoming `Proxy:` request
+header, so the uppercase name is the one an untrusted caller can write
+(httpoxy); curl reads only the lowercase spelling for the same reason. No
+request header spells `HTTPS_PROXY`, so that direction reads both.
+
+A proxy URL must be `http://`. Nothing here wraps the hop to the proxy in TLS —
+HTTPS targets go through a plaintext `CONNECT`, and the proxy credentials ride
+on it as `Proxy-Authorization: Basic` — so `https://` is refused with that
+reason rather than silently downgraded. End-to-end TLS to the *receiver* is
+unaffected: it is established inside the tunnel and verified against the
+receiver's own name.
 
 The `OCTO_`-prefixed names exist so a pod can override a cluster-wide
 `HTTPS_PROXY` injected for something else without unsetting the ambient one.
@@ -111,10 +145,14 @@ Two things inspection does not change:
   own allowlist accordingly.
 
 A related consequence: behind a proxy the local resolver frequently has no view
-of the outside at all. A webhook host that does not resolve is therefore *not*
-treated as a delivery failure when a proxy applies to it, because the local
-resolver's opinion is not the one that matters. Without a proxy it stays a
-retryable failure, as before.
+of the outside at all. **A webhook host that does not resolve here is still a
+delivery failure**, proxy or no proxy. The addresses are what the `#151` policy
+inspects, so a name with none of them has not been checked at all — and handing
+it to a proxy that *can* resolve it would turn the proxy into an SSRF oracle:
+any internal name a tenant admin cares to guess gets dialed, and the delivery
+record hands back the answer. Give the API a resolver that can see the
+receivers (a forwarder), or exempt on-network receivers with `OCTO_NO_PROXY`
+and keep the pinned direct dial.
 
 ## NATS and proxies
 

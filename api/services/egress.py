@@ -16,10 +16,20 @@ an internal root, and the receivers reached without it still have public
 certificates. Verification is never turned off — an inspected connection is
 verified against the inspector's own CA, which is the point of naming it.
 
-The lowercase-only ``http_proxy`` is deliberately not consulted for plain HTTP:
-in a CGI-shaped environment it is the caller's own ``Proxy:`` request header
-wearing an environment variable's name (httpoxy). ``HTTP_PROXY`` uppercase is
-read, because that is the name an operator sets.
+The plain-HTTP direction reads ``http_proxy`` in **lowercase** and ignores
+``HTTP_PROXY``. That is the httpoxy mitigation, and it points the way curl
+points it: a CGI-shaped environment derives ``HTTP_PROXY`` from an incoming
+``Proxy:`` request header, so the uppercase name is one an untrusted caller can
+write, while the lowercase one is not. ``OCTO_HTTP_PROXY`` is what an operator
+should set and is out of reach either way — a header of that name would arrive
+as ``HTTP_OCTO_HTTP_PROXY``. Only this direction is affected; no request header
+spells ``HTTPS_PROXY``.
+
+A proxy URL must itself be ``http://``. This client speaks to the proxy in the
+clear (a ``CONNECT`` for HTTPS targets, an absolute-URI request for plain HTTP)
+and does not wrap that hop in TLS, so accepting ``https://`` would promise an
+encrypted hop that never happens — and send ``Proxy-Authorization: Basic`` over
+it. :func:`parse_proxy` refuses it by name rather than downgrading silently.
 
 **What this does not cover.** NATS is not HTTP and no HTTP proxy carries it;
 see ``docs/network-requirements.md``. The SSRF boundary in
@@ -38,7 +48,9 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 #: Read in order; the first non-empty one wins.
-_HTTP_PROXY_VARS = ("OCTO_HTTP_PROXY", "HTTP_PROXY")
+#: Uppercase ``HTTP_PROXY`` is absent on purpose: httpoxy. See the module
+#: docstring — an operator sets ``OCTO_HTTP_PROXY``.
+_HTTP_PROXY_VARS = ("OCTO_HTTP_PROXY", "http_proxy")
 _HTTPS_PROXY_VARS = ("OCTO_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy")
 _NO_PROXY_VARS = ("OCTO_NO_PROXY", "NO_PROXY", "no_proxy")
 CA_BUNDLE_VAR = "OCTO_CA_BUNDLE"
@@ -81,11 +93,22 @@ def _first_env(names: tuple[str, ...]) -> str:
 
 
 def parse_proxy(raw: str) -> Proxy:
-    """Parse ``[scheme://][user:pass@]host[:port]`` the way every client does."""
+    """Parse ``[http://][user:pass@]host[:port]`` the way every client does.
+
+    ``https://`` is refused rather than accepted-and-downgraded: see the module
+    docstring. A bare ``host:port`` is read as ``http://``, which is what every
+    other client does with it.
+    """
     candidate = raw if "://" in raw else f"http://{raw}"
     parts = urlsplit(candidate)
-    if parts.scheme not in ("http", "https"):
-        raise EgressConfigError(f"proxy URL must be http or https, got {parts.scheme!r}")
+    if parts.scheme == "https":
+        raise EgressConfigError(
+            "proxy URL must be http://; this client talks to the proxy in the clear "
+            "and would send Proxy-Authorization over it, so https:// would promise "
+            "an encrypted hop that does not exist"
+        )
+    if parts.scheme != "http":
+        raise EgressConfigError(f"proxy URL must be http, got {parts.scheme!r}")
     if not parts.hostname:
         raise EgressConfigError("proxy URL must include a host")
     try:
@@ -95,7 +118,7 @@ def parse_proxy(raw: str) -> Proxy:
     return Proxy(
         scheme=parts.scheme,
         host=parts.hostname,
-        port=port or (443 if parts.scheme == "https" else 80),
+        port=port or 80,
         username=parts.username or "",
         password=parts.password or "",
     )
