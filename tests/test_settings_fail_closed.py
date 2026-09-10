@@ -537,3 +537,28 @@ def test_db_pool_is_configurable_and_floored(clean_env: pytest.MonkeyPatch) -> N
     floored = load_settings()
     assert floored.db_pool_size == 1
     assert floored.db_pool_timeout == 1
+
+
+def test_db_pool_leaves_room_for_the_leader_locks(clean_env: pytest.MonkeyPatch) -> None:
+    """The defect: the floors were per variable, so `pool_size=1` with
+    `max_overflow=0` passed — a pool of exactly one connection against three
+    workers that each hold one for the life of the process (schedule
+    dispatcher, report dispatcher, software match). The first takes it, the
+    other two never become leader, and no request gets a connection at all."""
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_DB_POOL_SIZE", "1")
+    clean_env.setenv("OCTO_DB_MAX_OVERFLOW", "0")
+
+    settings = load_settings()
+    assert settings.db_pool_size == 1
+    assert settings.db_pool_size + settings.db_max_overflow >= 4
+
+    # The floor is raised on the overflow, which is opened on demand: an
+    # installation that asked for a small steady pool keeps it.
+    assert settings.db_max_overflow == 3
+
+    # A configuration already above the floor is left exactly as written.
+    clean_env.setenv("OCTO_DB_POOL_SIZE", "4")
+    clean_env.setenv("OCTO_DB_MAX_OVERFLOW", "0")
+    untouched = load_settings()
+    assert (untouched.db_pool_size, untouched.db_max_overflow) == (4, 0)

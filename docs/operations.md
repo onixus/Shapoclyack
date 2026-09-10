@@ -868,11 +868,16 @@ reloader sidecar is in place.
 
 ### Pod disruption and API availability
 
-`k8s/shapoclyack/base/api-pdb.yaml` sets `minAvailable: 1`. With the current base
-`replicas: 1`, a voluntary eviction is blocked rather than reducing API
-availability to zero. Production overlays that need drain-friendly maintenance
-should run two or more API replicas; the scheduler is already protected by its
-PostgreSQL advisory-lock leadership mechanism.
+`k8s/shapoclyack/base/api-pdb.yaml` sets `maxUnavailable: 1`. It used to set
+`minAvailable: 1`, which at base's `replicas: 1` blocked every voluntary
+eviction outright — `kubectl drain` on the node running the API hung until
+someone deleted the PDB by hand. `maxUnavailable: 1` keeps N-1 replicas
+available at any N and serialises the drain, and it is what
+[`overlays/prod-ha`](high-availability.md) inherits unpatched: at its ceiling of
+six replicas, `minAvailable: 1` would have permitted five simultaneous
+evictions. A single-replica install still has a moment of downtime during a
+drain; two or more replicas is the fix, not a different budget. The scheduler is
+separately protected by its PostgreSQL advisory-lock leadership mechanism.
 
 ## Enrichment data in a release build
 

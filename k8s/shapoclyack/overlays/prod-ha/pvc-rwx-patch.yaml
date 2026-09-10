@@ -15,6 +15,11 @@
 #     without RWX storage CANNOT run this overlay. There is no third option
 #     that keeps both the replicas and the artifacts.
 #
+# `accessModes` and `storageClassName` are immutable on a claim that already
+# exists, so this patch does not upgrade an installation in place: it applies
+# to a fresh namespace, or after the claim has been recreated. See
+# docs/high-availability.md § Migrating an existing install.
+#
 # The class name is left as a placeholder rather than guessed: a wrong
 # `storageClassName` binds to the wrong backend silently, whereas an unknown
 # one leaves the PVC Pending with a "storageclass not found" event. 20Gi is

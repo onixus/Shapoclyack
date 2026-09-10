@@ -117,7 +117,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 **Goal:** Decouple agents from DB polling and ensure resilient data ingestion.
 
-**Status:** **Done** — JetStream manifests (cluster-ready, safe at `replicas=1`) + compose auto-wire + long-lived agent pull + live broker tests + bounded retention (`OCTO_NATS_*_MAX_AGE_SECONDS`/`MAX_BYTES`) + opt-in HA (`OCTO_NATS_STREAM_REPLICAS`, `examples/nats-ha-patch.yaml`).
+**Status:** **Done** — JetStream manifests (cluster-ready, safe at `replicas=1`) + compose auto-wire + long-lived agent pull + live broker tests + bounded retention (`OCTO_NATS_*_MAX_AGE_SECONDS`/`MAX_BYTES`) + opt-in HA (`OCTO_NATS_STREAM_REPLICAS`, `k8s/shapoclyack/overlays/prod-ha/nats-ha-patch.yaml`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|

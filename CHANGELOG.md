@@ -56,7 +56,7 @@ All notable changes to Shapoclyack are documented in this file.
   patch file from outside its root); fills in `OCTO_NATS_URL` and
   `OCTO_CLICKHOUSE_URL`; and replaces the in-cluster PostgreSQL — StatefulSet,
   Services, NetworkPolicy, `pg_dump` CronJob and dev Secret — with a
-  Secret-supplied `?sslmode=verify-full` URL to a managed one (as five
+  Secret-supplied `?sslmode=verify-full` URL to a managed one (as six
   single-object `$patch: delete` files: the kustomize inside kubectl 1.31,
   which is what CI runs, segfaults on a multi-document delete patch that
   kubectl 1.36 renders happily). It also opens the
@@ -74,6 +74,22 @@ All notable changes to Shapoclyack are documented in this file.
   pending [#336](https://github.com/onixus/Shapoclyack/issues/336), DR beyond
   PostgreSQL pending [#333](https://github.com/onixus/Shapoclyack/issues/333))
   are in the new [docs/high-availability.md](docs/high-availability.md).
+- **NATS survives being a cluster** ([#335](https://github.com/onixus/Shapoclyack/issues/335)).
+  The broker's probes both asked bare `/healthz`, which is the *full* JetStream
+  check: enabled, a meta leader elected, and every stream and consumer on this
+  server current. At `replicas: 1` that is roughly "the process is up"; at three
+  it fails for as long as a restarted node is catching up, so liveness restarted
+  the pod mid catch-up while readiness pulled it from the Service. Liveness now
+  asks `/healthz?js-enabled-only=true` and readiness `/healthz?js-server-only=true`,
+  which mean the same thing on one node. Separately, `update_stream` — the call
+  that pushes `OCTO_NATS_STREAM_REPLICAS=3` onto streams that already exist —
+  failed inside a bare `except: pass`: an installation that scaled NATS out kept
+  its single-copy streams and nothing said so. It is logged now, along with any
+  stream whose actual replica count is not the one this replica asked for.
+- **`k8s/scripts/validate-kustomize.sh` discovers overlays instead of listing
+  them.** The hand-written list had drifted: `overlays/kind-restore` and
+  `overlays/enrichment-advisories` were rendered by nothing, which is exactly
+  where a broken patch would have sat unnoticed. Eleven targets now, from a glob.
 - **`OCTO_DB_POOL_SIZE`, `OCTO_DB_MAX_OVERFLOW`, `OCTO_DB_POOL_TIMEOUT`**
   ([#335](https://github.com/onixus/Shapoclyack/issues/335)). The SQLAlchemy
   pool was whatever the library chose (5 + 10) and could not be changed. That
@@ -81,7 +97,11 @@ All notable changes to Shapoclyack are documented in this file.
   `max_connections` on the server is one shared budget — so the profile that
   scales the API is exactly the one that needs to shrink it. Applied in
   `api/db/engine.py` from `create_app()`, before the first session is opened;
-  the `dev` SQLite fallback ignores them, having no connection queue.
+  the `dev` SQLite fallback ignores them, having no connection queue. The sum of
+  the two is floored at four: the schedule dispatcher, the report dispatcher and
+  the software-match worker each hold one connection for the life of the process
+  for their session-scoped advisory lock, so a pool of one or two would have
+  left a worker unable to become leader at all, in every replica, silently.
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426
@@ -432,8 +452,12 @@ All notable changes to Shapoclyack are documented in this file.
   ([#331](https://github.com/onixus/Shapoclyack/issues/331)). `/readyz` runs a
   real sweep — PostgreSQL `SELECT 1`, a NATS round trip and a ClickHouse query
   where those are configured — and answers `503
-  {"status":"degraded","checks":{…}}` when one of them is down, so an
-  unservable replica leaves the Service. `/livez` touches nothing: liveness
+  {"status":"degraded","checks":{…}}` when PostgreSQL or NATS is down, so an
+  unservable replica leaves the Service. ClickHouse is reported in `checks` and
+  degrades the body, but does not fail the probe: it is a single pod with no
+  PDB even in `overlays/prod-ha`, and letting it decide readiness would turn one
+  ClickHouse restart into a 503 from *every* API replica at once — a full
+  control-plane outage in exchange for analytics that were already down. `/livez` touches nothing: liveness
   decides whether to restart the process, and restarting every replica is not
   how an unreachable database gets fixed. The API Deployment now points its
   readiness probe at `/readyz`, both liveness and a new `startupProbe` at

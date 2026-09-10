@@ -633,6 +633,31 @@ def _shipped_data_plane_secrets(settings: Settings) -> list[str]:
     return sorted(found)
 
 
+# Three connections out of every pool are held for the lifetime of the process,
+# not borrowed per request: the schedule dispatcher, the report dispatcher and
+# the software-match worker each keep one open for their session-scoped
+# advisory lock (api/services/leader_lock.py, and the docstring there says so).
+# A pool that can hand out three or fewer therefore has nothing left for a
+# request — and the third leader never acquires its lock at all, so the worker
+# it guards silently stops running in every replica. Floor the total rather
+# than let OCTO_DB_POOL_SIZE=1 create that (#335).
+MIN_DB_CONNECTIONS = 4
+
+
+def _db_pool_bounds() -> tuple[int, int]:
+    """``(pool_size, max_overflow)`` from the environment, floored.
+
+    The floor is raised on the overflow, not the pool: overflow connections are
+    opened on demand and closed again, so a small installation that asked for a
+    small steady pool keeps it.
+    """
+    pool_size = max(1, int(os.environ.get("OCTO_DB_POOL_SIZE", "5")))
+    max_overflow = max(0, int(os.environ.get("OCTO_DB_MAX_OVERFLOW", "10")))
+    if pool_size + max_overflow < MIN_DB_CONNECTIONS:
+        max_overflow = MIN_DB_CONNECTIONS - pool_size
+    return pool_size, max_overflow
+
+
 def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     """Refuse to start when prod configuration is still the published default.
 
@@ -794,6 +819,8 @@ def load_settings() -> Settings:
     # that difference the moment it is applied.
     postgres_url_env = os.environ.get("OCTO_POSTGRES_URL", "").strip()
 
+    db_pool_size, db_max_overflow = _db_pool_bounds()
+
     mode = os.environ.get("OCTO_JOB_EXECUTION_MODE", "local").strip().lower()
     if mode not in {"local", "agent"}:
         mode = "local"
@@ -850,12 +877,11 @@ def load_settings() -> Settings:
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         postgres_url=postgres_url_env or _default_sqlite_url(),
-        # Floored rather than trusted: pool_size=0 means "no pooling limit" to
-        # SQLAlchemy for some pool classes and an unusable engine for others,
-        # and pool_timeout=0 turns a busy pool into an immediate failure. A
-        # mistyped 0 should not be the thing that decides either.
-        db_pool_size=max(1, int(os.environ.get("OCTO_DB_POOL_SIZE", "5"))),
-        db_max_overflow=max(0, int(os.environ.get("OCTO_DB_MAX_OVERFLOW", "10"))),
+        # Floored rather than trusted, see _db_pool_bounds() and the
+        # pool_timeout floor below: a mistyped 0 should not be the thing that
+        # decides how this process talks to its database.
+        db_pool_size=db_pool_size,
+        db_max_overflow=db_max_overflow,
         db_pool_timeout=max(1, int(os.environ.get("OCTO_DB_POOL_TIMEOUT", "30"))),
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
         asset_events_enabled=os.environ.get("OCTO_ASSET_EVENTS_ENABLED", "true").lower()

@@ -245,10 +245,15 @@ def create_app() -> FastAPI:
     @app.get("/readyz", include_in_schema=False)
     def readyz() -> JSONResponse:
         report = health_service.check_readiness(get_settings())
+        # The status code and the body answer different questions: 503 means
+        # "take this replica out of the Service", which only a blocking
+        # dependency earns, while "degraded" means "something configured here
+        # is not answering". A replica with ClickHouse down is 200 degraded —
+        # serving, and saying what is wrong (#335).
         return JSONResponse(
             status_code=200 if report.ready else 503,
             content={
-                "status": "ok" if report.ready else "degraded",
+                "status": "ok" if report.healthy else "degraded",
                 "checks": report.checks,
             },
         )
@@ -263,7 +268,7 @@ def create_app() -> FastAPI:
         # container HEALTHCHECKs are wired to this path.
         report = health_service.check_readiness(settings)
         return HealthResponse(
-            status="ok" if report.ready else "degraded",
+            status="ok" if report.healthy else "degraded",
             version=__version__,
             nats=_check_flag(report, "nats"),
             clickhouse=_check_flag(report, "clickhouse"),

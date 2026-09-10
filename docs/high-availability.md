@@ -159,6 +159,16 @@ roughly 340). Before raising either number — or `maxReplicas` — raise
 `OCTO_DB_POOL_TIMEOUT` (default 30s) bounds the wait for a free connection: a
 saturated pool then fails a request with a cause instead of hanging it.
 
+Not every connection in that pool is available to a request. Three of them are
+held for the life of the process: the schedule dispatcher, the report
+dispatcher and the software-match worker each keep one open for a session-scoped
+Postgres advisory lock (`api/services/leader_lock.py`), because that is what
+makes leadership end the instant the leader does. So the useful width of the
+pool is `pool_size + max_overflow - 3`, and a total below four leaves the third
+worker unable to take its lock at all — it would simply never run, in every
+replica, with nothing in the logs. `api/settings.py` floors the total at four
+for that reason; size it well above the floor, not at it.
+
 The values are read in `api/settings.py` and applied in `api/db/engine.py`,
 which `create_app()` configures before the first session is opened — the engine
 is a lazy singleton, so sizing that arrived later would apply to nobody.
@@ -173,8 +183,13 @@ work with:
 * `strategy.rollingUpdate.maxUnavailable: 0` / `maxSurge: 1` — the replacement
   pod is Ready before the old one is taken down.
 * `readinessProbe` on `/readyz`, which checks Postgres and, where configured,
-  NATS and ClickHouse. A replica that cannot serve leaves the Service instead of
-  being restarted.
+  NATS — a replica without either can neither serve a request nor dispatch a
+  job, and it leaves the Service instead of being restarted. ClickHouse is
+  checked too but deliberately does **not** fail the probe: it is one pod with
+  no PDB (see [below](#what-this-overlay-does-not-give-you)), so letting it
+  decide readiness would make one broker restart take *both* API replicas out
+  of the Service at once. A replica with ClickHouse down answers `/readyz` with
+  200 and `"status": "degraded"`, and `/api/health` says which check failed.
 * `livenessProbe` on `/livez`, dependency-free on purpose: a Postgres outage
   must not restart every replica at once.
 * `startupProbe` — up to 150s for a cold start against a busy database, during
@@ -182,8 +197,10 @@ work with:
 * `lifecycle.preStop: sleep 5` and `terminationGracePeriodSeconds: 45` —
   endpoint removal and `SIGTERM` are dispatched concurrently, so without the
   pause the process starts shutting down while proxies still route to it.
-* PDB `minAvailable: 1` — bounds *voluntary* disruption (drains, evictions),
-  which the rollout strategy does not.
+* PDB `maxUnavailable: 1` (`base/api-pdb.yaml`, inherited unpatched) — bounds
+  *voluntary* disruption (drains, evictions), which the rollout strategy does
+  not. At N replicas it keeps N-1 available; `minAvailable: 1` would allow five
+  of six to go at once.
 
 What is still a brief interruption:
 
@@ -210,9 +227,12 @@ Naming these is the point of the page.
 
 * **ClickHouse is a single StatefulSet pod.** Losing it loses the analytics
   store — not the control plane, which is Postgres, and not the raw run
-  artifacts, which are files. A real ClickHouse cluster (Keeper, sharded or
-  replicated tables) is out of scope here; nothing in this repository sets one
-  up, and `base/clickhouse/init-local.sql` creates non-replicated tables.
+  artifacts, which are files. This is why it is an advisory readiness check and
+  not a blocking one (`api/services/health.py`): a dependency with one replica
+  and no PDB must not be able to unready the two that do have both. A real
+  ClickHouse cluster (Keeper, sharded or replicated tables) is out of scope
+  here; nothing in this repository sets one up, and
+  `base/clickhouse/init-local.sql` creates non-replicated tables.
 * **Artifacts still live on a shared filesystem.**
   [#336](https://github.com/onixus/Shapoclyack/issues/336) — object storage — is
   the fix; RWX is the workaround this overlay depends on.
@@ -240,6 +260,74 @@ Naming these is the point of the page.
   quieter results with no error.
 * **ClickHouse and the scan workload have no HPA.** Only the API scales.
 
+## Migrating an existing install
+
+`kubectl apply -k` onto a namespace that already runs `overlays/prod` or
+`overlays/dev` **fails part-way**, and the half that applied stays applied.
+Two fields in this overlay are immutable on an object that already exists, and
+the API server rejects the change rather than rolling anything:
+
+| Object | Field | Base | prod-ha |
+|---|---|---|---|
+| `pvc/scanner-data` | `spec.accessModes`, `spec.storageClassName` | `ReadWriteOnce`, default class | `ReadWriteMany`, your RWX class |
+| `sts/shapoclyack-nats` | `spec.podManagementPolicy` | `OrderedReady` (default) | `Parallel` |
+
+A green-field namespace has neither problem. For an existing one, do both
+migrations first, in a maintenance window — this is not a live migration and
+there is no version of it that is:
+
+```bash
+NS=network-scan
+
+# 1. Artifacts: the RWO claim cannot be widened, it has to be replaced — so
+#    copy its contents out while a pod still mounts it. A PVC delete is not
+#    reversible unless the PV's reclaim policy is Retain; check that first.
+kubectl -n "$NS" exec deploy/shapoclyack-api -- \
+  tar -C /app/scanner -cf - output state > artifacts.tar
+kubectl -n "$NS" scale deploy/shapoclyack-api --replicas=0
+kubectl -n "$NS" delete pvc scanner-data
+
+#    Recreate just the claim — the rest of the overlay comes in step 3, and
+#    applying it now would hit the NATS problem below. Same shape the overlay
+#    renders (`kubectl kustomize .../prod-ha` to check), with your RWX class:
+kubectl -n "$NS" apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scanner-data
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: YOUR-RWX-STORAGE-CLASS
+  resources:
+    requests:
+      storage: 20Gi
+EOF
+kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Bound pvc/scanner-data --timeout=5m
+
+#    Restore into the new volume, then scale back up.
+kubectl -n "$NS" scale deploy/shapoclyack-api --replicas=1
+kubectl -n "$NS" exec -i deploy/shapoclyack-api -- \
+  tar -C /app/scanner -xf - < artifacts.tar
+
+# 2. NATS: recreate the StatefulSet object, keep the pod and its PVC.
+#    --cascade=orphan leaves nats-0 running and nats-data-shapoclyack-nats-0 intact; the
+#    new StatefulSet adopts the pod by name on the next apply.
+kubectl -n "$NS" delete statefulset shapoclyack-nats --cascade=orphan
+
+# 3. Now the overlay applies as a whole.
+kubectl apply -k k8s/shapoclyack/overlays/prod-ha
+```
+
+`podManagementPolicy: Parallel` is not cosmetic and is why step 2 exists at
+all: under the default `OrderedReady`, pod N+1 is not created until pod N is
+Ready, and a NATS pod that has to reach a JetStream meta leader cannot get
+there alone (verified: `nats-1` sits at `0/1` forever and `nats-2` is never
+created). The narrower readiness probe this repository now uses
+(`/healthz?js-server-only=true`, `base/nats/statefulset.yaml`) removes that
+particular cause, but "should now bootstrap under `OrderedReady`" has not been
+re-verified on a real three-node cluster, and an unverified claim here costs an
+outage. The field stays, and so does this section.
+
 ## Verifying the profile
 
 `k8s/scripts/validate-kustomize.sh` renders this overlay in CI (Jenkins stage
@@ -265,9 +353,18 @@ kubectl -n network-scan rollout status deploy/shapoclyack-api
 kubectl -n network-scan get pods -l app.kubernetes.io/component=api \
   -o custom-columns=POD:.metadata.name,NODE:.spec.nodeName
 
-# 3. JetStream formed a cluster and the streams are R3.
+# 3. JetStream formed a cluster and the streams are R3. The nats:2.10-alpine
+#    image carries no `nats` CLI, so ask the monitoring endpoint, which needs
+#    no credentials and is not exposed outside the pod network.
 kubectl -n network-scan exec sts/shapoclyack-nats -- \
-  nats --user api --password "$NATS_API_PASSWORD" stream report
+  wget -qO- 'http://127.0.0.1:8222/jsz?streams=1'
+#    Expect "cluster" with three peers, and every stream's "replicas": 3.
+#    For the CLI's own output, run it from a box image instead:
+kubectl -n network-scan run natsbox --rm -it --restart=Never \
+  --image=natsio/nats-box:latest -- \
+  nats --server nats://shapoclyack-nats:4222 \
+      --user api --password "$(kubectl -n network-scan get secret shapoclyack-nats \
+        -o jsonpath='{.data.api_password}' | base64 -d)" stream report
 
 # 4. The HPA can read metrics (not <unknown>).
 kubectl -n network-scan get hpa shapoclyack-api

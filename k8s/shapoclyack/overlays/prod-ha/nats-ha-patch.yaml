@@ -33,6 +33,14 @@
 # N+1) are up and JetStream has a meta leader. That's a bootstrap
 # deadlock (verified: nats-1 sits at 0/1 forever, nats-2 never even gets
 # created). Parallel starts all pods at once so they can find each other.
+#
+# It is also an IMMUTABLE field, so this patch cannot be applied onto a
+# StatefulSet that already exists — `kubectl apply -k` fails part-way, with
+# whatever applied before it still applied. Migrating an install that already
+# runs base or overlays/prod needs
+# `kubectl delete statefulset shapoclyack-nats --cascade=orphan` first; the
+# procedure, and the same problem for the RWX PVC, is
+# docs/high-availability.md § Migrating an existing install.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

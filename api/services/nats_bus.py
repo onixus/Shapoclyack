@@ -134,6 +134,28 @@ _STREAM_MAX_DELAY_SECONDS = 3.0
 _STREAM_BUDGET_SECONDS = 12.0
 
 
+def _warn_on_replica_drift(config: Any, info: Any) -> None:
+    """Say so when a stream's replica count is not the one we asked for.
+
+    ``update_stream`` is how ``OCTO_NATS_STREAM_REPLICAS=3`` reaches a stream
+    that already exists, and it is exactly the call that fails when the cluster
+    has fewer peers than the requested replicas (#335). Without this the
+    operator who scaled NATS to three nodes keeps single-copy streams — the
+    thing the scale-out was bought to prevent — and nothing anywhere says it.
+    """
+    wanted = getattr(config, "num_replicas", None)
+    actual = getattr(getattr(info, "config", None), "num_replicas", None)
+    if wanted is None or actual is None or wanted == actual:
+        return
+    LOG.warning(
+        "JetStream stream %s is R%s, not the R%s this replica asked for "
+        "(OCTO_NATS_STREAM_REPLICAS): losing a broker node can lose its messages",
+        getattr(config, "name", "?"),
+        actual,
+        wanted,
+    )
+
+
 class NatsBus:
     """Background asyncio loop + JetStream helpers usable from sync FastAPI code."""
 
@@ -288,13 +310,31 @@ class NatsBus:
                 # retention/replica config onto it so limit changes (e.g. a new
                 # OCTO_NATS_*_MAX_AGE_SECONDS) take effect on redeploy, not only
                 # on first stream creation.
+                update_exc: BaseException | None = None
                 try:
                     await self._js.update_stream(config=config)
                     return
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # Deliberate fail-soft: an existing stream we could not
+                    # reconcile still carries messages, and refusing to start
+                    # over it would turn a stale limit into an outage. But it
+                    # is not nothing, so it is logged below — once the stream
+                    # is confirmed to exist, which is what tells this apart
+                    # from the cold-JetStream retry path where every call
+                    # fails and the loop is expected to come round again.
+                    update_exc = exc
                 try:
-                    await self._js.stream_info(config.name)
+                    info = await self._js.stream_info(config.name)
+                    if update_exc is not None:
+                        LOG.warning(
+                            "JetStream stream %s exists but could not be reconciled with the "
+                            "configuration this replica asked for; it keeps its current "
+                            "settings: %s: %s",
+                            config.name,
+                            type(update_exc).__name__,
+                            update_exc,
+                        )
+                    _warn_on_replica_drift(config, info)
                     return
                 except Exception as info_exc:  # noqa: BLE001
                     last_exc = info_exc
