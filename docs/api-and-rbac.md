@@ -177,7 +177,10 @@ Every password or code check in this module runs inside the login limiter
 stolen token would be a password oracle. An account that cannot be asked for a
 password — provisioned by the identity provider, or one whose password
 `OCTO_LOCAL_LOGIN` no longer accepts — is asked only for the factor
-(`MfaStatus.password_required` says which).
+(`MfaStatus.password_required` says which). That is a real, deliberate
+weakening of `disable` for those accounts, and a small one: the thing the
+password-plus-code pair defends against is a stolen session, which holds
+neither half.
 
 `POST /api/auth/mfa/verify` takes `{"mfa_token":…, "code":…}` or
 `{"mfa_token":…, "recovery_code":…}` and returns the ordinary session token.

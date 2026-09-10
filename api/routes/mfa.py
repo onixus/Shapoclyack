@@ -296,7 +296,6 @@ def verify_mfa(
     return LoginResponse(access_token=token, role=principal.role, username=username)
 
 
-
 @router.post("/auth/mfa/disable", response_model=MfaStatus)
 def disable_mfa(
     body: MfaDisableRequest,

@@ -437,7 +437,9 @@ def disable(
 
     Both, because either alone is exactly the thing the other protects against.
     A stolen session holds neither; a stolen password holds one; a shoulder-read
-    code holds the other.
+    code holds the other. An account that cannot be asked for a password
+    (:func:`password_required`) pays only the factor — which a stolen session
+    still does not have, so the control the pair exists for survives.
 
     Both are checked by the route, under the login limiter, before this is
     called: ``factors_verified`` is that assertion. Doing it here would put a
