@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.auth import Role, TokenUser, get_current_user, require_role
+from api.auth import Role, TokenUser, get_current_user, get_settings, require_role
 from api.routes._audit import AuditDep
 from api.schemas import (
     ChangeOwnPasswordRequest,
@@ -27,7 +27,9 @@ from api.schemas import (
     SetUserRoleRequest,
     UserInfo,
 )
+from api.services import sessions as sessions_service
 from api.services import users as users_service
+from api.settings import Settings
 
 router = APIRouter(tags=["users"])
 
@@ -155,6 +157,30 @@ def set_user_disabled(
     if updated is None:
         raise _not_found(username)
     return UserInfo.model_validate(updated)
+
+
+@router.post("/users/{username}/sessions/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_user_sessions(
+    username: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Sign one account out of everywhere, without changing anything else (#314).
+
+    Disabling, demoting and resetting a password already end that account's
+    sessions on their own. This exists for the case where none of those is the
+    right answer — a laptop left in a taxi, a shared browser, a token pasted
+    into a chat — and the account should simply start over.
+
+    Platform admin, and deliberately not restricted to *other* accounts: an
+    admin who wants to end their own sessions from here rather than from
+    ``POST /api/auth/sessions/revoke-all`` gets the same effect, including on
+    the token they are holding.
+    """
+    try:
+        sessions_service.revoke_all(settings, username)
+    except LookupError as exc:
+        raise _not_found(username) from exc
 
 
 @router.delete("/users/{username}", status_code=status.HTTP_204_NO_CONTENT)

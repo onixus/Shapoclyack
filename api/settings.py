@@ -84,6 +84,29 @@ DEFAULT_USERS = [
 ]
 
 
+def _csv_secrets(raw: str) -> list[str]:
+    """Parse a comma-separated key list from the environment.
+
+    Whitespace and empty entries are dropped rather than kept as keys: a
+    trailing comma in a Secret is a typo, and an empty string would otherwise
+    become a signing key that verifies an unsigned-looking token.
+    """
+    return _unique_secrets(raw.split(","))
+
+
+def _unique_secrets(values: list[str]) -> list[str]:
+    """Non-empty values in order, first occurrence wins."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        cleaned = (value or "").strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
+
+
 @dataclass
 class Settings:
     # "prod" (default) enforces the fail-closed checks in _validate_production;
@@ -94,9 +117,25 @@ class Settings:
     jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = ALLOWED_JWT_ALGORITHMS[0]
     jwt_expire_minutes: int = 480
+    # Keys this installation has retired but still verifies with, newest first
+    # (OCTO_JWT_SECRET_PREVIOUS, comma-separated). Rotating a symmetric secret
+    # without them is a fleet-wide logout at the moment of the rollout, because
+    # every session token in every browser was signed with the old value; with
+    # them the old tokens are accepted until they expire on their own and
+    # nothing new is ever signed with them. Nothing here weakens verification:
+    # a key is trusted only because an operator wrote it down as one that was
+    # in use, and #314 gives every token a ``kid`` so the right one is tried
+    # first. Empty is the normal state — a rotation adds one entry and a later
+    # deploy removes it (docs/operations.md § Rotating the JWT signing key).
+    jwt_secret_previous: list[str] = field(default_factory=list)
     # Signing key for agent JWTs (OCTO_AGENT_JWT_SECRET). Empty means "derive
     # one from jwt_secret" -- see agent_signing_secret() below.
     agent_jwt_secret: str = ""
+    # The same rotation window for the agent key (OCTO_AGENT_JWT_SECRET_PREVIOUS).
+    # Only consulted when agent_jwt_secret is set explicitly: when it is
+    # derived, the previous *operator* keys derive the previous agent keys, so
+    # naming them twice would be two lists to keep in step.
+    agent_jwt_secret_previous: list[str] = field(default_factory=list)
     output_dir: Path = Path("scanner/output")
     state_dir: Path = Path("scanner/state")
     config_path: Path = Path("scanner/config/default.yaml")
@@ -492,6 +531,33 @@ class Settings:
 
         return self.agent_jwt_secret or derive_agent_jwt_secret(self.jwt_secret)
 
+    def jwt_verification_secrets(self) -> list[str]:
+        """Every key a console token may be verified against, signing key first.
+
+        Signing still uses ``jwt_secret`` alone: this list exists so a rotation
+        is a window rather than an outage (#314). Deduplicated and stripped of
+        blanks, because an ``OCTO_JWT_SECRET_PREVIOUS`` that still names the
+        current key would otherwise make the rotation look done when it is not.
+        """
+        secrets = [self.jwt_secret, *self.jwt_secret_previous]
+        return _unique_secrets(secrets)
+
+    def agent_signing_secrets(self) -> list[str]:
+        """The agent counterpart of :meth:`jwt_verification_secrets`.
+
+        When ``OCTO_AGENT_JWT_SECRET`` is unset the agent key is an HKDF of the
+        operator key, so the retired operator keys derive the retired agent
+        keys and one rotation covers both audiences. When it *is* set the two
+        keys are independent and so are their rotation windows.
+        """
+        from api.core.security import derive_agent_jwt_secret
+
+        if self.agent_jwt_secret:
+            previous = list(self.agent_jwt_secret_previous)
+        else:
+            previous = [derive_agent_jwt_secret(key) for key in self.jwt_secret_previous]
+        return _unique_secrets([self.agent_signing_secret(), *previous])
+
 
 # Legacy sqlite filename from when the product was called "octo-man". Kept as a
 # fallback so an existing self-host keeps its data after the rename instead of
@@ -698,6 +764,23 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
             "    invalidates the tokens issued by the others."
         )
 
+    # A retired key is trusted for as long as it is listed, so the two ways to
+    # get this wrong are worth naming: the published development secret, which
+    # would let anyone with the repository mint a token again, and the current
+    # key, which makes a half-finished rotation look finished.
+    if DEFAULT_JWT_SECRET in settings.jwt_secret_previous:
+        problems.append(
+            "OCTO_JWT_SECRET_PREVIOUS lists the built-in development secret.\n"
+            "    A rotation window that trusts a published key is not a rotation.\n"
+            "    Remove that entry; list only keys this installation actually used."
+        )
+    if settings.jwt_secret and settings.jwt_secret in settings.jwt_secret_previous:
+        problems.append(
+            "OCTO_JWT_SECRET_PREVIOUS repeats the current OCTO_JWT_SECRET.\n"
+            "    List only the keys being retired — see docs/operations.md\n"
+            "    § Rotating the JWT signing key."
+        )
+
     # Any "*" in the list, not just a bare ["*"]: the wildcard matches every
     # origin regardless of what else is listed beside it, so ["*", "https://x"]
     # is exactly as open as ["*"] while looking deliberate.
@@ -832,6 +915,7 @@ def load_settings() -> Settings:
         or os.environ.get("OCTO_JWT_SECRET", DEFAULT_JWT_SECRET),
         jwt_algorithm=algorithm,
         jwt_expire_minutes=int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")),
+        jwt_secret_previous=_csv_secrets(os.environ.get("OCTO_JWT_SECRET_PREVIOUS", "")),
         output_dir=Path(os.environ.get("OCTO_OUTPUT_DIR", "scanner/output")),
         state_dir=Path(os.environ.get("OCTO_STATE_DIR", "scanner/state")),
         config_path=Path(os.environ.get("OCTO_CONFIG", "scanner/config/default.yaml")),
@@ -858,6 +942,9 @@ def load_settings() -> Settings:
         in {"1", "true", "yes"},
         agent_jwt_expire_minutes=int(os.environ.get("OCTO_AGENT_JWT_EXPIRE_MINUTES", "120")),
         agent_jwt_secret=os.environ.get("OCTO_AGENT_JWT_SECRET", "").strip(),
+        agent_jwt_secret_previous=_csv_secrets(
+            os.environ.get("OCTO_AGENT_JWT_SECRET_PREVIOUS", "")
+        ),
         agent_results_max_body_bytes=int(
             os.environ.get("OCTO_AGENT_RESULTS_MAX_BODY_BYTES", str(128 * 1024 * 1024))
         ),
