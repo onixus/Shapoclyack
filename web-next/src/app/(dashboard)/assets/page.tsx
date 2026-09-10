@@ -15,11 +15,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
+import { AssetBulkContext } from "@/components/asset/bulk-context";
 import { useT } from "@/lib/i18n";
 import { StatusBadge } from "@/components/status-badge";
 import { useAssets } from "@/hooks/use-assets";
 import { usePagination } from "@/hooks/use-pagination";
-import { type AssetStatus, type AssetSummary } from "@/lib/api";
+import { MAX_BULK_IDS, type AssetStatus, type AssetSummary } from "@/lib/api";
 import { assetRiskLabel } from "@/lib/asset-context";
 import {
   ASSET_CRITICALITY,
@@ -48,6 +49,9 @@ function AssetsInner() {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState<AssetStatus | "">("");
   const [unowned, setUnowned] = useState(searchParams.get("unowned") === "1");
+  // Selected asset ids (#346), held outside the table for the same reason the
+  // findings page holds its own: the list polls and pages under the operator.
+  const [selected, setSelected] = useState<string[]>([]);
 
   // Server-side paging/search/sort (ROADMAP P3.3) — the registry is the one
   // list expected to reach 50k rows, so nothing here is filtered client-side.
@@ -267,6 +271,16 @@ function AssetsInner() {
         meta={`${total.toLocaleString()} asset${total === 1 ? "" : "s"} tracked`}
         loadingMessage="Retrieving asset inventory database…"
         emptyMessage="No assets registered yet. Run a discovery scan to populate the asset catalog."
+        selection={{
+          rowId: (row) => row.asset_id,
+          selected,
+          onChange: setSelected,
+          max: MAX_BULK_IDS,
+          selectAllLabel: "Select every asset on this page",
+          actions: (ids) => (
+            <AssetBulkContext ids={ids} onApplied={(remaining) => setSelected(remaining)} />
+          ),
+        }}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,

@@ -15,12 +15,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
+import { VulnerabilityBulkActions } from "@/components/vulnerability/bulk-actions";
 import { useT } from "@/lib/i18n";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { usePagination } from "@/hooks/use-pagination";
 import { useTrackedVulnerabilities, useVulnerabilitySummary } from "@/hooks/use-vulnerabilities";
+import { MAX_BULK_IDS } from "@/lib/api";
 import type {
   SlaState,
   TrackedVulnerability,
@@ -72,6 +74,10 @@ function VulnerabilitiesInner() {
   const [unassigned, setUnassigned] = useState(initialUnassigned);
   const [source, setSource] = useState<VulnerabilitySource | "">(initialSource);
   const [exposure, setExposure] = useState<NetworkExposure | "">(initialExposure);
+  // Selected finding ids (#346). Held here rather than in the table so paging,
+  // the poll and a filter change do not drop a selection somebody is still
+  // building; ``useAuthStore``-gated verbs live in the bulk bar itself.
+  const [selected, setSelected] = useState<string[]>([]);
   const assetId = initialAssetId;
 
   const pagination = usePagination({
@@ -430,6 +436,21 @@ function VulnerabilitiesInner() {
         meta={`${total.toLocaleString()} finding${total === 1 ? "" : "s"}`}
         loadingMessage="Retrieving tracked vulnerabilities…"
         emptyMessage="No tracked findings match these filters. Findings appear here after a scan observes them against an asset."
+        selection={{
+          rowId: (row) => row.vuln_id,
+          selected,
+          onChange: setSelected,
+          max: MAX_BULK_IDS,
+          selectAllLabel: "Select every finding on this page",
+          actions: (ids) => (
+            <VulnerabilityBulkActions
+              ids={ids}
+              // The ids that failed stay selected: an operator whose batch of
+              // two hundred skipped three needs to see which three.
+              onApplied={(remaining) => setSelected(remaining)}
+            />
+          ),
+        }}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,
