@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 
 from .config_schema import CloudDiscoveryConfig
+from .egress_env import httpx_kwargs
 from .utils import save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.cloud-discovery")
@@ -250,7 +251,9 @@ async def discover_cloud_buckets(
     findings: list[dict[str, Any]] = []
     checked = 0
 
-    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        headers={"User-Agent": USER_AGENT}, follow_redirects=True, **httpx_kwargs()
+    ) as client:
 
         async def _guarded(coro: Any) -> Any:
             async with semaphore:

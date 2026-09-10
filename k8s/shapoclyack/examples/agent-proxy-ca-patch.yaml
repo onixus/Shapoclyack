@@ -1,0 +1,75 @@
+# Corporate egress for the agent: proxy and internal CA (#359).
+#
+# Apply this where the agent runs on a network that has no direct route out —
+# everything leaves through an HTTP proxy, and TLS is terminated and re-signed
+# by an inspecting appliance holding an internal root. Without it the agent's
+# register/heartbeat/claim/upload calls fail at connect (no route) or at the
+# handshake (unknown issuer), and neither error names the setting that is
+# missing.
+#
+# Wiring (overlay kustomization.yaml):
+#
+#   patches:
+#     - path: agent-proxy-ca-patch.yaml
+#
+# The CA bundle is a ConfigMap holding one PEM file. It is public material, not
+# a secret:
+#
+#   kubectl -n network-scan create configmap corp-ca \
+#     --from-file=ca.crt=/path/to/corporate-root.pem
+#
+# What goes through the proxy and what does not
+# ---------------------------------------------
+# Every HTTP call the agent makes goes through it: /api/auth/agent/token,
+# /api/agent/register, /api/agent/heartbeat, /api/agent/jobs/claim and the
+# results upload.
+#
+# NATS does not. No HTTP proxy carries nats://, tls:// or nats-py's wss://
+# transport, and the agent does not pretend otherwise: on a proxy-only network
+# leave OCTO_NATS_URL unset (as this patch does) and the agent falls back to
+# HTTP claim polling, which is a supported mode and not a degraded one — the
+# only difference is that a job is picked up within --poll-interval instead of
+# being pushed. See docs/network-requirements.md.
+#
+# OCTO_CA_BUNDLE is added to the system trust store, never substituted for it,
+# and it covers the NATS connection too where one is used — one internal root,
+# named once.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-agent
+spec:
+  template:
+    spec:
+      volumes:
+        - name: corp-ca
+          configMap:
+            name: corp-ca
+      containers:
+        - name: agent
+          volumeMounts:
+            - name: corp-ca
+              mountPath: /etc/corp-ca
+              readOnly: true
+          env:
+            # The OCTO_-prefixed names win over any ambient HTTP_PROXY the
+            # cluster injects for something else. Both are read; these are the
+            # ones this deployment owns.
+            - name: OCTO_HTTPS_PROXY
+              value: http://proxy.corp.example:3128
+            - name: OCTO_HTTP_PROXY
+              value: http://proxy.corp.example:3128
+            # Hosts reached without the proxy. Comma-separated; an entry may be
+            # a name (matching it and its subdomains), host:port, or a CIDR.
+            # The in-cluster API belongs here when the agent runs beside it.
+            - name: OCTO_NO_PROXY
+              value: .svc,.cluster.local,10.0.0.0/8,localhost,127.0.0.1
+            # PEM, added to the system store. Certificate and hostname
+            # verification stay on — this names the inspector's root so that
+            # verification can succeed, it does not disable it.
+            - name: OCTO_CA_BUNDLE
+              value: /etc/corp-ca/ca.crt
+            # Shape the results upload so a run archive does not saturate the
+            # site's uplink. 0 (the default) is no limit.
+            - name: OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS
+              value: "2048"

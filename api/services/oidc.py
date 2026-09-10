@@ -56,6 +56,7 @@ from sqlalchemy import delete, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import egress
 from api.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -190,10 +191,12 @@ def _http_get_json(url: str, *, timeout: int) -> dict[str, Any]:
     ``urllib`` follows redirects by default, which on an operator-supplied URL
     is an SSRF pivot: the first hop passes review and the second one goes
     wherever the provider says. The opener below has no redirect handler, so a
-    3xx surfaces as an error instead.
+    3xx surfaces as an error instead. It is built by ``api.services.egress``,
+    so the provider is reached through this installation's proxy and verified
+    against its CA bundle (#359) — the same route webhooks take.
     """
     request = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
-    opener = urllib.request.build_opener(_NoRedirect())
+    opener = egress.build_opener(url, _NoRedirect())
     try:
         with opener.open(request, timeout=timeout) as response:  # nosec B310 - https scheme checked below
             raw = response.read(MAX_METADATA_BYTES + 1)
@@ -220,7 +223,7 @@ def _http_post_form(url: str, form: dict[str, str], *, timeout: int) -> dict[str
             "Accept": "application/json",
         },
     )
-    opener = urllib.request.build_opener(_NoRedirect())
+    opener = egress.build_opener(url, _NoRedirect())
     try:
         with opener.open(request, timeout=timeout) as response:  # nosec B310 - https scheme checked below
             raw = response.read(MAX_METADATA_BYTES + 1)

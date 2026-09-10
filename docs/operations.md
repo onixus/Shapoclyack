@@ -1327,10 +1327,17 @@ every row of scan data. As of
 | API → Postgres | Only if you ask for it | `?sslmode=verify-full` in `OCTO_POSTGRES_URL`; a `prod` start without any `sslmode=` logs a warning |
 | API → ClickHouse | Only if you ask for it | `https://` in `OCTO_CLICKHOUSE_URL`. The scheme decides, not the port |
 | API → SMTP relay | Yes, verified | `OCTO_REPORT_SMTP_STARTTLS` (default on) with certificate verification; `OCTO_REPORT_SMTP_VERIFY_TLS=false` downgrades it deliberately |
-| API / agents ↔ NATS | **No** | Tracked in [#309](https://github.com/onixus/Shapoclyack/issues/309) and [#359](https://github.com/onixus/Shapoclyack/issues/359). Until it lands, keep NATS on the cluster network and do not expose `:4222` across an untrusted segment |
+| API / agents ↔ NATS | Yes, when you configure it | `tls://` in `OCTO_NATS_URL` plus `OCTO_NATS_TLS_*`; the broker side is `examples/nats-tls-configmap-patch.yaml`. Plain `nats://` is still accepted and still plaintext — do not expose `:4222` across an untrusted segment without `tls://` |
 
 There is no mTLS anywhere yet: nothing in this repository issues or checks a
 client certificate. Where the README once said "mTLS", read "TLS, one-way".
+
+Which ports have to be open for any of it, how egress goes through a corporate
+proxy (`OCTO_HTTPS_PROXY`, `OCTO_NO_PROXY`), and where an internal root goes
+(`OCTO_CA_BUNDLE`) are in
+[network-requirements.md](network-requirements.md) — including why NATS is the
+one link a proxy cannot carry, and what an agent does instead
+([#359](https://github.com/onixus/Shapoclyack/issues/359)).
 
 **Postgres with a private CA.** `verify-full` needs the CA in the pod, not in
 the operator's laptop:

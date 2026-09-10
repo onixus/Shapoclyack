@@ -43,6 +43,73 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **One outbound HTTP client, with a proxy and an internal CA**
+  ([#359](https://github.com/onixus/Shapoclyack/issues/359)). Nothing in this
+  repository read a proxy variable, and webhook/ticket delivery on raw
+  `http.client` could not have used one anyway — on a network whose only egress
+  is a proxy, no webhook ever left and no remote agent ever registered.
+  `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`, `OCTO_NO_PROXY` and `OCTO_CA_BUNDLE`
+  now decide the control-plane HTTP calls on both sides: `api/services/egress.py`
+  for webhook and ticket delivery, OIDC and advisory feeds, and its deliberate
+  mirror `agent/egress.py` for the agent's token exchange, registration,
+  heartbeat, claim and results upload (a copy, not an import — the agent ships
+  without the `api` package; a test asserts the two agree). The scanner's own
+  external lookups — RIPEstat in `asn_discovery`, the three object stores in
+  `cloud_discovery` — read the same two variables through
+  `scanner/pipeline/egress_env.py`; the remaining outbound stages (`hostnames`,
+  `ownership`, `alerts`) do not, and
+  [docs/network-requirements.md](docs/network-requirements.md) now lists every
+  direction and says which is which rather than claiming all of them. Each
+  variable falls back to the conventional `HTTPS_PROXY`/`NO_PROXY`, and for the
+  plain-HTTP direction to the **lowercase** `http_proxy` only: a CGI-shaped
+  environment derives uppercase `HTTP_PROXY` from an incoming `Proxy:` request
+  header, so that is the spelling an untrusted caller can write (httpoxy), and
+  curl reads only the lowercase one for the same reason. A proxy URL must
+  itself be `http://` — nothing here wraps the hop to the proxy in TLS, so
+  `https://` is refused by name instead of promising an encrypted hop that
+  `Proxy-Authorization: Basic` would then cross in the clear.
+  `OCTO_CA_BUNDLE` is *added* to the system trust store — HTTPS, the SMTP relay
+  and the NATS connection on **both** ends read it, so one internal root is
+  named once — and a path that does not resolve to a usable PEM is an error
+  rather than a silent fallback. The SSRF boundary (#151) is unchanged: a
+  proxied webhook target is still parsed, port-checked and address-checked
+  before anything is sent, a host whose name resolves to nothing here is
+  refused rather than handed to the proxy to resolve, and a host
+  `OCTO_NO_PROXY` exempts keeps the pinned direct dial. What proxying
+  necessarily gives up is that pinning, which
+  [docs/network-requirements.md](docs/network-requirements.md) says plainly.
+- **NATS on 443, and an honest answer about proxies**
+  ([#359](https://github.com/onixus/Shapoclyack/issues/359)). `wss://` in
+  `OCTO_NATS_URL` now works where `aiohttp` is installed — nats-py implements
+  the WebSocket transport with it, the agent image does not carry it, and the
+  agent refuses at start naming the package instead of failing later inside its
+  event-loop thread. `k8s/shapoclyack/examples/nats-443-ingress.example.yaml`
+  has both routes onto 443: a raw-TCP (stream) ingress with `tls://`, which
+  keeps TLS end to end and is the recommended one, and the `wss://` listener
+  with an ordinary Ingress. **No HTTP proxy carries NATS** in any of its
+  transports; where the proxy is the only way out, leave `OCTO_NATS_URL` unset
+  and the agent polls `POST /api/agent/jobs/claim` — a supported mode, not a
+  degraded one. `k8s/shapoclyack/examples/agent-proxy-ca-patch.yaml` is that
+  deployment.
+- **`OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS`** ([#359](https://github.com/onixus/Shapoclyack/issues/359)).
+  Shapes the agent's results upload to a token bucket, `0` (the default) for no
+  limit. The multipart body is now streamed from disk rather than assembled in
+  memory, so the limit bounds the wire rate rather than the size of a buffer
+  that was already filled — and a run archive stops being why a branch office's
+  uplink saturates for two minutes after every scan. `Content-Length` is set
+  explicitly so the streamed body does not fall through to chunked encoding,
+  which the results route answers `411` to. An upload the API cuts off
+  mid-body — how `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` looks from the agent's
+  side, since the refusal is decided on `Content-Length` and the status line is
+  lost with the socket — is not retried: re-shaping the same archive through
+  the token bucket only spends the site's uplink to be refused twice more.
+- **[docs/network-requirements.md](docs/network-requirements.md)** — ports,
+  directions and protocols for the agent, the cluster and the API's own egress;
+  the proxy and CA variables with their exact `NO_PROXY` dialect; what TLS
+  inspection does and does not change; and the bandwidth section. Linked from
+  [operations.md](docs/operations.md#transport-encryption) and the wiki portal.
+  The transport-encryption table in `operations.md` also stops saying NATS is
+  unencrypted, which has not been true since `tls://` landed.
 - **`OCTO_AGENT_MIN_VERSION` — a version floor for the agent fleet**
   ([#363](https://github.com/onixus/Shapoclyack/issues/363)). Empty by default,
   which changes nothing. Set it and an agent below the floor is answered `426

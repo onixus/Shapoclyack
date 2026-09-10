@@ -1,0 +1,118 @@
+# Reaching NATS on 443, for a network whose egress firewall knows one port (#359).
+#
+# A remote agent normally dials tls://…:4222. Plenty of corporate networks will
+# not open 4222 outbound at all, and the answer is to put the broker behind 443.
+# There are two ways, and they are not equivalent.
+#
+# ---------------------------------------------------------------------------
+# 1. tls:// on 443 through a TCP (stream) ingress — the recommended one
+# ---------------------------------------------------------------------------
+# The ingress controller forwards raw TCP; TLS is terminated by nats-server
+# itself (nats-tls-configmap-patch.yaml), so the agent's certificate check is
+# against the broker's own certificate and nothing in between sees the traffic.
+#
+#   OCTO_NATS_URL=tls://agent:$(NATS_PASSWORD)@nats.example.com:443
+#
+# ingress-nginx does this with a ConfigMap the controller reads at startup —
+# not an Ingress object, because Ingress is HTTP-only. The controller must be
+# started with --tcp-services-configmap pointing at it (the Helm chart's
+# `tcp` values map writes both), and its Service needs the extra port.
+#
+#   Note: 443 on the controller is usually already taken by HTTPS. Use a
+#   dedicated LoadBalancer Service for the stream port, or a second controller,
+#   rather than displacing the HTTP one.
+#
+# ---------------------------------------------------------------------------
+# 2. wss:// — NATS over WebSocket, an ordinary HTTPS Ingress
+# ---------------------------------------------------------------------------
+# Use it where a raw TCP ingress is not available. nats-py 2.15 speaks it, but
+# through aiohttp, which the agent image does not carry: install it on the
+# agent host (`pip install aiohttp`) or the agent refuses at start with that
+# message rather than failing later inside its event loop.
+#
+#   OCTO_NATS_URL=wss://agent:$(NATS_PASSWORD)@nats.example.com:443
+#
+# Beware what "443" buys here: a WebSocket upgrade is an HTTP request, so an
+# inspecting proxy in the path terminates the TLS, and OCTO_CA_BUNDLE must
+# carry its root. It also means the hop between the proxy and the ingress is
+# the proxy's TLS, not yours.
+#
+# ---------------------------------------------------------------------------
+# What neither of these does
+# ---------------------------------------------------------------------------
+# Go through an HTTP proxy. nats-py issues no CONNECT for any of its
+# transports, so on a network where the proxy is the *only* way out, NATS is
+# not reachable at all — leave OCTO_NATS_URL unset and the agent polls
+# /api/agent/jobs/claim over HTTP instead (agent-proxy-ca-patch.yaml).
+# docs/network-requirements.md has the full table.
+---
+# Option 1: ingress-nginx stream forwarding for tls:// on 443.
+# namespace/service:port of the NATS client Service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-tcp
+  namespace: ingress-nginx
+data:
+  "443": "network-scan/shapoclyack-nats-client:4222"
+---
+# Option 2: the WebSocket listener nats-server needs for wss://.
+#
+# This is a fragment, not a whole file: Kubernetes replaces the entire
+# `nats.conf` string on a strategic merge, so paste the `websocket {}` block
+# below into nats-tls-configmap-patch.yaml (or base/nats/configmap.yaml) rather
+# than applying this ConfigMap on its own.
+#
+#   websocket {
+#     port: 8080
+#     # TLS is terminated by the ingress in front, so the listener itself is
+#     # plaintext and must never be exposed outside the cluster. Set
+#     # `no_tls: true` only because of that; with a certificate here, use the
+#     # same `tls {}` shape as the client port instead.
+#     no_tls: true
+#     # The Origin header a browser would send. Agents are not browsers and
+#     # send none, so this stays off rather than listing a host that no client
+#     # will ever present.
+#     same_origin: false
+#   }
+#
+# The listener also needs a container port and a Service port, neither of which
+# base/nats carries — shapoclyack-nats-client publishes 4222 and 8222 only:
+#
+#   # statefulset patch
+#   containers:
+#     - name: nats
+#       ports:
+#         - name: websocket
+#           containerPort: 8080
+#   # service patch (shapoclyack-nats-client)
+#   ports:
+#     - name: websocket
+#       port: 8080
+#       targetPort: websocket
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shapoclyack-nats-ws
+  namespace: network-scan
+  annotations:
+    # A JetStream pull consumer holds the connection open between fetches.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - nats.example.com
+      secretName: shapoclyack-nats-ws-tls
+  rules:
+    - host: nats.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shapoclyack-nats-client
+                port:
+                  number: 8080
