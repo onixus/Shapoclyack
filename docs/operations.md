@@ -1016,6 +1016,100 @@ token on the first iteration and every call after it would answer 401 — which
 signed out one account looking exactly like a run that signed out all of them.
 Hence `|| echo "FAILED: $u"` as well: a silent loop is the failure mode here.
 
+### Resetting a lost second factor
+
+An account that has enrolled TOTP and lost the phone cannot sign in and cannot
+turn the factor off — `POST /api/auth/mfa/disable` asks for a live code by
+design. The recovery codes issued at enrolment are the first answer; when those
+are gone too, a **platform admin** clears it
+([#315](https://github.com/onixus/Shapoclyack/issues/315)):
+
+```bash
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/users/$USER/mfa/reset
+```
+
+**The reset is itself behind a step-up** (#315): if the admin running it has a
+second factor of their own and has not proved it in the last
+`OCTO_MFA_STEPUP_MINUTES`, the call is refused with `403` — and `curl -sf`
+reports that by exiting non-zero and printing nothing, which at three in the
+morning reads as "the database is broken". Prove it first and use the token
+that comes back:
+
+```bash
+TOKEN=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"code":"123456"}' \
+  http://localhost:8080/api/auth/mfa/verify | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+```
+
+The console does this for you: a refused action raises a dialog asking for a
+code, after which you repeat the action.
+
+It deletes the secret
+and the recovery codes and bumps the account's `token_version`, so every
+session that account has open ends — including any opened by whoever has the
+phone. It is recorded as `user.mfa_reset` in the administrative trail, which is
+the row a review looks for: it is the only way a factor comes off an account
+without the factor.
+
+Verify the account before you do it. This route is the whole reason MFA has a
+help-desk bypass, and the trail records who used it:
+
+```bash
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/audit?action=user.mfa_reset"
+```
+
+If `OCTO_MFA_REQUIRED_ROLES` names the account's role, its next login is a
+session confined to the enrolment flow, so the reset does not leave it locked
+out — it leaves it in front of the setup page.
+
+### Break-glass local login
+
+On an installation with SSO configured, `OCTO_LOCAL_LOGIN=break-glass` reserves
+password login for the accounts named in `OCTO_BREAK_GLASS_USERS`. Everyone
+else gets the same `401 Invalid credentials` a wrong password gets — the mode
+is public in `GET /api/auth/sso`, the account list is not.
+
+Set it up so the emergency door exists *before* the emergency:
+
+```bash
+OCTO_LOCAL_LOGIN=break-glass
+OCTO_BREAK_GLASS_USERS=breakglass
+```
+
+`break-glass` with an empty list is the same thing as `disabled` and warns at
+startup in `prod` — the moment to discover that is not during an IdP outage.
+Give the break-glass account its own strong password, its own second factor,
+and nothing else: it is a credential nobody uses day to day.
+
+Each such login announces itself in four places, because they are read by
+different people at different times:
+
+| Where | What to look for |
+|---|---|
+| Administrative trail | `GET /api/audit?action=auth.break_glass_login` |
+| Login trail | `GET /api/auth/events` — `reason=break_glass_login` |
+| Metrics | `octo_break_glass_logins_total` — **alert on any increase**, this is not a series to graph |
+| API log | `WARNING … Break-glass password login by …` |
+
+A Prometheus rule along these lines is the intended use:
+
+```yaml
+- alert: ShapoclyackBreakGlassLogin
+  expr: increase(octo_break_glass_logins_total[5m]) > 0
+  labels: { severity: critical }
+  annotations:
+    summary: "A break-glass password login bypassed SSO"
+    description: "Confirm it was expected; see GET /api/audit?action=auth.break_glass_login"
+```
+
+Recording is deliberately fail-soft: if the audit write fails, the login still
+succeeds and the failure is logged. An operator reaching for the emergency door
+is usually doing it because something is already broken, and a database that
+cannot take the row is a realistic version of that — refusing the login would
+turn a degraded installation into an unreachable one.
+
 ### Rotating the JWT signing key
 
 `OCTO_JWT_SECRET` used to be unrotatable in practice: changing it invalidated
@@ -1945,6 +2039,8 @@ working one.
 |-------|----------------|---------|
 | Webhook HMAC secret, ticket API token (`webhook_subscriptions.secret`) | Postgres | Encrypted (#310) |
 | Configured header values, e.g. `Authorization` (`webhook_subscriptions.headers`) | Postgres | Encrypted (#310) |
+| TOTP shared secret of an enrolled account (`users.mfa_secret`) | Postgres | Encrypted (#315), under its own GCM context `users.mfa_secret`, and covered by the same `python -m api.db.reencrypt_secrets` passes |
+| Recovery codes (`users.mfa_recovery_codes`) | Postgres | bcrypt hashes — a recovery code is a password |
 | Console passwords, service tokens, agent provisioning keys | Postgres | bcrypt / SHA-256 hashes — never reversible, so nothing to encrypt |
 | SSH host keys pinned for agent deployment | Postgres | Public keys; not secret |
 | `OCTO_OIDC_CLIENT_SECRET`, `OCTO_REPORT_SMTP_PASSWORD`, `OCTO_JWT_SECRET`, the data-plane URLs | Environment (Secret / ExternalSecret) | Not in the database at all — protected by Kubernetes Secret handling, not by this |

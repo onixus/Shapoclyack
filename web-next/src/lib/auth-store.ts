@@ -10,10 +10,16 @@ import {
   revokeAllSessions as apiRevokeAllSessions,
   setAccessToken,
   setActiveTenant,
+  verifyMfa as apiVerifyMfa,
   type LogoutOutcome,
   type Me,
   type Role,
 } from "@/lib/api";
+
+/** What a password login produced: a session, or an outstanding challenge. */
+export type LoginStep =
+  | { status: "signed-in"; mfaPending: boolean }
+  | { status: "mfa-required"; mfaToken: string; expiresIn: number | null };
 
 type AuthState = {
   user: Me | null;
@@ -24,7 +30,13 @@ type AuthState = {
    * — the fleet-wide view for a platform admin (ROADMAP P0). */
   activeTenant: string | null;
   hydrate: () => Promise<void>;
-  login: (username: string, password: string) => Promise<void>;
+  /** Signs in, or reports that a second factor is still owed (#315). The
+   * caller renders the code step from `mfaToken`; nothing is stored in the
+   * browser until a real session exists. */
+  login: (username: string, password: string) => Promise<LoginStep>;
+  /** Second leg of a login, or a step-up on the current session. */
+  verifyMfa: (input: { mfaToken?: string | null; code?: string; recoveryCode?: string }) =>
+    Promise<void>;
   /** Ends the session on the server as well as in this browser (#314), which
    * is why it is a promise now: forgetting the token locally left it working
    * for anyone who had copied it. The outcome is returned so the caller can
@@ -82,15 +94,26 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
   async login(username, password) {
     const session = await apiLogin(username, password);
+    if (session.mfa_required && !session.access_token) {
+      // No state is set: this browser is not signed in, and pretending
+      // otherwise would leave a half-authenticated console behind if the user
+      // walked away at the code prompt.
+      return {
+        status: "mfa-required" as const,
+        mfaToken: session.mfa_token ?? "",
+        expiresIn: session.expires_in,
+      };
+    }
     // The login response carries no tenant context (ROADMAP P0), so read the
     // full principal — tenants, default tenant, platform-admin flag — from
     // /auth/me and fall back to the login payload if that call fails.
     let user: Me = {
       username: session.username,
-      role: session.role,
+      role: session.role ?? "viewer",
       tenants: [],
       default_tenant: "default",
       is_platform_admin: session.role === "admin",
+      mfa_pending: session.mfa_required,
     };
     try {
       user = await fetchMe();
@@ -104,6 +127,16 @@ export const useAuthStore = create<AuthState>((set) => ({
       canOperate: canOperate(user.role),
       activeTenant: reconcileTenant(user),
     });
+    // A session that owes an enrolment is a session: the console shows the
+    // banner and the setup page rather than the login form.
+    return { status: "signed-in" as const, mfaPending: Boolean(user.mfa_pending) };
+  },
+  async verifyMfa({ mfaToken, code, recoveryCode }) {
+    await apiVerifyMfa({ mfa_token: mfaToken, code, recovery_code: recoveryCode });
+    // Deliberately re-read rather than derived from the verify response: this
+    // is also the step-up path, where the store already holds a principal and
+    // the only thing that changed is what the *token* now proves.
+    await useAuthStore.getState().hydrate();
   },
   async logout() {
     // apiLogout clears the stored token whether or not the server answered, so

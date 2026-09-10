@@ -32,10 +32,11 @@ from api.settings import ENV_PROD, InsecureConfigurationError, Settings
 logger = logging.getLogger(__name__)
 
 _REFUSAL = (
-    f"Refusing to start: this installation stores integration secrets but "
+    f"Refusing to start: this installation stores secrets at rest but "
     f"{envelope.MASTER_KEY_ENV} is unset.\n\n"
     "  Webhook signing secrets and the header values that carry a Jira /\n"
-    "  ServiceNow / DefectDojo token live in the webhook_subscriptions table.\n"
+    "  ServiceNow / DefectDojo token live in the webhook_subscriptions table,\n"
+    "  and the TOTP seeds of every enrolled account live in users.mfa_secret.\n"
     "  Without a master key they are written to Postgres as typed, so a dump, a\n"
     "  backup or a read replica hands over every tenant's tracker tokens; rows\n"
     "  that are already encrypted cannot be read back at all.\n\n"
@@ -45,6 +46,23 @@ _REFUSAL = (
     "  stored with: python -m api.db.reencrypt_secrets\n\n"
     "  See docs/operations.md § Secrets at rest."
 )
+
+
+def _has_stored_mfa_secrets(settings: Settings) -> bool:
+    """Whether any account has enrolled a second factor (#315).
+
+    Asked alongside the webhook question and for the same reason: a TOTP seed
+    written as typed is a value that lets a database reader generate an admin's
+    codes, and an installation that has some must not come up without the key
+    that was meant to be protecting them.
+    """
+    with get_session(settings.postgres_url) as session:
+        found = session.execute(
+            select(models.User.username)
+            .where(models.User.mfa_secret.is_not(None))
+            .limit(1)
+        ).first()
+    return found is not None
 
 
 def _has_stored_integration_secrets(settings: Settings) -> bool:
@@ -89,18 +107,19 @@ def bootstrap(settings: Settings) -> None:
         )
         return
 
-    if not _has_stored_integration_secrets(settings):
+    if not (_has_stored_integration_secrets(settings) or _has_stored_mfa_secrets(settings)):
         logger.warning(
-            "%s is unset: integration secrets would be stored in Postgres as typed. "
+            "%s is unset: integration secrets and TOTP seeds would be stored in "
+            "Postgres as typed. "
             "Nothing is stored yet, so this is not refused — set the key before "
-            "configuring a webhook or a ticket integration.",
+            "configuring a webhook or a ticket integration, or enrolling MFA.",
             envelope.MASTER_KEY_ENV,
         )
         return
 
     if settings.env != ENV_PROD:
         logger.warning(
-            "%s is unset and integration secrets are already stored: they stay in "
+            "%s is unset and secrets are already stored: they stay in "
             "Postgres as typed. Allowed under OCTO_ENV=%s only.",
             envelope.MASTER_KEY_ENV,
             settings.env,

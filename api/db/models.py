@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -93,6 +93,29 @@ class User(Base):
     # migration starts at 0, which is also what a token minted before the
     # upgrade implicitly claims, so an upgrade does not sign the console out.
     token_version: Mapped[int] = mapped_column(default=0)
+    # Multi-factor authentication (migration 0041, #315). ``mfa_secret`` is the
+    # base32 TOTP shared secret, stored through ``api/services/crypto`` under
+    # the context ``users.mfa_secret`` — a secret that authenticates its owner
+    # belongs at rest under the same envelope as the integration credentials
+    # #310 moved, and for the same threat: a dump, a backup or a read replica.
+    # ``mfa_enabled_at`` is set only once a code has been confirmed, so an
+    # abandoned setup leaves an account exactly as it was.
+    mfa_secret: Mapped[str | None] = mapped_column(default=None)
+    mfa_enabled_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The last RFC 6238 step this account spent. Refusing a step at or before
+    # it is what makes a code single-use: without it a code observed on the
+    # wire stays good for the rest of its thirty seconds. BigInteger because a
+    # step is unix-seconds/30 — it fits an int32 for another two millennia, but
+    # a column that silently overflows is not a thing to leave to arithmetic.
+    mfa_last_step: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    # Recovery codes as ``[{"hash": <bcrypt>, "used_at": <iso|null>}, …]``.
+    # Only hashes, using the same passlib context as ``password_hash``: a
+    # recovery code is a password that bypasses the second factor, so storing
+    # it in a form the database can hand over would make the second factor
+    # optional for whoever reads a backup. Spent codes stay in the list with a
+    # timestamp — "which of my codes are gone" is a question the console
+    # answers, and deleting the row would delete the answer.
+    mfa_recovery_codes: Mapped[list] = mapped_column(JSON, default=list)
 
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),

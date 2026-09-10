@@ -10,12 +10,14 @@ from fastapi.responses import RedirectResponse
 
 from api.auth import (
     LoginRequest,
+    LoginResponse,
     MeResponse,
     Role,
-    TokenResponse,
+    StepUpDep,
     TokenUser,
     authenticate_user,
     create_access_token,
+    create_pre_auth_token,
     get_current_user,
     get_settings,
     require_role,
@@ -49,7 +51,9 @@ from api.routes._pagination import PageParams, build_page
 from api.services import agents as agents_service
 from api.services import auth as auth_service
 from api.services import auth_audit
+from api.services import local_login
 from api.services import memberships as memberships_service
+from api.services import mfa as mfa_service
 from api.services import oidc as oidc_service
 from api.services import promoted_domains
 from api.services import quotas
@@ -76,13 +80,13 @@ def _client_ip(request: Request, settings: Settings) -> str:
     )
 
 
-@router.post("/auth/login", response_model=TokenResponse)
+@router.post("/auth/login", response_model=LoginResponse)
 def login(
     body: LoginRequest,
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
-) -> TokenResponse:
-    """Exchange console credentials for a bearer token.
+) -> LoginResponse:
+    """Exchange console credentials for a bearer token, or for a challenge.
 
     Rate-limited per ``(username, client IP)`` with a Postgres-backed counter
     (#157), so the limit is shared by every API replica. A refusal is a 429
@@ -92,8 +96,32 @@ def login(
     Counting, verification and recording happen inside ``attempt_login`` as one
     serialized operation, so a batch of concurrent guesses cannot all pass a
     count taken before any of them has been recorded.
+
+    Three things can now happen to a correct password (#315):
+
+    * the account has a second factor — no session is issued, only a five-minute
+      pre-authentication token for ``POST /api/auth/mfa/verify``;
+    * this installation requires a factor of the account's role and it has not
+      enrolled — a session is issued carrying ``mfa_pending``, which reaches the
+      enrolment routes and nothing else (:func:`api.auth.get_current_user`);
+    * otherwise, exactly the session this endpoint has always returned.
     """
     client_ip = _client_ip(request, settings)
+    try:
+        break_glass = local_login.check_allowed(settings, body.username)
+    except local_login.LocalLoginRefused as exc:
+        # Refused by policy, answered as a wrong password. Naming the policy
+        # here would tell an unauthenticated caller which usernames are *not*
+        # break-glass accounts, i.e. hand over the shortlist worth attacking;
+        # the installation-wide mode is public in ``GET /api/auth/sso``, which
+        # names nobody. The reason is in the trail, where it belongs.
+        auth_audit.record_denied(
+            username=body.username, reason=exc.reason, detail=str(exc)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        ) from exc
+
     outcome = auth_audit.attempt_login(
         username=body.username,
         client_ip=client_ip,
@@ -108,6 +136,35 @@ def login(
     user = outcome.user
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    if mfa_service.is_enabled(settings, user.username):
+        # The password is right and that is all that has been established. The
+        # success row above says the first factor passed; the session, and the
+        # break-glass record that goes with it, wait for the second leg.
+        try:
+            challenge = create_pre_auth_token(
+                settings,
+                user.username,
+                ttl_minutes=mfa_service.PRE_AUTH_TTL_MINUTES,
+                break_glass=break_glass,
+            )
+        except LookupError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+            ) from exc
+        return LoginResponse(
+            username=user.username,
+            mfa_required=True,
+            mfa_token=challenge,
+            expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
+        )
+
+    # Not enrolled — ``is_enabled`` said so above — so "policy names this role"
+    # is the whole of "this session owes an enrolment". The session itself is
+    # confined by ``get_current_user``, which re-decides it per request; this
+    # is only what the console is told so it can route straight to the setup
+    # page instead of discovering it as a 403 on the dashboard.
+    pending = mfa_service.required_for_role(settings, user.role.value)
     try:
         token = create_access_token(settings, user)
     except LookupError as exc:
@@ -117,7 +174,17 @@ def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         ) from exc
-    return TokenResponse(access_token=token, role=user.role, username=user.username)
+    if break_glass:
+        local_login.record_break_glass(settings, username=user.username, client_ip=client_ip)
+    return LoginResponse(
+        access_token=token,
+        role=user.role,
+        username=user.username,
+        # Not an error and not a challenge: the session exists, and the console
+        # reads this to send the user straight to the enrolment page instead of
+        # letting them find out by way of a 403 on the dashboard.
+        mfa_required=pending,
+    )
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -209,7 +276,10 @@ def list_auth_events(
 
 
 @router.get("/auth/me", response_model=MeResponse)
-def me(user: Annotated[TokenUser, Depends(get_current_user)]) -> MeResponse:
+def me(
+    user: Annotated[TokenUser, Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MeResponse:
     is_platform_admin = user.role == Role.admin
     tenants = memberships_service.tenants_for_user(
         user.username, is_platform_admin=is_platform_admin
@@ -222,6 +292,12 @@ def me(user: Annotated[TokenUser, Depends(get_current_user)]) -> MeResponse:
             user.username, is_platform_admin=is_platform_admin
         ),
         is_platform_admin=is_platform_admin,
+        # Reachable by a session that owes an enrolment: this route is on the
+        # ``mfa_pending`` allowlist precisely so the console can render the
+        # banner that sends the user to the setup page (#315).
+        mfa_enabled=mfa_service.is_enabled(settings, user.username),
+        mfa_required=mfa_service.required_for_role(settings, user.role.value),
+        mfa_pending=user.mfa_pending,
     )
 
 
@@ -289,7 +365,7 @@ def _safe_next(value: str | None) -> str:
     return candidate[:512]
 
 
-@router.get("/auth/oidc/callback", response_model=TokenResponse)
+@router.get("/auth/oidc/callback", response_model=LoginResponse)
 def oidc_callback(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -302,6 +378,12 @@ def oidc_callback(
     The session is exactly what password login issues — same JWT, same claims,
     same expiry — because everything downstream of authentication should not
     care how the user proved who they are.
+
+    Which includes the second factor (#315): an account that has enrolled one
+    is answered with the same five-minute challenge a password login gets, in
+    the same place the session would have been (the fragment, as ``mfa_token``).
+    Skipping it here would have made MFA opt-out by way of clicking the other
+    button on the login form.
 
     Every failure is one 401 with a short message: which check failed (state,
     signature, audience, nonce, provisioning policy) is information only the
@@ -366,8 +448,25 @@ def oidc_callback(
     auth_audit.record_sso_login(
         username=token_user.username, client_ip=client_ip, action=action
     )
+    # An account that has enrolled a second factor is challenged here too
+    # (#315). The identity provider proved *an* identity; it did not prove
+    # possession of the authenticator this installation holds a seed for, and
+    # letting SSO skip the check would make the whole feature opt-out by way of
+    # clicking a different button. An account that has *not* enrolled needs no
+    # special case: ``get_current_user`` re-derives ``mfa_pending`` per request,
+    # so an SSO session of a covered role is confined exactly like a password
+    # one until it enrols.
+    challenge: str | None = None
     try:
-        token = create_access_token(settings, token_user)
+        if mfa_service.is_enabled(settings, token_user.username):
+            challenge = create_pre_auth_token(
+                settings,
+                token_user.username,
+                ttl_minutes=mfa_service.PRE_AUTH_TTL_MINUTES,
+            )
+            token = ""
+        else:
+            token = create_access_token(settings, token_user)
     except LookupError as exc:  # the account was deleted mid-callback
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed"
@@ -379,7 +478,12 @@ def oidc_callback(
         # server and which is not written to access logs the way a query string
         # is. The console reads it, stores it, and clears the fragment.
         separator = "&" if "#" in destination else "#"
-        landing = f"{destination}{separator}access_token={token}&token_type=bearer"
+        landing = (
+            f"{destination}{separator}mfa_token={challenge}"
+            f"&expires_in={mfa_service.PRE_AUTH_TTL_MINUTES * 60}"
+            if challenge
+            else f"{destination}{separator}access_token={token}&token_type=bearer"
+        )
         next_url = str(completed.get("next_url") or "")
         if next_url:
             # Percent-encoded: the fragment already carries the session token as
@@ -387,7 +491,16 @@ def oidc_callback(
             # parameters of its own to the URL the console is about to parse.
             landing = f"{landing}&next={urllib.parse.quote(next_url, safe='/')}"
         return RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
-    return TokenResponse(access_token=token, role=token_user.role, username=token_user.username)
+    if challenge:
+        return LoginResponse(
+            username=token_user.username,
+            mfa_required=True,
+            mfa_token=challenge,
+            expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
+        )
+    return LoginResponse(
+        access_token=token, role=token_user.role, username=token_user.username
+    )
 
 
 @router.post("/auth/agent/token", response_model=AgentTokenResponse)
@@ -541,6 +654,10 @@ def create_provisioning_key(
     tenant_id: str,
     body: CreateProvisioningKeyRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # A provisioning key enrols agents into a tenant and outlives the session
+    # that made it, so an account with a second factor must have proved it
+    # recently to mint one (#315). No effect on an account without MFA.
+    __: StepUpDep,
     audit: AuditDep,
 ) -> ProvisioningKeyInfo:
     try:
@@ -575,6 +692,9 @@ def revoke_provisioning_key(
     tenant_id: str,
     key_id: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Step-up on the revoke as well as the create (#315): cutting a tenant's
+    # agents off the platform is as much a credential decision as issuing them.
+    __: StepUpDep,
     audit: AuditDep,
 ) -> ProvisioningKeyInfo:
     revoked = tenants_service.revoke_provisioning_key(key_id, audit=audit)
@@ -709,6 +829,7 @@ def replace_scan_scope(
     tenant_id: str,
     body: ReplaceScanScopeRequest,
     user: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> list[ScanScopeEntryInfo]:
@@ -718,6 +839,11 @@ def replace_scan_scope(
     tenant may point the platform at a network is an administrative act, and
     an operator who could widen their own scope would be the control removing
     itself. The caller's username is stamped on every resulting row.
+
+    Behind a step-up since #315, for the same reason the credential routes are:
+    widening what the platform may scan is the one administrative act whose
+    blast radius is somebody else's network, and an eight-hour-old session
+    left open is not the evidence one should need to take it.
     """
     try:
         entries = scan_scopes.replace_scope(

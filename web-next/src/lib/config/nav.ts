@@ -18,6 +18,7 @@ import {
   Server,
   Share2,
   ShieldAlert,
+  ShieldCheck,
   Siren,
   SlidersHorizontal,
   SquareKanban,
@@ -219,6 +220,17 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: KeyRound,
         minRole: "admin",
         hintKey: "nav.hint.serviceTokens",
+      },
+      {
+        // Everyone's, not an administrator's: it manages the caller's own
+        // second factor (#315). It sits here because this is where the
+        // account-level doors are, and it carries no minRole for the same
+        // reason /audit does not — the API decides, and every role has one of
+        // these pages.
+        href: "/security",
+        labelKey: "nav.security",
+        icon: ShieldCheck,
+        hintKey: "nav.hint.security",
       },
       {
         href: "/system",

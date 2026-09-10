@@ -77,10 +77,18 @@ FORBIDDEN_RESOURCES = frozenset({"audit", "auth", "users", "tenants"})
 # Resources a service token may read but never write. These are the routes that
 # are *not* tenant-scoped — they hang off :func:`api.auth.require_role`, so the
 # tenant a token is pinned to buys nothing there and the scope layer is the only
-# boundary left. ``config`` is the whole of it today: ``PUT /api/config``
-# replaces the installation-wide scanner overrides, so an admin-role token
-# issued for one tenant would otherwise rewrite how every other tenant scans.
-FORBIDDEN_WRITE_RESOURCES = frozenset({"config"})
+# boundary left. ``config``: ``PUT /api/config`` replaces the installation-wide
+# scanner overrides, so an admin-role token issued for one tenant would
+# otherwise rewrite how every other tenant scans.
+#
+# ``agent`` is the *agent protocol* — claim, heartbeat, register, upload, and
+# ``POST /api/agent/deployment-command``, which mints a provisioning key (#315).
+# Every one of those is what a worker does with its own credential, not what an
+# integration does with a token; the last of them is a credential-issuing route
+# that step-up cannot protect, because there is no human at a service token to
+# challenge. The read side stays open: rendering the install snippet tells a
+# caller nothing it could not read off the docs.
+FORBIDDEN_WRITE_RESOURCES = frozenset({"config", "agent"})
 
 _settings: Settings | None = None
 
