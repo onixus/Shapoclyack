@@ -42,6 +42,38 @@ All notable changes to Shapoclyack are documented in this file.
   the scan form, the group on the agent drawer, and a marker on a queued job
   whose group has nobody in it; **assigning an agent to a group is API-only**
   (`PUT /api/agents/{id}/group`), so #361 stays open for the management UI.
+- **Accepting risk now takes two people, and its expiry is written down**
+  ([#348](https://github.com/onixus/Shapoclyack/issues/348)).
+  `POST /api/vulnerabilities/{id}/exception` suspended the SLA clock under a
+  single tenant admin — the person who wanted the deadline gone was the person
+  who removed it — and nothing recorded that an acceptance had lapsed. It is
+  now a *request* that suspends nothing; approving it is
+  `POST …/exception/approve`, gated on `vulnerability.exception.approve` (the
+  `risk-approver` role from #318) and refused to whoever filed it, platform
+  admin included. Rejecting is the same permission and moves no deadline, an
+  extension cannot shorten a window already granted, and the SLA worker records
+  each lapse as an `exception_expired` event and an audit row. Request,
+  approval, rejection, withdrawal and expiry are all in `audit_events`. New:
+  `GET /api/vulnerabilities/risk-register` (`?format=csv`) and a
+  `risk_acceptance` section in the executive and compliance reports, both
+  naming the acceptances nobody but their requester ever signed — including
+  every one migration 0050 inherited from before this change.
+  The register and the expiry sweep select on *there being an approved window*
+  rather than on the workflow state, because asking for an extension moves that
+  state and being refused one parks it: keyed on the state, a finding whose
+  extension had just been rejected vanished from the register, stayed out of
+  the breach report, and would never have had its lapse recorded. The request
+  for an extension keeps its own justification (`exception_requested_reason`)
+  and leaves the acceptance in force untouched, so the register prints what was
+  signed and names the approver rather than whoever said no. Closing a finding
+  drops its acceptance on every path, including the two the machine takes on
+  its own (verification, ticket sync), and neither the register nor the sweep
+  takes a closed finding. The approver's queue is real:
+  `GET /api/vulnerabilities?exception_state=exception_requested`. In the
+  console, **Approve** / **Reject** are shown to whoever holds
+  `vulnerability.exception.approve` in the tenant instead of to the global
+  `admin` role — which showed them to the requester the API refuses and hid
+  them from the `risk-approver`, the one account that can answer.
 
 - **Named permissions, an auditor role, and a tenant admin that is not the
   platform admin** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
@@ -477,6 +509,60 @@ All notable changes to Shapoclyack are documented in this file.
   copy. Base is unchanged — the kind stand has no CA and stays plaintext.
 
 ### Fixed
+
+- **A running scan can be stopped**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
+  legal only from `queued`; once an agent had claimed a job, the only bound on
+  it was the agent's own `--scan-timeout` — two hours of traffic at a target an
+  operator had already decided to leave alone. `POST /api/jobs/{id}/cancel` now
+  puts a claimed or running agent job into the new **`cancelling`** state, the
+  request reaches the agent on its next heartbeat response, and the agent
+  SIGTERMs its scanner's process group and uploads whatever the run produced
+  with `cancelled=true`. Partial results are kept; the job ends as `cancelled`
+  rather than `failed`, so an operator's decision is not filed as a defect. A
+  job whose agent never confirms (one too old to read the new field, say) is
+  finished as `cancelled` after `OCTO_JOB_CANCEL_GRACE_SECONDS` with the
+  silence recorded in `error`, and a `cancelling` job is never requeued by the
+  lease reaper, so it cannot be handed to a second agent while the first is
+  stopping. Gated on the named permission **`scan.cancel`** (migration 0051,
+  granted to exactly the roles that could cancel before) and written to
+  `audit_events`. The console offers Cancel on running jobs and says plainly
+  that a running scan is *asked* to stop. **A local scan that has already
+  started still cannot be cancelled** — it is a subprocess inside one API
+  replica, which is not necessarily the one answering the request — and the API
+  now refuses it with that reason instead of a generic 409.
+
+- **Five defects in that cancellation path, found by review of #360**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Each was
+  reproduced against a live Postgres before the fix. (1) A **second Cancel on a
+  job already `cancelling`** wrote it `cancelled`: `cancelling` is deliberately
+  not "in flight", which made the naive reading of it "queued, so stop it
+  outright". Two consoles four seconds apart — the list's own poll interval —
+  or one proxy retry were enough, and the job was then terminal with
+  `cancel_requested` cleared before the agent had read it, so a scan nobody
+  stopped kept running for up to two hours under a row that said it had
+  stopped. Asking again is now a no-op that answers the job as it stands.
+  (2) **The retry of a confirming upload was refused with a 422.** Confirming a
+  cancellation is itself a result upload now, so it inherits the lost-response
+  problem P1.5 solved for every other upload; a retry carrying the same
+  deterministic `idempotency_key` is answered with the stored outcome. An
+  upload that no key ties to the outcome is still refused — and the refusal no
+  longer says "cannot move to failed" about an agent that reported a
+  cancellation. (3) **`OCTO_JOB_CANCEL_GRACE_SECONDS` was floored at 5s**,
+  which protected nothing: the stop reaches the agent on a heartbeat and the
+  reaper only looks once a tick, so anything below those two summed guaranteed
+  the job was finished as `unconfirmed` before the agent could answer. The
+  floor is now `OCTO_AGENT_STALE_SECONDS` + `OCTO_JOB_REAPER_INTERVAL_SECONDS`
+  (180s by default) and derived from them rather than written as a constant.
+  (4) **The console demanded the operator rank on top of `scan.cancel`**, so a
+  `scan-operator` — the tenant role #318 added for exactly this, and a viewer
+  in the global role — stopped scans over the API but saw neither the button
+  nor the `/scans` pages. Both are gated on the permission now, the rank
+  surviving only as the answer for an API too old to send a permission list.
+  (5) **The confirming upload erased the reason from `error`**, writing the
+  agent's string — or `NULL` — over "Cancellation requested by X" that
+  `docs/api-and-rbac.md` promises stays there; the two are joined instead, so a
+  finished cancelled job still says who asked for it.
 
 - **Five ways the workflow-event worker under-delivered, found by review of
   #349** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). All five

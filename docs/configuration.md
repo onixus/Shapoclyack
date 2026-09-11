@@ -779,6 +779,7 @@ Job leases and the reaper (see [architecture.md](architecture.md#leases-and-orph
 |---|---|---|
 | `OCTO_JOB_LEASE_SECONDS` | `300` | How long a claimed/running job survives without its executor renewing. Keep it well above the agent heartbeat interval — too low and live scans are requeued under a working agent |
 | `OCTO_JOB_MAX_ATTEMPTS` | `3` | Hand-outs a job gets before an expired lease fails it instead of requeueing it |
+| `OCTO_JOB_CANCEL_GRACE_SECONDS` | `300` | How long a scan an operator stopped may sit in `cancelling` before the reaper finishes it as `cancelled` without the agent's confirmation ([#360](https://github.com/onixus/Shapoclyack/issues/360)). A cooperating agent answers on its next heartbeat, so this is the bound on an agent too old to understand the request, or one that died with the signal in flight. **Floored at `OCTO_AGENT_STALE_SECONDS` + `OCTO_JOB_REAPER_INTERVAL_SECONDS` (180s by default), not at a constant**: the stop only reaches the agent on a heartbeat and the reaper only looks once a tick, so a shorter value cannot be answered at all — every cancellation would be recorded as unconfirmed, alerting on each click, and the agent's honest confirmation would arrive at a job already finished |
 | `OCTO_JOB_REAPER_ENABLED` | `true` | Run the expiry sweep in this replica. Safe in all replicas; disabling it everywhere means abandoned jobs stay in flight forever |
 | `OCTO_JOB_REAPER_INTERVAL_SECONDS` | `60` | Sweep interval |
 

@@ -19,23 +19,39 @@ Two states are new here:
     A terminal state the API never had. An operator could only wait for a
     queued scan to be picked up.
 
+``cancelling``
+    An operator has asked for a *running* scan to stop and the API is waiting
+    for the agent to confirm it did (#360). Not terminal and not in flight: the
+    job is out with an executor that has been told to put it down, so it must
+    not be requeued by the reaper and must not count as work anybody is still
+    doing. The stop itself travels on the heartbeat response, which is the only
+    channel that reaches a working agent, and ``jobs.reap_stale_cancellations``
+    bounds the wait — an agent too old to understand the request, or one that
+    died with the signal in flight, leaves the job ``cancelled`` after
+    ``job_cancel_grace_seconds`` rather than parked here forever.
+
 ``claimed | running → queued`` is the P1.4 reaper putting a job back after its
 executor stopped renewing the lease. It is the one backwards move in the table,
 and it is bounded: each hand-out increments ``attempts``, and past the cap the
 reaper fails the job instead of requeueing it.
 
+``claimed | running → cancelling`` is #360 closing the gap this table used to
+document as unclosable: an agent now asks the API on every heartbeat whether
+the job it holds has been cancelled, so there *is* a channel, and the state in
+between says plainly that the API has asked and has not yet been told the scan
+stopped. ``cancelling → succeeded | failed`` is legal for the same reason the
+claim path is: the scan may have finished on its own microseconds before the
+request reached the agent, and a real result must not be thrown away to make
+the console's wording come true.
+
 Transitions deliberately *not* here:
 
-- ``running → cancelled`` **and** ``claimed → cancelled``. There is no channel
-  to stop work already handed to an executor: a local job is a ``subprocess``
-  owned by one replica's thread, an agent job runs in another process, and an
-  agent that has claimed a job starts scanning without ever asking the API
-  again. Cancelling either would report a stop that never happened while the
-  scan still hit the targets. Cancellation is therefore only offered while the
-  job is still ``queued`` — nothing has taken it, so refusing to hand it out is
-  a real stop. An abandoned ``claimed`` job is the reaper's business (P1.4),
-  and what the reaper does is fail it, which is a statement about the executor
-  rather than a claim to have stopped a scan.
+- ``running → cancelled`` **for a local job**. A local scan is a ``subprocess``
+  owned by one replica's thread; the row can be read by every replica but the
+  process can only be signalled by the one that spawned it, so an API that
+  answered "cancelled" would be reporting a stop that never happened while the
+  scan went on hitting the targets. ``jobs.cancel_job`` refuses it by
+  execution rather than by state, and says so.
 - Same-state moves (``succeeded → succeeded``). A second terminal write is a
   duplicate delivery, and rejecting it is what makes the retry safe until the
   idempotency keys in P1.5 land.
@@ -49,15 +65,21 @@ RUNNING = "running"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
 CANCELLED = "cancelled"
+#: Stop requested, not yet confirmed by the executor (#360).
+CANCELLING = "cancelling"
 
 #: Terminal states — nothing may follow them.
 TERMINAL = frozenset({SUCCEEDED, FAILED, CANCELLED})
 
 #: States that occupy the queue. Both gauges in docs/slo.md are counted over
 #: these: ``claimed`` is in flight, not finished, so it is reported as running.
-ACTIVE = frozenset({QUEUED, CLAIMED, RUNNING})
+ACTIVE = frozenset({QUEUED, CLAIMED, RUNNING, CANCELLING})
 
-#: In-flight on a worker, i.e. reported by ``octo_jobs_running``.
+#: In-flight on a worker, i.e. reported by ``octo_jobs_running``. Deliberately
+#: without ``cancelling``: the lease machinery is keyed on this set, and a job
+#: whose stop has been requested must neither have its lease renewed nor be
+#: handed to a second agent by the reaper. Its deadline is the cancellation
+#: grace period instead (``jobs.reap_stale_cancellations``).
 IN_FLIGHT = frozenset({CLAIMED, RUNNING})
 
 TRANSITIONS: dict[str, frozenset[str]] = {
@@ -68,8 +90,12 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     # heartbeat, so claimed → terminal has to be legal without passing through
     # running. Back to queued is the P1.4 reaper returning a job whose executor
     # stopped renewing its lease.
-    CLAIMED: frozenset({RUNNING, SUCCEEDED, FAILED, QUEUED}),
-    RUNNING: frozenset({SUCCEEDED, FAILED, QUEUED}),
+    CLAIMED: frozenset({RUNNING, SUCCEEDED, FAILED, QUEUED, CANCELLING}),
+    RUNNING: frozenset({SUCCEEDED, FAILED, QUEUED, CANCELLING}),
+    # The agent confirms with a ``cancelled`` result upload; the two other
+    # moves are the scan having finished before the stop reached it, and the
+    # grace period running out is CANCELLED written by the reaper.
+    CANCELLING: frozenset({CANCELLED, SUCCEEDED, FAILED}),
     SUCCEEDED: frozenset(),
     FAILED: frozenset(),
     CANCELLED: frozenset(),

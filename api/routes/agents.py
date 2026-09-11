@@ -31,6 +31,7 @@ from api.schemas import (
     AgentFleetSummary,
     AgentGroupInfo,
     AgentHeartbeatRequest,
+    AgentHeartbeatResponse,
     AgentInfo,
     AgentRegisterRequest,
     AgentSSHHostKeyInfo,
@@ -131,12 +132,12 @@ def register_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
-@router.post("/agent/heartbeat", response_model=AgentInfo)
+@router.post("/agent/heartbeat", response_model=AgentHeartbeatResponse)
 def heartbeat(
     body: AgentHeartbeatRequest,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> AgentInfo:
+) -> AgentHeartbeatResponse:
     """Accepted even from a disabled or quarantined agent, on purpose (#308).
 
     The response carries ``lifecycle_status`` and ``lifecycle_message``, which
@@ -161,10 +162,13 @@ def heartbeat(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
     # The agent naming a job it holds is the only evidence the API gets that
     # the scan actually started, so it is what promotes claimed → running
-    # (ROADMAP P1.3). Any other state is left alone by mark_running.
-    if body.current_job_id:
-        jobs_service.mark_running(settings, body.current_job_id, agent_id=body.agent_id)
-    return info
+    # (ROADMAP P1.3). Any other state is left alone by mark_running, which also
+    # answers the one question that travels back down this channel: has an
+    # operator asked for this job to stop (#360)?
+    cancel_requested = bool(body.current_job_id) and jobs_service.mark_running(
+        settings, str(body.current_job_id), agent_id=body.agent_id
+    )
+    return AgentHeartbeatResponse(**info.model_dump(), cancel_requested=cancel_requested)
 
 
 @router.post(
@@ -229,6 +233,11 @@ async def upload_results(
     # Fencing token from the claim response (ROADMAP P1.4/P1.5). Optional, so
     # pre-P1.5 agents keep working — unfenced, as they were.
     attempt: Annotated[int | None, Form()] = None,
+    # The agent confirming it stopped this scan because the heartbeat asked it
+    # to (#360). Honoured only for a job the API actually put in `cancelling`,
+    # so this field cannot be used to retire a job as cancelled that nobody
+    # asked to stop; see jobs.complete_job.
+    cancelled: Annotated[bool, Form()] = False,
 ) -> JobInfo:
     _bind_identity(principal, agent_id)
     agent = agents_service.get_agent(agent_id)
@@ -254,6 +263,7 @@ async def upload_results(
             tenant_id=principal.tenant_id,
             idempotency_key=(idempotency_key or "").strip()[:200] or None,
             attempt=attempt,
+            cancelled=cancelled,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

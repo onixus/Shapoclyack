@@ -399,8 +399,17 @@ export type PromoteDomainResponse = {
 
 export type JobInfo = {
   job_id: string;
-  /** `claimed` = an agent holds the job but has not reported starting it. */
-  status: "queued" | "claimed" | "running" | "succeeded" | "failed" | "cancelled";
+  /** `claimed` = an agent holds the job but has not reported starting it;
+   * `cancelling` = the API has asked the agent running it to stop and has not
+   * been told it did yet (#360). */
+  status:
+    | "queued"
+    | "claimed"
+    | "running"
+    | "cancelling"
+    | "succeeded"
+    | "failed"
+    | "cancelled";
   run_id: string | null;
   mode: string;
   started_at: string | null;
@@ -2082,6 +2091,16 @@ export type VulnLifecycleState =
 
 export type SlaState = "on_track" | "due_soon" | "breached" | "accepted" | "none";
 
+/** Where a risk acceptance is in its own little workflow (#348). Separate from
+ * `sla_state`: only `exception_approved` suspends the clock, and a finding
+ * whose request is pending is still counted against its deadline. */
+export type VulnExceptionState =
+  | "none"
+  | "exception_requested"
+  | "exception_approved"
+  | "exception_rejected"
+  | "exception_expired";
+
 /** Which observer found it. A software finding comes from the endpoint
  * inventory: it has an installed package where a scan finding has a port, and
  * a network re-scan cannot verify it. */
@@ -2117,9 +2136,29 @@ export type TrackedVulnerability = {
   sla_days: number | null;
   sla_source: string | null;
   sla_state: SlaState;
+  /** The acceptance in force: its expiry, who approved it, when, and on whose
+   * request. Null while a *first* request waits for its second signature
+   * (#348) — but a request to extend an acceptance leaves all of these alone,
+   * so `exception_state === "exception_requested"` with an `exception_until`
+   * means "in force, and more time is being asked for". */
   exception_until: string | null;
   exception_reason: string | null;
   exception_by: string | null;
+  exception_state: VulnExceptionState;
+  exception_requested_by: string | null;
+  exception_requested_at: string | null;
+  exception_requested_until: string | null;
+  exception_decided_by: string | null;
+  exception_decided_at: string | null;
+  exception_decision_note: string | null;
+  /** The justification of the request that is waiting, which is not the one
+   * that was approved until somebody approves it. */
+  exception_requested_reason: string | null;
+  exception_approved_at: string | null;
+  exception_approved_requested_by: string | null;
+  /** When the sweep recorded that the window ran out. The lapse itself is
+   * visible without it: `exception_until` in the past says so. */
+  exception_expired_at: string | null;
   first_seen_at: string | null;
   last_seen_at: string | null;
   sla_started_at: string | null;
@@ -2450,6 +2489,24 @@ export async function setVulnerabilityException(vulnId: string, body: Vulnerabil
     const { data } = await api.post<TrackedVulnerability>(
       `/vulnerabilities/${encodeURIComponent(vulnId)}/exception`,
       body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Answer a pending request. Needs `vulnerability.exception.approve` in the
+ * tenant, and the API refuses it to whoever filed the request (#348). */
+export async function decideVulnerabilityException(
+  vulnId: string,
+  decision: "approve" | "reject",
+  note?: string,
+) {
+  try {
+    const { data } = await api.post<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/exception/${decision}`,
+      { note: note?.trim() || null },
     );
     return data;
   } catch (error) {

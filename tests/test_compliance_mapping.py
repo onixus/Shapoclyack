@@ -17,6 +17,7 @@ from api.services.compliance import frameworks as catalog
 from api.services.compliance import service as compliance
 from api.services.compliance import signals as sig
 from tests.conftest import (
+    accept_risk,
     auth_headers,
     configured_client,
     make_settings,
@@ -180,13 +181,13 @@ def test_closed_findings_stop_failing_and_accepted_risk_is_separated(tmp_path):
     rows, _total = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)
     telnet = next(row for row in rows if row["script_id"] == "telnet-encryption")
 
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id=tenant_id,
         vuln_id=telnet["vuln_id"],
         until=datetime.now(UTC) + timedelta(days=30),
         reason="compensating control",
-        actor="admin",
+        requester="admin",
     )
     posture = compliance.assess(settings, framework_id="iso-27001-2022", tenant_id=tenant_id)
     by_id = {entry["control_id"]: entry for entry in posture["controls"]}

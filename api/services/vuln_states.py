@@ -55,6 +55,11 @@ nothing else, and it has to expire back into whatever state the work was
 actually in. Modelling it as a seventh state would mean inventing a rule for
 where a finding lands when the acceptance runs out, and losing the answer the
 row already had. See ``api/services/vulnerabilities.py``.
+
+It does have a lifecycle of its own, though — requested, approved or rejected
+by somebody else, expiring (#348) — and that one *is* a table here, at the
+bottom of this module: see :data:`EXCEPTION_TRANSITIONS`. Two machines, one
+finding, and the second one never moves the first.
 """
 
 from __future__ import annotations
@@ -112,4 +117,83 @@ def check_transition(vuln_id: str, current: str, new: str) -> None:
         raise InvalidVulnTransition(
             f"Vulnerability {vuln_id} cannot move from {current} to {new}"
             + (" (already in that state)" if current == new else "")
+        )
+
+
+# ---------------------------------------------------------------------------
+# Accepted risk, as a machine of its own (#348)
+# ---------------------------------------------------------------------------
+# Risk acceptance is still not a seventh lifecycle state — the reasoning in the
+# module docstring holds, and an accepted finding is still PLANNED or FIXING
+# underneath. What #348 adds is that the acceptance itself stopped being a pair
+# of columns whoever clicked wrote: it is *requested* by one person and
+# approved or rejected by a second one, it expires, and each of those moves has
+# to be refusable. That is a state machine, so it is declared as one — here,
+# next to the lifecycle it hangs off, rather than as a flag every caller
+# interprets for itself.
+
+#: No acceptance activity. The column is NOT NULL so every query can compare
+#: it; this is what a pre-#348 row with no ``exception_until`` migrated to.
+EXCEPTION_NONE = "none"
+#: Somebody asked for the risk to be accepted. **The SLA clock keeps running**
+#: while it waits — see :func:`api.services.vulnerabilities.request_exception`.
+EXCEPTION_REQUESTED = "exception_requested"
+#: A second person approved it. This, and only this, suspends the clock.
+EXCEPTION_APPROVED = "exception_approved"
+EXCEPTION_REJECTED = "exception_rejected"
+#: The approved window ran out and the sweep recorded it. Deliberately distinct
+#: from ``none``: "this acceptance lapsed" is one of the two rows the risk
+#: register is read for, and resetting it to ``none`` would erase it.
+EXCEPTION_EXPIRED = "exception_expired"
+
+EXCEPTION_STATES = (
+    EXCEPTION_NONE,
+    EXCEPTION_REQUESTED,
+    EXCEPTION_APPROVED,
+    EXCEPTION_REJECTED,
+    EXCEPTION_EXPIRED,
+)
+
+EXCEPTION_TRANSITIONS: dict[str, frozenset[str]] = {
+    # No acceptance, a refused one and a lapsed one are all "ask again"
+    # positions: circumstances change, and a rejection nobody could revisit
+    # would be re-litigated in a ticket instead of in the platform.
+    EXCEPTION_NONE: frozenset({EXCEPTION_REQUESTED}),
+    # Back to ``none`` is the requester withdrawing; the other two are the
+    # second person's decision.
+    EXCEPTION_REQUESTED: frozenset({EXCEPTION_APPROVED, EXCEPTION_REJECTED, EXCEPTION_NONE}),
+    # An approved acceptance lapses, is withdrawn, or is superseded by a
+    # request for a longer window — which is approved again rather than
+    # extending itself, because "until when" is the decision.
+    EXCEPTION_APPROVED: frozenset({EXCEPTION_EXPIRED, EXCEPTION_NONE, EXCEPTION_REQUESTED}),
+    EXCEPTION_REJECTED: frozenset({EXCEPTION_REQUESTED, EXCEPTION_NONE}),
+    EXCEPTION_EXPIRED: frozenset({EXCEPTION_REQUESTED, EXCEPTION_NONE}),
+}
+
+EXCEPTION_ALL = frozenset(EXCEPTION_TRANSITIONS)
+
+
+class InvalidExceptionTransition(InvalidVulnTransition):
+    """An illegal acceptance move — approving nothing, approving twice.
+
+    Subclasses :class:`InvalidVulnTransition` so the routes and
+    ``bulk_actions`` answer 409 for it exactly as they do for a lifecycle
+    refusal, which is what it is.
+    """
+
+
+def can_transition_exception(current: str | None, new: str) -> bool:
+    return new in EXCEPTION_TRANSITIONS.get(current or EXCEPTION_NONE, frozenset())
+
+
+def check_exception_transition(vuln_id: str, current: str | None, new: str) -> None:
+    """Raise unless ``current → new`` is a legal acceptance move."""
+    current = current or EXCEPTION_NONE
+    if new not in EXCEPTION_ALL:
+        raise InvalidExceptionTransition(
+            f"Vulnerability {vuln_id}: unknown exception state {new!r}"
+        )
+    if not can_transition_exception(current, new):
+        raise InvalidExceptionTransition(
+            f"Vulnerability {vuln_id}: accepted risk cannot move from {current} to {new}"
         )

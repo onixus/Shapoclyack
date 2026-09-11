@@ -569,6 +569,7 @@ class AgentClient:
         error: str | None,
         archive_path: Path | None,
         attempt: int | None = None,
+        cancelled: bool = False,
     ) -> dict[str, Any]:
         boundary = f"----octoagent{int(time.time() * 1000)}"
         parts: list[bytes] = []
@@ -596,6 +597,10 @@ class AgentClient:
         # from an attempt whose lease has already expired and been reissued.
         if attempt is not None:
             add_field("attempt", str(attempt))
+        # Only when it is true: an older API ignores a form field it does not
+        # know, but sending it on every upload would be noise (#360).
+        if cancelled:
+            add_field("cancelled", "true")
         if run_id:
             add_field("run_id", run_id)
         if error:
@@ -703,6 +708,38 @@ def _detect_current_stage(output_dir: Path | None, run_id: str | None) -> str | 
     return None
 
 
+#: How often the scan wait wakes up to look at ``cancel_event``. Short enough
+#: that a stop requested on one heartbeat is acted on within a second of the
+#: response arriving, cheap enough to do for two hours: it is one ``poll()`` on
+#: a pipe, not a syscall storm.
+_CANCEL_POLL_SECONDS = 1.0
+
+
+def _terminate_process_group(proc: "subprocess.Popen[str]", *, use_session: bool) -> None:
+    """Put down the scanner and everything it started.
+
+    The process group rather than the process: a scan is ``scanner.main``
+    shelling out to nmap, httpx and nuclei, and killing only the parent would
+    leave the tool that is actually touching the target running with no one to
+    report it. SIGTERM first so the pipeline can close its files, SIGKILL five
+    seconds later for whatever ignored it.
+    """
+    if not use_session:
+        proc.kill()
+        proc.wait()
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=5.0)
+    except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5.0)
+
+
 def _run_scan(
     *,
     config: Path,
@@ -710,6 +747,7 @@ def _run_scan(
     workdir: Path,
     output_dir: Path,
     timeout: float | None = 7200.0,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, str | None, Path | None]:
     target_args = _write_inputs(workdir, dict(job.get("inputs") or {}))
     run_id = str(job["run_id"])
@@ -748,23 +786,33 @@ def _run_scan(
     except Exception as exc:
         return 1, f"failed to spawn scan process: {exc}", None
 
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        LOG.warning("Scan run %s timed out after %ss; terminating process group", run_id, timeout)
-        if use_session:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                proc.wait(timeout=5.0)
-            except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    pass
-        else:
-            proc.kill()
-        proc.wait()
-        return 124, f"scan timed out after {timeout}s", None
+    # Waited on in short slices rather than one long ``communicate(timeout=…)``
+    # so the cancellation the heartbeat thread may set is noticed while the
+    # scan runs, not two hours later (#360). Retrying ``communicate`` after a
+    # TimeoutExpired is the documented way to keep waiting on the same pipes.
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        try:
+            stdout, stderr = proc.communicate(timeout=_CANCEL_POLL_SECONDS)
+            break
+        except subprocess.TimeoutExpired:
+            if cancel_event is not None and cancel_event.is_set():
+                LOG.warning("Scan run %s cancelled by the API; terminating process group", run_id)
+                _terminate_process_group(proc, use_session=use_session)
+                # Whatever the pipeline had written before the signal is still
+                # this scan's output, and the operator who stopped it asked for
+                # a stop, not for the partial findings to be thrown away. The
+                # archive is best-effort: a run killed early may have no
+                # directory at all.
+                return 143, "cancelled on the operator's request", _archive_run(
+                    output_dir, workdir, run_id
+                )
+            if deadline is not None and time.monotonic() >= deadline:
+                LOG.warning(
+                    "Scan run %s timed out after %ss; terminating process group", run_id, timeout
+                )
+                _terminate_process_group(proc, use_session=use_session)
+                return 124, f"scan timed out after {timeout}s", None
 
     if proc.returncode != 0:
         err = (stderr or stdout or f"exit {proc.returncode}")[:2000]
@@ -779,6 +827,26 @@ def _run_scan(
     return 0, None, archive_path
 
 
+def _archive_run(output_dir: Path, workdir: Path, run_id: str) -> Path | None:
+    """Tar whatever the run wrote, or ``None`` if it wrote nothing usable.
+
+    Only the cancelled path uses this: a finished run is archived above and its
+    missing directory is an error worth reporting, while a scan that was put
+    down half-way legitimately may not have created one yet. A failure to pack
+    is logged and swallowed — the cancellation must still be reported.
+    """
+    run_dir = output_dir / "runs" / run_id
+    if not run_dir.is_dir():
+        return None
+    archive_path = workdir / f"{run_id}.tar.gz"
+    try:
+        _tar_directory(run_dir, archive_path)
+    except OSError:
+        LOG.warning("Could not archive the partial results of run %s", run_id, exc_info=True)
+        return None
+    return archive_path
+
+
 @contextlib.contextmanager
 def _busy_heartbeats(
     client: AgentClient,
@@ -788,6 +856,7 @@ def _busy_heartbeats(
     run_id: str | None = None,
     output_dir: Path | None = None,
     interval: float,
+    cancel_event: threading.Event | None = None,
 ) -> Iterator[None]:
     """Keep reporting this job for as long as the scan runs with live telemetry.
 
@@ -797,6 +866,12 @@ def _busy_heartbeats(
     handed to a second agent while the first is still scanning the same
     targets. Failures are logged and retried on the next tick — a blip in the
     control plane must not abort a running scan.
+
+    It is also the channel the other way (#360): the response says whether an
+    operator has asked for this job to stop, and setting ``cancel_event`` is
+    what tells the scan wait to put the process group down. A failed heartbeat
+    therefore delays a cancellation by one interval rather than losing it — the
+    API keeps answering ``cancel_requested`` until the agent confirms.
     """
     stop = threading.Event()
     t0 = time.perf_counter()
@@ -807,9 +882,15 @@ def _busy_heartbeats(
                 elapsed_sec = int(time.perf_counter() - t0)
                 stage = _detect_current_stage(output_dir, run_id)
                 detail = f"stage={stage or 'running'} elapsed={elapsed_sec}s"
-                client.heartbeat(
+                beat = client.heartbeat(
                     agent_id, status="busy", current_job_id=job_id, detail=detail
                 )
+                if cancel_event is not None and (beat or {}).get("cancel_requested"):
+                    LOG.warning("API requested cancellation of job %s", job_id)
+                    cancel_event.set()
+                    # Nothing left to report: the scan wait acts on the event
+                    # and the result upload is the next thing the API hears.
+                    return
             except Exception:  # noqa: BLE001
                 LOG.warning("Heartbeat failed for job %s", job_id, exc_info=True)
 
@@ -833,29 +914,42 @@ def _execute_job(
     scan_timeout: float | None = 7200.0,
 ) -> None:
     LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
-    client.heartbeat(
+    cancel_event = threading.Event()
+    beat = client.heartbeat(
         agent_id,
         status="busy",
         current_job_id=job["job_id"],
         detail=f"stage=starting run_id={job['run_id']}",
     )
+    # A stop requested between the claim and this line is already waiting in
+    # the first response, and starting the scan only to kill it a minute later
+    # would put the targets through a sweep nobody wants (#360).
+    if (beat or {}).get("cancel_requested"):
+        LOG.warning("Job %s was cancelled before the scan started", job["job_id"])
+        cancel_event.set()
     with tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp:
         workdir = Path(tmp)
-        with _busy_heartbeats(
-            client,
-            agent_id=agent_id,
-            job_id=job["job_id"],
-            run_id=str(job["run_id"]),
-            output_dir=output_dir,
-            interval=heartbeat_interval,
-        ):
-            exit_code, error, archive = _run_scan(
-                config=config,
-                job=job,
-                workdir=workdir,
+        if cancel_event.is_set():
+            exit_code, error, archive = 143, "cancelled before the scan started", None
+        else:
+            with _busy_heartbeats(
+                client,
+                agent_id=agent_id,
+                job_id=job["job_id"],
+                run_id=str(job["run_id"]),
                 output_dir=output_dir,
-                timeout=scan_timeout,
-            )
+                interval=heartbeat_interval,
+                cancel_event=cancel_event,
+            ):
+                exit_code, error, archive = _run_scan(
+                    config=config,
+                    job=job,
+                    workdir=workdir,
+                    output_dir=output_dir,
+                    timeout=scan_timeout,
+                    cancel_event=cancel_event,
+                )
+        cancelled = cancel_event.is_set() and exit_code != 0
         client.upload_results(
             job["job_id"],
             agent_id=agent_id,
@@ -864,8 +958,15 @@ def _execute_job(
             run_id=str(job["run_id"]),
             error=error,
             archive_path=archive,
+            # ...and a clean exit is reported as one even here: the scan can
+            # finish by itself in the second between the stop being set and the
+            # wait noticing it, and calling a completed run cancelled would
+            # throw away a whole sweep's findings to match the request (#360).
+            cancelled=cancelled,
         )
-    LOG.info("Job %s finished exit=%s", job["job_id"], exit_code)
+    LOG.info(
+        "Job %s finished exit=%s%s", job["job_id"], exit_code, " (cancelled)" if cancelled else ""
+    )
 
 
 class AgentNatsSession:

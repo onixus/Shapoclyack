@@ -2,10 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isCancellable, JobsTable } from "@/components/scans/jobs-table";
+import { isCancellable, isStopping, JobsTable } from "@/components/scans/jobs-table";
 import type { PaginationState } from "@/hooks/use-pagination";
 import * as apiModule from "@/lib/api";
-import type { JobInfo } from "@/lib/api";
+import type { JobInfo, Me } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -62,23 +63,87 @@ function renderTable(items: JobInfo[], props: Partial<Parameters<typeof JobsTabl
   );
 }
 
+/** A principal whose authority is a tenant membership, not the global role. */
+function member(role: string, permissions: string[]): Me {
+  return {
+    username: "on-call",
+    role: "viewer",
+    tenants: ["default"],
+    default_tenant: "default",
+    is_platform_admin: false,
+    tenant_role: role,
+    permissions,
+    scoped_tenant: "default",
+  };
+}
+
 describe("JobsTable", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    useAuthStore.setState({ user: null, canOperate: false });
   });
 
-  it("only offers cancel on a job that has not started", () => {
+  it("offers cancel on a running scan too, but not once it is stopping", () => {
+    // #360: a running scan is stoppable through the agent's heartbeat. A job
+    // already `cancelling` is not — the stop has been asked for, and a second
+    // button would suggest the first click did not land.
     expect(isCancellable({ status: "queued" })).toBe(true);
     expect(isCancellable({ status: "claimed" })).toBe(true);
-    expect(isCancellable({ status: "running" })).toBe(false);
+    expect(isCancellable({ status: "running" })).toBe(true);
+    expect(isCancellable({ status: "cancelling" })).toBe(false);
     expect(isCancellable({ status: "succeeded" })).toBe(false);
-    renderTable([job(), job({ job_id: "000000000001", status: "queued", run_id: null })]);
-    expect(screen.getAllByRole("button", { name: "Cancel job" })).toHaveLength(1);
+    expect(isStopping({ status: "cancelling" })).toBe(true);
+    renderTable([
+      job(),
+      job({ job_id: "000000000001", status: "queued", run_id: null }),
+      job({ job_id: "000000000002", status: "running" }),
+      job({ job_id: "000000000003", status: "cancelling" }),
+    ]);
+    expect(screen.getAllByRole("button", { name: "Cancel job" })).toHaveLength(2);
+    expect(
+      screen.getByLabelText("Stopping: waiting for the agent to confirm"),
+    ).toBeInTheDocument();
+  });
+
+  it("warns that a running scan is only asked to stop", async () => {
+    // The queued wording ("never handed out") would promise a stop that has
+    // not happened yet on a scan an agent is in the middle of.
+    renderTable([job({ status: "running" })]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Cancel job" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("on its next heartbeat");
+    expect(dialog).toHaveTextContent("is kept");
   });
 
   it("hides cancel from a viewer even on a queued job", () => {
+    useAuthStore.setState({ user: member("viewer", []), canOperate: false });
     renderTable([job({ status: "queued" })], { canOperate: false });
     expect(screen.queryByRole("button", { name: "Cancel job" })).not.toBeInTheDocument();
+  });
+
+  it("shows cancel to a scan-operator, who is a viewer in the global role", () => {
+    // docs/ui.md promises the button on `scan.cancel`. Requiring the operator
+    // rank on top of it hid the button from the one role #318 added for
+    // exactly this — a `scan-operator` whose global role is viewer — while the
+    // API accepted their stop, and would hide it from an on-call granted the
+    // permission on its own.
+    useAuthStore.setState({
+      user: member("scan-operator", ["scan.cancel"]),
+      canOperate: false,
+    });
+    renderTable([job({ status: "running" })], { canOperate: false });
+    expect(screen.getByRole("button", { name: "Cancel job" })).toBeInTheDocument();
+  });
+
+  it("keeps the button for an operator on an API that sends no permissions", () => {
+    // Pre-#318 installations answer /auth/me without a permission list; the
+    // rank is then all there is, and the action must not vanish on upgrade.
+    const legacy = member("operator", []);
+    delete legacy.permissions;
+    useAuthStore.setState({ user: legacy, canOperate: true });
+    renderTable([job({ status: "running" })], { canOperate: true });
+    expect(screen.getByRole("button", { name: "Cancel job" })).toBeInTheDocument();
   });
 
   it("asks before cancelling and then calls the API", async () => {

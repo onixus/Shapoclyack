@@ -100,6 +100,17 @@ ACTION_REPORT_DOWNLOAD = "report.download"
 # are not audited here at all — they write ``vulnerability_events``, which is
 # the remediation trail and outlives this one.
 ACTION_VULN_BULK = "vulnerability.bulk"
+# Accepted risk is the exception to that rule (#348). Every other single-finding
+# verb moves work along and lives in ``vulnerability_events``; these four decide
+# that the organisation will live with an exposure past its own deadline, and
+# who signed for it. That belongs in the trail an auditor reads and the SIEM
+# forwards, in addition to the finding's own history — including the expiry,
+# which nobody performed and which is exactly why it has to be recorded.
+ACTION_VULN_EXCEPTION_REQUEST = "vulnerability.exception_request"
+ACTION_VULN_EXCEPTION_APPROVE = "vulnerability.exception_approve"
+ACTION_VULN_EXCEPTION_REJECT = "vulnerability.exception_reject"
+ACTION_VULN_EXCEPTION_WITHDRAW = "vulnerability.exception_withdraw"
+ACTION_VULN_EXCEPTION_EXPIRE = "vulnerability.exception_expire"
 ACTION_ASSET_BULK = "asset.bulk"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
 # Where a tenant's finished runs are announced (#351). Audited although the
@@ -120,6 +131,12 @@ ACTION_MAINTENANCE_WINDOW_UPDATE = "maintenance_window.update"
 ACTION_MAINTENANCE_WINDOW_DELETE = "maintenance_window.delete"
 ACTION_TENANT_CHANGE_FREEZE = "tenant.change_freeze"
 ACTION_SCAN_MAINTENANCE_BLOCK = "scan.maintenance_block"
+# Stopping a scan (#360). One row for the operator's request — it is the same
+# decision whether the job was still queued or an agent had to be told to put
+# it down, and ``after.status`` says which it was — and nothing for the agent's
+# confirmation, which is a machine reporting that it obeyed rather than a
+# person deciding anything.
+ACTION_SCAN_CANCEL = "scan.cancel"
 
 #: The value stored in place of a secret. Not the empty string and not a
 #: dropped key: "this field was set, and its value is not in the audit trail"

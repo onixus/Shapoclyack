@@ -525,6 +525,17 @@ class Settings:
     # it and fails it instead. Counted per claim, so a target that reliably
     # kills its worker cannot cycle forever.
     job_max_attempts: int = 3
+    # How long a job may sit in `cancelling` before the reaper finishes it as
+    # `cancelled` anyway (#360). The stop reaches the agent on its next
+    # heartbeat and a cooperating agent answers within one of them, so this is
+    # not a normal wait — it is the bound on an agent too old to understand the
+    # request, or one that died between being told and confirming. Generous on
+    # purpose: the scan is being put down, and finishing the row early would
+    # claim a stop the API has not been told happened. Floored at
+    # ``agent_stale_seconds + job_reaper_interval_seconds`` by
+    # :func:`_cancel_grace_seconds`, which is the shortest wait an agent can
+    # physically answer inside.
+    job_cancel_grace_seconds: int = 300
     job_reaper_enabled: bool = True
     job_reaper_interval_seconds: int = 60
     # Login brute-force protection (#157). The counter is the auth_events table,
@@ -922,6 +933,25 @@ def _db_pool_bounds() -> tuple[int, int]:
     return pool_size, max_overflow
 
 
+def _cancel_grace_seconds(*, agent_stale_seconds: int, reaper_interval_seconds: int) -> int:
+    """``OCTO_JOB_CANCEL_GRACE_SECONDS``, floored by the channel it waits on (#360).
+
+    The stop travels on a heartbeat and the reaper only looks once a tick, so
+    the shortest grace an agent can physically answer inside is "long enough
+    for the API to have already called that agent offline, plus one sweep".
+    A flat floor of a few seconds protected nothing: an administrator who
+    shortens this to feel faster gets every cancellation written
+    ``unconfirmed`` — the ``did not confirm`` reason on every job, the
+    docs/slo.md alert on every click, and the agent's honest confirmation a
+    minute later meeting a finished row.
+
+    Derived from the two knobs rather than written as a constant, so an
+    installation that slows its heartbeat down moves the floor with it.
+    """
+    floor = agent_stale_seconds + reaper_interval_seconds
+    return max(floor, int(os.environ.get("OCTO_JOB_CANCEL_GRACE_SECONDS", "300")))
+
+
 def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     """Refuse to start when prod configuration is still the published default.
 
@@ -1114,6 +1144,16 @@ def load_settings() -> Settings:
 
     db_pool_size, db_max_overflow = _db_pool_bounds()
 
+    # Read here rather than inline below because the cancellation grace is
+    # floored against both of them (#360).
+    agent_stale_seconds = int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120"))
+    # Floored: the reaper's tick is a locking query over the jobs table, so
+    # a mistyped 0 or a negative value would turn Event.wait() into a busy
+    # loop hammering the database rather than "sweep more often".
+    job_reaper_interval_seconds = max(
+        5, int(os.environ.get("OCTO_JOB_REAPER_INTERVAL_SECONDS", "60"))
+    )
+
     mode = os.environ.get("OCTO_JOB_EXECUTION_MODE", "local").strip().lower()
     if mode not in {"local", "agent"}:
         mode = "local"
@@ -1154,7 +1194,7 @@ def load_settings() -> Settings:
         in {"1", "true", "yes"},
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
-        agent_stale_seconds=int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120")),
+        agent_stale_seconds=agent_stale_seconds,
         agent_min_version=os.environ.get("OCTO_AGENT_MIN_VERSION", "").strip(),
         agent_deploy_ssh_ports=os.environ.get("OCTO_AGENT_DEPLOY_SSH_PORTS", "22,2222").strip(),
         agent_deploy_enforce_scan_scope=os.environ.get(
@@ -1402,14 +1442,13 @@ def load_settings() -> Settings:
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),
+        job_cancel_grace_seconds=_cancel_grace_seconds(
+            agent_stale_seconds=agent_stale_seconds,
+            reaper_interval_seconds=job_reaper_interval_seconds,
+        ),
         job_reaper_enabled=os.environ.get("OCTO_JOB_REAPER_ENABLED", "true").lower()
         in {"1", "true", "yes"},
-        # Floored: the reaper's tick is a locking query over the jobs table, so
-        # a mistyped 0 or a negative value would turn Event.wait() into a busy
-        # loop hammering the database rather than "sweep more often".
-        job_reaper_interval_seconds=max(
-            5, int(os.environ.get("OCTO_JOB_REAPER_INTERVAL_SECONDS", "60"))
-        ),
+        job_reaper_interval_seconds=job_reaper_interval_seconds,
         login_rate_limit_enabled=os.environ.get("OCTO_LOGIN_RATE_LIMIT_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
         login_rate_limit_max_failures=max(

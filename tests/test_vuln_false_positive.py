@@ -24,7 +24,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns
-from tests.conftest import auth_headers, configured_client, requires_postgres
+from tests.conftest import accept_risk, auth_headers, configured_client, requires_postgres
 from tests.test_vuln_lifecycle import _FINDINGS, _HOSTS, _seed, _settings, _write_run
 
 pytestmark = requires_postgres
@@ -127,13 +127,13 @@ def test_marking_clears_an_accepted_exception(tmp_path):
     settings, tenant_id = _seed(tmp_path)
     vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
     vuln_id = _ids(settings, tenant_id)["CVE-2024-0001"]
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id=tenant_id,
         vuln_id=vuln_id,
         until=datetime.now(UTC) + timedelta(days=10),
         reason="waiting on the vendor",
-        actor="admin",
+        requester="admin",
     )
 
     row = vulns.mark_false_positive(

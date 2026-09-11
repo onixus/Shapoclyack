@@ -46,6 +46,7 @@ from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
 from api.services import asset_events
 from api.services import assets as assets_service
+from api.services import audit as audit_service
 from api.services import config_override as config_override_service
 from api.services import job_states
 from api.services import maintenance
@@ -385,14 +386,17 @@ def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, An
         by_status[str(status)] = by_status.get(str(status), 0) + count
         bucket = by_surface[surface if surface in by_surface else "unknown"]
         bucket["total"] += count
-        if status == job_states.RUNNING:
+        if status in (job_states.RUNNING, job_states.CANCELLING):
             bucket["running"] += count
         elif status in (job_states.QUEUED, job_states.CLAIMED):
             bucket["queued"] += count
 
     return {
         "by_status": by_status,
-        "running": by_status.get(job_states.RUNNING, 0),
+        # A job being stopped is still on a worker, so it is counted with the
+        # running ones rather than disappearing from both tiles (#360).
+        "running": by_status.get(job_states.RUNNING, 0)
+        + by_status.get(job_states.CANCELLING, 0),
         "queued": by_status.get(job_states.QUEUED, 0) + by_status.get(job_states.CLAIMED, 0),
         "by_surface": by_surface,
         "generated_at": _iso(_now()),
@@ -547,7 +551,9 @@ def _refresh_job_gauges(settings: Settings) -> None:
 
     ``claimed`` (P1.3) counts as running: the job is out with a worker and no
     longer waiting, so folding it into the queue depth would read as a backlog
-    that nothing is working on.
+    that nothing is working on. ``cancelling`` (#360) counts as running for the
+    same reason — the agent is still busy with it until it confirms — even
+    though it is deliberately outside ``IN_FLIGHT``, which is the lease set.
     """
     with get_session(settings.postgres_url) as session:
         counts = dict(
@@ -558,7 +564,9 @@ def _refresh_job_gauges(settings: Settings) -> None:
             ).all()
         )
     metrics_service.JOBS_QUEUED.set(counts.get(job_states.QUEUED, 0))
-    metrics_service.JOBS_RUNNING.set(sum(counts.get(s, 0) for s in job_states.IN_FLIGHT))
+    metrics_service.JOBS_RUNNING.set(
+        sum(counts.get(s, 0) for s in (*job_states.IN_FLIGHT, job_states.CANCELLING))
+    )
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:
@@ -1881,31 +1889,44 @@ def claim_job(
     return response
 
 
-def mark_running(settings: Settings, job_id: str, *, agent_id: str) -> None:
-    """Record an agent's heartbeat for the job it is working on.
+def mark_running(settings: Settings, job_id: str, *, agent_id: str) -> bool:
+    """Record an agent's heartbeat, and answer whether the job was cancelled.
 
-    Two things ride on this one signal: a claimed job is promoted to running,
-    and an in-flight job's lease is pushed forward (P1.4) — the heartbeat is
-    the only regular evidence the API gets that a remote worker is still alive.
+    Three things ride on this one signal: a claimed job is promoted to running,
+    an in-flight job's lease is pushed forward (P1.4) — the heartbeat is the
+    only regular evidence the API gets that a remote worker is still alive —
+    and, since #360, the reply carries the one instruction that travels the
+    other way. The return value is ``True`` when an operator has asked for this
+    job to stop and the agent holding it must put the scan down; the route puts
+    it on the heartbeat response.
 
     Any other state is left alone: repeated heartbeats during a scan would
     otherwise attempt running → running, and a heartbeat arriving after the
     results upload must not resurrect a finished job. A heartbeat from an agent
-    that does not hold the job is ignored outright.
+    that does not hold the job is ignored outright — including the cancellation
+    answer, which is an instruction about somebody else's work.
     """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id)
-        if row is None or row.status not in job_states.IN_FLIGHT:
-            return
-        if row.assigned_agent_id != agent_id:
-            return
+        if row is None or row.assigned_agent_id != agent_id:
+            return False
+        if row.status == job_states.CANCELLING:
+            # Repeated on every heartbeat until the agent confirms with a
+            # cancelled upload: the answer to one heartbeat can be lost, and
+            # the instruction has to survive that. No lease renewal — a
+            # cancelling job is not in flight, and its clock is the grace
+            # period in ``reap_stale_cancellations`` instead.
+            return True
+        if row.status not in job_states.IN_FLIGHT:
+            return False
         row.claimed_until = _lease_deadline(settings)
         if row.status != job_states.CLAIMED:
-            return
+            return False
         row.status = job_states.RUNNING
         if row.started_at is None:
             row.started_at = _now()
     _refresh_job_gauges(settings)
+    return False
 
 
 def cancel_job(
@@ -1914,14 +1935,31 @@ def cancel_job(
     *,
     username: str,
     tenant_id: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> JobInfo:
-    """Cancel a job nothing has picked up yet.
+    """Stop a scan: refuse to hand it out, or ask the agent to put it down.
 
-    Legal only from ``queued``. Once an agent has claimed a job it starts
-    scanning without asking the API again, so cancelling a ``claimed`` (or
-    ``running``) job would show a stop that never happened while the scan went
-    on hitting the targets — see ``job_states``. An abandoned claimed job is
-    handled by the lease reaper instead.
+    Two outcomes, and which one an operator gets is a property of the job:
+
+    - ``queued`` -> ``cancelled`` at once. Nothing has taken the job, so
+      refusing to hand it out *is* the stop, and the answer is final.
+    - ``claimed``/``running`` on an **agent** -> ``cancelling`` (#360). The
+      instruction rides the next heartbeat, the agent signals its scanner's
+      process group and uploads whatever the run produced as a cancelled
+      result, and only that upload — or the grace period expiring in
+      ``reap_stale_cancellations`` — writes the terminal state. The API says
+      "stopping", not "stopped", because at this moment it has not been told
+      the scan stopped.
+    - ``cancelling`` -> itself, unchanged. The stop has been asked for and the
+      clock on it is running; re-asking is not a second decision. A stale
+      console, a second operator or a retried POST must not be able to
+      terminalize a scan nobody has confirmed stopped.
+
+    A ``running`` **local** job is still refused, and by execution rather than
+    by state: its scanner is a ``subprocess`` in one replica's thread, which
+    the replica handling this request may not be, so there is no signal to send
+    and reporting a stop would be a lie. The message says so rather than
+    reading as a generic lifecycle refusal.
 
     The reason is stored in ``error`` rather than a new column: it is the field
     the UI and API already surface for "why did this job end this way".
@@ -1937,15 +1975,107 @@ def cancel_job(
         job_tenant = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
         if tenant_id is not None and job_tenant != tenant_id:
             raise PermissionError("Cross-tenant job access denied")
-        job_states.check_transition(job_id, row.status, job_states.CANCELLED)
-        row.status = job_states.CANCELLED
-        row.finished_at = _now()
-        row.claimed_until = None
-        row.error = f"Cancelled by {username}"[:2000]
+        before = row.status
+        if before == job_states.CANCELLING:
+            # Idempotent, and deliberately *before* the transition table gets a
+            # say: `cancelling` is not in IN_FLIGHT, so the target below would
+            # be computed as `cancelled` — a legal move that would have the
+            # API report a stop nobody confirmed, clear `cancel_requested`
+            # before the agent has read it, and collapse the grace period to
+            # nothing. Two consoles four seconds apart, or one proxy retry,
+            # are enough to reach here; the answer is the job as it stands.
+            _log.info("Job %s is already stopping; %s's request is a no-op", job_id, username)
+            result = _to_info(row)
+            return result
+        if before in job_states.IN_FLIGHT and row.execution != "agent":
+            raise job_states.InvalidJobTransition(
+                f"Job {job_id} is {before} in the API process itself; a local scan "
+                "cannot be stopped once it has started, only an agent job can"
+            )
+        target = (
+            job_states.CANCELLING if before in job_states.IN_FLIGHT else job_states.CANCELLED
+        )
+        job_states.check_transition(job_id, before, target)
+        row.status = target
+        if target == job_states.CANCELLING:
+            row.cancel_requested_at = _now()
+            # Cleared although the job is not terminal: the lease is what the
+            # reaper requeues on, and a job on its way down must not be handed
+            # to a second agent while the first is still stopping.
+            row.claimed_until = None
+            row.error = f"Cancellation requested by {username}"[:2000]
+        else:
+            row.finished_at = _now()
+            row.claimed_until = None
+            row.error = f"Cancelled by {username}"[:2000]
+            metrics_service.JOB_CANCELLATIONS_TOTAL.labels(outcome="queued").inc()
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_SCAN_CANCEL,
+            resource_type="job",
+            resource_id=job_id,
+            tenant_id=job_tenant,
+            before={"status": before, "assigned_agent_id": row.assigned_agent_id},
+            after={"status": target, "requested_by": username},
+        )
     _refresh_job_gauges(settings)
     result = get_job(settings, job_id)
     assert result is not None
     return result
+
+
+def reap_stale_cancellations(settings: Settings) -> int:
+    """Finish jobs whose agent never confirmed the stop, and say how many (#360).
+
+    ``cancelling`` is the one non-terminal state nothing else will leave: the
+    lease reaper deliberately ignores it (it is not in ``IN_FLIGHT``, or the
+    job would be handed to a second agent while the first is putting it down),
+    and the confirmation that would terminalize it is exactly what an agent too
+    old to understand the request never sends. So this is the other end of the
+    clock — past ``job_cancel_grace_seconds`` the job is written ``cancelled``,
+    which is the honest outcome: the operator's decision stands, and the row
+    says the agent never answered rather than pretending it did.
+
+    A late upload from such an agent then meets a terminal job and is refused
+    by ``complete_job``, the same way a result for any cancelled job is.
+
+    Safe in every replica, like the lease sweep beside it: rows are taken with
+    ``FOR UPDATE SKIP LOCKED``.
+    """
+    now = _now()
+    deadline = now - timedelta(seconds=max(settings.job_cancel_grace_seconds, 1))
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(models.Job)
+            .where(
+                models.Job.status == job_states.CANCELLING,
+                models.Job.cancel_requested_at.is_not(None),
+                models.Job.cancel_requested_at < deadline,
+            )
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+        for row in rows:
+            job_states.check_transition(row.job_id, row.status, job_states.CANCELLED)
+            row.status = job_states.CANCELLED
+            row.finished_at = now
+            row.claimed_until = None
+            row.error = (
+                f"{row.error or 'Cancellation requested'}; agent "
+                f"{row.assigned_agent_id or 'unknown'} did not confirm within "
+                f"{settings.job_cancel_grace_seconds}s"
+            )[:2000]
+            _log.warning(
+                "Cancelled job %s without confirmation: agent %s stayed silent for %ds",
+                row.job_id,
+                row.assigned_agent_id,
+                settings.job_cancel_grace_seconds,
+            )
+        count = len(rows)
+    if count:
+        metrics_service.JOB_CANCELLATIONS_TOTAL.labels(outcome="unconfirmed").inc(count)
+        _refresh_job_gauges(settings)
+    return count
 
 
 class ResultsConflict(ValueError):
@@ -1978,8 +2108,15 @@ def _classify_replay(
 
     Returns the stored outcome for a replay, raises ``ResultsConflict`` for an
     upload that contradicts it, and returns ``None`` when this is not a replay
-    question at all (a cancelled job, say) so the caller's normal transition
-    check produces the error.
+    question at all, so the caller's normal transition check produces the
+    error.
+
+    A ``cancelled`` job is the narrow case (#360). Since a confirmed
+    cancellation *is* an upload, its retry is a replay like any other — but
+    only an exact key proves that. Without one, this is a late result for a
+    stop the row never recorded a confirmation of (the reaper's row carries no
+    key), and that still meets the transition check rather than being answered
+    with an outcome it did not produce.
 
     With a key, the comparison is exact. Without one — older agents, and the
     legacy shared-token path — the fallback is the natural key: the same agent
@@ -1988,6 +2125,8 @@ def _classify_replay(
     because a different result carries a different exit code.
     """
     if row.status == job_states.CANCELLED:
+        if idempotency_key and row.results_idempotency_key == idempotency_key:
+            return _replayed(row)
         return None
     if idempotency_key:
         if row.results_idempotency_key == idempotency_key:
@@ -2000,6 +2139,21 @@ def _classify_replay(
     if row.exit_code == exit_code:
         return _replayed(row)
     return None
+
+
+def _merge_cancellation_reason(requested: str | None, reported: str | None) -> str | None:
+    """Keep "Cancellation requested by X" when the agent confirms the stop (#360).
+
+    ``requested`` is what ``cancel_job`` wrote and is ``None`` for every
+    outcome that is not a confirmed cancellation, which makes this the plain
+    truncation the other paths always did. For a cancellation it is the only
+    place the actor survives after the job is finished: without it the agent's
+    string — or, when it sends none, ``NULL`` — is all a drawer shows for a
+    scan somebody deliberately stopped, and "who killed my scan at 3am" is a
+    hop away in the audit trail instead of being on the job.
+    """
+    merged = "; ".join(part for part in (requested, reported) if part)
+    return merged[:2000] or None
 
 
 def _replayed(row: models.Job) -> JobInfo:
@@ -2020,6 +2174,7 @@ def complete_job(
     tenant_id: str | None = None,
     idempotency_key: str | None = None,
     attempt: int | None = None,
+    cancelled: bool = False,
 ) -> JobInfo:
     """Record an agent's result upload. Replays return the original outcome.
 
@@ -2035,6 +2190,16 @@ def complete_job(
     a straggler from an attempt that has already been replaced — and since a
     restarted worker keeps its ``agent_id``, that is the only way to tell the
     two apart. Omitted by pre-P1.5 agents, which are then unfenced.
+
+    ``cancelled`` is the agent confirming it put the scan down because the API
+    asked it to (#360), and it decides the outcome on its own: the scanner was
+    signalled, so it exits non-zero, and without this flag every stop would be
+    filed as a scan that failed. The archive is still ingested — whatever the
+    run had written before the signal is real data an operator asked to keep —
+    but, like a failed run, it does not feed the vulnerability tracker, the
+    asset event stream or the notification channels: a partial sweep read as a
+    complete one would report hosts and ports as *gone* that the scan simply
+    never reached.
     """
     replay_result: JobInfo | None = None
     with get_session(settings.postgres_url) as session:
@@ -2056,6 +2221,23 @@ def complete_job(
                 f"Job {job_id} is on attempt {row.attempts}; upload is from attempt {attempt}"
             )
         status = job_states.SUCCEEDED if exit_code == 0 else job_states.FAILED
+        if cancelled:
+            # Only from a job the API actually asked to stop. An agent that
+            # reported a cancellation nobody requested would otherwise be able
+            # to retire any job it holds as "cancelled" — and the honest
+            # reading of a scan that stopped for the agent's own reasons is a
+            # failure, which is what the exit code already says.
+            #
+            # A row already ``cancelled`` is included so that an upload this
+            # function is about to refuse is refused for what it reported: a
+            # retry whose key does not match is a second cancellation result,
+            # and telling its agent the job "cannot move from cancelled to
+            # failed" would name an outcome nobody claimed.
+            status = (
+                job_states.CANCELLED
+                if row.status in (job_states.CANCELLING, job_states.CANCELLED)
+                else status
+            )
         if row.status in job_states.TERMINAL:
             replay = _classify_replay(row, exit_code=exit_code, idempotency_key=idempotency_key)
             if replay is not None:
@@ -2082,6 +2264,11 @@ def complete_job(
         # and re-publish to NATS before being rejected.
         if replay_result is None:
             job_states.check_transition(job_id, row.status, status)
+        # Read under the lock, for the same reason the surface below is: the
+        # confirming upload is the only writer that would otherwise erase who
+        # asked for the stop, and `error` is where docs/api-and-rbac.md says
+        # that reason lives for the life of the job (#360).
+        requested_reason = row.error if status == job_states.CANCELLED else None
         resolved_run_id = _confirm_run_id(row.run_id, run_id)
         # Read here rather than re-fetched at the write below: the row is
         # already loaded and locked, and the surface was decided at start_scan.
@@ -2159,7 +2346,7 @@ def complete_job(
             finished_at=_now(),
             exit_code=exit_code,
             run_id=str(resolved_run_id) if resolved_run_id else None,
-            error=(error[:2000] if error else None),
+            error=_merge_cancellation_reason(requested_reason, error),
             # Recorded with the outcome, so a later upload can be told apart from
             # the one that produced it.
             results_idempotency_key=(idempotency_key or None),
@@ -2171,6 +2358,8 @@ def complete_job(
         if idempotency_key:
             _release_results_reservation(settings, job_id, idempotency_key)
         raise
+    if status == job_states.CANCELLED:
+        metrics_service.JOB_CANCELLATIONS_TOTAL.labels(outcome="confirmed").inc()
     agents_service.touch_job(agent_id, None, status="idle")
     # The job is terminal now: no further claim will serve these files (#258).
     # After the _update_job above, so a raise in ingestion leaves them for the

@@ -326,8 +326,12 @@ class StartScanRequest(BaseModel):
 class JobInfo(BaseModel):
     job_id: str
     # `claimed` (an agent holds the job but has not reported starting) and
-    # `cancelled` are ROADMAP P1.3 additions — see api/services/job_states.py.
-    status: Literal["queued", "claimed", "running", "succeeded", "failed", "cancelled"]
+    # `cancelled` are ROADMAP P1.3 additions; `cancelling` is #360 — the stop
+    # has been requested and the agent has not confirmed it yet. See
+    # api/services/job_states.py.
+    status: Literal[
+        "queued", "claimed", "running", "cancelling", "succeeded", "failed", "cancelled"
+    ]
     run_id: str | None = None
     mode: str
     command: list[str]
@@ -382,11 +386,12 @@ class JobSurfaceCounts(BaseModel):
 class JobSummary(BaseModel):
     """Queue depth for a scan console's header (`GET /api/jobs/summary`).
 
-    `by_status` carries all six lifecycle states, zero-filled, and `by_surface`
-    all four buckets including `unknown`, so a console renders a stable set of
-    tiles instead of one that appears as jobs happen to exist. `queued` is
-    queued plus claimed: a job an agent has taken but not started is still
-    waiting to be done.
+    `by_status` carries all seven lifecycle states, zero-filled, and
+    `by_surface` all four buckets including `unknown`, so a console renders a
+    stable set of tiles instead of one that appears as jobs happen to exist.
+    `queued` is queued plus claimed: a job an agent has taken but not started is
+    still waiting to be done. `running` is running plus cancelling: a scan
+    being stopped is still occupying its agent until the agent says otherwise.
     """
 
     by_status: dict[str, int] = Field(default_factory=dict)
@@ -487,6 +492,25 @@ class SetAgentGroupRequest(BaseModel):
     """
 
     group: str | None = Field(default=None, max_length=63)
+
+
+class AgentHeartbeatResponse(AgentInfo):
+    """What the API answers a heartbeat with — the agent, plus one instruction.
+
+    The heartbeat response is the only channel that reaches an agent while it
+    is scanning, so it is where a cancellation has to travel (#360): everything
+    else in the agent protocol is the agent asking for work or reporting on it.
+    A field rather than a status code, and repeated on every heartbeat until
+    the agent confirms, because one lost response must not lose the stop.
+
+    Extends :class:`AgentInfo` rather than wrapping it so an agent (or a test)
+    written against the previous response keeps reading the same document.
+    """
+
+    #: The job named in ``current_job_id`` has been cancelled: stop the scan
+    #: and upload whatever it produced with ``cancelled=true``. False for every
+    #: other case, including a heartbeat naming a job this agent does not hold.
+    cancel_requested: bool = False
 
 
 class UpdateAgentStatusRequest(BaseModel):
@@ -1739,9 +1763,30 @@ class VulnerabilityInfo(BaseModel):
     sla_days: int | None = None
     sla_source: str | None = None
     sla_state: str
+    # Accepted risk. ``exception_until``/``exception_by`` describe what is in
+    # force (the approved window, and who approved it); the workflow around it
+    # is ``exception_state`` and the request/decision pair below (#348). A
+    # pending request has ``exception_state == "exception_requested"`` and no
+    # ``exception_until`` at all — nothing is suspended until it is approved.
+    # A request for an *extension* is the case worth reading twice: the
+    # acceptance in force keeps its own fields (``exception_until``,
+    # ``exception_reason``, ``exception_by``, ``exception_approved_*``) while
+    # ``exception_state`` says ``exception_requested`` and the request fields
+    # say what is being asked for now.
     exception_until: str | None = None
     exception_reason: str | None = None
     exception_by: str | None = None
+    exception_state: str = "none"
+    exception_requested_by: str | None = None
+    exception_requested_at: str | None = None
+    exception_requested_until: str | None = None
+    exception_decided_by: str | None = None
+    exception_decided_at: str | None = None
+    exception_decision_note: str | None = None
+    exception_requested_reason: str | None = None
+    exception_approved_at: str | None = None
+    exception_approved_requested_by: str | None = None
+    exception_expired_at: str | None = None
     first_seen_at: str | None = None
     last_seen_at: str | None = None
     sla_started_at: str | None = None
@@ -1819,14 +1864,63 @@ class VulnerabilityAssignRequest(BaseModel):
 
 
 class VulnerabilityExceptionRequest(BaseModel):
-    """Body for ``POST /vulnerabilities/{id}/exception`` — accepted risk.
+    """Body for ``POST /vulnerabilities/{id}/exception`` — asking for acceptance.
 
     Both fields are required: an acceptance with no expiry is a decision nobody
-    revisits, and one with no reason cannot be reviewed by whoever inherits it.
+    revisits, and one with no reason cannot be reviewed by whoever inherits it
+    — or by the person who now has to approve it (#348).
     """
 
     until: datetime
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityExceptionDecision(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/exception/approve`` and ``/reject``.
+
+    The expiry and the justification are the *request*'s, and the approver does
+    not get to edit them here: an approval that could rewrite what it approves
+    is a second request signed by one person. Changing the window means asking
+    again. ``note`` is the approver's own comment, optional on an approval and
+    the useful half of a rejection.
+    """
+
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class RiskAcceptanceInfo(BaseModel):
+    """One row of the risk-acceptance register (``GET /risk-register``, #348).
+
+    ``status`` is derived from the expiry against now, not read off
+    ``exception_state``: the sweep that records a lapse runs on a worker's
+    tick, and a register that waited for it would show an acceptance that ran
+    out an hour ago as still in force. ``self_approved`` names the rows where
+    the requester and the approver are the same account — pre-#348 acceptances,
+    which are reported rather than hidden.
+    """
+
+    vuln_id: str
+    tenant_id: str
+    asset_id: str
+    title: str = ""
+    cve: str | None = None
+    severity: str = "unknown"
+    state: str
+    status: str
+    exception_state: str
+    reason: str | None = None
+    requested_by: str | None = None
+    requested_at: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    decision_note: str | None = None
+    until: str | None = None
+    days_remaining: int | None = None
+    assignee: str | None = None
+    owner_team: str | None = None
+    asset_owner: str | None = None
+    business_service: str | None = None
+    self_approved: bool = False
 
 
 class VulnerabilityFalsePositiveRequest(BaseModel):

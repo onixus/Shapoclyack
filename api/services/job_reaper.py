@@ -1,9 +1,12 @@
-"""Background sweep for jobs whose executor stopped renewing its lease (P1.4).
+"""Background sweep for jobs no executor is going to finish (P1.4, #360).
 
 Structured like ``schedule_dispatcher``/``endpoint_retention``: a daemon thread
 with a crash-restart loop, started and stopped from the FastAPI lifespan. The
-work itself is one function, ``jobs.reap_expired_leases``; this module only
-decides when to call it.
+work itself is two functions — ``jobs.reap_expired_leases`` for a lease its
+executor stopped renewing, and ``jobs.reap_stale_cancellations`` for a stop an
+agent never confirmed (#360) — and this module only decides when to call them.
+They are on one tick because they are the same kind of statement: a job that
+has been waiting on somebody longer than the promise allowed.
 
 Unlike the schedule dispatcher, this worker is **safe in every replica** and
 does not wait on leader election (P1.6). Expiry is a property of the row, not
@@ -32,7 +35,7 @@ class JobReaper:
         )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._stats = {"ticks": 0, "requeued": 0, "failed": 0, "errors": 0}
+        self._stats = {"ticks": 0, "requeued": 0, "failed": 0, "cancelled": 0, "errors": 0}
 
     @property
     def stats(self) -> dict[str, int]:
@@ -45,10 +48,12 @@ class JobReaper:
         self._thread = threading.Thread(target=self._run, name="octo-job-reaper", daemon=True)
         self._thread.start()
         LOG.info(
-            "Job reaper started (poll_interval=%.0fs lease=%ds max_attempts=%d)",
+            "Job reaper started (poll_interval=%.0fs lease=%ds max_attempts=%d "
+            "cancel_grace=%ds)",
             self._poll_interval,
             self._settings.job_lease_seconds,
             self._settings.job_max_attempts,
+            self._settings.job_cancel_grace_seconds,
         )
 
     def stop(self, *, join_timeout: float = 5.0) -> None:
@@ -71,6 +76,7 @@ class JobReaper:
         outcome = jobs_service.reap_expired_leases(self._settings)
         self._stats["requeued"] += outcome["requeued"]
         self._stats["failed"] += outcome["failed"]
+        self._stats["cancelled"] += jobs_service.reap_stale_cancellations(self._settings)
 
 
 _REAPER: JobReaper | None = None

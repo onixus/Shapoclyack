@@ -127,7 +127,11 @@ export function JobDetailsDrawer({
             <StatusBadge
               value={current.status}
               map={JOB_STATUS}
-              showPulse={current.status === "running" || current.status === "claimed"}
+              showPulse={
+                current.status === "running" ||
+                current.status === "claimed" ||
+                current.status === "cancelling"
+              }
             />
             <SurfaceBadge surface={jobSurface(current)} link />
           </div>

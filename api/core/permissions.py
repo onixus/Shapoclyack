@@ -62,6 +62,12 @@ SCAN_SCOPE_READ = "scan_scope.read"
 #: separation this issue is named for: never held by a role that can also run
 #: scans, so widening the scope and using it are two people.
 SCAN_SCOPE_APPROVE = "scan_scope.approve"
+#: Stop a scan this tenant is running (``POST /api/jobs/{id}/cancel``) — both
+#: refusing to hand out a queued job and asking the agent running one to put it
+#: down (#360). Named rather than ranked because stopping somebody else's scan
+#: mid-flight is an authority an installation may want to hand out on its own,
+#: to an on-call who is not otherwise an operator.
+SCAN_CANCEL = "scan.cancel"
 #: List a tenant's members and their roles.
 TENANT_MEMBER_READ = "tenant.member.read"
 #: Grant and revoke them — tenant self-service, no longer platform admin only.
@@ -86,9 +92,11 @@ PLATFORM_TENANT_MANAGE = "platform.tenant.manage"
 #: totals in ``GET /api/system``, which told a single-tenant viewer how many
 #: other customers this installation has.
 PLATFORM_FLEET_READ = "platform.fleet.read"
-#: Approve an accepted risk on a finding. **Defined here and not yet enforced
-#: anywhere**: the approval workflow itself is #348, and the role that will
-#: hold this permission has to exist before the workflow can ask for it.
+#: Approve or reject a requested risk acceptance on a finding
+#: (``POST /api/vulnerabilities/{id}/exception/{approve,reject}``, #348).
+#: Holding it is necessary and not sufficient: the service refuses the person
+#: who filed the request by name, which is what separates the duties for a
+#: platform admin, who holds every permission in this file.
 VULNERABILITY_EXCEPTION_APPROVE = "vulnerability.exception.approve"
 
 #: Every permission with the sentence the catalogue endpoint and migration 0049
@@ -101,6 +109,7 @@ PERMISSIONS: dict[str, str] = {
     CONFIG_WRITE: "Change the installation-wide scanner configuration",
     SCAN_SCOPE_READ: "Read the tenant's approved scanning scope",
     SCAN_SCOPE_APPROVE: "Approve what the tenant may scan",
+    SCAN_CANCEL: "Stop a queued or running scan",
     TENANT_MEMBER_READ: "List the tenant's members",
     TENANT_MEMBER_MANAGE: "Grant and revoke the tenant's members",
     TENANT_CREDENTIAL_MANAGE: "Manage the tenant's provisioning keys and service tokens",
@@ -160,6 +169,7 @@ _TENANT_ADMIN_PERMISSIONS = (
     AUDIT_READ,
     CONFIG_READ,
     SCAN_SCOPE_READ,
+    SCAN_CANCEL,
     TENANT_MEMBER_READ,
     TENANT_MEMBER_MANAGE,
     TENANT_CREDENTIAL_MANAGE,
@@ -178,6 +188,7 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
         2,
         "Runs scans and works the findings",
         CONFIG_READ,
+        SCAN_CANCEL,
     ),
     ROLE_ADMIN: _role(
         ROLE_ADMIN,
@@ -201,6 +212,7 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
         2,
         "Runs scans within the approved scope, and cannot widen it",
         CONFIG_READ,
+        SCAN_CANCEL,
     ),
     ROLE_SCOPE_APPROVER: _role(
         ROLE_SCOPE_APPROVER,
@@ -218,7 +230,7 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
     ROLE_RISK_APPROVER: _role(
         ROLE_RISK_APPROVER,
         1,
-        "Approves accepted risk on findings (#348)",
+        "Approves and rejects requested risk acceptances (#348)",
         VULNERABILITY_EXCEPTION_APPROVE,
     ),
     ROLE_PLATFORM_ADMIN: _role(
