@@ -10,6 +10,14 @@ from .utils import run_command, save_json, write_lines
 
 PROBE_METHODS = ("icmp", "tcp", "naabu")
 
+#: The TCP ports ``naabu -sn`` pings when it is given no probe flags of its
+#: own. Not a guess: ``configureHostDiscovery`` in naabu v2.6.1 — the version
+#: ``Dockerfile`` pins — sets ICMP echo, ICMP timestamp, and SYN *and* ACK
+#: pings to 80 and 443 whenever ``!options.hasProbes()``. Naming them here is
+#: what lets this stage honour the avoid-list: ``-exclude-ports`` belongs to
+#: the port scan and does not reach host discovery.
+NAABU_SN_PROBE_PORTS: tuple[int, ...] = (80, 443)
+
 
 def parse_naabu_host_lines(stdout: str) -> list[str]:
     """Extract unique hosts from naabu stdout (host-only or host:port lines)."""
@@ -109,10 +117,31 @@ def naabu_host_discovery(
     retries: int,
     tag: str,
     scope_members: list[str],
+    exclude_ports: list[int] | None = None,
 ) -> list[str]:
-    """naabu -sn host discovery for pending targets."""
+    """naabu -sn host discovery for pending targets.
+
+    ``exclude_ports`` is the run's avoid-list, and this step needs it for the
+    same reason :func:`tcp_port_probe` does: left to itself ``-sn`` SYNs and
+    ACKs 80 and 443 (:data:`NAABU_SN_PROBE_PORTS`), so a tenant who put an
+    HMI's web port on the list was still receiving a SYN to it from the stage
+    that decides who is alive. The probes are spelled out rather than left to
+    naabu's defaults — naming any probe suppresses the defaults — and the
+    avoided ports are dropped from the pair. With both gone the step still
+    runs, on ICMP alone: losing the TCP half of host discovery is a few
+    missed hosts, and sending the SYN is the thing the list forbids.
+    """
     if not targets:
         return []
+
+    excluded = {int(p) for p in (exclude_ports or [])}
+    probe_ports = [port for port in NAABU_SN_PROBE_PORTS if port not in excluded]
+    if len(probe_ports) != len(NAABU_SN_PROBE_PORTS):
+        logging.info(
+            "naabu -sn batch %s: host-discovery TCP pings narrowed to %s by the avoid-list (#362)",
+            tag,
+            probe_ports or "none (ICMP only)",
+        )
 
     batch_dir = output_dir / "discover"
     input_file = batch_dir / f"{tag}.naabu.targets.txt"
@@ -130,6 +159,14 @@ def naabu_host_discovery(
             str(rate),
             "-retries",
             str(max(1, retries)),
+            "-pe",
+            "-pp",
+            *(
+                ["-ps", ",".join(str(port) for port in probe_ports)]
+                + ["-pa", ",".join(str(port) for port in probe_ports)]
+                if probe_ports
+                else []
+            ),
         ],
         timeout=timeout,
         retries=retries,
@@ -155,13 +192,23 @@ def run_probe_ladder(
 ) -> tuple[list[str], dict[str, int]]:
     """Run configured probe steps in order; return merged alive hosts and per-method counts.
 
-    ``exclude_ports`` is the run's avoid-list, for the one step that picks
-    ports of its own (see :func:`tcp_port_probe`).
+    ``exclude_ports`` is the run's avoid-list, and it reaches both steps that
+    put a port on the wire: the TCP probe, which picks its port list from the
+    config (see :func:`tcp_port_probe`), and ``naabu -sn``, which picks one
+    from its own defaults (see :func:`naabu_host_discovery`).
     """
     pending = list(targets)
     alive_accum: set[str] = set()
     stats = {method: 0 for method in PROBE_METHODS}
-    tcp_rate = discovery.tcp_probe.rate if discovery.tcp_probe.rate is not None else rate
+    # ``rate`` is the batch rate the caller worked out, and it already carries
+    # the policy's per-host correction for a batch of one device
+    # (``scan_policy.single_host_rate``). ``tcp_probe.rate`` is a second
+    # ceiling, not a replacement for the first: reading it as "a value that
+    # wins when it is set" threw that correction away, and a policy promising
+    # 25 pps at any single host sent that host 100 (#397 review).
+    tcp_rate = (
+        min(discovery.tcp_probe.rate, rate) if discovery.tcp_probe.rate is not None else rate
+    )
 
     for step in discovery.probe_order:
         if not pending:
@@ -204,6 +251,7 @@ def run_probe_ladder(
                 retries=retries,
                 tag=tag,
                 scope_members=scope_members,
+                exclude_ports=exclude_ports,
             )
             stats["naabu"] = len(naabu_alive)
             alive_accum.update(naabu_alive)

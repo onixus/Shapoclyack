@@ -121,7 +121,11 @@ class ProfileConfig(BaseModel):
 
 class BatchingConfig(BaseModel):
     enabled: bool = True
-    ipv4_prefix: int = Field(default=20, ge=8, le=30)
+    # 32 is a batch per address: not a useful thing to configure by hand, but
+    # it is what a scan policy lowers this to when it has been told both how
+    # many hosts may be touched at once and how hard any one of them may be
+    # (``scan_policy.apply_policy``).
+    ipv4_prefix: int = Field(default=20, ge=8, le=32)
     max_targets_per_batch: int = Field(default=4096, ge=1, le=1_000_000)
 
 
@@ -144,6 +148,9 @@ class IcmpDiscoveryConfig(BaseModel):
     tool: Literal["fping"] = "fping"
     timeout_ms: int = Field(default=500, ge=50, le=30_000)
     retries: int = Field(default=1, ge=0, le=10)
+    # Milliseconds between the packets fping sends (its ``-i``): the pace of
+    # the ladder's first step, and the one a scan policy's ``max_discover_rate``
+    # is translated into (``scan_policy.apply_policy``).
     period_ms: int | None = Field(default=None, ge=0, le=10_000)
 
 

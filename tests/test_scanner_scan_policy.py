@@ -540,3 +540,273 @@ def test_pulse_host_parallel_zero_stays_one_host_at_a_time():
     )
     assert "--host-parallel" not in command
     assert "--host-first" in command
+
+
+# ---------------------------------------------------------------------------
+# The pace the tool is actually handed, and the two ladder steps the first
+# round of this work left out (review of #397)
+# ---------------------------------------------------------------------------
+
+
+def _capture_probes(monkeypatch) -> list[list[str]]:
+    """Every command the probe ladder runs — naabu *and* fping.
+
+    The assertions below are on the argv the tool receives, not on the config
+    object: the whole defect class this file is about is a ceiling that is
+    correct in the config and lost on its way to the command line.
+    """
+    from scanner.pipeline import icmp_discover as icmp_mod
+    from scanner.pipeline import probe_ladder as ladder_mod
+
+    captured: list[list[str]] = []
+
+    class _Result:
+        stdout = ""
+
+    def _record(command, **kwargs):  # noqa: ANN001, ANN003
+        captured.append(list(command))
+        return _Result()
+
+    monkeypatch.setattr(ladder_mod, "run_command", _record)
+    monkeypatch.setattr(icmp_mod, "run_command", _record)
+    return captured
+
+
+def _naabu_calls(captured: list[list[str]]) -> list[list[str]]:
+    return [command for command in captured if command and command[0] == "naabu"]
+
+
+def _flag(command: list[str], flag: str) -> str:
+    return command[command.index(flag) + 1]
+
+
+def test_the_tcp_probe_of_one_host_is_held_to_the_per_host_ceiling(tmp_path, monkeypatch):
+    """The ceiling the policy put on ``discovery.tcp_probe.rate`` is a *batch*
+    ceiling like every other one here, and the per-host correction is applied
+    to the batch rate before the ladder ever sees it. Reading the field as "a
+    rate that replaces the batch rate" threw that correction away and sent a
+    fragile tenant's one PLC 100 pps under a policy promising 25."""
+    from scanner.pipeline.discover import host_discovery
+
+    tightened = _tcp_probe_config(_fragile_run_config(), [80])
+    assert tightened.discovery.tcp_probe.rate == 100
+    captured = _capture_probes(monkeypatch)
+    host_discovery(
+        ["10.0.0.7"],
+        output_dir=tmp_path,
+        rate=tightened.profiles["safe"].discover_rate,
+        timeout=60,
+        retries=1,
+        skip_discovery=False,
+        discovery=tightened.discovery,
+        tag="one",
+        per_host_rate=tightened.runtime.per_host_rate,
+        exclude_ports=tightened.ports.exclude_ports,
+    )
+    command = _naabu_calls(captured)[0]
+    assert _flag(command, "-rate") == "25"
+
+
+def test_the_last_ladder_step_never_pings_an_avoided_port(tmp_path, monkeypatch):
+    """``naabu -sn`` with no probe flags pings TCP 80 and 443 (SYN and ACK) on
+    top of ICMP — ``configureHostDiscovery`` in naabu v2.6.1, the version the
+    image pins. It is the step a default ladder ends on, so a tenant who put
+    the HMI's web port on the avoid-list was getting a SYN to it from the very
+    stage that decides who is alive."""
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    captured = _capture_probes(monkeypatch)
+    naabu_host_discovery(
+        ["10.0.0.7"],
+        tmp_path,
+        rate=25,
+        timeout=60,
+        retries=1,
+        tag="one",
+        scope_members=["10.0.0.7"],
+        exclude_ports=[80, 502],
+    )
+    command = _naabu_calls(captured)[0]
+    assert "-pe" in command and "-pp" in command
+    assert _flag(command, "-ps") == "443"
+    assert _flag(command, "-pa") == "443"
+
+
+def test_the_last_ladder_step_keeps_both_probe_ports_when_neither_is_avoided(
+    tmp_path, monkeypatch
+):
+    """The fix narrows the probe set, it does not replace naabu's defaults with
+    something weaker: an avoid-list that touches neither port leaves both."""
+    from scanner.pipeline.probe_ladder import naabu_host_discovery
+
+    captured = _capture_probes(monkeypatch)
+    naabu_host_discovery(
+        ["10.0.0.7"],
+        tmp_path,
+        rate=25,
+        timeout=60,
+        retries=1,
+        tag="one",
+        scope_members=["10.0.0.7"],
+        exclude_ports=[502, 20000],
+    )
+    command = _naabu_calls(captured)[0]
+    assert _flag(command, "-ps") == "80,443"
+    assert _flag(command, "-pa") == "80,443"
+
+
+def test_the_ladder_hands_the_last_step_the_avoid_list(tmp_path, monkeypatch):
+    """Wiring, not intent — the half of the previous round's lesson that still
+    applied: the step reads the list from what the ladder hands it, and a
+    ladder that passed nothing would leave it probing 80."""
+    from scanner.pipeline.discover import host_discovery
+
+    tightened = _fragile_run_config()
+    tightened = tightened.model_copy(
+        update={
+            "discovery": tightened.discovery.model_copy(update={"probe_order": ["naabu"]}),
+            "ports": tightened.ports.model_copy(
+                update={"exclude_ports": sorted({*tightened.ports.exclude_ports, 80})}
+            ),
+        }
+    )
+    captured = _capture_probes(monkeypatch)
+    host_discovery(
+        ["10.0.0.7"],
+        output_dir=tmp_path,
+        rate=tightened.profiles["safe"].discover_rate,
+        timeout=60,
+        retries=1,
+        skip_discovery=False,
+        discovery=tightened.discovery,
+        tag="one",
+        per_host_rate=tightened.runtime.per_host_rate,
+        exclude_ports=tightened.ports.exclude_ports,
+    )
+    command = _naabu_calls(captured)[0]
+    assert "-sn" in command
+    assert _flag(command, "-ps") == "443"
+
+
+def test_the_icmp_step_uses_the_fping_flag_that_paces_it(tmp_path, monkeypatch):
+    """``-p`` is the interval between packets *to one target*, and fping applies
+    it only in loop and count modes, neither of which this command asks for:
+    measured on fping 5.x, ``-p 200`` over 20 addresses took the same 1.51s as
+    no flag at all, while ``-i 200`` took 6.82s. The knob was a no-op and the
+    step ran at fping's default 10ms — 100 pps, whatever the policy said."""
+    from scanner.pipeline.icmp_discover import icmp_ping_filter
+
+    tightened = _fragile_run_config()
+    assert tightened.discovery.icmp.enabled is True
+    captured = _capture_probes(monkeypatch)
+    icmp_ping_filter(["10.0.0.7"], tmp_path, tightened.discovery.icmp, timeout=60, retries=1, tag="one")
+    command = captured[0]
+    assert "-p" not in command
+    # 100 pps is the ceiling, so 10ms between packets is the fastest allowed.
+    assert _flag(command, "-i") == "10"
+
+
+def test_the_icmp_step_is_paced_by_the_discovery_ceiling(tmp_path, monkeypatch):
+    """The ladder's first step is a discovery probe like the other two, and it
+    was the one pass no ``max_discover_rate`` reached."""
+    from scanner.pipeline.discovery_profiles import apply_discovery_profile
+    from scanner.pipeline.icmp_discover import icmp_ping_filter
+
+    config = apply_discovery_profile(_config(), active_mode="safe")
+    tightened = apply_policy(config, _policy(max_discover_rate=20))
+    captured = _capture_probes(monkeypatch)
+    icmp_ping_filter(["10.0.0.7"], tmp_path, tightened.discovery.icmp, timeout=60, retries=1, tag="one")
+    assert _flag(captured[0], "-i") == "50"
+
+
+def _run_wave_one(tmp_path, monkeypatch, config, targets: list[str]):
+    from scanner.pipeline.checkpoint import CheckpointStore
+    from scanner.pipeline.discovery_runner import run_discovery_stage
+
+    captured = _capture_probes(monkeypatch)
+    run_discovery_stage(
+        all_targets=targets,
+        config=config,
+        profile=config.profiles["safe"],
+        output_dir=tmp_path,
+        alive_file=tmp_path / "alive.txt",
+        timeout=60,
+        retries=1,
+        checkpoint=CheckpointStore(tmp_path / "checkpoint.json"),
+        resume=False,
+    )
+    return captured
+
+
+def test_wave_one_carries_the_avoid_list(tmp_path, monkeypatch):
+    """The pass every scan runs, and the one the first round of this work left
+    untested: verify and delta-refresh are optional, wave 1 is not."""
+    tightened = _tcp_probe_config(_fragile_run_config(), [80, 502])
+    captured = _run_wave_one(tmp_path, monkeypatch, tightened, ["10.0.0.7"])
+    command = _naabu_calls(captured)[0]
+    assert _flag(command, "-p") == "80"
+    assert _flag(command, "-exclude-ports") == "502,20000"
+
+
+def test_the_delta_refresh_pass_carries_the_avoid_list(tmp_path, monkeypatch):
+    """The third caller. It re-probes the hosts a previous run found alive —
+    on an OT estate, the controllers — and it picks its own rate, so it is the
+    one most easily forgotten."""
+    tightened = _tcp_probe_config(_fragile_run_config(), [80, 502])
+    tightened = tightened.model_copy(
+        update={
+            "discovery": tightened.discovery.model_copy(
+                update={"delta": tightened.discovery.delta.model_copy(update={"enabled": True})}
+            )
+        }
+    )
+    from scanner.pipeline.checkpoint import CheckpointStore
+    from scanner.pipeline.discovery_runner import run_discovery_stage
+
+    captured = _capture_probes(monkeypatch)
+    run_discovery_stage(
+        all_targets=["10.0.0.7"],
+        config=tightened,
+        profile=tightened.profiles["safe"],
+        output_dir=tmp_path,
+        alive_file=tmp_path / "alive.txt",
+        timeout=60,
+        retries=1,
+        checkpoint=CheckpointStore(tmp_path / "checkpoint.json"),
+        resume=False,
+        previous_alive={"10.0.0.7"},
+    )
+    refresh = [c for c in _naabu_calls(captured) if "delta-refresh" in " ".join(c)]
+    assert refresh, "the delta refresh pass never probed"
+    assert _flag(refresh[0], "-exclude-ports") == "502,20000"
+
+
+def test_a_fragile_scan_of_a_range_walks_one_host_at_a_time(tmp_path, monkeypatch):
+    """What ``max_host_concurrency: 1`` is documented to mean. Lowering the
+    worker counts alone left the *batch* at 4096 targets, so a ``/24`` reached
+    naabu as one invocation of 254 hosts at the batch rate — with the per-host
+    ceiling not applied at all, because it only applies to a batch of one."""
+    from scanner.pipeline.utils import read_lines
+
+    tightened = _tcp_probe_config(_fragile_run_config(), [80])
+    assert tightened.batching.max_targets_per_batch == 1
+    assert tightened.batching.ipv4_prefix == 32
+    captured = _run_wave_one(tmp_path, monkeypatch, tightened, ["10.10.0.0/24"])
+    calls = _naabu_calls(captured)
+    probed: set[str] = set()
+    for command in calls:
+        members = read_lines(Path(_flag(command, "-list")))
+        assert len(members) == 1, f"{len(members)} hosts in one naabu invocation"
+        assert _flag(command, "-rate") == "25"
+        probed.update(members)
+    assert len(probed) == 256, "a /24 is 256 addresses, and each one got its own invocation"
+
+
+def test_a_ceiling_without_a_per_host_rate_leaves_the_batch_size_alone(tmp_path):
+    """The batch budget is spent across the batch, so shrinking a batch without
+    a per-host figure to hold it to would *raise* what one host receives — this
+    file's one forbidden direction. 4096 hosts at 2500 pps is 0.6 pps each; one
+    host at 2500 pps is 2500."""
+    tightened = apply_policy(_config(), _policy(max_host_concurrency=1))
+    assert tightened.batching.max_targets_per_batch == _config().batching.max_targets_per_batch
+    assert tightened.batching.ipv4_prefix == _config().batching.ipv4_prefix
