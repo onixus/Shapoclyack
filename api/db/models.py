@@ -1557,6 +1557,16 @@ class Agent(Base):
     detail: Mapped[str | None] = mapped_column(default=None)
     registered_at: Mapped[datetime]
     last_seen_at: Mapped[datetime]
+    # When this agent's current unbroken run of heartbeats began — not when it
+    # was last heard from. The two differ exactly where it matters: an agent
+    # whose link drops every other beat has a fresh ``last_seen_at`` half the
+    # time and a run that never grows past the gap. ``agent_offline`` is
+    # claimed once per silence and given back on recovery
+    # (``api/services/sla_escalation.py``), and this is what lets the worker
+    # refuse to call a flapping agent recovered. Restarted only by a gap longer
+    # than ``OCTO_AGENT_STALE_SECONDS``; NULL on rows that predate 0056 and are
+    # read as a run starting at ``last_seen_at``.
+    healthy_since: Mapped[datetime | None] = mapped_column(default=None)
 
     __table_args__ = (
         Index("ix_agents_tenant_last_seen", "tenant_id", "last_seen_at"),

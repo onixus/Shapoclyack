@@ -115,6 +115,9 @@ def load_agents(settings: Settings) -> None:
                 detail=item.get("detail"),
                 registered_at=_parse_iso(item.get("registered_at")) or now,
                 last_seen_at=_parse_iso(item.get("last_seen_at")) or now,
+                # The imported row has no record of when its run began; its
+                # last beat is the only evidence, as in 0056's backfill.
+                healthy_since=_parse_iso(item.get("last_seen_at")) or now,
             )
             if insert_if_absent(session, row, agent_id):
                 imported += 1
@@ -146,6 +149,27 @@ def _is_online(last_seen: datetime | None) -> bool:
         return False
     age = (datetime.now(UTC) - last_seen.replace(tzinfo=UTC)).total_seconds()
     return age <= _require_settings().agent_stale_seconds
+
+
+def _note_seen(row: models.Agent, now: datetime) -> None:
+    """Move ``last_seen_at``, and restart ``healthy_since`` after a gap.
+
+    Every path that hears from an agent goes through here, because the two
+    columns only mean anything together: ``last_seen_at`` answers "is it there
+    now", ``healthy_since`` answers "has it been there all along". A beat that
+    arrives within ``OCTO_AGENT_STALE_SECONDS`` of the previous one continues
+    the run; one that arrives after a longer gap starts a new one, which is
+    what makes a flapping agent's run stay short and stops the escalation
+    worker from reading its next beat as a recovery (#349).
+
+    NULL on rows written before 0056 is treated as "the run starts now" rather
+    than as a run of unknown length.
+    """
+    previous = row.last_seen_at
+    gap = None if previous is None else (now - previous).total_seconds()
+    if row.healthy_since is None or gap is None or gap > _require_settings().agent_stale_seconds:
+        row.healthy_since = now
+    row.last_seen_at = now
 
 
 # The operator-set lifecycle states an agent row can be in (#308). Kept apart
@@ -601,7 +625,7 @@ def register_agent(
             row.tenant_id = tenant_id
             if labels is not None:
                 row.labels = dict(labels)
-            row.last_seen_at = now
+            _note_seen(row, now)
             # ``upgrade_requested`` is an operator marker, so re-registration must
             # neither drop it (a plain restart is not an upgrade) nor keep it
             # forever. A changed reported version is the only evidence the host
@@ -645,6 +669,7 @@ def register_agent(
             detail=_pack_detail(metrics=metrics, capabilities=capabilities),
             registered_at=now,
             last_seen_at=now,
+            healthy_since=now,
         )
         session.add(row)
         session.flush()
@@ -687,7 +712,7 @@ def heartbeat(
         row = session.get(models.Agent, agent_id)
         if row is None:
             return None
-        row.last_seen_at = _now()
+        _note_seen(row, _now())
         row.status = status
         row.current_job_id = current_job_id
         # Preserve upgrade_requested if previously set
@@ -815,7 +840,7 @@ def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> Non
         row = session.get(models.Agent, agent_id)
         if row is None:
             return
-        row.last_seen_at = _now()
+        _note_seen(row, _now())
         row.current_job_id = job_id
         row.status = status if job_id else "idle"
 
