@@ -441,6 +441,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **A running scan can be stopped**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
+  legal only from `queued`; once an agent had claimed a job, the only bound on
+  it was the agent's own `--scan-timeout` — two hours of traffic at a target an
+  operator had already decided to leave alone. `POST /api/jobs/{id}/cancel` now
+  puts a claimed or running agent job into the new **`cancelling`** state, the
+  request reaches the agent on its next heartbeat response, and the agent
+  SIGTERMs its scanner's process group and uploads whatever the run produced
+  with `cancelled=true`. Partial results are kept; the job ends as `cancelled`
+  rather than `failed`, so an operator's decision is not filed as a defect. A
+  job whose agent never confirms (one too old to read the new field, say) is
+  finished as `cancelled` after `OCTO_JOB_CANCEL_GRACE_SECONDS` with the
+  silence recorded in `error`, and a `cancelling` job is never requeued by the
+  lease reaper, so it cannot be handed to a second agent while the first is
+  stopping. Gated on the named permission **`scan.cancel`** (migration 0051,
+  granted to exactly the roles that could cancel before) and written to
+  `audit_events`. The console offers Cancel on running jobs and says plainly
+  that a running scan is *asked* to stop. **A local scan that has already
+  started still cannot be cancelled** — it is a subprocess inside one API
+  replica, which is not necessarily the one answering the request — and the API
+  now refuses it with that reason instead of a generic 409.
+
 - **Five ways the workflow-event worker under-delivered, found by review of
   #349** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). All five
   were reproduced against a live Postgres before the fix. (1)

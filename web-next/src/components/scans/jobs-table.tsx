@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { ArrowUpRight, Ban, Cpu, Info, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, Ban, Cpu, Hourglass, Info, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,6 +21,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { JobDetailsDrawer, jobDuration } from "@/components/scans/job-details-drawer";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
 import { useCancelJob } from "@/hooks/use-jobs";
+import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import type { PaginationState } from "@/hooks/use-pagination";
 import { type JobInfo, type Page } from "@/lib/api";
 import { JOB_STATUS } from "@/lib/config/statuses";
@@ -28,15 +29,30 @@ import { useT } from "@/lib/i18n";
 import { runDetailHref } from "@/lib/run-data";
 import { jobSurface } from "@/lib/scan-surface";
 
+/** Whether the API will accept a stop for this job.
+ *
+ * A running scan is cancellable since #360: the request reaches the agent on
+ * its next heartbeat. `cancelling` is deliberately not — the stop has already
+ * been asked for, and a second click would do nothing but suggest the first
+ * one did not land. A local scan that has started is refused by the API with a
+ * 409 and its reason; the console does not know the execution mode early
+ * enough to hide the button, so the refusal is what says so.
+ */
 export function isCancellable(job: Pick<JobInfo, "status">): boolean {
-  return job.status === "queued" || job.status === "claimed";
+  return job.status === "queued" || job.status === "claimed" || job.status === "running";
+}
+
+/** A job whose stop was requested and not yet confirmed by its agent. */
+export function isStopping(job: Pick<JobInfo, "status">): boolean {
+  return job.status === "cancelling";
 }
 
 /**
  * The job list shared by the three operations pages. Surface is a column on
  * the unpinned list and omitted on a surfaced one, where every row is the
- * same. Row click opens the full record; the cancel action only shows on a
- * job that has not started, mirroring what the API will accept.
+ * same. Row click opens the full record; the cancel action shows on every job
+ * the API will accept a stop for, which since #360 includes one an agent is
+ * already running.
  */
 export function JobsTable({
   page,
@@ -66,6 +82,11 @@ export function JobsTable({
   const [deepLinked, setDeepLinked] = useState<string | null>(initialJobId ?? null);
   const [cancelTarget, setCancelTarget] = useState<JobInfo | null>(null);
   const cancel = useCancelJob();
+  // `scan.cancel` since #360, falling back to the rank the button used to be
+  // gated on so an API older than #318 (which sends no permission list) keeps
+  // showing it to the operators it always did. The API is the boundary either
+  // way.
+  const canCancel = useAuthStore((s) => canOperate && holdsPermission(s.user, "scan.cancel", true));
 
   const columns = useMemo<ColumnDef<JobInfo>[]>(() => {
     const cols: ColumnDef<JobInfo>[] = [
@@ -91,7 +112,11 @@ export function JobsTable({
             <StatusBadge
               value={row.original.status}
               map={JOB_STATUS}
-              showPulse={row.original.status === "running" || row.original.status === "claimed"}
+              showPulse={
+                row.original.status === "running" ||
+                row.original.status === "claimed" ||
+                row.original.status === "cancelling"
+              }
             />
             {row.original.asset_upsert_error ? (
               <span
@@ -232,7 +257,7 @@ export function JobsTable({
             >
               <Info className="h-3.5 w-3.5" />
             </Button>
-            {canOperate && isCancellable(row.original) ? (
+            {canCancel && isCancellable(row.original) ? (
               <Button
                 type="button"
                 variant="ghost"
@@ -245,12 +270,22 @@ export function JobsTable({
                 <Ban className="h-3.5 w-3.5" />
               </Button>
             ) : null}
+            {isStopping(row.original) ? (
+              <span
+                role="img"
+                aria-label={t("jobs.stopping")}
+                title={t("jobs.stopping")}
+                className="text-amber-600 dark:text-amber-300"
+              >
+                <Hourglass className="h-3.5 w-3.5" />
+              </span>
+            ) : null}
           </span>
         ),
       },
     );
     return cols;
-  }, [t, showSurface, canOperate]);
+  }, [t, showSurface, canCancel]);
 
   return (
     <>
@@ -302,7 +337,9 @@ export function JobsTable({
               {t("jobs.cancelTitle", { id: cancelTarget?.job_id ?? "" })}
             </AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
-              {t("jobs.cancelBody")}
+              {cancelTarget && cancelTarget.status !== "queued"
+                ? t("jobs.cancelBodyRunning")
+                : t("jobs.cancelBody")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

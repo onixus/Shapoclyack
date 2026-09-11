@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isCancellable, JobsTable } from "@/components/scans/jobs-table";
+import { isCancellable, isStopping, JobsTable } from "@/components/scans/jobs-table";
 import type { PaginationState } from "@/hooks/use-pagination";
 import * as apiModule from "@/lib/api";
 import type { JobInfo } from "@/lib/api";
@@ -67,13 +67,37 @@ describe("JobsTable", () => {
     vi.restoreAllMocks();
   });
 
-  it("only offers cancel on a job that has not started", () => {
+  it("offers cancel on a running scan too, but not once it is stopping", () => {
+    // #360: a running scan is stoppable through the agent's heartbeat. A job
+    // already `cancelling` is not — the stop has been asked for, and a second
+    // button would suggest the first click did not land.
     expect(isCancellable({ status: "queued" })).toBe(true);
     expect(isCancellable({ status: "claimed" })).toBe(true);
-    expect(isCancellable({ status: "running" })).toBe(false);
+    expect(isCancellable({ status: "running" })).toBe(true);
+    expect(isCancellable({ status: "cancelling" })).toBe(false);
     expect(isCancellable({ status: "succeeded" })).toBe(false);
-    renderTable([job(), job({ job_id: "000000000001", status: "queued", run_id: null })]);
-    expect(screen.getAllByRole("button", { name: "Cancel job" })).toHaveLength(1);
+    expect(isStopping({ status: "cancelling" })).toBe(true);
+    renderTable([
+      job(),
+      job({ job_id: "000000000001", status: "queued", run_id: null }),
+      job({ job_id: "000000000002", status: "running" }),
+      job({ job_id: "000000000003", status: "cancelling" }),
+    ]);
+    expect(screen.getAllByRole("button", { name: "Cancel job" })).toHaveLength(2);
+    expect(
+      screen.getByLabelText("Stopping: waiting for the agent to confirm"),
+    ).toBeInTheDocument();
+  });
+
+  it("warns that a running scan is only asked to stop", async () => {
+    // The queued wording ("never handed out") would promise a stop that has
+    // not happened yet on a scan an agent is in the middle of.
+    renderTable([job({ status: "running" })]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Cancel job" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("on its next heartbeat");
+    expect(dialog).toHaveTextContent("is kept");
   });
 
   it("hides cancel from a viewer even on a queued job", () => {

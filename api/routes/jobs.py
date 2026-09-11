@@ -4,7 +4,15 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
-from api.auth import Role, TenantPrincipal, get_settings, require_tenant
+from api.auth import (
+    Role,
+    TenantPrincipal,
+    get_settings,
+    require_permission,
+    require_tenant,
+)
+from api.core import permissions as permission_catalog
+from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.schemas import JobInfo, JobSummary, Page, StartScanRequest
 from api.services import job_states
@@ -79,13 +87,26 @@ def get_job(
 @router.post("/{job_id}/cancel", response_model=JobInfo)
 def cancel_job(
     job_id: str,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.SCAN_CANCEL))
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
 ) -> JobInfo:
-    """Cancel a job that has not started executing (ROADMAP P1.3).
+    """Stop a scan (ROADMAP P1.3, #360).
 
-    Answers 409 for a job that is already running or finished: cancellation
-    only prevents execution, it cannot stop a scan already in flight.
+    A queued job comes back `cancelled`: nothing has taken it, so refusing to
+    hand it out is the whole stop. A scan an agent is already running comes
+    back `cancelling` — the request rides the agent's next heartbeat and the
+    job reaches `cancelled` when the agent confirms, or when the grace period
+    expires without it. Answers 409 for a job that has already finished, and
+    for a *local* scan that has started: that one runs as a subprocess inside
+    one API replica, which is not necessarily this one, so there is nothing to
+    signal and nothing truthful to report.
+
+    Gated on `scan.cancel` rather than on the operator rank (#318): stopping
+    somebody else's scan is an authority an installation may want to grant on
+    its own. Every one of the roles that could cancel before holds it.
     """
     try:
         return jobs_service.cancel_job(
@@ -96,6 +117,7 @@ def cancel_job(
             # pinned, and the mismatch is reported as 404 below so the id is
             # not confirmed to someone with no right to know it exists.
             tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+            audit=audit,
         )
     except (LookupError, PermissionError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found") from exc

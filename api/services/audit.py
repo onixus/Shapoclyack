@@ -112,6 +112,12 @@ ACTION_MAINTENANCE_WINDOW_UPDATE = "maintenance_window.update"
 ACTION_MAINTENANCE_WINDOW_DELETE = "maintenance_window.delete"
 ACTION_TENANT_CHANGE_FREEZE = "tenant.change_freeze"
 ACTION_SCAN_MAINTENANCE_BLOCK = "scan.maintenance_block"
+# Stopping a scan (#360). One row for the operator's request — it is the same
+# decision whether the job was still queued or an agent had to be told to put
+# it down, and ``after.status`` says which it was — and nothing for the agent's
+# confirmation, which is a machine reporting that it obeyed rather than a
+# person deciding anything.
+ACTION_SCAN_CANCEL = "scan.cancel"
 
 #: The value stored in place of a secret. Not the empty string and not a
 #: dropped key: "this field was set, and its value is not in the audit trail"

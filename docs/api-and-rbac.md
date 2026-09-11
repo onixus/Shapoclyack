@@ -606,6 +606,7 @@ it is only supposed to approve.
 | `config.write` | platform admin |
 | `scan_scope.read` | `scope-approver`, `auditor`, tenant `admin`, platform admin |
 | `scan_scope.approve` | `scope-approver`, platform admin |
+| `scan.cancel` | `operator`, `scan-operator`, tenant `admin`, platform admin |
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
@@ -695,14 +696,31 @@ sets the status yet — see
 | `/api/system` | Non-secret installation status |
 | `/api/config` | Validated, whitelisted scanner overrides. Read needs `config.read` (not a viewer), write is platform admin |
 
-`POST /api/jobs/{job_id}/cancel` (operator) cancels a `queued` job — one no
-executor has taken yet, so refusing to hand it out is a real stop. It answers
-`409` once the job is `claimed`, `running`, or finished (an agent that has
-claimed a job scans without asking again, so cancelling then would report a
-stop that never happened), and `404` for a job in another tenant.
-The job's status becomes `cancelled` and the reason is recorded in `error`. See
-the job lifecycle in [architecture.md](architecture.md#job-lifecycle) for the
-full state set.
+`POST /api/jobs/{job_id}/cancel` stops a scan. It requires the **`scan.cancel`**
+permission — held by `operator`, `scan-operator`, `admin` and the platform
+admin, i.e. exactly the roles that could cancel before it was named — and
+answers `404` for a job in another tenant.
+
+What comes back says what was actually stopped:
+
+- a `queued` job becomes `cancelled` at once: no executor has taken it, so
+  refusing to hand it out is the whole stop;
+- a `claimed`/`running` **agent** job becomes `cancelling`
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The request
+  reaches the agent on its next heartbeat, the agent signals its scanner's
+  process group and uploads whatever the run produced with `cancelled=true`,
+  and only that upload — or the grace period expiring — makes the job
+  `cancelled`. Partial results are ingested and kept; they do not feed the
+  vulnerability tracker or the notification channels, because a partial sweep
+  read as a complete one would report hosts a scan never reached as gone;
+- a `running` **local** job answers `409` and says why: it is a subprocess
+  inside one API replica, so there is nothing this request can signal;
+- a finished job answers `409`.
+
+The reason is recorded in `error`, and the request writes a `scan.cancel` row
+to `audit_events` carrying the actor and the status the job was in. See the job
+lifecycle in [architecture.md](architecture.md#job-lifecycle) for the full state
+set.
 
 `POST /api/jobs` accepts an optional **`Idempotency-Key`** header. A retry
 carrying a key an earlier request already used returns that job with **200**

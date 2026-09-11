@@ -59,7 +59,12 @@ export function useJob(jobId: string | null, enabled = true) {
     enabled: enabled && Boolean(jobId),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      return status === "queued" || status === "claimed" || status === "running"
+      // `cancelling` keeps polling too: it is the state a drawer is most
+      // likely to be left open on, waiting for the agent to confirm (#360).
+      return status === "queued" ||
+        status === "claimed" ||
+        status === "running" ||
+        status === "cancelling"
         ? POLL_INTERVALS.jobs
         : false;
     },
@@ -90,7 +95,15 @@ export function useCancelJob() {
   return useMutation({
     mutationFn: (jobId: string) => cancelJob(jobId),
     onSuccess: async (job) => {
-      toast.success("Job cancelled", { description: `Job ${job.job_id}` });
+      // Two different things happened, and saying "cancelled" for both would
+      // promise a stop the API has not been told happened yet (#360).
+      if (job.status === "cancelling") {
+        toast.success("Stopping the scan", {
+          description: `Job ${job.job_id} — waiting for the agent to confirm`,
+        });
+      } else {
+        toast.success("Job cancelled", { description: `Job ${job.job_id}` });
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     },
     onError: (err) => {

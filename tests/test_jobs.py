@@ -238,21 +238,18 @@ def test_cancel_stops_a_queued_job_and_rejects_the_agents_late_upload(settings):
         jobs_service.cancel_job(settings, job.job_id, username="operator")
 
 
-def test_cancel_refuses_a_job_an_agent_already_holds(settings):
-    """An agent that has claimed a job starts scanning without asking the API
-    again, so cancelling it would report a stop that never happened while the
-    scan went on hitting the targets (see api/services/job_states.py)."""
+def test_cancelling_a_job_an_agent_holds_asks_rather_than_declares(settings):
+    """A claimed or running agent job goes to `cancelling`, not `cancelled`
+    (#360): the API has asked the agent to stop and has not been told it did,
+    and the row says exactly that until the agent's upload says otherwise."""
     job = _start_agent_job(settings)
     jobs_service.claim_job(settings, "agent-1")
 
-    with pytest.raises(job_states.InvalidJobTransition):
-        jobs_service.cancel_job(settings, job.job_id, username="operator")
-    assert get_job(settings, job.job_id).status == "claimed"
-
-    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
-    with pytest.raises(job_states.InvalidJobTransition):
-        jobs_service.cancel_job(settings, job.job_id, username="operator")
-    assert get_job(settings, job.job_id).status == "running"
+    asked = jobs_service.cancel_job(settings, job.job_id, username="operator")
+    assert asked.status == "cancelling"
+    assert asked.error == "Cancellation requested by operator"
+    # Not finished: nothing has confirmed the scan stopped.
+    assert asked.finished_at is None
 
 
 def test_cancel_is_tenant_scoped(settings):

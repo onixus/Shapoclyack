@@ -399,8 +399,17 @@ export type PromoteDomainResponse = {
 
 export type JobInfo = {
   job_id: string;
-  /** `claimed` = an agent holds the job but has not reported starting it. */
-  status: "queued" | "claimed" | "running" | "succeeded" | "failed" | "cancelled";
+  /** `claimed` = an agent holds the job but has not reported starting it;
+   * `cancelling` = the API has asked the agent running it to stop and has not
+   * been told it did yet (#360). */
+  status:
+    | "queued"
+    | "claimed"
+    | "running"
+    | "cancelling"
+    | "succeeded"
+    | "failed"
+    | "cancelled";
   run_id: string | null;
   mode: string;
   started_at: string | null;

@@ -525,6 +525,14 @@ class Settings:
     # it and fails it instead. Counted per claim, so a target that reliably
     # kills its worker cannot cycle forever.
     job_max_attempts: int = 3
+    # How long a job may sit in `cancelling` before the reaper finishes it as
+    # `cancelled` anyway (#360). The stop reaches the agent on its next
+    # heartbeat and a cooperating agent answers within one of them, so this is
+    # not a normal wait — it is the bound on an agent too old to understand the
+    # request, or one that died between being told and confirming. Generous on
+    # purpose: the scan is being put down, and finishing the row early would
+    # claim a stop the API has not been told happened.
+    job_cancel_grace_seconds: int = 300
     job_reaper_enabled: bool = True
     job_reaper_interval_seconds: int = 60
     # Login brute-force protection (#157). The counter is the auth_events table,
@@ -1402,6 +1410,11 @@ def load_settings() -> Settings:
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),
+        # Floored at one reaper tick: anything shorter would terminalize a
+        # cancellation before the agent it was sent to had a chance to answer.
+        job_cancel_grace_seconds=max(
+            5, int(os.environ.get("OCTO_JOB_CANCEL_GRACE_SECONDS", "300"))
+        ),
         job_reaper_enabled=os.environ.get("OCTO_JOB_REAPER_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         # Floored: the reaper's tick is a locking query over the jobs table, so

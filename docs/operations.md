@@ -315,7 +315,10 @@ and `claim_job` does not consult the calendar — a worker that was busy or
 offline can therefore pick up that job after the blackout has opened. The
 control is over what the platform *accepts*, not a kill switch over work
 already queued. If a window has to hold in the data plane as well, cancel the
-queued jobs (`POST /api/jobs/{id}/cancel`) or stop the agents for its duration;
+jobs (`POST /api/jobs/{id}/cancel` — since
+[#360](https://github.com/onixus/Shapoclyack/issues/360) this also stops a scan
+an agent is already running, through `cancelling`) or stop the agents for its
+duration;
 #352 stays open for the claim-time gate.
 
 A refused **schedule** is deferred rather than skipped: `next_run_at` moves to

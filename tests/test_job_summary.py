@@ -62,13 +62,14 @@ def test_summary_counts_by_status_and_by_surface(settings):
 
     result = jobs_service.summary(settings)
 
-    # All six lifecycle states, zero-filled: a console renders a stable set of
+    # Every lifecycle state, zero-filled: a console renders a stable set of
     # tiles rather than one that appears as jobs happen to exist.
     assert set(result["by_status"]) == set(job_states.ALL)
     assert result["by_status"] == {
         "queued": 1,
         "claimed": 1,
         "running": 1,
+        "cancelling": 0,
         "succeeded": 1,
         "failed": 0,
         "cancelled": 0,

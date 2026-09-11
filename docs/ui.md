@@ -35,7 +35,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/attack-surface` | One scan's hostname → IP → port → service graph (not an attack path) | Viewer |
 | `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
 | `/endpoints` | Endpoint device/software inventory, CVE matches and the patch-gap panel | Viewer |
-| `/scans` | Scan operations across both surfaces: KPIs, launcher, job list with cancel and per-job record, recent runs. `/jobs` redirects here | Operator |
+| `/scans` | Scan operations across both surfaces: KPIs, launcher, job list with cancel (including a scan already running — see below) and per-job record, recent runs. `/jobs` redirects here | Operator |
 | `/scans/external` | External scans: internet-facing launcher (domains, public ranges, org profile, wordlists) and the jobs/runs classified `external` | Operator |
 | `/scans/internal` | Internal scans: private-range launcher, agent/endpoint context and the jobs/runs classified `internal` | Operator |
 | `/runs` | Tenant-scoped run history, filterable by surface (`?surface=external|internal|mixed|unknown`) | Viewer |
@@ -202,8 +202,15 @@ renders an absent value as internal: it shows **Unclassified**.
   twice, while an edited form is a new request (the API also compares a
   digest of the body and answers 409 when a key is reused for a different
   scan);
-- the job table with a **Cancel** action on queued/claimed jobs (the API
-  answers 409 once a job runs) and a per-job drawer: timeline and duration,
+- the job table with a **Cancel** action on queued, claimed and running jobs
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The confirm
+  dialog says which stop is being asked for: a queued job is simply never
+  handed out, while a running one has its agent asked to put the scan down on
+  its next heartbeat — that job shows as **cancelling** with an hourglass
+  until the agent confirms, and what the scan produced before it stopped is
+  kept. A scan running inside the API itself is refused with the API's reason
+  in the error toast. The button needs the `scan.cancel` permission. There is
+  also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains
   admitted and dropped, wordlist, agent, command line, links to the run and
   its findings. `/scans?job=<id>` opens the drawer directly;
