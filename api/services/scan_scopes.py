@@ -368,8 +368,15 @@ def required_agent_groups(
         # entry restricts anything, so no target has to be matched at all.
         return None
 
-    targets = [(value, KIND_CIDR) for value in split_target_lines(ranges_text)]
-    targets += [(value, KIND_DOMAIN) for value in split_target_lines(domains_text)]
+    # Classified by what the value *is*, not by the field it arrived in. An
+    # address typed into ``domains`` is still an address the scan will reach,
+    # and a wildcard domain entry covers it — so trusting the field would let
+    # ``10.1.2.3`` in the domains box walk straight past the group restriction
+    # on the ``10.1.0.0/16`` entry it sits inside.
+    targets = [
+        (value, KIND_CIDR if is_ip_or_cidr(value) else KIND_DOMAIN)
+        for value in [*split_target_lines(ranges_text), *split_target_lines(domains_text)]
+    ]
     if not targets:
         return None
 

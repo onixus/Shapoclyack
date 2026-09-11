@@ -237,6 +237,39 @@ def test_the_scope_entry_decides_which_group_may_reach_its_range(tmp_path, monke
     assert "office" in denied.json()["detail"]
 
 
+def test_the_restriction_follows_the_target_not_the_field_it_arrived_in(
+    tmp_path, monkeypatch
+):
+    """Defence in depth, asserted on the resolver itself.
+
+    ``parse_target_payload`` refuses an address in the domains field today, so
+    a scan cannot reach the resolver that way — but a wildcard domain entry
+    *does* cover ``10.1.2.3``, and had the requirement been derived from which
+    box a value was typed into, that one line would have escaped the group
+    restriction on the ``10.1.0.0/16`` entry it sits inside. The classification
+    is by what the value is, and this is what keeps it that way.
+    """
+    from api.services import scan_scopes
+
+    # The client is built for its side effect: it configures the services and
+    # seeds the default tenant that the scope below is written for.
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    approve_scan_scope(
+        settings,
+        entries=[
+            {"effect": "allow", "kind": "cidr", "value": "10.1.0.0/16", "agent_groups": ["pci"]},
+            {"effect": "allow", "kind": "domain", "value": "*"},
+        ],
+    )
+
+    required = scan_scopes.required_agent_groups(
+        settings, tenant_id="default", ranges_text=None, domains_text="10.1.2.3"
+    )
+    assert required == frozenset({"pci"})
+
+
 def test_targets_restricted_to_different_groups_cannot_be_scanned_together(
     tmp_path, monkeypatch
 ):
