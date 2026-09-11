@@ -18,7 +18,20 @@ All notable changes to Shapoclyack are documented in this file.
   platform's own re-scans are held to it — travels to the executor as a
   `scan_policy.json` input beside the targets (never in the broadcast NATS
   offer), and is applied by the scanner, where it can only ever *lower* what
-  the local config says. The `fragile` profile is the OT/ICS one and is a
+  the local config says — in every stage that reads a rate of its own, which
+  is the part that is easy to get wrong: the adaptive wave-2 pass that
+  re-probes the hosts which stayed silent and the verify pass that re-probes
+  alive hosts with no open ports (2500 and 1250 pps in the shipped config),
+  the probe ladder's TCP step, nuclei's rate limit and concurrency, and
+  naabu's own `-rate` when a batch is a single device, where the batch budget
+  and the per-host budget are the same number. `skip_service_probe` turns
+  nuclei off as well as NSE and pulse: it is the stage that sends HTTP
+  payloads. Writing a policy also holds that tenant's still-**queued** jobs to
+  the stricter of their frozen snapshot and the new document, and answers with
+  how many (`retightened_queued_jobs`) — the recurring scan queued at 02:00
+  and still waiting for a worker is the one an operator writing `fragile` at
+  09:00 means to catch; a claimed or running job is left alone, and deleting a
+  policy loosens nothing. The `fragile` profile is the OT/ICS one and is a
   **floor, not a default**: it forces `safe`, 100/50 pps, one host at a time,
   no service-probe stage and the fieldbus avoid-list, and a stored value is
   used only when it is stricter — so a policy cannot be raised out of its
@@ -27,7 +40,10 @@ All notable changes to Shapoclyack are documented in this file.
   `octo_scan_policy_refusals_total`). A job carrying a policy is handed only to
   an agent that declares the `scan_policy` capability; an older one is answered
   `426` and the job waits, because a ceiling an old worker silently ignored
-  would read as enforced and would not be. A tenant with **no** policy is
+  would read as enforced and would not be — and a worker pulling from NATS now
+  also asks the API directly once a minute when no offer arrives, so a job
+  whose offer was burned by the refusals of an agent that cannot take it is
+  still found rather than left queued for ever. A tenant with **no** policy is
   scanned exactly as before and needs no administrator action. Not done, so the
   issue stays open: no console UI (the policy is API-only), the agent does not
   echo back the policy digest it applied, and target exclusions are still the

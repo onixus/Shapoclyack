@@ -1494,8 +1494,10 @@ step-up, because the interesting direction is the loosening one, and the whole
 document lands in `audit_events` as `scan_policy.update`.
 
 `profile` is `standard` or `fragile`. **`fragile` is the OT/ICS profile and it
-is a floor, not a default**: it forces the `safe` speed profile, 100/50 pps,
-one host at a time, 25 pps per host, no service-probe stage, and an avoid-list
+is a floor, not a default**: it forces the `safe` speed profile, 100/50 pps
+across a batch, one host at a time, 25 pps at any single host (which is what
+the batch rate becomes when the batch is one device), no service-probe stage —
+nmap NSE, pulse and nuclei — and an avoid-list
 of fieldbus and building-automation ports (modbus 502, DNP3 20000, BACnet
 47808, S7 102, IEC-104 2404, EtherNet/IP 44818 and the rest — see
 `api/services/scan_policy.py`). A stored value is taken only when it is
@@ -1507,7 +1509,8 @@ Enforcement is in three places and none of them is the console:
 | Where | What |
 | --- | --- |
 | `jobs.start_scan` | Beside the quota, the scope and the calendar, so the recurring dispatcher and the platform's own re-scans are held to it too. A `safe-only` tenant asking for `balanced`/`fast`/`test` is **`403`**, and so is a scan naming a port on the avoid-list — refused rather than silently filtered, because an operator who asked to scan 502 should hear no rather than get results that omit it. The refusal is in `audit_events` as `scan.policy_block` and counted in `octo_scan_policy_refusals_total` |
-| The executor | The resolved policy is frozen onto the job and travels to whoever runs it as the `scan_policy.json` input, beside the targets and the approved scope — in the claim response, never in the broadcast NATS offer (#361). `scanner/pipeline/scan_policy.py` applies it onto the local config, where it can only ever *lower* a rate, union the port exclusions, or turn the service probe off |
+| The executor | The resolved policy is frozen onto the job and travels to whoever runs it as the `scan_policy.json` input, beside the targets and the approved scope — in the claim response, never in the broadcast NATS offer (#361). `scanner/pipeline/scan_policy.py` applies it onto the local config, where it can only ever *lower* a rate, union the port exclusions, or turn the service probe off. Every stage that reads a rate of its own is covered: the two discovery passes after wave 1, the probe ladder's TCP step, nuclei's rate limit and concurrency, and naabu's own `-rate` when a batch is a single host |
+| The `PUT` itself | Jobs of that tenant still in `queued` are held to the stricter of their frozen snapshot and the new policy, and the response says how many (`retightened_queued_jobs`). Tightening only, and never a job already claimed: the night's scan that has not started yet is the one an operator writing `fragile` in the morning means to catch, and a scan already handed to a worker is answerable for the document it was handed |
 | `claim_job` | A job whose tenant has a policy is handed only to an agent that declares the `scan_policy` capability. Anything else gets **`426`**, the same status the version floor uses, and the job stays queued for a worker that can pace itself. A ceiling an older agent silently ignored would read as enforced and would not be |
 
 A schedule the policy forbids is **skipped** at dispatch (`skipped_policy` in

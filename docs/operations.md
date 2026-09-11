@@ -260,10 +260,46 @@ scanning, one host at a time, 25 pps at any single host, the service-probe
 stage off, and an avoid-list of fieldbus ports (modbus 502, DNP3 20000, BACnet
 47808, S7 102, IEC-104 2404, EtherNet/IP 44818 and the rest, in
 `api/services/scan_policy.py`). These are floors: a stored value is used only
-when it is stricter, and the avoid-lists are unioned. **Budget hours, not
-minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
+when it is stricter, and the avoid-lists are unioned.
+
+What each of those numbers covers, because a ceiling that holds for one stage
+and not the next is not a ceiling:
+
+* **100 pps discovery** is all three discovery passes — wave 1, the adaptive
+  wave 2 that re-probes the hosts which stayed silent (on a plant floor, the
+  controllers), and the verify pass that re-probes alive hosts with no open
+  ports. The shipped `default.yaml` gives the last two 2500 and 1250 pps of
+  their own; the policy lowers those too, and so is the rate the TCP step of
+  the probe ladder uses.
+* **25 pps at any single host** is the per-host figure, and naabu's `-rate` is
+  a budget for a whole batch. When the batch is one host — which is the shape a
+  fragile scan has, one device at a time — discovery and the port stage hold
+  that batch to the per-host figure instead. A batch of many hosts keeps the
+  batch budget: lowering it to 25 would make the scan as many times longer as
+  it has hosts.
+* **The service-probe stage off** means nmap NSE, pulse *and nuclei*. Nuclei is
+  the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
+  templates at whatever web interface an engineering station exposes — so a
+  fragile run turns it off entirely. For a tenant that is throttled rather than
+  silenced, `nuclei.rate_limit` is held to `per_host_rate` and
+  `nuclei.concurrency` to `max_host_concurrency`.
+
+**Budget hours, not minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
 alternative it is measured against is not scanning the plant at all. If a
 fragile scan has to fit a window, narrow the targets rather than the policy.
+
+**Jobs already in the queue when the policy is written.** They are caught too:
+the `PUT` holds every job of that tenant still in `queued` to the stricter of
+its frozen snapshot and the new policy, and answers with how many
+(`retightened_queued_jobs`). This matters for the one case the feature is
+bought for — the recurring scan queued at 02:00 that was still waiting for an
+offline worker when somebody was told at 09:00 that the segment is a plant
+floor. It is tightening only: a job that already carried a stricter ceiling
+keeps it, a running or claimed job is not re-paced under the worker executing
+it, and *deleting* a policy leaves the frozen snapshots alone. A job that had
+no policy at all now has one, which means it also now needs an agent with the
+`scan_policy` capability — the count in the response is where an operator sees
+how many scans that is, and #360 gives them the cancel.
 
 **Rolling it out to an existing fleet.** A job carrying a policy is handed only
 to an agent that reports the `scan_policy` capability; anything older is
@@ -273,7 +309,12 @@ in the queue. The symptoms are visible in three places — the agent's own
 journal (the `426` detail names the capability), the queue (the job stays
 `queued`), and `octo_scan_policy_refusals_total{reason="agent_unsupported"}`,
 which is the series to alert on because nobody is told about it
-interactively. Tenants with **no** policy are unaffected and are served by
+interactively. In NATS mode the wait is bounded rather than indefinite: the
+offer is published once and an agent refused the job NAKs it, so a mixed fleet
+can burn the offer's delivery attempts — since #362 a worker pulling from NATS
+also asks the API directly once a minute when no offer arrives, which is how
+queued work whose offer is gone is found. Tenants with **no** policy are
+unaffected and are served by
 agents of any version, which is every tenant until somebody writes one.
 
 **What this does not prove.** The ceilings are applied by the process that
