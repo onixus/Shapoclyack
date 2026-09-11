@@ -231,6 +231,61 @@ belong in the agent's network policy as well, not only here. The pipeline
 filter runs in the same process as the scan and is a control over what that
 process aims at, not a boundary around what it can reach.
 
+## Scan policy and the OT profile
+
+The scope above decides what a tenant may be pointed at. Since
+[#362](https://github.com/onixus/Shapoclyack/issues/362) a tenant also has a
+**scan policy** (`tenant_scan_policies`, migration `0053`) that decides how
+hard: rate ceilings, host concurrency, a per-host pace, ports that must never
+be touched, and whether anything but the `safe` speed profile may run. It is
+written through `PUT /api/tenants/{id}/scan-policy` — see
+[api-and-rbac.md](api-and-rbac.md#scan-policy-how-hard-a-tenant-may-be-scanned)
+for the document and the permissions.
+
+**What changed operationally.** Before this, the API sent a remote agent
+`--mode` and nothing else; every rate came from
+`scanner/config/default.yaml` *on the agent's host* — 2000 packets per second
+for `safe` discovery. That file is still read, and it is still what a
+standalone `python -m scanner.main` uses, but it is now the **fallback, not the
+decision**: when a tenant has a policy, the API writes it beside the job's
+target files and the pipeline applies it on top of the local config, where it
+can only ever lower a rate, add a port exclusion, or turn the service-probe
+stage off. An installation that has hardened its own `default.yaml` keeps the
+hardening; a policy cannot raise it.
+
+**The `fragile` profile is for somebody else's production.** It is meant for
+OT/ICS estates — plant networks, building automation — and it forces, on top of
+whatever is stored: the `safe` speed profile, 100 pps discovery, 50 pps port
+scanning, one host at a time, 25 pps at any single host, the service-probe
+stage off, and an avoid-list of fieldbus ports (modbus 502, DNP3 20000, BACnet
+47808, S7 102, IEC-104 2404, EtherNet/IP 44818 and the rest, in
+`api/services/scan_policy.py`). These are floors: a stored value is used only
+when it is stricter, and the avoid-lists are unioned. **Budget hours, not
+minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
+alternative it is measured against is not scanning the plant at all. If a
+fragile scan has to fit a window, narrow the targets rather than the policy.
+
+**Rolling it out to an existing fleet.** A job carrying a policy is handed only
+to an agent that reports the `scan_policy` capability; anything older is
+answered `426` on claim and the job waits. So: upgrade the workers of a tenant
+*before* writing its first policy, or the first scan after the write will sit
+in the queue. The symptoms are visible in three places — the agent's own
+journal (the `426` detail names the capability), the queue (the job stays
+`queued`), and `octo_scan_policy_refusals_total{reason="agent_unsupported"}`,
+which is the series to alert on because nobody is told about it
+interactively. Tenants with **no** policy are unaffected and are served by
+agents of any version, which is every tenant until somebody writes one.
+
+**What this does not prove.** The ceilings are applied by the process that
+sends the packets. The API can refuse work to an agent that does not claim to
+support policies, and it records the document each job was admitted under
+(`scan_options.scan_policy`, with a `digest`), but it cannot verify from the
+outside that a worker on somebody else's host actually paced itself — the agent
+does not yet echo back the policy it applied. An agent binary you do not trust
+is a trust problem, not a rate-limit problem: treat the policy as a control
+over what the platform *asks* for, and the agent's host as part of the trust
+boundary, exactly as with the scan scope's third barrier above.
+
 ## Maintenance windows and the change freeze
 
 Since #352 a tenant has a calendar (`maintenance_windows`, migration `0048`)
