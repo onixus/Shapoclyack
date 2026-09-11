@@ -237,6 +237,11 @@ ports:
   custom_udp_ports_file: scanner/inputs/ports_udp.txt
   top_udp_ports: 100
   udp_probes: true
+  # Ports no scan started from this config may touch (naabu -exclude-ports).
+  # Empty here; a tenant's scan policy (#362) adds its own — the OT/ICS profile
+  # contributes modbus/DNP3/BACnet and friends — and the two are unioned, so an
+  # entry written here survives whatever the API pushes.
+  exclude_ports: []
 
 # ssl-enum-ciphers must be present in the active profile's `scripts` for
 # weak-cipher/protocol TLS posture findings (Phase 9.2) to populate; cert

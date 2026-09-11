@@ -199,6 +199,7 @@ def _run_naabu(
     protocol: ScanProtocol,
     udp_probes: bool,
     scan_type: NaabuScanType = "auto",
+    exclude_ports: list[int] | None = None,
 ) -> list[str]:
     input_file = batch_dir / f"{tag}.hosts.txt"
     output_file = batch_dir / f"{tag}.open.txt"
@@ -226,6 +227,13 @@ def _run_naabu(
         "1",
         *port_args,
     ]
+    if exclude_ports:
+        # The ports this run must not touch (#362) — a tenant's OT avoid-list,
+        # or a local exclusion. naabu drops them from whatever ``-p`` or
+        # ``-top-ports`` selected, so this is the one place that has to be
+        # right: every later stage only ever sees the ports this command
+        # reports open.
+        command.extend(["-exclude-ports", ",".join(str(p) for p in sorted(set(exclude_ports)))])
     if protocol == "udp" and udp_probes:
         command.append("-uP")
 
@@ -250,15 +258,22 @@ def fast_port_scan(
     udp_probes: bool,
     tag: str = "all",
     scan_type: NaabuScanType = "auto",
+    exclude_ports: list[int] | None = None,
 ) -> list[str]:
     """Run naabu port scan(s) for a batch of alive hosts.
 
     ``protocol_mode`` is one of ``tcp``, ``udp``, or ``tcp_udp``. Results use
     ``host:port/tcp`` or ``host:port/udp`` (plain ``host:port`` from naabu is
     normalized with the active protocol suffix).
+
+    ``exclude_ports`` is ``ports.exclude_ports`` — the ports this run must not
+    touch (#362). It reaches naabu as ``-exclude-ports`` for both protocols,
+    which naabu applies to whatever ``-p`` or ``-top-ports`` selected, so an
+    excluded port is not scanned even when the custom port file names it.
     """
     batch_dir = output_dir / "ports"
     results: list[str] = []
+    excluded = sorted({int(p) for p in (exclude_ports or [])})
 
     if protocol_mode in ("tcp", "tcp_udp"):
         suffix = tag if protocol_mode == "tcp" else f"{tag}-tcp"
@@ -279,6 +294,7 @@ def fast_port_scan(
                 protocol="tcp",
                 udp_probes=False,
                 scan_type=scan_type,
+                exclude_ports=excluded,
             )
         )
 
@@ -301,6 +317,7 @@ def fast_port_scan(
                 protocol="udp",
                 udp_probes=udp_probes,
                 scan_type=scan_type,
+                exclude_ports=excluded,
             )
         )
 

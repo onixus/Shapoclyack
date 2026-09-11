@@ -59,6 +59,16 @@ LOG = logging.getLogger("octo-agent")
 # to survive a few missed heartbeats, not just one.
 HEARTBEAT_INTERVAL_SECONDS = 60.0
 
+# What this build promises the API it can honour, reported on register and on
+# every heartbeat. ``scan_policy`` means: when a claim carries a
+# ``scan_policy.json`` input, this worker passes it to the scanner as
+# ``--scan-policy``, where the tenant's rate ceilings and port avoid-list are
+# applied on top of the local config (#362). The API refuses to hand a job
+# whose tenant has a policy to an agent that does not declare this — a ceiling
+# an older worker silently ignores would read as enforced and would not be.
+# Kept equal to api/services/scan_policy.AGENT_CAPABILITY.
+CAPABILITIES: tuple[str, ...] = ("scan_policy",)
+
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"
 CONSUMER_AGENTS_PREFIX = "octo-agents"
@@ -524,6 +534,11 @@ class AgentClient:
             "hostname": hostname,
             "version": __version__,
             "labels": labels,
+            # Sent at registration as well as on every heartbeat: a job whose
+            # tenant has a scan policy is refused to an agent that has not
+            # declared it can apply one (#362), and this process claims before
+            # its first beat.
+            "capabilities": list(CAPABILITIES),
         }
         return self._request(
             "POST",
@@ -546,6 +561,10 @@ class AgentClient:
             "current_job_id": current_job_id,
             "detail": detail,
             "metrics": metrics or _collect_system_metrics(),
+            # On *every* heartbeat, not only the first: the API stores the list
+            # it was last told, so a beat that omitted it would clear this
+            # agent's capabilities and cost it the jobs that need one (#362).
+            "capabilities": list(CAPABILITIES),
         }
         return self._request(
             "POST",
@@ -660,6 +679,17 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         scope_path = workdir / "scan_scope.json"
         scope_path.write_text(inputs["scan_scope.json"], encoding="utf-8")
         args.extend(["--scan-scope", str(scope_path)])
+    if "scan_policy.json" in inputs:
+        # The tenant's scan policy (#362): rate ceilings, host concurrency and
+        # the ports this run must not touch, decided by the API. Handed through
+        # unread like the scope above — the pipeline applies it onto the local
+        # config, where it can only ever lower a rate, and this worker has no
+        # opinion about it. The ``scan_policy`` capability this agent declares
+        # is the promise to pass it on; an agent that did not would be refused
+        # the job on claim.
+        policy_path = workdir / "scan_policy.json"
+        policy_path.write_text(inputs["scan_policy.json"], encoding="utf-8")
+        args.extend(["--scan-policy", str(policy_path)])
     if "promoted_domains.txt" in inputs:
         # Related domains the tenant promoted (org_profile M4). Also handed
         # through unread: the pipeline merges them into its name scope and

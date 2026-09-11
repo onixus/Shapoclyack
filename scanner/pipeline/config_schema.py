@@ -356,6 +356,13 @@ class PortsConfig(BaseModel):
     custom_udp_ports_file: str = "scanner/inputs/ports_udp.txt"
     top_udp_ports: int = Field(default=100, ge=1, le=65535)
     udp_probes: bool = True
+    # Ports no scan of this installation may send a packet to (#362). Empty by
+    # default; a tenant's scan policy fills it with the fieldbus ports of its
+    # OT profile, and the value is unioned rather than replaced, so a local
+    # exclusion survives the policy. Passed to naabu as ``-exclude-ports``,
+    # which it applies on top of whatever ``-p``/``-top-ports`` selected — so
+    # an excluded port stays unscanned even when a custom port file names it.
+    exclude_ports: list[int] = Field(default_factory=list)
     # naabu's own -s default is "c" (CONNECT) -- it never probes for privileges,
     # so leaving the flag off means the CAP_NET_RAW the images grant naabu
     # (setcap in the Dockerfiles, capabilities.add in the manifests) is paid for
