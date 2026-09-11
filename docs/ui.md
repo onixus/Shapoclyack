@@ -208,8 +208,15 @@ renders an absent value as internal: it shows **Unclassified**.
   handed out, while a running one has its agent asked to put the scan down on
   its next heartbeat — that job shows as **cancelling** with an hourglass
   until the agent confirms, and what the scan produced before it stopped is
-  kept. A scan running inside the API itself is refused with the API's reason
-  in the error toast. The button needs the `scan.cancel` permission. There is
+  kept. Asking again for a job that is already `cancelling` changes nothing:
+  the API answers the job as it stands rather than declaring a stop nobody has
+  confirmed, which is why the button is hidden in that state and why a second
+  tab clicking it is harmless. A scan running inside the API itself is refused
+  with the API's reason in the error toast. The button needs the `scan.cancel`
+  permission and nothing else — a `scan-operator`, or an on-call granted that
+  permission alone, sees it, and the `/scans` pages open for them too. (The
+  sidebar still lists those pages by the *global* role, so such an account
+  reaches them by link rather than from the menu.) There is
   also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains
   admitted and dropped, wordlist, agent, command line, links to the run and

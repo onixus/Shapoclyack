@@ -361,3 +361,197 @@ def test_a_local_scan_that_has_started_is_refused_with_the_reason(tmp_path):
         jobs_service.cancel_job(settings, job.job_id, username="operator")
     assert "local scan" in str(exc.value)
     assert jobs_service.get_job(settings, job.job_id).status == job_states.RUNNING
+
+
+# --- Asking twice, and the retry of the answer ------------------------------
+
+
+def test_asking_a_second_time_does_not_stop_a_scan_nobody_stopped(tmp_path, monkeypatch):
+    """The list refreshes every four seconds, so two operators — or one proxy
+    retry — reach this endpoint on a job that is already `cancelling` all the
+    time. `cancelling` is not in `IN_FLIGHT`, so the naive reading of that is
+    "queued, cancel it outright": the API would write `cancelled` and clear the
+    flag before the agent had read it, leaving a scan running for two hours
+    under a row that says it stopped."""
+    client = _client(tmp_path, monkeypatch)
+    auth = auth_headers(client, "operator")
+    agent_id, job_id, run_id = _running_agent_job(client, auth)
+
+    first = client.post(f"/api/jobs/{job_id}/cancel", headers=auth)
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "cancelling"
+
+    again = client.post(f"/api/jobs/{job_id}/cancel", headers=auth_headers(client, "admin"))
+    assert again.status_code == 200, again.text
+    body = again.json()
+    assert body["status"] == "cancelling"
+    # Not terminalized, and the reason still names whoever actually asked.
+    assert body["finished_at"] is None
+    assert body["error"] == "Cancellation requested by operator"
+
+    # The instruction is still on its way: the agent has not been told yet, and
+    # this is the only channel that can tell it.
+    beat = client.post(
+        "/api/agent/heartbeat",
+        headers=_agent_headers(),
+        json={"agent_id": agent_id, "status": "busy", "current_job_id": job_id},
+    )
+    assert beat.json()["cancel_requested"] is True
+
+    # ...and the confirmation is still accepted, with the results it carries.
+    done = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={
+            "agent_id": agent_id,
+            "exit_code": "143",
+            "run_id": run_id,
+            "cancelled": "true",
+        },
+        files={"archive": ("run.tar.gz", _archive("findings.json"), "application/gzip")},
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "cancelled"
+
+
+def test_a_retried_confirmation_upload_is_answered_with_the_stored_outcome(
+    tmp_path, monkeypatch
+):
+    """Confirming a cancellation *is* an upload now (#360), so it inherits the
+    problem P1.5 solved for every other upload: the bytes land, the response is
+    lost to a timeout, and the agent retries with the same deterministic key.
+    Refusing that retry tells an agent that obeyed the stop that its upload
+    failed, and the partial results it carries are dropped on the floor."""
+    client = _client(tmp_path, monkeypatch)
+    auth = auth_headers(client, "operator")
+    agent_id, job_id, run_id = _running_agent_job(client, auth)
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=auth).status_code == 200
+
+    def _upload() -> object:
+        return client.post(
+            f"/api/agent/jobs/{job_id}/results",
+            headers=_agent_headers(),
+            data={
+                "agent_id": agent_id,
+                "exit_code": "143",
+                "run_id": run_id,
+                "cancelled": "true",
+                # What the worker derives from (agent, job, run, exit code), so
+                # the retry of a lost response carries exactly this again.
+                "idempotency_key": f"{agent_id}:{job_id}:{run_id}:143",
+            },
+            files={"archive": ("run.tar.gz", _archive("findings.json"), "application/gzip")},
+        )
+
+    first = _upload()
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "cancelled"
+
+    retry = _upload()
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["status"] == "cancelled"
+    assert retry.json()["finished_at"] == first.json()["finished_at"]
+
+
+def test_a_late_result_for_a_cancellation_nobody_confirmed_is_still_refused(
+    tmp_path, monkeypatch
+):
+    """The replay above is recognised by the key the first upload stored. An
+    upload with no key — or a different one — arriving at a job the reaper
+    finished is a different thing: nothing here produced that outcome, so it
+    meets the transition check, and the refusal names what was reported rather
+    than inventing a failure the agent never claimed."""
+    client = _client(tmp_path, monkeypatch)
+    auth = auth_headers(client, "operator")
+    agent_id, job_id, run_id = _running_agent_job(client, auth)
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=auth).status_code == 200
+
+    settings = _settings(tmp_path)
+    settings.job_cancel_grace_seconds = 1
+    _age_cancellation(settings, job_id, 300)
+    assert jobs_service.reap_stale_cancellations(settings) == 1
+
+    late = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={
+            "agent_id": agent_id,
+            "exit_code": "143",
+            "run_id": run_id,
+            "cancelled": "true",
+            "idempotency_key": f"{agent_id}:{job_id}:{run_id}:143",
+        },
+    )
+    assert late.status_code == 422, late.text
+    detail = late.json()["detail"]
+    assert "already cancelled" in detail
+    # The agent reported a cancellation; telling it the job "cannot move ... to
+    # failed" would name an outcome nobody claimed.
+    assert "to failed" not in detail
+
+
+def test_a_confirmed_cancellation_still_says_who_asked_for_it(tmp_path, monkeypatch):
+    """docs/api-and-rbac.md promises the reason lives in `error`, and for a
+    finished job that is the only place on the row where it lives: the agent's
+    upload used to write its own string over "Cancellation requested by X" —
+    or, sending none, write NULL — leaving "who stopped my scan at 3am" one hop
+    away in the audit trail."""
+    client = _client(tmp_path, monkeypatch)
+    auth = auth_headers(client, "operator")
+    agent_id, job_id, run_id = _running_agent_job(client, auth)
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=auth).status_code == 200
+
+    done = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={
+            "agent_id": agent_id,
+            "exit_code": "143",
+            "run_id": run_id,
+            "cancelled": "true",
+            "error": "scanner signalled",
+        },
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["error"] == "Cancellation requested by operator; scanner signalled"
+
+    # ...and an agent that reports no string of its own does not erase it.
+    other_agent, other_job, other_run = _running_agent_job(client, auth)
+    assert client.post(f"/api/jobs/{other_job}/cancel", headers=auth).status_code == 200
+    silent = client.post(
+        f"/api/agent/jobs/{other_job}/results",
+        headers=_agent_headers(),
+        data={
+            "agent_id": other_agent,
+            "exit_code": "143",
+            "run_id": other_run,
+            "cancelled": "true",
+        },
+    )
+    assert silent.status_code == 200, silent.text
+    assert silent.json()["error"] == "Cancellation requested by operator"
+
+
+def test_the_grace_period_cannot_be_set_below_what_an_agent_can_answer_in(monkeypatch):
+    """The stop reaches the agent on a heartbeat and the reaper only looks once
+    a tick, so a grace shorter than "already declared offline, plus one sweep"
+    is one no cooperating agent can answer inside. The old floor of 5s allowed
+    an administrator who wanted cancellations to feel faster to make every one
+    of them `unconfirmed` — the slo.md alert on each click, and the agent's
+    honest confirmation a minute later meeting a finished job."""
+    from api.settings import load_settings
+
+    monkeypatch.delenv("OCTO_AGENT_STALE_SECONDS", raising=False)
+    monkeypatch.delenv("OCTO_JOB_REAPER_INTERVAL_SECONDS", raising=False)
+    monkeypatch.setenv("OCTO_JOB_CANCEL_GRACE_SECONDS", "30")
+    assert load_settings().job_cancel_grace_seconds == 180
+
+    # Derived, not a constant: an installation that slows its agents down moves
+    # the floor with them.
+    monkeypatch.setenv("OCTO_AGENT_STALE_SECONDS", "300")
+    monkeypatch.setenv("OCTO_JOB_REAPER_INTERVAL_SECONDS", "120")
+    assert load_settings().job_cancel_grace_seconds == 420
+
+    # Anything above the floor is the administrator's business.
+    monkeypatch.setenv("OCTO_JOB_CANCEL_GRACE_SECONDS", "900")
+    assert load_settings().job_cancel_grace_seconds == 900

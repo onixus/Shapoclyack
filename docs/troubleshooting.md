@@ -80,7 +80,10 @@ it sends will ever terminalize the job. The reaper finishes such a job as
 confirm"* into `error`; that message means the row is closed but the scan may
 still be running on the agent host, so check the agent (and upgrade it) rather
 than assuming the targets were left alone. A `cancelling` job is never requeued
-and never handed to a second agent.
+and never handed to a second agent. If *every* cancellation ends this way it is
+the agents, not the clock: `OCTO_JOB_CANCEL_GRACE_SECONDS` is floored at
+`OCTO_AGENT_STALE_SECONDS` + `OCTO_JOB_REAPER_INTERVAL_SECONDS`, so it can no
+longer be set shorter than the heartbeat the instruction travels on.
 
 Jobs that bounce between `queued` and `claimed` and then fail with *"Lease
 expired after N attempt(s)"* are killing whichever agent picks them up. Check

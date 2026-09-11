@@ -1786,6 +1786,10 @@ def cancel_job(
       ``reap_stale_cancellations`` — writes the terminal state. The API says
       "stopping", not "stopped", because at this moment it has not been told
       the scan stopped.
+    - ``cancelling`` -> itself, unchanged. The stop has been asked for and the
+      clock on it is running; re-asking is not a second decision. A stale
+      console, a second operator or a retried POST must not be able to
+      terminalize a scan nobody has confirmed stopped.
 
     A ``running`` **local** job is still refused, and by execution rather than
     by state: its scanner is a ``subprocess`` in one replica's thread, which
@@ -1808,6 +1812,17 @@ def cancel_job(
         if tenant_id is not None and job_tenant != tenant_id:
             raise PermissionError("Cross-tenant job access denied")
         before = row.status
+        if before == job_states.CANCELLING:
+            # Idempotent, and deliberately *before* the transition table gets a
+            # say: `cancelling` is not in IN_FLIGHT, so the target below would
+            # be computed as `cancelled` — a legal move that would have the
+            # API report a stop nobody confirmed, clear `cancel_requested`
+            # before the agent has read it, and collapse the grace period to
+            # nothing. Two consoles four seconds apart, or one proxy retry,
+            # are enough to reach here; the answer is the job as it stands.
+            _log.info("Job %s is already stopping; %s's request is a no-op", job_id, username)
+            result = _to_info(row)
+            return result
         if before in job_states.IN_FLIGHT and row.execution != "agent":
             raise job_states.InvalidJobTransition(
                 f"Job {job_id} is {before} in the API process itself; a local scan "
@@ -1929,8 +1944,15 @@ def _classify_replay(
 
     Returns the stored outcome for a replay, raises ``ResultsConflict`` for an
     upload that contradicts it, and returns ``None`` when this is not a replay
-    question at all (a cancelled job, say) so the caller's normal transition
-    check produces the error.
+    question at all, so the caller's normal transition check produces the
+    error.
+
+    A ``cancelled`` job is the narrow case (#360). Since a confirmed
+    cancellation *is* an upload, its retry is a replay like any other — but
+    only an exact key proves that. Without one, this is a late result for a
+    stop the row never recorded a confirmation of (the reaper's row carries no
+    key), and that still meets the transition check rather than being answered
+    with an outcome it did not produce.
 
     With a key, the comparison is exact. Without one — older agents, and the
     legacy shared-token path — the fallback is the natural key: the same agent
@@ -1939,6 +1961,8 @@ def _classify_replay(
     because a different result carries a different exit code.
     """
     if row.status == job_states.CANCELLED:
+        if idempotency_key and row.results_idempotency_key == idempotency_key:
+            return _replayed(row)
         return None
     if idempotency_key:
         if row.results_idempotency_key == idempotency_key:
@@ -1951,6 +1975,21 @@ def _classify_replay(
     if row.exit_code == exit_code:
         return _replayed(row)
     return None
+
+
+def _merge_cancellation_reason(requested: str | None, reported: str | None) -> str | None:
+    """Keep "Cancellation requested by X" when the agent confirms the stop (#360).
+
+    ``requested`` is what ``cancel_job`` wrote and is ``None`` for every
+    outcome that is not a confirmed cancellation, which makes this the plain
+    truncation the other paths always did. For a cancellation it is the only
+    place the actor survives after the job is finished: without it the agent's
+    string — or, when it sends none, ``NULL`` — is all a drawer shows for a
+    scan somebody deliberately stopped, and "who killed my scan at 3am" is a
+    hop away in the audit trail instead of being on the job.
+    """
+    merged = "; ".join(part for part in (requested, reported) if part)
+    return merged[:2000] or None
 
 
 def _replayed(row: models.Job) -> JobInfo:
@@ -2024,9 +2063,15 @@ def complete_job(
             # to retire any job it holds as "cancelled" — and the honest
             # reading of a scan that stopped for the agent's own reasons is a
             # failure, which is what the exit code already says.
+            #
+            # A row already ``cancelled`` is included so that an upload this
+            # function is about to refuse is refused for what it reported: a
+            # retry whose key does not match is a second cancellation result,
+            # and telling its agent the job "cannot move from cancelled to
+            # failed" would name an outcome nobody claimed.
             status = (
                 job_states.CANCELLED
-                if row.status == job_states.CANCELLING
+                if row.status in (job_states.CANCELLING, job_states.CANCELLED)
                 else status
             )
         if row.status in job_states.TERMINAL:
@@ -2055,6 +2100,11 @@ def complete_job(
         # and re-publish to NATS before being rejected.
         if replay_result is None:
             job_states.check_transition(job_id, row.status, status)
+        # Read under the lock, for the same reason the surface below is: the
+        # confirming upload is the only writer that would otherwise erase who
+        # asked for the stop, and `error` is where docs/api-and-rbac.md says
+        # that reason lives for the life of the job (#360).
+        requested_reason = row.error if status == job_states.CANCELLED else None
         resolved_run_id = _confirm_run_id(row.run_id, run_id)
         # Read here rather than re-fetched at the write below: the row is
         # already loaded and locked, and the surface was decided at start_scan.
@@ -2132,7 +2182,7 @@ def complete_job(
             finished_at=_now(),
             exit_code=exit_code,
             run_id=str(resolved_run_id) if resolved_run_id else None,
-            error=(error[:2000] if error else None),
+            error=_merge_cancellation_reason(requested_reason, error),
             # Recorded with the outcome, so a later upload can be told apart from
             # the one that produced it.
             results_idempotency_key=(idempotency_key or None),

@@ -34,7 +34,9 @@ import { jobSurface } from "@/lib/scan-surface";
  * A running scan is cancellable since #360: the request reaches the agent on
  * its next heartbeat. `cancelling` is deliberately not — the stop has already
  * been asked for, and a second click would do nothing but suggest the first
- * one did not land. A local scan that has started is refused by the API with a
+ * one did not land. (The API answers a repeat with the job unchanged, so a
+ * second tab clicking it is harmless; this only keeps the console from
+ * offering it.) A local scan that has started is refused by the API with a
  * 409 and its reason; the console does not know the execution mode early
  * enough to hide the button, so the refusal is what says so.
  */
@@ -71,6 +73,8 @@ export function JobsTable({
   isFetching?: boolean;
   pagination: PaginationState;
   showSurface: boolean;
+  /** The rank gate, used only as the fallback for an API that sends no
+   * permission list; `scan.cancel` is what actually shows the action. */
   canOperate: boolean;
   /** Open this job's drawer on mount (deep link from the command palette). */
   initialJobId?: string | null;
@@ -82,11 +86,14 @@ export function JobsTable({
   const [deepLinked, setDeepLinked] = useState<string | null>(initialJobId ?? null);
   const [cancelTarget, setCancelTarget] = useState<JobInfo | null>(null);
   const cancel = useCancelJob();
-  // `scan.cancel` since #360, falling back to the rank the button used to be
-  // gated on so an API older than #318 (which sends no permission list) keeps
-  // showing it to the operators it always did. The API is the boundary either
-  // way.
-  const canCancel = useAuthStore((s) => canOperate && holdsPermission(s.user, "scan.cancel", true));
+  // The permission decides, and the rank is only what to answer when there is
+  // no permission list to read — an API older than #318 — so the button keeps
+  // showing to the operators it always did. Gating on *both* was the bug: the
+  // rank here is the global role, and `scan-operator` (the role an
+  // installation grants for "runs scans", #318) holds it as a viewer, so the
+  // API accepted their stop while the console hid the button docs/ui.md
+  // promises them. The API is the boundary either way.
+  const canCancel = useAuthStore((s) => holdsPermission(s.user, "scan.cancel", canOperate));
 
   const columns = useMemo<ColumnDef<JobInfo>[]>(() => {
     const cols: ColumnDef<JobInfo>[] = [

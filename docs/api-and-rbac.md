@@ -710,14 +710,22 @@ What comes back says what was actually stopped:
   reaches the agent on its next heartbeat, the agent signals its scanner's
   process group and uploads whatever the run produced with `cancelled=true`,
   and only that upload — or the grace period expiring — makes the job
-  `cancelled`. Partial results are ingested and kept; they do not feed the
+  `cancelled`. That upload is idempotent like any other: a retry carrying the
+  same `Idempotency-Key` is answered with the stored outcome rather than with a
+  conflict. Partial results are ingested and kept; they do not feed the
   vulnerability tracker or the notification channels, because a partial sweep
   read as a complete one would report hosts a scan never reached as gone;
+- a job already `cancelling` answers `200` with that job unchanged. The stop
+  stands and its grace period is already running, so asking again is not a
+  second decision — and terminalizing here would report a stop no agent has
+  confirmed and clear the flag before it was read;
 - a `running` **local** job answers `409` and says why: it is a subprocess
   inside one API replica, so there is nothing this request can signal;
 - a finished job answers `409`.
 
-The reason is recorded in `error`, and the request writes a `scan.cancel` row
+The reason is recorded in `error` and survives the agent's confirmation: what
+the agent reports is appended to it rather than written over it, so a finished
+`cancelled` job still says who asked. The request also writes a `scan.cancel` row
 to `audit_events` carrying the actor and the status the job was in. See the job
 lifecycle in [architecture.md](architecture.md#job-lifecycle) for the full state
 set.
