@@ -1758,6 +1758,22 @@ def start_scan(
     )
     try:
         with get_session(settings.postgres_url) as session:
+            if agent_group:
+                # Re-asked here, holding the group row, rather than trusted
+                # from the resolution above: that ran on a connection of its
+                # own and this insert is another, so a concurrent
+                # ``DELETE /api/agent-groups/{name}`` could count the pending
+                # jobs of the group, find this one not yet inserted, and take
+                # the row. What was left is a ``queued`` job addressed to a
+                # group that is gone — no agent can be put into one, so it is
+                # claimed by nobody, shows ``agent_group_unavailable`` in the
+                # console and raises no error anywhere (#361).
+                if not agent_groups_service.lock_existing_names(
+                    session, tenant_id=tenant_id, names={agent_group}
+                ):
+                    raise ValueError(
+                        f"Unknown agent_group for tenant {tenant_id}: {agent_group}"
+                    )
             session.add(row)
             session.flush()
             info = _to_info(
@@ -1771,6 +1787,14 @@ def start_scan(
                     else None
                 ),
             )
+    except ValueError:
+        # The group this scan is addressed to went while the row was being
+        # written. Nothing became a job, so the input files staged for it —
+        # and the merged config beside them — would be read by nobody;
+        # discarded here the way the idempotency loser's are.
+        _discard_job_wordlist(settings, job_id)
+        _discard_job_inputs(settings, job_id)
+        raise
     except IntegrityError:
         # Lost the race on (tenant_id, idempotency_key): another replica — or
         # this one, serving the client's retry concurrently — already created

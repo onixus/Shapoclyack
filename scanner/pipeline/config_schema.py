@@ -144,7 +144,12 @@ class IcmpDiscoveryConfig(BaseModel):
     tool: Literal["fping"] = "fping"
     timeout_ms: int = Field(default=500, ge=50, le=30_000)
     retries: int = Field(default=1, ge=0, le=10)
-    period_ms: int | None = Field(default=None, ge=0, le=10_000)
+    # Milliseconds between the packets fping sends (its ``-i``): the pace of
+    # the ladder's first step, and the one a scan policy's ``max_discover_rate``
+    # is translated into (``scan_policy.apply_policy``). Unset means fping's own
+    # 10ms; 1 is the floor because fping refuses anything smaller ("you need
+    # -i >= 1", exit 1) and the step reads that empty output as nobody alive.
+    period_ms: int | None = Field(default=None, ge=1, le=10_000)
 
 
 class TcpProbeDiscoveryConfig(BaseModel):

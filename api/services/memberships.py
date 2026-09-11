@@ -36,6 +36,7 @@ back. Nothing about the existing three changed, so no grant written before
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -220,13 +221,38 @@ def default_tenant_for_user(username: str, *, is_platform_admin: bool = False) -
     return allowed[0] if allowed else tenants_service.DEFAULT_TENANT_ID
 
 
+@dataclass(frozen=True)
+class TenantResolution:
+    """Which tenant a request acts in, the role it carries there, and the
+    tenant's own state.
+
+    ``status`` is read in the same query as the membership on purpose. It used
+    to be a second ``SELECT`` per request
+    (:func:`api.services.tenants.require_active`, called from
+    :func:`api.auth.resolve_tenant_principal`), which doubled the round trips
+    to Postgres on every tenant-scoped listing — findings and assets included —
+    to re-read a column that changes once in a tenant's life. It is still read
+    **per request** rather than cached: suspending a customer has to take
+    effect on their next call, not at the end of a TTL.
+
+    ``None`` means "not read", not "active": the platform admin resolves
+    without touching the tenants table because it is exempt from the check
+    anyway, and a tenant row that does not exist is not an error here (see
+    :func:`api.services.tenants.check_active`).
+    """
+
+    tenant_id: str
+    role: str
+    status: str | None = None
+
+
 def resolve_tenant(
     username: str,
     requested: str | None,
     *,
     global_role: str,
-) -> tuple[str, str]:
-    """Return ``(tenant_id, effective_role)`` for this request.
+) -> TenantResolution:
+    """Resolve the tenant, the role inside it and that tenant's status.
 
     Raises ``PermissionError`` when the caller asked for a tenant they hold no
     membership in — the route turns that into a 403.
@@ -235,16 +261,35 @@ def resolve_tenant(
     requested = (requested or "").strip() or None
 
     if is_platform_admin:
-        return (requested or tenants_service.DEFAULT_TENANT_ID), "admin"
+        return TenantResolution(requested or tenants_service.DEFAULT_TENANT_ID, "admin")
 
-    granted = roles_for_user(username)
-    if not granted:
-        # Pre-P0 installations: the user is confined to the default tenant and
-        # keeps the global role there.
-        tenant_id = requested or tenants_service.DEFAULT_TENANT_ID
-        if tenant_id != tenants_service.DEFAULT_TENANT_ID:
-            raise PermissionError(f"No access to tenant {tenant_id}")
-        return tenant_id, global_role
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(
+                models.UserTenant.tenant_id,
+                models.UserTenant.role,
+                models.Tenant.status,
+            )
+            .outerjoin(models.Tenant, models.Tenant.tenant_id == models.UserTenant.tenant_id)
+            .where(models.UserTenant.username == username)
+        ).all()
+        granted = {tenant_id: role for tenant_id, role, _ in rows}
+        statuses = {tenant_id: status for tenant_id, _, status in rows}
+
+        if not granted:
+            # Pre-P0 installations: the user is confined to the default tenant
+            # and keeps the global role there. The one case that still costs a
+            # second query, because there is no membership row to join the
+            # tenant onto — and it is the single-tenant installation, not the
+            # listing-heavy multi-tenant one.
+            tenant_id = requested or tenants_service.DEFAULT_TENANT_ID
+            if tenant_id != tenants_service.DEFAULT_TENANT_ID:
+                raise PermissionError(f"No access to tenant {tenant_id}")
+            status = session.execute(
+                select(models.Tenant.status).where(models.Tenant.tenant_id == tenant_id)
+            ).scalar_one_or_none()
+            return TenantResolution(tenant_id, global_role, status)
 
     if requested is None:
         # Same choice as default_tenant_for_user, without a second query.
@@ -257,4 +302,6 @@ def resolve_tenant(
         if requested not in granted:
             raise PermissionError(f"No access to tenant {requested}")
         tenant_id = requested
-    return tenant_id, granted.get(tenant_id, global_role)
+    return TenantResolution(
+        tenant_id, granted.get(tenant_id, global_role), statuses.get(tenant_id)
+    )

@@ -109,6 +109,13 @@ ACTION_VULN_BULK = "vulnerability.bulk"
 ACTION_VULN_EXCEPTION_REQUEST = "vulnerability.exception_request"
 ACTION_VULN_EXCEPTION_APPROVE = "vulnerability.exception_approve"
 ACTION_VULN_EXCEPTION_REJECT = "vulnerability.exception_reject"
+# Two different acts, deliberately two different rows: the first is a requester
+# taking back their own ask (nothing was granted, nothing changes about the
+# deadline), the second is somebody revoking an acceptance a second person
+# signed, which puts the finding back under its deadline immediately. One
+# action name for both made the trail unable to answer "who cancelled the
+# acceptance" — the answer was often "nobody meant to".
+ACTION_VULN_EXCEPTION_REQUEST_WITHDRAW = "vulnerability.exception_request_withdraw"
 ACTION_VULN_EXCEPTION_WITHDRAW = "vulnerability.exception_withdraw"
 ACTION_VULN_EXCEPTION_EXPIRE = "vulnerability.exception_expire"
 ACTION_ASSET_BULK = "asset.bulk"

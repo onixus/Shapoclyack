@@ -312,6 +312,25 @@ pipeline {
                 python -m compileall scanner
               '
             """
+            // Живой naabu с теми флагами, которые собирает код. В pytest naabu
+            // подменён, поэтому набор флагов никто не проверял на исполнимость:
+            // `-sn` с явными пробами, но без `-wn`, naabu 2.6.1 отказывается
+            // запускать ("discovery probes were provided but host discovery is
+            // disabled", exit 1), и это поймал только E2E — стадией позже и
+            // сообщением про non-zero exit status. Монтируем один файл теста,
+            // а не весь tests/: conftest.py тянет api и Postgres, которых в
+            // образе нет. pytest ставится в --user, чтобы прогон шёл от
+            // непривилегированного 'scanner' — ровно как в E2E и в проде, где
+            // права даёт только file capability на бинаре.
+            sh """
+              docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+                -v "\$WORKSPACE/tests/test_naabu_live.py":/app/test_naabu_live.py:ro \
+                -e OCTO_NAABU_LIVE=1 --entrypoint sh ${IMAGE_TAG} -c '
+                  set -e
+                  pip install --quiet --no-cache-dir --user pytest
+                  python -m pytest -p no:cacheprovider test_naabu_live.py -q
+                '
+            """
           }
         }
 

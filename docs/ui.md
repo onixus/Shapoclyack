@@ -396,13 +396,21 @@ operator's next, different batch mints its own key.
   said so in the same panel rather than reading as "no exception", and an
   expiry is read off the date rather than off the workflow state: the worker
   that stamps a lapse runs on a tick, and until it does a window that ran out
-  an hour ago must not still read "in force";
+  an hour ago must not still read "in force". Undoing is two buttons, because
+  it was always two acts: **Withdraw request** takes back your own unanswered
+  ask and touches nothing that was granted, and **Revoke acceptance** — offered
+  only to whoever holds `vulnerability.exception.approve` — destroys a signed
+  window and asks first, naming who signed it and until when, because after
+  that click the finding is back under its original deadline, which may be in
+  the past. One button did both until this was split, so an admin correcting a
+  date in their own extension request lost the acceptance somebody else had
+  signed, with no second signature of their own to put it back;
 - CVSS / risk / owner / first-and-last-seen / SLA, plus EPSS, KEV and the
   risk explanation copied from the last observing run when that run is still
   on disk;
 - the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
-  `exception_requested`, `exception_approved`, `exception_rejected`,
-  `exception_expired`, `exception_cleared`).
+  `exception_requested`, `exception_request_withdrawn`, `exception_approved`,
+  `exception_rejected`, `exception_expired`, `exception_cleared`).
 
 For an endpoint-software finding the **Verify** button is not shown at all: the
 API refuses the dispatch (`409`) because a re-scan does not observe an installed
@@ -794,6 +802,44 @@ admin-only clearing of somebody else's second factor — it ends that account's
 sessions and is recorded as `user.mfa_reset` (#315). The Users table shows each account's tenant
 memberships from `UserInfo.tenants`.
 
+The roles the membership tab offers come from `GET /api/rbac/roles` — the
+platform's own catalogue, with the description it publishes for each role shown
+under the picker — rather than from a list the console keeps. While it kept
+one, the five roles [#318](https://github.com/onixus/Shapoclyack/issues/318)
+added (`auditor`, `scan-operator`, `scope-approver`, `token-admin`,
+`risk-approver`) existed in the API, in the migration and in these docs, and
+could not be granted from the UI that exists to grant them. `platform-admin` is
+never offered: it is a property of an account, not a grant inside one tenant.
+A membership naming a role the catalogue no longer lists keeps showing that
+role, because an empty picker would demote the member on the first edit. The
+account's *global* role — the **Users** tab, `users.role` — is still the three
+original names and is still a fixed list.
+
+## What the console hides, and how it decides
+
+Every gate in the console asks one function — `can(user, requirement)` in
+`web-next/src/lib/authz.ts` — and every requirement mirrors the dependency the
+route behind it is written with:
+
+| In the console | On the API | Reads |
+| --- | --- | --- |
+| `permission: "…"` | `require_permission` | the permission list from `/auth/me`, scoped to the selected tenant |
+| `minRole: "operator"` | `require_tenant(Role.operator)` | the rank of `tenant_role` — the role held **in that tenant** |
+| `globalMinRole: "admin"` | `require_role(Role.admin)` | the account's own `role` from the JWT |
+
+Which matters because since [#318](https://github.com/onixus/Shapoclyack/issues/318)
+authority lives in the membership, not in the account: a `scan-operator` is a
+global `viewer`, and the console used to compare every menu entry and half the
+page gates against that global role. The result was an account that the API
+served `GET /api/jobs` while the console hid Scan jobs, both scanning surfaces,
+Agents, Schedules and the quick-launch buttons from it. Only two entries are
+still on the global role, and deliberately: `/tenants` and `/users`, whose
+routes resolve their own tenant set and are gated on the `TokenUser`.
+
+This is presentation only. The API refuses what it refuses whatever the menu
+shows; the gate exists so a viewer is not handed eleven doors that all open
+onto "operator role required".
+
 ## Audit trail
 
 `/audit` reads `GET /api/audit` — the administrative trail (#327), which is a
@@ -812,12 +858,8 @@ The tenant switcher scopes the page: naming a tenant narrows the trail, and a
 platform admin with none selected reads every tenant plus the platform-level
 rows (account creation, config changes) that belong to no tenant. The query is
 fired regardless of the account's global role — "admin" on this endpoint means
-admin *in the tenant*, which the console cannot tell from the JWT, so a tenant
-admin signed in as a global viewer gets their own trail instead of an empty
-page. The sidebar entry carries **no** `minRole` for the same reason (unlike
-`/users` next to it, which really is global-admin-only): a link hidden from the
-global role would hide the page from exactly the account it is for. The API is
-the boundary, and a caller who is admin nowhere gets the 403 the page renders.
+admin *in the tenant*, which the JWT does not carry. The API is the boundary,
+and a caller who is admin nowhere gets the 403 the page renders.
 
 `before → after` is a diff, not a pair of snapshots, wherever a snapshot would
 be mostly noise: a scan scope shows the entries `added` and `removed` with the
