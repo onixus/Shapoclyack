@@ -29,26 +29,32 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { MsgKey } from "@/lib/i18n/messages";
-import type { Role } from "@/lib/api";
+import { can, type Principal, type Requirement } from "@/lib/authz";
 
 /**
  * What a menu entry is *shown* for. This is presentation only — the API
  * enforces access on every request — but a viewer should not be handed eleven
  * doors that all open onto "operator role required".
  *
- * `minRole` gates on the account's global role, which is all the JWT carries.
- * `permission` gates on a named permission from `/auth/me` (#318) and is the
- * right one for anything a *tenant* role can hold: the global role is not the
- * whole answer any more, so `minRole: "admin"` on a tenant-administration
- * page hides it from exactly the tenant admin it is for. The two are
- * exclusive; `permission` wins if both are set.
+ * The three ways to say it are `Requirement` from `@/lib/authz`, the same
+ * question every page gate asks, and each mirrors the dependency the route
+ * behind it is written with:
+ *
+ * - `permission` — `require_permission`, a named authority in the active
+ *   tenant;
+ * - `minRole` — `require_tenant(Role.x)`, the rank held **in that tenant**.
+ *   This used to compare against the account's global role, which is what hid
+ *   Scan jobs, both scanning surfaces, Agents and Schedules from every account
+ *   whose operator role came from a membership (#318);
+ * - `globalMinRole` — `require_role(Role.x)` on the `TokenUser`, for the two
+ *   entries whose routes are not tenant-scoped at all (the cross-tenant tenant
+ *   list, and platform user administration). Asking the tenant role for those
+ *   would show a door the API refuses.
  */
-export type NavItem = {
+export type NavItem = Requirement & {
   href: string;
   labelKey: MsgKey;
   icon: LucideIcon;
-  minRole?: Exclude<Role, "viewer">;
-  permission?: string;
   /** Short hint shown in the command palette. */
   hintKey?: MsgKey;
 };
@@ -192,17 +198,24 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     labelKey: "nav.group.admin",
     items: [
       {
+        // `globalMinRole`, not `minRole`: GET /api/auth/tenants resolves its
+        // own tenant set from the account and hangs off `require_role`, so a
+        // tenant operator whose global role is viewer is answered 403 — and
+        // the switcher this page feeds is the platform's, not one tenant's.
         href: "/tenants",
         labelKey: "nav.tenants",
         icon: Users,
-        minRole: "operator",
+        globalMinRole: "operator",
         hintKey: "nav.hint.tenants",
       },
       {
+        // Same reason: /api/users is platform account administration, refused
+        // to anybody whose *account* is not an admin. Tenant membership is
+        // edited from this page too, but the accounts behind it are not.
         href: "/users",
         labelKey: "nav.users",
         icon: UserCog,
-        minRole: "admin",
+        globalMinRole: "admin",
         hintKey: "nav.hint.users",
       },
       {
@@ -258,33 +271,17 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 /** Flat list, in menu order — for the command palette and tests. */
 export const NAV: readonly NavItem[] = NAV_GROUPS.flatMap((group) => group.items);
 
-const ROLE_RANK: Record<Role, number> = { viewer: 0, operator: 1, admin: 2 };
-
-export function canSee(
-  item: Pick<NavItem, "minRole" | "permission">,
-  role: Role | undefined,
-  permissions?: readonly string[],
-): boolean {
-  if (item.permission) {
-    // No list at all means an API older than #318, which sends none: fall back
-    // to the global role the entry used to be gated on, so an upgrade in two
-    // steps loses no page.
-    return permissions
-      ? permissions.includes(item.permission)
-      : role === "admin";
-  }
-  if (!item.minRole) return true;
-  return ROLE_RANK[role ?? "viewer"] >= ROLE_RANK[item.minRole];
+/** Whether this principal is shown one entry. Delegates to the one gate in
+ * `@/lib/authz`, so the menu and the page behind it cannot disagree. */
+export function canSee(item: Requirement, user: Principal): boolean {
+  return can(user, item);
 }
 
 /** Groups with the entries this principal may see; a group left empty disappears. */
-export function visibleNavGroups(
-  role: Role | undefined,
-  permissions?: readonly string[],
-): NavGroup[] {
+export function visibleNavGroups(user: Principal): NavGroup[] {
   return NAV_GROUPS.map((group) => ({
     ...group,
-    items: group.items.filter((item) => canSee(item, role, permissions)),
+    items: group.items.filter((item) => canSee(item, user)),
   })).filter((group) => group.items.length > 0);
 }
 

@@ -97,6 +97,30 @@ describe("RelatedDomainsPanel Component", () => {
     expect(screen.getByText("CANDIDATE")).toBeInTheDocument();
   });
 
+  it("offers Promote to a scan-operator, whose operator rank is in the tenant", async () => {
+    // Promoting is a tenant-scoped write behind `require_tenant(Role.operator)`
+    // and a `scan-operator` passes it — but is a `viewer` globally (#318), so
+    // reading the account's role hid the action from the role granted for it.
+    useAuthStore.setState({
+      user: {
+        username: "scanner",
+        role: "viewer",
+        tenant_role: "scan-operator",
+        permissions: ["config.read", "scan.cancel"],
+        tenants: ["default"],
+        default_tenant: "default",
+        is_platform_admin: false,
+      },
+    });
+    vi.spyOn(apiModule, "fetchOrgProfile").mockResolvedValue(mockOrgProfile);
+
+    renderWithQuery(<RelatedDomainsPanel runId="run-test-org-123" />);
+
+    expect(await screen.findAllByRole("button", { name: /Promote to Scope/i })).not.toHaveLength(
+      0,
+    );
+  });
+
   it("filters candidates by status", async () => {
     vi.spyOn(apiModule, "fetchOrgProfile").mockResolvedValue(mockOrgProfile);
 

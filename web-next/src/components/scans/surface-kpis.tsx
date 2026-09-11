@@ -11,6 +11,7 @@ import { useVulnerabilitySummary } from "@/hooks/use-vulnerabilities";
 import { type JobInfo } from "@/lib/api";
 import { POLL_INTERVALS } from "@/lib/config/constants";
 import { useAuthStore } from "@/lib/auth-store";
+import { holdsPermission, isTenantAdmin } from "@/lib/authz";
 import { useT } from "@/lib/i18n";
 import { runDetailHref } from "@/lib/run-data";
 import { type ScanSurface } from "@/lib/scan-surface";
@@ -45,7 +46,11 @@ export function SurfaceKpis({
   const t = useT();
   const { user, activeTenant } = useAuthStore();
   const tenantId = activeTenant ?? user?.default_tenant ?? "default";
-  const isAdmin = user?.role === "admin";
+  // The named permission the two scope reads are actually gated on
+  // (`require_path_tenant_permission(scan_scope.read)`), not a rank: an
+  // `auditor` and a `scope-approver` hold it and are not admins of anything.
+  // The fallback keeps the pre-#318 behaviour on an API that sends no list.
+  const canReadScope = holdsPermission(user, "scan_scope.read", isTenantAdmin(user));
 
   const jobsQuery = useJobs(
     canOperate,
@@ -64,8 +69,8 @@ export function SurfaceKpis({
 
   const agents = useAgentSummary();
   const system = useSystemStatus();
-  const scope = useScanScope(tenantId, isAdmin && surface !== null);
-  const promoted = usePromotedDomains(tenantId, isAdmin && surface === "external");
+  const scope = useScanScope(tenantId, canReadScope && surface !== null);
+  const promoted = usePromotedDomains(tenantId, canReadScope && surface === "external");
 
   const scopeCounts = useMemo(() => {
     const kind = surface === "external" ? "domain" : "cidr";
@@ -127,7 +132,7 @@ export function SurfaceKpis({
           href="/agents"
           decorationColor="blue"
         />
-      ) : surface === "external" && isAdmin ? (
+      ) : surface === "external" && canReadScope ? (
         <KpiCard
           label={t("kpi.scans.scopeDomains")}
           value={scope.data ? scopeCounts.allow : "…"}

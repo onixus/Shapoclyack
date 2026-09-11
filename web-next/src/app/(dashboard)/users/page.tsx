@@ -32,6 +32,7 @@ import { DataTable } from "@/components/data-table";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
 import { useResetUserMfa } from "@/hooks/use-mfa";
+import { useRoleCatalogue } from "@/hooks/use-rbac";
 import { usePagination } from "@/hooks/use-pagination";
 import { useTenants } from "@/hooks/use-tenants";
 import {
@@ -50,7 +51,14 @@ import {
   useTenantMembers,
   useUsers,
 } from "@/hooks/use-users";
-import { type AuthEventInfo, type AuthEventOutcome, type Role, type UserInfo } from "@/lib/api";
+import {
+  type AuthEventInfo,
+  type AuthEventOutcome,
+  type Role,
+  type RoleInfo,
+  type TenantRoleName,
+  type UserInfo,
+} from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
   ACCOUNT_STATUS,
@@ -60,7 +68,11 @@ import {
 } from "@/lib/config/statuses";
 import { useT, type Translate } from "@/lib/i18n";
 
-const ROLES: Role[] = ["viewer", "operator", "admin"];
+/** The roles an **account** can hold. Three, and still three after #318: this
+ * is `users.role`, validated by `GlobalRoleName` on the API side. The roles a
+ * *membership* can name are a different and longer list, and this page no
+ * longer keeps a copy of it — see `useRoleCatalogue`. */
+const GLOBAL_ROLES: Role[] = ["viewer", "operator", "admin"];
 const OUTCOMES: AuthEventOutcome[] = ["success", "failure", "locked", "denied", "trust_change"];
 
 const SELECT_CLASS = "h-9 rounded-md border border-input bg-background px-2 text-sm";
@@ -311,7 +323,7 @@ function CreateUserDialog({ t }: { t: Translate }) {
                 value={role}
                 onChange={(event) => setRole(event.target.value as Role)}
               >
-                {ROLES.map((value) => (
+                {GLOBAL_ROLES.map((value) => (
                   <option key={value} value={value}>
                     {value}
                   </option>
@@ -398,7 +410,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
                 })
               }
             >
-              {ROLES.map((value) => (
+              {GLOBAL_ROLES.map((value) => (
                 <option key={value} value={value}>
                   {value}
                 </option>
@@ -765,12 +777,41 @@ function SetEmailDialog({
   );
 }
 
+/** The grantable roles for one tenant, in an order a human can read: the
+ * three ranked ones first, then the separation-of-duties roles, then anything
+ * this tenant defined for itself. `platform-admin` is never in the answer —
+ * the API refuses it as a membership role — but it is filtered here too so a
+ * future catalogue change cannot put it in a dropdown. */
+function grantableRoles(catalogue: RoleInfo[]): RoleInfo[] {
+  const order = ["viewer", "operator", "admin"];
+  return [...catalogue]
+    .filter((role) => role.role_id !== "platform-admin")
+    .sort((a, b) => {
+      const ia = order.indexOf(a.role_id);
+      const ib = order.indexOf(b.role_id);
+      if (ia !== ib) return (ia < 0 ? order.length : ia) - (ib < 0 ? order.length : ib);
+      if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
+      return a.role_id.localeCompare(b.role_id);
+    });
+}
+
 function MembershipTab({ t, tenantId }: { t: Translate; tenantId: string }) {
   const { data = [], isLoading, error } = useTenantMembers(tenantId, Boolean(tenantId));
   const grant = useGrantMembership(tenantId);
   const revoke = useRevokeMembership(tenantId);
+  // The role table lives on the server (#318). Before this the editor offered
+  // viewer/operator/admin from a literal, so `auditor`, `scan-operator`,
+  // `scope-approver`, `token-admin` and `risk-approver` existed in the API,
+  // in migration 0049 and in the docs, and could not be granted from the
+  // console at all.
+  const catalogueQuery = useRoleCatalogue(tenantId, Boolean(tenantId));
+  const roles = useMemo(
+    () => grantableRoles(catalogueQuery.data ?? []),
+    [catalogueQuery.data],
+  );
   const [username, setUsername] = useState("");
-  const [role, setRole] = useState<Role>("viewer");
+  const [role, setRole] = useState<TenantRoleName>("viewer");
+  const selected = roles.find((entry) => entry.role_id === role);
 
   async function onGrant(event: FormEvent) {
     event.preventDefault();
@@ -804,11 +845,12 @@ function MembershipTab({ t, tenantId }: { t: Translate; tenantId: string }) {
             id="membership-role"
             className={SELECT_CLASS}
             value={role}
-            onChange={(event) => setRole(event.target.value as Role)}
+            disabled={catalogueQuery.isLoading}
+            onChange={(event) => setRole(event.target.value)}
           >
-            {ROLES.map((value) => (
-              <option key={value} value={value}>
-                {value}
+            {roles.map((entry) => (
+              <option key={entry.role_id} value={entry.role_id}>
+                {entry.role_id}
               </option>
             ))}
           </select>
@@ -816,6 +858,17 @@ function MembershipTab({ t, tenantId }: { t: Translate; tenantId: string }) {
         <Button type="submit" disabled={grant.isPending || !tenantId}>
           {t("users.membership.grant")}
         </Button>
+        {/* What the role does, in the platform's own words: the catalogue
+            publishes a description for exactly this, and "auditor" means
+            nothing to whoever is about to grant it. */}
+        {selected ? (
+          <p className="text-xs text-muted-foreground sm:col-span-4">{selected.description}</p>
+        ) : null}
+        {catalogueQuery.error ? (
+          <p className="text-xs text-rose-500 sm:col-span-4" role="alert">
+            {t("users.membership.catalogueFailed")}
+          </p>
+        ) : null}
         <p className="text-xs text-muted-foreground sm:col-span-4">
           {t("users.membership.grantHint")}
         </p>
@@ -856,15 +909,22 @@ function MembershipTab({ t, tenantId }: { t: Translate; tenantId: string }) {
                       onChange={(event) =>
                         grant.mutate({
                           username: member.username,
-                          role: event.target.value as Role,
+                          role: event.target.value,
                         })
                       }
                     >
-                      {ROLES.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
+                      {roles.map((entry) => (
+                        <option key={entry.role_id} value={entry.role_id}>
+                          {entry.role_id}
                         </option>
                       ))}
+                      {/* A role the catalogue no longer lists — one a tenant
+                          deleted, or a newer replica wrote — still has to be
+                          shown as what it is, or the select renders blank and
+                          the first edit silently demotes somebody. */}
+                      {roles.some((entry) => entry.role_id === member.role) ? null : (
+                        <option value={member.role}>{member.role}</option>
+                      )}
                     </select>
                   </td>
                   <td className="py-2 pr-4 tabular-nums">{formatMoment(member.created_at)}</td>

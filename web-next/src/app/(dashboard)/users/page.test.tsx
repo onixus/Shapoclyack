@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import UsersPage from "@/app/(dashboard)/users/page";
 import * as apiModule from "@/lib/api";
-import type { MembershipInfo, Me, TenantInfo, UserInfo } from "@/lib/api";
+import type { MembershipInfo, Me, RoleInfo, TenantInfo, UserInfo } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 function account(overrides: Partial<UserInfo> = {}): UserInfo {
@@ -44,6 +44,31 @@ function membership(overrides: Partial<MembershipInfo> = {}): MembershipInfo {
     created_by: "admin",
     ...overrides,
   };
+}
+
+/** The catalogue as `GET /api/rbac/roles` serves it after #318: the three
+ * ranked roles, the five separation-of-duties ones, and the platform admin —
+ * which the API refuses as a membership role and which must not be offered. */
+function roleCatalogue(): RoleInfo[] {
+  const builtin = (role_id: string, rank: number, description: string): RoleInfo => ({
+    role_id,
+    tenant_id: null,
+    description,
+    builtin: true,
+    rank,
+    permissions: [],
+  });
+  return [
+    builtin("viewer", 1, "Reads the tenant's findings and assets"),
+    builtin("operator", 2, "Runs scans and works the findings"),
+    builtin("admin", 3, "Administers this tenant"),
+    builtin("auditor", 1, "Reads the audit trail and the configuration, writes nothing"),
+    builtin("scan-operator", 2, "Runs scans within the approved scope"),
+    builtin("scope-approver", 1, "Approves what the tenant may scan"),
+    builtin("token-admin", 1, "Manages the tenant's credentials"),
+    builtin("risk-approver", 1, "Approves and rejects requested risk acceptances"),
+    builtin("platform-admin", 3, "Administers the installation"),
+  ];
 }
 
 function signIn(user: Partial<Me> = {}) {
@@ -89,6 +114,7 @@ describe("UsersPage", () => {
     vi.restoreAllMocks();
     useAuthStore.setState({ user: null, activeTenant: null });
     vi.spyOn(apiModule, "fetchTenants").mockResolvedValue([tenant()]);
+    vi.spyOn(apiModule, "fetchRoleCatalogue").mockResolvedValue(roleCatalogue());
   });
 
   it("shows an admin the accounts and what can be done to them", async () => {
@@ -189,5 +215,59 @@ describe("UsersPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Grant access" }));
 
     await waitFor(() => expect(grant).toHaveBeenCalledWith("acme", "newbie", "operator"));
+  });
+
+  it("offers the roles the API publishes, not three it remembers", async () => {
+    // The defect: `viewer | operator | admin` was a literal in this file, so
+    // the five roles #318 added — and migration 0049 seeded, and the docs
+    // describe — could be granted with curl and not from the console that
+    // exists to grant them.
+    vi.spyOn(apiModule, "fetchUsers").mockResolvedValue([account()]);
+    vi.spyOn(apiModule, "fetchTenantMembers").mockResolvedValue([membership()]);
+    const grant = vi
+      .spyOn(apiModule, "grantMembership")
+      .mockResolvedValue(membership({ username: "newbie", role: "scope-approver" }));
+    signIn();
+    renderPage();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Tenant membership" }));
+    const picker = await screen.findByLabelText("Role in tenant");
+    await waitFor(() =>
+      expect(within(picker).getByRole("option", { name: "scope-approver" })).toBeInTheDocument(),
+    );
+    for (const role of ["auditor", "scan-operator", "token-admin", "risk-approver"]) {
+      expect(within(picker).getByRole("option", { name: role })).toBeInTheDocument();
+    }
+    // Never offered: it is a property of an account, and granting it here
+    // would let a tenant admin promote somebody to the whole installation.
+    expect(within(picker).queryByRole("option", { name: "platform-admin" })).toBeNull();
+
+    // And the catalogue's own sentence is shown — "auditor" tells whoever is
+    // about to grant it nothing on its own.
+    await userEvent.selectOptions(picker, "auditor");
+    expect(
+      screen.getByText("Reads the audit trail and the configuration, writes nothing"),
+    ).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Grant or change access"), "newbie");
+    await userEvent.selectOptions(picker, "scope-approver");
+    await userEvent.click(screen.getByRole("button", { name: "Grant access" }));
+    await waitFor(() => expect(grant).toHaveBeenCalledWith("acme", "newbie", "scope-approver"));
+  });
+
+  it("keeps showing a role the catalogue no longer lists", async () => {
+    // A membership naming a role this catalogue does not carry — one a tenant
+    // deleted, or a newer replica wrote — must render as what it is. An empty
+    // select would demote the member on the first edit.
+    vi.spyOn(apiModule, "fetchUsers").mockResolvedValue([account()]);
+    vi.spyOn(apiModule, "fetchTenantMembers").mockResolvedValue([
+      membership({ role: "incident-lead" }),
+    ]);
+    signIn();
+    renderPage();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Tenant membership" }));
+    const picker = await screen.findByLabelText("Role for analyst");
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("incident-lead"));
   });
 });

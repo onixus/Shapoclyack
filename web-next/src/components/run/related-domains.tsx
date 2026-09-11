@@ -24,6 +24,7 @@ import {
   type RelatedDomainCandidate,
 } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import { canOperate as canOperateIn } from "@/lib/authz";
 
 type DomainOwnership = {
   org_name?: string | null;
@@ -168,7 +169,9 @@ function CandidateRow({
 
 export function RelatedDomainsPanel({ runId }: { runId: string }) {
   const user = useAuthStore((s) => s.user);
-  const canOperate = user?.role === "operator" || user?.role === "admin";
+  // Promoting a related domain is a tenant-scoped write, so the rank that
+  // decides is the one held in this tenant, not the account's (#318).
+  const canOperate = canOperateIn(user);
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<"all" | "confirmed" | "candidates">("all");
 
