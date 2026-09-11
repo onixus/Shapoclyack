@@ -414,7 +414,17 @@ class AgentRegisterRequest(BaseModel):
     # predating this sends nothing and is treated as unable, which is what it
     # is: the policy is enforced by the executor, so believing an old worker
     # would mean a ceiling that reads as enforced and is not.
-    capabilities: list[str] = Field(default_factory=list)
+    #
+    # ``None`` rather than ``[]`` for the default, here and on the heartbeat
+    # below, because the service has to tell "this request says nothing about
+    # capabilities" from "this build has none of them" and the two used to
+    # arrive as the same bytes. Omitted keeps what is stored — an agent that
+    # declares them only on the heartbeat must not lose them by restarting —
+    # and a list, empty included, replaces it: a worker rolled back to a build
+    # without ``scan_policy`` says so honestly, and reading that as silence
+    # would leave the API handing it policy-carrying jobs it scans at whatever
+    # its local config says.
+    capabilities: list[str] | None = None
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -423,7 +433,9 @@ class AgentHeartbeatRequest(BaseModel):
     current_job_id: str | None = None
     detail: str | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
-    capabilities: list[str] = Field(default_factory=list)
+    #: Omitted keeps the stored list, a list replaces it — see
+    #: ``AgentRegisterRequest.capabilities``.
+    capabilities: list[str] | None = None
 
 
 class AgentInfo(BaseModel):

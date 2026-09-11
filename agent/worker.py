@@ -1473,6 +1473,16 @@ def run_loop(args: argparse.Namespace) -> int:
                         time.sleep(args.poll_interval)
                     continue
 
+                # The refusal, if there was one, is over: this claim was
+                # answered with work. Cleared the way the heartbeat clears
+                # ``last_upgrade_message`` and ``last_lifecycle_message``,
+                # which are re-assigned every beat and so forget on their own.
+                # Without this the deduplication below is "once per process",
+                # not "once per change": an agent refused, then working for a
+                # day, then refused again for the same reason logged the first
+                # one and nothing after it.
+                last_claim_refusal_message = ""
+
                 _execute_job(
                     client,
                     agent_id=agent_id,

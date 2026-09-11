@@ -167,6 +167,79 @@ def test_re_registering_keeps_the_capabilities_only_the_heartbeat_declared(
     assert narrowed["capabilities"] == ["nuclei"]
 
 
+def test_a_heartbeat_says_nothing_about_capabilities_or_says_it_has_none(
+    tmp_path: Path, monkeypatch
+):
+    """"Omitted" and "empty" are two answers, and both schemas used to send the
+    same bytes for them.
+
+    Omitted has to keep what is stored — the register path was fixed for that
+    and the heartbeat beside it was not, so an agent that declared
+    ``scan_policy`` once lost it at the next beat, fifteen seconds later, and
+    was answered 426 on every policy-carrying job from then on.
+
+    Empty has to replace it. An agent rolled back to a build without
+    ``scan_policy`` reports honestly that it has none, and treating that as
+    "said nothing" leaves the API believing a capability the executor no
+    longer has: the job is handed over and scanned at whatever the worker's
+    local ``default.yaml`` says, which is the ceiling not applying.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    agent_hdrs = {"Authorization": f"Bearer {settings.agent_token}"}
+
+    client.post(
+        "/api/agent/register",
+        json={
+            "agent_id": "agent-beat",
+            "hostname": "srv-1",
+            "version": "0.3.2.1",
+            "capabilities": ["scan_policy"],
+        },
+        headers=agent_hdrs,
+    )
+    silent = client.post(
+        "/api/agent/heartbeat",
+        json={"agent_id": "agent-beat", "status": "idle"},
+        headers=agent_hdrs,
+    )
+    assert silent.status_code == 200
+    assert silent.json()["capabilities"] == ["scan_policy"]
+
+    downgraded = client.post(
+        "/api/agent/heartbeat",
+        json={"agent_id": "agent-beat", "status": "idle", "capabilities": []},
+        headers=agent_hdrs,
+    )
+    assert downgraded.status_code == 200
+    assert downgraded.json()["capabilities"] == []
+
+    # And the same on the register path, which is the one a rolled-back agent
+    # reaches first: it claims before its first beat.
+    client.post(
+        "/api/agent/register",
+        json={
+            "agent_id": "agent-beat",
+            "hostname": "srv-1",
+            "version": "0.3.2.1",
+            "capabilities": ["scan_policy"],
+        },
+        headers=agent_hdrs,
+    )
+    restarted = client.post(
+        "/api/agent/register",
+        json={
+            "agent_id": "agent-beat",
+            "hostname": "srv-1",
+            "version": "0.3.2.0",
+            "capabilities": [],
+        },
+        headers=agent_hdrs,
+    )
+    assert restarted.status_code == 200
+    assert restarted.json()["capabilities"] == []
+
+
 def test_agent_telemetry_heartbeat_and_fleet_summary(tmp_path: Path, monkeypatch):
     settings = make_settings(tmp_path, agent_stale_seconds=10)
     client = configured_client(tmp_path, monkeypatch, settings=settings)

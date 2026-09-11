@@ -130,15 +130,11 @@ def register_agent(
             # before its first beat, and a job carrying a scan policy is
             # refused to an agent that has not declared it can apply one.
             #
-            # ``or None`` because the service reads None as "this request says
-            # nothing about capabilities, keep what is stored" and a list as
-            # the new truth. The request model defaults the field to ``[]``, so
-            # without this an agent that declares its capabilities only on the
-            # heartbeat — the pre-#362 shape, and what a third-party build
-            # still does — had them erased by its own restart, and every claim
-            # of a job carrying a scan policy was answered 426 until its next
-            # beat.
-            capabilities=body.capabilities or None,
+            # Passed through as it arrived: the field is ``None`` when the
+            # request said nothing, which the service reads as "keep what is
+            # stored", and a list — empty included — when it did, which
+            # replaces it. See ``AgentRegisterRequest.capabilities``.
+            capabilities=body.capabilities,
             tenant_id=principal.tenant_id,
             provisioning_key_id=principal.key_id,
             audit=audit,

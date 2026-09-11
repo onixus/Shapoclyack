@@ -39,6 +39,14 @@ the group rows (:func:`lock_existing_names`). Validating on one connection and
 writing on another leaves a window in which a concurrent deletion sees no
 reference yet and the reference is committed against a row that is gone — the
 same silent widening a cascade would produce, arrived at by a race.
+
+All four writers that name a group do this, because the blockers
+:func:`delete_group` counts are only as good as the weakest of them: the scope
+entry (``scan_scopes.replace_scope``), the job (``jobs.start_scan``), the
+schedule (``scan_schedules.create_schedule``) and the agent's membership
+(:func:`set_agent_group`). One of the two requests therefore sees the other's
+result: either the reference is refused with the group named, or the deletion
+is refused with the reference counted.
 """
 
 from __future__ import annotations
@@ -400,6 +408,13 @@ def set_agent_group(
     the membership that applied when it was handed out, and taking it back here
     would abandon a scan that is already running on the customer's network. The
     move takes effect on the next claim.
+
+    The group row is taken ``FOR UPDATE``, as in :func:`delete_group`: the
+    membership is written on this connection and counted on the deleting one,
+    and without the lock both requests answered 200 — the agent stayed in a
+    group that was gone, and because the name is the identifier, re-creating
+    it later put that agent straight back into it, with nothing in the
+    assignment journal to say so.
     """
     normalized = normalize_name(name) if name else None
     with get_session(settings.postgres_url) as session:
@@ -409,7 +424,7 @@ def set_agent_group(
         if (agent.tenant_id or tenants_service.DEFAULT_TENANT_ID) != tenant_id:
             raise PermissionError("Cross-tenant agent access denied")
         if normalized is not None and _row_by_name(
-            session, tenant_id=tenant_id, name=normalized
+            session, tenant_id=tenant_id, name=normalized, for_update=True
         ) is None:
             raise LookupError(f"agent group not found: {normalized}")
 
