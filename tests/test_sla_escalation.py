@@ -105,12 +105,26 @@ def _set_due(settings: Settings, vuln_id: str, due_at: datetime) -> None:
         session.get(models.Vulnerability, vuln_id).due_at = due_at.replace(tzinfo=None)
 
 
-def _set_last_seen(settings: Settings, agent_id: str, last_seen: datetime) -> None:
+def _set_last_seen(
+    settings: Settings,
+    agent_id: str,
+    last_seen: datetime,
+    *,
+    healthy_since: datetime | None = None,
+) -> None:
     """Age an agent's heartbeat instead of waiting one out. Set explicitly
     rather than derived from the test clock: ``register_agent`` stamps the real
-    wall clock, which is not ``_NOW``."""
+    wall clock, which is not ``_NOW``.
+
+    ``healthy_since`` is the start of the run of heartbeats that ends at
+    ``last_seen`` — the column ``api/services/agents.py`` keeps and the worker
+    reads to tell a recovery from a flap. It defaults to ``last_seen``, which
+    is a run of exactly one beat: what a flapping agent has.
+    """
     with get_session(settings.postgres_url) as session:
-        session.get(models.Agent, agent_id).last_seen_at = last_seen.replace(tzinfo=None)
+        row = session.get(models.Agent, agent_id)
+        row.last_seen_at = last_seen.replace(tzinfo=None)
+        row.healthy_since = (healthy_since or last_seen).replace(tzinfo=None)
 
 
 def _seed_second_finding(settings: Settings, vuln_id: str, due_at: datetime) -> str:
@@ -627,11 +641,239 @@ def test_a_quiet_agent_is_announced_once_per_silence(settings):
     assert events[0]["event"]["data"]["agent_id"] == "agent-1"
     assert events[0]["event"]["data"]["silent_for_seconds"] > settings.agent_stale_seconds
 
-    # It comes back, then goes quiet again: a new silence, announced again.
-    _set_last_seen(settings, "agent-1", later)
-    worker.tick(now=later + timedelta(days=1))
+    # It comes back for good — a run of heartbeats long enough to be a
+    # recovery rather than a flap — and the claim is given back on the tick
+    # that sees it.
+    back = later + timedelta(minutes=15)
+    recovered_at = back + timedelta(seconds=settings.agent_stale_seconds * 3)
+    _set_last_seen(settings, "agent-1", recovered_at, healthy_since=back)
+    worker.tick(now=recovered_at)
+    assert worker.stats["agents_recovered"] == 1
+
+    # ...and then goes quiet again: a new silence, announced again.
+    _set_last_seen(settings, "agent-1", recovered_at)
+    worker.tick(now=recovered_at + timedelta(days=1))
+    events = _queued(settings, "agent_offline")
+    assert len(events) == 2
+    # Two episodes are two envelopes, not one said twice: the claim is keyed on
+    # the agent, the event on the beat it fell silent after.
+    assert events[0]["event"]["event_id"] != events[1]["event"]["event_id"]
+
+
+def test_an_agent_that_reaches_the_api_every_other_beat_is_announced_once(settings):
+    """The duplicate storm this marker scheme exists to stop.
+
+    ``OCTO_AGENT_STALE_SECONDS`` is 120 and the agent beats every 60: a
+    degraded link means one beat in two arrives, so at any tick the agent's
+    last beat is either fresh or just over the threshold — and it is a
+    *different* last beat every time. Keyed on ``last_seen_at`` the claim was
+    new on every tick, so one degraded agent produced an ``agent_offline``
+    every fifteen minutes, ninety-six a day, with nothing to tell them apart.
+    One flap is one episode.
+    """
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    stale = settings.agent_stale_seconds
+
+    for i in range(8):
+        at = _NOW + timedelta(minutes=15 * i)
+        # Alternately just past the threshold and just inside it — a run of one
+        # beat either way, because the beat before it never arrived.
+        age = stale + 10 if i % 2 == 0 else stale - 60
+        _set_last_seen(settings, "agent-1", at - timedelta(seconds=age))
+        worker.tick(now=at)
+
+    assert len(_queued(settings, "agent_offline")) == 1
+    # And it is never called recovered: being *seen* is not the same as being
+    # back, or the next tick would announce the same flap all over again.
+    assert worker.stats["agents_recovered"] == 0
+
+
+def test_an_agent_that_really_went_away_is_announced_on_the_next_tick(settings):
+    """The other side of the same fix: the claim-per-episode must not turn the
+    false positives into false negatives. An agent that stops beating is
+    announced by the first tick after ``OCTO_AGENT_STALE_SECONDS`` passes, with
+    no confirmation window and no second opinion."""
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    last_beat = _NOW
+    _set_last_seen(settings, "agent-1", last_beat, healthy_since=_NOW - timedelta(hours=6))
+
+    # One tick while it is still inside the window says nothing...
+    worker.tick(now=last_beat + timedelta(seconds=settings.agent_stale_seconds - 5))
+    assert _queued(settings, "agent_offline") == []
+
+    # ...and the first one after it crosses does.
+    worker.tick(now=last_beat + timedelta(seconds=settings.agent_stale_seconds + 5))
+    events = _queued(settings, "agent_offline")
+    assert len(events) == 1
+    assert events[0]["event"]["data"]["agent_id"] == "agent-1"
+
+
+def test_one_tick_announces_at_most_the_configured_number_of_agents(settings):
+    """The offline sweep was the one query in this worker with no ``limit`` and
+    no cursor: every quiet agent of every tenant, in one tick, outside the
+    budget that bounds every other fan-out here. A fleet whose uplink drops
+    would deliver the whole fleet at once."""
+    settings.sla_escalation_max_findings = 2
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    quiet = [f"agent-{i}" for i in range(5)]
+    for index, agent_id in enumerate(quiet):
+        agents_service.register_agent(agent_id=agent_id, tenant_id="default")
+        # Distinct ages, so "oldest silence first" is an order and not a tie.
+        _set_last_seen(settings, agent_id, _NOW - timedelta(minutes=10 - index))
+    worker = _worker(settings)
+
+    worker.tick(now=_NOW)
     assert len(_queued(settings, "agent_offline")) == 2
 
+    # The window walks on rather than re-reading the same two for ever: a quiet
+    # agent stays quiet, so without the cursor the other three would never be
+    # announced at all.
+    worker.tick(now=_NOW + timedelta(minutes=15))
+    worker.tick(now=_NOW + timedelta(minutes=30))
+    announced = [
+        item["event"]["data"]["agent_id"] for item in _queued(settings, "agent_offline")
+    ]
+    assert sorted(announced) == sorted(quiet)
+
+
+def test_a_run_of_heartbeats_is_broken_by_a_gap_and_only_by_a_gap(settings, monkeypatch):
+    """The half of the fix the worker only reads: who writes ``healthy_since``.
+
+    Every test above ages an agent by writing both columns itself, so none of
+    them exercises ``agents._note_seen`` — and a run that never restarts turns
+    a flapping agent into a recovery, which is the duplicate storm this whole
+    change exists to stop. So: beat, beat inside the stale window, beat after
+    a longer gap, and read the column back.
+    """
+    agents_service.configure(settings)
+    stale = settings.agent_stale_seconds
+    # Naive UTC, as ``agents._now`` reads it, and driven rather than slept
+    # through — the gap under test is two minutes long.
+    clock = _NOW.replace(tzinfo=None)
+    monkeypatch.setattr(agents_service, "_now", lambda: clock)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+
+    def _healthy_since() -> datetime:
+        with get_session(settings.postgres_url) as session:
+            return session.get(models.Agent, "agent-1").healthy_since
+
+    agents_service.heartbeat("agent-1")
+    assert _healthy_since() == clock
+
+    # A beat that arrives while the previous one is still fresh continues the
+    # run: the agent has been there all along.
+    begun = clock
+    clock = clock + timedelta(seconds=stale - 30)
+    agents_service.heartbeat("agent-1")
+    assert _healthy_since() == begun
+
+    # One that arrives after a longer gap does not: the agent was away in
+    # between, whatever it says now, so its run starts over.
+    clock = clock + timedelta(seconds=stale + 30)
+    agents_service.heartbeat("agent-1")
+    assert _healthy_since() == clock
+
+
+def test_a_claim_whose_fan_out_failed_is_given_back(settings, monkeypatch):
+    """A marker standing for an event nobody received is worse here than
+    anywhere else in this worker: an ``agent_offline`` claim is held for the
+    whole episode, so a database hiccup on the fan-out would suppress the agent
+    until it came back — which, for a host that died, is never."""
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    _set_last_seen(settings, "agent-1", _NOW)
+    later = _NOW + timedelta(seconds=settings.agent_stale_seconds + 60)
+
+    def _explode(_envelope):
+        raise RuntimeError("the fan-out hiccupped")
+
+    monkeypatch.setattr(webhooks, "enqueue_event", _explode)
+    worker.tick(now=later)
+    assert _queued(settings, "agent_offline") == []
+    assert worker.stats["agents_offline"] == 0
+
+    monkeypatch.undo()
+    worker.tick(now=later + timedelta(minutes=15))
+    assert len(_queued(settings, "agent_offline")) == 1
+    assert worker.stats["agents_offline"] == 1
+
+
+def test_an_agent_that_came_back_briefly_and_died_for_good_is_announced_again(settings):
+    """The second death has to be announced too.
+
+    Releasing on "seen inside the stale window *at this instant*" made that
+    depend on the tick landing in a 120-second window it visits every fifteen
+    minutes: an agent that was genuinely back for ten minutes and then died
+    stayed "already announced" for ever, and the on-call kept the event from
+    two hours ago — the one they had already closed. What the release asks now
+    is what was *observed*: an unbroken run, begun after the claim was taken,
+    of at least twice the stale window.
+    """
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    stale = settings.agent_stale_seconds
+    # A long run that ended before the claim is not a recovery, or every dead
+    # agent would be released on the tick after it was announced.
+    _set_last_seen(settings, "agent-1", _NOW, healthy_since=_NOW - timedelta(hours=6))
+
+    worker.tick(now=_NOW + timedelta(seconds=stale + 60))
+    worker.tick(now=_NOW + timedelta(minutes=15))
+    assert len(_queued(settings, "agent_offline")) == 1
+    assert worker.stats["agents_recovered"] == 0
+
+    # It comes back twenty minutes later, beats for ten minutes, and the host
+    # dies for good. No tick fell inside those ten minutes — at the default
+    # interval, five times out of six none does.
+    back = _NOW + timedelta(minutes=20)
+    _set_last_seen(settings, "agent-1", back + timedelta(minutes=10), healthy_since=back)
+    worker.tick(now=_NOW + timedelta(minutes=45))
+    assert worker.stats["agents_recovered"] == 1
+
+    worker.tick(now=_NOW + timedelta(hours=1))
+    events = _queued(settings, "agent_offline")
+    assert len(events) == 2
+    assert events[0]["event"]["event_id"] != events[1]["event"]["event_id"]
+    # Computed, not written out: _NOW follows the real clock now, so a literal
+    # here would expire the way the one in accept_risk's window did.
+    second_silence_began = back + timedelta(minutes=10)
+    assert events[1]["event"]["data"]["last_seen_at"].startswith(
+        second_silence_began.strftime("%Y-%m-%dT%H:%M")
+    )
+
+
+def test_a_blink_between_two_silences_is_still_one_episode(settings):
+    """The other direction of the same release. Three minutes of uptime is a
+    crash loop, not a recovery: below :data:`AGENT_RECOVERY_FACTOR` stale
+    windows the claim stays, and the agent stays one episode however many times
+    it blinks."""
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    stale = settings.agent_stale_seconds
+    _set_last_seen(settings, "agent-1", _NOW)
+
+    worker.tick(now=_NOW + timedelta(seconds=stale + 60))
+    for i in range(1, 6):
+        blink = _NOW + timedelta(minutes=15 * i)
+        _set_last_seen(
+            settings, "agent-1", blink + timedelta(seconds=stale - 30), healthy_since=blink
+        )
+        worker.tick(now=blink + timedelta(minutes=10))
+
+    assert worker.stats["agents_recovered"] == 0
+    assert len(_queued(settings, "agent_offline")) == 1
 
 def test_a_retired_agent_is_not_news(settings):
     _subscribe(["agent_offline"])

@@ -435,6 +435,7 @@ def emit_once(
     tenant_id: str,
     subject_id: str,
     marker: str,
+    event_marker: str | None = None,
     data: dict[str, Any] | None = None,
     source: str = "workflow",
     now: datetime | None = None,
@@ -450,6 +451,13 @@ def emit_once(
     ``OCTO_WORKFLOW_MARKER_RETENTION_DAYS``. What remains uncovered is a
     process killed between the claim and the emit — one notification, and a
     lost notification is the cheaper failure than a loop of duplicates.
+
+    ``event_marker`` keys the *envelope* differently from the claim, for the
+    one kind where the two are not the same question: ``agent_offline`` is
+    claimed per agent (the episode of silence, held until the agent is back)
+    and emitted per ``last_seen_at`` (the beat it fell silent after), so two
+    episodes are two envelopes on the bus rather than one said twice. It
+    defaults to ``marker``, which is every other caller.
     """
     if not claim(
         settings,
@@ -465,7 +473,7 @@ def emit_once(
         kind,
         tenant_id=tenant_id,
         subject_id=subject_id,
-        marker=marker,
+        marker=marker if event_marker is None else event_marker,
         data=data,
         source=source,
         occurred_at=now,

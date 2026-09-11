@@ -1558,6 +1558,16 @@ class Agent(Base):
     detail: Mapped[str | None] = mapped_column(default=None)
     registered_at: Mapped[datetime]
     last_seen_at: Mapped[datetime]
+    # When this agent's current unbroken run of heartbeats began — not when it
+    # was last heard from. The two differ exactly where it matters: an agent
+    # whose link drops every other beat has a fresh ``last_seen_at`` half the
+    # time and a run that never grows past the gap. ``agent_offline`` is
+    # claimed once per silence and given back on recovery
+    # (``api/services/sla_escalation.py``), and this is what lets the worker
+    # refuse to call a flapping agent recovered. Restarted only by a gap longer
+    # than ``OCTO_AGENT_STALE_SECONDS``; NULL on rows that predate 0056 and are
+    # read as a run starting at ``last_seen_at``.
+    healthy_since: Mapped[datetime | None] = mapped_column(default=None)
 
     __table_args__ = (
         Index("ix_agents_tenant_last_seen", "tenant_id", "last_seen_at"),
@@ -2219,11 +2229,19 @@ class WorkflowEventMarker(Base):
 
     ``marker`` **is the discriminator, not a timestamp.** It carries whatever
     makes one occurrence distinct from the next — the deadline for an SLA
-    event, the deadline plus the threshold for an expiring exception, the
-    ``last_seen_at`` an agent went quiet at. A finding whose clock restarts (a
-    reopen recomputes ``due_at``) therefore gets a new marker and is announced
-    again, while the same deadline is announced once however many times the
-    worker looks at it.
+    event, the deadline plus the threshold for an expiring exception. A finding
+    whose clock restarts (a reopen recomputes ``due_at``) therefore gets a new
+    marker and is announced once more, while the same deadline is announced
+    once however many times the worker looks at it.
+
+    For ``agent_offline`` the discriminator is the *episode* rather than any
+    timestamp: the marker is the constant ``"offline"`` (0056), claimed when
+    the agent goes quiet and released by the escalation worker when it comes
+    back for a run of heartbeats long enough to count. Keyed on ``last_seen_at``
+    — as it was until 0056 — an agent whose link dropped every other beat
+    presented a different-but-still-stale timestamp on every tick and was
+    announced on every one of them. The beat it fell silent after still keys
+    the *envelope*, so two episodes are two events on the bus.
 
     **The insert is the claim.** The unique constraint decides, so two replicas
     that both believe they lead — the advisory lock is not fenced — send one

@@ -611,6 +611,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **`agent_offline` now means the agent is gone, not that it is busy or that a
+  packet was lost** ([#349](https://github.com/onixus/Shapoclyack/issues/349)).
+  Two ways the same false alarm was reached. The escalation worker claimed each
+  announcement under the agent's `last_seen_at`, so a degraded link — one beat
+  in two arriving, at the default 60-second heartbeat and 120-second stale
+  window — presented a new-but-still-stale timestamp on every tick and was
+  announced on every tick: 96 deliveries a day for one agent, ~19k across a
+  fleet of two hundred. The claim is now keyed on the agent and held for the
+  whole episode of silence, and given back only for an unbroken run of
+  heartbeats — begun after the claim was taken, and twice
+  `OCTO_AGENT_STALE_SECONDS` long (`agents.healthy_since`, migration 0056) — a
+  run a flapping link cannot produce. The run is what was *observed*, not
+  whether the agent happens to answer at the instant the worker looks, so an
+  agent that came back for ten minutes and then died for good has its second
+  death announced as a second episode instead of staying for ever under the
+  event the on-call already closed. A claim whose fan-out failed is given back
+  for the next tick to retry, as everywhere else in this worker; an episode is
+  counted in `agents_offline` when it is announced, not when it is claimed.
+  Migration 0056 also folds the claims standing under the old per-timestamp key
+  into the new one, so the first tick after an upgrade does not re-announce
+  every already-quiet agent: `webhook_deliveries` would de-duplicate that by
+  `event_id`, but a second NATS copy hours after the first is outside
+  JetStream's content window and would reach a SIEM twice. The other way was
+  the agent's own: on
+  receiving a cancellation its heartbeat thread returned, leaving the process-
+  group terminate and the packing of the partial run silent, so a stop of a
+  large scan alerted on the agent obeying it; the thread now keeps beating
+  (`stage=cancelling`) until the job is done. Nothing waits longer to be
+  announced: the first tick after an agent crosses the threshold still
+  announces it. The offline sweep was also the one query in this worker with
+  neither a `limit` nor a cursor — it now spends the same
+  `OCTO_SLA_ESCALATION_MAX_FINDINGS` budget, oldest silence first, as every
+  other fan-out here. **Not done:** there is still no paired `agent_recovered`
+  event, so a receiver's alert is closed by hand; the results upload after a
+  cancellation is still sent with no heartbeat behind it.
 - **An `Idempotency-Key` belongs to the caller who minted it, not to the whole
   tenant** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). The key
   on the bulk verbs was unique per `(tenant, endpoint)`, and the CI recipes in

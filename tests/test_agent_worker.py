@@ -914,6 +914,50 @@ def test_the_heartbeat_answer_stops_the_scan_and_the_upload_says_so(monkeypatch,
     assert client.uploads[0]["exit_code"] == 143
 
 
+def test_the_heartbeat_keeps_beating_while_the_agent_carries_out_the_cancellation(
+    monkeypatch, tmp_path
+):
+    """Obeying a stop is not a reason to look dead (#349).
+
+    The renewal thread used to ``return`` the moment it saw
+    `cancel_requested`, and what follows is a process-group terminate of up to
+    ten seconds and a tar of the partial run. With `OCTO_AGENT_STALE_SECONDS`
+    at twice the heartbeat interval that silence is enough to cross the
+    threshold, and the escalation worker announces `agent_offline` for an agent
+    that is doing exactly what it was told.
+    """
+    client = _FakeClient()
+    marks: dict[str, int] = {}
+
+    def _obedient_scan(**kwargs: Any):
+        # The operator clicks once the scan is under way, so the renewal thread
+        # is the one that delivers it.
+        client.cancel_requested = True
+        assert kwargs["cancel_event"].wait(timeout=5.0)
+        with client.lock:
+            marks["at_cancel"] = len(client.heartbeats)
+        # Stands in for the terminate and for packing the partial run.
+        time.sleep(0.35)
+        return 143, "cancelled on the operator's request", None
+
+    monkeypatch.setattr(worker, "_run_scan", _obedient_scan)
+    worker._execute_job(  # noqa: SLF001
+        client,
+        agent_id="agent-1",
+        job={"job_id": "job-1", "run_id": "run-1", "attempt": 1},
+        config=tmp_path / "config.yaml",
+        output_dir=tmp_path,
+        heartbeat_interval=0.05,
+    )
+
+    during_shutdown = client.heartbeats[marks["at_cancel"] :]
+    assert during_shutdown, "the agent went silent while carrying out the cancellation"
+    assert all(hb["status"] == "busy" for hb in during_shutdown)
+    # And it says what it is doing, so the fleet view reads "cancelling"
+    # rather than a stage the scan left behind.
+    assert all("stage=cancelling" in (hb["detail"] or "") for hb in during_shutdown)
+
+
 def test_a_scan_that_finished_anyway_is_not_reported_as_cancelled(monkeypatch, tmp_path):
     """The stop can land in the second between the scan completing and the wait
     noticing it. Reporting that run as cancelled to match the request would

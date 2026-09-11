@@ -28,7 +28,9 @@ each into an event exactly once:
     An agent whose ``last_seen_at`` crossed ``OCTO_AGENT_STALE_SECONDS``.
     Derived on read for the same reason SLA state is (``Agent.status`` never
     stores "stale"), and therefore invisible to anyone not looking, for the
-    same reason.
+    same reason. Announced once per *episode* of silence rather than once per
+    missed beat — see :meth:`SlaEscalationWorker._agents`, which is also where
+    the claim is given back once the agent is heartbeating properly again.
 
 The escalation *actions* — reassign, raise severity — are applied only where
 the tenant asked for them (``sla_escalation_policies``), and the daily digest
@@ -40,6 +42,12 @@ without a durable record this thread would page a tenant's on-call in a loop.
 ``workflow_event_markers`` first and emits only if the claim was won; the claim
 key includes the deadline, so a clock that restarts is announced again and the
 same deadline is not.
+
+Where the occurrence has no deadline to be keyed on, the claim is keyed on the
+*state* and released when the state ends: ``agent_offline`` takes one marker
+per agent, held for as long as the platform believes the agent is gone. Keyed
+on the last beat instead, an agent that reached the API every other try
+produced a new key on every tick and was announced on every tick.
 
 The escalation *write* is claimed the same way, under its own marker kind
 (``workflow_events.MARKER_KIND_ESCALATION``), because "already assigned where
@@ -86,6 +94,23 @@ EXCEPTION_WARN_DAYS = (30, 14, 7)
 #: more there are. A mail with four hundred rows in it is not read.
 DIGEST_MAX_ROWS = 25
 
+#: The marker every ``agent_offline`` claim is taken under. Constant, and that
+#: is the whole point: the claim covers the *episode* of silence, not the beat
+#: it began after. Keyed on ``last_seen_at`` — as it was until the fix — an
+#: agent whose link drops every other beat presented a different, still-stale
+#: timestamp on every tick and was announced on every tick. The claim is given
+#: back by :meth:`SlaEscalationWorker._agent_recoveries` when the agent is
+#: properly back, which is what makes the next silence a new episode.
+AGENT_OFFLINE_MARKER = "offline"
+
+#: How long an agent has to keep an unbroken run of heartbeats before its
+#: offline claim is given back, as a multiple of ``OCTO_AGENT_STALE_SECONDS``.
+#: Not one: "seen within the stale window" is true half the time for a flapping
+#: agent, so releasing on that would re-open the episode every tick and put the
+#: duplicate storm straight back. Two stale windows is the shortest run that a
+#: link dropping every other beat cannot produce.
+AGENT_RECOVERY_FACTOR = 2
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -126,6 +151,7 @@ class SlaEscalationWorker:
             "exception_expiring": 0,
             "exception_expired": 0,
             "agents_offline": 0,
+            "agents_recovered": 0,
             "escalated": 0,
             "digests_sent": 0,
             "digest_failures": 0,
@@ -146,6 +172,12 @@ class SlaEscalationWorker:
         #: reason: an exception stays inside the 30-day horizon for a month, so
         #: a re-read window would warn about the first N and starve the rest.
         self._exception_cursor: dict[str, tuple[datetime, str] | None] = {}
+        #: And the same over the offline-agent sweep, which is fleet-wide
+        #: rather than per tenant — one key, not one per tenant. A quiet agent
+        #: stays quiet, so the window would otherwise re-read the same oldest
+        #: ``OCTO_SLA_ESCALATION_MAX_FINDINGS`` agents forever and never reach
+        #: the rest of a larger fleet.
+        self._agent_cursor: tuple[datetime, str] | None = None
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -465,21 +497,48 @@ class SlaEscalationWorker:
             )
 
     def _agents(self, now: datetime) -> None:
-        """Announce agents that have gone quiet, once per silence.
+        """Announce agents that have gone quiet, once per *episode* of silence.
 
-        The marker is the agent's ``last_seen_at``, so an agent that comes back
-        and later goes quiet again is announced again, while one that has been
-        down for a week is announced once. Retired and quarantined agents are
-        skipped: an agent an operator deliberately took out of service is not
-        news, and paging on it is how a fleet's alerts get muted.
+        The claim is taken under a constant marker
+        (:data:`AGENT_OFFLINE_MARKER`) and given back by
+        :meth:`_agent_recoveries` once the agent is properly back, so what the
+        table records is the agent's announced state rather than the beat the
+        silence started after. Keyed on ``last_seen_at``, as it was before, an
+        agent whose link drops every other beat presented a new-but-still-stale
+        timestamp on every tick and was announced on every tick — ninety-six
+        deliveries a day for one degraded agent, and nothing to tell them apart
+        with. The claim and the event are therefore keyed differently, as in
+        :meth:`_exceptions`: the claim says "this agent is announced", the
+        event carries the beat it fell silent after so two episodes are two
+        events on the bus rather than one content-deduped envelope said twice.
+
+        Retired and quarantined agents are skipped: an agent an operator
+        deliberately took out of service is not news, and paging on it is how a
+        fleet's alerts get muted.
+
+        Windowed and cursored like :meth:`_due_findings`, and for the same
+        reason — a quiet agent stays quiet, so a re-read window would announce
+        the oldest ``OCTO_SLA_ESCALATION_MAX_FINDINGS`` of a larger fleet and
+        never reach the rest. This was the one query in the worker that had
+        neither, so the budget that bounds every other fan-out did not bound
+        this one.
         """
-        cutoff = _naive(now) - timedelta(seconds=self._settings.agent_stale_seconds)
+        limit = max(1, int(self._settings.sla_escalation_max_findings))
+        naive_now = _naive(now)
+        cutoff = naive_now - timedelta(seconds=self._settings.agent_stale_seconds)
+        query = select(models.Agent).where(
+            models.Agent.lifecycle_status == "active",
+            models.Agent.last_seen_at < cutoff,
+        )
+        if self._agent_cursor is not None:
+            query = query.where(
+                tuple_(models.Agent.last_seen_at, models.Agent.agent_id) > self._agent_cursor
+            )
         with get_session(self._settings.postgres_url) as session:
             rows = session.execute(
-                select(models.Agent).where(
-                    models.Agent.lifecycle_status == "active",
-                    models.Agent.last_seen_at < cutoff,
-                )
+                query.order_by(
+                    models.Agent.last_seen_at.asc(), models.Agent.agent_id.asc()
+                ).limit(limit)
             ).scalars().all()
             pending = [
                 {
@@ -492,15 +551,26 @@ class SlaEscalationWorker:
                 }
                 for row in rows
             ]
+            self._agent_cursor = (
+                (rows[-1].last_seen_at, rows[-1].agent_id) if len(rows) == limit else None
+            )
 
         for agent in pending:
             last_seen = agent.pop("last_seen_at")
-            emitted = workflow_events.emit_once(
+            # ``emit_once`` rather than a claim of our own: a claim held for an
+            # event the fan-out dropped is worse here than anywhere else in
+            # this worker, because this one is held for the whole episode. It
+            # would be given back by a recovery that, for a host that died, is
+            # never coming — so the agent would stay suppressed until the
+            # retention sweep a year later. The claim covers the agent and the
+            # envelope carries the beat, hence the two markers.
+            announced = workflow_events.emit_once(
                 self._settings,
                 "agent_offline",
                 tenant_id=agent["tenant_id"],
                 subject_id=agent["agent_id"],
-                marker=_stamp(last_seen),
+                marker=AGENT_OFFLINE_MARKER,
+                event_marker=_stamp(last_seen),
                 data={
                     **agent,
                     "last_seen_at": _stamp(last_seen),
@@ -509,8 +579,84 @@ class SlaEscalationWorker:
                 },
                 now=now,
             )
-            if emitted:
+            if announced:
                 self._stats["agents_offline"] += 1
+        self._agent_recoveries(now, limit=limit)
+
+    def _agent_recoveries(self, now: datetime, *, limit: int) -> None:
+        """Give back the claim of every agent that is properly back.
+
+        "Properly" is the whole difficulty. An agent that is merely *seen*
+        within the stale window is seen half the time while it flaps, and
+        releasing on that would let the next tick announce it again — the
+        duplicate storm, one release later. So recovery is a *run*: the agent
+        kept an unbroken run of heartbeats, begun after the claim was taken, of
+        at least :data:`AGENT_RECOVERY_FACTOR` stale windows
+        (``agents.healthy_since``). A link that drops every other beat never
+        gets there, and stays one episode.
+
+        What the release deliberately does **not** ask is whether the agent is
+        there *now*. It did, and that made closing an episode depend on a tick
+        landing inside a two-minute window it visits every fifteen: an agent
+        that was genuinely back for ten minutes and then died for good stayed
+        "already announced" for ever, and its second, real death was never
+        announced at all. A run is what was *observed*, so a tick that arrives
+        an hour late still sees it. The run must have begun after the claim,
+        or every dead agent — whose last run was long and ended when it died —
+        would be released on the tick after it was announced.
+
+        Driven from the markers rather than from the fleet: the standing claims
+        are the agents the platform believes are offline, which is a much
+        smaller set than "every healthy agent" and the only one worth reading.
+        No cursor here, unlike :meth:`_agents` — a released row leaves the
+        query, so a window that re-reads from the start drains rather than
+        starves. A row whose agent has since been deleted is left to
+        ``prune_markers``.
+
+        Lifecycle is deliberately not filtered: an operator who quarantined an
+        agent while it was offline still wants its claim cleared when the link
+        comes back, or the next real silence would go unannounced.
+        """
+        run_length = timedelta(
+            seconds=self._settings.agent_stale_seconds * AGENT_RECOVERY_FACTOR
+        )
+        with get_session(self._settings.postgres_url) as session:
+            recovered = session.execute(
+                select(
+                    models.WorkflowEventMarker.tenant_id,
+                    models.WorkflowEventMarker.subject_id,
+                )
+                .join(
+                    models.Agent,
+                    models.Agent.agent_id == models.WorkflowEventMarker.subject_id,
+                )
+                .where(
+                    models.WorkflowEventMarker.kind == "agent_offline",
+                    models.WorkflowEventMarker.marker == AGENT_OFFLINE_MARKER,
+                    # The run began after the platform said the agent was
+                    # gone... NULL on a row written by a replica still on 0053
+                    # fails this comparison, which postpones a recovery rather
+                    # than inventing one.
+                    models.Agent.healthy_since > models.WorkflowEventMarker.created_at,
+                    # ...and it is long enough to be a return rather than a
+                    # blink. Measured between the two columns, not against the
+                    # clock: it is the run the platform saw.
+                    models.Agent.healthy_since + run_length <= models.Agent.last_seen_at,
+                )
+                .order_by(models.WorkflowEventMarker.subject_id.asc())
+                .limit(limit)
+            ).all()
+
+        for tenant_id, agent_id in recovered:
+            if workflow_events.release(
+                self._settings,
+                tenant_id=tenant_id,
+                kind="agent_offline",
+                subject_id=agent_id,
+                marker=AGENT_OFFLINE_MARKER,
+            ):
+                self._stats["agents_recovered"] += 1
+                LOG.info("Agent %s is heartbeating again; offline claim released", agent_id)
 
     # ----------------------------------------------------------------------
     # Actions

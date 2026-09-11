@@ -721,6 +721,13 @@ What comes back says what was actually stopped:
   same `Idempotency-Key` is answered with the stored outcome rather than with a
   conflict. Partial results are ingested and kept; they do not feed the
   vulnerability tracker or the notification channels, because a partial sweep
+  read as a complete one would report hosts a scan never reached as gone. The
+  agent keeps heartbeating (`stage=cancelling`) while it terminates the process
+  group and packs the partial run, so the fleet does not read an agent carrying
+  out the order as one that has gone offline
+  ([#349](https://github.com/onixus/Shapoclyack/issues/349)); the upload itself
+  is still sent without a beat behind it, so a very slow upload of a very large
+  archive can still cross `OCTO_AGENT_STALE_SECONDS`;
   read as a complete one would report hosts a scan never reached as gone. An
   archive that arrives **after** the grace period — the agent obeyed, but a
   large partial run on a narrow link did not finish uploading in time — is
