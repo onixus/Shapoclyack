@@ -877,9 +877,43 @@ a `421` at 00:07 costs the owner a quarter of an hour, not the day. The digest
 lists what is overdue for that owner now, not what this tick announced — it is
 read separately from the announcement window for exactly that reason.
 
+**`agent_offline` is claimed per episode, not per missed beat.** The other
+three derived kinds key their claim on a deadline; an agent has none, so the
+claim is keyed on the agent itself and held for as long as the platform
+believes it is gone. This matters for the agent that is *degraded* rather than
+dead: with `OCTO_AGENT_STALE_SECONDS=120` and a 60-second heartbeat, an agent
+reaching the API every other try presents a different-but-still-stale
+`last_seen_at` on every tick, and the old per-timestamp key made every one of
+them a new occurrence — ninety-six deliveries a day for one agent, nineteen
+thousand across a fleet of two hundred.
+
+The claim is given back when the agent comes back, and "comes back" is a run
+rather than a beat: it must have been heard from inside the stale window *and*
+have kept an unbroken run of heartbeats for twice `OCTO_AGENT_STALE_SECONDS`
+(`agents.healthy_since`, added in 0056 and restarted by any gap longer than the
+stale window). A flapping link never reaches that, so it stays one episode; an
+agent that is genuinely back clears its alert about four minutes later at the
+defaults. Nothing changes on the announcing side: the first tick after an
+agent crosses the threshold still announces it, with no confirmation window.
+
+The sweep is bounded by `OCTO_SLA_ESCALATION_MAX_FINDINGS` and cursored like
+the finding window above — it was the one query in this worker with neither.
+The cursor is fleet-wide rather than per tenant, and lives in the worker's
+memory on the same terms: a restart re-reads from the oldest silence, which the
+standing claims make quiet.
+
+There is still **no `agent_recovered` event**: the platform closes its own
+claim, but a receiver that opened an alert on `agent_offline` has to close it
+from the fleet view or from `GET /api/agents`. Until that kind exists, treat
+`agent_offline` as "a new episode of silence started", not as a state that will
+be retracted.
+
 Worker counters live on `octo_workflow_events_total{kind,outcome}` and
 `octo_sla_escalations_total{action}`; `outcome="no_subscription"` is the
-ordinary case for a tenant that has not opted in, not a failure.
+ordinary case for a tenant that has not opted in, not a failure. The worker's
+own `stats` also counts `agents_offline` and `agents_recovered` — episodes
+opened and claims released, so a fleet whose two counters climb together is a
+fleet that is flapping rather than one that is failing.
 
 ### ClickHouse ingest consumer subjects (#230)
 

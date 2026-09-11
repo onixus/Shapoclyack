@@ -552,6 +552,30 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **`agent_offline` now means the agent is gone, not that it is busy or that a
+  packet was lost** ([#349](https://github.com/onixus/Shapoclyack/issues/349)).
+  Two ways the same false alarm was reached. The escalation worker claimed each
+  announcement under the agent's `last_seen_at`, so a degraded link — one beat
+  in two arriving, at the default 60-second heartbeat and 120-second stale
+  window — presented a new-but-still-stale timestamp on every tick and was
+  announced on every tick: 96 deliveries a day for one agent, ~19k across a
+  fleet of two hundred. The claim is now keyed on the agent and held for the
+  whole episode of silence, and given back only when the agent has been heard
+  from *and* has kept an unbroken run of heartbeats for twice
+  `OCTO_AGENT_STALE_SECONDS` (`agents.healthy_since`, migration 0056) — a run
+  a flapping link cannot produce. The other way was the agent's own: on
+  receiving a cancellation its heartbeat thread returned, leaving the process-
+  group terminate and the packing of the partial run silent, so a stop of a
+  large scan alerted on the agent obeying it; the thread now keeps beating
+  (`stage=cancelling`) until the job is done. Nothing waits longer to be
+  announced: the first tick after an agent crosses the threshold still
+  announces it. The offline sweep was also the one query in this worker with
+  neither a `limit` nor a cursor — it now spends the same
+  `OCTO_SLA_ESCALATION_MAX_FINDINGS` budget, oldest silence first, as every
+  other fan-out here. **Not done:** there is still no paired `agent_recovered`
+  event, so a receiver's alert is closed by hand; the results upload after a
+  cancellation is still sent with no heartbeat behind it.
+
 - **A running scan can be stopped**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
   legal only from `queued`; once an agent had claimed a job, the only bound on
