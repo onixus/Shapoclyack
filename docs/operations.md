@@ -888,13 +888,35 @@ them a new occurrence — ninety-six deliveries a day for one agent, nineteen
 thousand across a fleet of two hundred.
 
 The claim is given back when the agent comes back, and "comes back" is a run
-rather than a beat: it must have been heard from inside the stale window *and*
-have kept an unbroken run of heartbeats for twice `OCTO_AGENT_STALE_SECONDS`
-(`agents.healthy_since`, added in 0056 and restarted by any gap longer than the
-stale window). A flapping link never reaches that, so it stays one episode; an
-agent that is genuinely back clears its alert about four minutes later at the
-defaults. Nothing changes on the announcing side: the first tick after an
-agent crosses the threshold still announces it, with no confirmation window.
+rather than a beat: an unbroken run of heartbeats, begun after the claim was
+taken, of at least twice `OCTO_AGENT_STALE_SECONDS` (`agents.healthy_since`,
+added in 0056 and restarted by any gap longer than the stale window). A
+flapping link never reaches that, so it stays one episode.
+
+What the release deliberately does *not* ask is whether the agent is there at
+the instant the worker looks. A run is what was **observed**, so an agent that
+was genuinely back for ten minutes and then died for good is released on
+whatever tick comes next — and its second, real death is announced as a second
+episode rather than left under the first event, which the on-call had already
+closed. Asking "seen right now" instead would make closing an episode depend
+on a tick landing inside a two-minute window it visits every fifteen.
+
+An agent that is genuinely back therefore clears its alert on the first tick
+that is at least four minutes into its new run: **between four minutes and one
+tick later**, so four to nineteen minutes at the defaults, and
+`OCTO_SLA_ESCALATION_INTERVAL_SECONDS` is what decides where in that range.
+Nothing changes on the announcing side: the first tick after an agent crosses
+the threshold still announces it, with no confirmation window.
+
+**Upgrading past 0056** folds the standing claims: every `agent_offline`
+marker under the old per-timestamp key becomes the one `offline` claim for that
+agent, dated from the last time it was announced. Without that, the first tick
+would claim every already-quiet agent afresh and announce it again —
+`webhook_deliveries` would de-duplicate that by `event_id`, but the copy
+published to NATS would not be, since JetStream's content window is minutes
+wide and these agents have been silent for hours. Nothing to do by hand; a
+`SELECT count(*) FROM workflow_event_markers WHERE kind = 'agent_offline' AND
+marker <> 'offline'` should answer `0` after the upgrade.
 
 The sweep is bounded by `OCTO_SLA_ESCALATION_MAX_FINDINGS` and cursored like
 the finding window above — it was the one query in this worker with neither.
@@ -912,8 +934,12 @@ Worker counters live on `octo_workflow_events_total{kind,outcome}` and
 `octo_sla_escalations_total{action}`; `outcome="no_subscription"` is the
 ordinary case for a tenant that has not opted in, not a failure. The worker's
 own `stats` also counts `agents_offline` and `agents_recovered` — episodes
-opened and claims released, so a fleet whose two counters climb together is a
-fleet that is flapping rather than one that is failing.
+**announced** and claims released, so a fleet whose two counters climb together
+is a fleet that is flapping rather than one that is failing. `agents_offline`
+counts an episode only when the event reached the delivery queue or the broker,
+as `breached` and `due_soon` do: a claim whose fan-out failed is given back and
+retried on the next tick rather than counted here, and a tenant that has
+subscribed to nothing and runs no broker counts nothing at all.
 
 ### ClickHouse ingest consumer subjects (#230)
 
