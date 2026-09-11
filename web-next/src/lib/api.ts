@@ -2329,7 +2329,13 @@ export type BulkActionReport = {
   action: string;
   requested: number;
   succeeded: number;
+  /** Ids the API refused — closed, in another tenant, illegal transition. Does
+   * *not* include the ids a batch ran out of time for; those are
+   * `not_attempted`, because nothing was asked of them. */
   failed: number;
+  /** Ids the time budget cut the loop before. The operator's next step is to
+   * send them again; `0` on an older API that did not count them apart. */
+  not_attempted?: number;
   results: BulkActionItemResult[];
   replayed: boolean;
   deadline?: boolean;

@@ -256,23 +256,53 @@ def _report(
 ) -> dict[str, Any]:
     """The report envelope. ``requested`` is the id count when it is not the
     number of results — a batch that aborted part-way reached fewer ids than it
-    was given, and saying ``requested: 99`` of two hundred would hide that."""
+    was given, and saying ``requested: 99`` of two hundred would hide that.
+
+    ``failed`` and ``not_attempted`` are two different statements and are
+    counted apart. ``failed`` is what the API *refused* — a closed finding, an
+    illegal transition, an id in another tenant — and ``docs/api-and-rbac.md``
+    tells an integration that ``failed == 0`` means the batch applied. An id
+    the budget cut the loop before was never asked anything, so folding it into
+    ``failed`` turns "the request was slow" into "eighty findings rejected",
+    which is a pipeline alerting on a batch that refused nothing.
+    """
     succeeded = sum(1 for item in results if item["ok"])
+    not_attempted = sum(1 for item in results if item["outcome"] == OUTCOME_DEADLINE)
     report = {
         "action": action,
         "requested": len(results) if requested is None else requested,
         "succeeded": succeeded,
-        "failed": len(results) - succeeded,
+        "failed": len(results) - succeeded - not_attempted,
+        "not_attempted": not_attempted,
         "results": results,
     }
     if aborted:
         report["aborted"] = True
-    if any(item["outcome"] == OUTCOME_DEADLINE for item in results):
+    if not_attempted:
         # Derived from the results rather than passed in, so every envelope
         # built from a set of results — including the per-tenant ones
         # ``audit_rows`` regroups for a platform admin — says it.
         report["deadline"] = True
     return report
+
+
+def changed_nothing(report: dict[str, Any]) -> bool:
+    """Whether this report is worth remembering under an ``Idempotency-Key``.
+
+    A batch that stopped on its budget having applied *nothing* is not an
+    answer, it is a request that did not happen — and storing it makes the key
+    mean "this was done" for the next 24 hours. The console never notices (it
+    mints a UUID per click), but the CI recipes in
+    ``docs/wiki/scenarios-architect.md`` are told to send a stable, meaningful
+    key: `nightly-triage` sends the rest of its batch under the same name, is
+    replayed the empty report, and the remainder never arrives at all.
+
+    Narrow on purpose. Only the ids the budget cut off make a batch re-sendable
+    under its own key; a batch whose ids were all refused — every one closed,
+    every one in another tenant — *is* an answer, and re-running it would
+    produce the same refusals with a second audit row to show for it.
+    """
+    return bool(report.get("deadline")) and not report["succeeded"]
 
 
 def _deadline_results(
@@ -323,9 +353,11 @@ def _apply_each(
     it never reached are reported :data:`OUTCOME_DEADLINE`: a 200 saying what
     landed and what is left, which the caller can send again. ``0`` disables it.
 
-    The first id is always attempted. A budget too small to fit one id would
-    otherwise return a report of two hundred ``deadline`` entries having done
-    nothing, and burn an idempotency key on it.
+    The first id is always attempted, so a budget too small to fit one id does
+    not return two hundred ``deadline`` entries having asked nothing. Attempted
+    is not applied, though — the first id may be one that closed since the
+    selection was made — so the caller, not this loop, is what keeps a batch
+    that changed nothing from burning its key; see ``routes/vulnerabilities.py``.
     """
     results: list[dict[str, Any]] = []
     deadline = _clock() + budget_seconds if budget_seconds > 0 else None
@@ -397,12 +429,14 @@ def apply_vulnerability_action(
     )
     report = _report(action, results)
     LOG.info(
-        "bulk vulnerabilities action=%s tenant=%s requested=%d succeeded=%d failed=%d actor=%s",
+        "bulk vulnerabilities action=%s tenant=%s requested=%d succeeded=%d failed=%d "
+        "not_attempted=%d actor=%s",
         action,
         tenant_id or "*",
         report["requested"],
         report["succeeded"],
         report["failed"],
+        report["not_attempted"],
         actor,
     )
     return report
@@ -517,12 +551,14 @@ def apply_asset_action(
     )
     report = _report(action, results)
     LOG.info(
-        "bulk assets action=%s tenant=%s requested=%d succeeded=%d failed=%d actor=%s",
+        "bulk assets action=%s tenant=%s requested=%d succeeded=%d failed=%d "
+        "not_attempted=%d actor=%s",
         action,
         tenant_id,
         report["requested"],
         report["succeeded"],
         report["failed"],
+        report["not_attempted"],
         actor,
     )
     return report
@@ -579,6 +615,9 @@ def audit_document(
         "requested": report["requested"],
         "succeeded": report["succeeded"],
         "failed": report["failed"],
+        # Apart from ``failed`` here too: a reader of the trail asking "what did
+        # this batch refuse" must not be shown the ids it simply never reached.
+        "not_attempted": report["not_attempted"],
         "write_scope": write_scope or "*",
         "applied": [item["id"] for item in report["results"] if item["ok"]],
         "rejected": {

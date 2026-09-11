@@ -563,7 +563,17 @@ All notable changes to Shapoclyack are documented in this file.
   trail is written. The key now also carries the caller (migration 0055, the
   principal the audit trail records). Rows written before the migration keep the
   old tenant-wide reading for the 24 hours they survive, so a retry that crosses
-  the upgrade still replays instead of re-applying its batch.
+  the upgrade still replays instead of re-applying its batch. Both directions of
+  the rolling deploy are closed by a trigger that refuses an insert whose
+  owner-ness disagrees with the row already holding the key: without it a batch
+  answered by a new replica and retried against one the deploy had not reached
+  would have been applied a second time. The trigger, the narrowed index and the
+  fallback read come out together one release later — the contract step, now
+  tracked in `ROADMAP.md` and in a `TODO` in `api/services/idempotency.py`
+  rather than only in prose. Until they do, a
+  key a pre-upgrade replica reserved is still tenant-wide for the 24 hours that
+  row lives, and a neighbour who guesses it can still be handed its report
+  without an audit row of their own.
 - **A bulk action has a time budget and answers with a partial report instead of
   a 504** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Two
   hundred ids are two hundred transactions and, for findings carrying a tracker
@@ -574,8 +584,14 @@ All notable changes to Shapoclyack are documented in this file.
   and answers **200**; the ids it never reached carry the new outcome
   `deadline`, the envelope carries `"deadline": true`, and the console's toast
   says `N updated, M left — select them again to finish` rather than calling
-  them failures. The first id is always attempted, and retrying the same key
-  replays the partial report, so nothing is lost and nothing is applied twice.
+  them failures. Those ids are counted in the new `not_attempted` field and
+  **not** in `failed`, which stays what the API refused — `failed == 0` still
+  means "everything the batch asked for applied", which is what
+  `docs/api-and-rbac.md` tells integrations to check. Retrying the same key
+  replays the partial report, so nothing is lost and nothing is applied twice —
+  except for a batch that was cut short having applied *nothing* (its first id
+  had closed since the selection was made), which releases its key instead of
+  answering "already done" to every retry for a day.
 - **A partial archive that arrives after the cancellation grace period is kept**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The agent that
   obeyed but was slow — a large partial `runs/<run_id>` on a narrow link — had
@@ -588,7 +604,11 @@ All notable changes to Shapoclyack are documented in this file.
   note that the results turned up late, and is counted as
   `octo_job_cancellations_total{outcome="late_results"}`. An upload with **no**
   archive is still refused, because it carries nothing to keep and accepting it
-  would record a confirmation that never came.
+  would record a confirmation that never came. An agent too old to send an
+  idempotency key gets a server-side reservation on the row instead of none, so
+  the archive is taken once: before this, the "nothing has ever been ingested"
+  clause stayed true after every upload and the same job could be re-extracted,
+  re-published and re-upserted for the whole grace period.
 - **A running scan can be stopped**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
   legal only from `queued`; once an agent had claimed a job, the only bound on

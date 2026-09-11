@@ -488,7 +488,14 @@ def bulk_action(
         guard.release()
         raise
     _record_bulk_audit(audit, principal, report, payload, action=body.action)
-    guard.store(report)
+    if bulk_actions.changed_nothing(report):
+        # The budget ran out before anything was applied. Storing that under the
+        # key would answer every retry of it "already done, nothing changed" for
+        # a day — and a pipeline sending a stable key would never get the rest of
+        # its batch in. See ``bulk_actions.changed_nothing``.
+        guard.release()
+    else:
+        guard.store(report)
     return report
 
 

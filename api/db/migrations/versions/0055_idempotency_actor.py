@@ -39,14 +39,34 @@ can fail on data that is already there:
   one key are decided, not an optimisation. Restricted to ``actor IS NULL`` it
   guards exactly the rows old code writes and ignores the ones new code does.
 
+**The two indexes do not see each other, and a rolling deploy has two
+directions.** ``uq_idempotency_legacy_tenant_endpoint_key`` decides two *old*
+replicas and the four-column index decides two *new* ones, but neither can
+refuse an old replica's ``actor IS NULL`` insert for a key a new replica has
+already answered under an owner — the rows land in different indexes. Left
+there, a retry arriving on a not-yet-replaced replica is told "the key is
+yours" and applies its batch a second time, which is the one outcome the key
+exists to prevent, in the one window this migration creates.
+
+Nothing declarative can express it: the constraint is "unique across a
+projection two generations of writer spell differently". So the window is
+closed by a trigger, ``idempotency_records_cross_generation``, which refuses an
+insert whose owner-ness disagrees with a row that already holds the key and
+raises ``unique_violation`` — the error *both* generations already handle by
+reading the row that won. It takes a transaction advisory lock on the key
+first, so two inserts arriving together are decided rather than both passing
+the look-ahead. The alternative the review proposed — keeping the tenant-wide
+index for a release — closes the same window by making every new row
+tenant-wide too, which is this change not shipping.
+
 The read path handles the rows this leaves behind rather than orphaning them:
 ``idempotency.reserve`` looks for the caller's own row first and falls back to a
 legacy one, so a retry that arrives seconds after the deploy still replays its
-answer instead of applying its batch a second time. That fallback and the
-partial index are the temporary half of this change; both may go once no legacy
-row can exist, which is ``RETENTION_SECONDS`` (24h) after the deploy — the
-"contract" step in ``docs/operations.md`` terms, and it needs no migration of
-its own because the sweep removes the rows on its own.
+answer instead of applying its batch a second time. That fallback, the partial
+index and the trigger are the temporary half of this change; all three go once
+no legacy row can exist, which is ``RETENTION_SECONDS`` (24h) after the deploy
+— the "contract" step in ``docs/operations.md`` terms, tracked in ``ROADMAP.md``,
+and it needs a migration only to drop the trigger.
 """
 from __future__ import annotations
 
@@ -59,6 +79,42 @@ revision: str = "0055_idempotency_actor"
 down_revision: Union[str, None] = "0053_tenant_scan_policy"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+
+# One spelling of the cross-generation guard, written out rather than
+# interpolated: an f-string reaching sa.text() is the shape CI's semgrep gate
+# refuses, and rightly.
+#
+# ``unique_violation`` on purpose. It is what a colliding INSERT would have
+# raised had one index been able to cover both generations, and it is what both
+# the previous release and this one already catch and answer by reading the row
+# that won — so no replica needs to learn a new error to be safe.
+_CROSS_GENERATION_FUNCTION = """
+CREATE OR REPLACE FUNCTION idempotency_cross_generation() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    -- Taken before the look-ahead below and held to commit, so two inserts for
+    -- one key are decided one at a time. Without it both could read "no
+    -- conflicting row" and both insert, which is the same race the unique
+    -- indexes exist to settle for the generations they do cover.
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended(NEW.tenant_id || '/' || NEW.endpoint || '/' || NEW.key, 0)
+    );
+    IF EXISTS (
+        SELECT 1 FROM idempotency_records
+        WHERE tenant_id = NEW.tenant_id
+          AND endpoint = NEW.endpoint
+          AND key = NEW.key
+          AND (actor IS NULL) IS DISTINCT FROM (NEW.actor IS NULL)
+    ) THEN
+        RAISE EXCEPTION
+            'idempotency key is already held for this tenant and endpoint'
+            USING ERRCODE = 'unique_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+"""
 
 
 def upgrade() -> None:
@@ -83,9 +139,26 @@ def upgrade() -> None:
         postgresql_where=sa.text("actor IS NULL"),
         sqlite_where=sa.text("actor IS NULL"),
     )
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(sa.text(_CROSS_GENERATION_FUNCTION))
+        op.execute(
+            sa.text(
+                "CREATE TRIGGER idempotency_records_cross_generation "
+                "BEFORE INSERT ON idempotency_records "
+                "FOR EACH ROW EXECUTE FUNCTION idempotency_cross_generation()"
+            )
+        )
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            sa.text(
+                "DROP TRIGGER IF EXISTS idempotency_records_cross_generation "
+                "ON idempotency_records"
+            )
+        )
+        op.execute(sa.text("DROP FUNCTION IF EXISTS idempotency_cross_generation()"))
     # Rebuilding the tenant-wide index can fail, and legitimately: after the
     # upgrade two callers may each hold ``nightly-triage`` in one tenant, which
     # is the whole point, and which the old index forbids. Those rows are the

@@ -74,7 +74,10 @@ describe("bulkSummary", () => {
     // was rejected rather than that it is half done.
     const cut = report({
       succeeded: 1,
-      failed: 1,
+      // Not a failure: `failed` is what the API refused, and it refused
+      // nothing here.
+      failed: 0,
+      not_attempted: 1,
       deadline: true,
       results: [
         { id: "vln_1", ok: true, outcome: "ok", error: null },
@@ -84,6 +87,29 @@ describe("bulkSummary", () => {
     expect(bulkSummary(cut, "finding")).toBe(
       "1 finding updated, 1 left — select them again to finish",
     );
+  });
+
+  it("counts a refusal and an id nobody reached separately", () => {
+    // The two live side by side in one report and mean different things: one
+    // finding was refused, one was never asked. Reading `failed` as "both"
+    // was what made the toast say two were skipped.
+    const mixed = report({
+      requested: 3,
+      succeeded: 1,
+      failed: 1,
+      not_attempted: 1,
+      deadline: true,
+      results: [
+        { id: "vln_1", ok: true, outcome: "ok", error: null },
+        { id: "vln_2", ok: false, outcome: "conflict", error: "already CLOSED" },
+        { id: "vln_3", ok: false, outcome: "deadline", error: "not attempted" },
+      ],
+    });
+    expect(bulkSummary(mixed, "finding")).toBe(
+      "1 finding updated, 1 skipped, 1 left — select them again to finish",
+    );
+    // And the toast's description names the refusal, not the budget message.
+    expect(bulkFailureDetail(mixed)).toBe("already CLOSED");
   });
 
   it("says a replay applied nothing now", () => {

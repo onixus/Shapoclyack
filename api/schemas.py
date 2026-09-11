@@ -2060,7 +2060,11 @@ class BulkActionReport(BaseModel):
     A batch is a partial success by design — one closed finding in a selection
     of two hundred must not refuse the other hundred and ninety-nine — so the
     envelope is a report and the status is 200 even when ``failed`` is nonzero.
-    A caller wanting all-or-nothing checks ``failed == 0``.
+    A caller wanting all-or-nothing checks ``failed == 0`` — which counts only
+    what the API *refused*. ``not_attempted`` is counted apart from it: an id
+    the time budget cut the loop before was never asked anything, and reporting
+    eighty of those as eighty failures is how a pipeline alerts on a batch that
+    rejected nothing. ``failed + not_attempted + succeeded == len(results)``.
 
     ``replayed`` is true when this answer came out of the ``Idempotency-Key``
     record of an earlier identical request rather than from work done now. The
@@ -2087,6 +2091,7 @@ class BulkActionReport(BaseModel):
     requested: int
     succeeded: int
     failed: int
+    not_attempted: int = 0
     results: list[BulkActionItemResult]
     replayed: bool = False
     aborted: bool = False

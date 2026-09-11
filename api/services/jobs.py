@@ -2296,6 +2296,21 @@ def _release_results_reservation(
                 row.results_idempotency_key = None
 
 
+#: Written into ``results_idempotency_key`` by a late-archive ingest whose
+#: agent sent no key of its own.
+#:
+#: The predicate below reads "no results key" as "nothing has ever been
+#: ingested", and for a pre-P1.5 agent — which this file already admits exists,
+#: unfenced — there is no key to write, so that clause stayed true after the
+#: first upload and the whole ``job_cancel_grace_seconds`` window was open to a
+#: second, different archive: another extraction into ``runs/<run_id>``, another
+#: NATS publish, another asset upsert. A reservation the *server* writes is what
+#: makes the fact of the ingest visible to the next upload; it is deliberately
+#: not a key any agent could send, so it never matches one and the second copy
+#: meets the ordinary transition check.
+LATE_ARCHIVE_RESERVATION = "late-archive:unkeyed"
+
+
 def _accepts_late_archive(
     settings: Settings, row: models.Job, *, cancelled: bool, has_archive: bool
 ) -> bool:
@@ -2327,7 +2342,10 @@ def _accepts_late_archive(
     * ``cancel_requested_at`` — an operator did ask. A job cancelled out of the
       queue never had an agent to obey;
     * ``exit_code IS NULL`` and no results key — nothing has ever been ingested
-      for this job, so this cannot overwrite a run that was already reported;
+      for this job, so this cannot overwrite a run that was already reported.
+      An ingest on this path writes one even when the agent sent none
+      (:data:`LATE_ARCHIVE_RESERVATION`), which is what keeps the clause from
+      being permanently true for an agent old enough not to have a key;
     * inside one further ``job_cancel_grace_seconds`` of ``finished_at``. The
       agent that missed the first grace period gets one more to deliver what it
       packed; past that "late" would mean "whenever", and an archive for a scan
@@ -2526,12 +2544,13 @@ def complete_job(
                 # The obedient-but-slow agent: its bytes are kept, the outcome
                 # the reaper wrote is not touched. See the predicate.
                 late_archive = True
-                if idempotency_key:
-                    # Reserved inside the lock like any other, so a second copy
-                    # of this upload is recognised rather than extracted twice.
-                    # Given back by the failure path below, which is told this
-                    # is a reservation and not the record of an outcome.
-                    row.results_idempotency_key = idempotency_key
+                # Reserved inside the lock like any other, so a second copy of
+                # this upload is recognised rather than extracted twice. Given
+                # back by the failure path below, which is told this is a
+                # reservation and not the record of an outcome. An agent that
+                # sent no key gets the server's own marker rather than nothing:
+                # see :data:`LATE_ARCHIVE_RESERVATION`.
+                row.results_idempotency_key = idempotency_key or LATE_ARCHIVE_RESERVATION
         elif idempotency_key:
             if row.results_idempotency_key == idempotency_key:
                 # Same key, job not finished: the first request holding this key
@@ -2647,10 +2666,12 @@ def complete_job(
             )
     except Exception:
         # The reservation above is only meaningful while this upload is in
-        # flight. Releasing it lets the agent retry with the same key instead
-        # of meeting its own abandoned reservation forever.
-        if idempotency_key:
-            _release_results_reservation(settings, job_id, idempotency_key, late=late_archive)
+        # flight. Releasing it lets the agent retry with the same key — or, on
+        # the late path, with no key at all — instead of meeting its own
+        # abandoned reservation forever.
+        held = idempotency_key or (LATE_ARCHIVE_RESERVATION if late_archive else None)
+        if held:
+            _release_results_reservation(settings, job_id, held, late=late_archive)
         raise
     if status == job_states.CANCELLED:
         # Counted apart from a confirmation, because it is not one: the scan was

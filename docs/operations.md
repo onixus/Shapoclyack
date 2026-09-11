@@ -502,12 +502,32 @@ is marked by construction as "reserved when a key was a tenant-wide namespace",
 and `reserve` still honours those rows for the 24 hours they survive. The
 tenant-wide unique index is not dropped but *narrowed* to exactly those rows
 (`WHERE actor IS NULL`), so a replica still running the previous release keeps
-the uniqueness that decides which of two racing replicas holds a key. Both the
-narrowed index and the fallback read may go in a later release, once no row
-without an actor can exist; that is a code change with no migration, because the
-sweep removes the rows on its own. During the rolling deploy itself a key
-reserved by an old replica is still tenant-wide — one deploy window, not a
-standing property.
+the uniqueness that decides which of two racing replicas holds a key.
+
+The two indexes cannot see each other, though — one covers rows with an owner
+and one covers rows without — so the rollout is also given a trigger,
+`idempotency_records_cross_generation`, which refuses an insert whose owner-ness
+disagrees with a row already holding the key and raises `unique_violation`, the
+error both releases already handle by reading the row that won. Without it the
+*reverse* direction of a rolling deploy is open: a batch answered by a new
+replica and retried against one the deploy has not reached yet would be applied
+a second time. It takes a transaction advisory lock on the key, so the cost is
+one lock per bulk request that carries one.
+
+**The contract step is tracked** in [ROADMAP.md](../ROADMAP.md#track-a--what-is-actually-left)
+("Idempotency key `actor` — contract step") and in a `TODO` on
+`api/services/idempotency.py`, so it is scheduled rather than prose. One release
+later, once no row without an actor
+can exist (the bound is the 24h `RETENTION_SECONDS`), drop the narrowed index,
+the trigger and the fallback read in `idempotency.reserve`. While they are in
+place a legacy row is still read tenant-wide, which is the thing this change
+exists to end.
+
+During the rolling deploy itself a key reserved by an old replica is still
+tenant-wide: a member of the same tenant who guesses it and sends a matching
+body is handed that report as a replay, with no audit row of their own. One
+deploy window plus the 24-hour life of the rows it wrote, not a standing
+property.
 
 **Nothing operational to schedule.** Rows expire 24 hours after they are
 written (`RETENTION_SECONDS` in `api/services/idempotency.py`) and are deleted

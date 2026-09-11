@@ -138,7 +138,12 @@ def bulk_action(
         guard.release()
         raise
     record(report)
-    guard.store(report)
+    if bulk_actions.changed_nothing(report):
+        # Same contract as the findings batch: a batch that applied nothing
+        # gives its key back rather than replaying the nothing it did.
+        guard.release()
+    else:
+        guard.store(report)
     return report
 
 

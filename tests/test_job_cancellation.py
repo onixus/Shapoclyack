@@ -566,6 +566,54 @@ def test_a_late_partial_archive_is_kept_without_confirming_the_cancellation(
     assert retry.json()["error"].count("partial results uploaded late") == 1
 
 
+def test_a_late_archive_from_an_agent_with_no_key_is_taken_once(tmp_path, monkeypatch):
+    """The predicate says "no results key, so nothing has ever been ingested" —
+    but a pre-P1.5 agent sends no key, and the late path used to write none, so
+    that clause was true again the moment the first upload finished. The window
+    is a whole `job_cancel_grace_seconds`, and inside it the agent could push a
+    different archive into the same `runs/<run_id>`, re-publish it and re-upsert
+    its assets, as often as it liked.
+
+    The reservation is what closes it: an unkeyed late archive marks the row
+    itself, so the second copy meets the ordinary transition check like any
+    other straggler."""
+    client = _client(tmp_path, monkeypatch)
+    auth = auth_headers(client, "operator")
+    agent_id, job_id, run_id = _running_agent_job(client, auth)
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=auth).status_code == 200
+
+    settings = _settings(tmp_path)
+    settings.job_cancel_grace_seconds = 1
+    _age_cancellation(settings, job_id, 300)
+    assert jobs_service.reap_stale_cancellations(settings) == 1
+
+    def upload(*names: str):
+        return client.post(
+            f"/api/agent/jobs/{job_id}/results",
+            headers=_agent_headers(),
+            data={
+                "agent_id": agent_id,
+                "exit_code": "143",
+                "run_id": run_id,
+                "cancelled": "true",
+            },
+            files={"archive": ("run.tar.gz", _archive(*names), "application/gzip")},
+        )
+
+    first = upload("findings.json")
+    second = upload("other.json")
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 422, second.text
+    assert "already cancelled" in second.json()["detail"]
+    # The run directory still holds the archive that was kept, and only it.
+    run_dir = settings.output_dir / "runs" / run_id
+    assert (run_dir / "findings.json").is_file()
+    assert not (run_dir / "other.json").exists()
+    # And the note the drawer shows was not doubled by the second attempt.
+    assert jobs_service.get_job(settings, job_id).error.count("uploaded late") == 1
+
+
 def test_an_archive_for_a_job_closed_long_ago_is_refused(tmp_path, monkeypatch):
     """"Late" has to stop meaning "whenever". The agent that missed the grace
     period gets one more of them to deliver what it packed; an archive for a

@@ -20,9 +20,11 @@ key back rather than burning it.
 from __future__ import annotations
 
 import itertools
+import threading
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from api.db import models
 from api.db.engine import get_session
@@ -628,6 +630,7 @@ def test_two_hundred_ids_at_full_length_still_fit_the_audit_document():
         "requested": len(ids),
         "succeeded": 0,
         "failed": len(ids),
+        "not_attempted": 0,
         "results": [
             {"id": vuln_id, "ok": False, "outcome": "conflict", "error": "already CLOSED"}
             for vuln_id in ids
@@ -978,6 +981,319 @@ def test_the_time_budget_can_be_turned_off(tmp_path, monkeypatch):
     assert response.status_code == 200, response.text
     assert response.json()["succeeded"] == 2
     assert response.json()["deadline"] is False
+
+
+# --------------------------------------------------------------------------
+# The rows the deploy leaves behind: a key that has no owner (`0055`)
+# --------------------------------------------------------------------------
+
+
+def _bulk_digest(ids, payload, *, action: str = "assign") -> str:
+    """The digest the bulk route computes for this body."""
+    return idempotency_service.digest(
+        {"action": action, "ids": sorted(set(ids)), "payload": payload}
+    )
+
+
+def _legacy_record(
+    settings,
+    tenant_id: str,
+    *,
+    key: str,
+    request_digest: str,
+    response: dict | None = None,
+    age_seconds: int = 0,
+    endpoint: str = "vulnerabilities.bulk",
+) -> None:
+    """A row as the release before ``0055`` wrote it: a key with no owner.
+
+    The first 24 hours after the deploy are full of these and nothing in the
+    suite had one, which is the half of the change that cannot be undone by
+    reverting the code — the rows outlive it.
+    """
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.IdempotencyRecord(
+                tenant_id=tenant_id,
+                actor=None,
+                endpoint=endpoint,
+                key=key,
+                request_digest=request_digest,
+                response=response,
+                created_at=datetime.now(UTC).replace(tzinfo=None)
+                - timedelta(seconds=age_seconds),
+            )
+        )
+
+
+def _records(settings) -> list[tuple[str | None, str, bool]]:
+    """``(actor, key, answered)`` for every record, in insertion order."""
+    with get_session(settings.postgres_url) as session:
+        rows = session.execute(
+            select(models.IdempotencyRecord).order_by(models.IdempotencyRecord.id)
+        ).scalars().all()
+        return [(row.actor, row.key, row.response is not None) for row in rows]
+
+
+def _previous_release_reserve(
+    settings, *, tenant_id: str, endpoint: str, key: str, request_digest: str
+) -> dict | None:
+    """``idempotency.reserve`` as the release *before* ``0055`` wrote it.
+
+    Kept here in the shape it had — insert first, then answer from whichever
+    row won, with no notion of an owner — because the property under test is
+    about a replica still running that code while the rollout is half done, and
+    nothing else in the tree exercises it any more. ``None`` is that code
+    saying "the key is yours, execute the batch".
+    """
+    with get_session(settings.postgres_url) as session:
+        try:
+            with session.begin_nested():
+                session.add(
+                    models.IdempotencyRecord(
+                        tenant_id=tenant_id,
+                        endpoint=endpoint,
+                        key=key,
+                        request_digest=request_digest,
+                        response=None,
+                        created_at=datetime.now(UTC).replace(tzinfo=None),
+                    )
+                )
+                session.flush()
+            return None
+        except IntegrityError:
+            pass
+        row = session.execute(
+            select(models.IdempotencyRecord).where(
+                models.IdempotencyRecord.tenant_id == tenant_id,
+                models.IdempotencyRecord.endpoint == endpoint,
+                models.IdempotencyRecord.key == key,
+            )
+        ).scalars().first()
+        if row is None or row.response is None:
+            return None
+        return dict(row.response)
+
+
+def test_a_key_reserved_before_the_deploy_still_replays(tmp_path, monkeypatch):
+    """The rolling deploy, old replica first. A pipeline's batch was answered
+    by a replica that knew nothing about owners; its retry a second later lands
+    on a new one. The row it needs has ``actor IS NULL`` and no way to grow an
+    owner — the table never recorded who reserved a key — so for the day it
+    survives it keeps the meaning it was written under."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    payload = {"assignee": "ada"}
+    body = {"action": "assign", "vuln_ids": ids, "payload": payload}
+    _legacy_record(
+        settings,
+        tenant_id,
+        key="nightly-triage",
+        request_digest=_bulk_digest(ids, payload),
+        response={"action": "assign", "requested": 2, "succeeded": 2, "failed": 0, "results": []},
+    )
+
+    response = client.post(
+        _VULN_URL,
+        json=body,
+        headers={**auth_headers(client, "operator"), "Idempotency-Key": "nightly-triage"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["replayed"] is True
+    # And nothing was applied by this request: the answer is the stored one.
+    viewer = auth_headers(client, "viewer")
+    assert client.get(f"/api/vulnerabilities/{ids[0]}", headers=viewer).json()["assignee"] is None
+
+
+def test_a_key_a_pre_deploy_replica_is_still_working_on_is_a_conflict(tmp_path, monkeypatch):
+    """An unowned reservation is somebody's request in flight, and it is in
+    flight for a caller this row cannot name. Executing next to it would be the
+    double application the key exists to prevent."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    payload = {"assignee": "ada"}
+    _legacy_record(
+        settings, tenant_id, key="in-flight", request_digest=_bulk_digest(ids, payload)
+    )
+
+    response = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": ids, "payload": payload},
+        headers={**auth_headers(client, "operator"), "Idempotency-Key": "in-flight"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert "still being processed" in response.json()["detail"]
+
+
+def test_a_pre_deploy_reservation_nobody_answered_is_dropped_after_its_lease(
+    tmp_path, monkeypatch
+):
+    """The replica that made it is gone — it was the one the deploy replaced —
+    so without the lease that key is a 409 for a full day. Past the lease it is
+    deleted rather than taken over: the caller is about to insert a row of its
+    own, properly owned, and two rows for one key would be two answers to one
+    question."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    payload = {"assignee": "ada"}
+    _legacy_record(
+        settings,
+        tenant_id,
+        key="abandoned-by-the-deploy",
+        request_digest=_bulk_digest(ids, payload),
+        age_seconds=idempotency_service.RESERVATION_LEASE_SECONDS + 60,
+    )
+
+    response = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": ids, "payload": payload},
+        headers={
+            **auth_headers(client, "operator"),
+            "Idempotency-Key": "abandoned-by-the-deploy",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["succeeded"] == 2
+    assert _records(settings) == [("operator", "abandoned-by-the-deploy", True)]
+
+
+def test_a_pre_deploy_replica_cannot_take_a_key_this_release_holds(tmp_path, monkeypatch):
+    """The other direction of the same rollout, and the one the narrowed index
+    left open. A batch is answered by a new replica, which writes the key with
+    an owner; the retry a second later reaches a replica the deploy has not got
+    to yet, whose ``INSERT`` carries no owner at all. Nothing may let that
+    insert succeed: the old code reads "the key is mine" from it and applies
+    two hundred transitions a second time."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    payload = {"assignee": "ada"}
+    first = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": ids, "payload": payload},
+        headers={**auth_headers(client, "operator"), "Idempotency-Key": "nightly-triage"},
+    )
+    assert first.status_code == 200, first.text
+
+    replay = _previous_release_reserve(
+        settings,
+        tenant_id=tenant_id,
+        endpoint="vulnerabilities.bulk",
+        key="nightly-triage",
+        request_digest=_bulk_digest(ids, payload),
+    )
+
+    assert replay is not None, "the previous release was told to execute the batch again"
+    assert replay["succeeded"] == 2
+    # One key, one row — the old replica's insert never landed.
+    assert _records(settings) == [("operator", "nightly-triage", True)]
+
+
+def test_two_replicas_racing_one_abandoned_pre_deploy_reservation_execute_once(
+    tmp_path, monkeypatch
+):
+    """Both new replicas see the same expired unowned row and both may delete
+    it. Only one of them may come away holding the key: the loser's own insert
+    has to meet the winner's row rather than a gap where it used to be."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    payload = {"assignee": "ada"}
+    request_digest = _bulk_digest(ids, payload)
+    _legacy_record(
+        settings,
+        tenant_id,
+        key="contended",
+        request_digest=request_digest,
+        age_seconds=idempotency_service.RESERVATION_LEASE_SECONDS + 60,
+    )
+    outcomes: list[object] = []
+    barrier = threading.Barrier(2)
+
+    def replica() -> None:
+        barrier.wait(timeout=10)
+        try:
+            outcomes.append(
+                idempotency_service.reserve(
+                    settings,
+                    tenant_id=tenant_id,
+                    actor="operator",
+                    endpoint="vulnerabilities.bulk",
+                    key="contended",
+                    request_digest=request_digest,
+                )
+            )
+        except Exception as exc:  # the loser's refusal is the assertion below
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=replica) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert outcomes.count(None) == 1, outcomes
+    loser = [item for item in outcomes if item is not None]
+    assert len(loser) == 1 and isinstance(loser[0], idempotency_service.IdempotencyInFlight)
+    assert _records(settings) == [("operator", "contended", False)]
+
+
+# --------------------------------------------------------------------------
+# What the budget costs: a key, and the meaning of ``failed``
+# --------------------------------------------------------------------------
+
+
+def test_a_batch_that_changed_nothing_does_not_burn_its_key(tmp_path, monkeypatch):
+    """The first id is *attempted*, which is not the same as applied: a stale
+    selection whose first id has closed since the page loaded comes back
+    ``not_found``, and if the budget is gone by the second the whole batch
+    changed nothing. Storing that empty report under the key would make the CI
+    recipe in docs/wiki/scenarios-architect.md — which is told to send a stable
+    key — replay "succeeded: 0" for 24 hours, and the rest of the batch would
+    never arrive."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    body = {"action": "assign", "vuln_ids": ["vln_gone", ids[0]], "payload": {"assignee": "ada"}}
+    headers = {**auth_headers(client, "operator"), "Idempotency-Key": "nightly-triage"}
+    ticks = itertools.count(step=10_000)
+    monkeypatch.setattr(bulk_actions, "_clock", lambda: float(next(ticks)))
+
+    spent = client.post(_VULN_URL, json=body, headers=headers)
+
+    assert spent.status_code == 200, spent.text
+    assert spent.json()["succeeded"] == 0
+    assert spent.json()["deadline"] is True
+    # The key is free again, so the pipeline's next send under the same name is
+    # a batch and not a replay of the nothing above.
+    monkeypatch.setattr(bulk_actions, "_clock", lambda: 0.0)
+    again = client.post(_VULN_URL, json=body, headers=headers)
+    assert again.status_code == 200, again.text
+    assert again.json()["replayed"] is False
+    assert again.json()["succeeded"] == 1
+    assert _records(settings) == [("operator", "nightly-triage", True)]
+
+
+def test_ids_the_batch_never_reached_are_not_counted_as_refusals(tmp_path, monkeypatch):
+    """``failed`` is what the API refused, and docs/api-and-rbac.md tells an
+    integration that ``failed == 0`` means the batch applied. An id the budget
+    cut the loop before is not a refusal — nothing was asked of it — so it is
+    counted apart, in the report and in the audit row."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    body = {"action": "assign", "vuln_ids": ["vln_gone", *ids], "payload": {"assignee": "ada"}}
+    ticks = itertools.count(step=10_000)
+    monkeypatch.setattr(bulk_actions, "_clock", lambda: float(next(ticks)))
+
+    response = client.post(_VULN_URL, json=body, headers=auth_headers(client, "operator"))
+
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert (report["requested"], report["succeeded"]) == (3, 0)
+    # One refusal (the id that is gone) and two ids nobody touched.
+    assert (report["failed"], report["not_attempted"]) == (1, 2)
+    after = _audit_rows(settings, "vulnerability.bulk")[0]["after"]
+    assert (after["failed"], after["not_attempted"]) == (1, 2)
 
 
 def test_records_are_purged_once_past_their_ttl(tmp_path, monkeypatch):

@@ -896,6 +896,7 @@ The answer is **200 with a per-id report**, even when some ids failed:
 
 ```json
 {"action": "assign", "requested": 3, "succeeded": 2, "failed": 1,
+ "not_attempted": 0,
  "results": [{"id": "vln_a", "ok": true, "outcome": "ok", "error": null},
              {"id": "vln_x", "ok": false, "outcome": "not_found",
               "error": "not found in this tenant"}],
@@ -908,8 +909,13 @@ confirms existence), `conflict` its `409`, `invalid` its `422`. `deadline` is
 the one outcome that is not a status code; see the time budget below. A batch is
 a partial success by design: one finding that closed since the operator loaded
 the page must not refuse the other hundred and ninety-nine. A caller wanting
-all-or-nothing checks `failed == 0`. `422` is reserved for a request that
-applies to nothing at all. Duplicate ids are applied once.
+all-or-nothing checks `failed == 0` — `failed` counts only what the API
+*refused*. Ids the request ran out of time for are counted apart, in
+`not_attempted` (see the time budget below), because nothing was asked of them:
+folding them in would make a slow batch that refused nothing report eighty
+failures. `succeeded + failed + not_attempted == len(results)`. `422` is
+reserved for a request that applies to nothing at all. Duplicate ids are applied
+once.
 
 `POST /api/assets/bulk` (`operator`) is the same shape for the asset registry
 and has one verb, `context` — `PATCH /api/assets/{id}`'s body applied to a
@@ -934,11 +940,19 @@ no statement of which half. So the batch carries a budget
 (`OCTO_BULK_ACTION_BUDGET_SECONDS`, default 45s — keep it below the read timeout
 of whatever sits in front of the API; `0` turns it off). When it is spent the
 request stops and answers **200** with the report it has: the ids it never
-reached carry outcome `deadline` and `"deadline": true` is set on the envelope.
-Those ids were not refused and nothing was asked of them, so the caller finishes
-the job by sending them again — in a **new** request under a **new** key, since
-retrying the same key replays this same partial report. The first id is always
-attempted, so a batch never answers having done nothing.
+reached carry outcome `deadline`, are counted in `not_attempted` rather than in
+`failed`, and `"deadline": true` is set on the envelope. Those ids were not
+refused and nothing was asked of them, so the caller finishes the job by sending
+them again — in a **new** request under a **new** key, since retrying the same
+key replays this same partial report.
+
+The one exception is a cut-short batch that applied **nothing** (`succeeded: 0`
+with `"deadline": true`), which does *not* burn its key: the first id is always
+attempted, but attempted is not applied — a stale selection whose first id has
+since closed comes back `not_found` — and storing that empty report would answer
+every retry "already done" for 24 hours. A pipeline sending a stable, meaningful
+key (`nightly-triage`) would then never get the rest of its batch in. So the
+reservation is released and the same key may be sent again.
 
 **`Idempotency-Key` on the bulk endpoints.** Both accept the header, and it
 matters most here: a bulk request is the slowest, so it is the one that times
@@ -967,7 +981,18 @@ namespaced per endpoint and **per caller** — the principal the audit trail
 records, so `service-token:nightly-ci` for an integration and the username for a
 person — capped at 200 characters, and remembered for 24 hours
 (`api/services/idempotency.py`); the scan-start path is unchanged and keeps
-hanging its key on the job row it creates.
+hanging its key on the job row it creates — a scan-start key is still
+**tenant-wide**, so two pipelines of one customer must not name their runs the
+same thing.
+
+For the first 24 hours after the `0055` deploy a key reserved by a replica of
+the *previous* release is still tenant-wide, because the row it left carries no
+owner and the table never recorded one. Both directions of the rollout are
+closed — a retry landing on a new replica replays that row, and a retry landing
+on an old one cannot take a key a new replica already answered — but a
+neighbour in the tenant who guesses such a key inside that window is still
+handed its report as a replay, without an audit row of their own. See
+`docs/operations.md`.
 
 Per caller rather than per tenant, because the console mints a UUID per click
 but a CI pipeline sends a *meaningful* key (`nightly-triage`,
