@@ -30,6 +30,7 @@ import {
   useClearVulnerabilityFalsePositive,
   useClearVulnerabilityTicket,
   useCommentOnVulnerability,
+  useDecideVulnerabilityException,
   useSetVulnerabilityException,
   useSetVulnerabilityFalsePositive,
   useSetVulnerabilityTicket,
@@ -711,11 +712,18 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
   );
 }
 
+/** Accepted risk, which since #348 is two decisions by two people: this card
+ * asks, and whoever holds `vulnerability.exception.approve` answers. The panel
+ * has to say which of the two states the finding is in — a request that looked
+ * like an acceptance would tell an operator their SLA had stopped when it is
+ * still running. */
 function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
   const setMutation = useSetVulnerabilityException(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityException(vuln.vuln_id);
+  const decideMutation = useDecideVulnerabilityException(vuln.vuln_id);
   const [until, setUntil] = useState("");
   const [reason, setReason] = useState(vuln.exception_reason ?? "");
+  const pending = vuln.exception_state === "exception_requested";
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -737,13 +745,59 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
             </>
           ) : null}
         </p>
+      ) : vuln.exception_state === "exception_rejected" ? (
+        <p className="mt-2 text-xs text-amber-300">
+          Last request rejected
+          {vuln.exception_decided_by ? (
+            <>
+              {" "}
+              by <span className="font-mono text-slate-300">{vuln.exception_decided_by}</span>
+            </>
+          ) : null}
+          . The deadline never moved.
+        </p>
+      ) : vuln.exception_state === "exception_expired" ? (
+        <p className="mt-2 text-xs text-amber-300">
+          The acceptance lapsed on {formatWhen(vuln.exception_requested_until)} and the finding
+          is back under its deadline.
+        </p>
       ) : (
         <p className="mt-2 text-xs text-slate-500">
-          No exception. Both expiry and reason are required.
+          No exception. Both expiry and reason are required, and a second person has to approve.
         </p>
       )}
+      {pending ? (
+        <p className="mt-2 text-xs text-sky-300">
+          Requested by <span className="font-mono">{vuln.exception_requested_by ?? "—"}</span>{" "}
+          until {formatWhen(vuln.exception_requested_until)} · waiting for approval. The SLA
+          clock is still running.
+        </p>
+      ) : null}
       {vuln.exception_reason ? (
         <p className="mt-2 text-xs text-slate-300">{vuln.exception_reason}</p>
+      ) : null}
+      {pending ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            disabled={decideMutation.isPending}
+            onClick={() => decideMutation.mutate({ decision: "approve" })}
+            className="bg-emerald-600 hover:bg-emerald-500"
+          >
+            Approve
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={decideMutation.isPending}
+            onClick={() => decideMutation.mutate({ decision: "reject" })}
+            className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+          >
+            Reject
+          </Button>
+        </div>
       ) : null}
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
@@ -779,9 +833,9 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
             disabled={setMutation.isPending}
             className="bg-indigo-600 hover:bg-indigo-500"
           >
-            {setMutation.isPending ? "Saving…" : "Accept risk"}
+            {setMutation.isPending ? "Saving…" : "Request acceptance"}
           </Button>
-          {vuln.exception_until ? (
+          {vuln.exception_until || pending ? (
             <Button
               type="button"
               size="sm"

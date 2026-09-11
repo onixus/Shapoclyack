@@ -1228,10 +1228,35 @@ class Vulnerability(Base):
     # "default" (built-in table) | "policy" (a sla_policies row) | "exception".
     sla_source: Mapped[str | None] = mapped_column(default=None)
     # Accepted risk, expiring. See the vuln_states docstring for why this is an
-    # attribute and not a seventh state.
+    # attribute and not a seventh state. ``exception_until`` and
+    # ``exception_by`` describe the acceptance that is *in force*: written when
+    # it is approved, cleared when it is withdrawn. So ``exception_until is not
+    # NULL and in the future`` still means exactly what it meant before #348 —
+    # the clock is suspended until then — while ``exception_by`` is now the
+    # approver rather than whoever asked for it.
     exception_until: Mapped[datetime | None] = mapped_column(default=None)
+    # The justification. Written when the acceptance is *requested* and kept
+    # through the decision, including a rejected or lapsed one: the risk
+    # register has to be able to show what was argued, not only what was
+    # granted.
     exception_reason: Mapped[str | None] = mapped_column(default=None)
     exception_by: Mapped[str | None] = mapped_column(default=None)
+    # The approval workflow around it (#348). ``exception_state`` is the
+    # machine in api/services/vuln_states.py; the request fields are what was
+    # asked for and by whom, the decision fields are the second person's
+    # answer. The requester is kept after the decision on purpose — a register
+    # that could not say who asked cannot show that two people were involved,
+    # which is the entire control.
+    exception_state: Mapped[str] = mapped_column(default="none", server_default="none")
+    exception_requested_by: Mapped[str | None] = mapped_column(default=None)
+    exception_requested_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The expiry that was asked for. Copied to ``exception_until`` on approval
+    # and left here afterwards, so a rejected or lapsed request still says what
+    # window it wanted.
+    exception_requested_until: Mapped[datetime | None] = mapped_column(default=None)
+    exception_decided_by: Mapped[str | None] = mapped_column(default=None)
+    exception_decided_at: Mapped[datetime | None] = mapped_column(default=None)
+    exception_decision_note: Mapped[str | None] = mapped_column(default=None)
     first_seen_at: Mapped[datetime]
     last_seen_at: Mapped[datetime]
     # The run the SLA clock is counted from: first discovery, or the

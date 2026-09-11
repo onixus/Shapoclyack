@@ -1674,9 +1674,21 @@ class VulnerabilityInfo(BaseModel):
     sla_days: int | None = None
     sla_source: str | None = None
     sla_state: str
+    # Accepted risk. ``exception_until``/``exception_by`` describe what is in
+    # force (the approved window, and who approved it); the workflow around it
+    # is ``exception_state`` and the request/decision pair below (#348). A
+    # pending request has ``exception_state == "exception_requested"`` and no
+    # ``exception_until`` at all — nothing is suspended until it is approved.
     exception_until: str | None = None
     exception_reason: str | None = None
     exception_by: str | None = None
+    exception_state: str = "none"
+    exception_requested_by: str | None = None
+    exception_requested_at: str | None = None
+    exception_requested_until: str | None = None
+    exception_decided_by: str | None = None
+    exception_decided_at: str | None = None
+    exception_decision_note: str | None = None
     first_seen_at: str | None = None
     last_seen_at: str | None = None
     sla_started_at: str | None = None
@@ -1754,14 +1766,63 @@ class VulnerabilityAssignRequest(BaseModel):
 
 
 class VulnerabilityExceptionRequest(BaseModel):
-    """Body for ``POST /vulnerabilities/{id}/exception`` — accepted risk.
+    """Body for ``POST /vulnerabilities/{id}/exception`` — asking for acceptance.
 
     Both fields are required: an acceptance with no expiry is a decision nobody
-    revisits, and one with no reason cannot be reviewed by whoever inherits it.
+    revisits, and one with no reason cannot be reviewed by whoever inherits it
+    — or by the person who now has to approve it (#348).
     """
 
     until: datetime
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class VulnerabilityExceptionDecision(BaseModel):
+    """Body for ``POST /vulnerabilities/{id}/exception/approve`` and ``/reject``.
+
+    The expiry and the justification are the *request*'s, and the approver does
+    not get to edit them here: an approval that could rewrite what it approves
+    is a second request signed by one person. Changing the window means asking
+    again. ``note`` is the approver's own comment, optional on an approval and
+    the useful half of a rejection.
+    """
+
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class RiskAcceptanceInfo(BaseModel):
+    """One row of the risk-acceptance register (``GET /risk-register``, #348).
+
+    ``status`` is derived from the expiry against now, not read off
+    ``exception_state``: the sweep that records a lapse runs on a worker's
+    tick, and a register that waited for it would show an acceptance that ran
+    out an hour ago as still in force. ``self_approved`` names the rows where
+    the requester and the approver are the same account — pre-#348 acceptances,
+    which are reported rather than hidden.
+    """
+
+    vuln_id: str
+    tenant_id: str
+    asset_id: str
+    title: str = ""
+    cve: str | None = None
+    severity: str = "unknown"
+    state: str
+    status: str
+    exception_state: str
+    reason: str | None = None
+    requested_by: str | None = None
+    requested_at: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    decision_note: str | None = None
+    until: str | None = None
+    days_remaining: int | None = None
+    assignee: str | None = None
+    owner_team: str | None = None
+    asset_owner: str | None = None
+    business_service: str | None = None
+    self_approved: bool = False
 
 
 class VulnerabilityFalsePositiveRequest(BaseModel):

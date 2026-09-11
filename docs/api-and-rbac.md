@@ -361,6 +361,7 @@ One row per administrative change, with the resource before and after it:
 | `tenant.change_freeze` | `PUT /api/change-freeze`. `before`/`after` carry the flag, the note and the stamp, so both the freeze and the thaw are rows — the thaw is the one that precedes the scan somebody did not expect |
 | `scan.maintenance_block` | Not an edit: the platform refusing a scan because a window or a freeze said so ([#352](https://github.com/onixus/Shapoclyack/issues/352)). Written by `jobs_service.start_scan`, so the console's `POST /api/jobs` and the recurring dispatcher leave the same row, with the `reason`, the `window_id` that refused and the `retry_at` it will lift at. Best-effort like the scope denial above: the scan is already refused, and losing the row must not turn a clean `409` into a `500` |
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
+| `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
 
 Every row carries the actor and what kind of principal it is (`user`,
@@ -591,7 +592,7 @@ then it applies in that tenant only.
 | `scan-operator` | write | Operator, named separately so "runs scans" can be granted without the word operator |
 | `scope-approver` | read | Approves what the tenant may scan (`PUT …/scan-scope`) and starts no scans |
 | `token-admin` | read | Manages the tenant's provisioning keys and service tokens, and nothing else |
-| `risk-approver` | read | Holds `vulnerability.exception.approve` for the risk-acceptance workflow (#348, **not yet implemented** — the role and the permission exist, the approval flow does not) |
+| `risk-approver` | read | Approves and rejects requested risk acceptances (`POST …/exception/approve`), and works no findings ([#348](https://github.com/onixus/Shapoclyack/issues/348)) |
 
 The specialist roles are deliberately at **read** rank: a `scope-approver` at
 write rank would pass every `operator` gate in the API and could run the scans
@@ -610,7 +611,7 @@ it is only supposed to approve.
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
-| `vulnerability.exception.approve` | `risk-approver`, platform admin |
+| `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around |
 
 `platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
 anyone below it: those counters span every tenant on the installation.
@@ -844,7 +845,11 @@ carries the same payload its single-finding endpoint takes:
 `action` is one of `assign`, `transition`, `ticket` (each `operator`) or
 `exception`, `false_positive` (each tenant **`admin`**, exactly as one at a
 time — bulk is not a cheaper door to risk acceptance or suppression, and the
-route answers `403` naming the role it wanted). At most **200** ids per
+route answers `403` naming the role it wanted). Since
+[#348](https://github.com/onixus/Shapoclyack/issues/348) the `exception` verb
+files a *request* on each id and suspends nothing; there is deliberately no
+bulk approval verb, because signing for fifty acceptances with one click is the
+ceremony that issue exists to stop being a formality. At most **200** ids per
 request; more is `422`, as is an empty list.
 
 The answer is **200 with a per-id report**, even when some ids failed:

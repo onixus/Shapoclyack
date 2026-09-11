@@ -15,7 +15,7 @@ import pytest
 
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns
-from tests.conftest import POSTGRES_URL, requires_postgres
+from tests.conftest import POSTGRES_URL, accept_risk, requires_postgres
 
 
 # --------------------------------------------------------------------------
@@ -379,7 +379,7 @@ def test_exception_suspends_the_clock_and_clearing_it_does_not_restart_it(tmp_pa
     vuln_id = items[0]["vuln_id"]
     original_due = items[0]["due_at"]
 
-    accepted = vulns.set_exception(
+    requested = vulns.request_exception(
         settings,
         tenant_id=tenant_id,
         vuln_id=vuln_id,
@@ -387,6 +387,19 @@ def test_exception_suspends_the_clock_and_clearing_it_does_not_restart_it(tmp_pa
         reason="vendor patch scheduled for Q4",
         actor="admin",
     )
+    # The request on its own suspends nothing: an SLA anybody could pause by
+    # asking is not an SLA (#348).
+    assert requested["exception_state"] == vuln_states.EXCEPTION_REQUESTED
+    assert requested["exception_until"] is None
+    assert requested["due_at"] == original_due
+    assert requested["sla_state"] != "accepted"
+
+    accepted = vulns.approve_exception(
+        settings, tenant_id=tenant_id, vuln_id=vuln_id, actor="risk-approver"
+    )
+    assert accepted["exception_state"] == vuln_states.EXCEPTION_APPROVED
+    assert accepted["exception_by"] == "risk-approver"
+    assert accepted["exception_requested_by"] == "admin"
     assert accepted["sla_state"] == "accepted"
     assert accepted["sla_source"] == "exception"
     assert accepted["due_at"] > original_due
@@ -402,7 +415,9 @@ def test_exception_suspends_the_clock_and_clearing_it_does_not_restart_it(tmp_pa
         event["kind"]
         for event in vulns.list_events(settings, tenant_id=tenant_id, vuln_id=vuln_id)[0]
     ]
-    assert "exception_set" in kinds and "exception_cleared" in kinds
+    assert "exception_requested" in kinds
+    assert "exception_approved" in kinds
+    assert "exception_cleared" in kinds
 
 
 @requires_postgres
@@ -412,7 +427,7 @@ def test_exception_needs_a_future_expiry_and_a_reason(tmp_path):
     vuln_id = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)[0][0]["vuln_id"]
 
     with pytest.raises(ValueError):
-        vulns.set_exception(
+        vulns.request_exception(
             settings,
             tenant_id=tenant_id,
             vuln_id=vuln_id,
@@ -421,7 +436,7 @@ def test_exception_needs_a_future_expiry_and_a_reason(tmp_path):
             actor="admin",
         )
     with pytest.raises(ValueError):
-        vulns.set_exception(
+        vulns.request_exception(
             settings,
             tenant_id=tenant_id,
             vuln_id=vuln_id,
@@ -436,19 +451,22 @@ def test_closing_a_finding_clears_its_acceptance(tmp_path):
     settings, tenant_id = _seed(tmp_path)
     vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
     vuln_id = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)[0][0]["vuln_id"]
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id=tenant_id,
         vuln_id=vuln_id,
         until=datetime.now(UTC) + timedelta(days=30),
         reason="accepted",
-        actor="admin",
+        requester="admin",
     )
 
     closed = vulns.transition(
         settings, tenant_id=tenant_id, vuln_id=vuln_id, to_state=vuln_states.CLOSED, actor="admin"
     )
     assert closed["exception_until"] is None
+    # And the workflow around it goes with it: a closed finding must not leave
+    # an approved acceptance in the register or a request in somebody's queue.
+    assert closed["exception_state"] == vuln_states.EXCEPTION_NONE
 
 
 @requires_postgres

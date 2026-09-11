@@ -92,6 +92,17 @@ ACTION_REPORT_DOWNLOAD = "report.download"
 # are not audited here at all — they write ``vulnerability_events``, which is
 # the remediation trail and outlives this one.
 ACTION_VULN_BULK = "vulnerability.bulk"
+# Accepted risk is the exception to that rule (#348). Every other single-finding
+# verb moves work along and lives in ``vulnerability_events``; these four decide
+# that the organisation will live with an exposure past its own deadline, and
+# who signed for it. That belongs in the trail an auditor reads and the SIEM
+# forwards, in addition to the finding's own history — including the expiry,
+# which nobody performed and which is exactly why it has to be recorded.
+ACTION_VULN_EXCEPTION_REQUEST = "vulnerability.exception_request"
+ACTION_VULN_EXCEPTION_APPROVE = "vulnerability.exception_approve"
+ACTION_VULN_EXCEPTION_REJECT = "vulnerability.exception_reject"
+ACTION_VULN_EXCEPTION_WITHDRAW = "vulnerability.exception_withdraw"
+ACTION_VULN_EXCEPTION_EXPIRE = "vulnerability.exception_expire"
 ACTION_ASSET_BULK = "asset.bulk"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
 # Where a tenant's finished runs are announced (#351). Audited although the

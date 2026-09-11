@@ -54,6 +54,7 @@ import logging
 from typing import Any, Callable, Iterable
 
 from api.services import assets as assets_service
+from api.services import audit as audit_service
 from api.services import metrics as metrics_service
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
@@ -351,13 +352,22 @@ def _vulnerability_verb(
             note=payload.get("note"),
         )
     if action == "exception":
-        return lambda vuln_id: vulns_service.set_exception(
+        # Files a request on each id (#348); nothing is accepted until somebody
+        # else approves it, one finding at a time. There is deliberately no
+        # bulk *approval* verb: signing for fifty acceptances with one click is
+        # the ceremony this issue exists to stop being a formality.
+        return lambda vuln_id: vulns_service.request_exception(
             settings,
             tenant_id=tenant_id,
             vuln_id=vuln_id,
             until=payload["until"],
             reason=payload["reason"],
             actor=actor,
+            # The batch's own audit row (``ACTION_VULN_BULK``) carries the
+            # caller's address and request id; this one carries the name, so
+            # the per-finding request rows are attributed to the person and not
+            # to "system". A request context does not reach this layer.
+            audit=audit_service.AuditContext(actor=actor or ""),
         )
     if action == "ticket":
         return lambda vuln_id: vulns_service.set_ticket(

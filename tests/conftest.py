@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from datetime import datetime
+
     from fastapi.testclient import TestClient
 
     from api.settings import Settings
@@ -195,6 +197,41 @@ def approve_scan_scope(
     scan_scopes.replace_scope(
         settings, tenant_id=tenant_id, entries=entries, approved_by="tests"
     )
+
+
+def accept_risk(
+    settings: "Settings",
+    *,
+    tenant_id: str,
+    vuln_id: str,
+    until: "datetime",
+    reason: str = "accepted by tests",
+    requester: str = "requester",
+    approver: str = "approver",
+) -> dict[str, Any]:
+    """Put an acceptance in force the way the platform does since #348.
+
+    Two calls and two names, because there is no longer one: a request and
+    somebody else's approval. Tests that only need a finding whose SLA clock is
+    suspended use this; the ones about the workflow itself call the two service
+    functions directly, and the whole point of this helper is that they are the
+    only ones that have to know the order.
+    """
+    from api.services import vulnerabilities as vulns_service
+
+    vulns_service.request_exception(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=vuln_id,
+        until=until,
+        reason=reason,
+        actor=requester,
+    )
+    approved = vulns_service.approve_exception(
+        settings, tenant_id=tenant_id, vuln_id=vuln_id, actor=approver
+    )
+    assert approved is not None, f"no such finding: {vuln_id}"
+    return approved
 
 
 def approve_scan_scope_via_api(

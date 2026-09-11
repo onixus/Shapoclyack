@@ -18,6 +18,7 @@ vi.mock("@/lib/api", () => ({
   transitionVulnerability: vi.fn(),
   assignVulnerability: vi.fn(),
   setVulnerabilityException: vi.fn(),
+  decideVulnerabilityException: vi.fn(),
   clearVulnerabilityException: vi.fn(),
   setVulnerabilityFalsePositive: vi.fn(),
   clearVulnerabilityFalsePositive: vi.fn(),
@@ -26,13 +27,17 @@ vi.mock("@/lib/api", () => ({
 import {
   assignVulnerability,
   clearVulnerabilityFalsePositive,
+  decideVulnerabilityException,
   fetchTrackedVulnerabilities,
   fetchVulnerabilitySummary,
+  setVulnerabilityException,
   setVulnerabilityFalsePositive,
   transitionVulnerability,
 } from "@/lib/api";
 import {
   useAssignVulnerability,
+  useDecideVulnerabilityException,
+  useSetVulnerabilityException,
   useClearVulnerabilityFalsePositive,
   useSetVulnerabilityFalsePositive,
   useTrackedVulnerabilities,
@@ -72,6 +77,13 @@ const VULN: TrackedVulnerability = {
   exception_until: null,
   exception_reason: null,
   exception_by: null,
+  exception_state: "none",
+  exception_requested_by: null,
+  exception_requested_at: null,
+  exception_requested_until: null,
+  exception_decided_by: null,
+  exception_decided_at: null,
+  exception_decision_note: null,
   first_seen_at: "2026-08-01T00:00:00Z",
   last_seen_at: "2026-08-18T00:00:00Z",
   sla_started_at: "2026-08-01T00:00:00Z",
@@ -163,6 +175,50 @@ describe("useTransitionVulnerability", () => {
       note: "looking",
     });
     expect(result.current.data?.state).toBe("ACKNOWLEDGED");
+  });
+});
+
+describe("risk acceptance (#348)", () => {
+  it("reports a request as requested, not as accepted", async () => {
+    vi.mocked(setVulnerabilityException).mockResolvedValueOnce({
+      ...VULN,
+      exception_state: "exception_requested",
+      exception_requested_by: "ada",
+      exception_requested_until: "2026-12-01T00:00:00Z",
+    });
+    const { result } = renderHook(() => useSetVulnerabilityException("vuln_1"), { wrapper });
+    result.current.mutate({ until: "2026-12-01T00:00:00Z", reason: "vendor patch" });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // The toast is the console's only statement about what just happened, and
+    // "Risk accepted" on a request that suspended nothing is a lie.
+    expect(toast.success).toHaveBeenCalledWith("Acceptance requested");
+  });
+
+  it("posts the decision to the approve endpoint", async () => {
+    vi.mocked(decideVulnerabilityException).mockResolvedValueOnce({
+      ...VULN,
+      exception_state: "exception_approved",
+      exception_by: "risk-boss",
+      exception_until: "2026-12-01T00:00:00Z",
+      sla_state: "accepted",
+    });
+    const { result } = renderHook(() => useDecideVulnerabilityException("vuln_1"), { wrapper });
+    result.current.mutate({ decision: "approve" });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(decideVulnerabilityException).toHaveBeenCalledWith("vuln_1", "approve", undefined);
+    expect(toast.success).toHaveBeenCalledWith("Risk accepted");
+  });
+
+  it("says rejected when the request was refused", async () => {
+    vi.mocked(decideVulnerabilityException).mockResolvedValueOnce({
+      ...VULN,
+      exception_state: "exception_rejected",
+      exception_decided_by: "risk-boss",
+    });
+    const { result } = renderHook(() => useDecideVulnerabilityException("vuln_1"), { wrapper });
+    result.current.mutate({ decision: "reject", note: "patch is out" });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(toast.success).toHaveBeenCalledWith("Request rejected");
   });
 });
 

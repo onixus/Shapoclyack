@@ -3,9 +3,14 @@
 Reads need ``viewer``; moving a finding through the lifecycle or reassigning it
 needs ``operator``. Two things need tenant ``admin``:
 
-* **accepting risk** (``POST /{id}/exception``) — it suspends an SLA the
-  organisation set, which is a decision about what this tenant is willing to
-  live with rather than a step in someone's remediation work;
+* **asking for risk to be accepted** (``POST /{id}/exception``) — it proposes
+  living past an SLA the organisation set, which is a decision about what this
+  tenant is willing to tolerate rather than a step in someone's remediation
+  work. Since #348 it only *asks*: the acceptance itself is
+  ``POST /{id}/exception/approve``, gated on the named permission
+  ``vulnerability.exception.approve`` (the ``risk-approver`` role) and refused
+  to whoever filed the request. Two roles, two people, and the SLA clock keeps
+  running until the second one signs;
 * **editing SLA policy** — it changes every future deadline in the tenant, and
   the escalation policy next to it (#349) decides what the platform does to a
   finding whose deadline passed and whose asset owner is mailed about it;
@@ -25,12 +30,24 @@ apply to no id at all.
 
 from __future__ import annotations
 
+import csv
+import io
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 
-from api.auth import ROLE_RANK, Role, TenantPrincipal, get_settings, require_tenant
+from api.auth import (
+    ROLE_RANK,
+    Role,
+    TenantPrincipal,
+    get_settings,
+    require_permission,
+    require_tenant,
+)
+from api.core import permissions as permission_catalog
 from api.routes import _idempotency as idempotency
 from api.routes._audit import AuditDep
 from api.routes._idempotency import IdempotencyKeyHeader
@@ -39,6 +56,7 @@ from api.schemas import (
     BulkActionReport,
     BulkVulnerabilityRequest,
     Page,
+    RiskAcceptanceInfo,
     RiskScoreSnapshotInfo,
     SlaEscalationPolicyInfo,
     SlaEscalationPolicyRequest,
@@ -47,6 +65,7 @@ from api.schemas import (
     VulnerabilityAssignRequest,
     VulnerabilityCommentRequest,
     VulnerabilityEventInfo,
+    VulnerabilityExceptionDecision,
     VulnerabilityExceptionRequest,
     VulnerabilityFalsePositiveRequest,
     VulnerabilityInfo,
@@ -238,6 +257,99 @@ def list_all_events(
         settings, tenant_id=_scope(principal), offset=page.offset, limit=page.limit
     )
     return build_page(items, total, page)
+
+
+# Leading characters a spreadsheet evaluates rather than displays. Same list
+# and same reason as ``api/routes/audit.py``: the register's cells carry a
+# finding's title and somebody's free-text justification, and the file exists
+# to be opened in Excel by whoever is reviewing the acceptances.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+#: Columns of the CSV, in the order an auditor reads them: what was accepted,
+#: on whose word, until when, and who owns it now.
+_REGISTER_CSV_COLUMNS = (
+    "vuln_id",
+    "status",
+    "severity",
+    "title",
+    "cve",
+    "asset_id",
+    "asset_owner",
+    "business_service",
+    "assignee",
+    "owner_team",
+    "state",
+    "reason",
+    "requested_by",
+    "requested_at",
+    "approved_by",
+    "approved_at",
+    "decision_note",
+    "until",
+    "days_remaining",
+    "self_approved",
+)
+
+
+def _register_csv(entries: list[dict[str, Any]]) -> Iterator[str]:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=_REGISTER_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    yield _drain(buffer)
+    for entry in entries:
+        writer.writerow(
+            {
+                key: ("'" + value if isinstance(value, str) and value.startswith(
+                    _FORMULA_PREFIXES
+                ) else value)
+                for key, value in entry.items()
+            }
+        )
+        yield _drain(buffer)
+
+
+def _drain(buffer: io.StringIO) -> str:
+    value = buffer.getvalue()
+    buffer.seek(0)
+    buffer.truncate(0)
+    return value
+
+
+@router.get("/risk-register", response_model=None)
+def risk_register(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+    since: Annotated[
+        datetime | None,
+        Query(description="Include acceptances that lapsed at or after this UTC time"),
+    ] = None,
+    export_format: Annotated[
+        str | None, Query(alias="format", pattern="^csv$", description="Stream a CSV instead")
+    ] = None,
+) -> list[RiskAcceptanceInfo] | StreamingResponse:
+    """The register of accepted risk: in force now, and lapsed since ``since``.
+
+    ``viewer``, like every other read here — this is the document a team is
+    asked about in a review, and making it admin-only would mean the people who
+    have to answer for an acceptance cannot see the list of them.
+
+    Always one tenant, like ``/risk-history`` and for the same reason: a
+    register that merged two customers' acceptances is not a register of
+    either. The default window is
+    ``vulnerabilities.RISK_REGISTER_DAYS`` days back.
+    """
+    entries = vulns_service.risk_acceptance_register(
+        settings, tenant_id=principal.tenant_id, since=since
+    )
+    if export_format == "csv":
+        return StreamingResponse(
+            _register_csv(entries),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="risk-acceptance-register.csv"'
+            },
+        )
+    return entries
 
 
 # The role each bulk verb needs, which is exactly the role its single-finding
@@ -536,28 +648,114 @@ def assign(
 
 
 @router.post("/{vuln_id}/exception", response_model=VulnerabilityInfo)
-def set_exception(
+def request_exception(
     vuln_id: str,
     body: VulnerabilityExceptionRequest,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
     settings: SettingsDep,
+    audit: AuditDep,
 ) -> dict[str, Any]:
-    """Accept the risk until ``until``, suspending the SLA clock until then."""
+    """Ask for the risk to be accepted until ``until``. Suspends nothing (#348).
+
+    Still ``admin`` — proposing that the tenant live past its own deadline is
+    the same decision it always was — but it is now a *request*: the clock
+    keeps running until somebody holding ``vulnerability.exception.approve``
+    answers it at ``POST /{id}/exception/approve``. A tenant admin does not
+    carry that permission, which is what makes the two roles two people.
+    """
     try:
         return _found(
-            vulns_service.set_exception(
+            vulns_service.request_exception(
                 settings,
                 tenant_id=_write_scope(principal),
                 vuln_id=vuln_id,
                 until=body.until,
                 reason=body.reason,
                 actor=principal.username,
+                audit=audit,
             )
         )
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+
+@router.post("/{vuln_id}/exception/approve", response_model=VulnerabilityInfo)
+def approve_exception(
+    vuln_id: str,
+    body: VulnerabilityExceptionDecision,
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.VULNERABILITY_EXCEPTION_APPROVE)),
+    ],
+    settings: SettingsDep,
+    audit: AuditDep,
+) -> dict[str, Any]:
+    """Grant a pending request. The permission, and never the rank (#318/#348).
+
+    ``risk-approver`` is a rank-1 role on purpose — it approves and runs
+    nothing — so this route cannot be written as ``require_tenant(Role.admin)``
+    plus a check: the gate *is* the named permission. The 403 that matters most
+    is not the one for a missing permission, though, but the one below it: the
+    requester is refused by name even when they hold it, which is the only
+    thing that separates duties for a platform admin.
+    """
+    try:
+        return _found(
+            vulns_service.approve_exception(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+                note=body.note,
+                audit=audit,
+            )
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.post("/{vuln_id}/exception/reject", response_model=VulnerabilityInfo)
+def reject_exception(
+    vuln_id: str,
+    body: VulnerabilityExceptionDecision,
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.VULNERABILITY_EXCEPTION_APPROVE)),
+    ],
+    settings: SettingsDep,
+    audit: AuditDep,
+) -> dict[str, Any]:
+    """Refuse a pending request. Same permission, same self-decision bar.
+
+    Rejecting is gated as highly as approving, unlike withdrawing: an operator
+    who could reject would be able to close somebody else's request without
+    holding the authority to answer it, and "refused" is an answer.
+    """
+    try:
+        return _found(
+            vulns_service.reject_exception(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+                note=body.note,
+                audit=audit,
+            )
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.delete("/{vuln_id}/exception", response_model=VulnerabilityInfo)
@@ -565,15 +763,20 @@ def clear_exception(
     vuln_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
     settings: SettingsDep,
+    audit: AuditDep,
 ) -> dict[str, Any]:
-    """Withdraw an acceptance. The deadline is recomputed from when the SLA
-    clock started, not from now — the risk was accepted, not restarted."""
+    """Withdraw an acceptance, or a request waiting on a decision.
+
+    The deadline is recomputed from when the SLA clock started, not from now —
+    the risk was accepted, not restarted. No second person: this can only put
+    work back on the queue."""
     return _found(
         vulns_service.clear_exception(
             settings,
             tenant_id=_write_scope(principal),
             vuln_id=vuln_id,
             actor=principal.username,
+            audit=audit,
         )
     )
 

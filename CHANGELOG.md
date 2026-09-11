@@ -6,6 +6,23 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Accepting risk now takes two people, and its expiry is written down**
+  ([#348](https://github.com/onixus/Shapoclyack/issues/348)).
+  `POST /api/vulnerabilities/{id}/exception` suspended the SLA clock under a
+  single tenant admin — the person who wanted the deadline gone was the person
+  who removed it — and nothing recorded that an acceptance had lapsed. It is
+  now a *request* that suspends nothing; approving it is
+  `POST …/exception/approve`, gated on `vulnerability.exception.approve` (the
+  `risk-approver` role from #318) and refused to whoever filed it, platform
+  admin included. Rejecting is the same permission and moves no deadline, an
+  extension cannot shorten a window already granted, and the SLA worker records
+  each lapse as an `exception_expired` event and an audit row. Request,
+  approval, rejection, withdrawal and expiry are all in `audit_events`. New:
+  `GET /api/vulnerabilities/risk-register` (`?format=csv`) and a
+  `risk_acceptance` section in the executive and compliance reports, both
+  naming the acceptances nobody but their requester ever signed — including
+  every one migration 0050 inherited from before this change.
+
 - **Named permissions, an auditor role, and a tenant admin that is not the
   platform admin** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
   Three ranked roles could not express "reads the audit trail and writes

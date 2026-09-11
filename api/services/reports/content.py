@@ -37,6 +37,7 @@ SECTIONS = (
     "sla",
     "top_findings",
     "assets",
+    "risk_acceptance",
     "compliance",
 )
 
@@ -46,12 +47,21 @@ KINDS = ("executive", "technical", "compliance")
 # executive report that listed 200 findings would be a technical report with a
 # misleading name.
 _DEFAULT_SECTIONS: dict[str, tuple[str, ...]] = {
-    "executive": ("kpis", "trend", "severity", "sla", "compliance"),
+    # The risk register is on by default for the two kinds somebody signs off:
+    # an executive summary that reports 12 breaches without saying that 30
+    # findings are deliberately exempt from being counted is a flattering
+    # number, and a compliance report is read precisely for the exemptions.
+    "executive": ("kpis", "trend", "severity", "sla", "risk_acceptance", "compliance"),
     "technical": ("kpis", "severity", "top_findings", "assets"),
-    "compliance": ("kpis", "compliance"),
+    "compliance": ("kpis", "risk_acceptance", "compliance"),
 }
 
 _TOP_FINDINGS = {"executive": 10, "technical": 50, "compliance": 10}
+# Rows of the risk register a report prints. The full list is the CSV export
+# (``GET /api/vulnerabilities/risk-register?format=csv``), which is what a
+# tenant with two hundred acceptances hands to an auditor; a PDF that long is
+# not read, and the counts above the table carry the totals either way.
+_RISK_ACCEPTANCE_ROWS = 25
 _TREND_DAYS = 90
 # Snapshots are taken per run, not per day, so a limit equal to ``_TREND_DAYS``
 # would silently shorten the window to the last 90 *snapshots* — a few days on a
@@ -241,6 +251,29 @@ def build(
         ]
     if "assets" in active:
         body["assets"] = _asset_context(settings, tenant_id)
+    if "risk_acceptance" in active:
+        # Both halves, as #348 asks: what the tenant is living with right now,
+        # and what it accepted and then let lapse inside the reporting period.
+        # The second half is the one a review is actually about — an
+        # acceptance that expired and left the finding open is the control
+        # failing quietly.
+        register = vulns_service.risk_acceptance_register(
+            settings,
+            tenant_id=tenant_id,
+            since=now - timedelta(days=_TREND_DAYS),
+            now=now,
+        )
+        entries = register[:_RISK_ACCEPTANCE_ROWS]
+        body["risk_acceptance"] = {
+            "active": sum(1 for entry in register if entry["status"] == "active"),
+            "expired": sum(1 for entry in register if entry["status"] == "expired"),
+            "self_approved": sum(1 for entry in register if entry["self_approved"]),
+            "entries": entries,
+            # Said out loud rather than left to the reader counting rows: a
+            # truncated table that does not admit it is a report that
+            # under-states the exposure it was written to disclose.
+            "truncated": max(0, len(register) - len(entries)),
+        }
     if "compliance" in active:
         if framework_id:
             posture = compliance_service.assess(

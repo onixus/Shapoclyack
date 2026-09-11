@@ -46,6 +46,7 @@ from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit as audit_service
 from api.services import exploit_evidence
 from api.services import metrics
 from api.services import nist_risk
@@ -100,6 +101,14 @@ VULN_EVENT_KINDS = (
     "assigned",
     "exception_set",
     "exception_cleared",
+    # The approval workflow around an acceptance (#348). ``exception_set``
+    # above stays what it always was — the moment the clock was suspended —
+    # and is now written by the approval rather than by the request, so a
+    # finding's history reads request → decision → (expiry) in four rows.
+    "exception_requested",
+    "exception_approved",
+    "exception_rejected",
+    "exception_expired",
     "comment",
     "ticket_set",
     "ticket_cleared",
@@ -1259,6 +1268,13 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "exception_until": _iso(row.exception_until),
         "exception_reason": row.exception_reason,
         "exception_by": row.exception_by,
+        "exception_state": row.exception_state or vuln_states.EXCEPTION_NONE,
+        "exception_requested_by": row.exception_requested_by,
+        "exception_requested_at": _iso(row.exception_requested_at),
+        "exception_requested_until": _iso(row.exception_requested_until),
+        "exception_decided_by": row.exception_decided_by,
+        "exception_decided_at": _iso(row.exception_decided_at),
+        "exception_decision_note": row.exception_decision_note,
         "first_seen_at": _iso(row.first_seen_at),
         "last_seen_at": _iso(row.last_seen_at),
         "sla_started_at": _iso(row.sla_started_at),
@@ -1396,11 +1412,7 @@ def transition(
             row.machine_verified = False
             row.closure_reason = "manual"
             detail["closure_reason"] = row.closure_reason
-            if row.exception_until is not None:
-                detail["cleared_exception_until"] = _iso(row.exception_until)
-                row.exception_until = None
-                row.exception_reason = None
-                row.exception_by = None
+            detail.update(_drop_exception(row))
         elif previous == vuln_states.CLOSED:
             # The operator reopen. Same clock reset as the observer's regression
             # path, and recorded as the same kind of event so "how often does
@@ -1941,7 +1953,72 @@ def assign(
     return result
 
 
-def set_exception(
+def _same_person(one: str | None, other: str | None) -> bool:
+    """Whether two usernames name the same account, for the self-approval bar.
+
+    Case- and whitespace-insensitive: usernames are compared elsewhere in this
+    platform as stored, but a separation-of-duties check that ``Alice`` walks
+    past because the request said ``alice`` is not a check.
+    """
+    return (one or "").strip().casefold() == (other or "").strip().casefold() != ""
+
+
+#: What an exception audit row carries about the finding. The whole
+#: :func:`_to_dict` would put a finding's entire assessment in ``before``/
+#: ``after`` on every request, where the change is six fields — and the
+#: 16 KiB document cap in ``audit.record`` is not somewhere to spend a payload
+#: that nobody reads.
+_EXCEPTION_AUDIT_FIELDS = (
+    "vuln_id",
+    "title",
+    "severity",
+    "state",
+    "due_at",
+    "exception_state",
+    "exception_until",
+    "exception_reason",
+    "exception_by",
+    "exception_requested_by",
+    "exception_requested_until",
+    "exception_decided_by",
+    "exception_decision_note",
+)
+
+
+def _exception_document(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: row.get(key) for key in _EXCEPTION_AUDIT_FIELDS}
+
+
+def _drop_exception(row: models.Vulnerability) -> dict[str, Any]:
+    """Erase an acceptance, in force or merely asked for, and say what went.
+
+    Called from the two closing paths. A closed finding has no risk to accept
+    and no request worth answering, so the acceptance *and* the workflow state
+    around it go together — leaving ``exception_state`` on a closed row would
+    hand the approver a queue item for a finding nobody can act on, and would
+    put it back in the register the next time it was reopened.
+    """
+    detail: dict[str, Any] = {}
+    if row.exception_until is not None:
+        detail["cleared_exception_until"] = _iso(row.exception_until)
+    if (row.exception_state or vuln_states.EXCEPTION_NONE) != vuln_states.EXCEPTION_NONE:
+        detail["cleared_exception_state"] = row.exception_state
+    if not detail:
+        return detail
+    row.exception_until = None
+    row.exception_reason = None
+    row.exception_by = None
+    row.exception_state = vuln_states.EXCEPTION_NONE
+    row.exception_requested_by = None
+    row.exception_requested_at = None
+    row.exception_requested_until = None
+    row.exception_decided_by = None
+    row.exception_decided_at = None
+    row.exception_decision_note = None
+    return detail
+
+
+def request_exception(
     settings: Settings,
     *,
     tenant_id: str | None,
@@ -1949,14 +2026,24 @@ def set_exception(
     until: datetime,
     reason: str,
     actor: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any] | None:
-    """Accept the risk until ``until``, suspending the SLA clock.
+    """Ask for the risk to be accepted until ``until``. **Nothing is suspended.**
 
-    An expiry and a reason are both mandatory. A risk acceptance with no end
-    date is a decision nobody will revisit, and one with no reason cannot be
-    reviewed by the person who inherits it — which is exactly what an exception
-    workflow is for. ``due_at`` moves to the expiry so the finding returns to
-    the breach report the day the acceptance lapses.
+    Before #348 this call *was* the acceptance: one tenant admin wrote
+    ``exception_until`` and the SLA clock stopped, with the requester and the
+    approver being the same person. Now it opens a request that somebody
+    holding ``vulnerability.exception.approve`` has to answer, and the clock
+    keeps running while it waits — an SLA a request could pause would be an SLA
+    anybody could pause by asking.
+
+    An expiry and a reason are both still mandatory, for the reasons they
+    always were: an acceptance with no end date is a decision nobody revisits,
+    and one with no justification cannot be reviewed by whoever inherits it.
+    Asking again while an acceptance is already in force is legal and is how an
+    extension is requested — the acceptance in force stays in force until the
+    new window is approved, because a pending request must not be able to
+    shorten one that was granted.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -1972,8 +2059,93 @@ def set_exception(
             return None
         if row.state == vuln_states.CLOSED:
             raise ValueError("a closed finding has no risk to accept")
-        row.exception_until = until
+        before = _to_dict(row, now=now)
+        vuln_states.check_exception_transition(
+            vuln_id, row.exception_state, vuln_states.EXCEPTION_REQUESTED
+        )
+        row.exception_state = vuln_states.EXCEPTION_REQUESTED
+        row.exception_requested_by = actor
+        row.exception_requested_at = now
+        row.exception_requested_until = until
         row.exception_reason = reason[:2000]
+        # The previous decision belongs to the previous request.
+        row.exception_decided_by = None
+        row.exception_decided_at = None
+        row.exception_decision_note = None
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="exception_requested",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            note=reason,
+            detail={"requested_until": _iso(until)},
+        )
+        result = _to_dict(row, now=now)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_VULN_EXCEPTION_REQUEST,
+            resource_type="vulnerability",
+            resource_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            before=_exception_document(before),
+            after=_exception_document(result),
+        )
+        session.flush()
+        return result
+
+
+def approve_exception(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str,
+    note: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
+) -> dict[str, Any] | None:
+    """Grant a pending request, suspending the SLA clock until its expiry.
+
+    Two people, enforced twice over: the route demands
+    ``vulnerability.exception.approve`` (which the tenant ``admin`` who filed
+    the request does not carry), and this refuses the requester by name even
+    when they do hold it — a platform admin holds every permission, and
+    "whoever asked cannot be whoever signed" has to hold for them too.
+
+    ``due_at`` moves to the approved expiry, so the finding returns to the
+    breach report the day the acceptance lapses rather than never.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        before = _to_dict(row, now=now)
+        vuln_states.check_exception_transition(
+            vuln_id, row.exception_state, vuln_states.EXCEPTION_APPROVED
+        )
+        if _same_person(row.exception_requested_by, actor):
+            raise PermissionError(
+                "the person who requested an exception cannot approve it; "
+                "this decision needs a second pair of eyes"
+            )
+        until = _naive(row.exception_requested_until)
+        if until is None or until <= now:
+            # A request that sat in the queue past its own window. Approving it
+            # would write an acceptance that is already lapsed, which reads in
+            # every report as a granted exception nobody honoured.
+            raise ValueError(
+                "the requested window has already passed; ask for a new one"
+            )
+        row.exception_state = vuln_states.EXCEPTION_APPROVED
+        row.exception_decided_by = actor
+        row.exception_decided_at = now
+        row.exception_decision_note = (note or "").strip()[:2000] or None
+        row.exception_until = until
         row.exception_by = actor
         row.due_at = until
         row.sla_source = "exception"
@@ -1982,15 +2154,93 @@ def set_exception(
             session,
             vuln_id=row.vuln_id,
             tenant_id=row.tenant_id,
-            kind="exception_set",
+            kind="exception_approved",
             occurred_at=now,
             to_state=row.state,
             actor=actor,
-            note=reason,
-            detail={"exception_until": _iso(until)},
+            note=note,
+            detail={
+                "exception_until": _iso(until),
+                "requested_by": row.exception_requested_by,
+            },
+        )
+        result = _to_dict(row, now=now)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_VULN_EXCEPTION_APPROVE,
+            resource_type="vulnerability",
+            resource_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            before=_exception_document(before),
+            after=_exception_document(result),
         )
         session.flush()
-        return _to_dict(row, now=now)
+        return result
+
+
+def reject_exception(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str,
+    note: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
+) -> dict[str, Any] | None:
+    """Refuse a pending request. The finding keeps the deadline it had.
+
+    Nothing about the SLA changes here, including when the request was an
+    extension of an acceptance that is still in force: refusing to extend is
+    not withdrawing what was already granted, and conflating the two would let
+    a rejection shorten a window somebody had approved.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        before = _to_dict(row, now=now)
+        vuln_states.check_exception_transition(
+            vuln_id, row.exception_state, vuln_states.EXCEPTION_REJECTED
+        )
+        if _same_person(row.exception_requested_by, actor):
+            raise PermissionError(
+                "the person who requested an exception cannot decide it; "
+                "this decision needs a second pair of eyes"
+            )
+        row.exception_state = vuln_states.EXCEPTION_REJECTED
+        row.exception_decided_by = actor
+        row.exception_decided_at = now
+        row.exception_decision_note = (note or "").strip()[:2000] or None
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="exception_rejected",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            note=note,
+            detail={
+                "requested_until": _iso(row.exception_requested_until),
+                "requested_by": row.exception_requested_by,
+            },
+        )
+        result = _to_dict(row, now=now)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_VULN_EXCEPTION_REJECT,
+            resource_type="vulnerability",
+            resource_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            before=_exception_document(before),
+            after=_exception_document(result),
+        )
+        session.flush()
+        return result
 
 
 def clear_exception(
@@ -2000,35 +2250,53 @@ def clear_exception(
     vuln_id: str,
     actor: str | None = None,
     note: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any] | None:
-    """Withdraw an acceptance and put the finding back under its policy deadline.
+    """Withdraw an acceptance (or a pending request) and restore the deadline.
 
     The deadline is recomputed from ``sla_started_at``, not from now: the risk
     was accepted, not restarted, so a finding whose window had already elapsed
     is immediately breached again rather than being granted a fresh one.
+
+    Withdrawing needs no second person — it can only ever put work back on the
+    queue, and a control that is harder to undo than to apply is one people
+    stop applying (the same rule as clearing a false-positive verdict).
     """
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
         if row is None:
             return None
-        if row.exception_until is None:
+        state = row.exception_state or vuln_states.EXCEPTION_NONE
+        if row.exception_until is None and state == vuln_states.EXCEPTION_NONE:
             return _to_dict(row, now=now)
+        before = _to_dict(row, now=now)
         was_until = row.exception_until
-        asset = session.get(models.Asset, row.asset_id)
-        days, source = _resolve_sla_days(
-            session,
-            tenant_id=row.tenant_id,
-            severity=row.severity,
-            criticality=asset.asset_criticality if asset else None,
-        )
-        row.exception_until = None
+        row.exception_state = vuln_states.EXCEPTION_NONE
+        row.exception_requested_by = None
+        row.exception_requested_at = None
+        row.exception_requested_until = None
+        row.exception_decided_by = None
+        row.exception_decided_at = None
+        row.exception_decision_note = None
         row.exception_reason = None
         row.exception_by = None
-        row.sla_days = days
-        row.sla_source = source
-        row.due_at = (_naive(row.sla_started_at) or now) + timedelta(days=days)
         row.updated_at = now
+        if was_until is not None:
+            # Only an acceptance that was in force moved the deadline, so only
+            # that one has a deadline to restore. Withdrawing a request that
+            # was never granted must leave the clock exactly where it was.
+            asset = session.get(models.Asset, row.asset_id)
+            days, source = _resolve_sla_days(
+                session,
+                tenant_id=row.tenant_id,
+                severity=row.severity,
+                criticality=asset.asset_criticality if asset else None,
+            )
+            row.exception_until = None
+            row.sla_days = days
+            row.sla_source = source
+            row.due_at = (_naive(row.sla_started_at) or now) + timedelta(days=days)
         _record_event(
             session,
             vuln_id=row.vuln_id,
@@ -2038,10 +2306,193 @@ def clear_exception(
             to_state=row.state,
             actor=actor,
             note=note,
-            detail={"was_until": _iso(was_until), "due_at": _iso(row.due_at)},
+            detail={
+                "was_until": _iso(was_until),
+                "was_exception_state": state,
+                "due_at": _iso(row.due_at),
+            },
+        )
+        result = _to_dict(row, now=now)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_VULN_EXCEPTION_WITHDRAW,
+            resource_type="vulnerability",
+            resource_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            before=_exception_document(before),
+            after=_exception_document(result),
         )
         session.flush()
-        return _to_dict(row, now=now)
+        return result
+
+
+def expire_exceptions(
+    settings: Settings,
+    *,
+    tenant_id: str | None = None,
+    now: datetime | None = None,
+    limit: int = 500,
+) -> int:
+    """Record every acceptance whose window has run out. Returns how many.
+
+    The lapse is already *visible* without this — ``sla_state`` derives
+    ``accepted`` from ``exception_until`` being in the future, so the finding
+    goes back to breached on its own the moment it is not. What the derivation
+    cannot do is leave a row saying it happened, and "the acceptance for this
+    finding ran out on the 3rd and nobody did anything" is precisely the
+    question the register exists to answer. So the expiry is a fourth recorded
+    act alongside request, approval and rejection, with the platform as actor.
+
+    Called from the SLA escalation worker's tick (#349), which is already
+    leader-locked and already walks the tenants; the reminders it sends at
+    30/14/7 days are the warning, this is the obituary. ``exception_until`` is
+    deliberately *not* cleared: the register's expired half is read off it.
+    """
+    now = _naive(now) or _now()
+    expired = 0
+    with get_session(settings.postgres_url) as session:
+        query = select(models.Vulnerability).where(
+            models.Vulnerability.exception_state == vuln_states.EXCEPTION_APPROVED,
+            models.Vulnerability.exception_until.is_not(None),
+            models.Vulnerability.exception_until <= now,
+        )
+        if tenant_id is not None:
+            query = query.where(models.Vulnerability.tenant_id == tenant_id)
+        rows = session.scalars(
+            query.order_by(models.Vulnerability.exception_until.asc()).limit(limit)
+        ).all()
+        for row in rows:
+            row.exception_state = vuln_states.EXCEPTION_EXPIRED
+            row.updated_at = now
+            _record_event(
+                session,
+                vuln_id=row.vuln_id,
+                tenant_id=row.tenant_id,
+                kind="exception_expired",
+                occurred_at=now,
+                to_state=row.state,
+                # No actor: nobody did this, which is the point of recording it.
+                actor=None,
+                detail={
+                    "exception_until": _iso(row.exception_until),
+                    "approved_by": row.exception_by,
+                    "requested_by": row.exception_requested_by,
+                },
+            )
+            audit_service.record(
+                session,
+                audit_service.system_context("system:sla-escalation"),
+                action=audit_service.ACTION_VULN_EXCEPTION_EXPIRE,
+                resource_type="vulnerability",
+                resource_id=row.vuln_id,
+                tenant_id=row.tenant_id,
+                after=_exception_document(_to_dict(row, now=now)),
+            )
+            expired += 1
+        session.flush()
+    return expired
+
+
+#: How far back the risk register looks for acceptances that have lapsed. A
+#: register of only what is in force answers "what are we living with today"
+#: and not "what did we accept and then forget", which is the question an
+#: auditor asks; a year is the period the answer is usually wanted over.
+RISK_REGISTER_DAYS = 365
+
+#: Rows one register read returns. The report renders far fewer; the ceiling is
+#: for the CSV export, which is the one somebody hands to an auditor.
+RISK_REGISTER_LIMIT = 5000
+
+
+def risk_acceptance_register(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    since: datetime | None = None,
+    now: datetime | None = None,
+    limit: int = RISK_REGISTER_LIMIT,
+) -> list[dict[str, Any]]:
+    """The register of accepted risk: what is in force, and what has lapsed.
+
+    One row per finding with an approval decision on it — the justification,
+    who asked, who approved, until when, and who owns the thing — ordered by
+    expiry so the next acceptance to run out is at the top.
+
+    ``status`` is derived from ``exception_until`` against ``now`` rather than
+    read off ``exception_state``, because the sweep that writes
+    ``exception_expired`` runs on a worker's tick: a register that waited for
+    it would show an acceptance that lapsed an hour ago as still in force, and
+    this document is the one somebody signs off on.
+
+    Pending requests are deliberately absent. This is the register of risk the
+    organisation *accepted*, and something nobody has approved yet is not that;
+    ``GET /api/vulnerabilities?exception_state=exception_requested`` is the
+    queue of what is waiting.
+    """
+    now = _naive(now) or _now()
+    since = _naive(since) or (now - timedelta(days=RISK_REGISTER_DAYS))
+    with get_session(settings.postgres_url) as session:
+        query = (
+            select(models.Vulnerability, models.Asset)
+            .join(models.Asset, models.Asset.asset_id == models.Vulnerability.asset_id)
+            .where(
+                models.Vulnerability.tenant_id == tenant_id,
+                models.Vulnerability.exception_state.in_(
+                    (vuln_states.EXCEPTION_APPROVED, vuln_states.EXCEPTION_EXPIRED)
+                ),
+                models.Vulnerability.exception_until.is_not(None),
+                # In force, or lapsed inside the window asked for. An
+                # acceptance that ran out three years ago is history, not a
+                # register entry.
+                or_(
+                    models.Vulnerability.exception_until > now,
+                    models.Vulnerability.exception_until >= since,
+                ),
+            )
+            .order_by(models.Vulnerability.exception_until.asc())
+            .limit(limit)
+        )
+        entries: list[dict[str, Any]] = []
+        for row, asset in session.execute(query).all():
+            until = _naive(row.exception_until)
+            active = until is not None and until > now
+            entries.append(
+                {
+                    "vuln_id": row.vuln_id,
+                    "tenant_id": row.tenant_id,
+                    "asset_id": row.asset_id,
+                    "title": row.title,
+                    "cve": row.cve,
+                    "severity": row.severity,
+                    "state": row.state,
+                    "status": "active" if active else "expired",
+                    "exception_state": row.exception_state,
+                    "reason": row.exception_reason,
+                    "requested_by": row.exception_requested_by,
+                    "requested_at": _iso(row.exception_requested_at),
+                    "approved_by": row.exception_decided_by or row.exception_by,
+                    "approved_at": _iso(row.exception_decided_at),
+                    "decision_note": row.exception_decision_note,
+                    "until": _iso(until),
+                    "days_remaining": (until - now).days if active else None,
+                    # Two owners, because they answer different questions: the
+                    # assignee owns the remediation this acceptance postponed,
+                    # the asset's owner owns the thing carrying the risk.
+                    "assignee": row.assignee,
+                    "owner_team": row.owner_team,
+                    "asset_owner": asset.owner_email if asset else None,
+                    "business_service": asset.business_service if asset else None,
+                    # Pre-#348 acceptances, and any the platform admin both
+                    # asked for and signed. Named rather than filtered out: an
+                    # auditor reading this register has to be able to see which
+                    # entries never had a second person on them.
+                    "self_approved": _same_person(
+                        row.exception_requested_by, row.exception_decided_by or row.exception_by
+                    ),
+                }
+            )
+    return entries
 
 
 def mark_false_positive(
@@ -2106,13 +2557,9 @@ def mark_false_positive(
             "fp_suppress_until": _iso(row.fp_suppress_until),
             "suppress_days": suppress_days,
         }
-        if row.exception_until is not None:
-            # As with any other closure: an acceptance of a risk that turns out
-            # not to exist has nothing left to accept.
-            detail["cleared_exception_until"] = _iso(row.exception_until)
-            row.exception_until = None
-            row.exception_reason = None
-            row.exception_by = None
+        # As with any other closure: an acceptance of a risk that turns out not
+        # to exist has nothing left to accept.
+        detail.update(_drop_exception(row))
         _record_event(
             session,
             vuln_id=row.vuln_id,
