@@ -198,8 +198,8 @@ def delete_group(
     """Delete one group, or refuse while something still refers to it.
 
     LookupError when there is no such group in this tenant; ValueError naming
-    what still points at it — agents, pending jobs, or scope entries. See the
-    module docstring for why this is not a cascade.
+    what still points at it — agents, pending jobs, schedules, or scope
+    entries. See the module docstring for why this is not a cascade.
     """
     with get_session(settings.postgres_url) as session:
         row = _row_by_name(session, tenant_id=tenant_id, name=name)
@@ -230,6 +230,30 @@ def delete_group(
         )
         if jobs:
             blockers.append(f"{jobs} unfinished job(s) are addressed to it")
+        # Read and filtered here rather than with a JSON predicate: ``JSON``
+        # rather than ``JSONB`` on the SQLite fallback has no ``->>`` to index
+        # anyway, and a tenant has a handful of schedules. A *disabled*
+        # schedule counts too — enabling it is one click, and the failure it
+        # would come back to is the one below.
+        schedules = [
+            row_.name
+            for row_ in session.execute(
+                select(models.ScanSchedule).where(
+                    models.ScanSchedule.tenant_id == tenant_id
+                )
+            )
+            .scalars()
+            .all()
+            if (row_.scan_options or {}).get("agent_group") == row.name
+        ]
+        if schedules:
+            # Nothing else would catch it: the dispatcher builds its
+            # StartScanRequest from options stored days ago, start_scan refuses
+            # the unknown group with a ValueError, _tick swallows it into
+            # stats["errors"] and leaves next_run_at where it was — so the
+            # schedule retries and fails every poll, forever, and the only
+            # symptom an operator sees is that the nightly scans stopped.
+            blockers.append(f"{len(schedules)} schedule(s) dispatch to it")
         entries = [
             entry.value
             for entry in session.execute(
@@ -329,6 +353,36 @@ def live_agent_count(settings: Settings, *, tenant_id: str, name: str) -> int:
             .scalar()
             or 0
         )
+
+
+def live_groups(settings: Settings, tenant_ids: set[str]) -> set[tuple[str, str]]:
+    """``(tenant_id, group)`` pairs that have an agent able to take a job now.
+
+    The set form of :func:`live_agent_count`, for rendering a page of jobs: the
+    queue view asks it once and answers "is anything listening to this job's
+    group" for every row, instead of one count query per row. Keyed by tenant
+    as well as name because group names are only unique inside a tenant, and
+    the cross-tenant job list is one query for all of them.
+
+    Computed where it is read, never stored: a job queued while the group's
+    only agent was restarting would otherwise carry "nothing to execute it"
+    for the rest of its life, minutes after the agent came back.
+    """
+    if not tenant_ids:
+        return set()
+    cutoff = _now() - timedelta(seconds=settings.agent_stale_seconds)
+    with get_session(settings.postgres_url) as session:
+        return {
+            (tenant_id, name)
+            for tenant_id, name in session.execute(
+                select(models.Agent.tenant_id, models.Agent.agent_group).where(
+                    models.Agent.tenant_id.in_(sorted(tenant_ids)),
+                    models.Agent.agent_group.is_not(None),
+                    models.Agent.lifecycle_status == "active",
+                    models.Agent.last_seen_at >= cutoff,
+                )
+            ).all()
+        }
 
 
 def resolve_for_scan(

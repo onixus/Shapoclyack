@@ -741,12 +741,16 @@ class _FakeSub:
         return [self._msgs.pop(0)]
 
 
-def _connected_session(sub: _FakeSub, tenant_id: str) -> worker.AgentNatsSession:
+def _connected_session(
+    *subs: _FakeSub, tenant_id: str, agent_group: str | None = None
+) -> worker.AgentNatsSession:
     """A session with its event loop running but no broker behind it."""
-    session = worker.AgentNatsSession("nats://unused:4222", tenant_id=tenant_id)
+    session = worker.AgentNatsSession(
+        "nats://unused:4222", tenant_id=tenant_id, agent_group=agent_group
+    )
     session._thread.start()  # noqa: SLF001
     session._nc = SimpleNamespace(is_connected=True, is_closed=True)  # noqa: SLF001
-    session._sub = sub  # noqa: SLF001
+    session._subs = list(subs)  # noqa: SLF001
     session._started = True  # noqa: SLF001
     return session
 
@@ -757,13 +761,30 @@ def test_the_session_binds_only_its_own_tenants_subject():
     message as soon as whoever pulled it acks."""
     session = worker.AgentNatsSession("nats://unused:4222", tenant_id="acme-eu")
 
-    assert session._subject == "jobs.scan.acme-eu"  # noqa: SLF001
-    assert session._durable == "octo-agents-acme-eu"  # noqa: SLF001
+    assert session._bindings == [  # noqa: SLF001
+        ("jobs.scan.acme-eu", "octo-agents-acme-eu")
+    ]
+
+
+def test_a_grouped_agent_binds_its_group_subject_as_well_as_the_ungrouped_one():
+    """The point of #361 on the NATS path: the targets of a restricted job must
+    not reach an agent outside its group *at all*, and a subject shared by the
+    whole tenant is exactly what put them there. The ungrouped subject stays,
+    because ``claim_job`` still lets a grouped agent take unrestricted work."""
+    session = worker.AgentNatsSession(
+        "nats://unused:4222", tenant_id="acme-eu", agent_group="pci"
+    )
+
+    assert session._bindings == [  # noqa: SLF001
+        ("jobs.scan.acme-eu", "octo-agents-acme-eu"),
+        ("jobs.scan.acme-eu.pci", "octo-agents-acme-eu-pci"),
+    ]
+    assert session.agent_group == "pci"
 
 
 def test_an_offer_for_this_tenant_is_claimed_and_acked():
     msg = _FakeMsg({"job_id": "job-1", "tenant_id": "acme-eu"})
-    session = _connected_session(_FakeSub(msg), "acme-eu")
+    session = _connected_session(_FakeSub(msg), tenant_id="acme-eu")
 
     class _Client:
         def claim(self, agent_id: str, *, job_id: str | None = None):
@@ -783,7 +804,7 @@ def test_an_offer_for_another_tenant_is_terminated_not_nakked():
     so an agent that must not run the job would be deciding how many tries its
     rightful owner has left. Nothing is HTTP-claimed either."""
     msg = _FakeMsg({"job_id": "job-2", "tenant_id": "other-tenant"})
-    session = _connected_session(_FakeSub(msg), "acme-eu")
+    session = _connected_session(_FakeSub(msg), tenant_id="acme-eu")
 
     class _Client:
         def __init__(self) -> None:
@@ -817,7 +838,7 @@ def test_a_refusal_of_the_claim_reaches_the_run_loop_and_nakks_the_offer():
     import pytest
 
     msg = _FakeMsg({"job_id": "job-3", "tenant_id": "acme-eu"})
-    session = _connected_session(_FakeSub(msg), "acme-eu")
+    session = _connected_session(_FakeSub(msg), tenant_id="acme-eu")
 
     class _Client:
         def claim(self, agent_id: str, *, job_id: str | None = None):
@@ -832,3 +853,75 @@ def test_a_refusal_of_the_claim_reaches_the_run_loop_and_nakks_the_offer():
         session.close()
 
     assert msg.nakked and not msg.acked and not msg.termed
+
+
+def test_an_offer_addressed_to_another_group_is_terminated_not_nakked():
+    """Second barrier behind the subject filter. NAK would be the harmful
+    answer: five of them (``JOBS_MAX_DELIVER``) and the offer leaves the
+    consumer for good, so the job's own group never sees it and the job sits in
+    ``queued`` forever — the agent has no HTTP-claim fallback while a NATS
+    session is up."""
+    msg = _FakeMsg({"job_id": "job-4", "tenant_id": "acme-eu", "agent_group": "pci"})
+    session = _connected_session(_FakeSub(msg), tenant_id="acme-eu", agent_group="office")
+
+    class _Client:
+        def __init__(self) -> None:
+            self.claims = 0
+
+        def claim(self, agent_id: str, *, job_id: str | None = None):
+            self.claims += 1
+            return {"job_id": job_id}
+
+    client = _Client()
+    try:
+        claimed = session.pull_and_claim(client, "agent-1", timeout=1.0)
+    finally:
+        session.close()
+
+    assert claimed is None
+    assert msg.termed and not msg.nakked and not msg.acked
+    assert client.claims == 0
+
+
+def test_an_offer_already_taken_is_terminated_so_the_attempts_are_not_burned():
+    """204 means the job is no longer queued. Redelivering cannot make it
+    claimable again; the API republishes an offer when a lease expires and the
+    job goes back to ``queued``."""
+    msg = _FakeMsg({"job_id": "job-5", "tenant_id": "acme-eu"})
+    session = _connected_session(_FakeSub(msg), tenant_id="acme-eu")
+
+    class _Client:
+        def claim(self, agent_id: str, *, job_id: str | None = None):
+            return None
+
+    try:
+        claimed = session.pull_and_claim(_Client(), "agent-1", timeout=1.0)
+    finally:
+        session.close()
+
+    assert claimed is None
+    assert msg.termed and not msg.nakked
+
+
+def test_a_grouped_agent_drains_the_ungrouped_subject_before_its_own():
+    """Both queues are served from one poll, ungrouped first: a busy group must
+    not starve the work nobody restricted."""
+    ungrouped = _FakeMsg({"job_id": "job-plain", "tenant_id": "acme-eu"})
+    grouped = _FakeMsg({"job_id": "job-pci", "tenant_id": "acme-eu", "agent_group": "pci"})
+    session = _connected_session(
+        _FakeSub(ungrouped), _FakeSub(grouped), tenant_id="acme-eu", agent_group="pci"
+    )
+
+    class _Client:
+        def claim(self, agent_id: str, *, job_id: str | None = None):
+            return {"job_id": job_id}
+
+    try:
+        first = session.pull_and_claim(_Client(), "agent-1", timeout=1.0)
+        second = session.pull_and_claim(_Client(), "agent-1", timeout=1.0)
+    finally:
+        session.close()
+
+    assert first is not None and first["job_id"] == "job-plain"
+    assert second is not None and second["job_id"] == "job-pci"
+    assert ungrouped.acked and grouped.acked

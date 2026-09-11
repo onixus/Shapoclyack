@@ -59,6 +59,12 @@ STREAM_EVENTS = "EVENTS"
 # Durable pull consumer for remote agents (queue group = fair dispatch), one
 # per tenant: octo-agents-{tenant_token}, filtered to that tenant's subject.
 CONSUMER_AGENTS_PREFIX = "octo-agents"
+# Redeliveries before JetStream gives up on an offer. Since #361 the agents
+# sharing a consumer are the ones entitled to the jobs on it, so the attempts
+# are spent by agents that could actually run the scan; before that, agents of
+# another group could burn all five NAKing a job they were never allowed to
+# claim, and the job's own group never saw the offer at all.
+JOBS_MAX_DELIVER = 5
 
 # Retention bounds so a stalled consumer / unreachable ClickHouse worker can't
 # grow JetStream storage without limit. Overridable per environment.
@@ -476,16 +482,17 @@ class NatsBus:
             LOG.exception("NATS publish failed subject=%s msg_id=%s", subject, msg_id)
             return False
 
-    def ensure_jobs_consumer(self, tenant_id: str) -> None:
-        """Create this tenant's durable pull consumer if it is not there yet.
+    def ensure_jobs_consumer(self, tenant_id: str, agent_group: str | None = None) -> None:
+        """Create this (tenant, group)'s durable pull consumer if it is not there yet.
 
         Fail-soft on purpose: the agent creates the same consumer when it binds,
         so a broker that refuses the call here (races with another API replica,
         a permission the API user lacks in a hardened deployment) must not turn
         into a failed publish — the offer is still the thing that matters.
         """
+        key = f"{tenant_id}\x00{agent_group or ''}"
         with self._jobs_consumers_lock:
-            if tenant_id in self._jobs_consumers:
+            if key in self._jobs_consumers:
                 return
 
         async def _add() -> None:
@@ -495,10 +502,10 @@ class NatsBus:
             await self._js.add_consumer(
                 STREAM_JOBS,
                 ConsumerConfig(
-                    durable_name=jobs_consumer_name(tenant_id),
+                    durable_name=jobs_consumer_name(tenant_id, agent_group),
                     ack_policy=AckPolicy.EXPLICIT,
-                    filter_subject=jobs_scan_subject(tenant_id),
-                    max_deliver=5,
+                    filter_subject=jobs_scan_subject(tenant_id, agent_group),
+                    max_deliver=JOBS_MAX_DELIVER,
                 ),
             )
 
@@ -506,23 +513,31 @@ class NatsBus:
             self._call(_add())
         except Exception:  # noqa: BLE001
             LOG.debug(
-                "Could not create jobs consumer for tenant %s (may already exist)",
+                "Could not create jobs consumer for tenant %s group %s (may already exist)",
                 tenant_id,
+                agent_group or "-",
                 exc_info=True,
             )
         with self._jobs_consumers_lock:
-            self._jobs_consumers.add(tenant_id)
+            self._jobs_consumers.add(key)
 
     def publish_job_offer(self, payload: dict[str, Any]) -> bool:
         job_id = str(payload.get("job_id") or "")
         msg_id = f"job-{job_id}" if job_id else None
         tenant_id = str(payload.get("tenant_id") or DEFAULT_SUBJECT_TENANT)
-        self.ensure_jobs_consumer(tenant_id)
+        agent_group = str(payload.get("agent_group") or "") or None
+        self.ensure_jobs_consumer(tenant_id, agent_group)
+        headers = {"tenant_id": tenant_id}
+        if agent_group:
+            # Also in a header, so a subscriber can refuse an offer without
+            # parsing the body, and so an offer that somehow arrives on the
+            # wrong subject is still identifiable as another group's.
+            headers["agent_group"] = agent_group
         return self.publish_json(
-            jobs_scan_subject(tenant_id),
+            jobs_scan_subject(tenant_id, agent_group),
             payload,
             msg_id=msg_id,
-            headers={"tenant_id": tenant_id},
+            headers=headers,
         )
 
     def publish_ingest(self, payload: dict[str, Any], *, msg_id: str) -> bool:
@@ -658,20 +673,43 @@ def _subject_token(value: str, fallback: str) -> str:
     return f"{_ENCODED_TOKEN_PREFIX}{digest}"
 
 
-def jobs_scan_subject(tenant_id: str) -> str:
-    """NATS subject ``jobs.scan.{tenant_id}`` with safe token."""
-    return f"{SUBJECT_JOBS_SCAN_PREFIX}.{_subject_token(tenant_id, DEFAULT_SUBJECT_TENANT)}"
+def jobs_scan_subject(tenant_id: str, agent_group: str | None = None) -> str:
+    """NATS subject for one tenant's offers, and since #361 for one group's.
+
+    ``jobs.scan.{tenant}`` for a job any agent of the tenant may claim — every
+    job before #361, and still the default — and
+    ``jobs.scan.{tenant}.{group}`` for one addressed to an agent group. A
+    separate token rather than a field in the body because the body is what
+    was leaking: an offer carries what the scan is about, and a consumer
+    filtered on the tenant subject alone handed the card-data segment's
+    targets to whichever of the tenant's agents polled first, sorting it out
+    only afterwards at HTTP claim time.
+
+    The ungrouped subject stays exactly what it is today, so an agent that has
+    not been put in a group keeps the consumer it already has.
+    """
+    subject = f"{SUBJECT_JOBS_SCAN_PREFIX}.{_subject_token(tenant_id, DEFAULT_SUBJECT_TENANT)}"
+    if agent_group:
+        subject = f"{subject}.{_subject_token(agent_group, 'ungrouped')}"
+    return subject
 
 
-def jobs_consumer_name(tenant_id: str) -> str:
-    """Durable consumer name ``octo-agents-{tenant_id}`` with safe token.
+def jobs_consumer_name(tenant_id: str, agent_group: str | None = None) -> str:
+    """Durable consumer name ``octo-agents-{tenant_id}[-{group}]`` with safe tokens.
 
     A durable name is not a subject, but it is interpolated into ``$JS.API.*``
     subjects by JetStream itself, so it goes through the same encoder — a
     tenant id with a ``.`` in it would otherwise reshape those subjects and
     slip past a NATS permission written for one consumer token.
+
+    One durable per (tenant, group) so the agents of a group share a queue with
+    each other and with nobody else: a consumer shared across groups would let
+    an agent that cannot run a job spend its ``max_deliver`` attempts on it.
     """
-    return f"{CONSUMER_AGENTS_PREFIX}-{_subject_token(tenant_id, DEFAULT_SUBJECT_TENANT)}"
+    name = f"{CONSUMER_AGENTS_PREFIX}-{_subject_token(tenant_id, DEFAULT_SUBJECT_TENANT)}"
+    if agent_group:
+        name = f"{name}-{_subject_token(agent_group, 'ungrouped')}"
+    return name
 
 
 def ingest_results_subject(tenant_id: str) -> str:

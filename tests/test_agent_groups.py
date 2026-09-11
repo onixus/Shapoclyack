@@ -10,10 +10,13 @@ pre-#361 code, which is what makes them worth having.
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from api.services import scan_schedules
 from api.settings import Settings
 from tests.conftest import (
     approve_scan_scope,
@@ -540,3 +543,329 @@ def test_an_existing_schedule_without_a_group_keeps_dispatching(tmp_path, monkey
     claimed = _claim(client, agent_id)
     assert claimed.status_code == 200, claimed.text
     assert claimed.json()["job_id"] == job.job_id
+
+
+# ---------------------------------------------------------------------------
+# The configuration every upgraded installation actually has
+# ---------------------------------------------------------------------------
+
+#: What migration 0025 writes onto every tenant that predates the scope table
+#: (``_GRANDFATHER_ENTRIES``). Reproduced literally, because the defect this
+#: pins was invisible to every test that approved a scope by hand: a scan of a
+#: restricted range found the restricted entry *and* ``0.0.0.0/0``, and the
+#: rule "the widest covering entry wins" then handed the job to any agent. The
+#: control was dead on arrival on every upgraded installation, with a 200 and
+#: an audit line saying it had been applied.
+_GRANDFATHERED = [
+    {
+        "effect": "allow",
+        "kind": "cidr",
+        "value": "0.0.0.0/0",
+        "note": "grandfathered on upgrade to 0025 (#226) — narrow this",
+    },
+    {
+        "effect": "allow",
+        "kind": "cidr",
+        "value": "::/0",
+        "note": "grandfathered on upgrade to 0025 (#226) — narrow this",
+    },
+    {
+        "effect": "allow",
+        "kind": "domain",
+        "value": "*",
+        "note": "grandfathered on upgrade to 0025 (#226) — narrow this",
+    },
+]
+
+
+def test_a_restriction_is_not_cancelled_by_the_grandfathered_allow_all(tmp_path, monkeypatch):
+    """The narrowest covering entry decides, so the first restriction an
+    operator writes on an upgraded installation actually restricts."""
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    _create_group(client, "office")
+    approve_scan_scope(
+        settings,
+        entries=[
+            *_GRANDFATHERED,
+            {"effect": "allow", "kind": "cidr", "value": "10.1.0.0/16", "agent_groups": ["pci"]},
+            {
+                "effect": "allow",
+                "kind": "domain",
+                "value": "pci.example.com",
+                "agent_groups": ["pci"],
+            },
+        ],
+    )
+
+    restricted = _start_scan(client, domains=None, ranges="10.1.2.0/24")
+    assert restricted.status_code == 202, restricted.text
+    assert restricted.json()["agent_group"] == "pci"
+
+    # A suffix match under a restricted domain entry, against ``domain *``.
+    by_domain = _start_scan(client, domains="api.pci.example.com")
+    assert by_domain.status_code == 202, by_domain.text
+    assert by_domain.json()["agent_group"] == "pci"
+
+    # And it is not a restriction on everything: a target the operator never
+    # narrowed is still claimable by any agent, which is the upgrade promise.
+    untouched = _start_scan(client, domains=None, ranges="192.168.5.0/24")
+    assert untouched.status_code == 202, untouched.text
+    assert untouched.json()["agent_group"] is None
+
+    # The claim filter then holds for real, which is the point of the whole
+    # thing: the office agent gets the unrestricted job and, once that is gone,
+    # is told there is nothing for it — never one of the two pci jobs.
+    office = _register(client, "office-1")
+    _assign(client, office, "office")
+    first = _claim(client, office)
+    assert first.status_code == 200, first.text
+    assert first.json()["job_id"] == untouched.json()["job_id"]
+    assert _claim(client, office).status_code == 204
+
+
+def test_a_promoted_domain_does_not_decide_which_group_must_run_the_scan(
+    tmp_path, monkeypatch
+):
+    """A promoted related domain rides along with every scan the tenant starts,
+    so letting it contribute to the requirement sent an ordinary external scan
+    out from the card-data segment — the reverse of the control — and two
+    promoted domains restricted to different groups intersected to nothing and
+    refused every scan the tenant had, with advice the operator could not
+    follow: the form has no way to leave a promoted domain out.
+    """
+    from api.services import promoted_domains
+
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    _create_group(client, "ops-eu")
+    approve_scan_scope(settings, entries=_GRANDFATHERED)
+    for domain in ("pci.example.com", "ops.example.com"):
+        promoted_domains.promote(
+            settings,
+            tenant_id="default",
+            domain=domain,
+            source_run_id="run_1",
+            promoted_by="operator",
+        )
+    approve_scan_scope(
+        settings,
+        entries=[
+            *_GRANDFATHERED,
+            {
+                "effect": "allow",
+                "kind": "domain",
+                "value": "pci.example.com",
+                "agent_groups": ["pci"],
+            },
+            {
+                "effect": "allow",
+                "kind": "domain",
+                "value": "ops.example.com",
+                "agent_groups": ["ops-eu"],
+            },
+        ],
+    )
+
+    started = _start_scan(client, domains="www.example.com")
+    assert started.status_code == 202, started.text
+    # Both promoted domains are in the scan…
+    assert set(started.json()["scan_options"]["promoted_domains"]) == {
+        "ops.example.com",
+        "pci.example.com",
+    }
+    # …and neither decides who executes it.
+    assert started.json()["agent_group"] is None
+
+    # A target the operator *did* type still carries its own restriction.
+    typed = _start_scan(client, domains="api.pci.example.com")
+    assert typed.status_code == 202, typed.text
+    assert typed.json()["agent_group"] == "pci"
+
+
+# ---------------------------------------------------------------------------
+# Deleting a group, and what still names it
+# ---------------------------------------------------------------------------
+
+
+def test_deleting_a_group_an_unfinished_job_is_addressed_to_is_refused(tmp_path, monkeypatch):
+    """The job would become unclaimable or, worse, claimable by anybody."""
+    client = _client(tmp_path, monkeypatch)
+    _create_group(client, "pci")
+    admin = auth_headers(client, "admin")
+
+    started = _start_scan(client, agent_group="pci")
+    assert started.status_code == 202, started.text
+
+    held = client.delete("/api/agent-groups/pci", headers=admin)
+    assert held.status_code == 409, held.text
+    assert "unfinished job" in held.json()["detail"]
+
+    cancelled = client.post(
+        f"/api/jobs/{started.json()['job_id']}/cancel", headers=auth_headers(client, "operator")
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert client.delete("/api/agent-groups/pci", headers=admin).status_code == 200
+
+
+def test_deleting_a_group_a_schedule_dispatches_to_is_refused(tmp_path, monkeypatch):
+    """Nothing else catches it. The dispatcher builds its request from options
+    stored days ago, ``start_scan`` refuses the unknown group, ``_tick``
+    swallows it into ``errors`` and leaves ``next_run_at`` alone — so the
+    schedule fails on every poll forever and the only symptom is that the
+    nightly scans stopped appearing."""
+    client = _client(tmp_path, monkeypatch)
+    _create_group(client, "pci")
+    admin = auth_headers(client, "admin")
+
+    created = client.post(
+        "/api/schedules",
+        headers=auth_headers(client, "operator"),
+        json={
+            "name": "nightly",
+            "interval_seconds": 3600,
+            "domains": "example.com",
+            "agent_group": "pci",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    held = client.delete("/api/agent-groups/pci", headers=admin)
+    assert held.status_code == 409, held.text
+    assert "schedule" in held.json()["detail"]
+
+    removed = client.delete(f"/api/schedules/{created.json()['schedule_id']}", headers=admin)
+    assert removed.status_code in (200, 204), removed.text
+    assert client.delete("/api/agent-groups/pci", headers=admin).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# The dispatcher, called rather than imitated
+# ---------------------------------------------------------------------------
+
+
+def test_the_dispatcher_carries_the_schedules_group_onto_the_job(tmp_path, monkeypatch):
+    """Through ``ScheduleDispatcher._tick`` itself, not through a hand-rolled
+    replay of it: the three lists of option keys this has to pass
+    (``routes/schedules``, ``scan_schedules``, and what ``StartScanRequest``
+    accepts) can drift apart, and a test that rebuilds the request itself would
+    agree with every one of those drifts."""
+    from api.services import schedule_dispatcher
+
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    agent_id = _register(client, "pci-1")
+    _assign(client, agent_id, "pci")
+
+    created = client.post(
+        "/api/schedules",
+        headers=auth_headers(client, "operator"),
+        json={
+            "name": "nightly",
+            "interval_seconds": 60,
+            "domains": "example.com",
+            "agent_group": "pci",
+        },
+    )
+    assert created.status_code == 201, created.text
+    schedule_id = created.json()["schedule_id"]
+    # Due now: record a dispatch an hour ago, so the next run is in the past.
+    scan_schedules.record_dispatch(
+        schedule_id, job_id=None, ran_at=datetime.now(UTC) - timedelta(hours=1)
+    )
+
+    dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=settings)
+    dispatcher._tick()  # noqa: SLF001
+
+    assert dispatcher.stats["errors"] == 0
+    dispatched = scan_schedules.get_schedule(schedule_id)["last_job_id"]
+    assert dispatched, "the schedule dispatched nothing"
+    job = client.get(f"/api/jobs/{dispatched}", headers=auth_headers(client, "operator")).json()
+    assert job["agent_group"] == "pci"
+
+    # And the group's agent is the one that can take it.
+    claimed = _claim(client, agent_id)
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["job_id"] == dispatched
+
+
+# ---------------------------------------------------------------------------
+# The NATS offer
+# ---------------------------------------------------------------------------
+
+
+def test_the_offer_names_the_job_and_not_its_targets(tmp_path, monkeypatch):
+    """The offer used to carry ``inputs`` — the whole target list — into the
+    tenant's shared subject, where any agent read it before being refused the
+    claim. It now names the group instead, which decides the subject, and the
+    targets travel only in the claim response."""
+    from api.services import jobs as jobs_service
+    from api.services import nats_bus
+
+    published: list[dict] = []
+
+    class _Bus:
+        def publish_job_offer(self, payload: dict) -> bool:
+            published.append(payload)
+            return True
+
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: _Bus())
+    client = _client(tmp_path, monkeypatch, nats_url="nats://unused:4222")
+    _create_group(client, "pci")
+
+    started = _start_scan(client, agent_group="pci", domains="example.com")
+    assert started.status_code == 202, started.text
+
+    assert len(published) == 1
+    offer = published[0]
+    assert offer["job_id"] == started.json()["job_id"]
+    assert offer["agent_group"] == "pci"
+    assert "inputs" not in offer
+    assert "example.com" not in json.dumps(offer)
+    # The subject the bus will use is the group's own, so no other agent of the
+    # tenant is even woken by it.
+    assert (
+        nats_bus.jobs_scan_subject(offer["tenant_id"], offer["agent_group"])
+        == "jobs.scan.default.pci"
+    )
+    # And the claim response is where the targets are, for the one agent the
+    # API bound the job to.
+    agent_id = _register(client, "pci-1")
+    _assign(client, agent_id, "pci")
+    claimed = jobs_service.claim_job(_settings(tmp_path), agent_id, job_id=offer["job_id"])
+    assert claimed is not None and claimed.inputs
+
+
+# ---------------------------------------------------------------------------
+# "Nothing is listening" is a fact about now
+# ---------------------------------------------------------------------------
+
+
+def test_the_unavailable_flag_clears_when_an_agent_joins_the_group(tmp_path, monkeypatch):
+    """It was computed once, at queue time, and stored in ``scan_options``: a
+    job queued while the group's only agent was restarting went on reporting
+    "nothing can execute this" for the rest of its life, including after it had
+    been claimed and run."""
+    client = _client(tmp_path, monkeypatch)
+    operator = auth_headers(client, "operator")
+    _create_group(client, "pci")
+
+    started = _start_scan(client, agent_group="pci")
+    assert started.status_code == 202, started.text
+    job_id = started.json()["job_id"]
+    assert started.json()["agent_group_unavailable"] is True
+
+    agent_id = _register(client, "pci-1")
+    _assign(client, agent_id, "pci")
+
+    job = client.get(f"/api/jobs/{job_id}", headers=operator).json()
+    assert job["agent_group_unavailable"] is False
+    listed = client.get("/api/jobs?limit=50", headers=operator).json()["items"]
+    assert [item["agent_group_unavailable"] for item in listed if item["job_id"] == job_id] == [
+        False
+    ]
+    # Nothing stale was written onto the job either.
+    assert "agent_group_unavailable" not in (job["scan_options"] or {})

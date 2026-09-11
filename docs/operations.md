@@ -1074,17 +1074,37 @@ A few edges worth knowing before you rely on it:
 - **Names are immutable.** The name is the reference, so there is no rename —
   create the new group, move the agents, delete the old one, each visible in
   the audit trail. Deleting a group is refused (`409`) while an agent, an
-  unfinished job or a scope entry still names it: a cascade would turn the
-  deletion into a silent widening of a restricted scope entry back to "any
-  agent".
+  unfinished job, a **scan schedule** or a scope entry still names it: a
+  cascade would turn the deletion into a silent widening of a restricted scope
+  entry back to "any agent", and a schedule left pointing at a deleted group
+  would fail at 02:00 every night without moving its next run, so the only
+  symptom would be that the nightly scans stopped appearing.
+- **The requirement follows the targets you asked for.** Promoted related
+  domains are scanned along with them, but they do not contribute to which
+  group is required: otherwise an ordinary external scan would inherit the
+  restriction of a promoted domain that happens to sit in a restricted range
+  and go out from there, and two promoted domains restricted to different
+  groups would have made every scan of the tenant impossible.
 - **A job addressed to an empty group waits, visibly.** If the group has no
   active agent with a recent heartbeat when the scan is queued, the job is
-  still accepted — an agent that is restarting is back in seconds — but it
-  carries `agent_group_unavailable: true`, the API logs a warning naming the
-  group, and the console shows it. It is not auto-failed: a timeout would be a
+  still accepted — an agent that is restarting is back in seconds — and the API
+  logs a warning naming the group. It is not auto-failed: a timeout would be a
   transition on the job state machine, and a restart must not cost you a scan.
-  If you see that flag, the fix is to register an agent into the group (or
-  re-address the scan), not to wait.
+  While such a job is still `queued`, `agent_group_unavailable: true` on it
+  says so, and the console shows an amber marker on the row and a line in the
+  job drawer. The flag is **recomputed on every read** rather than stored, so
+  it disappears by itself the moment an agent of that group heartbeats — it
+  never claims a job cannot run because nothing was listening an hour ago. The
+  fix is to register an agent into the group (or re-address the scan).
+- **With NATS, each group has its own subject.** A job addressed to a group is
+  offered on `jobs.scan.{tenant}.{group}` (durable consumer
+  `octo-agents-{tenant}-{group}`), and an agent binds only the subjects it is
+  entitled to: the tenant's ungrouped `jobs.scan.{tenant}` always, plus its own
+  group's if it is in one. A NATS ACL can be written per group on that shape.
+  Offers carry a job id and never the scan's targets — those come back in the
+  claim response, to the one agent the API bound the job to. An agent that is
+  moved between groups rebinds on its next heartbeat; nothing has to be
+  restarted.
 - **Local execution has no groups.** The API container is in no group, so a
   scan that resolves to a group under `OCTO_JOB_EXECUTION_MODE=local` is
   refused rather than quietly run from the control plane.

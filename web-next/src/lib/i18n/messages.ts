@@ -667,6 +667,13 @@ export const en = {
   "jobs.exitCode": "Exit code",
   "jobs.error": "Error",
   "jobs.assetUpsertError": "Assets were not updated for this job",
+  "jobs.agentGroup": "Agent group",
+  "jobs.agentGroupAny": "any agent of this tenant",
+  "jobs.agentGroupHint":
+    "which agents may execute this scan; set by the approved scan scope or chosen at launch",
+  "jobs.agentGroupUnavailable": "no agent online in this group",
+  "jobs.agentGroupUnavailableHint":
+    "Queued for agent group {group}, which has no agent online. It waits until one registers.",
   "jobs.agent": "Agent",
   "jobs.command": "Command line",
   "jobs.openRun": "Open run report",
@@ -1663,6 +1670,13 @@ export const ru: Record<MsgKey, string> = {
   "jobs.exitCode": "Код выхода",
   "jobs.error": "Ошибка",
   "jobs.assetUpsertError": "Активы для этого задания не обновлены",
+  "jobs.agentGroup": "Группа агентов",
+  "jobs.agentGroupAny": "любой агент тенанта",
+  "jobs.agentGroupHint":
+    "какие агенты могут выполнить этот скан; задаётся утверждённым scope или выбирается при запуске",
+  "jobs.agentGroupUnavailable": "в группе нет агентов онлайн",
+  "jobs.agentGroupUnavailableHint":
+    "Задание адресовано группе {group}, в которой нет агентов онлайн. Оно ждёт, пока один не зарегистрируется.",
   "jobs.agent": "Агент",
   "jobs.command": "Командная строка",
   "jobs.openRun": "Открыть отчёт прогона",

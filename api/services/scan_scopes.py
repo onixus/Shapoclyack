@@ -45,7 +45,9 @@ what it approves. That is a second question about the same targets — not "may
 this tenant scan it" but "which of their workers may execute it" — and it is
 answered by :func:`required_agent_groups`, whose verdict ``start_scan`` turns
 into the job's ``agent_group``. An entry with no groups permits any agent,
-which is every entry written before that revision.
+which is every entry written before that revision; where entries overlap, the
+narrowest one covering a target decides, so a restriction is not undone by the
+allow-all row migration 0025 left behind.
 """
 
 from __future__ import annotations
@@ -338,6 +340,27 @@ def _covers(scope: ScanScope, *, target: str, kind: str) -> bool:
     return scope.rejects_domain(target) is None
 
 
+def _specificity(row: models.TenantScanScope) -> int:
+    """How narrow one entry is, so the narrowest covering entry can decide.
+
+    A prefix length for a network and a label count for a domain: both grow as
+    the entry covers less, and they are only ever compared between entries of
+    the same kind covering the same target. ``*`` is the widest of its kind and
+    scores zero, which is what the grandfathered allow-all entries of migration
+    0025 are.
+    """
+    if row.kind == KIND_CIDR:
+        if row.value == WILDCARD:
+            return 0
+        try:
+            return int(_network(row.value).prefixlen)
+        except ValueError:
+            return 0
+    if row.value == WILDCARD:
+        return 0
+    return len(_normalize_domain(row.value).strip(".").split("."))
+
+
 def required_agent_groups(
     settings: Settings,
     *,
@@ -348,11 +371,16 @@ def required_agent_groups(
     """Which agent groups the approved scope permits for *these* targets (#361).
 
     ``None`` means the scope says nothing about who may execute the scan —
-    every scope written before #361, and every scan whose targets are covered
-    by an unrestricted allow entry. Otherwise the set is the groups permitted
-    for **every** target at once, because one job runs on one agent: a scan of
-    two ranges restricted to disjoint groups has no agent that may do both, and
-    the empty set it returns is what tells the caller to refuse it.
+    every scope written before #361, and every scan whose targets are left
+    unrestricted by the narrowest entry covering them. Otherwise the set is the
+    groups permitted for **every** target at once, because one job runs on one
+    agent: a scan of two ranges restricted to disjoint groups has no agent that
+    may do both, and the empty set it returns is what tells the caller to
+    refuse it.
+
+    When several allow entries cover one target the narrowest of them decides;
+    see the comment on the loop for why the opposite rule left the control dead
+    on every installation that came through migration 0025.
 
     A scan with no targets at all runs the installation's default input files,
     whose contents the API never reads (see ``scan_surface``). Nothing here can
@@ -380,27 +408,39 @@ def required_agent_groups(
     if not targets:
         return None
 
-    matchers = [(row, _entry_scope(row)) for row in allow_rows]
+    matchers = [(row, _entry_scope(row), _specificity(row)) for row in allow_rows]
     required: set[str] | None = None
     for target, kind in targets:
+        # The narrowest covering entry decides, and only entries as narrow as
+        # it are read at all. The alternative — the widest entry wins, so any
+        # unrestricted entry covering the target permits any agent — made the
+        # whole control dead on every installation upgraded through migration
+        # 0025: that migration grandfathers ``0.0.0.0/0``, ``::/0`` and
+        # ``domain *`` onto every existing tenant, so the very first restricted
+        # entry an operator writes would have been cancelled by a row they
+        # never typed, with a 200 and an audit line to say it had worked.
+        # Narrowest-wins is also what an approver means by writing a second,
+        # smaller entry: ``10.1.0.0/16 → pci`` under ``10.0.0.0/8`` is an
+        # exception carved out of the larger approval, not a duplicate of it.
+        best = -1
         covering: set[str] = set()
-        for row, scope in matchers:
+        unrestricted = False
+        for row, scope, rank in matchers:
             if scope is None or row.kind != kind or not _covers(scope, target=target, kind=kind):
                 continue
-            if not row.agent_groups:
-                # An unrestricted entry covers this target, so the scope
-                # permits any agent to reach it. Deliberately the widest of the
-                # covering entries rather than the narrowest: the approver who
-                # left one of them unrestricted said the target may be scanned
-                # from anywhere, and a second, narrower entry does not take
-                # that back.
-                covering = set()
-                break
-            covering.update(row.agent_groups)
-        if not covering:
-            # Either unrestricted, or covered by nothing at all — in which case
-            # the target is outside the scope and ``check`` has already refused
-            # it. Neither is a restriction to invent here.
+            if rank < best:
+                continue
+            if rank > best:
+                best, covering, unrestricted = rank, set(), False
+            if row.agent_groups:
+                covering.update(row.agent_groups)
+            else:
+                unrestricted = True
+        if unrestricted or not covering:
+            # The narrowest entry covering this target leaves it open to any
+            # agent, or nothing covers it at all — in which case the target is
+            # outside the scope and ``check`` has already refused it. Neither
+            # is a restriction to invent here.
             continue
         required = covering if required is None else (required & covering)
     return frozenset(required) if required is not None else None

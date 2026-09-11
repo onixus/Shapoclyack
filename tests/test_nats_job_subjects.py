@@ -1,9 +1,10 @@
 """Per-tenant job subjects and durable consumers (no live broker required).
 
-Job offers carry the scan inputs — ranges, domains, the approved scope — so the
-subject an offer lands on decides which agents ever see them. These pin the
-naming on both sides of the wire: the API publishes to ``jobs.scan.{tenant}``
-and the agent, which cannot import ``api``, derives exactly the same names.
+The subject an offer lands on decides which agents are woken by it, and since
+#361 which agents may be: a job addressed to an agent group is offered on that
+group's own subject. These pin the naming on both sides of the wire — the API
+publishes to ``jobs.scan.{tenant}[.{group}]`` and the agent, which cannot
+import ``api``, derives exactly the same names.
 """
 
 from __future__ import annotations
@@ -105,6 +106,52 @@ def test_the_consumer_is_created_once_per_tenant_not_once_per_offer():
         "octo-agents-acme-eu",
         "octo-agents-other",
     ]
+
+
+def test_a_job_addressed_to_a_group_goes_to_that_groups_subject_and_consumer():
+    """#361 on the wire. One consumer per tenant meant the offer for the card
+    segment's scan was delivered to whichever of the tenant's agents polled
+    first, and it sorted that out only at HTTP claim time — after it had read
+    the body."""
+    js = _RecordingJetStream()
+    bus = _bus_with(js)
+    published: list[tuple[str, dict, dict]] = []
+    bus.publish_json = lambda subject, payload, **kwargs: (  # type: ignore[method-assign]
+        published.append((subject, payload, kwargs.get("headers") or {})) or True
+    )
+
+    bus.publish_job_offer({"job_id": "job-1", "tenant_id": "acme-eu", "agent_group": "pci"})
+
+    subject, _payload, headers = published[0]
+    assert subject == "jobs.scan.acme-eu.pci"
+    assert headers["agent_group"] == "pci"
+    stream, config = js.consumers[0]
+    assert stream == nats_bus.STREAM_JOBS
+    assert config.durable_name == "octo-agents-acme-eu-pci"
+    assert config.filter_subject == "jobs.scan.acme-eu.pci"
+
+
+def test_an_ungrouped_job_keeps_the_subject_it_has_today():
+    """The upgrade path: an agent that is in no group must keep the consumer it
+    is already bound to, or every job of every existing installation stops."""
+    js = _RecordingJetStream()
+    bus = _bus_with(js)
+    published: list[str] = []
+    bus.publish_json = lambda subject, payload, **kwargs: (  # type: ignore[method-assign]
+        published.append(subject) or True
+    )
+
+    bus.publish_job_offer({"job_id": "job-1", "tenant_id": "acme-eu", "agent_group": None})
+
+    assert published == ["jobs.scan.acme-eu"]
+    assert js.consumers[0][1].filter_subject == "jobs.scan.acme-eu"
+
+
+@pytest.mark.parametrize("group", ["pci", "ops-eu", "Group.1"])
+def test_the_agent_derives_the_same_group_names_as_the_api(group):
+    tenant = "acme.eu"
+    assert worker.jobs_scan_subject(tenant, group) == nats_bus.jobs_scan_subject(tenant, group)
+    assert worker.jobs_consumer_name(tenant, group) == nats_bus.jobs_consumer_name(tenant, group)
 
 
 def test_a_broker_that_refuses_the_consumer_still_gets_the_offer():

@@ -18,14 +18,30 @@ All notable changes to Shapoclyack are documented in this file.
   it approves, and the server derives the job's group from that rather than
   trusting the request — a selector naming a group the entry does not permit is
   a `403`, targets whose entries share no group cannot be scanned in one job,
-  and an agent's self-reported `labels` grant it nothing. A job addressed to a
-  group with nothing in it is accepted but flagged `agent_group_unavailable`
-  rather than auto-failed; it is not given a queue timeout, which would be a
-  job-state transition. Existing agents, jobs, schedules and scope entries are
+  and an agent's self-reported `labels` grant it nothing. Where several allow
+  entries cover a target the **narrowest** one decides, so a restriction is not
+  cancelled by the `0.0.0.0/0` / `::/0` / `domain *` rows migration 0025 left
+  on every tenant that predates the scope table — with the opposite rule, the
+  first restriction an operator wrote on an upgraded installation would have
+  been a silent no-op answered `200`. The requirement is derived from the
+  targets of the request; promoted related domains are scanned along with them
+  but do not contribute to it. Both halves of the dispatch are covered: with
+  NATS, a job addressed to a group is offered on `jobs.scan.{tenant}.{group}`
+  (durable `octo-agents-{tenant}-{group}`), an agent binds only the subjects it
+  is entitled to, and the offer carries a job id and **no targets** — those come
+  back in the claim response, to the one agent the API bound the job to. An
+  offer an agent may not run is `term`ed rather than `nak`ed, so outsiders can
+  no longer spend a job's redelivery budget and leave it undeliverable. A job
+  addressed to a group with nothing in it is accepted rather than auto-failed
+  (a queue timeout would be a job-state transition) and reports
+  `agent_group_unavailable` while it is queued — recomputed on every read, so it
+  clears by itself once an agent of that group heartbeats. Deleting a group is
+  refused while an agent, an unfinished job, a **schedule** or a scope entry
+  still names it. Existing agents, jobs, schedules and scope entries are
   unchanged and need no administrator action. The console gets the selector on
-  the scan form and the group on the agent drawer; **assigning an agent to a
-  group is API-only** (`PUT /api/agents/{id}/group`), so #361 stays open for
-  the management UI.
+  the scan form, the group on the agent drawer, and a marker on a queued job
+  whose group has nobody in it; **assigning an agent to a group is API-only**
+  (`PUT /api/agents/{id}/group`), so #361 stays open for the management UI.
 
 - **Named permissions, an auditor role, and a tenant admin that is not the
   platform admin** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).

@@ -921,7 +921,7 @@ and keeps hanging its key on the job row it creates.
 | `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the agent registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (an agent registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* agents that revocation stopped |
 | `GET /api/agent-groups` | viewer | The tenant's agent groups ([#361](https://github.com/onixus/Shapoclyack/issues/361)), each with the number of agents in it. Readable at viewer rank because it is the vocabulary of the scan form and of the approved scope |
 | `POST /api/agent-groups` | `agent.group.manage` | Create one (`{"name": "pci-segment", "description": …}`). Names are lowercase letters, digits and dashes, unique within the tenant, and **immutable** — the name is what jobs, agents and scope entries refer to, so a rename would silently re-point a restriction. `422` for a malformed or duplicate name |
-| `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. `409` while an agent, an unfinished job or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any agent" |
+| `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. `409` while an agent, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any agent" |
 | `PUT /api/agents/{id}/group` | `agent.group.manage` | Put the agent into a group (`{"group": "pci-segment"}`) or take it out of every group (`{"group": null}`), and answer the agent as it now stands. The agent's own `labels` are never consulted: membership decides which of the tenant's jobs it may claim, so it is a grant rather than something the host declares. A job the agent already holds is not recalled; the move applies from its next claim |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
@@ -1396,7 +1396,13 @@ PUT /api/tenants/{tenant_id}/scan-scope
 ```
 
 An empty list, which is what every entry written before #361 carries, permits
-any agent of the tenant. A non-empty one is enforced at scan start: the scan is
+any agent of the tenant. Where several allow entries cover one target, **the
+narrowest of them decides** — `10.1.0.0/16 → pci-segment` under a plain
+`10.0.0.0/8`, or under the `0.0.0.0/0` and `domain *` rows migration 0025 left
+on every tenant that predates the scope table, is the restriction that applies.
+The opposite rule would have made the first restricted entry an operator writes
+on an upgraded installation a no-op, answered `200`. A non-empty list is
+enforced at scan start: the scan is
 addressed to the single permitted group when there is one, refused with `422`
 asking the operator to choose when the covering entries leave several, and
 refused with `403` when the request names a group the entry does not permit.

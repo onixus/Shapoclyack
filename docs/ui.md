@@ -211,6 +211,12 @@ renders an absent value as internal: it shows **Unclassified**.
   require a group for the typed targets, and the server then refuses a
   different one with a `403` that names both sides
   ([#361](https://github.com/onixus/Shapoclyack/issues/361));
+- an amber **person-with-a-cross** marker beside the status of a queued job
+  addressed to an agent group that has no agent online, with the group name in
+  its tooltip; the drawer carries the same thing as an **Agent group** row
+  ("any agent of this tenant" when the job is addressed to none). It is
+  computed at read time, so it clears on the next refresh once an agent of that
+  group heartbeats ([#361](https://github.com/onixus/Shapoclyack/issues/361));
 - the job table with a **Cancel** action on queued/claimed jobs (the API
   answers 409 once a job runs) and a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains

@@ -100,6 +100,38 @@ describe("JobsTable", () => {
     expect(screen.getByText("domains 3")).toBeInTheDocument();
   });
 
+  it("marks a queued job whose agent group has nobody in it", async () => {
+    // docs/operations.md tells an operator to look here when a scan sits in
+    // the queue; before this the flag existed only in the API's type.
+    renderTable([
+      job({
+        status: "queued",
+        agent_group: "pci-segment",
+        agent_group_unavailable: true,
+        finished_at: null,
+        exit_code: null,
+      }),
+    ]);
+    expect(screen.getByLabelText("no agent online in this group")).toBeInTheDocument();
+  });
+
+  it("does not mark a job whose group has an agent online", () => {
+    renderTable([job({ status: "queued", agent_group: "pci-segment" })]);
+    expect(screen.queryByLabelText("no agent online in this group")).toBeNull();
+  });
+
+  it("names the agent group in the drawer", async () => {
+    vi.spyOn(apiModule, "fetchJob").mockResolvedValue(
+      job({ status: "queued", agent_group: "pci-segment", agent_group_unavailable: true }),
+    );
+    renderTable([job()]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "abc123def456" }));
+    const drawer = await screen.findByRole("dialog");
+    await waitFor(() => expect(drawer).toHaveTextContent("pci-segment"));
+    expect(drawer).toHaveTextContent("no agent online in this group");
+  });
+
   it("opens the full record from the job id", async () => {
     vi.spyOn(apiModule, "fetchJob").mockResolvedValue(job({ attempts: 2 }));
     renderTable([job()]);
