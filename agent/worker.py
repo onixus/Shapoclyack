@@ -915,6 +915,16 @@ def _busy_heartbeats(
     what tells the scan wait to put the process group down. A failed heartbeat
     therefore delays a cancellation by one interval rather than losing it — the
     API keeps answering ``cancel_requested`` until the agent confirms.
+
+    Carrying out that order is not a reason to go quiet. The loop used to
+    ``return`` the moment it saw ``cancel_requested``, and what follows is a
+    process-group terminate of up to ten seconds and a tar of the partial run —
+    all of it silent, on top of a last beat that may already be a whole
+    interval old. With ``OCTO_AGENT_STALE_SECONDS`` at twice the interval that
+    is enough to cross the threshold, and the fleet announces ``agent_offline``
+    for an agent that is doing exactly what it was told. So the loop keeps
+    beating until the context manager stops it, saying ``cancelling`` instead
+    of the stage: an agent obeying a cancellation is busy, not gone.
     """
     stop = threading.Event()
     t0 = time.perf_counter()
@@ -923,17 +933,25 @@ def _busy_heartbeats(
         while not stop.wait(interval):
             try:
                 elapsed_sec = int(time.perf_counter() - t0)
-                stage = _detect_current_stage(output_dir, run_id)
-                detail = f"stage={stage or 'running'} elapsed={elapsed_sec}s"
+                cancelling = cancel_event is not None and cancel_event.is_set()
+                if cancelling:
+                    detail = f"stage=cancelling elapsed={elapsed_sec}s"
+                else:
+                    stage = _detect_current_stage(output_dir, run_id)
+                    detail = f"stage={stage or 'running'} elapsed={elapsed_sec}s"
                 beat = client.heartbeat(
                     agent_id, status="busy", current_job_id=job_id, detail=detail
                 )
-                if cancel_event is not None and (beat or {}).get("cancel_requested"):
+                if (
+                    cancel_event is not None
+                    and not cancelling
+                    and (beat or {}).get("cancel_requested")
+                ):
+                    # Logged once: the API keeps answering ``cancel_requested``
+                    # until the results arrive, and one line per beat for the
+                    # rest of the shutdown is noise, not a record.
                     LOG.warning("API requested cancellation of job %s", job_id)
                     cancel_event.set()
-                    # Nothing left to report: the scan wait acts on the event
-                    # and the result upload is the next thing the API hears.
-                    return
             except Exception:  # noqa: BLE001
                 LOG.warning("Heartbeat failed for job %s", job_id, exc_info=True)
 
