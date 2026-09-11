@@ -844,7 +844,12 @@ def test_an_agent_that_came_back_briefly_and_died_for_good_is_announced_again(se
     events = _queued(settings, "agent_offline")
     assert len(events) == 2
     assert events[0]["event"]["event_id"] != events[1]["event"]["event_id"]
-    assert events[1]["event"]["data"]["last_seen_at"].startswith("2026-09-10T12:30")
+    # Computed, not written out: _NOW follows the real clock now, so a literal
+    # here would expire the way the one in accept_risk's window did.
+    second_silence_began = back + timedelta(minutes=10)
+    assert events[1]["event"]["data"]["last_seen_at"].startswith(
+        second_silence_began.strftime("%Y-%m-%dT%H:%M")
+    )
 
 
 def test_a_blink_between_two_silences_is_still_one_episode(settings):
