@@ -24,7 +24,11 @@ All notable changes to Shapoclyack are documented in this file.
   alive hosts with no open ports (2500 and 1250 pps in the shipped config),
   the probe ladder's TCP step, nuclei's rate limit and concurrency, and
   naabu's own `-rate` when a batch is a single device, where the batch budget
-  and the per-host budget are the same number. `skip_service_probe` turns
+  and the per-host budget are the same number. The `-sn` step's probes are
+  spelled out with the avoided ports dropped, and carry `-wn` with them: naabu
+  2.6.1 rejects named probes unless host discovery is explicitly enabled, and
+  reads `-sn` as not enabling it, so the flag set without `-wn` exits 1 before
+  it sends anything. `skip_service_probe` turns
   nuclei off as well as NSE and pulse: it is the stage that sends HTTP
   payloads. Writing a policy also holds that tenant's still-**queued** jobs to
   the stricter of their frozen snapshot and the new document, and answers with
@@ -48,6 +52,61 @@ All notable changes to Shapoclyack are documented in this file.
   issue stays open: no console UI (the policy is API-only), the agent does not
   echo back the policy digest it applied, and target exclusions are still the
   scan scope's deny entries rather than a field of the policy.
+- **The fieldbus avoid-list now also stops the probe that decides who is
+  alive** ([#362](https://github.com/onixus/Shapoclyack/issues/362)). The port
+  stage handed naabu `-exclude-ports`, but discovery's TCP probe step picks a
+  port list of its own and SYNed it regardless — so an installation that turned
+  that step on with its own ports could have a scan touch modbus 502 while
+  `ports.exclude_ports` promised, in as many words, that nothing started from
+  this config would. The avoided ports are dropped from the probe's list and
+  handed to naabu as well, and a probe left with no ports is skipped instead of
+  run. The last step of the ladder, `naabu -sn`, picks its ports from naabu's
+  own defaults — SYN and ACK pings to 80 and 443, which `-exclude-ports` does
+  not cover — so it now spells its probes out with the avoided ports removed,
+  and falls back to ICMP alone when both are avoided. `pulse.host_parallel: 0`
+  was checked and is *not* a defect of this class — the scanner spells that 0
+  as pulse's `--host-first`, one host at a time, so reading it as "unlimited"
+  would have raised it to the policy's figure; there is now a test pinning that
+  and a comment saying why.
+- **Three ceilings that were correct in the config and lost on the way to the
+  command line** ([#362](https://github.com/onixus/Shapoclyack/issues/362)).
+  Found by reviewing the audit above, which had missed them. The policy wrote
+  its discovery ceiling into `discovery.tcp_probe.rate`, and the probe ladder
+  read that field as a rate that *replaces* the batch rate — throwing away the
+  per-host correction already applied to the batch, so a fragile tenant's
+  single PLC was sent `-rate 100` under a policy promising 25. The ICMP step
+  was paced with fping's `-p`, which only applies in loop and count modes and
+  so did nothing at all (measured: 20 addresses take 1.51s with `-p 200` and
+  with no flag, 8.2s with `-i 200`); it is `-i` now, and `max_discover_rate` is
+  turned into the interval rather than leaving the step at fping's default 100
+  pps. That inversion reads fping's own 10 ms as the configured value it is: an
+  unset `period_ms` counted as 0 made this the one ceiling in the file that
+  could *raise* a rate, and a policy of 2000 pps — the figure already in
+  `profiles.safe` — wrote `-i 1` and took the step from 100 pps to 1000 (fping
+  5.1, 254 addresses: 5.86s with no flag, 5.71s with `-i 10`, 1.58s with
+  `-i 1`). A ceiling no stricter than the tool's default now leaves the command
+  alone. `discovery.icmp.period_ms` also has a floor of 1 rather than 0: fping
+  refuses `-i 0` outright, and the stage read the resulting empty output as
+  nobody being alive. Tests are on the argv the tool receives, and cover all
+  three callers of the discovery probe rather than the one the first round
+  covered.
+- **"One host at a time" is documented for what it is, rather than made
+  literally true** ([#362](https://github.com/onixus/Shapoclyack/issues/362)).
+  `max_host_concurrency` limits how many *batches* run at once, and a batch is
+  a `/20` subnet or up to `max_targets_per_batch` addresses, so a `/24` in
+  scope reaches naabu as one invocation of 254 devices and the per-host ceiling
+  — which is naabu's per-batch `-rate` — does not land on it. Narrowing batches
+  to one address per batch would have made the sentence true and cost more than
+  it bought: a `/8` in scope expands to 16.7M batches and ~12 GB before a
+  packet is sent, the checkpoint rewrites its whole JSON after every batch (27
+  hours of pure IO on a `/12`), every batch leaves its own artefact files
+  behind (12276 files for a `/22`), IPv6 ranges were not narrowed at all, and a
+  batch of `x.x.x.0/32` put ICMP and SYN on the network and directed-broadcast
+  addresses that a `/24` batch had always excluded. `docs/operations.md` now
+  says which ceilings hold for a range and which hold only for a batch that is
+  one host, and points at scope and `batching.ipv4_prefix` — an agent-side
+  setting a policy never raises — for operators who need a device-by-device
+  walk.
 - **A tenant's agent no longer takes every one of that tenant's jobs**
   ([#361](https://github.com/onixus/Shapoclyack/issues/361)). `claim_job`
   filtered by tenant and by "queued" and nothing else, so an agent in a
