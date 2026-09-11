@@ -256,8 +256,8 @@ hardening; a policy cannot raise it.
 **The `fragile` profile is for somebody else's production.** It is meant for
 OT/ICS estates — plant networks, building automation — and it forces, on top of
 whatever is stored: the `safe` speed profile, 100 pps discovery, 50 pps port
-scanning, one host at a time, 25 pps at any single host, the service-probe
-stage off, and an avoid-list of fieldbus ports (modbus 502, DNP3 20000, BACnet
+scanning, `max_host_concurrency: 1`, 25 pps at any single host, the
+service-probe stage off, and an avoid-list of fieldbus ports (modbus 502, DNP3 20000, BACnet
 47808, S7 102, IEC-104 2404, EtherNet/IP 44818 and the rest, in
 `api/services/scan_policy.py`). These are floors: a stored value is used only
 when it is stricter, and the avoid-lists are unioned.
@@ -273,31 +273,44 @@ and not the next is not a ceiling:
   the probe ladder uses. It is also the ICMP step, which has no rate of its
   own: fping paces itself by the gap between packets, so the ceiling is turned
   into `discovery.icmp.period_ms` — 100 pps is 10 ms — and passed as fping's
-  `-i`. A config that already waits longer keeps its own figure.
-* **25 pps at any single host** is the per-host figure, and naabu's `-rate` is
-  a budget for a whole batch, so the two are the same number only when the
-  batch is one host. Under a policy that names both this figure and
-  `max_host_concurrency`, every batch *is* one address (see below), so
-  discovery and the port stage hold each invocation to 25. Without a per-host
-  figure the batch keeps the batch budget: narrowing a batch without one would
-  raise what a single device receives, not lower it.
+  `-i`. fping's own gap, when nothing sets one, is that same 10 ms, so a
+  ceiling of 100 pps or looser leaves the step exactly as it ran before the
+  policy existed and a stricter one slows it down. A config that already waits
+  longer keeps its own figure.
+* **25 pps at any single host** is the per-host figure, and it is the one
+  ceiling on this list that does not apply to every scan. naabu's `-rate` is a
+  budget for a whole batch, so the per-host figure and the batch figure are the
+  same number only when the batch happens to be one host — which is what a
+  batch is when the targets are single addresses, and is not what it is for a
+  range. Discovery and the port stage hold a single-host batch to 25; a batch
+  of 254 addresses keeps the batch budget of 100, which is 0.4 pps per device
+  on average but says nothing about the instantaneous pace at any one of them.
+  The knob that does apply to a range is the rate itself: to hold a range to a
+  per-device figure, lower `max_discover_rate` and `max_port_rate`, or put the
+  devices in scope as addresses rather than as a CIDR. Where per-host means
+  what it says without qualification is nuclei (`rate_limit`), NSE
+  (`nse_max_rate`) and pulse (`rate`), which meter per target rather than per
+  batch.
 * **The service-probe stage off** means nmap NSE, pulse *and nuclei*. Nuclei is
   the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
   templates at whatever web interface an engineering station exposes — so a
   fragile run turns it off entirely. For a tenant that is throttled rather than
   silenced, `nuclei.rate_limit` is held to `per_host_rate` and
   `nuclei.concurrency` to `max_host_concurrency`.
-* **One host at a time** is `max_host_concurrency`: the discovery, port and NSE
-  worker counts, pulse's `--host-parallel`, *and* the batch size. The worker
-  counts alone would have been a half-measure — a worker takes a whole batch,
-  and a batch is a `/24` or up to a thousand addresses, so a `/24` target
-  reached naabu as one invocation of 254 devices however low the worker count
-  was. When the policy names a per-host rate as well, batching is lowered to
-  one address per batch (`ipv4_prefix: 32`, `max_targets_per_batch: 1`), so the
-  hosts being touched at once really are the worker count and every invocation
-  is the single-host shape the per-host ceiling applies to. That is many more
-  invocations of naabu than one wide batch, and is part of why a fragile scan
-  is measured in hours. A config that already spells one host at a time as
+* **`max_host_concurrency: 1`** is one *batch* at a time, not one host at a
+  time, and the difference matters on a plant network. It lowers the discovery,
+  port and NSE worker counts and pulse's `--host-parallel`; a worker takes a
+  whole batch, and a batch is a `/24` subnet or up to 1024 addresses in the
+  shipped `batching` block (`scanner/config/default.yaml`). So a `/24` in scope
+  reaches naabu as one invocation covering 254 devices — serialised against
+  every other batch, at the ceiling rate, but not device by device. The policy
+  does not resize batches: making every batch one address would put a `/8` at
+  16.7M batches and roughly 12 GB of expansion before a single packet, rewrite
+  the whole checkpoint file after each one, and leave an artefact file per
+  batch behind. **If a scan has to walk one device at a time, that is a scope
+  decision, not a policy one**: list the addresses individually, or lower
+  `batching.ipv4_prefix` on the executing agent's config, which the policy will
+  never raise. A config that already spells one host at a time as
   `pulse.host_parallel: 0` keeps the 0 — the scanner passes it to pulse as
   `--host-first`, which is stricter than any number a policy could put there.
 * **The avoid-list of fieldbus ports** is every stage that puts a port on the
