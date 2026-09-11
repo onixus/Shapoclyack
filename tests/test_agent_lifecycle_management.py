@@ -110,6 +110,63 @@ def _deploy_payload(**overrides) -> dict:
     return payload
 
 
+def test_re_registering_keeps_the_capabilities_only_the_heartbeat_declared(
+    tmp_path: Path, monkeypatch
+):
+    """An agent that declares its capabilities on the heartbeat and not at
+    registration is the pre-#362 shape, and still what a third-party build
+    does. The register body defaults ``capabilities`` to ``[]``, and an empty
+    list was stored as the new truth rather than read as "this request says
+    nothing" — so the agent's own restart erased what it can do, and until its
+    next beat every job carrying a scan policy was refused to it with 426.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    agent_hdrs = {"Authorization": f"Bearer {settings.agent_token}"}
+    admin_hdrs = auth_headers(client, username="admin")
+
+    client.post(
+        "/api/agent/register",
+        json={"agent_id": "agent-caps", "hostname": "srv-1", "version": "0.3.2.1"},
+        headers=agent_hdrs,
+    )
+    beat = client.post(
+        "/api/agent/heartbeat",
+        json={
+            "agent_id": "agent-caps",
+            "status": "idle",
+            "capabilities": ["scan_policy", "nuclei"],
+        },
+        headers=agent_hdrs,
+    )
+    assert beat.status_code == 200
+    assert beat.json()["capabilities"] == ["scan_policy", "nuclei"]
+
+    restarted = client.post(
+        "/api/agent/register",
+        json={"agent_id": "agent-caps", "hostname": "srv-1", "version": "0.3.2.1"},
+        headers=agent_hdrs,
+    )
+    assert restarted.status_code == 200
+    detail = client.get("/api/agents/agent-caps", headers=admin_hdrs).json()
+    assert detail["capabilities"] == ["scan_policy", "nuclei"]
+
+    # And a register that *does* name capabilities still replaces them: the
+    # empty list is "unsaid", not "none of them".
+    client.post(
+        "/api/agent/register",
+        json={
+            "agent_id": "agent-caps",
+            "hostname": "srv-1",
+            "version": "0.3.2.1",
+            "capabilities": ["nuclei"],
+        },
+        headers=agent_hdrs,
+    )
+    narrowed = client.get("/api/agents/agent-caps", headers=admin_hdrs).json()
+    assert narrowed["capabilities"] == ["nuclei"]
+
+
 def test_agent_telemetry_heartbeat_and_fleet_summary(tmp_path: Path, monkeypatch):
     settings = make_settings(tmp_path, agent_stale_seconds=10)
     client = configured_client(tmp_path, monkeypatch, settings=settings)

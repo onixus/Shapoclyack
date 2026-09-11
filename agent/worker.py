@@ -1337,6 +1337,7 @@ def run_loop(args: argparse.Namespace) -> int:
     last_upgrade_message = ""
     last_lifecycle_message = ""
     last_backoff_message = ""
+    last_claim_refusal_message = ""
 
     def _sig_handler(signum: int, frame: Any) -> None:
         LOG.info("Received signal %s, initiating graceful shutdown", signum)
@@ -1494,7 +1495,17 @@ def run_loop(args: argparse.Namespace) -> int:
                 LOG.warning("Agent token rejected; re-exchanging the provisioning key: %s", exc)
                 time.sleep(min(args.poll_interval, 5.0))
             except AgentUpgradeRequired as exc:
-                LOG.error("Job claim refused: %s", exc)
+                # Logged on change only, like the two messages above. A 426
+                # used to mean "this agent is below the fleet's version floor"
+                # and was a rarity; since #362 it is also the routine answer to
+                # an agent that has not declared a capability the job's scan
+                # policy needs, which is the steady state of a mixed fleet
+                # after the first policy is written — one ERROR line per poll,
+                # per agent, for as long as it takes an operator to upgrade it.
+                message = str(exc)
+                if message != last_claim_refusal_message:
+                    LOG.error("Job claim refused: %s", message)
+                last_claim_refusal_message = message
                 time.sleep(args.poll_interval)
             except AgentDisabled as exc:
                 # Logged on change only, for the reason upgrade_message is: the

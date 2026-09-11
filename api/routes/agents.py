@@ -129,7 +129,16 @@ def register_agent(
             # only on the heartbeat because a freshly started agent claims
             # before its first beat, and a job carrying a scan policy is
             # refused to an agent that has not declared it can apply one.
-            capabilities=body.capabilities,
+            #
+            # ``or None`` because the service reads None as "this request says
+            # nothing about capabilities, keep what is stored" and a list as
+            # the new truth. The request model defaults the field to ``[]``, so
+            # without this an agent that declares its capabilities only on the
+            # heartbeat — the pre-#362 shape, and what a third-party build
+            # still does — had them erased by its own restart, and every claim
+            # of a job carrying a scan policy was answered 426 until its next
+            # beat.
+            capabilities=body.capabilities or None,
             tenant_id=principal.tenant_id,
             provisioning_key_id=principal.key_id,
             audit=audit,
@@ -349,16 +358,26 @@ def delete_agent_group(
 ) -> dict[str, str]:
     """Delete one group, or 409 while an agent, a live job or a scope entry
     still names it — see api/services/agent_groups.py for why that is not a
-    cascade."""
+    cascade.
+
+    The path name is normalised by the service, so the spelling an operator
+    sent to the create endpoint is the spelling that deletes the group.
+    """
     try:
-        agent_groups_service.delete_group(
+        deleted = agent_groups_service.delete_group(
             settings, tenant_id=principal.tenant_id, name=name, audit=audit
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except ValueError as exc:
+    except agent_groups_service.GroupInUse as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    return {"status": "deleted", "name": name}
+    except ValueError as exc:
+        # A name no group could ever have — a malformed request, not a busy
+        # group. Caught after GroupInUse, which is a ValueError as well.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return {"status": "deleted", "name": deleted}
 
 
 @router.put("/agents/{agent_id}/group", response_model=AgentInfo)

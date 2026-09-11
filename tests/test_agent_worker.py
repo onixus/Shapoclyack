@@ -453,6 +453,56 @@ def _run_loop_args(**overrides: Any):
     return argparse.Namespace(**base)
 
 
+def test_a_426_on_every_poll_is_one_journal_line_not_one_per_second(monkeypatch, caplog):
+    """426 is no longer the rarity it was when it meant "below the version
+    floor". Since #362 it is also the standing answer to an agent that has not
+    declared a capability the job's scan policy needs, so a mixed fleet gets it
+    on every poll — and at the normal interval an undeduplicated ERROR is one
+    line per second, per agent, until an operator upgrades the host. Logged on
+    change, like the lifecycle refusal next to it.
+    """
+    import logging
+
+    polls = 0
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def register(self, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": "a1", "hostname": "edge-1", "tenant_id": "t1"}
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            nonlocal polls
+            polls += 1
+            if polls > 4:
+                raise KeyboardInterrupt
+            return {"agent_id": "a1", "lifecycle_status": "active"}
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            # The same refusal every time, which is what it looks like from an
+            # agent that cannot be upgraded this minute.
+            raise worker.AgentUpgradeRequired(
+                "POST /api/agent/jobs/claim -> 426: this job requires capability "
+                "scan_policy, which this agent has not declared"
+            )
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+
+    with caplog.at_level(logging.ERROR, logger=worker.LOG.name):
+        args = _run_loop_args(agent_id="a1", token="static-token", provisioning_key="")
+        assert worker.run_loop(args) == 0
+
+    refusals = [r for r in caplog.records if "scan_policy" in r.getMessage()]
+    assert len(refusals) == 1, [r.getMessage() for r in refusals]
+    # Still loud once, and still carrying what the API said is missing.
+    assert "Job claim refused" in refusals[0].getMessage()
+
+
 def _advance_the_clock_past_every_refresh(monkeypatch) -> None:
     """Make ``time.time()`` jump a refresh interval on each call.
 

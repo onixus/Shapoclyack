@@ -14,9 +14,12 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from api.services import scan_schedules
+from api.db import models
+from api.db.engine import get_session
+from api.services import agent_groups, scan_schedules, scan_scopes
 from api.settings import Settings
 from tests.conftest import (
     approve_scan_scope,
@@ -869,3 +872,144 @@ def test_the_unavailable_flag_clears_when_an_agent_joins_the_group(tmp_path, mon
     ]
     # Nothing stale was written onto the job either.
     assert "agent_group_unavailable" not in (job["scan_options"] or {})
+
+
+# ---------------------------------------------------------------------------
+# One name, one spelling, and no way to write a reference to a group that is
+# being deleted underneath it
+# ---------------------------------------------------------------------------
+
+
+def test_a_group_is_deleted_by_the_name_it_was_created_with(tmp_path, monkeypatch):
+    """Creating normalised the name and reading it did not, so an operator who
+    re-sent the exact string they had just posted was told there was no such
+    group."""
+    client = _client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+
+    created = client.post(
+        "/api/agent-groups", headers=admin, json={"name": "  PCI  "}
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["name"] == "pci"
+
+    deleted = client.delete("/api/agent-groups/PCI", headers=admin)
+    assert deleted.status_code == 200, deleted.text
+    assert client.get("/api/agent-groups", headers=admin).json() == []
+
+    # A name no group could have is a malformed request, not a busy group —
+    # the delete route answers 409 for "still in use" and must not reuse it
+    # here.
+    malformed = client.delete("/api/agent-groups/pci%20segment", headers=admin)
+    assert malformed.status_code == 422, malformed.text
+
+
+def test_the_loser_of_a_simultaneous_create_is_told_the_name_is_taken(
+    tmp_path, monkeypatch
+):
+    """``create_group`` checks and then inserts. Two requests for one name both
+    pass the check — each reads a snapshot taken before the other's insert —
+    and the loser met ``uq_agent_groups_tenant_name`` as an unhandled
+    IntegrityError, i.e. a 500 for a request whose only fault is being second.
+    """
+    client = _client(tmp_path, monkeypatch)
+    _create_group(client, "pci")
+
+    # The loser's view of the table, reproduced: the existence check finds
+    # nothing and the unique index is what decides.
+    monkeypatch.setattr(agent_groups, "_row_by_name", lambda *a, **kw: None)
+    duplicate = client.post(
+        "/api/agent-groups", headers=auth_headers(client, "admin"), json={"name": "pci"}
+    )
+    assert duplicate.status_code == 422, duplicate.text
+    assert "already exists" in duplicate.json()["detail"]
+
+
+def test_a_scope_cannot_be_approved_against_a_group_deleted_while_it_validated(
+    tmp_path, monkeypatch
+):
+    """The TOCTOU between the two writers.
+
+    ``replace_scope`` used to check its group names on a connection of its own
+    and then open a second one to write. A ``DELETE /api/agent-groups/pci``
+    landing in that window finds no scope entry among its blockers — the entry
+    is not inserted yet — and removes the row; the entry is then committed
+    against a group that no longer exists. Nothing reports it, and every scan
+    of those targets is queued to a group no agent can be put into.
+
+    The window is the gap between validation and the writing session, so the
+    deletion is fired from inside it.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+
+    real_now = scan_scopes._now
+
+    def _delete_the_group_mid_flight():
+        # Called once, after the entries are validated and before the session
+        # that writes them is opened.
+        monkeypatch.setattr(scan_scopes, "_now", real_now)
+        with get_session(settings.postgres_url) as session:
+            session.query(models.AgentGroup).filter(
+                models.AgentGroup.name == "pci"
+            ).delete()
+        return real_now()
+
+    monkeypatch.setattr(scan_scopes, "_now", _delete_the_group_mid_flight)
+
+    with pytest.raises(ValueError, match="unknown agent group"):
+        approve_scan_scope(
+            settings,
+            entries=[
+                {
+                    "effect": "allow",
+                    "kind": "cidr",
+                    "value": "10.1.0.0/16",
+                    "agent_groups": ["pci"],
+                },
+            ],
+        )
+    # Refused wholesale: the scope the tenant already had is untouched, and no
+    # entry anywhere in it names the group that went.
+    assert not [
+        entry
+        for entry in scan_scopes.list_entries(settings, "default")
+        if entry["agent_groups"]
+    ]
+
+
+def test_a_scan_restricted_to_a_group_that_is_gone_is_refused_not_queued(
+    tmp_path, monkeypatch
+):
+    """The residual case, however the scope came to name a missing group.
+
+    With one candidate the resolver used to take the scope's word for it
+    without checking the group still exists, so the job was queued to a name
+    nothing can join — ``set_agent_group`` refuses an unknown group — and it
+    was never claimed by anybody, with nothing in the job to say why.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    approve_scan_scope(
+        settings,
+        entries=[
+            {
+                "effect": "allow",
+                "kind": "cidr",
+                "value": "10.1.0.0/16",
+                "agent_groups": ["pci"],
+            },
+        ],
+    )
+    # Around the service, which would refuse the deletion: this is the state,
+    # not the path that reaches it.
+    with get_session(settings.postgres_url) as session:
+        session.query(models.AgentGroup).filter(
+            models.AgentGroup.name == "pci"
+        ).delete()
+
+    refused = _start_scan(client, domains=None, ranges="10.1.2.0/24")
+    assert refused.status_code == 403, refused.text
+    assert "pci" in refused.json()["detail"]

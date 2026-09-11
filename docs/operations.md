@@ -306,7 +306,9 @@ to an agent that reports the `scan_policy` capability; anything older is
 answered `426` on claim and the job waits. So: upgrade the workers of a tenant
 *before* writing its first policy, or the first scan after the write will sit
 in the queue. The symptoms are visible in three places — the agent's own
-journal (the `426` detail names the capability), the queue (the job stays
+journal (the `426` detail names the capability, logged once per *change* of
+the message rather than once per poll, so a fleet waiting on an upgrade does
+not bury everything else in its journal), the queue (the job stays
 `queued`), and `octo_scan_policy_refusals_total{reason="agent_unsupported"}`,
 which is the series to alert on because nobody is told about it
 interactively. In NATS mode the wait is bounded rather than indefinite: the

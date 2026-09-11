@@ -552,6 +552,36 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **An agent group is the same name on every path, and a reference to one
+  cannot be written against a group being deleted**
+  ([#361](https://github.com/onixus/Shapoclyack/issues/361)). Creating a group
+  normalised its name and reading it did not, so `POST {"name": "PCI"}` made
+  `pci` and `DELETE /api/agent-groups/PCI` answered `404` for a group that was
+  plainly there; the name is now normalised in one place, on every entry point,
+  and a name no group could have is `422` rather than `409`. Two simultaneous
+  creates of one name no longer end in a `500` — the loser of the unique index
+  is told the name is taken. And the reference check that `PUT
+  …/scan-scope` ran on a connection of its own now runs inside the transaction
+  that writes the entries, holding the group rows, so it can no longer
+  interleave with `DELETE /api/agent-groups/{name}` into a scope entry
+  restricted to a group that is gone — a restriction no agent can satisfy,
+  whose scans queue and are never claimed. Should such a scope exist anyway,
+  starting a scan against it is now refused with the group named instead of
+  queueing a job nobody can take.
+- **An agent's declared capabilities survive its own restart**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). `POST
+  /api/agent/register` sent an empty `capabilities` list where the service
+  reads "said nothing" as `None`, so an agent that declares them only on the
+  heartbeat — the pre-#362 shape, and what a third-party build still does —
+  had them erased by re-registering, and every claim of a job carrying a scan
+  policy was answered `426` until its next beat. A `register` without the field
+  now leaves the stored list alone; one with a list still replaces it.
+- **A 426 on every poll is one journal line, not one per second**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). The agent logged
+  the refusal at ERROR on each claim, unlike the lifecycle refusal beside it.
+  That was tolerable while `426` meant "below the version floor" and rare; it
+  is the steady state of a mixed fleet once a tenant has a scan policy. Logged
+  on change, like the other two.
 - **A running scan can be stopped**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
   legal only from `queued`; once an agent had claimed a job, the only bound on
