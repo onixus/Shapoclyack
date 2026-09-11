@@ -87,9 +87,11 @@ PLATFORM_TENANT_MANAGE = "platform.tenant.manage"
 #: totals in ``GET /api/system``, which told a single-tenant viewer how many
 #: other customers this installation has.
 PLATFORM_FLEET_READ = "platform.fleet.read"
-#: Approve an accepted risk on a finding. **Defined here and not yet enforced
-#: anywhere**: the approval workflow itself is #348, and the role that will
-#: hold this permission has to exist before the workflow can ask for it.
+#: Approve or reject a requested risk acceptance on a finding
+#: (``POST /api/vulnerabilities/{id}/exception/{approve,reject}``, #348).
+#: Holding it is necessary and not sufficient: the service refuses the person
+#: who filed the request by name, which is what separates the duties for a
+#: platform admin, who holds every permission in this file.
 VULNERABILITY_EXCEPTION_APPROVE = "vulnerability.exception.approve"
 
 #: Every permission with the sentence the catalogue endpoint and migration 0049
@@ -221,7 +223,7 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
     ROLE_RISK_APPROVER: _role(
         ROLE_RISK_APPROVER,
         1,
-        "Approves accepted risk on findings (#348)",
+        "Approves and rejects requested risk acceptances (#348)",
         VULNERABILITY_EXCEPTION_APPROVE,
     ),
     ROLE_PLATFORM_ADMIN: _role(

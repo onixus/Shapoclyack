@@ -27,7 +27,13 @@ from api.services import vulnerabilities as vulns
 from api.services import workflow_events
 from api.services.integrations import webhooks
 from api.settings import Settings
-from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
+from tests.conftest import (
+    accept_risk,
+    auth_headers,
+    configured_client,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -200,13 +206,13 @@ def test_accepted_risk_suspends_the_clock_and_the_notification_with_it(settings)
     _subscribe(["sla_breached"])
     vuln_id = _seed_finding(settings)
     _set_due(settings, vuln_id, _NOW - timedelta(days=3))
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id="default",
         vuln_id=vuln_id,
         until=_NOW + timedelta(days=30),
         reason="waiting on the vendor",
-        actor="admin",
+        requester="admin",
     )
 
     _worker(settings).tick(now=_NOW)
@@ -218,13 +224,13 @@ def test_an_expired_acceptance_brings_the_breach_back(settings):
     _subscribe(["sla_breached"])
     vuln_id = _seed_finding(settings)
     _set_due(settings, vuln_id, _NOW - timedelta(days=3))
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id="default",
         vuln_id=vuln_id,
         until=_NOW + timedelta(days=1),
         reason="short grace",
-        actor="admin",
+        requester="admin",
     )
     worker = _worker(settings)
     worker.tick(now=_NOW)
@@ -323,13 +329,13 @@ def test_an_expiring_exception_warns_at_the_nearest_threshold_only(settings):
     """A five-day acceptance must produce one notice, not one per threshold."""
     _subscribe(["exception_expiring"])
     vuln_id = _seed_finding(settings)
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id="default",
         vuln_id=vuln_id,
         until=_NOW + timedelta(days=5),
         reason="vendor patch pending",
-        actor="admin",
+        requester="admin",
     )
 
     _worker(settings).tick(now=_NOW)
@@ -346,13 +352,13 @@ def test_each_threshold_warns_once_as_the_expiry_approaches(settings):
     _subscribe(["exception_expiring"])
     vuln_id = _seed_finding(settings)
     until = _NOW + timedelta(days=40)
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id="default",
         vuln_id=vuln_id,
         until=until,
         reason="long acceptance",
-        actor="admin",
+        requester="admin",
     )
     worker = _worker(settings)
 
@@ -377,18 +383,64 @@ def test_an_exception_that_already_lapsed_is_not_warned_about(settings):
     population where ``sla_breached`` covers it."""
     _subscribe(["exception_expiring"])
     vuln_id = _seed_finding(settings)
-    vulns.set_exception(
+    accept_risk(
         settings,
         tenant_id="default",
         vuln_id=vuln_id,
         until=_NOW + timedelta(days=1),
         reason="short",
-        actor="admin",
+        requester="admin",
     )
 
     _worker(settings).tick(now=_NOW + timedelta(days=5))
 
     assert _queued(settings, "exception_expiring") == []
+
+
+def test_a_request_waiting_for_approval_is_not_announced_as_expiring(settings):
+    """Nothing is accepted yet, so there is nothing to expire (#348). The
+    worker's predicate reads ``exception_until``, which only an approval
+    writes; a request that also warned would page an on-call about a decision
+    nobody has taken."""
+    _subscribe(["exception_expiring"])
+    vuln_id = _seed_finding(settings)
+    vulns.request_exception(
+        settings,
+        tenant_id="default",
+        vuln_id=vuln_id,
+        until=_NOW + timedelta(days=5),
+        reason="waiting on a signature",
+        actor="admin",
+    )
+
+    _worker(settings).tick(now=_NOW)
+
+    assert _queued(settings, "exception_expiring") == []
+
+
+def test_the_tick_records_an_acceptance_that_has_run_out(settings):
+    """The reminders are the warning; this is the obituary (#348). Without it
+    the lapse is visible only to whoever happens to re-read the finding."""
+    vuln_id = _seed_finding(settings)
+    accept_risk(
+        settings,
+        tenant_id="default",
+        vuln_id=vuln_id,
+        until=_NOW + timedelta(days=2),
+        reason="two days to migrate",
+        requester="admin",
+    )
+    worker = _worker(settings)
+
+    assert worker.tick(now=_NOW)["exception_expired"] == 0
+
+    stats = worker.tick(now=_NOW + timedelta(days=3))
+
+    assert stats["exception_expired"] == 1
+    events, _total = vulns.list_events(settings, tenant_id="default", vuln_id=vuln_id)
+    lapsed = next(event for event in events if event["kind"] == "exception_expired")
+    # Nobody performed it, which is exactly why it is written down.
+    assert lapsed["actor"] is None
 
 
 # --------------------------------------------------------------------------

@@ -310,6 +310,55 @@ def test_verification_run_that_finds_nothing_closes_the_finding(tmp_path):
 
 
 @requires_postgres
+def test_verification_closing_a_finding_drops_its_accepted_risk(tmp_path):
+    """A fixed finding carries no risk to accept (#348).
+
+    The operator's own close erased the acceptance from the start; this path
+    left the columns behind, so the closed finding stayed in the risk register
+    as risk the organisation was still carrying, and the expiry sweep wrote it
+    an "the acceptance lapsed" audit row weeks after it was fixed.
+    """
+    from datetime import timedelta
+
+    from api.services import vuln_states as states
+    from tests.conftest import accept_risk
+
+    settings, tenant_id = _seed(tmp_path)
+    vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    tracked = _vuln_ids(settings, tenant_id)
+    target = tracked["CVE-2024-0001"]["vuln_id"]
+    accept_risk(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=target,
+        until=datetime.now(UTC) + timedelta(days=30),
+        reason="vendor patch in Q4",
+    )
+    _park_in_verifying(settings, tenant_id, target, "job-verify")
+
+    _write_run(settings.output_dir, "run-clean", [{"host": "10.0.0.5"}], [])
+    _job_for_run(settings, tenant_id, "job-verify", "run-clean")
+    assert (
+        vulns.register_findings_from_run(
+            settings, tenant_id=tenant_id, run_id="run-clean"
+        ).verification_passed
+        == 1
+    )
+
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=target)
+    assert after["state"] == vuln_states.CLOSED
+    assert after["exception_until"] is None
+    assert after["exception_state"] == states.EXCEPTION_NONE
+    assert vulns.risk_acceptance_register(settings, tenant_id=tenant_id) == []
+    assert (
+        vulns.expire_exceptions(
+            settings, tenant_id=tenant_id, now=datetime.now(UTC) + timedelta(days=31)
+        )
+        == 0
+    )
+
+
+@requires_postgres
 def test_an_empty_verification_run_still_closes_the_loop(tmp_path):
     """A scan that finds nothing at all *is* the success case, not a no-op."""
     settings, tenant_id = _seed(tmp_path)

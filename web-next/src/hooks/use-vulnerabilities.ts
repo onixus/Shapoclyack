@@ -8,6 +8,7 @@ import {
   clearVulnerabilityFalsePositive,
   clearVulnerabilityTicket,
   commentOnVulnerability,
+  decideVulnerabilityException,
   fetchRiskHistory,
   fetchTrackedVulnerability,
   fetchTrackedVulnerabilities,
@@ -175,9 +176,31 @@ export function useSetVulnerabilityException(vulnId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: VulnerabilityExceptionBody) => setVulnerabilityException(vulnId, body),
-    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Risk accepted"),
+    // "Requested", not "accepted": since #348 this call suspends nothing until
+    // somebody else approves it, and a toast that said otherwise would be the
+    // console telling an operator their SLA had stopped when it had not.
+    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Acceptance requested"),
     onError: (err) => {
-      toast.error("Could not accept risk", {
+      toast.error("Could not request an acceptance", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useDecideVulnerabilityException(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ decision, note }: { decision: "approve" | "reject"; note?: string }) =>
+      decideVulnerabilityException(vulnId, decision, note),
+    onSuccess: (updated) =>
+      onVulnWriteSuccess(
+        queryClient,
+        updated,
+        updated.exception_state === "exception_approved" ? "Risk accepted" : "Request rejected",
+      ),
+    onError: (err) => {
+      toast.error("Could not decide the request", {
         description: err instanceof Error ? err.message : undefined,
       });
     },
