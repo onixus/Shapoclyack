@@ -552,6 +552,58 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The console asks one question about authority, and asks it about the
+  tenant** ([#318](https://github.com/onixus/Shapoclyack/issues/318)). Every
+  page gate compared against the account's *global* role from the JWT, while
+  the API has checked the role held in the tenant since #318 — so an account
+  whose `scan-operator` role came from a membership is a global `viewer`, was
+  served `GET /api/jobs`, and had Scan jobs, both scanning surfaces, Agents,
+  Schedules and the quick-launch buttons hidden from it. Four of those were
+  fixed one page at a time during this wave; this replaces the pattern. One
+  function (`web-next/src/lib/authz.ts`) answers "may this principal do this",
+  the sidebar and the page gates ask it, and a requirement now says which
+  authority it means: a named permission, a rank **in the active tenant**, or
+  the account's own role — the last only for `/tenants` and `/users`, whose
+  routes really are gated on the account.
+- **The console no longer keeps its own copy of the role table**
+  ([#318](https://github.com/onixus/Shapoclyack/issues/318)). `GET
+  /api/rbac/roles` existed and nobody called it: the membership editor and the
+  service-token panel each held a literal `viewer | operator | admin`, so
+  `auditor`, `scan-operator`, `scope-approver`, `token-admin` and
+  `risk-approver` could be granted only over the API. The editor reads the
+  catalogue now, shows the description the platform publishes for each role,
+  keeps a role the catalogue no longer lists rather than silently demoting the
+  member, and never offers `platform-admin`. The service-token role dropdown
+  is capped at what the caller may actually issue, instead of offering two
+  options the issuance ceiling answers `403` on.
+- **"Withdraw" on a pending extension no longer destroys the acceptance in
+  force** ([#348](https://github.com/onixus/Shapoclyack/issues/348)). With a
+  60-day acceptance signed by a second person and an extension request waiting,
+  the card's only button was wired to `DELETE /{id}/exception` — so a tenant
+  admin fixing a typo in their own request lost the signed window, the finding
+  was breached on the spot, and they had no second signature to put it back.
+  The two acts are now two: `DELETE /{id}/exception/request` withdraws your own
+  unanswered ask and touches nothing that was granted (`403` for somebody
+  else's — it is rejected, not erased), while `DELETE /{id}/exception` revokes
+  a granted acceptance and has moved from the tenant-admin rank to
+  `vulnerability.exception.approve`, the hand that could have signed it. The
+  console shows them as two buttons and confirms the destructive one by name
+  and date. Re-filing your own pending request is now legal, so correcting a
+  date is one step. **Behaviour change:** a tenant `admin` who does not hold
+  `vulnerability.exception.approve` can no longer revoke an acceptance; the
+  platform admin, who holds every permission, still can.
+- **A tenant-scoped request reads the tenant's status with its membership, not
+  after it** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
+  `require_active` was a second `SELECT` on **every** tenant-scoped request,
+  fired after the membership lookup had already opened a transaction — two
+  round trips to Postgres to answer one authorisation question, on the hot
+  listings (findings, assets) most of all. The status now comes back in the
+  membership query (one statement instead of two, asserted by a test that
+  counts them), and it is still read per request rather than cached, because
+  suspending a customer has to take effect on their next call. `GLOBAL_ROLES`
+  in `api/core/permissions.py` was documented as the truth about `users.role`
+  and read by nobody while a hand-written `Literal` did the validating; the
+  two are now held together by a test, as the tenant roles already were.
 - **A running scan can be stopped**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
   legal only from `queued`; once an agent had claimed a job, the only bound on

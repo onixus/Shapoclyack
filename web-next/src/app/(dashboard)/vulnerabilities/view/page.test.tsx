@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import VulnerabilityDetailPage from "@/app/(dashboard)/vulnerabilities/view/page";
 import * as apiModule from "@/lib/api";
 import type { Me, TrackedVulnerability } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import { canOperate as canOperateIn } from "@/lib/authz";
 
 const searchParams = new URLSearchParams({ vulnId: "vln_1", tenantId: "default" });
 
@@ -86,7 +88,7 @@ function signIn(overrides: Partial<Me>) {
     user,
     loading: false,
     hydrated: true,
-    canOperate: user.role === "operator" || user.role === "admin",
+    canOperate: canOperateIn(user),
     activeTenant: "default",
   });
 }
@@ -215,5 +217,66 @@ describe("Accepted risk panel", () => {
 
     expect(await screen.findByText("Finding")).toBeInTheDocument();
     expect(screen.queryByText("Accepted risk")).not.toBeInTheDocument();
+  });
+
+  const EXTENDING = vuln({
+    // Signed by somebody else and in force; the requester wants more time.
+    exception_state: "exception_requested",
+    exception_until: "2027-01-01T00:00:00Z",
+    exception_reason: "vendor patch in Q4",
+    exception_by: "risk-boss",
+    exception_requested_by: "alice",
+    exception_requested_until: "2027-06-01T00:00:00Z",
+    exception_requested_reason: "EXTENSION not yet approved",
+    sla_state: "accepted",
+  });
+
+  it("offers the requester their own request back, never the signed acceptance", async () => {
+    // The defect. With an extension pending, the only button on this card was
+    // "Withdraw", wired to `DELETE /{id}/exception` — so an admin correcting a
+    // date destroyed the acceptance a second person had signed, and could not
+    // put it back.
+    const withdrawRequest = vi
+      .spyOn(apiModule, "withdrawVulnerabilityExceptionRequest")
+      .mockResolvedValue(EXTENDING);
+    const clear = vi.spyOn(apiModule, "clearVulnerabilityException");
+    signIn({
+      username: "alice",
+      role: "viewer",
+      tenant_role: "admin",
+      permissions: [],
+      scoped_tenant: "default",
+    });
+    renderPage(EXTENDING);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Withdraw request" }));
+    await waitFor(() => expect(withdrawRequest).toHaveBeenCalledWith("vln_1"));
+    // The acceptance is not this person's to revoke, and no button offers to.
+    expect(clear).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Revoke acceptance/ })).toBeNull();
+  });
+
+  it("asks before revoking, and names what is being destroyed", async () => {
+    const clear = vi
+      .spyOn(apiModule, "clearVulnerabilityException")
+      .mockResolvedValue(EXTENDING);
+    signIn({
+      username: "risk-boss",
+      role: "viewer",
+      tenant_role: "risk-approver",
+      permissions: ["vulnerability.exception.approve"],
+      scoped_tenant: "default",
+    });
+    renderPage(EXTENDING);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Revoke acceptance" }));
+    // The confirmation says whose signature and until when, because after the
+    // click the finding is breached and this account is the only way back.
+    const warning = screen.getByText(/back under its original deadline/);
+    expect(warning).toHaveTextContent("risk-boss");
+    expect(clear).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Revoke acceptance" }));
+    await waitFor(() => expect(clear).toHaveBeenCalledWith("vln_1"));
   });
 });

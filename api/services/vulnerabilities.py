@@ -106,6 +106,9 @@ VULN_EVENT_KINDS = (
     # and is now written by the approval rather than by the request, so a
     # finding's history reads request → decision → (expiry) in four rows.
     "exception_requested",
+    # The requester taking their own ask back, which is not the same row as
+    # ``exception_cleared``: that one says a signed acceptance stopped holding.
+    "exception_request_withdrawn",
     "exception_approved",
     "exception_rejected",
     "exception_expired",
@@ -2088,6 +2091,18 @@ def request_exception(
         vuln_states.check_exception_transition(
             vuln_id, row.exception_state, vuln_states.EXCEPTION_REQUESTED
         )
+        if (
+            row.exception_state == vuln_states.EXCEPTION_REQUESTED
+            and not _same_person(row.exception_requested_by, actor)
+        ):
+            # Re-filing over your own pending ask is how a wrong date is fixed
+            # (#348 debt); overwriting somebody else's is how their request
+            # disappears without anybody deciding it. Whoever may answer it
+            # rejects it instead.
+            raise vuln_states.InvalidExceptionTransition(
+                f"Vulnerability {vuln_id}: a request by "
+                f"{row.exception_requested_by!r} is waiting for a decision"
+            )
         row.exception_state = vuln_states.EXCEPTION_REQUESTED
         row.exception_requested_by = actor
         row.exception_requested_at = now
@@ -2280,6 +2295,107 @@ def reject_exception(
         return result
 
 
+def withdraw_exception_request(
+    settings: Settings,
+    *,
+    tenant_id: str | None,
+    vuln_id: str,
+    actor: str | None = None,
+    note: str | None = None,
+    audit: "audit_service.AuditContext | None" = None,
+) -> dict[str, Any] | None:
+    """Take back a pending request, leaving any granted acceptance alone.
+
+    The half of :func:`clear_exception` that the console used to reach by
+    accident. With an acceptance in force and an extension waiting on a
+    decision, the only button on the card was "Withdraw", and it withdrew the
+    *acceptance*: the second person's signature went with the typo the
+    requester was trying to fix, and the finding was breached the moment the
+    page reloaded. These are two acts with two authorities — the requester
+    takes back their own ask; revoking what somebody signed is
+    :func:`clear_exception`, gated on the permission that could have granted
+    it — so they are two functions.
+
+    Nothing about the SLA moves here: a request never suspended the clock, so
+    withdrawing one cannot restart it. ``exception_state`` returns to whatever
+    the row was in before the request: the granted window if one is still
+    there (lapsed or not), and ``none`` otherwise.
+
+    Refuses somebody else's request by name. Whoever holds
+    ``vulnerability.exception.approve`` closes a request they did not file by
+    *rejecting* it, which is an answer and leaves one — a withdrawal would
+    erase the ask with no record of who made it go away.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _load(session, tenant_id=tenant_id, vuln_id=vuln_id)
+        if row is None:
+            return None
+        state = row.exception_state or vuln_states.EXCEPTION_NONE
+        if state != vuln_states.EXCEPTION_REQUESTED:
+            raise vuln_states.InvalidExceptionTransition(
+                f"Vulnerability {vuln_id}: no exception request is waiting for a decision"
+            )
+        if not _same_person(row.exception_requested_by, actor):
+            raise PermissionError(
+                "only the person who filed an exception request may withdraw it; "
+                "somebody holding vulnerability.exception.approve can reject it instead"
+            )
+        before = _to_dict(row, now=now)
+        requested_until = row.exception_requested_until
+        row.exception_state = _state_behind_a_request(row, now=now)
+        row.exception_requested_by = None
+        row.exception_requested_at = None
+        row.exception_requested_until = None
+        row.exception_requested_reason = None
+        row.updated_at = now
+        _record_event(
+            session,
+            vuln_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            kind="exception_request_withdrawn",
+            occurred_at=now,
+            to_state=row.state,
+            actor=actor,
+            note=note,
+            detail={
+                "requested_until": _iso(requested_until),
+                "exception_state": row.exception_state,
+            },
+        )
+        result = _to_dict(row, now=now)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_VULN_EXCEPTION_REQUEST_WITHDRAW,
+            resource_type="vulnerability",
+            resource_id=row.vuln_id,
+            tenant_id=row.tenant_id,
+            before=_exception_document(before),
+            after=_exception_document(result),
+        )
+        session.flush()
+        return result
+
+
+def _state_behind_a_request(row: Any, *, now: datetime) -> str:
+    """What the acceptance state was before a request was filed over it.
+
+    ``exception_until`` is the granted window and is never touched by a
+    request, so it is the whole answer: a window still ahead is an acceptance
+    in force, one behind is an acceptance that lapsed — and the register reads
+    those two rows differently — and no window at all is ``none``.
+    """
+    granted = _naive(row.exception_until)
+    if granted is None:
+        return vuln_states.EXCEPTION_NONE
+    return (
+        vuln_states.EXCEPTION_APPROVED
+        if granted > now
+        else vuln_states.EXCEPTION_EXPIRED
+    )
+
+
 def clear_exception(
     settings: Settings,
     *,
@@ -2289,15 +2405,24 @@ def clear_exception(
     note: str | None = None,
     audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any] | None:
-    """Withdraw an acceptance (or a pending request) and restore the deadline.
+    """Revoke a granted acceptance and put the finding back under its deadline.
 
     The deadline is recomputed from ``sla_started_at``, not from now: the risk
     was accepted, not restarted, so a finding whose window had already elapsed
     is immediately breached again rather than being granted a fresh one.
 
-    Withdrawing needs no second person — it can only ever put work back on the
-    queue, and a control that is harder to undo than to apply is one people
-    stop applying (the same rule as clearing a false-positive verdict).
+    **A pending request is not part of this.** An extension waiting for a
+    decision survives — it is a separate ask, and answering it is
+    :func:`approve_exception` or :func:`reject_exception` — and a requester
+    taking their own ask back is :func:`withdraw_exception_request`. Before
+    those were separate the console offered one "Withdraw" button for both, so
+    somebody fixing a typo in their own extension request destroyed the
+    acceptance a second person had signed.
+
+    The one case where a request does go: when there is nothing else to revoke.
+    A caller who may revoke a signed acceptance may certainly close a request
+    that was never granted, and refusing that would leave the route answering
+    "nothing to do" on a row that plainly has something.
     """
     now = _now()
     with get_session(settings.postgres_url) as session:
@@ -2309,14 +2434,20 @@ def clear_exception(
             return _to_dict(row, now=now)
         before = _to_dict(row, now=now)
         was_until = row.exception_until
-        row.exception_state = vuln_states.EXCEPTION_NONE
-        row.exception_requested_by = None
-        row.exception_requested_at = None
-        row.exception_requested_until = None
+        # A request waiting on a decision keeps its columns and its state, so
+        # long as there is a granted window to revoke underneath it.
+        keeps_request = state == vuln_states.EXCEPTION_REQUESTED and was_until is not None
+        row.exception_state = (
+            vuln_states.EXCEPTION_REQUESTED if keeps_request else vuln_states.EXCEPTION_NONE
+        )
+        if not keeps_request:
+            row.exception_requested_by = None
+            row.exception_requested_at = None
+            row.exception_requested_until = None
+            row.exception_requested_reason = None
         row.exception_decided_by = None
         row.exception_decided_at = None
         row.exception_decision_note = None
-        row.exception_requested_reason = None
         row.exception_reason = None
         row.exception_by = None
         row.exception_approved_at = None

@@ -315,13 +315,14 @@ def me(
     # through, so "what may I do here" and "what does a request here get"
     # cannot drift apart — including the refusal for a tenant with no claim.
     try:
-        scoped_tenant, tenant_role = memberships_service.resolve_tenant(
+        resolution = memberships_service.resolve_tenant(
             user.username, tenant_id, global_role=user.role.value
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    scoped_tenant = resolution.tenant_id
     try:
-        effective_role = Role(tenant_role)
+        effective_role = Role(resolution.role)
     except ValueError:
         # A membership naming a role this build does not know resolves to the
         # lowest authority, exactly as ``resolve_tenant_principal`` does.

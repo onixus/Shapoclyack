@@ -56,6 +56,11 @@ export const queryKeys = {
   auditEvents: (page?: PageParams, filters?: Record<string, string | undefined>) =>
     ["audit", "events", filters ?? {}, pageKey(page)] as const,
   tenantMembers: (tenantId: string) => ["tenants", tenantId, "members"] as const,
+  /** The role catalogue as it stands in one tenant (#318): the built-in roles
+   * plus anything that tenant defined for itself, so it is keyed per tenant
+   * like the member list it is read next to. */
+  roleCatalogue: (tenantId: string) => ["tenants", tenantId, "roles"] as const,
+  permissionCatalogue: ["rbac", "permissions"] as const,
   provisioningKeys: (tenantId: string) => ["tenants", tenantId, "provisioning-keys"] as const,
   serviceTokens: (tenantId: string) => ["tenants", tenantId, "service-tokens"] as const,
   assets: (filters: { status?: string }) => ["assets", filters] as const,

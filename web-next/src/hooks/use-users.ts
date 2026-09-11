@@ -21,6 +21,7 @@ import {
   type CreateUserBody,
   type PageParams,
   type Role,
+  type TenantRoleName,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -179,7 +180,9 @@ export function useTenantMembers(tenantId: string, enabled: boolean) {
 export function useGrantMembership(tenantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ username, role }: { username: string; role: Role }) =>
+    // A membership role, not the account's — a different and longer list
+    // since #318, served by GET /api/rbac/roles.
+    mutationFn: ({ username, role }: { username: string; role: TenantRoleName }) =>
       grantMembership(tenantId, username, role),
     onSuccess: async (membership) => {
       toast.success("Membership granted", {

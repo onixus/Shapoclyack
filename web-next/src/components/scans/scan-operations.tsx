@@ -25,6 +25,7 @@ import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
 import { useSystemStatus } from "@/hooks/use-system";
 import { holdsPermission, useAuthStore } from "@/lib/auth-store";
+import { holdsGlobalRole } from "@/lib/authz";
 import { useT } from "@/lib/i18n";
 import { runDetailHref } from "@/lib/run-data";
 import { surfaceHref, type ScanSurface } from "@/lib/scan-surface";
@@ -193,7 +194,10 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
   const showLauncher = canOperate && (launcherOpen ?? noJobsYet);
   const agentMode = system?.runtime.job_execution_mode === "agent";
   const scanStartDisabled = system ? !system.runtime.allow_scan_start : false;
-  const isAdmin = user?.role === "admin";
+  // This one is a link to /tenants, where the scope is approved — and that
+  // page's listings hang off `require_role` on the account, so it is the
+  // global role that decides whether the link goes anywhere.
+  const canReachScope = holdsGlobalRole(user, "operator");
 
   const header = useMemo(
     () => ({
@@ -234,7 +238,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
                 {t("common.manageSchedules")}
               </Link>
             </Button>
-            {isAdmin ? (
+            {canReachScope ? (
               <Button asChild variant="outline" size="sm" className="gap-1.5">
                 <Link href="/tenants">
                   <ShieldCheck className="h-3.5 w-3.5" />

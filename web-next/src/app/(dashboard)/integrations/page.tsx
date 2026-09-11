@@ -35,6 +35,7 @@ import {
 } from "@/hooks/use-webhooks";
 import { type WebhookDelivery, type WebhookInfo } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import { canOperate, isTenantAdmin } from "@/lib/authz";
 import { WEBHOOK_DELIVERY_STATUS } from "@/lib/config/statuses";
 import { useT, type MsgKey, type Translate } from "@/lib/i18n";
 
@@ -74,8 +75,11 @@ function eventKindsLabel(kinds: string[], t: Translate) {
 export default function IntegrationsPage() {
   const t = useT();
   const { user } = useAuthStore();
-  const isAdmin = user?.role === "admin";
-  const canRead = isAdmin || user?.role === "operator";
+  // In this tenant, not globally: every webhook route is `require_tenant`, so
+  // an account whose operator or admin role came from a membership was shown
+  // an empty page the API would have filled (#318).
+  const isAdmin = isTenantAdmin(user);
+  const canRead = canOperate(user);
 
   const pagination = usePagination({ sort: "created_at", order: "desc" });
   const deliveryPagination = usePagination({ sort: "created_at", order: "desc" });

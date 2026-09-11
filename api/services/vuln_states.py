@@ -159,9 +159,16 @@ EXCEPTION_TRANSITIONS: dict[str, frozenset[str]] = {
     # positions: circumstances change, and a rejection nobody could revisit
     # would be re-litigated in a ticket instead of in the platform.
     EXCEPTION_NONE: frozenset({EXCEPTION_REQUESTED}),
-    # Back to ``none`` is the requester withdrawing; the other two are the
-    # second person's decision.
-    EXCEPTION_REQUESTED: frozenset({EXCEPTION_APPROVED, EXCEPTION_REJECTED, EXCEPTION_NONE}),
+    # Back to ``none`` is the requester withdrawing; the middle two are the
+    # second person's decision. ``requested -> requested`` is the requester
+    # correcting their own ask: without it, fixing a date typo meant cancelling
+    # and re-filing, and the only cancel button the console had took the
+    # *acceptance* with it. Who is allowed to overwrite whose request is
+    # :func:`api.services.vulnerabilities.request_exception`'s to enforce —
+    # this table says the move exists, not who may make it.
+    EXCEPTION_REQUESTED: frozenset(
+        {EXCEPTION_APPROVED, EXCEPTION_REJECTED, EXCEPTION_NONE, EXCEPTION_REQUESTED}
+    ),
     # An approved acceptance lapses, is withdrawn, or is superseded by a
     # request for a longer window — which is approved again rather than
     # extending itself, because "until when" is the decision.

@@ -10,7 +10,10 @@ needs ``operator``. Two things need tenant ``admin``:
   ``POST /{id}/exception/approve``, gated on the named permission
   ``vulnerability.exception.approve`` (the ``risk-approver`` role) and refused
   to whoever filed the request. Two roles, two people, and the SLA clock keeps
-  running until the second one signs;
+  running until the second one signs. Undoing splits the same way: the
+  requester takes back their own ask at ``DELETE /{id}/exception/request``,
+  while revoking an acceptance that was signed (``DELETE /{id}/exception``)
+  needs the permission that could have signed it;
 * **editing SLA policy** — it changes every future deadline in the tenant, and
   the escalation policy next to it (#349) decides what the platform does to a
   finding whose deadline passed and whose asset owner is mailed about it;
@@ -768,18 +771,65 @@ def reject_exception(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.delete("/{vuln_id}/exception", response_model=VulnerabilityInfo)
-def clear_exception(
+@router.delete("/{vuln_id}/exception/request", response_model=VulnerabilityInfo)
+def withdraw_exception_request(
     vuln_id: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
     settings: SettingsDep,
     audit: AuditDep,
 ) -> dict[str, Any]:
-    """Withdraw an acceptance, or a request waiting on a decision.
+    """Take back your own pending request. The granted acceptance is untouched.
 
-    The deadline is recomputed from when the SLA clock started, not from now —
-    the risk was accepted, not restarted. No second person: this can only put
-    work back on the queue."""
+    Same rank as filing one, because it is the same person doing it — the
+    service refuses a request somebody else filed by name. Nothing about the
+    SLA moves: a request never suspended the clock.
+
+    Separate from ``DELETE /{id}/exception`` next door, which revokes what a
+    second person signed. One route for both is what let an admin correcting a
+    date in their own extension request destroy the acceptance in force under
+    it (#348 debt).
+    """
+    try:
+        return _found(
+            vulns_service.withdraw_exception_request(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+                audit=audit,
+            )
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.delete("/{vuln_id}/exception", response_model=VulnerabilityInfo)
+def clear_exception(
+    vuln_id: str,
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.VULNERABILITY_EXCEPTION_APPROVE)),
+    ],
+    settings: SettingsDep,
+    audit: AuditDep,
+) -> dict[str, Any]:
+    """Revoke a granted acceptance. The finding is back under its deadline.
+
+    The permission that could have granted it, not the rank that asked for it
+    (#348 debt): an acceptance carries a second person's signature, and taking
+    it away the day before an audit is a decision of the same weight as
+    signing it. The tenant ``admin`` who filed the request does not hold
+    ``vulnerability.exception.approve`` — which is the whole point of the two
+    roles — so it can no longer undo somebody else's approval. The platform
+    admin holds every permission and remains the way out for an installation
+    with nobody in the ``risk-approver`` role.
+
+    The deadline is recomputed from when the SLA clock started, not from now:
+    the risk was accepted, not restarted. A request still waiting on a decision
+    is left waiting — that one belongs to its requester.
+    """
     return _found(
         vulns_service.clear_exception(
             settings,

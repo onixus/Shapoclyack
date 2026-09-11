@@ -612,3 +612,215 @@ def test_a_technical_report_still_omits_it(tmp_path, monkeypatch):
     body = content_builder.build(settings, tenant_id=tenant_id, kind="technical")
     assert "risk_acceptance" not in body["sections"]
     assert "risk_acceptance" not in body
+
+
+# --------------------------------------------------------------------------
+# Taking it back: whose request, and whose signature (#348 debt)
+# --------------------------------------------------------------------------
+
+
+def test_withdrawing_an_extension_request_leaves_the_signed_window_alone(
+    tmp_path, monkeypatch
+):
+    """The defect the two routes exist for.
+
+    An acceptance signed by a second person is in force; the tenant admin asks
+    for an extension, mistypes the date, and takes the request back. Before the
+    split there was one route for both acts, so what went was the *acceptance*:
+    ``exception_until`` and ``exception_by`` were nulled, ``due_at`` was
+    recomputed from ``sla_started_at``, and the finding was breached with no
+    second signature available to put it back.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    vuln_id = _vuln_id(client, admin)
+
+    _request(client, admin, vuln_id, days=60)
+    granted = client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception/approve", json={}, headers=approver
+    ).json()
+    assert granted["sla_state"] == "accepted"
+
+    # The typo, and taking it back.
+    _request(client, admin, vuln_id, days=2000)
+    withdrawn = client.delete(
+        f"/api/vulnerabilities/{vuln_id}/exception/request", headers=admin
+    )
+    assert withdrawn.status_code == 200, withdrawn.text
+    body = withdrawn.json()
+
+    assert body["exception_until"] == granted["exception_until"]
+    assert body["exception_by"] == "risk-boss"
+    assert body["due_at"] == granted["due_at"]
+    assert body["exception_state"] == vuln_states.EXCEPTION_APPROVED
+    assert body["sla_state"] == "accepted"
+    # The ask is gone, and only the ask.
+    assert body["exception_requested_by"] is None
+    assert body["exception_requested_until"] is None
+    assert body["exception_reason"] == "vendor patch lands in Q4"
+
+    # The register still prints the signed acceptance.
+    entries = vulns.risk_acceptance_register(settings, tenant_id=tenant_id)
+    assert [entry["vuln_id"] for entry in entries] == [vuln_id]
+    assert entries[0]["approved_by"] == "risk-boss"
+    assert entries[0]["status"] == "active"
+
+    # And the withdrawal is its own row in the finding's history, distinct
+    # from an acceptance being revoked.
+    kinds = {
+        event["kind"]
+        for event in client.get(
+            f"/api/vulnerabilities/{vuln_id}/events", headers=admin
+        ).json()["items"]
+    }
+    assert "exception_request_withdrawn" in kinds
+    assert "exception_cleared" not in kinds
+
+
+def test_only_the_requester_withdraws_a_request(tmp_path, monkeypatch):
+    """Somebody else's request is answered, not erased.
+
+    Whoever holds ``vulnerability.exception.approve`` rejects it — which leaves
+    a decision and a decider in the trail — rather than making it disappear.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    other_admin = _account(client, "second-admin", _TENANT, "admin")
+    vuln_id = _vuln_id(client, admin)
+    _request(client, admin, vuln_id, days=30)
+
+    # Another tenant admin holds the rank this route gates on and is still
+    # refused: the bar is whose request it is, not what they may do.
+    refused = client.delete(
+        f"/api/vulnerabilities/{vuln_id}/exception/request", headers=other_admin
+    )
+    assert refused.status_code == 403, refused.text
+    assert "withdraw" in refused.json()["detail"]
+    # The approver never reaches that check — filing and unfiling are the
+    # requester's rank, and ``risk-approver`` is rank 1 by design.
+    assert (
+        client.delete(
+            f"/api/vulnerabilities/{vuln_id}/exception/request", headers=approver
+        ).status_code
+        == 403
+    )
+
+    # The requester's own withdrawal lands, and a second one has nothing to
+    # take back — a 409 rather than a silent 200 that changed nothing.
+    first = client.delete(f"/api/vulnerabilities/{vuln_id}/exception/request", headers=admin)
+    assert first.status_code == 200, first.text
+    again = client.delete(f"/api/vulnerabilities/{vuln_id}/exception/request", headers=admin)
+    assert again.status_code == 409, again.text
+
+
+def test_revoking_a_signed_acceptance_needs_the_hand_that_could_have_signed_it(
+    tmp_path, monkeypatch
+):
+    """``DELETE /{id}/exception`` moved from the rank to the permission.
+
+    It was ``require_tenant(admin)``: the tenant admin who filed a request —
+    and who deliberately does *not* hold ``vulnerability.exception.approve`` —
+    could undo the approval the separation of duties exists to require.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    tenant_admin = _account(client, "acme-admin", _TENANT, "admin")
+    vuln_id = _vuln_id(client, admin)
+
+    _request(client, tenant_admin, vuln_id, days=60)
+    granted = client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception/approve", json={}, headers=approver
+    ).json()
+
+    refused = client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=tenant_admin)
+    assert refused.status_code == 403, refused.text
+    still = client.get(f"/api/vulnerabilities/{vuln_id}", headers=admin).json()
+    assert still["exception_until"] == granted["exception_until"]
+
+    revoked = client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=approver)
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json()["exception_until"] is None
+    assert revoked.json()["exception_state"] == vuln_states.EXCEPTION_NONE
+    assert revoked.json()["sla_state"] != "accepted"
+
+
+def test_revoking_an_acceptance_leaves_a_pending_extension_waiting(tmp_path, monkeypatch):
+    """The mirror of the first test: the two acts do not consume each other."""
+    client = configured_client(tmp_path, monkeypatch)
+    _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    vuln_id = _vuln_id(client, admin)
+    _request(client, admin, vuln_id, days=60)
+    client.post(f"/api/vulnerabilities/{vuln_id}/exception/approve", json={}, headers=approver)
+    _request(client, admin, vuln_id, days=120)
+
+    revoked = client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=approver)
+    assert revoked.status_code == 200, revoked.text
+    body = revoked.json()
+    assert body["exception_until"] is None
+    assert body["exception_state"] == vuln_states.EXCEPTION_REQUESTED
+    assert body["exception_requested_by"] == "admin"
+    # Still answerable, and approving it grants the new window on its own.
+    approved = client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception/approve", json={}, headers=approver
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["sla_state"] == "accepted"
+
+
+def test_a_requester_may_correct_their_own_pending_request(tmp_path, monkeypatch):
+    """``requested -> requested`` for the same person, 409 for anybody else.
+
+    Fixing a date used to be a two-step operation whose first step was the
+    button that destroyed the acceptance.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    other = _account(client, "second-admin", _TENANT, "admin")
+    vuln_id = _vuln_id(client, admin)
+
+    first = _request(client, admin, vuln_id, days=30)
+    assert first.status_code == 200, first.text
+    corrected = client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception",
+        json={"until": _until(45), "reason": "vendor patch lands in Q4, revised"},
+        headers=admin,
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["exception_requested_reason"] == "vendor patch lands in Q4, revised"
+
+    clash = _request(client, other, vuln_id, days=90)
+    assert clash.status_code == 409, clash.text
+    assert "waiting for a decision" in clash.json()["detail"]
+
+
+def test_both_undo_paths_leave_their_own_audit_row(tmp_path, monkeypatch):
+    """One action name for two acts could not answer "who cancelled it"."""
+    client = configured_client(tmp_path, monkeypatch)
+    settings, _ = _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    vuln_id = _vuln_id(client, admin)
+    _request(client, admin, vuln_id, days=60)
+    client.post(f"/api/vulnerabilities/{vuln_id}/exception/approve", json={}, headers=approver)
+    _request(client, admin, vuln_id, days=120)
+    client.delete(f"/api/vulnerabilities/{vuln_id}/exception/request", headers=admin)
+    client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=approver)
+
+    with get_session(settings.postgres_url) as session:
+        actions = [
+            row.action
+            for row in session.query(models.AuditEvent)
+            .filter(models.AuditEvent.resource_id == vuln_id)
+            .all()
+        ]
+    assert audit_service.ACTION_VULN_EXCEPTION_REQUEST_WITHDRAW in actions
+    assert audit_service.ACTION_VULN_EXCEPTION_WITHDRAW in actions

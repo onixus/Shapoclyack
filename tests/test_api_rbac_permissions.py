@@ -15,7 +15,7 @@ from unittest.mock import patch
 from api.core import permissions as permission_catalog
 from api.db import models
 from api.db.engine import get_session
-from api.schemas import JobInfo, TenantRoleName
+from api.schemas import GlobalRoleName, JobInfo, TenantRoleName
 from tests.conftest import (
     approve_scan_scope_via_api,
     auth_headers,
@@ -486,3 +486,85 @@ def test_a_suspended_tenant_leaves_the_listings_that_describe_it(tmp_path, monke
     assert "paused" in {
         row["tenant_id"] for row in client.get("/api/tenants/posture", headers=_admin(client)).json()
     }
+
+
+def test_the_global_roles_are_the_ones_the_user_schema_accepts():
+    """``users.role`` had two truths: the constant and a hand-written Literal.
+
+    ``GLOBAL_ROLES`` was documented as "assignable in ``users.role``" and read
+    by nobody, while the validation lived in a Literal spelled out five times
+    in ``api/schemas.py``. Whoever added a fourth global role would have found
+    one of them and not the other. This is the same guard
+    :func:`test_the_grantable_roles_are_the_ones_the_schema_accepts` puts on
+    the tenant roles.
+    """
+    assert set(typing.get_args(GlobalRoleName)) == set(permission_catalog.GLOBAL_ROLES)
+    # And the global names stay a subset of the tenant ones: a membership may
+    # name every global role, not the other way round.
+    assert set(permission_catalog.GLOBAL_ROLES) <= set(permission_catalog.TENANT_ROLES)
+
+
+def _record_statements(settings):
+    """Record every statement the API's engine executes. Returns (log, stop)."""
+    from sqlalchemy import event
+
+    from api.db.engine import get_engine
+
+    engine = get_engine(settings.postgres_url)
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _record)
+    return statements, lambda: event.remove(engine, "before_cursor_execute", _record)
+
+
+def test_a_tenant_scoped_listing_reads_the_tenant_status_with_the_membership(
+    tmp_path, monkeypatch
+):
+    """The suspension check costs no round trip of its own (#318 debt).
+
+    ``require_active`` was a second ``SELECT`` on the tenants table on **every**
+    tenant-scoped request, fired after ``resolve_tenant`` had already opened a
+    transaction to read the membership — two round trips to answer "which
+    tenant, which role, is it still active". On the hot listings (findings,
+    assets) that doubled the authorisation cost of the request. The status now
+    comes back with the membership, so this asserts the shape of what the
+    request spends: exactly one statement against ``tenants``, the one joined
+    onto ``user_tenants``.
+
+    Counting statements rather than timing anything: a latency assertion in a
+    test suite is a flake, and the defect was a shape, not a speed.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    member = _account(client, "lister", "acme", "scan-operator")
+
+    from api.auth import get_settings
+
+    settings = get_settings()
+    statements, stop = _record_statements(settings)
+    try:
+        listed = client.get("/api/assets?tenant_id=acme", headers=member)
+        assert listed.status_code == 200, listed.text
+    finally:
+        stop()
+
+    reads = [
+        text
+        for text in statements
+        if "FROM user_tenants" in text or "FROM tenants" in text
+    ]
+    assert len(reads) == 1, "\n---\n".join(reads)
+    # ...and it is one statement answering both questions, not a membership
+    # lookup followed by a status lookup.
+    assert "user_tenants" in reads[0] and "tenants.status" in reads[0], reads[0]
+
+    # The suspension is still enforced per request rather than cached: flipping
+    # the status refuses the very next call, with no TTL to wait out.
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Tenant, "acme").status = "suspended"
+    refused = client.get("/api/assets?tenant_id=acme", headers=member)
+    assert refused.status_code == 403, refused.text
+    assert "suspended" in refused.json()["detail"]
