@@ -824,3 +824,57 @@ def test_both_undo_paths_leave_their_own_audit_row(tmp_path, monkeypatch):
         ]
     assert audit_service.ACTION_VULN_EXCEPTION_REQUEST_WITHDRAW in actions
     assert audit_service.ACTION_VULN_EXCEPTION_WITHDRAW in actions
+
+
+def test_a_request_with_nothing_granted_under_it_is_rejected_not_erased(tmp_path, monkeypatch):
+    """``DELETE /{id}/exception`` on a bare request is a 409, not a deletion.
+
+    The revoke path used to fall through to "clear everything" whenever there
+    was no granted window, which handed whoever holds
+    ``vulnerability.exception.approve`` a way to make somebody else's ask
+    disappear: ``exception_requested_by`` emptied, ``exception_decided_by``
+    never filled, and the register showing ``exception_cleared`` — rendered
+    "Acceptance revoked" by the console — for a finding that never had an
+    acceptance. Closing a request you did not file is the reject, which leaves
+    a decision with a name on it.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    settings, _ = _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    tenant_admin = _account(client, "acme-admin", _TENANT, "admin")
+    vuln_id = _vuln_id(client, admin)
+    _request(client, tenant_admin, vuln_id, days=60)
+
+    refused = client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=approver)
+    assert refused.status_code == 409, refused.text
+    assert "reject" in refused.json()["detail"]
+
+    still = client.get(f"/api/vulnerabilities/{vuln_id}", headers=admin).json()
+    assert still["exception_state"] == vuln_states.EXCEPTION_REQUESTED
+    assert still["exception_requested_by"] == "acme-admin"
+
+    kinds = [
+        event["kind"]
+        for event in client.get(
+            f"/api/vulnerabilities/{vuln_id}/events", headers=admin
+        ).json()["items"]
+    ]
+    assert "exception_cleared" not in kinds
+    with get_session(settings.postgres_url) as session:
+        actions = [
+            row.action
+            for row in session.query(models.AuditEvent)
+            .filter(models.AuditEvent.resource_id == vuln_id)
+            .all()
+        ]
+    assert audit_service.ACTION_VULN_EXCEPTION_WITHDRAW not in actions
+
+    # And the answer that does close it names who closed it.
+    rejected = client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception/reject",
+        json={"note": "not this quarter"},
+        headers=approver,
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["exception_decided_by"] == "risk-boss"

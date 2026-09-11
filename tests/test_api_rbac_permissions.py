@@ -9,7 +9,9 @@ which is what makes them worth having.
 
 from __future__ import annotations
 
+import re
 import typing
+from pathlib import Path
 from unittest.mock import patch
 
 from api.core import permissions as permission_catalog
@@ -502,6 +504,33 @@ def test_the_global_roles_are_the_ones_the_user_schema_accepts():
     # And the global names stay a subset of the tenant ones: a membership may
     # name every global role, not the other way round.
     assert set(permission_catalog.GLOBAL_ROLES) <= set(permission_catalog.TENANT_ROLES)
+
+
+_AUTHZ_TS = Path(__file__).resolve().parents[1] / "web-next/src/lib/authz.ts"
+_TS_RANK = re.compile(r'^\s*"?([a-z-]+)"?:\s*(\d+),\s*$', re.MULTILINE)
+
+
+def test_the_consoles_rank_table_is_the_one_the_api_gates_on():
+    """``ROLE_RANK`` in the console is a hand copy of this module's ``rank``.
+
+    It cannot be anything else: the catalogue that would serve it,
+    ``GET /api/rbac/roles``, is gated on ``tenant.member.read``, which only the
+    tenant ``admin`` and the platform admin hold — so the very principals whose
+    menu the rank decides (a ``scan-operator``, a ``viewer``) can never read
+    it, and the console would fall back to a built-in copy anyway. What the
+    copy can have is this: a ninth role added here and forgotten there scores
+    :func:`api.core.permissions.rank_for`'s unknown-role 1 in the console,
+    which hides every scanning page from a rank-2 role the API serves — the
+    exact defect #318 closed, reopened by an addition. This is the same guard
+    :func:`test_the_global_roles_are_the_ones_the_user_schema_accepts` puts on
+    the global names, pointed at the other language.
+    """
+    source = _AUTHZ_TS.read_text(encoding="utf-8")
+    body = source.split("const ROLE_RANK: Record<string, number> = {", 1)[1].split("};", 1)[0]
+    console = {name: int(rank) for name, rank in _TS_RANK.findall(body)}
+    assert console == {
+        name: role.rank for name, role in permission_catalog.BUILTIN_ROLES.items()
+    }
 
 
 def _record_statements(settings):

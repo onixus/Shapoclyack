@@ -618,7 +618,7 @@ it is only supposed to approve.
 | `scan_policy.manage` | tenant `admin`, platform admin. Reading a policy needs only `scan_scope.read`: whoever may see what a tenant is allowed to scan may see how hard |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
-| `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one — while a requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
+| `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one. It revokes a *granted* window and nothing else: with none granted it answers `409`, because closing somebody else's pending ask is the reject, which leaves a decision with a name on it. A requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
 
 `platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
 anyone below it: those counters span every tenant on the installation.

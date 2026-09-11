@@ -829,16 +829,25 @@ def clear_exception(
     The deadline is recomputed from when the SLA clock started, not from now:
     the risk was accepted, not restarted. A request still waiting on a decision
     is left waiting — that one belongs to its requester.
+
+    A finding with no granted window is a 409, not a 200. Answering "revoked"
+    to a request that revoked nothing is what let this route erase a pending
+    ask — under the audit action for withdrawing an *acceptance*, which the
+    console reads as "Acceptance revoked". Closing somebody else's request is
+    ``POST /{id}/exception/reject``, which leaves a decision and a name.
     """
-    return _found(
-        vulns_service.clear_exception(
-            settings,
-            tenant_id=_write_scope(principal),
-            vuln_id=vuln_id,
-            actor=principal.username,
-            audit=audit,
+    try:
+        return _found(
+            vulns_service.clear_exception(
+                settings,
+                tenant_id=_write_scope(principal),
+                vuln_id=vuln_id,
+                actor=principal.username,
+                audit=audit,
+            )
         )
-    )
+    except vuln_states.InvalidVulnTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/{vuln_id}/false-positive", response_model=VulnerabilityInfo)

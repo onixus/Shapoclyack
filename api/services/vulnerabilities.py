@@ -2419,10 +2419,13 @@ def clear_exception(
     somebody fixing a typo in their own extension request destroyed the
     acceptance a second person had signed.
 
-    The one case where a request does go: when there is nothing else to revoke.
-    A caller who may revoke a signed acceptance may certainly close a request
-    that was never granted, and refusing that would leave the route answering
-    "nothing to do" on a row that plainly has something.
+    **There is no case where a request goes with it.** With nothing granted
+    this raises instead, because the alternative was the same erasure by
+    another door: the approver who may revoke an acceptance would clear a
+    request nobody had answered, leaving ``exception_decided_by`` empty and the
+    register reporting ``exception_cleared`` — "Acceptance revoked" in the
+    console — for a finding that never had one. Whoever may revoke may also
+    *reject*, which costs one more click and records who made the ask go away.
     """
     now = _now()
     with get_session(settings.postgres_url) as session:
@@ -2430,13 +2433,25 @@ def clear_exception(
         if row is None:
             return None
         state = row.exception_state or vuln_states.EXCEPTION_NONE
-        if row.exception_until is None and state == vuln_states.EXCEPTION_NONE:
-            return _to_dict(row, now=now)
-        before = _to_dict(row, now=now)
         was_until = row.exception_until
-        # A request waiting on a decision keeps its columns and its state, so
-        # long as there is a granted window to revoke underneath it.
-        keeps_request = state == vuln_states.EXCEPTION_REQUESTED and was_until is not None
+        if was_until is None:
+            # ``exception_until`` is the granted window and the only thing this
+            # route revokes, so with none there is nothing here to take away.
+            # Answering 200 spent the acceptance the row did not have: on a row
+            # carrying a request it erased the ask, on an empty one it wrote a
+            # revocation nobody performed.
+            raise vuln_states.InvalidExceptionTransition(
+                f"Vulnerability {vuln_id}: no accepted risk to revoke"
+                + (
+                    "; a request waiting for a decision is closed by rejecting it"
+                    if state == vuln_states.EXCEPTION_REQUESTED
+                    else ""
+                )
+            )
+        before = _to_dict(row, now=now)
+        # A request waiting on a decision keeps its columns and its state: it is
+        # a separate ask over the window being revoked, and it stays waiting.
+        keeps_request = state == vuln_states.EXCEPTION_REQUESTED
         row.exception_state = (
             vuln_states.EXCEPTION_REQUESTED if keeps_request else vuln_states.EXCEPTION_NONE
         )
@@ -2454,21 +2469,19 @@ def clear_exception(
         row.exception_approved_requested_by = None
         row.exception_expired_at = None
         row.updated_at = now
-        if was_until is not None:
-            # Only an acceptance that was in force moved the deadline, so only
-            # that one has a deadline to restore. Withdrawing a request that
-            # was never granted must leave the clock exactly where it was.
-            asset = session.get(models.Asset, row.asset_id)
-            days, source = _resolve_sla_days(
-                session,
-                tenant_id=row.tenant_id,
-                severity=row.severity,
-                criticality=asset.asset_criticality if asset else None,
-            )
-            row.exception_until = None
-            row.sla_days = days
-            row.sla_source = source
-            row.due_at = (_naive(row.sla_started_at) or now) + timedelta(days=days)
+        # The granted window is what moved the deadline, so revoking it is what
+        # restores the deadline — recomputed from the policy, not remembered.
+        asset = session.get(models.Asset, row.asset_id)
+        days, source = _resolve_sla_days(
+            session,
+            tenant_id=row.tenant_id,
+            severity=row.severity,
+            criticality=asset.asset_criticality if asset else None,
+        )
+        row.exception_until = None
+        row.sla_days = days
+        row.sla_source = source
+        row.due_at = (_naive(row.sla_started_at) or now) + timedelta(days=days)
         _record_event(
             session,
             vuln_id=row.vuln_id,

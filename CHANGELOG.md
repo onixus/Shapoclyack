@@ -564,7 +564,12 @@ All notable changes to Shapoclyack are documented in this file.
   the sidebar and the page gates ask it, and a requirement now says which
   authority it means: a named permission, a rank **in the active tenant**, or
   the account's own role — the last only for `/tenants` and `/users`, whose
-  routes really are gated on the account.
+  routes really are gated on the account. The rank table it compares against is
+  a copy of `api/core/permissions.py` — it has to be, since the catalogue that
+  would serve it is gated on a permission the roles in question do not hold —
+  so a test reads the copy out of the console's source and asserts it equals
+  `BUILTIN_ROLES`: a ninth role added on one side only would score the
+  unknown-role rank and hide the scanning pages from it all over again.
 - **The console no longer keeps its own copy of the role table**
   ([#318](https://github.com/onixus/Shapoclyack/issues/318)). `GET
   /api/rbac/roles` existed and nobody called it: the membership editor and the
@@ -589,9 +594,25 @@ All notable changes to Shapoclyack are documented in this file.
   `vulnerability.exception.approve`, the hand that could have signed it. The
   console shows them as two buttons and confirms the destructive one by name
   and date. Re-filing your own pending request is now legal, so correcting a
-  date is one step. **Behaviour change:** a tenant `admin` who does not hold
-  `vulnerability.exception.approve` can no longer revoke an acceptance; the
-  platform admin, who holds every permission, still can.
+  date is one step. Revoking is also now strictly about a *granted* window:
+  with none granted the route answers `409` instead of quietly erasing whatever
+  request was waiting — that erasure was recorded under the audit action for
+  withdrawing an acceptance and read "Acceptance revoked" in the console, for a
+  finding that had never had one. Closing somebody else's pending ask is the
+  reject, which leaves a decision with a name on it.
+  **Behaviour change, read this before upgrading:** revoking an acceptance now
+  takes `vulnerability.exception.approve`, and a tenant `admin` does not hold
+  it. This is not only about undoing somebody else's signature. Migration
+  `0050_vuln_exception_approval` records every acceptance made before this — when
+  one tenant admin was the whole procedure — as `exception_approved` with that
+  admin as both the requester and the approver. On an installation where
+  `risk-approver` has been granted to nobody, which is the default, an admin
+  will therefore find they cannot revoke an acceptance **they made themselves**.
+  Nothing is locked: the platform admin holds every permission and can revoke
+  it, and granting `risk-approver` to a second person restores the normal path.
+  Granting it to the admin is not the way out — a membership carries one role,
+  so they would lose `admin` to gain it. Decide who holds `risk-approver`
+  before you upgrade.
 - **A tenant-scoped request reads the tenant's status with its membership, not
   after it** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
   `require_active` was a second `SELECT` on **every** tenant-scoped request,
@@ -600,7 +621,9 @@ All notable changes to Shapoclyack are documented in this file.
   listings (findings, assets) most of all. The status now comes back in the
   membership query (one statement instead of two, asserted by a test that
   counts them), and it is still read per request rather than cached, because
-  suspending a customer has to take effect on their next call. `GLOBAL_ROLES`
+  suspending a customer has to take effect on their next call. Two paths still
+  spend two: an account with no membership at all — the single-tenant
+  installation — and a service token, which reads the tenant row of its own. `GLOBAL_ROLES`
   in `api/core/permissions.py` was documented as the truth about `users.role`
   and read by nobody while a hand-written `Literal` did the validating; the
   two are now held together by a test, as the tenant roles already were.
