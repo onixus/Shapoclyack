@@ -789,14 +789,7 @@ published fix" on a row with the fix printed in the next column.
 same transaction, so a refused address leaves no half-created account; change
 role, set email, disable, reset password, delete — never offered for the
 signed-in account), **Tenant membership** (grant, change, revoke per tenant;
-a platform admin needs no rows). The roles offered there come from
-`GET /api/rbac/roles` — the platform's own catalogue, with the description it
-publishes for each one shown under the picker — rather than from a list the
-console keeps: while it kept one, the five roles #318 added (`auditor`,
-`scan-operator`, `scope-approver`, `token-admin`, `risk-approver`) existed in
-the API and could not be granted from the UI that exists to grant them.
-`platform-admin` is never offered: it is a property of an account, not a grant
-inside one tenant, **Provisioning keys** (list and revoke; the
+a platform admin needs no rows), **Provisioning keys** (list and revoke; the
 key is *created* on `/agents`), **Sign-in audit** (`GET /api/auth/events`,
 paged, filter by outcome) and **My account** (own password, and a link to
 `/security` for the second factor), which is the
@@ -804,6 +797,19 @@ only tab a non-admin sees. The Users table also carries **Reset MFA**, the
 admin-only clearing of somebody else's second factor — it ends that account's
 sessions and is recorded as `user.mfa_reset` (#315). The Users table shows each account's tenant
 memberships from `UserInfo.tenants`.
+
+The roles the membership tab offers come from `GET /api/rbac/roles` — the
+platform's own catalogue, with the description it publishes for each role shown
+under the picker — rather than from a list the console keeps. While it kept
+one, the five roles [#318](https://github.com/onixus/Shapoclyack/issues/318)
+added (`auditor`, `scan-operator`, `scope-approver`, `token-admin`,
+`risk-approver`) existed in the API, in the migration and in these docs, and
+could not be granted from the UI that exists to grant them. `platform-admin` is
+never offered: it is a property of an account, not a grant inside one tenant.
+A membership naming a role the catalogue no longer lists keeps showing that
+role, because an empty picker would demote the member on the first edit. The
+account's *global* role — the **Users** tab, `users.role` — is still the three
+original names and is still a fixed list.
 
 ## What the console hides, and how it decides
 
