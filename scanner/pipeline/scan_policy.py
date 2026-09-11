@@ -105,31 +105,45 @@ def single_host_rate(rate: int, host_count: int, per_host_rate: int | None) -> i
     policy promising "25 pps at any single host" put 100 pps of discovery and
     50 pps of port scanning into that one PLC.
 
-    A policy that names a per-host rate alongside ``max_host_concurrency`` also
-    narrows batching to one address per batch (:func:`apply_policy`), so on a
-    fragile estate this is not the rare case it reads as: every batch is a
-    single host and every one of them is held here. Batches of several hosts —
-    a policy with a per-host rate and no concurrency ceiling — are left alone:
-    lowering the whole batch to the per-host figure would make a large scan take
-    as many times longer as it has hosts, which is not what the ceiling says.
+    It is the batch shape that decides whether this applies, and the policy
+    does not change that shape: batching is the config's (a ``/24`` per batch
+    and up to 1024 addresses, as shipped), so this lands on the targets
+    that arrive as single addresses and not on a range. Batches of several
+    hosts keep the batch budget — lowering the whole batch to the per-host
+    figure would make a large scan take as many times longer as it has hosts,
+    which is not what the ceiling says. ``docs/operations.md`` says the same
+    thing to the operator rather than promising a walk device by device.
     """
     if per_host_rate is None or host_count != 1:
         return rate
     return min(rate, per_host_rate)
 
 
-def _icmp_period_ms(current: int | None, max_discover_rate: int) -> int:
+#: The gap fping leaves between packets when ``-i`` is not given: 10ms, 100 pps.
+#: It is a configured value like any other — the config just spells it by saying
+#: nothing — so a ceiling has to be measured against it (:func:`_icmp_period_ms`).
+FPING_DEFAULT_PERIOD_MS = 10
+
+
+def _icmp_period_ms(current: int | None, max_discover_rate: int) -> int | None:
     """The gap between fping packets that holds the ICMP step to a pps ceiling.
 
     fping has no rate flag: ``-i`` is the interval between the packets it
     sends, so ``max_discover_rate`` pps is ``1000 // rate`` milliseconds,
-    rounded up so the ceiling is never exceeded. ``None`` and ``0`` both mean
-    "fping's own default", which is 10ms — 100 pps — and is why an operator
-    reading "discover<=100 pps" in the log was right by coincidence on a
-    fragile estate and wrong under any stricter policy.
+    rounded up so the ceiling is never exceeded.
+
+    An unset ``period_ms`` is not "no pace", and reading it as 0 made this the
+    one knob in this file that a ceiling could *raise*: a policy of 2000 pps —
+    the figure already in ``profiles.safe`` — computed a 1ms gap and took the
+    step from fping's 100 pps to 1000 (measured on fping 5.1, 254 addresses:
+    5.86s with no flag, 5.71s with ``-i 10``, 1.58s with ``-i 1``). So a
+    ceiling looser than the tool's own default leaves the field unset and the
+    command is the one the step ran before any policy existed.
     """
     floor = -(-1000 // max(1, max_discover_rate))
-    return max(current or 0, floor)
+    if current is None:
+        return floor if floor > FPING_DEFAULT_PERIOD_MS else None
+    return max(current, floor)
 
 
 def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
@@ -232,8 +246,10 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         # The ladder's first step is a discovery probe too, and it was the one
         # pass no rate ceiling reached: fping paces itself by the gap between
         # packets, so the ceiling has to be inverted into milliseconds. A
-        # config that already waits longer keeps its own figure — ``max`` here
-        # is the same direction as ``min`` everywhere else in this file.
+        # config that already waits longer keeps its own figure, and so does a
+        # config that said nothing and gets fping's 10ms — ``max`` over an
+        # interval is the same direction as ``min`` over a rate only as long as
+        # the tool's default is counted as the configured value it is.
         discovery_updates["icmp"] = config.discovery.icmp.model_copy(
             update={"period_ms": _icmp_period_ms(config.discovery.icmp.period_ms, max_discover)}
         )
@@ -250,33 +266,14 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         # in name only. One direction, like ``skip_nse``: never turned back on.
         nuclei_updates["enabled"] = False
 
-    batching_updates: dict[str, Any] = {}
-    if max_concurrency is not None and per_host_rate is not None:
-        # What "one host at a time" has to mean to be true. The worker counts
-        # above say how many *batches* run at once, and a batch is a whole
-        # ``/24`` or up to ``max_targets_per_batch`` addresses — so a ``/24``
-        # target reached naabu as one invocation of 254 devices, and the
-        # per-host ceiling was not applied to it at all, because that ceiling
-        # only lands on a batch of one (``single_host_rate``).
-        #
-        # A batch of one address makes both true at once: the hosts in flight
-        # are exactly the worker count, which is what ``max_host_concurrency``
-        # says everywhere else in this file, and every batch is the single-host
-        # shape ``per_host_rate`` applies to. It is many more invocations of
-        # naabu than one wide batch; a fragile scan is documented to take hours
-        # and this is part of why.
-        #
-        # Only when the policy also names a per-host rate. ``-rate`` is a
-        # budget spent across the batch, so narrowing a batch *raises* what one
-        # host receives: 1024 hosts sharing 2500 pps is 2 pps each, one host
-        # with 2500 pps is 2500. Without a per-host figure to hold the narrow
-        # batch to, this would be the ceiling loosening the config.
-        batching_updates["max_targets_per_batch"] = 1
-        batching_updates["ipv4_prefix"] = 32
-
+    # Batching is deliberately not among the knobs above. Narrowing a batch to
+    # one address is the only way "one host at a time" becomes literally true,
+    # and the cost is out of all proportion to the promise: a ``/8`` in scope
+    # expands to 16.7M batches (~12 GB before a packet is sent), the checkpoint
+    # rewrites its whole JSON after every one of them, and each batch leaves its
+    # own artefact files behind. What the ceilings actually buy is written down
+    # as such in ``docs/operations.md`` instead.
     updates: dict[str, Any] = {"profiles": profiles}
-    if batching_updates:
-        updates["batching"] = config.batching.model_copy(update=batching_updates)
     if discovery_updates:
         updates["discovery"] = config.discovery.model_copy(update=discovery_updates)
     if nuclei_updates:

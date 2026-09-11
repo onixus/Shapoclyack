@@ -698,12 +698,15 @@ def test_the_icmp_step_uses_the_fping_flag_that_paces_it(tmp_path, monkeypatch):
 
     tightened = _fragile_run_config()
     assert tightened.discovery.icmp.enabled is True
+    # 100 pps is the ceiling and 100 pps is what fping does unasked, so the
+    # fragile policy leaves the field unset rather than restating the default.
+    assert tightened.discovery.icmp.period_ms is None
+    paced = tightened.discovery.icmp.model_copy(update={"period_ms": 200})
     captured = _capture_probes(monkeypatch)
-    icmp_ping_filter(["10.0.0.7"], tmp_path, tightened.discovery.icmp, timeout=60, retries=1, tag="one")
+    icmp_ping_filter(["10.0.0.7"], tmp_path, paced, timeout=60, retries=1, tag="one")
     command = captured[0]
     assert "-p" not in command
-    # 100 pps is the ceiling, so 10ms between packets is the fastest allowed.
-    assert _flag(command, "-i") == "10"
+    assert _flag(command, "-i") == "200"
 
 
 def test_the_icmp_step_is_paced_by_the_discovery_ceiling(tmp_path, monkeypatch):
@@ -781,32 +784,111 @@ def test_the_delta_refresh_pass_carries_the_avoid_list(tmp_path, monkeypatch):
     assert _flag(refresh[0], "-exclude-ports") == "502,20000"
 
 
-def test_a_fragile_scan_of_a_range_walks_one_host_at_a_time(tmp_path, monkeypatch):
-    """What ``max_host_concurrency: 1`` is documented to mean. Lowering the
-    worker counts alone left the *batch* at 4096 targets, so a ``/24`` reached
-    naabu as one invocation of 254 hosts at the batch rate — with the per-host
-    ceiling not applied at all, because it only applies to a batch of one."""
+def test_a_ceiling_no_stricter_than_the_config_leaves_the_icmp_command_alone(
+    tmp_path, monkeypatch
+):
+    """The first policy an operator writes is "no faster than what is already
+    configured", and it has to change nothing.
+
+    ``max_discover_rate: 2000`` is exactly ``profiles.safe.discover_rate`` in
+    the shipped config. Reading an unset ``period_ms`` as 0 made the ceiling
+    compute ``-i 1`` for it, and fping 5.1 over 254 addresses takes 1.58s with
+    ``-i 1`` against 5.86s with no flag at all: the one knob in this file that
+    ran *faster* under a ceiling — 100 pps to 1000 — because the tool's own
+    default is part of the config whether or not the YAML spells it out.
+    """
+    from scanner.pipeline.discovery_profiles import apply_discovery_profile
+    from scanner.pipeline.icmp_discover import icmp_ping_filter
+    from scanner.pipeline.utils import load_yaml
+
+    shipped = load_config(load_yaml(Path("scanner/config/default.yaml")))
+    assert shipped.profiles["safe"].discover_rate == 2000, "the figure the operator copies"
+    config = apply_discovery_profile(shipped, active_mode="safe")
+    assert config.discovery.icmp.period_ms is None, "the shipped config sets no pace"
+
+    captured = _capture_probes(monkeypatch)
+    icmp_ping_filter(["10.0.0.7"], tmp_path, config.discovery.icmp, timeout=60, retries=1, tag="one")
+    tightened = apply_policy(config, _policy(max_discover_rate=2000))
+    icmp_ping_filter(
+        ["10.0.0.7"], tmp_path, tightened.discovery.icmp, timeout=60, retries=1, tag="one"
+    )
+
+    before, after = captured
+    assert after == before, "a ceiling at the configured rate rewrote the fping command"
+
+
+def test_a_pace_fping_refuses_cannot_be_configured():
+    """``-i 0`` is not "fping's own default": fping 5.1 answers "these options
+    are too risky for mere mortals ... You need -i >= 1" and exits 1, and the
+    step reads that empty stdout as nobody being alive. The smallest gap the
+    tool accepts is the smallest one the schema accepts."""
+    from pydantic import ValidationError
+
+    from scanner.pipeline.config_schema import IcmpDiscoveryConfig
+
+    assert IcmpDiscoveryConfig(period_ms=1).period_ms == 1
+    with pytest.raises(ValidationError):
+        IcmpDiscoveryConfig(period_ms=0)
+
+
+def test_a_policy_does_not_resize_batches():
+    """A ceiling picks the pace, not the shape of the work.
+
+    Narrowing batches to one address per batch is how "one host at a time"
+    would become literally true, and it costs more than it buys: a ``/8`` in
+    scope expands to 16.7M batches (~12 GB in ``expand_batches`` alone), the
+    checkpoint rewrites its whole JSON after every batch, and each batch leaves
+    its own artefact files behind — a ``/22`` produced 12276 of them. The
+    promise is documented for what it is instead (``docs/operations.md``): the
+    worker counts are batches in flight, and the per-host ceiling lands when a
+    batch happens to be one host."""
+    baseline = _config().batching
+    tightened = apply_policy(
+        _config(), _policy(max_host_concurrency=1, per_host_rate=25, max_discover_rate=100)
+    )
+    assert tightened.batching.max_targets_per_batch == baseline.max_targets_per_batch
+    assert tightened.batching.ipv4_prefix == baseline.ipv4_prefix
+
+
+def test_a_fragile_scan_of_a_range_spares_the_network_and_broadcast_addresses(
+    tmp_path, monkeypatch
+):
+    """A batch is a subnet, and a subnet's own address and its directed
+    broadcast are not hosts.
+
+    Splitting a ``/24`` into 256 batches of ``x.x.x.y/32`` lost that:
+    ``ip_network(...).hosts()`` on a ``/32`` returns the address itself, so
+    ``x.x.x.0`` and ``x.x.x.255`` picked up an ICMP echo and a SYN — the
+    directed broadcast being exactly the packet an old stack answers in a
+    pile."""
     from scanner.pipeline.utils import read_lines
 
     tightened = _tcp_probe_config(_fragile_run_config(), [80])
-    assert tightened.batching.max_targets_per_batch == 1
-    assert tightened.batching.ipv4_prefix == 32
     captured = _run_wave_one(tmp_path, monkeypatch, tightened, ["10.10.0.0/24"])
-    calls = _naabu_calls(captured)
     probed: set[str] = set()
+    for command in _naabu_calls(captured):
+        probed.update(read_lines(Path(_flag(command, "-list"))))
+    assert len(probed) == 254, "a /24 is 254 hosts between its network and broadcast address"
+    assert "10.10.0.0" not in probed
+    assert "10.10.0.255" not in probed
+
+
+def test_an_ipv6_range_reaches_naabu_the_way_the_document_says_it_does(tmp_path, monkeypatch):
+    """Batching splits IPv4 networks by prefix and leaves everything else as
+    one entry (``batching.expand_batches``), so an IPv6 range is one batch and
+    one naabu invocation at the batch rate — with the per-host ceiling not
+    applied, because that ceiling only lands on a batch of one host.
+
+    This pins the shape the documentation now describes. It is also why
+    ``docs/operations.md`` no longer promises a walk device by device: half a
+    promise, kept for IPv4 and not for IPv6, reads as a ceiling and is not
+    one."""
+    from scanner.pipeline.utils import read_lines
+
+    tightened = _tcp_probe_config(_fragile_run_config(), [80])
+    captured = _run_wave_one(tmp_path, monkeypatch, tightened, ["2001:db8::/120"])
+    calls = _naabu_calls(captured)
+    assert calls, "the IPv6 range was never probed"
     for command in calls:
-        members = read_lines(Path(_flag(command, "-list")))
-        assert len(members) == 1, f"{len(members)} hosts in one naabu invocation"
-        assert _flag(command, "-rate") == "25"
-        probed.update(members)
-    assert len(probed) == 256, "a /24 is 256 addresses, and each one got its own invocation"
-
-
-def test_a_ceiling_without_a_per_host_rate_leaves_the_batch_size_alone(tmp_path):
-    """The batch budget is spent across the batch, so shrinking a batch without
-    a per-host figure to hold it to would *raise* what one host receives — this
-    file's one forbidden direction. 4096 hosts at 2500 pps is 0.6 pps each; one
-    host at 2500 pps is 2500."""
-    tightened = apply_policy(_config(), _policy(max_host_concurrency=1))
-    assert tightened.batching.max_targets_per_batch == _config().batching.max_targets_per_batch
-    assert tightened.batching.ipv4_prefix == _config().batching.ipv4_prefix
+        assert len(read_lines(Path(_flag(command, "-list")))) == 255, "one batch, whole range"
+        assert _flag(command, "-rate") == "100", "the batch rate, not the per-host rate"
