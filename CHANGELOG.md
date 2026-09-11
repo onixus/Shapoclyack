@@ -611,6 +611,127 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **An agent group is the same name on every path, and a reference to one
+  cannot be written against a group being deleted**
+  ([#361](https://github.com/onixus/Shapoclyack/issues/361)). Creating a group
+  normalised its name and reading it did not, so `POST {"name": "PCI"}` made
+  `pci` and `DELETE /api/agent-groups/PCI` answered `404` for a group that was
+  plainly there; the name is now normalised in one place, on every entry point,
+  and a name no group could have is `422` rather than `409`. Two simultaneous
+  creates of one name no longer end in a `500` — the loser of the unique index
+  is told the name is taken. And all four references to a group by name — a
+  scope entry (`PUT /api/tenants/{id}/scan-scope`), a job (`POST /api/jobs`), a
+  schedule (`POST /api/schedules`) and an agent's membership (`PUT
+  /api/agents/{id}/group`) — are now checked inside the transaction that writes
+  them, holding the group row, where each used to ask on a connection of its
+  own and write on another. A `DELETE /api/agent-groups/{name}` landing in that
+  window counted the references, saw none of the one being written, and took
+  the row: what was left was a scope entry, a queued job, a schedule or an
+  agent pointing at a group that is gone — a restriction no agent can satisfy,
+  whose scans queue and are never claimed, and, because the name is the
+  identifier, an agent that a later group of the same name silently adopts.
+  One of the two requests now sees the other's result: the reference is
+  refused with the group named (`422`), or the deletion is refused with the
+  reference counted (`409`). Should such a state exist from before, starting a
+  scan against it is refused with the group named instead of queueing a job
+  nobody can take.
+- **An agent's declared capabilities survive its own restart, and an agent that
+  says it has none is believed**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). `capabilities`
+  defaulted to `[]` on both `register` and `heartbeat` where the service reads
+  "said nothing" as `None`, so an agent that declares them only on the
+  heartbeat — the pre-#362 shape, and what a third-party build still does —
+  had them erased by re-registering and by every beat after it, and every claim
+  of a job carrying a scan policy was answered `426`. The field is now
+  three-valued in both schemas: omitted keeps the stored list, and a list —
+  the empty one included — replaces it. The empty list mattered in the other
+  direction: a worker rolled back to a build without `scan_policy` reports
+  honestly that it has none, and reading that as silence left the API handing
+  it policy-carrying jobs it scanned at whatever its local config said.
+- **A 426 on every poll is one journal line, not one per second — and not one
+  per process either**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). The agent logged
+  the refusal at ERROR on each claim, unlike the lifecycle refusal beside it.
+  That was tolerable while `426` meant "below the version floor" and rare; it
+  is the steady state of a mixed fleet once a tenant has a scan policy. Logged
+  on change, like the other two — and the remembered message is now cleared by
+  a successful claim, so a refusal that comes back after a day of ordinary work
+  is a second line rather than silence.
+- **The console asks one question about authority, and asks it about the
+  tenant** ([#318](https://github.com/onixus/Shapoclyack/issues/318)). Every
+  page gate compared against the account's *global* role from the JWT, while
+  the API has checked the role held in the tenant since #318 — so an account
+  whose `scan-operator` role came from a membership is a global `viewer`, was
+  served `GET /api/jobs`, and had Scan jobs, both scanning surfaces, Agents,
+  Schedules and the quick-launch buttons hidden from it. Four of those were
+  fixed one page at a time during this wave; this replaces the pattern. One
+  function (`web-next/src/lib/authz.ts`) answers "may this principal do this",
+  the sidebar and the page gates ask it, and a requirement now says which
+  authority it means: a named permission, a rank **in the active tenant**, or
+  the account's own role — the last only for `/tenants` and `/users`, whose
+  routes really are gated on the account. The rank table it compares against is
+  a copy of `api/core/permissions.py` — it has to be, since the catalogue that
+  would serve it is gated on a permission the roles in question do not hold —
+  so a test reads the copy out of the console's source and asserts it equals
+  `BUILTIN_ROLES`: a ninth role added on one side only would score the
+  unknown-role rank and hide the scanning pages from it all over again.
+- **The console no longer keeps its own copy of the role table**
+  ([#318](https://github.com/onixus/Shapoclyack/issues/318)). `GET
+  /api/rbac/roles` existed and nobody called it: the membership editor and the
+  service-token panel each held a literal `viewer | operator | admin`, so
+  `auditor`, `scan-operator`, `scope-approver`, `token-admin` and
+  `risk-approver` could be granted only over the API. The editor reads the
+  catalogue now, shows the description the platform publishes for each role,
+  keeps a role the catalogue no longer lists rather than silently demoting the
+  member, and never offers `platform-admin`. The service-token role dropdown
+  is capped at what the caller may actually issue, instead of offering two
+  options the issuance ceiling answers `403` on.
+- **"Withdraw" on a pending extension no longer destroys the acceptance in
+  force** ([#348](https://github.com/onixus/Shapoclyack/issues/348)). With a
+  60-day acceptance signed by a second person and an extension request waiting,
+  the card's only button was wired to `DELETE /{id}/exception` — so a tenant
+  admin fixing a typo in their own request lost the signed window, the finding
+  was breached on the spot, and they had no second signature to put it back.
+  The two acts are now two: `DELETE /{id}/exception/request` withdraws your own
+  unanswered ask and touches nothing that was granted (`403` for somebody
+  else's — it is rejected, not erased), while `DELETE /{id}/exception` revokes
+  a granted acceptance and has moved from the tenant-admin rank to
+  `vulnerability.exception.approve`, the hand that could have signed it. The
+  console shows them as two buttons and confirms the destructive one by name
+  and date. Re-filing your own pending request is now legal, so correcting a
+  date is one step. Revoking is also now strictly about a *granted* window:
+  with none granted the route answers `409` instead of quietly erasing whatever
+  request was waiting — that erasure was recorded under the audit action for
+  withdrawing an acceptance and read "Acceptance revoked" in the console, for a
+  finding that had never had one. Closing somebody else's pending ask is the
+  reject, which leaves a decision with a name on it.
+  **Behaviour change, read this before upgrading:** revoking an acceptance now
+  takes `vulnerability.exception.approve`, and a tenant `admin` does not hold
+  it. This is not only about undoing somebody else's signature. Migration
+  `0050_vuln_exception_approval` records every acceptance made before this — when
+  one tenant admin was the whole procedure — as `exception_approved` with that
+  admin as both the requester and the approver. On an installation where
+  `risk-approver` has been granted to nobody, which is the default, an admin
+  will therefore find they cannot revoke an acceptance **they made themselves**.
+  Nothing is locked: the platform admin holds every permission and can revoke
+  it, and granting `risk-approver` to a second person restores the normal path.
+  Granting it to the admin is not the way out — a membership carries one role,
+  so they would lose `admin` to gain it. Decide who holds `risk-approver`
+  before you upgrade.
+- **A tenant-scoped request reads the tenant's status with its membership, not
+  after it** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
+  `require_active` was a second `SELECT` on **every** tenant-scoped request,
+  fired after the membership lookup had already opened a transaction — two
+  round trips to Postgres to answer one authorisation question, on the hot
+  listings (findings, assets) most of all. The status now comes back in the
+  membership query (one statement instead of two, asserted by a test that
+  counts them), and it is still read per request rather than cached, because
+  suspending a customer has to take effect on their next call. Two paths still
+  spend two: an account with no membership at all — the single-tenant
+  installation — and a service token, which reads the tenant row of its own. `GLOBAL_ROLES`
+  in `api/core/permissions.py` was documented as the truth about `users.role`
+  and read by nobody while a hand-written `Literal` did the validating; the
+  two are now held together by a test, as the tenant roles already were.
 - **A running scan can be stopped**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
   legal only from `queued`; once an agent had claimed a job, the only bound on

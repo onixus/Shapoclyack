@@ -112,7 +112,7 @@ def _assert_targets_in_scope(settings: Settings, tenant_id: str, targets: dict[s
 
 
 def _assert_agent_group_known(
-    settings: Settings, tenant_id: str, scan_options: dict[str, Any]
+    session, tenant_id: str, scan_options: dict[str, Any]
 ) -> None:
     """Refuse a schedule aimed at an agent group the tenant does not have (#361).
 
@@ -122,12 +122,25 @@ def _assert_agent_group_known(
     still permits that group for these targets — that can change between now
     and the dispatch, and the check that decides is the one inside
     ``start_scan``, where it is asked at the moment the scan starts.
+
+    Takes a ``session`` rather than ``Settings`` because the answer has to be
+    given inside the transaction that stores the schedule, holding the group
+    row: asked on a connection of its own, it leaves the window in which a
+    concurrent ``DELETE /api/agent-groups/{name}`` counts the schedules that
+    dispatch to the group, does not see this one, and takes the row. The
+    schedule then dispatches to a group that is gone — the state
+    ``delete_group`` refuses precisely to keep out of reach, because nothing
+    reports it: ``start_scan`` raises, ``_tick`` swallows it into
+    ``stats["errors"]``, ``next_run_at`` does not move, and the nightly scans
+    stop with nothing said.
     """
     name = scan_options.get("agent_group")
     if not name:
         return
     normalized = agent_groups_service.normalize_name(str(name))
-    if normalized not in agent_groups_service.existing_names(settings, tenant_id):
+    if not agent_groups_service.lock_existing_names(
+        session, tenant_id=tenant_id, names={normalized}
+    ):
         raise ValueError(f"Unknown agent_group for tenant {tenant_id}: {normalized}")
     scan_options["agent_group"] = normalized
 
@@ -176,8 +189,6 @@ def create_schedule(
     if tenant is None:
         raise ValueError(f"Unknown tenant_id: {tenant_id}")
     _assert_targets_in_scope(settings, tenant_id, targets)
-    scan_options = dict(scan_options)
-    _assert_agent_group_known(settings, tenant_id, scan_options)
 
     now = _now()
     row = models.ScanSchedule(
@@ -196,6 +207,13 @@ def create_schedule(
         created_by=created_by,
     )
     with get_session(settings.postgres_url) as session:
+        # Inside the writing transaction, not before it: see the function's
+        # docstring for the deletion this would otherwise race. It also
+        # normalises the name in place, so what is stored is the spelling the
+        # group has.
+        stored_options = dict(row.scan_options or {})
+        _assert_agent_group_known(session, tenant_id, stored_options)
+        row.scan_options = stored_options
         session.add(row)
         session.flush()
         return _to_dict(row)
@@ -288,7 +306,7 @@ def update_schedule(schedule_id: str, **fields: Any) -> dict[str, Any] | None:
             # On the merged result, as for the targets below: an edit that only
             # changes the cadence must not re-validate an agent group it never
             # touched away, and one that changes the group has to be checked.
-            _assert_agent_group_known(settings, row.tenant_id, merged)
+            _assert_agent_group_known(session, row.tenant_id, merged)
             row.scan_options = merged
         if "targets" in fields and fields["targets"] is not None:
             merged_targets = dict(row.targets or {})

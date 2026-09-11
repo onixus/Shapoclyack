@@ -778,6 +778,7 @@ def resolve_tenant_principal(
     from api.services import memberships as memberships_service
     from api.services import tenants as tenants_service
 
+    resolution: memberships_service.TenantResolution | None = None
     service_principal = getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None)
     if service_principal is not None:
         # A service token is issued *for* a tenant, so there is nothing to
@@ -802,13 +803,14 @@ def resolve_tenant_principal(
         )
     else:
         try:
-            resolved, role_value = memberships_service.resolve_tenant(
+            resolution = memberships_service.resolve_tenant(
                 user.username, requested_tenant, global_role=user.role.value
             )
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        resolved = resolution.tenant_id
         try:
-            role = Role(role_value)
+            role = Role(resolution.role)
         except ValueError:
             # A membership naming a role this build does not know — a row
             # written by a newer replica during a rollout, or a custom role
@@ -834,8 +836,15 @@ def resolve_tenant_principal(
         # machines rather than about a customer (#318). The platform admin is
         # exempt on purpose — somebody has to be able to look at, and
         # un-suspend, a tenant in that state.
+        #
+        # On the console path the status came back with the membership, so this
+        # is a comparison and not a second SELECT per request; the service-token
+        # path resolves no membership and still has to read the row.
         try:
-            tenants_service.require_active(principal.tenant_id)
+            if resolution is not None:
+                tenants_service.check_active(principal.tenant_id, resolution.status)
+            else:
+                tenants_service.require_active(principal.tenant_id)
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return principal

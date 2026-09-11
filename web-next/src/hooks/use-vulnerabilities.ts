@@ -22,6 +22,7 @@ import {
   transitionVulnerability,
   triggerRiskSnapshot,
   triggerVulnVerification,
+  withdrawVulnerabilityExceptionRequest,
   type PageParams,
   type TrackedVulnerability,
   type VulnerabilityAssignBody,
@@ -243,6 +244,19 @@ export function useClearVulnerabilityTicket(vulnId: string) {
     onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Ticket unlinked"),
     onError: (err) => {
       toast.error("Could not unlink ticket", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useWithdrawVulnerabilityExceptionRequest(vulnId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => withdrawVulnerabilityExceptionRequest(vulnId),
+    onSuccess: (updated) => onVulnWriteSuccess(queryClient, updated, "Request withdrawn"),
+    onError: (err) => {
+      toast.error("Could not withdraw the request", {
         description: err instanceof Error ? err.message : undefined,
       });
     },

@@ -26,11 +26,16 @@ import { RISK_LEVEL_STATUS, TENANT_STATUS } from "@/lib/config/statuses";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
+import { holdsGlobalRole } from "@/lib/authz";
 
 export default function TenantsPage() {
   const t = useT();
-  const { user, canOperate, selectTenant } = useAuthStore();
-  const isAdmin = user?.role === "admin";
+  const { user, selectTenant } = useAuthStore();
+  // Both listings behind this page hang off `require_role` on the account's
+  // global role — they resolve their own tenant set and are not scoped to one
+  // tenant — so this is the one page that must *not* read the tenant role.
+  const canList = holdsGlobalRole(user, "operator");
+  const isAdmin = holdsGlobalRole(user, "admin");
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
@@ -40,8 +45,8 @@ export default function TenantsPage() {
   // state with it (#226).
   const [scopeTenant, setScopeTenant] = useState<TenantInfo | null>(null);
 
-  const { data = [], isLoading, error, isFetching } = useTenants(canOperate);
-  const postureQuery = useTenantPosture(canOperate);
+  const { data = [], isLoading, error, isFetching } = useTenants(canList);
+  const postureQuery = useTenantPosture(canList);
   const posture = postureQuery.data ?? [];
   const createMutation = useCreateTenantWithKey();
   const queryClient = useQueryClient();
@@ -179,7 +184,7 @@ export default function TenantsPage() {
     [isAdmin, t],
   );
 
-  if (!canOperate) {
+  if (!canList) {
     return (
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-100">{t("page.tenants.title")}</h1>

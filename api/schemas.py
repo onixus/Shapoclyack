@@ -30,6 +30,15 @@ TenantRoleName = Literal[
     "risk-approver",
 ]
 
+#: The roles an *account* may hold in ``users.role`` (``admin`` meaning the
+#: platform admin). Spelled out for the same reason as
+#: :data:`TenantRoleName` above — a Pydantic ``Literal`` needs literal values —
+#: and kept honest by the same test, which asserts it against
+#: :data:`api.core.permissions.GLOBAL_ROLES`. Before that assertion existed the
+#: constant and this Literal were two independent truths about one column, and
+#: whoever added a fourth global role would have found only one of them.
+GlobalRoleName = Literal["viewer", "operator", "admin"]
+
 
 class Page(BaseModel, Generic[T]):
     """Uniform envelope for every paginated list endpoint (ROADMAP P3.2).
@@ -414,7 +423,17 @@ class AgentRegisterRequest(BaseModel):
     # predating this sends nothing and is treated as unable, which is what it
     # is: the policy is enforced by the executor, so believing an old worker
     # would mean a ceiling that reads as enforced and is not.
-    capabilities: list[str] = Field(default_factory=list)
+    #
+    # ``None`` rather than ``[]`` for the default, here and on the heartbeat
+    # below, because the service has to tell "this request says nothing about
+    # capabilities" from "this build has none of them" and the two used to
+    # arrive as the same bytes. Omitted keeps what is stored — an agent that
+    # declares them only on the heartbeat must not lose them by restarting —
+    # and a list, empty included, replaces it: a worker rolled back to a build
+    # without ``scan_policy`` says so honestly, and reading that as silence
+    # would leave the API handing it policy-carrying jobs it scans at whatever
+    # its local config says.
+    capabilities: list[str] | None = None
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -423,7 +442,9 @@ class AgentHeartbeatRequest(BaseModel):
     current_job_id: str | None = None
     detail: str | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
-    capabilities: list[str] = Field(default_factory=list)
+    #: Omitted keeps the stored list, a list replaces it — see
+    #: ``AgentRegisterRequest.capabilities``.
+    capabilities: list[str] | None = None
 
 
 class AgentInfo(BaseModel):
@@ -1043,7 +1064,7 @@ class UserInfo(BaseModel):
     """A console account (#156). Carries no password material by construction."""
 
     username: str
-    role: Literal["viewer", "operator", "admin"]
+    role: GlobalRoleName
     disabled: bool = False
     # False for an account backfilled by migration 0013 from an orphan
     # membership: it exists and can be granted tenants, but cannot log in until
@@ -1220,7 +1241,7 @@ _PASSWORD = Field(min_length=12, max_length=72)
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = _PASSWORD
-    role: Literal["viewer", "operator", "admin"] = "viewer"
+    role: GlobalRoleName = "viewer"
     # Stored unverified. Marking an address verified is the administrative
     # assertion that makes an account linkable to an SSO identity by email,
     # and it stays its own deliberate call: PUT /users/{username}/email.
@@ -1232,7 +1253,7 @@ class SetUserPasswordRequest(BaseModel):
 
 
 class SetUserRoleRequest(BaseModel):
-    role: Literal["viewer", "operator", "admin"]
+    role: GlobalRoleName
 
 
 class SetUserDisabledRequest(BaseModel):

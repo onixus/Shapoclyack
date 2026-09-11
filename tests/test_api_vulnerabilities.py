@@ -353,8 +353,15 @@ def test_requesting_risk_acceptance_is_admin_only(tmp_path, monkeypatch):
     )
     assert expired.status_code == 422
 
-    withdrawn = client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=admin)
-    assert withdrawn.status_code == 200
+    # Taking the ask back is the request route. The acceptance route next door
+    # revokes a granted window and answers 409 when there is none (#348) —
+    # before that it cleared the request instead, under the audit action for
+    # withdrawing an acceptance that had never been granted.
+    revoked = client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=admin)
+    assert revoked.status_code == 409, revoked.text
+
+    withdrawn = client.delete(f"/api/vulnerabilities/{vuln_id}/exception/request", headers=admin)
+    assert withdrawn.status_code == 200, withdrawn.text
     assert withdrawn.json()["exception_until"] is None
     assert withdrawn.json()["exception_state"] == "none"
 

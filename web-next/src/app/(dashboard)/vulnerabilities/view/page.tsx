@@ -39,8 +39,10 @@ import {
   useTransitionVulnerability,
   useTriggerVulnVerification,
   useVulnerabilityEvents,
+  useWithdrawVulnerabilityExceptionRequest,
 } from "@/hooks/use-vulnerabilities";
 import { holdsPermission, useAuthStore } from "@/lib/auth-store";
+import { isTenantAdmin } from "@/lib/authz";
 import type {
   TicketSystem,
   TrackedVulnerability,
@@ -130,7 +132,8 @@ function VulnerabilityDetailInner() {
   const vulnId = (searchParams.get("vulnId") || "").trim();
   const tenantId = searchParams.get("tenantId") || "default";
   const { canOperate, user } = useAuthStore();
-  const isAdmin = user?.role === "admin";
+  // Tenant admin: marking a false positive is `require_tenant(Role.admin)`.
+  const isAdmin = isTenantAdmin(user);
   // Accepted risk is two permissions held by two different people (#348), and
   // neither of them is the *global* role: `risk-approver` is a membership of
   // this tenant and is a plain `viewer` globally, so gating the panel on
@@ -754,7 +757,9 @@ function ExceptionCard({
 }) {
   const setMutation = useSetVulnerabilityException(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityException(vuln.vuln_id);
+  const withdrawMutation = useWithdrawVulnerabilityExceptionRequest(vuln.vuln_id);
   const decideMutation = useDecideVulnerabilityException(vuln.vuln_id);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
   const [until, setUntil] = useState("");
   const [reason, setReason] = useState(
     vuln.exception_requested_reason ?? vuln.exception_reason ?? "",
@@ -897,20 +902,74 @@ function ExceptionCard({
           >
             {setMutation.isPending ? "Saving…" : "Request acceptance"}
           </Button>
-          {vuln.exception_until || pending ? (
+          {/* Two buttons, because they were always two acts (#348). The
+              first takes back your own ask and touches nothing that was
+              granted; the second destroys a window somebody else signed for
+              and breaches the finding on the spot. One button did the second
+              while the person pressing it meant the first. */}
+          {pending && ownRequest ? (
             <Button
               type="button"
               size="sm"
               variant="outline"
-              disabled={clearMutation.isPending}
-              onClick={() => clearMutation.mutate()}
+              disabled={withdrawMutation.isPending}
+              onClick={() => withdrawMutation.mutate()}
               className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
             >
-              {clearMutation.isPending ? "Withdrawing…" : "Withdraw"}
+              {withdrawMutation.isPending ? "Withdrawing…" : "Withdraw request"}
             </Button>
           ) : null}
         </div>
       </form>
+      ) : null}
+      {/* Revoking is the approver's, not the requester's: the API moved this
+          from the tenant-admin rank to `vulnerability.exception.approve`,
+          because undoing a signature is a decision of the same weight as
+          making one. */}
+      {inForce && canApprove ? (
+        <div className="mt-4 border-t border-slate-800/80 pt-3">
+          {confirmRevoke ? (
+            <div className="space-y-2">
+              <p className="text-xs text-amber-300">
+                Revoking the acceptance signed by{" "}
+                <span className="font-mono">{vuln.exception_by ?? "—"}</span> until{" "}
+                {formatWhen(vuln.exception_until)} puts this finding back under its original
+                deadline immediately — which may be in the past. Only somebody holding
+                vulnerability.exception.approve can grant it again.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={clearMutation.isPending}
+                  onClick={() => clearMutation.mutate()}
+                  className="bg-rose-600 hover:bg-rose-500"
+                >
+                  {clearMutation.isPending ? "Revoking…" : "Revoke acceptance"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setConfirmRevoke(false)}
+                  className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+                >
+                  Keep it
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setConfirmRevoke(true)}
+              className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+            >
+              Revoke acceptance
+            </Button>
+          )}
+        </div>
       ) : null}
     </section>
   );

@@ -200,24 +200,37 @@ def get_tenant(tenant_id: str) -> dict[str, Any] | None:
         return _tenant_to_dict(row) if row else None
 
 
-def require_active(tenant_id: str) -> None:
+def check_active(tenant_id: str, status: str | None) -> None:
     """Raise ``PermissionError`` unless this tenant is still active (#318).
 
     Suspending a tenant used to reach its machines only: an agent could not
     exchange a provisioning key and a key could not be minted, while every
     person in the tenant kept scanning, editing and downloading exactly as
-    before. This is the same check for the human side, called once per request
+    before. This is the same check for the human side, applied once per request
     from :func:`api.auth.resolve_tenant_principal`.
 
-    A tenant row that has gone missing is *not* an error here: the platform has
-    always let a caller with no memberships act in ``default``, and an
-    installation whose default row was never created would otherwise stop
-    serving. Whether a named tenant exists is the route's 404 to raise, not
-    this function's 403.
+    Takes the status rather than reading it: on the console path it arrives
+    with the membership, in the same query
+    (:class:`api.services.memberships.TenantResolution`), which is what keeps a
+    listing from paying two round trips to Postgres for one answer. ``None``
+    means the tenant row was not read or does not exist, and is *not* an error
+    here: the platform has always let a caller with no memberships act in
+    ``default``, and an installation whose default row was never created would
+    otherwise stop serving. Whether a named tenant exists is the route's 404 to
+    raise, not this function's 403.
+    """
+    if status is not None and status != "active":
+        raise PermissionError(f"Tenant {tenant_id} is {status}")
+
+
+def require_active(tenant_id: str) -> None:
+    """:func:`check_active` for a caller that has no status in hand.
+
+    The service-token path: a token is issued *for* one tenant and resolves no
+    membership, so there is no query to read the status along with.
     """
     row = get_tenant(tenant_id)
-    if row is not None and row["status"] != "active":
-        raise PermissionError(f"Tenant {tenant_id} is {row['status']}")
+    check_active(tenant_id, row["status"] if row is not None else None)
 
 
 def _validate_tenant_id(tid: str) -> None:

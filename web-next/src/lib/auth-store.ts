@@ -13,8 +13,10 @@ import {
   verifyMfa as apiVerifyMfa,
   type LogoutOutcome,
   type Me,
-  type Role,
 } from "@/lib/api";
+import { canOperate as canOperateIn } from "@/lib/authz";
+
+export { can, holdsPermission, isTenantAdmin, tenantRole } from "@/lib/authz";
 
 /** What a password login produced: a session, or an outstanding challenge. */
 export type LoginStep =
@@ -25,6 +27,11 @@ type AuthState = {
   user: Me | null;
   loading: boolean;
   hydrated: boolean;
+  /** Operator-or-better **in the active tenant** (`@/lib/authz`), not
+   * globally: since #318 the authority lives in the membership, and reading
+   * the JWT's global role here hid the scanning pages from every account whose
+   * operator role was granted per tenant. Kept on the store rather than
+   * recomputed per page so a page cannot ask the question a fourth way. */
   canOperate: boolean;
   /** Tenant every request is scoped to, or `null` for the server's own choice
    * — the fleet-wide view for a platform admin (ROADMAP P0). */
@@ -50,27 +57,6 @@ type AuthState = {
    * Awaitable so a caller can wait for the new authority before rendering. */
   selectTenant: (tenantId: string | null) => Promise<void>;
 };
-
-function canOperate(role: Role | undefined) {
-  return role === "operator" || role === "admin";
-}
-
-/** Whether the signed-in principal holds one named permission (#318).
- *
- * `fallback` is what to answer when the API did not send a permission list at
- * all — an installation older than #318 — so a page gated on this keeps
- * rendering for whoever it used to render for instead of disappearing. It is
- * presentation only: the API is the boundary, and every one of these
- * permissions is enforced there.
- */
-export function holdsPermission(
-  user: Me | null | undefined,
-  permission: string,
-  fallback = false,
-): boolean {
-  if (!user?.permissions) return fallback;
-  return user.permissions.includes(permission);
-}
 
 /** Keep a persisted tenant only while the signed-in user is still entitled to
  * it — a revoked membership (or a different user on the same browser) would
@@ -104,7 +90,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         user,
         loading: false,
         hydrated: true,
-        canOperate: canOperate(user.role),
+        canOperate: canOperateIn(user),
         activeTenant: reconcileTenant(user),
       });
     } catch {
@@ -150,7 +136,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       user,
       loading: false,
       hydrated: true,
-      canOperate: canOperate(user.role),
+      canOperate: canOperateIn(user),
       activeTenant: reconcileTenant(user),
     });
     // A session that owes an enrolment is a session: the console shows the
@@ -192,7 +178,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     // the API would serve, and showing one it refuses.
     try {
       const user = await fetchMe();
-      set({ user, canOperate: canOperate(user.role) });
+      set({ user, canOperate: canOperateIn(user) });
     } catch {
       // The tenant stays selected: the API is the boundary and it is now being
       // asked in the right scope, so the cost of a failure here is a stale

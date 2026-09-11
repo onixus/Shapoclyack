@@ -52,6 +52,7 @@ import { useSystemStatus } from "@/hooks/use-system";
 import { type CreateScheduleBody, type ScanSchedule } from "@/lib/api";
 import { SCHEDULE_ENABLED_STATUS } from "@/lib/config/statuses";
 import { useAuthStore } from "@/lib/auth-store";
+import { isTenantAdmin } from "@/lib/authz";
 
 type CadenceKind = "cron" | "interval";
 
@@ -90,7 +91,9 @@ function cadenceSummary(schedule: ScanSchedule): string {
 export default function SchedulesPage() {
   const t = useT();
   const { user, canOperate } = useAuthStore();
-  const isAdmin = user?.role === "admin";
+  // `PUT …/maintenance` is `require_tenant(Role.admin)`: the tenant's own
+  // admin, whose global role is usually viewer.
+  const isAdmin = isTenantAdmin(user);
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ScanSchedule | null>(null);
