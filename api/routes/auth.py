@@ -57,6 +57,7 @@ from api.routes._pagination import PageParams, build_page
 from api.services import agents as agents_service
 from api.services import auth as auth_service
 from api.services import auth_audit
+from api.services import jobs as jobs_service
 from api.services import local_login
 from api.services import memberships as memberships_service
 from api.services import mfa as mfa_service
@@ -1001,10 +1002,14 @@ def replace_scan_scope(
     return [ScanScopeEntryInfo.model_validate(entry) for entry in entries]
 
 
-def _policy_info(stored: dict) -> ScanPolicyInfo:
+def _policy_info(stored: dict, *, retightened: int = 0) -> ScanPolicyInfo:
     """One stored policy plus what it resolves to — see ScanPolicyInfo."""
     return ScanPolicyInfo.model_validate(
-        {**stored, "effective": scan_policy.resolve(stored) or {}}
+        {
+            **stored,
+            "effective": scan_policy.resolve(stored) or {},
+            "retightened_queued_jobs": retightened,
+        }
     )
 
 
@@ -1081,7 +1086,15 @@ def replace_scan_policy(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return _policy_info(stored)
+    # The jobs that were already in the queue when this was written. They were
+    # admitted under whatever stood then and their snapshot is frozen, but a
+    # scan that has not started yet is held to the stricter of the two — the
+    # night's job waiting for an offline agent is exactly the one an operator
+    # writing ``fragile`` in the morning means to catch (#362).
+    retightened = jobs_service.apply_policy_to_queued(
+        settings, tenant_id=tenant_id, resolved=scan_policy.resolve(stored)
+    )
+    return _policy_info(stored, retightened=retightened)
 
 
 @router.delete("/tenants/{tenant_id}/scan-policy", status_code=status.HTTP_204_NO_CONTENT)

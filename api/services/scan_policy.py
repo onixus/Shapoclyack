@@ -56,6 +56,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.services import metrics as metrics_service
+from api.services import targets as targets_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -386,6 +387,48 @@ def resolve(policy: dict[str, Any] | None) -> dict[str, Any] | None:
     return resolved
 
 
+def tighten(frozen: dict[str, Any] | None, resolved: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The stricter of a job's frozen policy and one written after it queued.
+
+    A snapshot is frozen at admission on purpose: a scan runs under the
+    ceiling it was accepted with, and an operator editing the policy must not
+    silently change what was approved. That reasoning only holds in one
+    direction. A job admitted at 02:00 and still *queued* at 09:00, when
+    somebody writes ``fragile`` because the segment turned out to be a plant
+    floor, has not sent a packet yet, and letting it start at the old pace
+    because it was queued first is the failure the profile exists to prevent —
+    while holding it to the stricter of the two takes nothing away from what
+    was approved.
+
+    Both arguments may be None: no policy at all on either side stays None, and
+    a policy on one side is the answer when the other has none.
+    """
+    if frozen is None and resolved is None:
+        return None
+    frozen = frozen or {}
+    resolved = resolved or {}
+    profile = (
+        PROFILE_FRAGILE
+        if PROFILE_FRAGILE in (frozen.get("profile"), resolved.get("profile"))
+        else (resolved.get("profile") or frozen.get("profile") or PROFILE_STANDARD)
+    )
+    merged: dict[str, Any] = {
+        "policy_version": POLICY_VERSION,
+        "profile": profile,
+        "safe_only": bool(frozen.get("safe_only")) or bool(resolved.get("safe_only")),
+        "skip_service_probe": (
+            bool(frozen.get("skip_service_probe")) or bool(resolved.get("skip_service_probe"))
+        ),
+        "avoid_ports": sorted(
+            {int(port) for port in (frozen.get("avoid_ports") or [])}
+            | {int(port) for port in (resolved.get("avoid_ports") or [])}
+        ),
+    }
+    for field in _CEILING_FIELDS:
+        merged[field] = _stricter(frozen.get(field), resolved.get(field))
+    return merged
+
+
 def effective(settings: Settings, tenant_id: str) -> dict[str, Any] | None:
     """The resolved policy for one tenant, or None when it has no row."""
     return resolve(get_policy(settings, tenant_id))
@@ -423,30 +466,46 @@ def snapshot(resolved: dict[str, Any] | None) -> dict[str, Any] | None:
 def _forbidden_ports(text: str | None, avoid: set[int]) -> set[int]:
     """Which avoided ports a scan request's ``ports``/``ports_udp`` text names.
 
-    Reads what ``api.services.targets.parse_target_payload`` reads — newline-
-    or comma-separated entries, single ports or ``N-M`` ranges, with the
-    ``u:``/``t:`` protocol markers the port files use — and ignores anything
-    that is not a port, which the target preparation refuses on its own terms.
+    Reads what ``api.services.targets.parse_target_payload`` reads, through the
+    same ``split_target_lines`` — newline- or comma-separated entries, single
+    ports or ``N-M`` ranges, with the ``u:``/``t:`` protocol markers the port
+    files use, and with ``#`` comments dropped — and ignores anything that is
+    not a port, which the target preparation refuses on its own terms.
+
+    The comments are the reason this does not do its own splitting: the port
+    format documented in ``docs/configuration.md`` allows them, and an operator
+    who writes ``# never 502 here`` above their port list was being told their
+    scan of 80 and 443 names an avoided port.
 
     Answers with the *intersection* rather than with the requested set, so a
     range is never expanded: ``1-65535`` is a legitimate sweep request and
     expanding it would build a 65 535-element set to learn that it covers 502.
     """
     named: set[int] = set()
-    for chunk in str(text or "").replace(",", "\n").split():
-        item = chunk.strip().lower().removeprefix("u:").removeprefix("t:")
-        if not item:
-            continue
-        if "-" in item:
-            lo, _, hi = item.partition("-")
-            if lo.isdigit() and hi.isdigit():
-                start, end = int(lo), int(hi)
-                if 0 < start <= end <= 65535:
-                    named.update(port for port in avoid if start <= port <= end)
-            continue
-        if item.isdigit() and int(item) in avoid:
-            named.add(int(item))
+    for entry in targets_service.split_target_lines(text):
+        for chunk in entry.split():
+            if chunk.startswith("#"):
+                # A trailing comment on an otherwise valid line. The parser
+                # refuses the line for its own reasons; this one stops reading.
+                break
+            item = chunk.strip().lower().removeprefix("u:").removeprefix("t:")
+            if not item:
+                continue
+            _note_port(item, avoid, named)
     return named
+
+
+def _note_port(item: str, avoid: set[int], named: set[int]) -> None:
+    """Add ``item`` to ``named`` when it is, or covers, an avoided port."""
+    if "-" in item:
+        lo, _, hi = item.partition("-")
+        if lo.isdigit() and hi.isdigit():
+            start, end = int(lo), int(hi)
+            if 0 < start <= end <= 65535:
+                named.update(port for port in avoid if start <= port <= end)
+        return
+    if item.isdigit() and int(item) in avoid:
+        named.add(int(item))
 
 
 def assert_scan_admitted(

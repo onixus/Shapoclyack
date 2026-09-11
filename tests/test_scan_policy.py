@@ -381,3 +381,83 @@ def test_the_resolved_policy_is_pure_and_never_loosens(tmp_path, monkeypatch):
     assert stricter["max_port_rate"] == 10  # the tenant's own is the tighter one
     assert stricter["safe_only"] is True
     assert scan_policy.resolve(None) is None
+
+
+def test_a_comment_in_the_port_list_is_not_read_as_a_port(tmp_path, monkeypatch):
+    """The port format documented in ``docs/configuration.md`` allows comments,
+    and an operator noting *why* 502 is excluded was getting their scan of 80
+    and 443 refused for naming it. A false refusal is expensive in a feature
+    whose whole value is that its refusals are trusted."""
+    client = _client(tmp_path, monkeypatch)
+    assert _set_policy(client, avoid_ports=[502]).status_code == 200
+
+    allowed = _start_scan(client, ranges="10.0.0.1", ports="80\n# never 502 here\n443")
+    assert allowed.status_code == 202, allowed.text
+    # The comment is not a hiding place either: a port named for real is still
+    # named for real.
+    assert _start_scan(client, ranges="10.0.0.1", ports="80\n# a note\n502").status_code == 403
+
+
+def test_a_job_already_queued_is_held_to_a_policy_written_after_it(tmp_path, monkeypatch):
+    """The 02:00 scan waiting for an offline agent, and the operator who is
+    told at 09:00 that the segment is a plant floor.
+
+    The snapshot is frozen so that a policy edit cannot *loosen* what was
+    admitted; a job that has not sent a packet yet is held to the stricter of
+    the two, and the write says how many jobs that was.
+    """
+    client = _client(tmp_path, monkeypatch)
+    started = _start_scan(client, mode="fast")
+    assert started.status_code == 202, started.text
+    job_id = started.json()["job_id"]
+    assert "scan_policy" not in (started.json()["scan_options"] or {})
+
+    written = _set_policy(client, profile="fragile")
+    assert written.status_code == 200, written.text
+
+    # The agent that cannot pace itself is now refused this job too — before
+    # this it was handed the night's scan at 2000 pps with 502 in range.
+    assert _claim(client, _register(client, "old-agent")).status_code == 426
+
+    agent_id = _register(client, "ot-agent", capabilities=["scan_policy"])
+    claimed = _claim(client, agent_id)
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["job_id"] == job_id
+    document = json.loads(claimed.json()["inputs"]["scan_policy.json"])
+    assert document["max_discover_rate"] == 100
+    assert 502 in document["avoid_ports"]
+    assert document["skip_service_probe"] is True
+    # And the write said so, which is how an operator knows there is a night's
+    # scan to look at (#360 gives them the cancel).
+    assert written.json()["retightened_queued_jobs"] == 1
+
+
+def test_a_queued_job_keeps_the_stricter_of_the_two_policies(tmp_path, monkeypatch):
+    """Only the tightening direction: a policy loosened while the job waited
+    leaves it exactly as it was admitted, which is the freeze this feature is
+    built on."""
+    client = _client(tmp_path, monkeypatch)
+    assert _set_policy(client, max_discover_rate=200).status_code == 200
+    started = _start_scan(client)
+    assert started.status_code == 202, started.text
+
+    loosened = _set_policy(client, max_discover_rate=50_000)
+    assert loosened.status_code == 200, loosened.text
+    assert loosened.json()["retightened_queued_jobs"] == 0
+
+    claimed = _claim(client, _register(client, "agent-1", capabilities=["scan_policy"]))
+    assert claimed.status_code == 200, claimed.text
+    assert json.loads(claimed.json()["inputs"]["scan_policy.json"])["max_discover_rate"] == 200
+
+
+def test_a_job_that_has_been_claimed_is_left_alone(tmp_path, monkeypatch):
+    """A running scan is not re-paced from under the worker executing it: the
+    document it was handed is the one it is answerable for."""
+    client = _client(tmp_path, monkeypatch)
+    started = _start_scan(client)
+    assert started.status_code == 202, started.text
+    assert _claim(client, _register(client, "agent-1")).status_code == 200
+
+    written = _set_policy(client, profile="fragile")
+    assert written.status_code == 200, written.text
+    assert written.json()["retightened_queued_jobs"] == 0

@@ -1371,6 +1371,12 @@ class ScanPolicyInfo(ScanPolicyRequest):
     updated_at: str | None = None
     updated_by: str | None = None
     effective: dict[str, Any] = Field(default_factory=dict)
+    #: How many jobs that were already queued this write caught and tightened
+    #: (PUT only; always 0 on a read). A scan admitted last night and still
+    #: waiting for a worker is held to the policy written this morning, and
+    #: this is where the operator sees that it happened — and how many scans
+    #: to look at if the answer should have been "cancel them instead".
+    retightened_queued_jobs: int = 0
 
 
 class AgentTokenRequest(BaseModel):

@@ -635,12 +635,7 @@ def _prepare_target_inputs(
         # same document by the same mechanism — a policy only one of the two
         # paths applied would be a ceiling that depends on where the scan
         # happened to run.
-        policy_path = inputs_dir / SCAN_POLICY_INPUT
-        policy_path.write_text(
-            json.dumps(policy, indent=2, ensure_ascii=True, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        extra.extend(["--scan-policy", str(policy_path)])
+        extra.extend(["--scan-policy", str(_write_policy_input(inputs_dir, policy))])
 
     if promoted:
         promoted_path = inputs_dir / PROMOTED_DOMAINS_INPUT
@@ -695,6 +690,23 @@ def _discard_job_wordlist(settings: Settings, job_id: str) -> None:
         wordlist_file_for_job(settings, job_id).unlink(missing_ok=True)
     except OSError:
         _log.warning("Could not remove wordlist scratch file for job %s", job_id, exc_info=True)
+
+
+def _write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
+    """Write one job's ``scan_policy.json`` and answer where it went.
+
+    The same file for both executors: the local runner is handed its path on
+    the command line, and the agent reads its contents out of the claim
+    response (``_read_job_inputs``). One writer, so a job cannot end up with a
+    policy that depends on where it happened to run.
+    """
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    path = inputs_dir / SCAN_POLICY_INPUT
+    path.write_text(
+        json.dumps(policy, indent=2, ensure_ascii=True, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def job_inputs_dir(settings: Settings, job_id: str) -> Path:
@@ -1851,6 +1863,75 @@ def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
         if path.is_file():
             out[name] = path.read_text(encoding="utf-8")
     return out
+
+
+def apply_policy_to_queued(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    resolved: dict[str, Any] | None,
+) -> int:
+    """Hold this tenant's still-queued jobs to a policy written after they queued.
+
+    Returns how many jobs were changed, which the PUT reports back: the number
+    is what tells an operator that writing ``fragile`` at 09:00 also caught the
+    scan that has been waiting for an offline agent since 02:00 — the one that
+    would otherwise have started at the pace it was admitted with.
+
+    Tightening only, through ``scan_policy.tighten``: a queued job keeps every
+    ceiling it was admitted under and gains the stricter ones. A job that
+    carried no policy at all gains one, which also means the claim check will
+    now hold it for an agent that declares the capability (#362) — deliberately,
+    because "not scanned yet" is the better outcome on the estate this profile
+    describes, and the PUT's count is where the operator sees it.
+
+    Deleting a policy does not run this: the frozen snapshots stay, and a scan
+    already admitted under a ceiling is not loosened behind the operator's back.
+
+    Best-effort against a job being claimed at the same moment — a job that
+    leaves ``queued`` between the select and the write keeps the snapshot it
+    was handed. The window is one transaction wide and the next scan of that
+    tenant is admitted under the new policy in any case.
+    """
+    if resolved is None:
+        return 0
+    touched = 0
+    with get_session(settings.postgres_url) as session:
+        rows = (
+            session.execute(
+                select(models.Job).where(
+                    models.Job.tenant_id == tenant_id,
+                    models.Job.status == job_states.QUEUED,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            options = dict(row.scan_options or {})
+            frozen = options.get("scan_policy")
+            merged = scan_policy.snapshot(scan_policy.tighten(frozen, resolved))
+            if merged is None or merged == frozen:
+                continue
+            command = list(row.command or [])
+            policy_path = _write_policy_input(job_inputs_dir(settings, row.job_id), merged)
+            if "--scan-policy" not in command:
+                command.extend(["--scan-policy", str(policy_path)])
+            options["scan_policy"] = merged
+            if merged.get("skip_service_probe"):
+                options["skip_nse"] = True
+                if "--skip-nse" not in command:
+                    command.append("--skip-nse")
+            # Reassigned rather than mutated: both columns are JSON, and an
+            # in-place edit of the loaded value is not seen as a change.
+            row.scan_options = options
+            row.command = command
+            touched += 1
+    if touched:
+        _log.info(
+            "Scan policy for tenant %s applied to %d queued job(s)", tenant_id, touched
+        )
+    return touched
 
 
 def claim_job(
