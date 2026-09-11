@@ -41,7 +41,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0051_job_cancellation"
-down_revision: Union[str, None] = "0049_rbac_permissions"
+down_revision: Union[str, None] = "0050_vuln_exception_approval"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
