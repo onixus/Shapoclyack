@@ -150,7 +150,17 @@ def _worker(settings: Settings) -> sla_escalation.SlaEscalationWorker:
     return sla_escalation.SlaEscalationWorker(settings=settings)
 
 
-_NOW = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+#: The simulated clock every test in this file hangs its timeline on.
+#:
+#: Anchored to the real clock rather than written out as a literal. A literal
+#: works until wall-clock time passes it: ``accept_risk`` validates
+#: ``exception_until`` against ``datetime.now`` (api/services/vulnerabilities.py,
+#: "exception_until must be in the future") and not against the ``now`` the
+#: worker is handed, so a test granting an acceptance at ``_NOW + 1 day`` began
+#: raising ValueError the moment that day arrived — on every branch at once,
+#: hours after the code it tests had stopped changing. Truncated to the hour so
+#: a run is still reproducible from its logs.
+_NOW = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
 
 # --------------------------------------------------------------------------
