@@ -6,6 +6,42 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **A tenant's agent no longer takes every one of that tenant's jobs**
+  ([#361](https://github.com/onixus/Shapoclyack/issues/361)). `claim_job`
+  filtered by tenant and by "queued" and nothing else, so an agent in a
+  customer's office network could be handed the scan of their card-data
+  segment, and the scan of that segment could be executed from anywhere. Agents
+  can now be put into named **agent groups** (migration 0052, permission
+  `agent.group.manage`), a scan and a schedule can be addressed to one
+  (`agent_group`), and the claim is filtered by it. The binding rule is on the
+  approved scan scope: an allow entry may name the groups entitled to scan what
+  it approves, and the server derives the job's group from that rather than
+  trusting the request — a selector naming a group the entry does not permit is
+  a `403`, targets whose entries share no group cannot be scanned in one job,
+  and an agent's self-reported `labels` grant it nothing. Where several allow
+  entries cover a target the **narrowest** one decides, so a restriction is not
+  cancelled by the `0.0.0.0/0` / `::/0` / `domain *` rows migration 0025 left
+  on every tenant that predates the scope table — with the opposite rule, the
+  first restriction an operator wrote on an upgraded installation would have
+  been a silent no-op answered `200`. The requirement is derived from the
+  targets of the request; promoted related domains are scanned along with them
+  but do not contribute to it. Both halves of the dispatch are covered: with
+  NATS, a job addressed to a group is offered on `jobs.scan.{tenant}.{group}`
+  (durable `octo-agents-{tenant}-{group}`), an agent binds only the subjects it
+  is entitled to, and the offer carries a job id and **no targets** — those come
+  back in the claim response, to the one agent the API bound the job to. An
+  offer an agent may not run is `term`ed rather than `nak`ed, so outsiders can
+  no longer spend a job's redelivery budget and leave it undeliverable. A job
+  addressed to a group with nothing in it is accepted rather than auto-failed
+  (a queue timeout would be a job-state transition) and reports
+  `agent_group_unavailable` while it is queued — recomputed on every read, so it
+  clears by itself once an agent of that group heartbeats. Deleting a group is
+  refused while an agent, an unfinished job, a **schedule** or a scope entry
+  still names it. Existing agents, jobs, schedules and scope entries are
+  unchanged and need no administrator action. The console gets the selector on
+  the scan form, the group on the agent drawer, and a marker on a queued job
+  whose group has nobody in it; **assigning an agent to a group is API-only**
+  (`PUT /api/agents/{id}/group`), so #361 stays open for the management UI.
 - **Accepting risk now takes two people, and its expiry is written down**
   ([#348](https://github.com/onixus/Shapoclyack/issues/348)).
   `POST /api/vulnerabilities/{id}/exception` suspended the SLA clock under a

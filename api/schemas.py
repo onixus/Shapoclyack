@@ -314,6 +314,13 @@ class StartScanRequest(BaseModel):
     # Local execution only: it enables ct.brute_force with the uploaded list.
     # Rejected in agent mode, where the scanner runs its own mounted config.
     wordlist_id: str | None = None
+    # Which of the tenant's agent groups must execute this scan (#361). Omitted
+    # is the pre-#361 meaning — any agent of the tenant — unless the approved
+    # scan scope restricts these targets to a group, in which case the server
+    # supplies it (one candidate) or refuses and asks (several). Never taken on
+    # trust: it must name a group of the caller's own tenant and one the scope
+    # permits for these targets.
+    agent_group: str | None = Field(default=None, max_length=63)
 
 
 class JobInfo(BaseModel):
@@ -358,6 +365,14 @@ class JobInfo(BaseModel):
     # indistinguishable once stored. None alongside a null `surface`, and for
     # jobs started before this shipped.
     surface_source: Literal["operator", "derived"] | None = None
+    # The agent group this job is addressed to (#361); None means any agent of
+    # the tenant may claim it, which is every job started before this shipped.
+    agent_group: str | None = None
+    # True when, at the moment the scan was queued, that group had no active
+    # agent with a recent heartbeat. The job is still accepted — an agent that
+    # is restarting comes back — but a job nobody can claim must not look like
+    # an ordinary queued one.
+    agent_group_unavailable: bool = False
 
 
 class JobSurfaceCounts(BaseModel):
@@ -432,11 +447,51 @@ class AgentInfo(BaseModel):
     lifecycle_status: Literal["active", "disabled", "quarantined"] = "active"
     lifecycle_reason: str | None = None
     lifecycle_message: str | None = None
+    # Which agent group an operator put this agent in (#361). None is "in no
+    # group": it claims only the jobs addressed to none. Never set from the
+    # agent's own ``labels`` — see api/services/agent_groups.py.
+    agent_group: str | None = None
     # How many *other* agents registered with the same provisioning key — the
     # blast radius of ``DELETE …?revoke_key=true``, which stops every one of
     # them (#308). Counted only on the single-agent read, which is where the
     # delete is confirmed; the fleet list leaves it at 0.
     other_agents_on_key: int = 0
+
+
+class AgentGroupInfo(BaseModel):
+    """One agent group of a tenant (#361).
+
+    ``name`` is the identifier: the job's ``agent_group``, the agent's, and the
+    scope entry's restriction all carry it, which is why there is no rename.
+    ``agent_count`` is how many agents are currently in it — a restriction to
+    an empty group is a restriction to nobody, and that is worth seeing before
+    it is approved rather than after a scan sits in the queue.
+    """
+
+    group_id: str
+    tenant_id: str
+    name: str
+    description: str = ""
+    created_at: str | None = None
+    created_by: str | None = None
+    agent_count: int = 0
+
+
+class CreateAgentGroupRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=63)
+    description: str = Field(default="", max_length=500)
+
+
+class SetAgentGroupRequest(BaseModel):
+    """Put one agent into a group, or take it out of every group with null.
+
+    A route of its own rather than a field on ``PATCH /api/agents/{id}``: the
+    null that clears the membership has to be tellable from "not mentioned",
+    and this is also the authority ``agent.group.manage`` gates, which the
+    lifecycle patch does not.
+    """
+
+    group: str | None = Field(default=None, max_length=63)
 
 
 class AgentHeartbeatResponse(AgentInfo):
@@ -598,6 +653,10 @@ class CreateScheduleRequest(BaseModel):
     ports: str | None = None
     ports_udp: str | None = None
     surface: Literal["external", "internal", "mixed"] | None = None
+    # Which agent group every dispatch of this schedule is addressed to (#361).
+    # Checked against the tenant's groups when the schedule is written, and
+    # against the approved scope again when it fires.
+    agent_group: str | None = Field(default=None, max_length=63)
 
 
 class UpdateScheduleRequest(BaseModel):
@@ -616,6 +675,7 @@ class UpdateScheduleRequest(BaseModel):
     ports: str | None = None
     ports_udp: str | None = None
     surface: Literal["external", "internal", "mixed"] | None = None
+    agent_group: str | None = Field(default=None, max_length=63)
 
 
 class ScheduleInfo(BaseModel):
@@ -1225,6 +1285,11 @@ class ScanScopeEntry(BaseModel):
     kind: Literal["cidr", "domain"]
     value: str = Field(min_length=1, max_length=255)
     note: str = Field(default="", max_length=500)
+    # On an allow entry: the agent groups entitled to scan what it approves
+    # (#361). Empty — what every entry written before this shipped carries —
+    # permits any agent of the tenant. Refused on a deny entry, which refuses
+    # everybody and cannot express an exception.
+    agent_groups: list[str] = Field(default_factory=list, max_length=32)
 
 
 class ScanScopeEntryInfo(ScanScopeEntry):

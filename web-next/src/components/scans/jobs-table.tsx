@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { ArrowUpRight, Ban, Cpu, Hourglass, Info, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, Ban, Cpu, Hourglass, Info, TriangleAlert, UserX } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -132,6 +132,17 @@ export function JobsTable({
                 title={`${t("jobs.assetUpsertError")}: ${row.original.asset_upsert_error}`}
               >
                 <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+              </span>
+            ) : null}
+            {row.original.agent_group_unavailable ? (
+              <span
+                role="img"
+                aria-label={t("jobs.agentGroupUnavailable")}
+                title={t("jobs.agentGroupUnavailableHint", {
+                  group: row.original.agent_group ?? "",
+                })}
+              >
+                <UserX className="h-3.5 w-3.5 shrink-0 text-amber-500" />
               </span>
             ) : null}
             {row.original.attempts && row.original.attempts > 1 ? (

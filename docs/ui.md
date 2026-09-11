@@ -202,6 +202,23 @@ renders an absent value as internal: it shows **Unclassified**.
   twice, while an edited form is a new request (the API also compares a
   digest of the body and answers 409 when a key is reused for a different
   scan);
+- in agent mode, an **Agent group** selector beside the speed profile, listing
+  the tenant's groups (`GET /api/agent-groups`) with "any agent of this tenant"
+  as the default. It is hidden entirely when scans run locally, or when the
+  tenant has no groups, so an installation that never uses them sees the form
+  it always saw. Picking a group with no agent online replaces the hint with a
+  warning that the scan will wait in the queue; the approved scope may also
+  require a group for the typed targets, and the server then refuses a
+  different one with a `403` that names both sides
+  ([#361](https://github.com/onixus/Shapoclyack/issues/361));
+- an amber **person-with-a-cross** marker beside the status of a queued job
+  addressed to an agent group that has no agent online, with the group name in
+  its tooltip; the drawer carries the same thing as an **Agent group** row
+  ("any agent of this tenant" when the job is addressed to none). It is
+  computed at read time, so it clears on the next refresh once an agent of that
+  group heartbeats ([#361](https://github.com/onixus/Shapoclyack/issues/361));
+- the job table with a **Cancel** action on queued/claimed jobs (the API
+  answers 409 once a job runs) and a per-job drawer: timeline and duration,
 - the job table with a **Cancel** action on queued, claimed and running jobs
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The confirm
   dialog says which stop is being asked for: a queued job is simply never

@@ -1467,6 +1467,46 @@ class Wordlist(Base):
     )
 
 
+class AgentGroup(Base):
+    """A named set of a tenant's agents, and the unit a job can be addressed to (#361).
+
+    Before this table an agent job was claimable by any agent of the tenant, so
+    a provider running one agent inside a customer's card-data segment and
+    another in their office network could not say which of the two a scan of
+    the card-data segment had to come from. The queue was flat and the first
+    worker to poll won.
+
+    A group is identified by its ``name`` inside the tenant, not by
+    ``group_id``: ``agents.agent_group``, ``jobs.agent_group`` and
+    ``tenant_scan_scopes.agent_groups`` all refer to it by that name, because
+    the name is also what the API body, the console and the operator use. The
+    name is therefore immutable — there is no rename endpoint — and deleting a
+    group is refused by ``api/services/agent_groups.py`` while anything still
+    names it, since the alternative is a scope entry whose restriction quietly
+    evaporates.
+
+    Membership is written only by an operator holding ``agent.group.manage``.
+    An agent's own ``labels`` are not consulted: a worker that could declare
+    its way into a group would be granting itself the jobs of a segment it does
+    not sit in, which is the control this table exists to provide.
+    """
+
+    __tablename__ = "agent_groups"
+
+    group_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str]
+    description: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    created_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_agent_groups_tenant_name"),
+    )
+
+
 class Agent(Base):
     """Registered remote scanning agent (ROADMAP P1.1).
 
@@ -1507,12 +1547,21 @@ class Agent(Base):
     provisioning_key_id: Mapped[str | None] = mapped_column(
         ForeignKey("provisioning_keys.key_id"), default=None, index=True
     )
+    # Which agent group an *operator* put this agent in (#361), by name — the
+    # vocabulary ``jobs.agent_group`` and the scope entries share. NULL is the
+    # pre-#361 agent: it claims only jobs addressed to no group. Never written
+    # from the agent's own registration: a worker that could name its own group
+    # would be a worker that grants itself the jobs of a segment it is not in.
+    agent_group: Mapped[str | None] = mapped_column(default=None)
     current_job_id: Mapped[str | None] = mapped_column(default=None)
     detail: Mapped[str | None] = mapped_column(default=None)
     registered_at: Mapped[datetime]
     last_seen_at: Mapped[datetime]
 
-    __table_args__ = (Index("ix_agents_tenant_last_seen", "tenant_id", "last_seen_at"),)
+    __table_args__ = (
+        Index("ix_agents_tenant_last_seen", "tenant_id", "last_seen_at"),
+        Index("ix_agents_group", "tenant_id", "agent_group"),
+    )
 
 
 class AgentSshHostKey(Base):
@@ -1624,6 +1673,11 @@ class Job(Base):
     target_counts: Mapped[dict | None] = mapped_column(JSON, default=None)
     requested_by: Mapped[str] = mapped_column(default="")
     assigned_agent_id: Mapped[str | None] = mapped_column(default=None, index=True)
+    # The agent group this job is addressed to (#361), by name. NULL is the
+    # pre-#361 meaning and still the default: any agent of the tenant may claim
+    # it. A named group is a claim-time filter, not a preference — see
+    # ``api/services/jobs.py::claim_job``.
+    agent_group: Mapped[str | None] = mapped_column(default=None)
     owner_id: Mapped[str | None] = mapped_column(default=None)
     # Idempotency (ROADMAP P1.5). `idempotency_key` is the client's name for
     # the scan request, unique per tenant; `results_idempotency_key` records
@@ -1662,6 +1716,15 @@ class Job(Base):
         # The claim query's exact predicate: queued agent jobs of one tenant,
         # oldest first.
         Index("ix_jobs_claim", "execution", "status", "tenant_id", "queued_at"),
+        # The same predicate once the claim also filters by group (#361).
+        Index(
+            "ix_jobs_claim_group",
+            "execution",
+            "status",
+            "tenant_id",
+            "agent_group",
+            "queued_at",
+        ),
         # The reaper's predicate: in-flight jobs whose lease has lapsed. It
         # runs on every replica on a timer, so it must not scan the table.
         Index("ix_jobs_lease", "status", "claimed_until"),
@@ -1741,6 +1804,12 @@ class TenantScanScope(Base):
     kind: Mapped[str]
     value: Mapped[str]
     note: Mapped[str] = mapped_column(default="")
+    # On an allow entry: the agent groups entitled to scan what it approves
+    # (#361), by name. ``[]`` — what every entry written before this column had
+    # — means any agent of the tenant, so an installation with no groups is
+    # unchanged. Meaningless on a deny entry, which refuses everybody, and
+    # refused there by ``api/services/scan_scopes.py``.
+    agent_groups: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     approved_by: Mapped[str] = mapped_column(default="")
     approved_at: Mapped[datetime]
 

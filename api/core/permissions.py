@@ -76,6 +76,11 @@ TENANT_MEMBER_MANAGE = "tenant.member.manage"
 #: tokens. What ``token-admin`` exists for, and what lets a tenant admin
 #: rotate their own key instead of filing a ticket with the platform.
 TENANT_CREDENTIAL_MANAGE = "tenant.credential.manage"
+#: Create and delete a tenant's agent groups, and decide which agents are in
+#: them (#361). Membership is what a job's ``agent_group`` is matched against
+#: on claim, so this is the authority to change which worker may execute which
+#: customer's scan — a tenant-administration decision, never the agent's own.
+AGENT_GROUP_MANAGE = "agent.group.manage"
 #: Read what the tenant was sold (``GET …/quota``).
 TENANT_QUOTA_READ = "tenant.quota.read"
 #: Change it. Platform-only on purpose: a tenant admin who could raise their
@@ -108,6 +113,7 @@ PERMISSIONS: dict[str, str] = {
     TENANT_MEMBER_READ: "List the tenant's members",
     TENANT_MEMBER_MANAGE: "Grant and revoke the tenant's members",
     TENANT_CREDENTIAL_MANAGE: "Manage the tenant's provisioning keys and service tokens",
+    AGENT_GROUP_MANAGE: "Manage the tenant's agent groups and their members",
     TENANT_QUOTA_READ: "Read the tenant's quota",
     PLATFORM_QUOTA_MANAGE: "Set any tenant's quota",
     PLATFORM_TENANT_MANAGE: "Create tenants",
@@ -167,6 +173,7 @@ _TENANT_ADMIN_PERMISSIONS = (
     TENANT_MEMBER_READ,
     TENANT_MEMBER_MANAGE,
     TENANT_CREDENTIAL_MANAGE,
+    AGENT_GROUP_MANAGE,
     TENANT_QUOTA_READ,
 )
 

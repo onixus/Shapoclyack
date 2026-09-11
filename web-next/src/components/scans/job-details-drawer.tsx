@@ -214,6 +214,21 @@ export function JobDetailsDrawer({
                 ) : null}
               </span>
             </Row>
+            <Row label={t("jobs.agentGroup")} hint={t("jobs.agentGroupHint")}>
+              {current.agent_group ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="font-mono">{current.agent_group}</span>
+                  {current.agent_group_unavailable ? (
+                    <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-300">
+                      <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+                      {t("jobs.agentGroupUnavailable")}
+                    </span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{t("jobs.agentGroupAny")}</span>
+              )}
+            </Row>
             <Row label={t("jobs.requestedBy")}>{current.requested_by || "—"}</Row>
             {current.tenant_id ? <Row label={t("jobs.tenant")}>{current.tenant_id}</Row> : null}
             {wordlist ? <Row label={t("jobs.wordlist")}>{wordlist}</Row> : null}

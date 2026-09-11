@@ -353,6 +353,8 @@ One row per administrative change, with the resource before and after it:
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
 | `agent.disable`, `agent.enable`, `agent.quarantine` | `PATCH /api/agents/{id}` — one action per resulting state, so "who took this host out of the fleet" is a filter on the action rather than a read of every lifecycle row. `before` carries the state the agent was moved out of, `after` the new state and the operator's reason |
+| `agent_group.create`, `agent_group.delete` | `POST` / `DELETE /api/agent-groups` — the groups a job can be addressed to ([#361](https://github.com/onixus/Shapoclyack/issues/361)) |
+| `agent_group.assign` | `PUT /api/agents/{id}/group` — `before` and `after` carry the group the agent left and the one it joined. Membership decides which of the tenant's scans that host may execute, so it belongs in the same trail as a membership grant |
 | `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the agent |
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
@@ -610,6 +612,7 @@ it is only supposed to approve.
 | `scan.cancel` | `operator`, `scan-operator`, tenant `admin`, platform admin |
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
+| `agent.group.manage` | tenant `admin`, platform admin |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
 | `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around |
@@ -947,6 +950,10 @@ and keeps hanging its key on the job row it creates.
 | `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities, `upgrade_requested`, and `other_agents_on_key` — how many other agents share its provisioning key, which is what `?revoke_key=true` below would stop; `404` outside the tenant |
 | `PATCH /api/agents/{id}` | **admin** | Moves the agent between `active`, `disabled` and `quarantined` (`{"status": …, "reason": …}`), and answers the agent as it now stands. A non-`active` agent is refused job claims and result uploads with `403`; its heartbeat is still accepted so the reason reaches it. The state survives re-registration — a restart is not an appeal ([#308](https://github.com/onixus/Shapoclyack/issues/308)) |
 | `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the agent registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (an agent registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* agents that revocation stopped |
+| `GET /api/agent-groups` | viewer | The tenant's agent groups ([#361](https://github.com/onixus/Shapoclyack/issues/361)), each with the number of agents in it. Readable at viewer rank because it is the vocabulary of the scan form and of the approved scope |
+| `POST /api/agent-groups` | `agent.group.manage` | Create one (`{"name": "pci-segment", "description": …}`). Names are lowercase letters, digits and dashes, unique within the tenant, and **immutable** — the name is what jobs, agents and scope entries refer to, so a rename would silently re-point a restriction. `422` for a malformed or duplicate name |
+| `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. `409` while an agent, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any agent" |
+| `PUT /api/agents/{id}/group` | `agent.group.manage` | Put the agent into a group (`{"group": "pci-segment"}`) or take it out of every group (`{"group": null}`), and answer the agent as it now stands. The agent's own `labels` are never consulted: membership decides which of the tenant's jobs it may claim, so it is a grant rather than something the host declares. A job the agent already holds is not recalled; the move applies from its next claim |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
 | `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
@@ -1409,6 +1416,32 @@ the SSH host-key pins.
 `PUT` replaces the whole scope in one transaction and stamps the caller as
 `approved_by` on every resulting row; `entries: []` is accepted and means the
 tenant scans nothing. A malformed entry is `422`, an unknown tenant `404`.
+
+An **allow** entry may also carry `agent_groups` — the agent groups entitled to
+scan what it approves (#361):
+
+```http
+PUT /api/tenants/{tenant_id}/scan-scope
+{"entries": [{"effect": "allow", "kind": "cidr", "value": "10.1.0.0/16",
+              "agent_groups": ["pci-segment"]}]}
+```
+
+An empty list, which is what every entry written before #361 carries, permits
+any agent of the tenant. Where several allow entries cover one target, **the
+narrowest of them decides** — `10.1.0.0/16 → pci-segment` under a plain
+`10.0.0.0/8`, or under the `0.0.0.0/0` and `domain *` rows migration 0025 left
+on every tenant that predates the scope table, is the restriction that applies.
+The opposite rule would have made the first restricted entry an operator writes
+on an upgraded installation a no-op, answered `200`. A non-empty list is
+enforced at scan start: the scan is
+addressed to the single permitted group when there is one, refused with `422`
+asking the operator to choose when the covering entries leave several, and
+refused with `403` when the request names a group the entry does not permit.
+Targets whose entries share no group cannot be scanned in one job — one job
+runs on one agent — and that is a `403` too, naming both sides. `agent_groups`
+on a **deny** entry is `422`: a deny refuses everybody and has no exception to
+express. A group that does not exist is refused here rather than at 02:00,
+where the only symptom would be a scan nobody can claim.
 
 An out-of-scope scan is refused with **`403`, not `422`** — the target is
 well-formed, the tenant is simply not entitled to it — and the refusal is

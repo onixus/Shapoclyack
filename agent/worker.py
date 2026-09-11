@@ -5,6 +5,10 @@ When OCTO_NATS_URL is set, jobs are pulled from JetStream subject
 long-lived connection instead of HTTP claim polling. The tenant comes from the
 API — the provisioning-key exchange, or the registration response for a legacy
 shared token — so an agent never binds a consumer outside its own tenant.
+An agent an operator put in an agent group also binds
+``jobs.scan.{tenant}.{group}`` (durable ``octo-agents-{tenant}-{group}``); the
+group likewise comes from the API, on every register and heartbeat, and an
+offer names only a job id, never its targets (#361).
 Register, heartbeat, and results upload remain HTTP.
 
 TLS for the NATS connection is configured with OCTO_NATS_TLS_CA,
@@ -59,6 +63,10 @@ SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"
 CONSUMER_AGENTS_PREFIX = "octo-agents"
 DEFAULT_TENANT_ID = "default"
+# Kept equal to api/services/nats_bus.JOBS_MAX_DELIVER: whichever side creates
+# the consumer first decides, and a mismatch would be an attempt budget that
+# depends on which one won the race.
+JOBS_MAX_DELIVER = 5
 
 # Subject-token encoding, kept byte-for-byte identical to
 # api/services/nats_bus.py. The agent is deployed on its own (no api package on
@@ -80,14 +88,26 @@ def _subject_token(value: str, fallback: str = DEFAULT_TENANT_ID) -> str:
     return f"{_ENCODED_TOKEN_PREFIX}{digest}"
 
 
-def jobs_scan_subject(tenant_id: str) -> str:
-    """NATS subject ``jobs.scan.{tenant_id}`` this agent may consume."""
-    return f"{SUBJECT_JOBS_SCAN_PREFIX}.{_subject_token(tenant_id)}"
+def jobs_scan_subject(tenant_id: str, agent_group: str | None = None) -> str:
+    """NATS subject this agent may consume (see api/services/nats_bus.py).
+
+    ``jobs.scan.{tenant}`` carries the tenant's ungrouped jobs, which every
+    agent of the tenant may claim; ``jobs.scan.{tenant}.{group}`` carries the
+    jobs addressed to one group, and only the agents an operator put in that
+    group bind to it.
+    """
+    subject = f"{SUBJECT_JOBS_SCAN_PREFIX}.{_subject_token(tenant_id)}"
+    if agent_group:
+        subject = f"{subject}.{_subject_token(agent_group, 'ungrouped')}"
+    return subject
 
 
-def jobs_consumer_name(tenant_id: str) -> str:
-    """Durable consumer name ``octo-agents-{tenant_id}`` for this agent's tenant."""
-    return f"{CONSUMER_AGENTS_PREFIX}-{_subject_token(tenant_id)}"
+def jobs_consumer_name(tenant_id: str, agent_group: str | None = None) -> str:
+    """Durable consumer name ``octo-agents-{tenant_id}[-{group}]`` for this agent."""
+    name = f"{CONSUMER_AGENTS_PREFIX}-{_subject_token(tenant_id)}"
+    if agent_group:
+        name = f"{name}-{_subject_token(agent_group, 'ungrouped')}"
+    return name
 
 
 def tls_connect_options() -> dict[str, Any]:
@@ -950,11 +970,19 @@ def _execute_job(
 
 
 class AgentNatsSession:
-    """Long-lived JetStream pull session for one tenant's ``jobs.scan.{tenant}``.
+    """Long-lived JetStream pull session for the subjects this agent may consume.
 
-    ``tenant_id`` is the tenant the API told this agent it belongs to, and it
-    decides both the subject and the durable name — the session never sees, and
-    cannot bind to, another tenant's offers.
+    ``tenant_id`` is the tenant the API told this agent it belongs to, and
+    ``agent_group`` is the group the API says an operator put it in — neither
+    is the agent's to choose, and both come back on every register and
+    heartbeat. Together they decide the subjects and the durable names, so the
+    session never sees, and cannot bind to, another tenant's or another
+    group's offers.
+
+    An ungrouped agent binds one subject, ``jobs.scan.{tenant}``. A grouped one
+    binds that plus ``jobs.scan.{tenant}.{group}``: putting an agent into a
+    group narrows what it may reach without taking away the tenant-wide queue
+    it already served, which is exactly what ``claim_job``'s SQL filter says.
     """
 
     def __init__(
@@ -962,21 +990,39 @@ class AgentNatsSession:
         nats_url: str,
         *,
         tenant_id: str = DEFAULT_TENANT_ID,
+        agent_group: str | None = None,
         connect_timeout: float = 5.0,
     ) -> None:
         self._nats_url = nats_url
         self._tenant_id = tenant_id or DEFAULT_TENANT_ID
-        self._subject = jobs_scan_subject(self._tenant_id)
-        self._durable = jobs_consumer_name(self._tenant_id)
+        self._agent_group = agent_group or None
+        # Ungrouped subject first: the tenant-wide queue is the one every agent
+        # shares, and draining it before the group's keeps a busy group from
+        # starving jobs nobody restricted.
+        self._bindings: list[tuple[str, str]] = [
+            (jobs_scan_subject(self._tenant_id), jobs_consumer_name(self._tenant_id))
+        ]
+        if self._agent_group:
+            self._bindings.append(
+                (
+                    jobs_scan_subject(self._tenant_id, self._agent_group),
+                    jobs_consumer_name(self._tenant_id, self._agent_group),
+                )
+            )
         self._connect_timeout = connect_timeout
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop, name="octo-agent-nats", daemon=True
         )
         self._nc: Any = None
-        self._sub: Any = None
+        self._subs: list[Any] = []
         self._started = False
         self._lock = threading.Lock()
+
+    @property
+    def agent_group(self) -> str | None:
+        """The group this session was bound for; see ``run_loop`` for rebinding."""
+        return self._agent_group
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -991,10 +1037,10 @@ class AgentNatsSession:
             fut.result(timeout=self._connect_timeout + 10)
             self._started = True
             LOG.info(
-                "NATS agent session connected (%s) subject=%s durable=%s",
+                "NATS agent session connected (%s) subjects=%s group=%s",
                 self._nats_url,
-                self._subject,
-                self._durable,
+                ", ".join(subject for subject, _ in self._bindings),
+                self._agent_group or "-",
             )
 
     async def _connect(self) -> None:
@@ -1010,27 +1056,22 @@ class AgentNatsSession:
             **tls_connect_options(),
         )
         js = self._nc.jetstream()
-        try:
-            self._sub = await js.pull_subscribe(
-                self._subject,
-                durable=self._durable,
-                stream=STREAM_JOBS,
-            )
-        except Exception:
-            await js.add_consumer(
-                STREAM_JOBS,
-                ConsumerConfig(
-                    durable_name=self._durable,
-                    ack_policy=AckPolicy.EXPLICIT,
-                    filter_subject=self._subject,
-                    max_deliver=5,
-                ),
-            )
-            self._sub = await js.pull_subscribe(
-                self._subject,
-                durable=self._durable,
-                stream=STREAM_JOBS,
-            )
+        self._subs = []
+        for subject, durable in self._bindings:
+            try:
+                sub = await js.pull_subscribe(subject, durable=durable, stream=STREAM_JOBS)
+            except Exception:
+                await js.add_consumer(
+                    STREAM_JOBS,
+                    ConsumerConfig(
+                        durable_name=durable,
+                        ack_policy=AckPolicy.EXPLICIT,
+                        filter_subject=subject,
+                        max_deliver=JOBS_MAX_DELIVER,
+                    ),
+                )
+                sub = await js.pull_subscribe(subject, durable=durable, stream=STREAM_JOBS)
+            self._subs.append(sub)
 
     async def _close_connection(self) -> None:
         """Let nats-py stop its own background tasks before the loop is closed."""
@@ -1067,7 +1108,7 @@ class AgentNatsSession:
                 loop.call_soon_threadsafe(loop.stop)
 
             self._nc = None
-            self._sub = None
+            self._subs = []
 
             if self._thread.is_alive() and threading.current_thread() is not self._thread:
                 self._thread.join(timeout=5)
@@ -1078,7 +1119,7 @@ class AgentNatsSession:
             self._started = False
 
     def _ensure_ready(self) -> None:
-        if self._started and self._nc is not None and self._sub is not None:
+        if self._started and self._nc is not None and self._subs:
             try:
                 if self._nc.is_connected:
                     return
@@ -1099,15 +1140,18 @@ class AgentNatsSession:
         *,
         timeout: float = 5.0,
     ) -> dict[str, Any] | None:
-        """Fetch one offer, HTTP-claim it, then ACK/NAK. Reconnects if the session drops."""
+        """Fetch one offer, HTTP-claim it, then ACK/TERM. Reconnects if the session drops.
+
+        The offer carries no targets: the claim response does, and only the
+        agent the API bound the job to gets one (#361).
+        """
         self._ensure_ready()
 
-        async def _once() -> dict[str, Any] | None:
+        async def _one_sub(sub: Any, per_sub_timeout: float) -> dict[str, Any] | None:
             from nats.errors import TimeoutError as NatsTimeout
 
-            assert self._sub is not None
             try:
-                msgs = await self._sub.fetch(1, timeout=timeout)
+                msgs = await sub.fetch(1, timeout=per_sub_timeout)
             except NatsTimeout:
                 return None
             if not msgs:
@@ -1121,13 +1165,15 @@ class AgentNatsSession:
             if not isinstance(payload, dict) or not payload.get("job_id"):
                 await msg.term()
                 return None
+            # Terminate rather than NAK on anything this agent is not entitled
+            # to run: a NAK puts the message back for redelivery and burns one
+            # of its max_deliver attempts, so an agent that cannot run the job
+            # would be deciding how many attempts its rightful owner has left —
+            # and once the attempts are gone the offer leaves the consumer and
+            # the job's own agents never see it. The subject filters should
+            # make both checks unreachable; they are the second barrier.
             offer_tenant = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
             if _subject_token(offer_tenant) != _subject_token(self._tenant_id):
-                # The consumer's filter_subject should make this unreachable.
-                # If it ever happens, terminate rather than NAK: a NAK puts the
-                # message back for redelivery and burns one of its max_deliver
-                # attempts, so an agent that cannot run this job would be
-                # deciding how many attempts its rightful owner has left.
                 LOG.warning(
                     "Discarding offer %s for tenant %s on tenant %s subject",
                     payload.get("job_id"),
@@ -1136,22 +1182,48 @@ class AgentNatsSession:
                 )
                 await msg.term()
                 return None
+            offer_group = str(payload.get("agent_group") or "") or None
+            if offer_group is not None and offer_group != self._agent_group:
+                LOG.warning(
+                    "Discarding offer %s addressed to agent group %s; this agent is in %s",
+                    payload.get("job_id"),
+                    offer_group,
+                    self._agent_group or "no group",
+                )
+                await msg.term()
+                return None
             job_id = str(payload["job_id"])
             try:
                 claimed = await asyncio.to_thread(client.claim, agent_id, job_id=job_id)
             except (AgentDisabled, AgentUpgradeRequired, AgentTokenRejected):
-                # This agent cannot take the offer, but another one in the
-                # tenant can: NAK now rather than hold the message until
-                # ack_wait expires, and let the run loop decide what to do
-                # about the refusal (#308).
+                # This agent cannot take the offer, but another one entitled to
+                # the same subject can: NAK now rather than hold the message
+                # until ack_wait expires, and let the run loop decide what to
+                # do about the refusal (#308).
                 await msg.nak()
                 raise
             if claimed is None:
-                LOG.warning("NATS offer %s not claimable; NAK", job_id)
-                await msg.nak()
+                # 204: the job is no longer queued — another agent on this same
+                # subject won the race, or it was cancelled. TERM rather than
+                # NAK, because a redelivery cannot make an already-claimed job
+                # claimable again; a job that goes back to ``queued`` when its
+                # lease expires is re-offered by the API, as a new message.
+                LOG.info("NATS offer %s already taken; discarding", job_id)
+                await msg.term()
                 return None
             await msg.ack()
             return claimed
+
+        async def _once() -> dict[str, Any] | None:
+            subs = list(self._subs)
+            if not subs:
+                return None
+            share = max(1.0, timeout / len(subs))
+            for sub in subs:
+                claimed = await _one_sub(sub, share)
+                if claimed is not None:
+                    return claimed
+            return None
 
         try:
             fut = asyncio.run_coroutine_threadsafe(_once(), self._loop)
@@ -1202,6 +1274,11 @@ def run_loop(args: argparse.Namespace) -> int:
     # different agent, after which its own heartbeat was 403 (#308).
     agent_id: str = (args.agent_id or "").strip()
     tenant_id = ""
+    # The group an operator put this agent in, as the API reports it on every
+    # register and heartbeat. Never read from ``labels``: an agent that could
+    # declare its own group would be granting itself the jobs of a segment it
+    # does not sit in (#361).
+    agent_group: str | None = None
     nats_session: AgentNatsSession | None = None
     registered = False
     # Due immediately with a provisioning key (the bootstrap exchange happens
@@ -1251,7 +1328,7 @@ def run_loop(args: argparse.Namespace) -> int:
         )
 
     def _register() -> None:
-        nonlocal agent_id, tenant_id, registered
+        nonlocal agent_id, tenant_id, agent_group, registered
         info = client.register(
             agent_id=agent_id or None,
             hostname=hostname,
@@ -1262,12 +1339,14 @@ def run_loop(args: argparse.Namespace) -> int:
         # token, which is exchanged for nothing and whose tenant the agent
         # cannot know on its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
         tenant_id = tenant_id or str(info.get("tenant_id") or DEFAULT_TENANT_ID)
+        agent_group = str(info.get("agent_group") or "") or None
         registered = True
         LOG.info(
-            "Registered agent %s (%s) tenant=%s",
+            "Registered agent %s (%s) tenant=%s group=%s",
             agent_id,
             info.get("hostname"),
             info.get("tenant_id"),
+            agent_group or "-",
         )
 
     try:
@@ -1282,13 +1361,30 @@ def run_loop(args: argparse.Namespace) -> int:
                     # process — which systemd Restart=always then repeated
                     # every five seconds for the whole fleet.
                     _register()
+                if (
+                    nats_session is not None
+                    and nats_session.agent_group != agent_group
+                ):
+                    # An operator moved this agent between groups. The bindings
+                    # are decided at connect time, so the session is rebuilt
+                    # rather than left listening on the subjects of a group the
+                    # agent is no longer in.
+                    LOG.info(
+                        "Agent group changed to %s; rebinding the NATS session",
+                        agent_group or "none",
+                    )
+                    nats_session.close()
+                    nats_session = None
                 if nats_session is None and args.nats_url:
                     LOG.info(
-                        "NATS pull enabled (%s) subject=%s",
+                        "NATS pull enabled (%s) subject=%s group=%s",
                         args.nats_url,
                         jobs_scan_subject(tenant_id),
+                        agent_group or "-",
                     )
-                    nats_session = AgentNatsSession(args.nats_url, tenant_id=tenant_id)
+                    nats_session = AgentNatsSession(
+                        args.nats_url, tenant_id=tenant_id, agent_group=agent_group
+                    )
                     nats_session.start()
 
                 beat = client.heartbeat(agent_id, status="idle")
@@ -1302,6 +1398,10 @@ def run_loop(args: argparse.Namespace) -> int:
                 # The heartbeat is answered even while an agent is disabled or
                 # quarantined (#308), so this is where it finds out — before
                 # the claim below is refused, and with the operator's reason.
+                # The group can change while the process runs; the heartbeat
+                # response is where it finds out, and the rebinding above acts
+                # on it at the top of the next iteration.
+                agent_group = str((beat or {}).get("agent_group") or "") or None
                 lifecycle_message = str((beat or {}).get("lifecycle_message") or "")
                 if lifecycle_message and lifecycle_message != last_lifecycle_message:
                     LOG.error("%s", lifecycle_message)

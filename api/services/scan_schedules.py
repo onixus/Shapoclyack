@@ -28,6 +28,7 @@ from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import agent_groups as agent_groups_service
 from api.services import pagination
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
@@ -49,6 +50,7 @@ _SCAN_OPTION_KEYS = (
     "notify",
     "export_defectdojo",
     "surface",
+    "agent_group",
 )
 _TARGET_KEYS = ("ranges", "domains", "ports", "ports_udp")
 
@@ -109,6 +111,27 @@ def _assert_targets_in_scope(settings: Settings, tenant_id: str, targets: dict[s
     )
 
 
+def _assert_agent_group_known(
+    settings: Settings, tenant_id: str, scan_options: dict[str, Any]
+) -> None:
+    """Refuse a schedule aimed at an agent group the tenant does not have (#361).
+
+    The same reasoning as the scope check above: the dispatcher would refuse it
+    at 02:00 and the operator would learn about it by noticing that nothing had
+    run. What is deliberately *not* checked here is whether the approved scope
+    still permits that group for these targets — that can change between now
+    and the dispatch, and the check that decides is the one inside
+    ``start_scan``, where it is asked at the moment the scan starts.
+    """
+    name = scan_options.get("agent_group")
+    if not name:
+        return
+    normalized = agent_groups_service.normalize_name(str(name))
+    if normalized not in agent_groups_service.existing_names(settings, tenant_id):
+        raise ValueError(f"Unknown agent_group for tenant {tenant_id}: {normalized}")
+    scan_options["agent_group"] = normalized
+
+
 def _validate_cadence(cron: str | None, interval_seconds: int | None) -> None:
     if bool(cron) == bool(interval_seconds):
         raise ValueError("exactly one of cron or interval_seconds is required")
@@ -153,6 +176,8 @@ def create_schedule(
     if tenant is None:
         raise ValueError(f"Unknown tenant_id: {tenant_id}")
     _assert_targets_in_scope(settings, tenant_id, targets)
+    scan_options = dict(scan_options)
+    _assert_agent_group_known(settings, tenant_id, scan_options)
 
     now = _now()
     row = models.ScanSchedule(
@@ -260,6 +285,10 @@ def update_schedule(schedule_id: str, **fields: Any) -> dict[str, Any] | None:
         if "scan_options" in fields and fields["scan_options"] is not None:
             merged = dict(row.scan_options or {})
             merged.update({k: v for k, v in fields["scan_options"].items() if k in _SCAN_OPTION_KEYS})
+            # On the merged result, as for the targets below: an edit that only
+            # changes the cadence must not re-validate an agent group it never
+            # touched away, and one that changes the group has to be checked.
+            _assert_agent_group_known(settings, row.tenant_id, merged)
             row.scan_options = merged
         if "targets" in fields and fields["targets"] is not None:
             merged_targets = dict(row.targets or {})

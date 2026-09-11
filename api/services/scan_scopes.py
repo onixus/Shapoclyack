@@ -39,6 +39,15 @@ and applies the same deny check to the resolution it actually scans on, which
 is what covers a record that changes in between — see
 ``scanner/pipeline/scan_scope.py``, where the matching rules themselves live so
 that the two barriers cannot answer differently.
+
+Since #361 an **allow** entry can also name the agent groups entitled to scan
+what it approves. That is a second question about the same targets — not "may
+this tenant scan it" but "which of their workers may execute it" — and it is
+answered by :func:`required_agent_groups`, whose verdict ``start_scan`` turns
+into the job's ``agent_group``. An entry with no groups permits any agent,
+which is every entry written before that revision; where entries overlap, the
+narrowest one covering a target decides, so a restriction is not undone by the
+allow-all row migration 0025 left behind.
 """
 
 from __future__ import annotations
@@ -55,6 +64,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import agent_groups as agent_groups_service
 from api.services import audit as audit_service
 from api.services import auth_audit
 from api.services import tenants as tenants_service
@@ -225,6 +235,7 @@ def _to_dict(row: models.TenantScanScope) -> dict[str, Any]:
         "kind": row.kind,
         "value": row.value,
         "note": row.note or "",
+        "agent_groups": sorted(row.agent_groups or []),
         "approved_by": row.approved_by or "",
         "approved_at": _iso(row.approved_at),
     }
@@ -297,7 +308,145 @@ def list_entries(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
         return [_to_dict(row) for row in _rows(session, tenant_id)]
 
 
-def _validated(entry: dict[str, Any]) -> dict[str, str]:
+def _entry_scope(row: models.TenantScanScope) -> ScanScope | None:
+    """One scope entry, on its own, as something that can be matched.
+
+    Built rather than hand-rolled so "does this entry cover this target" is
+    answered by the very code that answers "is this target in scope" — the
+    containment and suffix rules live in ``scanner/pipeline/scan_scope.py`` and
+    a second implementation of them here would eventually be a second answer.
+    None for an entry whose value cannot be parsed; ``load_scope`` already logs
+    those, and an entry nothing can match restricts nothing.
+    """
+    if row.kind == KIND_CIDR:
+        if row.value == WILDCARD:
+            networks = (_network("0.0.0.0/0"), _network("::/0"))
+        else:
+            try:
+                networks = (_network(row.value),)
+            except ValueError:
+                return None
+        return ScanScope(tenant_id=row.tenant_id, allow_networks=networks, approved=True)
+    return ScanScope(
+        tenant_id=row.tenant_id,
+        allow_domains=(_normalize_domain(row.value),),
+        approved=True,
+    )
+
+
+def _covers(scope: ScanScope, *, target: str, kind: str) -> bool:
+    if kind == KIND_CIDR:
+        return scope.rejects_network(target) is None
+    return scope.rejects_domain(target) is None
+
+
+def _specificity(row: models.TenantScanScope) -> int:
+    """How narrow one entry is, so the narrowest covering entry can decide.
+
+    A prefix length for a network and a label count for a domain: both grow as
+    the entry covers less, and they are only ever compared between entries of
+    the same kind covering the same target. ``*`` is the widest of its kind and
+    scores zero, which is what the grandfathered allow-all entries of migration
+    0025 are.
+    """
+    if row.kind == KIND_CIDR:
+        if row.value == WILDCARD:
+            return 0
+        try:
+            return int(_network(row.value).prefixlen)
+        except ValueError:
+            return 0
+    if row.value == WILDCARD:
+        return 0
+    return len(_normalize_domain(row.value).strip(".").split("."))
+
+
+def required_agent_groups(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    ranges_text: str | None,
+    domains_text: str | None,
+) -> frozenset[str] | None:
+    """Which agent groups the approved scope permits for *these* targets (#361).
+
+    ``None`` means the scope says nothing about who may execute the scan —
+    every scope written before #361, and every scan whose targets are left
+    unrestricted by the narrowest entry covering them. Otherwise the set is the
+    groups permitted for **every** target at once, because one job runs on one
+    agent: a scan of two ranges restricted to disjoint groups has no agent that
+    may do both, and the empty set it returns is what tells the caller to
+    refuse it.
+
+    When several allow entries cover one target the narrowest of them decides;
+    see the comment on the loop for why the opposite rule left the control dead
+    on every installation that came through migration 0025.
+
+    A scan with no targets at all runs the installation's default input files,
+    whose contents the API never reads (see ``scan_surface``). Nothing here can
+    say which entries cover them, so it restricts nothing — the same limitation
+    the surface derivation has, and the reason a restricted installation should
+    not be scanning from default files.
+    """
+    with get_session(settings.postgres_url) as session:
+        rows = _rows(session, tenant_id)
+    allow_rows = [row for row in rows if row.effect == EFFECT_ALLOW]
+    if not any(row.agent_groups for row in allow_rows):
+        # The common case, and the one that must not pay for this feature: no
+        # entry restricts anything, so no target has to be matched at all.
+        return None
+
+    # Classified by what the value *is*, not by the field it arrived in. An
+    # address typed into ``domains`` is still an address the scan will reach,
+    # and a wildcard domain entry covers it — so trusting the field would let
+    # ``10.1.2.3`` in the domains box walk straight past the group restriction
+    # on the ``10.1.0.0/16`` entry it sits inside.
+    targets = [
+        (value, KIND_CIDR if is_ip_or_cidr(value) else KIND_DOMAIN)
+        for value in [*split_target_lines(ranges_text), *split_target_lines(domains_text)]
+    ]
+    if not targets:
+        return None
+
+    matchers = [(row, _entry_scope(row), _specificity(row)) for row in allow_rows]
+    required: set[str] | None = None
+    for target, kind in targets:
+        # The narrowest covering entry decides, and only entries as narrow as
+        # it are read at all. The alternative — the widest entry wins, so any
+        # unrestricted entry covering the target permits any agent — made the
+        # whole control dead on every installation upgraded through migration
+        # 0025: that migration grandfathers ``0.0.0.0/0``, ``::/0`` and
+        # ``domain *`` onto every existing tenant, so the very first restricted
+        # entry an operator writes would have been cancelled by a row they
+        # never typed, with a 200 and an audit line to say it had worked.
+        # Narrowest-wins is also what an approver means by writing a second,
+        # smaller entry: ``10.1.0.0/16 → pci`` under ``10.0.0.0/8`` is an
+        # exception carved out of the larger approval, not a duplicate of it.
+        best = -1
+        covering: set[str] = set()
+        unrestricted = False
+        for row, scope, rank in matchers:
+            if scope is None or row.kind != kind or not _covers(scope, target=target, kind=kind):
+                continue
+            if rank < best:
+                continue
+            if rank > best:
+                best, covering, unrestricted = rank, set(), False
+            if row.agent_groups:
+                covering.update(row.agent_groups)
+            else:
+                unrestricted = True
+        if unrestricted or not covering:
+            # The narrowest entry covering this target leaves it open to any
+            # agent, or nothing covers it at all — in which case the target is
+            # outside the scope and ``check`` has already refused it. Neither
+            # is a restriction to invent here.
+            continue
+        required = covering if required is None else (required & covering)
+    return frozenset(required) if required is not None else None
+
+
+def _validated(entry: dict[str, Any]) -> dict[str, Any]:
     """One submitted entry, normalised. Raises ValueError with the offending value."""
     effect = str(entry.get("effect", "")).strip().lower()
     kind = str(entry.get("kind", "")).strip().lower()
@@ -316,11 +465,21 @@ def _validated(entry: dict[str, Any]) -> dict[str, str]:
         normalized = _normalize_domain(value)
         if not is_fqdn(normalized):
             raise ValueError(f"not a domain: {value!r}")
+    groups = entry.get("agent_groups") or []
+    if not isinstance(groups, (list, tuple)):
+        raise ValueError(f"agent_groups must be a list of group names: {groups!r}")
+    group_names = sorted({agent_groups_service.normalize_name(name) for name in groups})
+    if group_names and effect == EFFECT_DENY:
+        # A deny entry refuses every agent already; letting one carry a group
+        # list would read as "denied, except for these agents", which is not a
+        # thing this scope can express and not a thing anybody should infer.
+        raise ValueError("agent_groups may only be set on an allow entry")
     return {
         "effect": effect,
         "kind": kind,
         "value": normalized,
         "note": str(entry.get("note", "") or "").strip()[:500],
+        "agent_groups": group_names,
     }
 
 
@@ -348,10 +507,20 @@ def replace_scope(
     if tenants_service.get_tenant(tenant_id) is None:
         raise LookupError(f"tenant not found: {tenant_id}")
 
-    seen: dict[tuple[str, str, str], dict[str, str]] = {}
+    seen: dict[tuple[str, str, str], dict[str, Any]] = {}
+    named_groups: set[str] = set()
     for entry in entries:
         validated = _validated(entry)
+        named_groups.update(validated["agent_groups"])
         seen[(validated["effect"], validated["kind"], validated["value"])] = validated
+    # A restriction to a group that does not exist is a restriction to nobody,
+    # and it would be discovered at the first scan of those targets rather than
+    # here, where the approver can still fix it.
+    unknown = sorted(named_groups - agent_groups_service.existing_names(settings, tenant_id))
+    if unknown:
+        raise ValueError(
+            f"unknown agent group(s) for tenant {tenant_id}: {', '.join(unknown)}"
+        )
 
     approved_at = _now()
     with get_session(settings.postgres_url) as session:
@@ -371,6 +540,7 @@ def replace_scope(
                     kind=validated["kind"],
                     value=validated["value"],
                     note=validated["note"],
+                    agent_groups=list(validated["agent_groups"]),
                     approved_by=approved_by,
                     approved_at=approved_at,
                 )
@@ -398,7 +568,15 @@ def _entry_signature(entry: dict[str, Any]) -> tuple:
     those move for entries nobody touched, and a diff keyed on them would call
     an unchanged scope a complete rewrite.
     """
-    return (entry.get("effect"), entry.get("kind"), entry.get("value"), entry.get("note"))
+    return (
+        entry.get("effect"),
+        entry.get("kind"),
+        entry.get("value"),
+        entry.get("note"),
+        # Part of the entry, so narrowing an approval to one agent group shows
+        # up in the audit diff as a change rather than as nothing at all.
+        tuple(sorted(entry.get("agent_groups") or [])),
+    )
 
 
 def _scope_diff(

@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
+import { useAgentGroups } from "@/hooks/use-agent-groups";
 import { useStartScan } from "@/hooks/use-jobs";
 import { useSystemStatus } from "@/hooks/use-system";
 import { useWordlists } from "@/hooks/use-wordlists";
@@ -35,6 +36,9 @@ import { cn } from "@/lib/utils";
 
 const NO_INTENT = "__none__";
 const NO_WORDLIST = "__none__";
+// "Let the server decide" — either any agent of the tenant, or the one group
+// the approved scope permits for these targets (#361).
+const ANY_AGENT_GROUP = "__any__";
 
 const INTENTS_BY_SURFACE: Record<"external" | "internal" | "all", Array<ScanIntent | "">> = {
   external: ["inventory", "vuln", "full", "delta", "org_profile", ""],
@@ -77,6 +81,7 @@ export function ScanLauncher({
   const [ports, setPorts] = useState("");
   const [portsUdp, setPortsUdp] = useState("");
   const [wordlistId, setWordlistId] = useState("");
+  const [agentGroup, setAgentGroup] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   // One key per *form content*: a retry of the same form after a timeout
   // replays the same request instead of queueing a second scan, while any
@@ -95,6 +100,7 @@ export function ScanLauncher({
     ports,
     portsUdp,
     wordlistId,
+    agentGroup,
     surface,
   ]);
   const [lastFingerprint, setLastFingerprint] = useState(formFingerprint);
@@ -109,6 +115,10 @@ export function ScanLauncher({
   const serviceBackend = systemStatus?.scan_config.service_backend;
   const wantsWordlists = family !== "internal" && !agentMode;
   const { data: wordlists } = useWordlists(wantsWordlists);
+  // Only in agent mode: a local scan runs in the API container, which is in no
+  // group, and the server refuses a selector there rather than ignoring it.
+  const { data: agentGroups } = useAgentGroups(agentMode);
+  const selectedGroup = (agentGroups ?? []).find((group) => group.name === agentGroup);
 
   useEffect(() => {
     // org_profile is an internet-facing intent; if the operator switches to
@@ -142,6 +152,7 @@ export function ScanLauncher({
       ports: ports.trim() || undefined,
       ports_udp: portsUdp.trim() || undefined,
       wordlist_id: wantsWordlists && wordlistId ? wordlistId : undefined,
+      agent_group: agentMode && agentGroup ? agentGroup : undefined,
     };
     mutation.mutate(
       { body, idempotencyKey },
@@ -273,6 +284,37 @@ export function ScanLauncher({
           </Select>
           <p className="text-[11px] text-muted-foreground">{t("launcher.intentHint")}</p>
         </div>
+
+        {agentMode && (agentGroups ?? []).length > 0 ? (
+          <div className="grid gap-2">
+            <Label htmlFor="scan-agent-group" className="font-semibold text-foreground">
+              {t("launcher.agentGroup")}
+            </Label>
+            <Select
+              value={agentGroup || ANY_AGENT_GROUP}
+              onValueChange={(v) => setAgentGroup(v === ANY_AGENT_GROUP ? "" : v)}
+            >
+              <SelectTrigger id="scan-agent-group">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY_AGENT_GROUP}>{t("launcher.agentGroup.any")}</SelectItem>
+                {(agentGroups ?? []).map((group) => (
+                  <SelectItem key={group.group_id} value={group.name}>
+                    {group.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedGroup && selectedGroup.agent_count === 0 ? (
+              <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                {t("launcher.agentGroupEmpty", { group: selectedGroup.name })}
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">{t("launcher.agentGroupHint")}</p>
+            )}
+          </div>
+        ) : null}
 
         <div className="grid gap-2">
           <Label htmlFor="scan-mode" className="font-semibold text-foreground">

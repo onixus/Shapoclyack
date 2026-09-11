@@ -21,6 +21,8 @@ _SCAN_OPTION_KEYS = (
     "notify",
     "export_defectdojo",
     "surface",
+    # Which agent group dispatches of this schedule are addressed to (#361).
+    "agent_group",
 )
 
 
