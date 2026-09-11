@@ -720,6 +720,9 @@ def _run_pipeline_body(
                     # one stage that decides which ports exist for every stage
                     # after it.
                     exclude_ports=port_cfg.exclude_ports,
+                    # A batch of one host gets this whole rate aimed at it, so
+                    # that is where a policy's per-host ceiling lands (#362).
+                    per_host_rate=runtime.per_host_rate,
                 ),
                 aggregate=open_set,
                 aggregate_file=open_file,

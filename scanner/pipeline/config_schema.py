@@ -25,6 +25,13 @@ class RuntimeConfig(BaseModel):
     nse_hosts_per_scan: int = Field(default=1, ge=1, le=256)
     discover_concurrency: int = Field(default=1, ge=1, le=32)
     ports_concurrency: int = Field(default=1, ge=1, le=32)
+    # Packets per second aimed at any *single* host, as opposed to the
+    # per-batch budgets in ``profiles.<mode>.discover_rate`` / ``port_rate``.
+    # Normally None (the batch budget is the only one) and set by a tenant
+    # scan policy (#362): naabu's ``-rate`` is a budget for the whole batch, so
+    # a batch that is one device hands that entire budget to that device, and
+    # the discovery and port stages hold it to this instead.
+    per_host_rate: int | None = Field(default=None, ge=1, le=100_000)
     # Skip NSE stage (L1 scan: discover + ports + reports only). Re-run with --resume to enrich.
     skip_nse: bool = False
     keep_intermediate: bool = True

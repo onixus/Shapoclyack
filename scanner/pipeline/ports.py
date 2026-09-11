@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .config_schema import NaabuScanType
 from .protocol import ScanProtocol, format_endpoint, naabu_udp_port_spec, parse_endpoint, top_udp_port_list
+from .scan_policy import single_host_rate
 from .utils import read_lines, run_command, write_lines
 
 # Whether naabu's SYN mode actually works here, decided once per run:
@@ -259,6 +260,7 @@ def fast_port_scan(
     tag: str = "all",
     scan_type: NaabuScanType = "auto",
     exclude_ports: list[int] | None = None,
+    per_host_rate: int | None = None,
 ) -> list[str]:
     """Run naabu port scan(s) for a batch of alive hosts.
 
@@ -270,10 +272,22 @@ def fast_port_scan(
     touch (#362). It reaches naabu as ``-exclude-ports`` for both protocols,
     which naabu applies to whatever ``-p`` or ``-top-ports`` selected, so an
     excluded port is not scanned even when the custom port file names it.
+
+    ``per_host_rate`` is the same policy's per-host ceiling. ``rate`` is a
+    budget for the whole batch, which for a batch of one host is a budget for
+    that host — see ``scan_policy.single_host_rate``.
     """
     batch_dir = output_dir / "ports"
     results: list[str] = []
     excluded = sorted({int(p) for p in (exclude_ports or [])})
+    batch_rate = single_host_rate(rate, len(alive_hosts), per_host_rate)
+    if batch_rate != rate:
+        logging.info(
+            "Port batch %s is a single host: rate %s -> %s (per-host ceiling)",
+            tag,
+            rate,
+            batch_rate,
+        )
 
     if protocol_mode in ("tcp", "tcp_udp"):
         suffix = tag if protocol_mode == "tcp" else f"{tag}-tcp"
@@ -287,7 +301,7 @@ def fast_port_scan(
                 alive_hosts=alive_hosts,
                 batch_dir=batch_dir,
                 tag=suffix,
-                rate=rate,
+                rate=batch_rate,
                 timeout=timeout,
                 retries=retries,
                 port_args=port_args,
@@ -310,7 +324,7 @@ def fast_port_scan(
                 alive_hosts=alive_hosts,
                 batch_dir=batch_dir,
                 tag=suffix,
-                rate=rate,
+                rate=batch_rate,
                 timeout=timeout,
                 retries=retries,
                 port_args=["-p", port_spec],

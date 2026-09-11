@@ -183,3 +183,190 @@ def test_avoided_ports_reach_naabu(tmp_path, monkeypatch):
     assert captured, "naabu was never invoked"
     command = captured[0]
     assert command[command.index("-exclude-ports") + 1] == "502,20000"
+
+
+# ---------------------------------------------------------------------------
+# The stages that read a rate of their own
+# ---------------------------------------------------------------------------
+
+
+def _fragile_run_config():
+    """The config a fragile scan actually runs on, assembled as ``main`` does.
+
+    ``scanner/config/default.yaml`` → the discovery preset for the mode → the
+    policy, in that order (see ``scanner/main.py``). Hand-made configs are no
+    use for these three: the defect was never in ``apply_policy`` refusing to
+    lower a number, it was in the shipped YAML carrying rates that nothing
+    lowered.
+    """
+    from scanner.pipeline.discovery_profiles import apply_discovery_profile
+    from scanner.pipeline.utils import load_yaml
+
+    config = load_config(load_yaml(Path("scanner/config/default.yaml")))
+    # ``fragile`` forces mode ``safe``, whose discovery preset is ``thorough``:
+    # adaptive wave 2 and the verify pass both on.
+    config = apply_discovery_profile(config, active_mode="safe")
+    return apply_policy(
+        config,
+        _policy(
+            profile="fragile",
+            safe_only=True,
+            skip_service_probe=True,
+            avoid_ports=[502, 20000],
+            max_discover_rate=100,
+            max_port_rate=50,
+            max_host_concurrency=1,
+            per_host_rate=25,
+        ),
+    )
+
+
+def test_the_discovery_ceiling_reaches_the_passes_after_wave_one():
+    """A ceiling of 100 pps that only holds for wave 1 is not a ceiling.
+
+    Wave 2 re-probes the hosts that stayed silent — on a plant network the
+    PLCs and relays this profile exists for — and the verify pass re-probes the
+    alive hosts with no open ports. The shipped config gives them 2500 and 1250
+    pps, and neither number went anywhere near ``discover_rate``.
+    """
+    from scanner.pipeline.discovery_runner import _wave2_rate
+
+    tightened = _fragile_run_config()
+    profile = tightened.profiles["safe"]
+    assert profile.discover_rate == 100
+    assert tightened.discovery.adaptive.enabled is True
+    assert _wave2_rate(profile, tightened.discovery.adaptive.wave2_rate) == 100
+    assert tightened.discovery.verify.enabled is True
+    assert tightened.discovery.verify.rate == 100
+    assert tightened.discovery.tcp_probe.rate == 100
+
+
+def test_the_derived_rate_of_the_later_passes_has_no_floor_of_its_own():
+    """With the YAML rates removed the passes derive their own, and that
+    derivation used to be ``max(500, …)``: any policy under 500 pps silently
+    became 500 on exactly the hosts that had not answered."""
+    from scanner.pipeline.config_schema import ProfileConfig
+    from scanner.pipeline.discovery_runner import _wave2_rate
+
+    profile = ProfileConfig(
+        discover_rate=100, port_rate=50, top_ports=100, nse_profile="baseline"
+    )
+    assert _wave2_rate(profile, None) == 100
+    # A config that never had a ceiling keeps the coarse figure it always had.
+    fast = ProfileConfig(discover_rate=10_000, port_rate=7000, top_ports=100, nse_profile="baseline")
+    assert _wave2_rate(fast, None) == 2500
+
+
+def test_nuclei_is_inside_the_policy_like_every_other_stage():
+    """Nuclei is the one stage that sends HTTP payloads rather than counting
+    SYN/ACKs, ~8.9k templates of them at whatever web interface the estate has.
+    It used to run at its configured 150 rps and 10 at a time no matter what
+    the policy said, on a scan whose whole point was that the devices are
+    fragile."""
+    from scanner.pipeline.config_schema import merge_nuclei_config
+
+    tightened = _fragile_run_config()
+    # ``skip_service_probe`` is "inventory the ports, do not talk to the
+    # devices", and nuclei is talking to the devices.
+    assert tightened.nuclei.enabled is False
+    # The ceilings hold for a tenant that is only throttled, not silenced:
+    # the per-profile overlay is merged over the global block at run time, so
+    # both have to be lowered.
+    throttled = apply_policy(
+        _fragile_run_config().model_copy(
+            update={"nuclei": tightened.nuclei.model_copy(update={"enabled": True})}
+        ),
+        _policy(per_host_rate=25, max_host_concurrency=1),
+    )
+    merged = merge_nuclei_config(throttled.nuclei, throttled.profiles["safe"].nuclei)
+    assert merged.rate_limit == 25
+    assert merged.concurrency == 1
+
+
+def test_the_policy_cannot_turn_nuclei_back_on():
+    config = _config().model_copy(
+        update={"nuclei": _config().nuclei.model_copy(update={"enabled": False})}
+    )
+    assert apply_policy(config, _policy(skip_service_probe=False)).nuclei.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# "25 pps at any single host", which is what the operator was promised
+# ---------------------------------------------------------------------------
+
+
+def test_a_port_batch_of_one_host_is_held_to_the_per_host_ceiling(tmp_path, monkeypatch):
+    """naabu's ``-rate`` is a budget for the whole batch, so a batch of one
+    device hands that device all of it: a fragile scan of one PLC was 50 pps of
+    port scanning at a policy that promised 25."""
+    from scanner.pipeline import ports as ports_mod
+
+    ports_mod._reset_syn_state()
+    captured: list[list[str]] = []
+
+    class _Result:
+        stdout = ""
+
+    monkeypatch.setattr(
+        ports_mod,
+        "run_command",
+        lambda command, **kwargs: (captured.append(command), _Result())[1],
+    )
+
+    def _scan(hosts: list[str]) -> list[str]:
+        captured.clear()
+        ports_mod.fast_port_scan(
+            alive_hosts=hosts,
+            output_dir=tmp_path,
+            rate=50,
+            top_ports=100,
+            top_udp_ports=100,
+            timeout=60,
+            retries=1,
+            protocol_mode="tcp",
+            custom_ports_file=tmp_path / "absent.txt",
+            custom_udp_ports_file=tmp_path / "absent-udp.txt",
+            udp_probes=False,
+            per_host_rate=25,
+        )
+        return captured[0]
+
+    try:
+        one = _scan(["10.0.0.7"])
+        assert one[one.index("-rate") + 1] == "25"
+        # A batch of many hosts keeps the batch budget: lowering it to the
+        # per-host figure would make a large scan take as many times longer as
+        # it has hosts, which is not what the ceiling says.
+        many = _scan(["10.0.0.7", "10.0.0.8"])
+        assert many[many.index("-rate") + 1] == "50"
+    finally:
+        ports_mod._reset_syn_state()
+
+
+def test_a_discovery_batch_of_one_host_is_held_to_the_per_host_ceiling(tmp_path, monkeypatch):
+    from scanner.pipeline import probe_ladder as ladder_mod
+    from scanner.pipeline.discover import host_discovery
+
+    captured: list[list[str]] = []
+
+    class _Result:
+        stdout = ""
+
+    monkeypatch.setattr(
+        ladder_mod,
+        "run_command",
+        lambda command, **kwargs: (captured.append(command), _Result())[1],
+    )
+    host_discovery(
+        ["10.0.0.7"],
+        output_dir=tmp_path,
+        rate=100,
+        timeout=60,
+        retries=1,
+        skip_discovery=False,
+        discovery=_config().discovery,
+        tag="one",
+        per_host_rate=25,
+    )
+    assert captured, "naabu was never invoked"
+    assert captured[0][captured[0].index("-rate") + 1] == "25"
