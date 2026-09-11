@@ -1058,3 +1058,81 @@ def test_a_grouped_agent_drains_the_ungrouped_subject_before_its_own():
     assert first is not None and first["job_id"] == "job-plain"
     assert second is not None and second["job_id"] == "job-pci"
     assert ungrouped.acked and grouped.acked
+
+
+def test_the_nats_path_still_asks_the_api_when_no_offer_arrives(monkeypatch):
+    """An offer is published once and its delivery attempts are finite.
+
+    An agent that cannot run the job NAKs it — the one without the
+    ``scan_policy`` capability does exactly that (#362) — and the durable
+    consumer is shared by the whole (tenant, group), so a few of those and the
+    offer is gone for everyone. The NATS path had no other way to find work,
+    and the job stayed ``queued`` for ever next to an agent able to take it.
+    """
+    import argparse
+
+    claims = 0
+    pulls = 0
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set_token(self, token: str) -> None:
+            pass
+
+        def register(self, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": "a1", "hostname": "edge-1", "tenant_id": "t1"}
+
+        def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+            return {"agent_id": "a1"}
+
+        def claim(self, agent_id: str, **kwargs: Any) -> None:
+            nonlocal claims
+            claims += 1
+            return None
+
+    class _Session:
+        agent_group = None
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def pull_and_claim(self, *args: Any, **kwargs: Any) -> None:
+            # No offer, poll after poll: the queue is not empty, the message
+            # that advertised it is. Bounded so that a loop which never asks
+            # the API fails the assertion below rather than spinning.
+            nonlocal pulls
+            pulls += 1
+            if pulls > 3:
+                raise KeyboardInterrupt
+            return None
+
+    monkeypatch.setattr(worker, "AgentClient", _Client)
+    monkeypatch.setattr(worker, "AgentNatsSession", _Session)
+    monkeypatch.setattr(worker, "check_nats_transport", lambda url: None)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    args = argparse.Namespace(
+        api_url="http://127.0.0.1:8080",
+        token="static-token",
+        timeout=1.0,
+        provisioning_key="",
+        jwt_refresh_seconds=1800,
+        agent_id="a1",
+        hostname="edge-1",
+        label=None,
+        nats_url="nats://127.0.0.1:4222",
+        poll_interval=0.01,
+        config="scanner/config/default.yaml",
+        output_dir="out",
+        scan_timeout=1.0,
+    )
+
+    assert worker.run_loop(args) == 0
+    assert claims == 1, "the NATS path never fell back to the API"
