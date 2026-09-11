@@ -42,13 +42,30 @@ export function bulkSummary(report: BulkActionReport, noun: string): string {
     // Nothing was applied by this request: the answer is the earlier one.
     return `${applied} (already applied — replayed)`;
   }
+  // Ids the server never reached, because the batch ran out of its time budget
+  // rather than out of ids. They are not failures and do not read as such: the
+  // API counts them apart from `failed`, so "skipped" here is only what was
+  // actually refused. `?? 0` for an API from before that split.
+  const left = report.not_attempted ?? 0;
+  const skipped = report.failed;
+  if (left > 0) {
+    const tail = `${left} left — select them again to finish`;
+    return skipped > 0
+      ? `${applied}, ${skipped} skipped, ${tail}`
+      : `${applied}, ${tail}`;
+  }
   return report.failed > 0 ? `${applied}, ${report.failed} skipped` : applied;
 }
 
 /** The distinct reasons ids were skipped, most common first, for the toast's
  * description. The full per-id detail is in the report the caller keeps. */
 export function bulkFailureDetail(report: BulkActionReport): string | undefined {
-  const failures = report.results.filter((item) => !item.ok);
+  // `deadline` ids are not refusals, so their "ran out of its time budget"
+  // message must not appear in a list of reasons the batch skipped things —
+  // the summary already says how many are left to send.
+  const failures = report.results.filter(
+    (item) => !item.ok && item.outcome !== "deadline",
+  );
   if (failures.length === 0) return undefined;
   const counts = new Map<string, number>();
   for (const item of failures) {
@@ -65,7 +82,7 @@ export function bulkFailureDetail(report: BulkActionReport): string | undefined 
 function announce(report: BulkActionReport, noun: string) {
   const summary = bulkSummary(report, noun);
   const detail = bulkFailureDetail(report);
-  if (report.failed > 0) {
+  if (report.failed > 0 || (report.not_attempted ?? 0) > 0) {
     toast.warning(summary, { description: detail });
     return;
   }

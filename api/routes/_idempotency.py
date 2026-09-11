@@ -59,12 +59,14 @@ class IdempotencyGuard:
         settings: Settings,
         *,
         tenant_id: str,
+        actor: str,
         endpoint: str,
         key: str,
         replay: dict[str, Any] | None,
     ) -> None:
         self._settings = settings
         self._tenant_id = tenant_id
+        self._actor = actor
         self._endpoint = endpoint
         self._key = key
         self.replay = replay
@@ -76,6 +78,7 @@ class IdempotencyGuard:
         idempotency_service.complete(
             self._settings,
             tenant_id=self._tenant_id,
+            actor=self._actor,
             endpoint=self._endpoint,
             key=self._key,
             response=response,
@@ -88,6 +91,7 @@ class IdempotencyGuard:
         idempotency_service.release(
             self._settings,
             tenant_id=self._tenant_id,
+            actor=self._actor,
             endpoint=self._endpoint,
             key=self._key,
         )
@@ -97,6 +101,7 @@ def begin(
     settings: Settings,
     *,
     tenant_id: str,
+    actor: str,
     endpoint: str,
     key: str | None,
     payload: Any,
@@ -107,6 +112,12 @@ def begin(
     replay checkable, so it must contain everything that decides what the
     request does and nothing that varies between honest retries.
 
+    ``actor`` is the caller the key belongs to — ``principal.username``, which
+    is the audit trail's identity and therefore ``service-token:<name>`` for an
+    integration. Passing it is what keeps one tenant member from taking a
+    guessable key out from under another's pipeline; see
+    :mod:`api.services.idempotency`.
+
     409 for both refusals, with different detail: a key reused for a different
     body is permanent and the caller must pick another key, while a key still
     in flight resolves by itself and the caller may retry.
@@ -114,12 +125,18 @@ def begin(
     normalised = idempotency_service.normalise_key(key)
     if not normalised:
         return IdempotencyGuard(
-            settings, tenant_id=tenant_id, endpoint=endpoint, key="", replay=None
+            settings,
+            tenant_id=tenant_id,
+            actor=actor,
+            endpoint=endpoint,
+            key="",
+            replay=None,
         )
     try:
         replay = idempotency_service.reserve(
             settings,
             tenant_id=tenant_id,
+            actor=actor,
             endpoint=endpoint,
             key=normalised,
             request_digest=idempotency_service.digest(payload),
@@ -131,5 +148,10 @@ def begin(
         # 409, not 422: the body is well-formed, the *key* is taken.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return IdempotencyGuard(
-        settings, tenant_id=tenant_id, endpoint=endpoint, key=normalised, replay=replay
+        settings,
+        tenant_id=tenant_id,
+        actor=actor,
+        endpoint=endpoint,
+        key=normalised,
+        replay=replay,
     )

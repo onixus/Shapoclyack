@@ -365,7 +365,11 @@ nothing is selected at all.
 A batch is a partial success by design, and the console says so rather than
 claiming a clean run: the toast reports `N updated, M skipped` with the distinct
 reasons, and **the ids that failed stay selected** so the operator can see which
-ones are left. A retried submission that the server recognised as a replay says
+ones are left. A batch the server cut short on its time budget
+(`OCTO_BULK_ACTION_BUDGET_SECONDS`) reads differently on purpose —
+`N updated, M left — select them again to finish` — because those ids were not
+refused: nothing was asked of them, they are still selected, and clicking Apply
+again finishes the job. A retried submission that the server recognised as a replay says
 `already applied — replayed`: the `Idempotency-Key` is minted once per
 submission and held against the body it names until that submission is
 answered, so clicking Apply again after a timeout sends the *same* request and

@@ -24,7 +24,11 @@ outcome:
   id exists to somebody with no right to know;
 * ``conflict`` — the verb is illegal from this row's current state (an
   ``InvalidVulnTransition``, an acceptance on a closed finding);
-* ``invalid`` — the payload is not applicable to this row.
+* ``invalid`` — the payload is not applicable to this row;
+* ``deadline`` — the batch ran out of its time budget before reaching this id,
+  so nothing was asked of it. The only outcome that is about the *request*
+  rather than about the row, and the only one a caller fixes by sending the ids
+  again.
 
 **One transaction per id, on purpose.** The alternative — one transaction for
 the batch — would mean a single illegal transition rolling back the other
@@ -41,6 +45,15 @@ times, and it is the other reason :data:`MAX_BULK_IDS` is 200 rather than
 proportionally long; nothing here runs it in the background, because a report
 that says what happened cannot be written before it has.
 
+**But not longer than the proxy will wait.** Two hundred slow ids used to end
+as a 504 somewhere in front of the API — the operator saw a failure, the batch
+had applied ninety of itself, and the only way to find out which ninety was to
+retry with the idempotency key. So the loop carries a time budget
+(``OCTO_BULK_ACTION_BUDGET_SECONDS``, default 45s, set below whatever the proxy
+allows): when it is spent the remaining ids are reported ``deadline`` and the
+request answers 200 with a report that names them. The work stops where the
+report says it stopped, which is the same promise the per-id outcomes make.
+
 **The role is the route's business** (``api/routes/vulnerabilities.py``), and it
 is the role the *single* verb requires: ``exception`` and ``false_positive``
 need tenant ``admin`` in bulk exactly as they do one at a time. Doing a hundred
@@ -51,6 +64,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable, Iterable
 
 from api.services import assets as assets_service
@@ -117,6 +131,16 @@ OUTCOME_OK = "ok"
 OUTCOME_NOT_FOUND = "not_found"
 OUTCOME_CONFLICT = "conflict"
 OUTCOME_INVALID = "invalid"
+#: An id the batch never reached: the request spent its time budget on the ids
+#: before it. Not a refusal — the verb was never asked — which is why it reads
+#: as "left to do" rather than as a failure of the finding. See
+#: :func:`_apply_each`.
+OUTCOME_DEADLINE = "deadline"
+
+
+def _clock() -> float:
+    """Monotonic seconds. A function so the budget can be tested without sleeping."""
+    return time.monotonic()
 
 
 class BulkActionAborted(Exception):
@@ -232,18 +256,78 @@ def _report(
 ) -> dict[str, Any]:
     """The report envelope. ``requested`` is the id count when it is not the
     number of results — a batch that aborted part-way reached fewer ids than it
-    was given, and saying ``requested: 99`` of two hundred would hide that."""
+    was given, and saying ``requested: 99`` of two hundred would hide that.
+
+    ``failed`` and ``not_attempted`` are two different statements and are
+    counted apart. ``failed`` is what the API *refused* — a closed finding, an
+    illegal transition, an id in another tenant — and ``docs/api-and-rbac.md``
+    tells an integration that ``failed == 0`` means the batch applied. An id
+    the budget cut the loop before was never asked anything, so folding it into
+    ``failed`` turns "the request was slow" into "eighty findings rejected",
+    which is a pipeline alerting on a batch that refused nothing.
+    """
     succeeded = sum(1 for item in results if item["ok"])
+    not_attempted = sum(1 for item in results if item["outcome"] == OUTCOME_DEADLINE)
     report = {
         "action": action,
         "requested": len(results) if requested is None else requested,
         "succeeded": succeeded,
-        "failed": len(results) - succeeded,
+        "failed": len(results) - succeeded - not_attempted,
+        "not_attempted": not_attempted,
         "results": results,
     }
     if aborted:
         report["aborted"] = True
+    if not_attempted:
+        # Derived from the results rather than passed in, so every envelope
+        # built from a set of results — including the per-tenant ones
+        # ``audit_rows`` regroups for a platform admin — says it.
+        report["deadline"] = True
     return report
+
+
+def changed_nothing(report: dict[str, Any]) -> bool:
+    """Whether this report is worth remembering under an ``Idempotency-Key``.
+
+    A batch that stopped on its budget having applied *nothing* is not an
+    answer, it is a request that did not happen — and storing it makes the key
+    mean "this was done" for the next 24 hours. The console never notices (it
+    mints a UUID per click), but the CI recipes in
+    ``docs/wiki/scenarios-architect.md`` are told to send a stable, meaningful
+    key: `nightly-triage` sends the rest of its batch under the same name, is
+    replayed the empty report, and the remainder never arrives at all.
+
+    Narrow on purpose. Only the ids the budget cut off make a batch re-sendable
+    under its own key; a batch whose ids were all refused — every one closed,
+    every one in another tenant — *is* an answer, and re-running it would
+    produce the same refusals with a second audit row to show for it.
+    """
+    return bool(report.get("deadline")) and not report["succeeded"]
+
+
+def _deadline_results(
+    endpoint: str, action: str, ids: list[str]
+) -> list[dict[str, Any]]:
+    """The ids a batch ran out of time for, as report entries.
+
+    ``ok`` is false because the verb did not happen, but the message says the
+    id was never tried: "not found" and "conflict" are statements about the
+    finding, and this is a statement about the request.
+    """
+    for _ in ids:
+        metrics_service.BULK_ACTION_ITEMS_TOTAL.labels(
+            endpoint=endpoint, action=action, outcome=OUTCOME_DEADLINE
+        ).inc()
+    return [
+        {
+            "id": item_id,
+            "ok": False,
+            "outcome": OUTCOME_DEADLINE,
+            "error": "not attempted: the batch ran out of its time budget",
+            "tenant_id": None,
+        }
+        for item_id in ids
+    ]
 
 
 def _apply_each(
@@ -251,15 +335,47 @@ def _apply_each(
     action: str,
     ids: list[str],
     verb: Callable[[str], Any],
+    *,
+    budget_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Every id's outcome, or :class:`BulkActionAborted` holding what was done.
 
     The loop is where "one transaction per id" becomes visible: an unclassified
     failure on the hundredth id does not undo the ninety-nine before it, so it
     must not be raised as though nothing had happened either.
+
+    ``budget_seconds`` is the other end of that. Two hundred ids are two
+    hundred transactions and, for findings carrying a Jira key, two hundred
+    outbound calls, all inside somebody's HTTP request — so a slow tracker puts
+    this request past the proxy's timeout, and a 504 on a batch that applied
+    half of itself is exactly the "partly applied, no report" failure the
+    per-id report exists to prevent. Past the budget the loop stops and the ids
+    it never reached are reported :data:`OUTCOME_DEADLINE`: a 200 saying what
+    landed and what is left, which the caller can send again. ``0`` disables it.
+
+    The first id is always attempted, so a budget too small to fit one id does
+    not return two hundred ``deadline`` entries having asked nothing. Attempted
+    is not applied, though — the first id may be one that closed since the
+    selection was made — so the caller, not this loop, is what keeps a batch
+    that changed nothing from burning its key; see ``routes/vulnerabilities.py``.
     """
     results: list[dict[str, Any]] = []
-    for item_id in ids:
+    deadline = _clock() + budget_seconds if budget_seconds > 0 else None
+    for index, item_id in enumerate(ids):
+        if deadline is not None and index and _clock() >= deadline:
+            LOG.warning(
+                "bulk %s action=%s stopped on its %.0fs budget after %d of %d ids "
+                "(%d applied); the rest are reported '%s'",
+                endpoint,
+                action,
+                budget_seconds,
+                index,
+                len(ids),
+                sum(1 for item in results if item["ok"]),
+                OUTCOME_DEADLINE,
+            )
+            results.extend(_deadline_results(endpoint, action, ids[index:]))
+            break
         try:
             results.append(_apply_one(endpoint, action, item_id, verb))
         except Exception as exc:
@@ -304,15 +420,23 @@ def apply_vulnerability_action(
     verb = _vulnerability_verb(
         settings, tenant_id=tenant_id, action=action, payload=payload, actor=actor
     )
-    results = _apply_each("vulnerabilities.bulk", action, ids, verb)
+    results = _apply_each(
+        "vulnerabilities.bulk",
+        action,
+        ids,
+        verb,
+        budget_seconds=settings.bulk_action_budget_seconds,
+    )
     report = _report(action, results)
     LOG.info(
-        "bulk vulnerabilities action=%s tenant=%s requested=%d succeeded=%d failed=%d actor=%s",
+        "bulk vulnerabilities action=%s tenant=%s requested=%d succeeded=%d failed=%d "
+        "not_attempted=%d actor=%s",
         action,
         tenant_id or "*",
         report["requested"],
         report["succeeded"],
         report["failed"],
+        report["not_attempted"],
         actor,
     )
     return report
@@ -422,15 +546,19 @@ def apply_asset_action(
             settings, tenant_id, asset_id, dict(payload), actor=actor
         )
 
-    results = _apply_each("assets.bulk", action, ids, verb)
+    results = _apply_each(
+        "assets.bulk", action, ids, verb, budget_seconds=settings.bulk_action_budget_seconds
+    )
     report = _report(action, results)
     LOG.info(
-        "bulk assets action=%s tenant=%s requested=%d succeeded=%d failed=%d actor=%s",
+        "bulk assets action=%s tenant=%s requested=%d succeeded=%d failed=%d "
+        "not_attempted=%d actor=%s",
         action,
         tenant_id,
         report["requested"],
         report["succeeded"],
         report["failed"],
+        report["not_attempted"],
         actor,
     )
     return report
@@ -487,6 +615,9 @@ def audit_document(
         "requested": report["requested"],
         "succeeded": report["succeeded"],
         "failed": report["failed"],
+        # Apart from ``failed`` here too: a reader of the trail asking "what did
+        # this batch refuse" must not be shown the ids it simply never reached.
+        "not_attempted": report["not_attempted"],
         "write_scope": write_scope or "*",
         "applied": [item["id"] for item in report["results"] if item["ok"]],
         "rejected": {

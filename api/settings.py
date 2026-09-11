@@ -558,6 +558,18 @@ class Settings:
     # Audit-trail retention. Pruned opportunistically on login (auth_audit);
     # 0 keeps events forever.
     auth_event_retention_days: int = 90
+    # How long ``POST /api/{vulnerabilities,assets}/bulk`` may spend applying
+    # ids before it stops and answers with a partial report (#346). Each id is
+    # its own transaction and, for a finding with a tracker key, its own
+    # outbound call, so two hundred of them against a slow Jira is a request no
+    # proxy will wait out — and a 504 there is the one thing the per-id report
+    # exists to prevent: work half applied and no statement of which half. Past
+    # the budget the ids the batch never reached come back ``deadline`` and the
+    # caller sends them again. Keep it **below** the read timeout of whatever
+    # sits in front of the API (nginx defaults to 60s); 0 turns it off and
+    # restores the pre-#346-debt behaviour of running until something upstream
+    # gives up.
+    bulk_action_budget_seconds: int = 45
     # Administrative audit trail (#327). Longer than the login trail above,
     # because it is what a compliance review reads a year later, and pruned by
     # a privileged job rather than by the API — see
@@ -1465,6 +1477,9 @@ def load_settings() -> Settings:
             for part in os.environ.get("OCTO_TRUSTED_PROXIES", "").split(",")
             if part.strip()
         ],
+        bulk_action_budget_seconds=max(
+            0, int(os.environ.get("OCTO_BULK_ACTION_BUDGET_SECONDS", "45"))
+        ),
         auth_event_retention_days=max(
             0, int(os.environ.get("OCTO_AUTH_EVENT_RETENTION_DAYS", "90"))
         ),

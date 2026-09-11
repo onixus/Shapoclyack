@@ -2062,11 +2062,16 @@ class BulkActionItemResult(BaseModel):
     ``conflict`` its 409, ``invalid`` its 422. ``error`` carries the refusal's
     own message so an operator does not have to guess which of a batch's
     hundred ids was already closed.
+
+    ``deadline`` is the one outcome that is not a status code: the batch spent
+    its time budget before reaching this id, so the verb was never asked of it.
+    It is not a refusal and not a failure of the finding — it is work left to
+    do, and the caller sends those ids again.
     """
 
     id: str
     ok: bool
-    outcome: Literal["ok", "not_found", "conflict", "invalid"]
+    outcome: Literal["ok", "not_found", "conflict", "invalid", "deadline"]
     error: str | None = None
 
 
@@ -2076,12 +2081,24 @@ class BulkActionReport(BaseModel):
     A batch is a partial success by design — one closed finding in a selection
     of two hundred must not refuse the other hundred and ninety-nine — so the
     envelope is a report and the status is 200 even when ``failed`` is nonzero.
-    A caller wanting all-or-nothing checks ``failed == 0``.
+    A caller wanting all-or-nothing checks ``failed == 0`` — which counts only
+    what the API *refused*. ``not_attempted`` is counted apart from it: an id
+    the time budget cut the loop before was never asked anything, and reporting
+    eighty of those as eighty failures is how a pipeline alerts on a batch that
+    rejected nothing. ``failed + not_attempted + succeeded == len(results)``.
 
     ``replayed`` is true when this answer came out of the ``Idempotency-Key``
     record of an earlier identical request rather than from work done now. The
     status code says so too (200 on a replay, where a fresh batch answers 200
     as well), so the flag is what a client actually reads.
+
+    ``deadline`` is true when the batch stopped on its time budget
+    (``OCTO_BULK_ACTION_BUDGET_SECONDS``) rather than on the end of its id
+    list: the ids it never reached carry outcome ``deadline``, and counting
+    them is what "N left" is made of. Still 200 and still a report — the
+    request did part of the work and says which part — so a client that wants
+    the rest sends those ids in a new request, under a **new** key: retrying
+    this one replays this report, which is how it learns nothing was lost.
 
     ``aborted`` is true when the batch stopped on something no per-id outcome
     describes — a deadlock, a tracker call that timed out — after applying part
@@ -2095,9 +2112,11 @@ class BulkActionReport(BaseModel):
     requested: int
     succeeded: int
     failed: int
+    not_attempted: int = 0
     results: list[BulkActionItemResult]
     replayed: bool = False
     aborted: bool = False
+    deadline: bool = False
 
 
 # One body per verb, selected by ``action`` — a discriminated union rather than

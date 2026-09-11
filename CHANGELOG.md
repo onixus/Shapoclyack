@@ -611,6 +611,63 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **An `Idempotency-Key` belongs to the caller who minted it, not to the whole
+  tenant** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). The key
+  on the bulk verbs was unique per `(tenant, endpoint)`, and the CI recipes in
+  `docs/wiki/scenarios-architect.md` tell integrations to send guessable names
+  like `nightly-triage`. Any member of the tenant could take one and, for the
+  24 hours the record lives, either `409` every other run of that name or — with
+  a body that happened to match — be handed somebody else's report as a replay,
+  with no audit row of their own, because the replay branch returns before the
+  trail is written. The key now also carries the caller (migration 0055, the
+  principal the audit trail records). Rows written before the migration keep the
+  old tenant-wide reading for the 24 hours they survive, so a retry that crosses
+  the upgrade still replays instead of re-applying its batch. Both directions of
+  the rolling deploy are closed by a trigger that refuses an insert whose
+  owner-ness disagrees with the row already holding the key: without it a batch
+  answered by a new replica and retried against one the deploy had not reached
+  would have been applied a second time. The trigger, the narrowed index and the
+  fallback read come out together one release later — the contract step, now
+  tracked in `ROADMAP.md` and in a `TODO` in `api/services/idempotency.py`
+  rather than only in prose. Until they do, a
+  key a pre-upgrade replica reserved is still tenant-wide for the 24 hours that
+  row lives, and a neighbour who guesses it can still be handed its report
+  without an audit row of their own.
+- **A bulk action has a time budget and answers with a partial report instead of
+  a 504** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Two
+  hundred ids are two hundred transactions and, for findings carrying a tracker
+  key, two hundred outbound calls, all inside one operator's request: against a
+  slow Jira that request outran the proxy in front of the API, which is the
+  "half applied, no report" failure the per-id report exists to prevent. Past
+  `OCTO_BULK_ACTION_BUDGET_SECONDS` (default 45s, `0` disables) the batch stops
+  and answers **200**; the ids it never reached carry the new outcome
+  `deadline`, the envelope carries `"deadline": true`, and the console's toast
+  says `N updated, M left — select them again to finish` rather than calling
+  them failures. Those ids are counted in the new `not_attempted` field and
+  **not** in `failed`, which stays what the API refused — `failed == 0` still
+  means "everything the batch asked for applied", which is what
+  `docs/api-and-rbac.md` tells integrations to check. Retrying the same key
+  replays the partial report, so nothing is lost and nothing is applied twice —
+  except for a batch that was cut short having applied *nothing* (its first id
+  had closed since the selection was made), which releases its key instead of
+  answering "already done" to every retry for a day.
+- **A partial archive that arrives after the cancellation grace period is kept**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The agent that
+  obeyed but was slow — a large partial `runs/<run_id>` on a narrow link — had
+  its upload refused `422` by `reap_stale_cancellations`'s terminal row, and an
+  archive nobody can produce again went in the bin, under a docs line promising
+  partial results are kept. The archive is now ingested for one further grace
+  period after the job was closed. What is accepted is the bytes and not the
+  verdict: the job keeps the reaper's outcome — `cancelled`, the same
+  `finished_at`, no `exit_code`, "did not confirm" still in `error` — plus a
+  note that the results turned up late, and is counted as
+  `octo_job_cancellations_total{outcome="late_results"}`. An upload with **no**
+  archive is still refused, because it carries nothing to keep and accepting it
+  would record a confirmation that never came. An agent too old to send an
+  idempotency key gets a server-side reservation on the row instead of none, so
+  the archive is taken once: before this, the "nothing has ever been ingested"
+  clause stayed true after every upload and the same job could be re-extracted,
+  re-published and re-upserted for the whole grace period.
 - **An agent group is the same name on every path, and a reference to one
   cannot be written against a group being deleted**
   ([#361](https://github.com/onixus/Shapoclyack/issues/361)). Creating a group

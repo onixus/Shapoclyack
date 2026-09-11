@@ -2369,24 +2369,35 @@ export const MAX_BULK_IDS = 200;
 /** One id's fate inside a batch. `outcome` is the single-id endpoint's status
  * code in words: `not_found` is its 404 (which is also what another tenant's id
  * gets — a write scope never confirms existence), `conflict` its 409, `invalid`
- * its 422. */
+ * its 422. `deadline` is the one that is not a status code: the request spent
+ * its time budget before reaching this id, so nothing was asked of it and
+ * sending it again applies it once. */
 export type BulkActionItemResult = {
   id: string;
   ok: boolean;
-  outcome: "ok" | "not_found" | "conflict" | "invalid";
+  outcome: "ok" | "not_found" | "conflict" | "invalid" | "deadline";
   error: string | null;
 };
 
 /** A batch is a partial success by design, so the response is a report and the
  * status is 200 even when `failed` is nonzero. `replayed` means the answer came
- * from the `Idempotency-Key` record of an earlier identical request. */
+ * from the `Idempotency-Key` record of an earlier identical request;
+ * `deadline` means the server stopped on its time budget and the ids carrying
+ * that outcome are work still to do. */
 export type BulkActionReport = {
   action: string;
   requested: number;
   succeeded: number;
+  /** Ids the API refused — closed, in another tenant, illegal transition. Does
+   * *not* include the ids a batch ran out of time for; those are
+   * `not_attempted`, because nothing was asked of them. */
   failed: number;
+  /** Ids the time budget cut the loop before. The operator's next step is to
+   * send them again; `0` on an older API that did not count them apart. */
+  not_attempted?: number;
   results: BulkActionItemResult[];
   replayed: boolean;
+  deadline?: boolean;
 };
 
 /** The verbs `POST /vulnerabilities/bulk` accepts, each carrying the same body
