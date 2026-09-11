@@ -552,6 +552,43 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **An `Idempotency-Key` belongs to the caller who minted it, not to the whole
+  tenant** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). The key
+  on the bulk verbs was unique per `(tenant, endpoint)`, and the CI recipes in
+  `docs/wiki/scenarios-architect.md` tell integrations to send guessable names
+  like `nightly-triage`. Any member of the tenant could take one and, for the
+  24 hours the record lives, either `409` every other run of that name or — with
+  a body that happened to match — be handed somebody else's report as a replay,
+  with no audit row of their own, because the replay branch returns before the
+  trail is written. The key now also carries the caller (migration 0055, the
+  principal the audit trail records). Rows written before the migration keep the
+  old tenant-wide reading for the 24 hours they survive, so a retry that crosses
+  the upgrade still replays instead of re-applying its batch.
+- **A bulk action has a time budget and answers with a partial report instead of
+  a 504** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Two
+  hundred ids are two hundred transactions and, for findings carrying a tracker
+  key, two hundred outbound calls, all inside one operator's request: against a
+  slow Jira that request outran the proxy in front of the API, which is the
+  "half applied, no report" failure the per-id report exists to prevent. Past
+  `OCTO_BULK_ACTION_BUDGET_SECONDS` (default 45s, `0` disables) the batch stops
+  and answers **200**; the ids it never reached carry the new outcome
+  `deadline`, the envelope carries `"deadline": true`, and the console's toast
+  says `N updated, M left — select them again to finish` rather than calling
+  them failures. The first id is always attempted, and retrying the same key
+  replays the partial report, so nothing is lost and nothing is applied twice.
+- **A partial archive that arrives after the cancellation grace period is kept**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The agent that
+  obeyed but was slow — a large partial `runs/<run_id>` on a narrow link — had
+  its upload refused `422` by `reap_stale_cancellations`'s terminal row, and an
+  archive nobody can produce again went in the bin, under a docs line promising
+  partial results are kept. The archive is now ingested for one further grace
+  period after the job was closed. What is accepted is the bytes and not the
+  verdict: the job keeps the reaper's outcome — `cancelled`, the same
+  `finished_at`, no `exit_code`, "did not confirm" still in `error` — plus a
+  note that the results turned up late, and is counted as
+  `octo_job_cancellations_total{outcome="late_results"}`. An upload with **no**
+  archive is still refused, because it carries nothing to keep and accepting it
+  would record a confirmation that never came.
 - **A running scan can be stopped**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
   legal only from `queued`; once an agent had claimed a job, the only bound on

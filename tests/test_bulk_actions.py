@@ -19,6 +19,7 @@ key back rather than burning it.
 
 from __future__ import annotations
 
+import itertools
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -739,6 +740,10 @@ def test_a_key_still_in_flight_is_a_conflict(tmp_path, monkeypatch):
         idempotency_service.reserve(
             settings,
             tenant_id=tenant_id,
+            # The same caller the request below authenticates as: a key is
+            # scoped to its owner, so a reservation made by anybody else would
+            # not be in this request's way at all.
+            actor="operator",
             endpoint="vulnerabilities.bulk",
             key="racing",
             request_digest=idempotency_service.digest(
@@ -775,6 +780,10 @@ def test_a_reservation_whose_process_died_is_retryable_once_its_lease_expires(
         idempotency_service.reserve(
             settings,
             tenant_id=tenant_id,
+            # The same caller the request below authenticates as: a key is
+            # scoped to its owner, so a reservation made by anybody else would
+            # not be in this request's way at all.
+            actor="operator",
             endpoint="vulnerabilities.bulk",
             key="abandoned",
             request_digest=idempotency_service.digest(
@@ -860,6 +869,115 @@ def test_the_key_is_namespaced_by_endpoint(tmp_path, monkeypatch):
     assert vulns_response.status_code == 200, vulns_response.text
     assert assets_response.status_code == 200, assets_response.text
     assert assets_response.json()["replayed"] is False
+
+
+def test_a_key_belongs_to_the_caller_and_not_to_the_tenant(tmp_path, monkeypatch):
+    """``nightly-triage`` is a guessable name, and the CI recipes in
+    docs/wiki/scenarios-architect.md tell integrations to send exactly that
+    shape. While the key was unique per *tenant*, the second member of a tenant
+    sending the same body under the same name was handed the first one's report
+    as a replay — a batch they never ran, reported as theirs, and with no audit
+    row of their own, because the replay branch returns before the trail is
+    written."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    body = {"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}}
+    key = {"Idempotency-Key": "nightly-triage"}
+
+    mine = client.post(_VULN_URL, json=body, headers={**auth_headers(client, "operator"), **key})
+    theirs = client.post(_VULN_URL, json=body, headers={**auth_headers(client, "admin"), **key})
+
+    assert mine.status_code == 200, mine.text
+    assert theirs.status_code == 200, theirs.text
+    assert mine.json()["replayed"] is False
+    assert theirs.json()["replayed"] is False
+    # Two callers, two batches, two rows in the trail. A replay writes none.
+    assert len(_audit_rows(settings, "vulnerability.bulk")) == 2
+
+
+def test_one_tenant_member_cannot_hold_a_key_against_another(tmp_path, monkeypatch):
+    """The other half of the same namespace: with a body that does *not* match,
+    the squatter did not get a replay — they got the key, and everybody else
+    got 409 for as long as the record lived. A day of it, from one guess."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    key = {"Idempotency-Key": "triage-2026-09-10"}
+
+    squatter = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}},
+        headers={**auth_headers(client, "admin"), **key},
+    )
+    mine = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": ids, "payload": {"assignee": "grace"}},
+        headers={**auth_headers(client, "operator"), **key},
+    )
+
+    assert squatter.status_code == 200, squatter.text
+    assert mine.status_code == 200, mine.text
+    assert mine.json()["succeeded"] == 2
+    # And the caller's own key still means what it meant: their retry replays.
+    assert client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": ids, "payload": {"assignee": "grace"}},
+        headers={**auth_headers(client, "operator"), **key},
+    ).json()["replayed"] is True
+
+
+def test_a_batch_that_runs_out_of_time_reports_what_is_left(tmp_path, monkeypatch):
+    """Two hundred ids are two hundred transactions and, for findings with a
+    tracker key, two hundred outbound calls — inside one operator's request. A
+    slow tracker used to put that request past the proxy, and a 504 on a batch
+    that applied half of itself is the "partly applied, no report" failure the
+    per-id report exists to prevent. The budget turns it into a 200 that says
+    which ids are left."""
+    client, settings, tenant_id = _client(tmp_path, monkeypatch)
+    ids = _vuln_ids(settings, tenant_id)
+    body = {"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}}
+    headers = {**auth_headers(client, "operator"), "Idempotency-Key": "slow-tracker"}
+    # A clock that has burned the whole budget by the time the second id comes
+    # up, rather than a verb that really sleeps for it.
+    ticks = itertools.count(step=10_000)
+    monkeypatch.setattr(bulk_actions, "_clock", lambda: float(next(ticks)))
+
+    response = client.post(_VULN_URL, json=body, headers=headers)
+
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["succeeded"] == 1
+    assert report["deadline"] is True
+    assert _outcomes(report) == {ids[0]: "ok", ids[1]: "deadline"}
+    # "Not attempted" is the whole claim: the id the batch never reached is
+    # untouched, so sending it again applies it once.
+    viewer = auth_headers(client, "viewer")
+    assert client.get(f"/api/vulnerabilities/{ids[1]}", headers=viewer).json()["assignee"] is None
+    # The key holds the partial report, so the retry that the operator's client
+    # makes on a timeout reads what landed instead of applying it again.
+    replay = client.post(_VULN_URL, json=body, headers=headers)
+    assert replay.json()["replayed"] is True
+    assert replay.json()["succeeded"] == 1
+    assert _outcomes(replay.json())[ids[1]] == "deadline"
+
+
+def test_the_time_budget_can_be_turned_off(tmp_path, monkeypatch):
+    """An installation whose proxy waits as long as its batches take keeps the
+    old behaviour with `OCTO_BULK_ACTION_BUDGET_SECONDS=0`."""
+    client = configured_client(tmp_path, monkeypatch, bulk_action_budget_seconds=0)
+    settings, tenant_id = _seed(tmp_path)
+    ids = _vuln_ids(settings, tenant_id)
+    ticks = itertools.count(step=10_000)
+    monkeypatch.setattr(bulk_actions, "_clock", lambda: float(next(ticks)))
+
+    response = client.post(
+        _VULN_URL,
+        json={"action": "assign", "vuln_ids": ids, "payload": {"assignee": "ada"}},
+        headers=auth_headers(client, "operator"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["succeeded"] == 2
+    assert response.json()["deadline"] is False
 
 
 def test_records_are_purged_once_past_their_ttl(tmp_path, monkeypatch):

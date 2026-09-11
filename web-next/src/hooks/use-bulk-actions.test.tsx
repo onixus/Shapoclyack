@@ -68,6 +68,24 @@ describe("bulkSummary", () => {
     );
   });
 
+  it("says how many ids are left when the server ran out of time", () => {
+    // The ids the batch never reached are not failures — nothing was asked of
+    // them — and calling them "skipped" would tell the operator the selection
+    // was rejected rather than that it is half done.
+    const cut = report({
+      succeeded: 1,
+      failed: 1,
+      deadline: true,
+      results: [
+        { id: "vln_1", ok: true, outcome: "ok", error: null },
+        { id: "vln_2", ok: false, outcome: "deadline", error: "not attempted" },
+      ],
+    });
+    expect(bulkSummary(cut, "finding")).toBe(
+      "1 finding updated, 1 left — select them again to finish",
+    );
+  });
+
   it("says a replay applied nothing now", () => {
     // The batch was applied by the earlier request this one is a retry of;
     // reporting it as fresh work would tell the operator the click landed

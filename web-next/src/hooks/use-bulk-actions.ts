@@ -42,6 +42,19 @@ export function bulkSummary(report: BulkActionReport, noun: string): string {
     // Nothing was applied by this request: the answer is the earlier one.
     return `${applied} (already applied — replayed)`;
   }
+  // Ids the server never reached, because the batch ran out of its time budget
+  // rather than out of ids. They are not failures and must not read as such:
+  // nothing was asked of them, and the operator's next step is to send them
+  // again. Counted from the results so the toast says how many are left, which
+  // `failed` alone — where they sit next to genuine refusals — cannot.
+  const left = report.results.filter((item) => item.outcome === "deadline").length;
+  const skipped = report.failed - left;
+  if (left > 0) {
+    const tail = `${left} left — select them again to finish`;
+    return skipped > 0
+      ? `${applied}, ${skipped} skipped, ${tail}`
+      : `${applied}, ${tail}`;
+  }
   return report.failed > 0 ? `${applied}, ${report.failed} skipped` : applied;
 }
 

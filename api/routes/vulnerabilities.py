@@ -440,6 +440,10 @@ def bulk_action(
     guard = idempotency.begin(
         settings,
         tenant_id=principal.tenant_id,
+        # The key is this caller's name for their own request, not a tenant-wide
+        # reservation: a guessable key like `nightly-triage` must not be takeable
+        # from one integration by another member of the same tenant.
+        actor=principal.username,
         endpoint="vulnerabilities.bulk",
         key=idempotency_key,
         # Sorted ids: a retry that reshuffles its selection is the same batch,

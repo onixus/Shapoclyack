@@ -493,7 +493,21 @@ deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30)
 `idempotency_records` remembers which `Idempotency-Key` a bulk write has already
 answered, so a retry after a timeout replays the first report instead of
 applying two hundred transitions twice. One row per key per endpoint per
-tenant, holding the request digest and the report.
+**caller** — the principal the audit trail records — holding the request digest
+and the report.
+
+**On upgrade to migration `0055`.** Expand only, and nothing is rewritten: the
+`actor` column arrives nullable with no default, so every row written before it
+is marked by construction as "reserved when a key was a tenant-wide namespace",
+and `reserve` still honours those rows for the 24 hours they survive. The
+tenant-wide unique index is not dropped but *narrowed* to exactly those rows
+(`WHERE actor IS NULL`), so a replica still running the previous release keeps
+the uniqueness that decides which of two racing replicas holds a key. Both the
+narrowed index and the fallback read may go in a later release, once no row
+without an actor can exist; that is a code change with no migration, because the
+sweep removes the rows on its own. During the rolling deploy itself a key
+reserved by an old replica is still tenant-wide — one deploy window, not a
+standing property.
 
 **Nothing operational to schedule.** Rows expire 24 hours after they are
 written (`RETENTION_SECONDS` in `api/services/idempotency.py`) and are deleted
