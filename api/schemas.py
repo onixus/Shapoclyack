@@ -406,6 +406,15 @@ class AgentRegisterRequest(BaseModel):
     hostname: str = ""
     version: str = ""
     labels: dict[str, str] = Field(default_factory=dict)
+    # What this build of the agent can honour (#362) — today only
+    # ``scan_policy``, meaning it applies the rate ceilings and the port
+    # avoid-list the claim response carries. Declared at registration as well
+    # as on the heartbeat because a freshly started agent claims before its
+    # first heartbeat, and an empty list there would cost it the job. An agent
+    # predating this sends nothing and is treated as unable, which is what it
+    # is: the policy is enforced by the executor, so believing an old worker
+    # would mean a ceiling that reads as enforced and is not.
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -630,6 +639,12 @@ class AgentClaimResponse(BaseModel):
     export_defectdojo: bool = False
     inputs: dict[str, str] = Field(default_factory=dict)
     tenant_id: str = "default"
+    # The pace this scan must keep (#362) travels in ``inputs`` as
+    # ``scan_policy.json``, beside the targets and the approved scope, rather
+    # than as a field of its own: it is a document the worker hands to the
+    # scanner unread, exactly like the scope (#244), and it must reach only the
+    # agent the API has just bound the job to — never the broadcast NATS offer
+    # (#361).
     # Fencing token for this hand-out (ROADMAP P1.4/P1.5). Echo it back on the
     # results upload; the API rejects an upload carrying a stale attempt, which
     # is how a late result from a lease that already expired is kept from
@@ -1311,6 +1326,57 @@ class ReplaceScanScopeRequest(BaseModel):
     """
 
     entries: list[ScanScopeEntry] = Field(default_factory=list, max_length=1000)
+
+
+class ScanPolicyRequest(BaseModel):
+    """How hard this tenant may be scanned, as an operator writes it (#362).
+
+    Every ceiling is optional and ``null`` means "nothing of this tenant's
+    own" — which is not the same as unlimited, because ``profile`` carries a
+    floor the stored values can only make stricter. ``fragile`` is the OT/ICS
+    profile: it forces the ``safe`` speed profile, a minimum pace, one host at
+    a time, no service probing, and the fieldbus avoid-list in
+    ``api/services/scan_policy.py``. Writing ``profile="fragile"`` with
+    ``max_discover_rate=10000`` therefore stores 10000 and scans at 100.
+    """
+
+    profile: Literal["standard", "fragile"] = "standard"
+    # Refuse every speed profile but ``safe``. Implied by ``fragile``; on its
+    # own for a tenant that is merely noise-sensitive.
+    safe_only: bool = False
+    max_discover_rate: int | None = Field(default=None, ge=1, le=100_000)
+    max_port_rate: int | None = Field(default=None, ge=1, le=100_000)
+    max_host_concurrency: int | None = Field(default=None, ge=1, le=64)
+    # Packets per second aimed at one host, which is what a fragile device
+    # notices — the two rates above are budgets for a whole batch.
+    per_host_rate: int | None = Field(default=None, ge=1, le=100_000)
+    # Ports this tenant's scans must never touch, TCP and UDP alike. Unioned
+    # with the profile's list, never replacing it.
+    avoid_ports: list[int] = Field(default_factory=list, max_length=128)
+    note: str = Field(default="", max_length=500)
+
+
+class ScanPolicyInfo(ScanPolicyRequest):
+    """A stored policy, who wrote it, and what it actually resolves to.
+
+    ``effective`` is the document the scans are held to and the one handed to
+    the executor: the stored row with the profile floor folded in. It is
+    returned beside the stored values rather than instead of them so an
+    operator can see that the 10000 they typed is being enforced as 100, which
+    is a question the console has to be able to answer without the reader
+    knowing the floor table by heart.
+    """
+
+    tenant_id: str
+    updated_at: str | None = None
+    updated_by: str | None = None
+    effective: dict[str, Any] = Field(default_factory=dict)
+    #: How many jobs that were already queued this write caught and tightened
+    #: (PUT only; always 0 on a read). A scan admitted last night and still
+    #: waiting for a worker is held to the policy written this morning, and
+    #: this is where the operator sees that it happened — and how many scans
+    #: to look at if the answer should have been "cancel them instead".
+    retightened_queued_jobs: int = 0
 
 
 class AgentTokenRequest(BaseModel):

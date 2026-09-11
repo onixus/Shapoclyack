@@ -18,9 +18,18 @@ from .utils import read_lines, write_lines
 
 
 def _wave2_rate(profile: ProfileConfig, configured: int | None) -> int:
+    """The rate for the passes that follow wave 1, configured or derived.
+
+    The derived figure is deliberately coarse — these passes carry a handful of
+    gap hosts, not a whole range — but it can never exceed the profile's own
+    discovery rate. It used to: ``max(500, ...)`` was a hard floor of 500 pps,
+    so a scan policy that pinned discovery at 100 pps (#362) got 100 for wave 1
+    and 500 for the re-probe of exactly the hosts that had stayed silent, which
+    on a plant network are the controllers the ceiling exists for.
+    """
     if configured is not None:
         return configured
-    return max(500, profile.discover_rate // 4)
+    return min(profile.discover_rate, max(500, profile.discover_rate // 4))
 
 
 def _discover_concurrency(
@@ -81,6 +90,7 @@ def _run_discover_batches(
             max_pending_hosts=65536,
             tag=bid,
             discovery=config.discovery,
+            per_host_rate=config.runtime.per_host_rate,
         )
 
     run_batches_parallel(
@@ -242,6 +252,7 @@ def run_discovery_stage(
                 skip_discovery=False,
                 discovery=discovery,
                 tag="delta-refresh",
+                per_host_rate=config.runtime.per_host_rate,
             )
             confirmed_set = set(confirmed)
             for host in refresh_hosts:
@@ -350,7 +361,7 @@ def verify_alive_without_ports(
     if not suspects:
         return alive_hosts
 
-    rate = verify.rate if verify.rate is not None else max(500, profile.discover_rate // 4)
+    rate = verify.rate if verify.rate is not None else _wave2_rate(profile, None)
     logging.info(
         "discovery verify: re-probing %s alive host(s) without open ports at rate %s",
         len(suspects),
@@ -365,6 +376,7 @@ def verify_alive_without_ports(
         skip_discovery=False,
         discovery=config.discovery,
         tag="verify",
+        per_host_rate=config.runtime.per_host_rate,
     )
     confirmed_set = set(confirmed)
     kept = sorted({host for host in alive_hosts if host in hosts_with_ports or host in confirmed_set})

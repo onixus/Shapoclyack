@@ -59,6 +59,16 @@ LOG = logging.getLogger("octo-agent")
 # to survive a few missed heartbeats, not just one.
 HEARTBEAT_INTERVAL_SECONDS = 60.0
 
+# What this build promises the API it can honour, reported on register and on
+# every heartbeat. ``scan_policy`` means: when a claim carries a
+# ``scan_policy.json`` input, this worker passes it to the scanner as
+# ``--scan-policy``, where the tenant's rate ceilings and port avoid-list are
+# applied on top of the local config (#362). The API refuses to hand a job
+# whose tenant has a policy to an agent that does not declare this — a ceiling
+# an older worker silently ignores would read as enforced and would not be.
+# Kept equal to api/services/scan_policy.AGENT_CAPABILITY.
+CAPABILITIES: tuple[str, ...] = ("scan_policy",)
+
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"
 CONSUMER_AGENTS_PREFIX = "octo-agents"
@@ -353,6 +363,19 @@ class AgentDisabled(RuntimeError):
 # operator is still looking at the page.
 DISABLED_BACKOFF_SECONDS = 300.0
 
+# How often an agent pulling from NATS also asks the API directly, when no
+# offer arrived. The offer is not a guarantee: a job is published once when it
+# is queued (and again only if a lease expires), the durable consumer is shared
+# by every agent in the (tenant, group), and a NAK — which is what an agent
+# refused the job returns, for instance one without the ``scan_policy``
+# capability (#362) — burns one of the few delivery attempts the offer has. An
+# offer that runs out of attempts leaves the consumer for good, and before this
+# the NATS path had no other way to find work: the job sat ``queued`` for ever
+# while a capable agent idled next to it. One claim a minute is cheaper than
+# that by any measure, and it is the same request the HTTP-mode fleet makes
+# every poll interval.
+NATS_FALLBACK_CLAIM_SECONDS = 60.0
+
 # Substrings of the API's own refusal (api/services/agents.py::lifecycle_message).
 # Matched on the message because a 403 also covers cross-tenant access and the
 # agent-id binding, and those two are misconfiguration to be logged loudly, not
@@ -524,6 +547,11 @@ class AgentClient:
             "hostname": hostname,
             "version": __version__,
             "labels": labels,
+            # Sent at registration as well as on every heartbeat: a job whose
+            # tenant has a scan policy is refused to an agent that has not
+            # declared it can apply one (#362), and this process claims before
+            # its first beat.
+            "capabilities": list(CAPABILITIES),
         }
         return self._request(
             "POST",
@@ -546,6 +574,10 @@ class AgentClient:
             "current_job_id": current_job_id,
             "detail": detail,
             "metrics": metrics or _collect_system_metrics(),
+            # On *every* heartbeat, not only the first: the API stores the list
+            # it was last told, so a beat that omitted it would clear this
+            # agent's capabilities and cost it the jobs that need one (#362).
+            "capabilities": list(CAPABILITIES),
         }
         return self._request(
             "POST",
@@ -660,6 +692,17 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         scope_path = workdir / "scan_scope.json"
         scope_path.write_text(inputs["scan_scope.json"], encoding="utf-8")
         args.extend(["--scan-scope", str(scope_path)])
+    if "scan_policy.json" in inputs:
+        # The tenant's scan policy (#362): rate ceilings, host concurrency and
+        # the ports this run must not touch, decided by the API. Handed through
+        # unread like the scope above — the pipeline applies it onto the local
+        # config, where it can only ever lower a rate, and this worker has no
+        # opinion about it. The ``scan_policy`` capability this agent declares
+        # is the promise to pass it on; an agent that did not would be refused
+        # the job on claim.
+        policy_path = workdir / "scan_policy.json"
+        policy_path.write_text(inputs["scan_policy.json"], encoding="utf-8")
+        args.extend(["--scan-policy", str(policy_path)])
     if "promoted_domains.txt" in inputs:
         # Related domains the tenant promoted (org_profile M4). Also handed
         # through unread: the pipeline merges them into its name scope and
@@ -1280,6 +1323,10 @@ def run_loop(args: argparse.Namespace) -> int:
     # does not sit in (#361).
     agent_group: str | None = None
     nats_session: AgentNatsSession | None = None
+    # When the NATS path next double-checks the queue over HTTP. Due at once,
+    # so an agent starting up next to a job whose offer has already been burned
+    # picks it up rather than waiting out the first interval.
+    nats_fallback_claim_at = 0.0
     registered = False
     # Due immediately with a provisioning key (the bootstrap exchange happens
     # inside the loop, so a refusal is backed off instead of killing the
@@ -1411,6 +1458,12 @@ def run_loop(args: argparse.Namespace) -> int:
                     job = nats_session.pull_and_claim(
                         client, agent_id, timeout=max(1.0, args.poll_interval)
                     )
+                    if job is None and time.time() >= nats_fallback_claim_at:
+                        # The safety net, not the normal path: see
+                        # NATS_FALLBACK_CLAIM_SECONDS. Queued work whose offer
+                        # is gone is found here, and nowhere else.
+                        nats_fallback_claim_at = time.time() + NATS_FALLBACK_CLAIM_SECONDS
+                        job = client.claim(agent_id)
                 else:
                     job = client.claim(agent_id)
 

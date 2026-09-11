@@ -6,6 +6,48 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **How hard a tenant is scanned is now the platform's decision, not the
+  agent host's** ([#362](https://github.com/onixus/Shapoclyack/issues/362)).
+  The API sent a remote agent `--mode` and every actual rate came from the
+  `scanner/config/default.yaml` on that agent's own machine — 2000 packets per
+  second for `safe` discovery — and nothing in the code knew that modbus, DNP3
+  or BACnet exist. A tenant now has a **scan policy** (migration 0053,
+  permission `scan_policy.manage`, step-up on write): rate ceilings, host
+  concurrency, a per-host pace, an avoid-list of ports, and `safe_only`. It is
+  enforced at admission in `start_scan` — so the console, the scheduler and the
+  platform's own re-scans are held to it — travels to the executor as a
+  `scan_policy.json` input beside the targets (never in the broadcast NATS
+  offer), and is applied by the scanner, where it can only ever *lower* what
+  the local config says — in every stage that reads a rate of its own, which
+  is the part that is easy to get wrong: the adaptive wave-2 pass that
+  re-probes the hosts which stayed silent and the verify pass that re-probes
+  alive hosts with no open ports (2500 and 1250 pps in the shipped config),
+  the probe ladder's TCP step, nuclei's rate limit and concurrency, and
+  naabu's own `-rate` when a batch is a single device, where the batch budget
+  and the per-host budget are the same number. `skip_service_probe` turns
+  nuclei off as well as NSE and pulse: it is the stage that sends HTTP
+  payloads. Writing a policy also holds that tenant's still-**queued** jobs to
+  the stricter of their frozen snapshot and the new document, and answers with
+  how many (`retightened_queued_jobs`) — the recurring scan queued at 02:00
+  and still waiting for a worker is the one an operator writing `fragile` at
+  09:00 means to catch; a claimed or running job is left alone, and deleting a
+  policy loosens nothing. The `fragile` profile is the OT/ICS one and is a
+  **floor, not a default**: it forces `safe`, 100/50 pps, one host at a time,
+  no service-probe stage and the fieldbus avoid-list, and a stored value is
+  used only when it is stricter — so a policy cannot be raised out of its
+  profile, and a request cannot reach around either (an aggressive mode or an
+  avoided port is a `403`, recorded in `audit_events` and counted in
+  `octo_scan_policy_refusals_total`). A job carrying a policy is handed only to
+  an agent that declares the `scan_policy` capability; an older one is answered
+  `426` and the job waits, because a ceiling an old worker silently ignored
+  would read as enforced and would not be — and a worker pulling from NATS now
+  also asks the API directly once a minute when no offer arrives, so a job
+  whose offer was burned by the refusals of an agent that cannot take it is
+  still found rather than left queued for ever. A tenant with **no** policy is
+  scanned exactly as before and needs no administrator action. Not done, so the
+  issue stays open: no console UI (the policy is API-only), the agent does not
+  echo back the policy digest it applied, and target exclusions are still the
+  scan scope's deny entries rather than a field of the policy.
 - **A tenant's agent no longer takes every one of that tenant's jobs**
   ([#361](https://github.com/onixus/Shapoclyack/issues/361)). `claim_job`
   filtered by tenant and by "queued" and nothing else, so an agent in a

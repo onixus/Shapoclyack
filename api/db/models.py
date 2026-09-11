@@ -1820,6 +1820,58 @@ class TenantScanScope(Base):
     )
 
 
+class TenantScanPolicy(Base):
+    """How hard this tenant may be scanned, decided by the platform (#362).
+
+    The scope table above says *what* a tenant may be pointed at; this one says
+    at what pace. Before it existed the API sent an agent ``--mode`` and
+    nothing else, and every rate the packets actually ran at came from the
+    ``scanner/config/default.yaml`` on the agent's own host — so the operator
+    who answers for the traffic could not set it, and two agents of the same
+    tenant could legitimately scan at different speeds with nothing recording
+    which had.
+
+    One row per tenant, and **no row is the pre-#362 behaviour**: no ceilings,
+    every mode allowed, the agent's local config left alone. Every existing
+    tenant has no row.
+
+    The NULL ceilings mean "nothing of this tenant's own"; they are not the
+    whole answer, because ``profile`` carries a floor of its own.
+    ``fragile`` is the OT/ICS profile, and what it forces — the avoid-list of
+    fieldbus ports, the minimum pace, service probing off — lives in
+    ``api/services/scan_policy.py`` rather than in these columns, so that a row
+    can only ever be *stricter* than its profile and an operator cannot raise
+    their way out of one by editing it.
+
+    ``avoid_ports`` is a list of TCP/UDP port numbers this tenant's scans must
+    never send a packet to. It is unioned with the profile's list, never
+    replaced by it, and a scan naming one of them in its own port list is
+    refused rather than quietly filtered — an operator who asked to scan 502
+    should be told no, not handed results that omit it without saying so.
+    """
+
+    __tablename__ = "tenant_scan_policies"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    # standard | fragile. See scan_policy.PROFILE_FLOORS.
+    profile: Mapped[str] = mapped_column(default="standard", server_default="standard")
+    # Refuse every speed profile but ``safe``. Implied by ``fragile``; storable
+    # on its own for a tenant that is merely noise-sensitive.
+    safe_only: Mapped[bool] = mapped_column(default=False, server_default="false")
+    max_discover_rate: Mapped[int | None] = mapped_column(default=None)
+    max_port_rate: Mapped[int | None] = mapped_column(default=None)
+    max_host_concurrency: Mapped[int | None] = mapped_column(default=None)
+    # Packets per second aimed at any single host, which is what a fragile
+    # device notices — the two rates above are budgets for a whole batch.
+    per_host_rate: Mapped[int | None] = mapped_column(default=None)
+    avoid_ports: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    note: Mapped[str] = mapped_column(default="")
+    updated_at: Mapped[datetime]
+    updated_by: Mapped[str | None] = mapped_column(default=None)
+
+
 class SoftwareCveMatch(Base):
     """One statement about one CVE on one endpoint (ROADMAP Track E, M1).
 

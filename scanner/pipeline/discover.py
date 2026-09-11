@@ -13,6 +13,7 @@ from .config_schema import CloudflareDiscoveryConfig, DiscoveryConfig
 from .coverage_tracker import expand_target_ips
 from .discovery_targets import pending_discovery_targets
 from .probe_ladder import run_probe_ladder
+from .scan_policy import single_host_rate
 from .utils import save_json, write_lines
 
 _CF_API = "https://api.cloudflare.com/client/v4"
@@ -30,6 +31,7 @@ def host_discovery(
     skip_known_alive: bool = False,
     max_pending_hosts: int | None = 65536,
     tag: str = "all",
+    per_host_rate: int | None = None,
 ) -> list[str]:
     """Run host discovery for a single batch via the configured probe ladder.
 
@@ -71,11 +73,22 @@ def host_discovery(
         write_lines(alive_file, [])
         return []
 
+    # A batch of one host receives naabu's whole ``-rate``, so that is where
+    # the policy's per-host ceiling has to land (#362, see single_host_rate).
+    batch_rate = single_host_rate(rate, len(probe_hosts), per_host_rate)
+    if batch_rate != rate:
+        logging.info(
+            "Discovery batch %s is a single host: rate %s -> %s (per-host ceiling)",
+            tag,
+            rate,
+            batch_rate,
+        )
+
     alive, _stats = run_probe_ladder(
         probe_hosts,
         output_dir,
         discovery,
-        rate=rate,
+        rate=batch_rate,
         timeout=timeout,
         retries=retries,
         tag=tag,

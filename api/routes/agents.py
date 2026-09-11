@@ -48,6 +48,7 @@ from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
 from api.services import audit as audit_service
 from api.services import jobs as jobs_service
+from api.services import scan_policy
 from api.settings import Settings
 
 router = APIRouter(tags=["agents"])
@@ -124,6 +125,11 @@ def register_agent(
             hostname=body.hostname,
             version=body.version,
             labels=body.labels,
+            # What this build can honour (#362). Taken at registration and not
+            # only on the heartbeat because a freshly started agent claims
+            # before its first beat, and a job carrying a scan policy is
+            # refused to an agent that has not declared it can apply one.
+            capabilities=body.capabilities,
             tenant_id=principal.tenant_id,
             provisioning_key_id=principal.key_id,
             audit=audit,
@@ -176,7 +182,10 @@ def heartbeat(
     response_model=AgentClaimResponse,
     responses={
         204: {"description": "No queued agent jobs"},
-        426: {"description": "Agent version is below OCTO_AGENT_MIN_VERSION"},
+        426: {
+            "description": "Agent version is below OCTO_AGENT_MIN_VERSION, or the job "
+            "carries a tenant scan policy this agent cannot apply (#362)"
+        },
     },
 )
 def claim_job(
@@ -210,6 +219,14 @@ def claim_job(
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except scan_policy.AgentPolicyUnsupported as exc:
+        # 426, like the version floor above and for the same reason: the fix is
+        # on the agent's host, the worker already backs off on this status
+        # while staying registered, and the job it was refused stays queued for
+        # a worker that can hold to the tenant's rate limits (#362).
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED, detail=str(exc)
+        ) from exc
     if claimed is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return claimed

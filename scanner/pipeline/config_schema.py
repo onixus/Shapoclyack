@@ -25,6 +25,13 @@ class RuntimeConfig(BaseModel):
     nse_hosts_per_scan: int = Field(default=1, ge=1, le=256)
     discover_concurrency: int = Field(default=1, ge=1, le=32)
     ports_concurrency: int = Field(default=1, ge=1, le=32)
+    # Packets per second aimed at any *single* host, as opposed to the
+    # per-batch budgets in ``profiles.<mode>.discover_rate`` / ``port_rate``.
+    # Normally None (the batch budget is the only one) and set by a tenant
+    # scan policy (#362): naabu's ``-rate`` is a budget for the whole batch, so
+    # a batch that is one device hands that entire budget to that device, and
+    # the discovery and port stages hold it to this instead.
+    per_host_rate: int | None = Field(default=None, ge=1, le=100_000)
     # Skip NSE stage (L1 scan: discover + ports + reports only). Re-run with --resume to enrich.
     skip_nse: bool = False
     keep_intermediate: bool = True
@@ -356,6 +363,13 @@ class PortsConfig(BaseModel):
     custom_udp_ports_file: str = "scanner/inputs/ports_udp.txt"
     top_udp_ports: int = Field(default=100, ge=1, le=65535)
     udp_probes: bool = True
+    # Ports no scan of this installation may send a packet to (#362). Empty by
+    # default; a tenant's scan policy fills it with the fieldbus ports of its
+    # OT profile, and the value is unioned rather than replaced, so a local
+    # exclusion survives the policy. Passed to naabu as ``-exclude-ports``,
+    # which it applies on top of whatever ``-p``/``-top-ports`` selected — so
+    # an excluded port stays unscanned even when a custom port file names it.
+    exclude_ports: list[int] = Field(default_factory=list)
     # naabu's own -s default is "c" (CONNECT) -- it never probes for privileges,
     # so leaving the flag off means the CAP_NET_RAW the images grant naabu
     # (setcap in the Dockerfiles, capabilities.add in the manifests) is paid for

@@ -358,6 +358,8 @@ One row per administrative change, with the resource before and after it:
 | `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the agent |
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
+| `scan_policy.update` | `PUT` / `DELETE /api/tenants/{id}/scan-policy` ([#362](https://github.com/onixus/Shapoclyack/issues/362)). `before` and `after` hold the whole document — it is one small row per tenant, and "who took the plant network's rate limit off, and what had it been" is what this trail is asked afterwards. `after: null` is the deletion, which is the loosening in its purest form |
+| `scan.policy_block` | Not an edit: the platform refusing a scan because the tenant's scan policy forbids that speed profile (`reason: safe_only`) or a port on its avoid-list (`reason: avoid_ports`). Written by `jobs_service.start_scan`, so the console and the recurring dispatcher leave the same row, and best-effort for the same reason as the two refusals above |
 | `config.update` | `PUT /api/config`, as the dot-paths whose value changed: `before` and `after` hold the same key set, and `"[unset]"` on one side means the path was not overridden |
 | `maintenance_window.create`, `maintenance_window.update`, `maintenance_window.delete` | `POST`/`PATCH`/`DELETE /api/maintenance-windows[/{id}]` — the window as stored, so "who moved the blackout off Saturday night" has an answer |
 | `tenant.change_freeze` | `PUT /api/change-freeze`. `before`/`after` carry the flag, the note and the stamp, so both the freeze and the thaw are rows — the thaw is the one that precedes the scan somebody did not expect |
@@ -613,6 +615,7 @@ it is only supposed to approve.
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `agent.group.manage` | tenant `admin`, platform admin |
+| `scan_policy.manage` | tenant `admin`, platform admin. Reading a policy needs only `scan_scope.read`: whoever may see what a tenant is allowed to scan may see how hard |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
 | `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around |
@@ -1096,6 +1099,12 @@ An agent below the floor is answered **`426 Upgrade Required`** on
 `POST /api/agent/jobs/claim`, with the required version in the detail.
 `register` and `heartbeat` keep working on purpose: a gated agent that
 disappeared from `GET /api/agents` would be a host nobody can find to upgrade.
+The same `426` has a second cause since
+[#362](https://github.com/onixus/Shapoclyack/issues/362): a job whose tenant
+has a scan policy is handed only to an agent that reports the `scan_policy`
+capability (on `register` and on every heartbeat), because the ceilings are
+applied by the executor and an agent that ignores them would scan at whatever
+its local config says. The detail names the capability; the job stays queued.
 The heartbeat response carries `min_version`, `upgrade_required` and a
 human-readable `upgrade_message`, which is the only channel that reaches a
 running agent — `agent/worker.py` logs it once per change rather than once per
@@ -1454,6 +1463,64 @@ dispatch-time check stays — a scope narrowed after the schedule was written
 still has to stop it. The model, the third barrier inside the run, and the
 grandfathering migration `0025` applies on upgrade are described in
 [operations.md](operations.md#approved-scan-scope-per-tenant).
+
+## Scan policy: how hard a tenant may be scanned
+
+The approved scope says *what* a tenant may be pointed at. The scan policy says
+at what pace, and it is the answer to a gap that was total before
+[#362](https://github.com/onixus/Shapoclyack/issues/362): the API sent a remote
+agent `--mode` and every actual number — 2000 packets per second for `safe`
+discovery, the host concurrency, the nmap timing — came from the
+`scanner/config/default.yaml` on **the agent's own host**. The platform
+operator, who answers for the traffic, could not set it.
+
+```http
+GET    /api/tenants/{tenant_id}/scan-policy     # scan_scope.read
+PUT    /api/tenants/{tenant_id}/scan-policy     # scan_policy.manage, step-up
+DELETE /api/tenants/{tenant_id}/scan-policy     # scan_policy.manage, step-up
+{"profile": "fragile", "safe_only": true, "max_discover_rate": 100,
+ "max_port_rate": 50, "max_host_concurrency": 1, "per_host_rate": 25,
+ "avoid_ports": [9100], "note": "plant network"}
+```
+
+`GET` answers `null` for a tenant that has no policy, and that is the normal
+state rather than a missing resource: **no policy is the pre-#362 behaviour** —
+no ceiling is pushed, the agent's local config decides, every speed profile is
+allowed. Writing one needs `scan_policy.manage`, held by the tenant's own
+`admin` and the platform admin (unlike the scope approval, which no role that
+can start a scan holds — this control only ever *narrows* what the platform
+does to a network it is already approved for). Both writes are behind the
+step-up, because the interesting direction is the loosening one, and the whole
+document lands in `audit_events` as `scan_policy.update`.
+
+`profile` is `standard` or `fragile`. **`fragile` is the OT/ICS profile and it
+is a floor, not a default**: it forces the `safe` speed profile, 100/50 pps
+across a batch, one host at a time, 25 pps at any single host (which is what
+the batch rate becomes when the batch is one device), no service-probe stage —
+nmap NSE, pulse and nuclei — and an avoid-list
+of fieldbus and building-automation ports (modbus 502, DNP3 20000, BACnet
+47808, S7 102, IEC-104 2404, EtherNet/IP 44818 and the rest — see
+`api/services/scan_policy.py`). A stored value is taken only when it is
+*stricter*, so `{"profile": "fragile", "max_discover_rate": 10000}` stores
+10000 and scans at 100, and the avoid-lists are unioned rather than replaced.
+
+Enforcement is in three places and none of them is the console:
+
+| Where | What |
+| --- | --- |
+| `jobs.start_scan` | Beside the quota, the scope and the calendar, so the recurring dispatcher and the platform's own re-scans are held to it too. A `safe-only` tenant asking for `balanced`/`fast`/`test` is **`403`**, and so is a scan naming a port on the avoid-list — refused rather than silently filtered, because an operator who asked to scan 502 should hear no rather than get results that omit it. The refusal is in `audit_events` as `scan.policy_block` and counted in `octo_scan_policy_refusals_total` |
+| The executor | The resolved policy is frozen onto the job and travels to whoever runs it as the `scan_policy.json` input, beside the targets and the approved scope — in the claim response, never in the broadcast NATS offer (#361). `scanner/pipeline/scan_policy.py` applies it onto the local config, where it can only ever *lower* a rate, union the port exclusions, or turn the service probe off. Every stage that reads a rate of its own is covered: the two discovery passes after wave 1, the probe ladder's TCP step, nuclei's rate limit and concurrency, and naabu's own `-rate` when a batch is a single host |
+| The `PUT` itself | Jobs of that tenant still in `queued` are held to the stricter of their frozen snapshot and the new policy, and the response says how many (`retightened_queued_jobs`). Tightening only, and never a job already claimed: the night's scan that has not started yet is the one an operator writing `fragile` in the morning means to catch, and a scan already handed to a worker is answerable for the document it was handed |
+| `claim_job` | A job whose tenant has a policy is handed only to an agent that declares the `scan_policy` capability. Anything else gets **`426`**, the same status the version floor uses, and the job stays queued for a worker that can pace itself. A ceiling an older agent silently ignored would read as enforced and would not be |
+
+A schedule the policy forbids is **skipped** at dispatch (`skipped_policy` in
+the dispatcher stats), not deferred: unlike a blackout this does not lift by
+itself, so there is no moment to move the tick to.
+
+The operational side — what the fragile profile costs in wall-clock, why the
+local `default.yaml` is now the fallback rather than the decision, and what
+this control does *not* prove about an agent — is in
+[operations.md](operations.md#scan-policy-and-the-ot-profile).
 
 ## Maintenance windows and the change freeze
 

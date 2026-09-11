@@ -55,6 +55,11 @@ from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ownership import resolve_ownership
 from scanner.pipeline.ports import custom_tcp_ports, fast_port_scan
 from scanner.pipeline.pulse_probe import run_pulse_probe, sync_report_primary_marker
+from scanner.pipeline.scan_policy import (
+    ScanPolicyError,
+    apply_policy as apply_scan_policy,
+    load_policy as load_scan_policy,
+)
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
 from scanner.pipeline.alerts import send_alerts
 from scanner.pipeline.defectdojo import export_to_defectdojo
@@ -102,6 +107,15 @@ def parse_args() -> argparse.Namespace:
             "every job it starts; targets outside the scope are dropped, and "
             "resolved addresses inside a denied range are dropped after resolve. "
             "Omitted for a standalone run, which is then unfiltered."
+        ),
+    )
+    parser.add_argument(
+        "--scan-policy",
+        help=(
+            "Path to the tenant's scan policy (#362). Set by the API for every job "
+            "it starts; the rates, host concurrency and avoided ports in it are "
+            "applied on top of --config and can only ever tighten it. Omitted for "
+            "a standalone run, which then runs at whatever the config says."
         ),
     )
     parser.add_argument(
@@ -222,6 +236,18 @@ def _run_pipeline_body(
                 )
             }
         )
+    # The tenant's scan policy (#362), applied before anything reads a rate:
+    # it only ever lowers what the config above says, so the local file stays
+    # the fallback it is documented to be. A policy this build cannot apply
+    # stops the run rather than being ignored — see scanner/pipeline/
+    # scan_policy.py.
+    if args.scan_policy:
+        try:
+            config = apply_scan_policy(config, load_scan_policy(Path(args.scan_policy)))
+        except ScanPolicyError as exc:
+            print(str(exc), file=sys.stderr)
+            return exit_codes.CONFIG_ERROR
+
     profile = config.profiles[profile_name]
 
     if args.notify:
@@ -689,6 +715,14 @@ def _run_pipeline_body(
                     udp_probes=port_cfg.udp_probes,
                     tag=bid,
                     scan_type=port_cfg.scan_type,
+                    # Ports this run must not touch (#362): a tenant's OT
+                    # avoid-list, or a local exclusion. Applied here, at the
+                    # one stage that decides which ports exist for every stage
+                    # after it.
+                    exclude_ports=port_cfg.exclude_ports,
+                    # A batch of one host gets this whole rate aimed at it, so
+                    # that is where a policy's per-host ceiling lands (#362).
+                    per_host_rate=runtime.per_host_rate,
                 ),
                 aggregate=open_set,
                 aggregate_file=open_file,

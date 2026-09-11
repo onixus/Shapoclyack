@@ -59,6 +59,7 @@ from api.services import auth_audit
 from api.services import results_ingest
 from api.services.integrations import channels as channels_service
 from api.services import runs as runs_service
+from api.services import scan_policy
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services import scan_intents
@@ -83,6 +84,14 @@ SCAN_SCOPE_INPUT = "scan_scope.json"
 #: into the name scope *in addition to* whatever target files the run reads, so
 #: a run on the installation's default targets is widened rather than replaced.
 PROMOTED_DOMAINS_INPUT = "promoted_domains.txt"
+
+#: The tenant's scan policy as it stood when this job was admitted (#362) —
+#: the rate ceilings, the host concurrency and the ports the run must not
+#: touch. It rides the same channel as the scope for the same reason: it is a
+#: server-decided constraint the worker hands to the scanner unread, and a
+#: worker that receives the targets receives what it may do to them. Absent for
+#: a tenant with no policy, which is the pre-#362 behaviour.
+SCAN_POLICY_INPUT = "scan_policy.json"
 _JOB_INPUT_FILES = (
     "ranges.txt",
     "domains.txt",
@@ -90,6 +99,7 @@ _JOB_INPUT_FILES = (
     "ports_udp.txt",
     SCAN_SCOPE_INPUT,
     PROMOTED_DOMAINS_INPUT,
+    SCAN_POLICY_INPUT,
 )
 
 
@@ -585,6 +595,7 @@ def _prepare_target_inputs(
     tenant_id: str,
     promoted: list[str] | None = None,
     scope: scan_scopes.ScanScope | None = None,
+    policy: dict[str, Any] | None = None,
 ) -> tuple[Path | None, dict[str, int] | None, list[str]]:
     """Write per-job input files, and the scope the run is to be held to.
 
@@ -617,6 +628,14 @@ def _prepare_target_inputs(
     )
     extra: list[str] = ["--scan-scope", str(scope_path)]
     counts: dict[str, int] = {}
+
+    if policy is not None:
+        # Written for the local runner and read back for the agent's claim
+        # response by ``_read_job_inputs``, so both executors are handed the
+        # same document by the same mechanism — a policy only one of the two
+        # paths applied would be a ceiling that depends on where the scan
+        # happened to run.
+        extra.extend(["--scan-policy", str(_write_policy_input(inputs_dir, policy))])
 
     if promoted:
         promoted_path = inputs_dir / PROMOTED_DOMAINS_INPUT
@@ -671,6 +690,23 @@ def _discard_job_wordlist(settings: Settings, job_id: str) -> None:
         wordlist_file_for_job(settings, job_id).unlink(missing_ok=True)
     except OSError:
         _log.warning("Could not remove wordlist scratch file for job %s", job_id, exc_info=True)
+
+
+def _write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
+    """Write one job's ``scan_policy.json`` and answer where it went.
+
+    The same file for both executors: the local runner is handed its path on
+    the command line, and the agent reads its contents out of the claim
+    response (``_read_job_inputs``). One writer, so a job cannot end up with a
+    policy that depends on where it happened to run.
+    """
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    path = inputs_dir / SCAN_POLICY_INPUT
+    path.write_text(
+        json.dumps(policy, indent=2, ensure_ascii=True, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def job_inputs_dir(settings: Settings, job_id: str) -> Path:
@@ -1471,9 +1507,41 @@ def start_scan(
         maintenance.record_block(username=username, blocked=blocked)
         raise
 
+    # How hard this tenant may be scanned (#362). Here, beside the quota and
+    # the calendar, for the same reason both are here: the recurring dispatcher
+    # and the platform's own re-scans never touch a route, and a rate ceiling
+    # the nightly sweep ignores is not a rate ceiling.
+    #
+    # ``request.mode`` rather than the resolved CLI mode below, so the refusal
+    # lands before any input file is written. The two agree on the only
+    # question asked here — ``scan_intents`` maps the API's ``test`` onto
+    # ``balanced`` and leaves ``safe`` alone, so "the operator asked for safe"
+    # is the same statement before and after that mapping.
+    try:
+        policy = scan_policy.assert_scan_admitted(
+            settings,
+            tenant_id=tenant_id,
+            mode=request.mode,
+            ports_text=request.ports,
+            ports_udp_text=request.ports_udp,
+        )
+    except scan_policy.ScanPolicyViolation as violation:
+        scan_policy.record_block(username=username, violation=violation)
+        raise
+    # The document the run is held to, frozen now: a policy edited while the
+    # job sits in the queue must not change what was admitted, and the run has
+    # to be answerable afterwards for the ceiling it actually ran under.
+    policy_snapshot = scan_policy.snapshot(policy)
+
     try:
         _, target_counts, target_args = _prepare_target_inputs(
-            settings, job_id, request, tenant_id=tenant_id, promoted=promoted_admitted, scope=scope
+            settings,
+            job_id,
+            request,
+            tenant_id=tenant_id,
+            promoted=promoted_admitted,
+            scope=scope,
+            policy=policy_snapshot,
         )
         # Second barrier, deliberately redundant. start_scan is also reached
         # from schedule_dispatcher, which replays targets stored days ago and
@@ -1610,11 +1678,18 @@ def start_scan(
     # widened set: a promoted related domain rides along with every scan and
     # would turn an internal sweep into a "mixed" one it was never asked to be.
     surface = scan_surface.resolve(request.surface, request.ranges, request.domains)
+    # A fragile (OT/ICS) policy turns the service-probe stage off: nmap's NSE
+    # scripts and pulse's banner grabs are the packets that put a PLC into a
+    # fault state, and the port inventory a fragile run is really asked for
+    # does not need them. Expressed on the command line as well as in the
+    # policy document the scanner applies, so a reader of the job — and the
+    # ``--skip-nse`` the scanner sees — says the same thing.
+    skip_nse = resolved.skip_nse or bool((policy_snapshot or {}).get("skip_service_probe"))
     command = _build_command(
         settings,
         mode=resolved.mode,
         delta=resolved.delta,
-        skip_nse=resolved.skip_nse,
+        skip_nse=skip_nse,
         notify=request.notify,
         export_defectdojo=request.export_defectdojo,
         run_id=run_id,
@@ -1639,7 +1714,12 @@ def start_scan(
             # domains this scan carried, and which the scope kept out.
             **({"promoted_domains": promoted_admitted} if promoted_admitted else {}),
             **({"promoted_domains_refused": promoted_refused} if promoted_refused else {}),
-            "skip_nse": resolved.skip_nse,
+            "skip_nse": skip_nse,
+            # The policy this scan was admitted under (#362), on the job rather
+            # than only derivable from a table that has since moved on. Absent
+            # for a tenant with no policy, so a job started before one was
+            # written reads exactly as it did.
+            **({"scan_policy": policy_snapshot} if policy_snapshot else {}),
             # External / internal / mixed, or None when the scan runs the
             # server's default input files and nothing here can tell (see
             # api.services.scan_surface).
@@ -1785,6 +1865,75 @@ def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
     return out
 
 
+def apply_policy_to_queued(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    resolved: dict[str, Any] | None,
+) -> int:
+    """Hold this tenant's still-queued jobs to a policy written after they queued.
+
+    Returns how many jobs were changed, which the PUT reports back: the number
+    is what tells an operator that writing ``fragile`` at 09:00 also caught the
+    scan that has been waiting for an offline agent since 02:00 — the one that
+    would otherwise have started at the pace it was admitted with.
+
+    Tightening only, through ``scan_policy.tighten``: a queued job keeps every
+    ceiling it was admitted under and gains the stricter ones. A job that
+    carried no policy at all gains one, which also means the claim check will
+    now hold it for an agent that declares the capability (#362) — deliberately,
+    because "not scanned yet" is the better outcome on the estate this profile
+    describes, and the PUT's count is where the operator sees it.
+
+    Deleting a policy does not run this: the frozen snapshots stay, and a scan
+    already admitted under a ceiling is not loosened behind the operator's back.
+
+    Best-effort against a job being claimed at the same moment — a job that
+    leaves ``queued`` between the select and the write keeps the snapshot it
+    was handed. The window is one transaction wide and the next scan of that
+    tenant is admitted under the new policy in any case.
+    """
+    if resolved is None:
+        return 0
+    touched = 0
+    with get_session(settings.postgres_url) as session:
+        rows = (
+            session.execute(
+                select(models.Job).where(
+                    models.Job.tenant_id == tenant_id,
+                    models.Job.status == job_states.QUEUED,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            options = dict(row.scan_options or {})
+            frozen = options.get("scan_policy")
+            merged = scan_policy.snapshot(scan_policy.tighten(frozen, resolved))
+            if merged is None or merged == frozen:
+                continue
+            command = list(row.command or [])
+            policy_path = _write_policy_input(job_inputs_dir(settings, row.job_id), merged)
+            if "--scan-policy" not in command:
+                command.extend(["--scan-policy", str(policy_path)])
+            options["scan_policy"] = merged
+            if merged.get("skip_service_probe"):
+                options["skip_nse"] = True
+                if "--skip-nse" not in command:
+                    command.append("--skip-nse")
+            # Reassigned rather than mutated: both columns are JSON, and an
+            # in-place edit of the loaded value is not seen as a change.
+            row.scan_options = options
+            row.command = command
+            touched += 1
+    if touched:
+        _log.info(
+            "Scan policy for tenant %s applied to %d queued job(s)", tenant_id, touched
+        )
+    return touched
+
+
 def claim_job(
     settings: Settings,
     agent_id: str,
@@ -1805,6 +1954,13 @@ def claim_job(
     is not permitted never takes the row's lock, and the NATS pull path (which
     names a specific ``job_id``) is filtered by the same predicate: an agent
     handed an offer for another group's job gets nothing back.
+
+    Since #362 there is a second thing the claim can refuse over: a job whose
+    tenant has a scan policy is only handed to an agent that declares it can
+    apply one. That check is after the row is selected rather than in the SQL
+    on purpose — it is a property of the *agent*, and refusing it loudly is the
+    point, where the group filter above is a property of the job and silently
+    excluding it is correct.
 
     The candidate row is locked with ``FOR UPDATE SKIP LOCKED`` (a no-op on the
     SQLite fallback, which has a single writer anyway): two agents claiming
@@ -1844,6 +2000,36 @@ def claim_job(
         row = session.execute(query).scalars().first()
         if row is None:
             return None
+
+        # A job whose tenant has a scan policy may only be handed to a worker
+        # that can honour it (#362). The policy is applied by the executor —
+        # the API cannot shape somebody else's packets — so an agent that does
+        # not declare the ``scan_policy`` capability would run this scan at
+        # whatever its local ``default.yaml`` says, which on a fragile estate
+        # is the failure the policy exists to prevent.
+        #
+        # Refused rather than skipped over: skipping would leave the operator
+        # with a queue that does not move and an agent that reports itself
+        # healthy, while a 426 lands in that agent's own journal, keeps it
+        # visible in the fleet view and names the upgrade — the same shape
+        # #363 gives an agent below the version floor. The job stays queued
+        # for a worker that can take it.
+        if (row.scan_options or {}).get("scan_policy") and (
+            scan_policy.AGENT_CAPABILITY not in (agent.capabilities or [])
+        ):
+            scan_policy.note_refusal("agent_unsupported")
+            _log.warning(
+                "Agent %s asked for job %s, whose tenant has a scan policy, but does not "
+                "declare the %s capability; the job stays queued",
+                agent_id,
+                row.job_id,
+                scan_policy.AGENT_CAPABILITY,
+            )
+            raise scan_policy.AgentPolicyUnsupported(
+                f"agent {agent_id} does not support tenant scan policies "
+                f"(capability {scan_policy.AGENT_CAPABILITY}); upgrade the agent — "
+                "its jobs carry rate limits it cannot currently apply"
+            )
 
         # `claimed`, not `running` (P1.3): the agent owns the job but has not
         # reported working on it. Its first heartbeat naming this job promotes
