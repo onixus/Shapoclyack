@@ -293,8 +293,11 @@ Every request is scoped to a verified tenant context using JWT bearer tokens:
 Roles also carry **named permissions**, so duties can be separated: `auditor`
 (reads the audit trail and configuration, writes nothing), `scope-approver`
 (approves what may be scanned, runs no scans), `scan-operator`, `token-admin`
-and `risk-approver`. Any of them can be granted per tenant on a membership —
-see [API and RBAC Documentation](docs/api-and-rbac.md#roles).
+and `risk-approver`. Any of them can be granted per tenant on a membership, in
+the console or over `PUT /api/tenants/{tenant_id}/members/{username}`; the
+console reads the list from the platform's own catalogue
+(`GET /api/rbac/roles`) rather than keeping a copy — see
+[API and RBAC Documentation](docs/api-and-rbac.md#roles).
 
 ### Enterprise Integrations
 * **Ticket Synchronization**: Push findings to Jira, ServiceNow, and DefectDojo automatically. The pull direction — noticing that a ticket was resolved and triggering mechanical re-verification — is an on-demand action today; a poller is [#347](https://github.com/onixus/Shapoclyack/issues/347).

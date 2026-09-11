@@ -11,8 +11,18 @@ import {
   useServiceTokens,
 } from "@/hooks/use-service-tokens";
 import { type Role, type ServiceTokenInfo } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
+import { tenantRank } from "@/lib/authz";
 
-const ROLES: Role[] = ["viewer", "operator", "admin"];
+/** What a service token's role may be: the three ranked ones, which is what
+ * `api/services/service_tokens.py` accepts — a token is a credential, not a
+ * separation of duties, so the specialist roles are not issuable. Their ranks
+ * are here because the ceiling below compares against the issuer's. */
+const TOKEN_ROLES: { role: Role; rank: number }[] = [
+  { role: "viewer", rank: 1 },
+  { role: "operator", rank: 2 },
+  { role: "admin", rank: 3 },
+];
 
 function formatDate(value: string | null) {
   if (!value) return "—";
@@ -44,6 +54,14 @@ export function ServiceTokensPanel({
   const { data = [], isLoading, error } = useServiceTokens(tenantId, canManage);
   const createMutation = useCreateServiceToken(tenantId);
   const revokeMutation = useRevokeServiceToken(tenantId);
+  // The issuance ceiling, shown rather than discovered (#318 review). A
+  // `token-admin` holds `tenant.credential.manage` at rank 1, so the server
+  // refuses the `operator` and `admin` options with a 403 — offering them was
+  // offering a choice that could not work. The platform admin has no ceiling,
+  // for the reason the service gives: it already holds everything everywhere.
+  const user = useAuthStore((state) => state.user);
+  const ceiling = user?.is_platform_admin ? 3 : tenantRank(user);
+  const issuable = TOKEN_ROLES.filter((entry) => entry.rank <= ceiling);
 
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState("runs:read");
@@ -107,12 +125,18 @@ export function ServiceTokensPanel({
             value={role}
             onChange={(event) => setRole(event.target.value as Role)}
           >
-            {ROLES.map((value) => (
-              <option key={value} value={value}>
-                {value}
+            {issuable.map((entry) => (
+              <option key={entry.role} value={entry.role}>
+                {entry.role}
               </option>
             ))}
           </select>
+          {issuable.length < TOKEN_ROLES.length ? (
+            <p className="text-xs text-muted-foreground">
+              A token cannot be stronger than the hand issuing it, so your role
+              in this tenant caps this list.
+            </p>
+          ) : null}
         </div>
         <Button type="submit" className="sm:col-span-4" disabled={createMutation.isPending}>
           <KeyRound className="mr-2 h-4 w-4" />

@@ -35,6 +35,7 @@ import {
 } from "@/hooks/use-agents";
 import { type AgentDeploySSHRequest } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import { holdsPermission } from "@/lib/authz";
 
 /** The snippets are rendered with a placeholder until an operator explicitly
  * mints a key — loading this dialog must not create tenant credentials. */
@@ -122,7 +123,11 @@ export function DeployAgentDialog() {
   const hostKeyMutation = useProbeSSHHostKey();
   // Both credential-handing actions in this dialog take tenant admin (#231).
   // Offering them to an operator would only produce a 403 they cannot act on.
-  const isAdmin = useAuthStore((state) => state.user?.role === "admin");
+  // Minting a provisioning key is `tenant.credential.manage` in this tenant
+  // — the tenant's own admin and a `token-admin` hold it (#318).
+  const isAdmin = useAuthStore((state) =>
+    holdsPermission(state.user, "tenant.credential.manage", state.user?.role === "admin"),
+  );
   const { data: deployStatus } = useDeployStatus(activeDeployId);
   const { data: snippets } = useAgentSnippets();
   const mintKeyMutation = useCreateAgentDeploymentKey();

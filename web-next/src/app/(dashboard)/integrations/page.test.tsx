@@ -26,6 +26,21 @@ function me(role: Role): Me {
   };
 }
 
+/** An account whose authority is a *membership*: globally a viewer, something
+ * else in the tenant the console is scoped to (#318). */
+function member(tenantRole: string, permissions: string[] = []): Me {
+  return {
+    username: `acme-${tenantRole}`,
+    role: "viewer",
+    tenants: ["default"],
+    default_tenant: "default",
+    is_platform_admin: false,
+    tenant_role: tenantRole,
+    permissions,
+    scoped_tenant: "default",
+  };
+}
+
 function subscription(overrides: Partial<WebhookInfo> = {}): WebhookInfo {
   return {
     subscription_id: "wh_1",
@@ -216,6 +231,39 @@ describe("IntegrationsPage", () => {
     expect(screen.queryByRole("button", { name: /^Test$/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Rotate secret/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Delete/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/tenant administrator/i)).toBeInTheDocument();
+  });
+
+  it("serves the tenant's own admin the page, though the account is a viewer", async () => {
+    // Every webhook route is `require_tenant` (api/routes/webhooks.py), so the
+    // API hands this account the subscriptions and the write verbs while the
+    // console — reading `user.role` — rendered it the empty "operator" page.
+    // The account in the case above holds a *global* admin role and so passed
+    // either way, which is why it never caught this.
+    useAuthStore.setState({ user: member("admin", ["audit.read"]), canOperate: true });
+    vi.spyOn(apiModule, "fetchWebhooks").mockResolvedValue(page([subscription()]));
+
+    renderPage();
+
+    expect(await screen.findByText("soc-alerts")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /New integration/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Rotate secret/i })).toBeInTheDocument();
+    expect(screen.queryByText(/tenant administrator/i)).not.toBeInTheDocument();
+  });
+
+  it("gives a scan-operator the list and none of the write actions", async () => {
+    // Rank 2 in the tenant and a viewer globally: on the account's role this
+    // page was blank, and the API answers `GET /api/webhooks` for it.
+    useAuthStore.setState({
+      user: member("scan-operator", ["config.read", "scan.cancel"]),
+      canOperate: true,
+    });
+    vi.spyOn(apiModule, "fetchWebhooks").mockResolvedValue(page([subscription()]));
+
+    renderPage();
+
+    expect(await screen.findByText("soc-alerts")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New integration/i })).not.toBeInTheDocument();
     expect(screen.getByText(/tenant administrator/i)).toBeInTheDocument();
   });
 

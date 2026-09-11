@@ -30,6 +30,15 @@ TenantRoleName = Literal[
     "risk-approver",
 ]
 
+#: The roles an *account* may hold in ``users.role`` (``admin`` meaning the
+#: platform admin). Spelled out for the same reason as
+#: :data:`TenantRoleName` above — a Pydantic ``Literal`` needs literal values —
+#: and kept honest by the same test, which asserts it against
+#: :data:`api.core.permissions.GLOBAL_ROLES`. Before that assertion existed the
+#: constant and this Literal were two independent truths about one column, and
+#: whoever added a fourth global role would have found only one of them.
+GlobalRoleName = Literal["viewer", "operator", "admin"]
+
 
 class Page(BaseModel, Generic[T]):
     """Uniform envelope for every paginated list endpoint (ROADMAP P3.2).
@@ -1055,7 +1064,7 @@ class UserInfo(BaseModel):
     """A console account (#156). Carries no password material by construction."""
 
     username: str
-    role: Literal["viewer", "operator", "admin"]
+    role: GlobalRoleName
     disabled: bool = False
     # False for an account backfilled by migration 0013 from an orphan
     # membership: it exists and can be granted tenants, but cannot log in until
@@ -1232,7 +1241,7 @@ _PASSWORD = Field(min_length=12, max_length=72)
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = _PASSWORD
-    role: Literal["viewer", "operator", "admin"] = "viewer"
+    role: GlobalRoleName = "viewer"
     # Stored unverified. Marking an address verified is the administrative
     # assertion that makes an account linkable to an SSO identity by email,
     # and it stays its own deliberate call: PUT /users/{username}/email.
@@ -1244,7 +1253,7 @@ class SetUserPasswordRequest(BaseModel):
 
 
 class SetUserRoleRequest(BaseModel):
-    role: Literal["viewer", "operator", "admin"]
+    role: GlobalRoleName
 
 
 class SetUserDisabledRequest(BaseModel):
