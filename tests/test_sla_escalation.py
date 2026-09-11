@@ -733,6 +733,133 @@ def test_one_tick_announces_at_most_the_configured_number_of_agents(settings):
     assert sorted(announced) == sorted(quiet)
 
 
+def test_a_run_of_heartbeats_is_broken_by_a_gap_and_only_by_a_gap(settings, monkeypatch):
+    """The half of the fix the worker only reads: who writes ``healthy_since``.
+
+    Every test above ages an agent by writing both columns itself, so none of
+    them exercises ``agents._note_seen`` — and a run that never restarts turns
+    a flapping agent into a recovery, which is the duplicate storm this whole
+    change exists to stop. So: beat, beat inside the stale window, beat after
+    a longer gap, and read the column back.
+    """
+    agents_service.configure(settings)
+    stale = settings.agent_stale_seconds
+    # Naive UTC, as ``agents._now`` reads it, and driven rather than slept
+    # through — the gap under test is two minutes long.
+    clock = _NOW.replace(tzinfo=None)
+    monkeypatch.setattr(agents_service, "_now", lambda: clock)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+
+    def _healthy_since() -> datetime:
+        with get_session(settings.postgres_url) as session:
+            return session.get(models.Agent, "agent-1").healthy_since
+
+    agents_service.heartbeat("agent-1")
+    assert _healthy_since() == clock
+
+    # A beat that arrives while the previous one is still fresh continues the
+    # run: the agent has been there all along.
+    begun = clock
+    clock = clock + timedelta(seconds=stale - 30)
+    agents_service.heartbeat("agent-1")
+    assert _healthy_since() == begun
+
+    # One that arrives after a longer gap does not: the agent was away in
+    # between, whatever it says now, so its run starts over.
+    clock = clock + timedelta(seconds=stale + 30)
+    agents_service.heartbeat("agent-1")
+    assert _healthy_since() == clock
+
+
+def test_a_claim_whose_fan_out_failed_is_given_back(settings, monkeypatch):
+    """A marker standing for an event nobody received is worse here than
+    anywhere else in this worker: an ``agent_offline`` claim is held for the
+    whole episode, so a database hiccup on the fan-out would suppress the agent
+    until it came back — which, for a host that died, is never."""
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    _set_last_seen(settings, "agent-1", _NOW)
+    later = _NOW + timedelta(seconds=settings.agent_stale_seconds + 60)
+
+    def _explode(_envelope):
+        raise RuntimeError("the fan-out hiccupped")
+
+    monkeypatch.setattr(webhooks, "enqueue_event", _explode)
+    worker.tick(now=later)
+    assert _queued(settings, "agent_offline") == []
+    assert worker.stats["agents_offline"] == 0
+
+    monkeypatch.undo()
+    worker.tick(now=later + timedelta(minutes=15))
+    assert len(_queued(settings, "agent_offline")) == 1
+    assert worker.stats["agents_offline"] == 1
+
+
+def test_an_agent_that_came_back_briefly_and_died_for_good_is_announced_again(settings):
+    """The second death has to be announced too.
+
+    Releasing on "seen inside the stale window *at this instant*" made that
+    depend on the tick landing in a 120-second window it visits every fifteen
+    minutes: an agent that was genuinely back for ten minutes and then died
+    stayed "already announced" for ever, and the on-call kept the event from
+    two hours ago — the one they had already closed. What the release asks now
+    is what was *observed*: an unbroken run, begun after the claim was taken,
+    of at least twice the stale window.
+    """
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    stale = settings.agent_stale_seconds
+    # A long run that ended before the claim is not a recovery, or every dead
+    # agent would be released on the tick after it was announced.
+    _set_last_seen(settings, "agent-1", _NOW, healthy_since=_NOW - timedelta(hours=6))
+
+    worker.tick(now=_NOW + timedelta(seconds=stale + 60))
+    worker.tick(now=_NOW + timedelta(minutes=15))
+    assert len(_queued(settings, "agent_offline")) == 1
+    assert worker.stats["agents_recovered"] == 0
+
+    # It comes back twenty minutes later, beats for ten minutes, and the host
+    # dies for good. No tick fell inside those ten minutes — at the default
+    # interval, five times out of six none does.
+    back = _NOW + timedelta(minutes=20)
+    _set_last_seen(settings, "agent-1", back + timedelta(minutes=10), healthy_since=back)
+    worker.tick(now=_NOW + timedelta(minutes=45))
+    assert worker.stats["agents_recovered"] == 1
+
+    worker.tick(now=_NOW + timedelta(hours=1))
+    events = _queued(settings, "agent_offline")
+    assert len(events) == 2
+    assert events[0]["event"]["event_id"] != events[1]["event"]["event_id"]
+    assert events[1]["event"]["data"]["last_seen_at"].startswith("2026-09-10T12:30")
+
+
+def test_a_blink_between_two_silences_is_still_one_episode(settings):
+    """The other direction of the same release. Three minutes of uptime is a
+    crash loop, not a recovery: below :data:`AGENT_RECOVERY_FACTOR` stale
+    windows the claim stays, and the agent stays one episode however many times
+    it blinks."""
+    _subscribe(["agent_offline"])
+    agents_service.configure(settings)
+    agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    worker = _worker(settings)
+    stale = settings.agent_stale_seconds
+    _set_last_seen(settings, "agent-1", _NOW)
+
+    worker.tick(now=_NOW + timedelta(seconds=stale + 60))
+    for i in range(1, 6):
+        blink = _NOW + timedelta(minutes=15 * i)
+        _set_last_seen(
+            settings, "agent-1", blink + timedelta(seconds=stale - 30), healthy_since=blink
+        )
+        worker.tick(now=blink + timedelta(minutes=10))
+
+    assert worker.stats["agents_recovered"] == 0
+    assert len(_queued(settings, "agent_offline")) == 1
+
 def test_a_retired_agent_is_not_news(settings):
     _subscribe(["agent_offline"])
     agents_service.configure(settings)

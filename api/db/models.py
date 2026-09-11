@@ -2228,11 +2228,19 @@ class WorkflowEventMarker(Base):
 
     ``marker`` **is the discriminator, not a timestamp.** It carries whatever
     makes one occurrence distinct from the next — the deadline for an SLA
-    event, the deadline plus the threshold for an expiring exception, the
-    ``last_seen_at`` an agent went quiet at. A finding whose clock restarts (a
-    reopen recomputes ``due_at``) therefore gets a new marker and is announced
-    again, while the same deadline is announced once however many times the
-    worker looks at it.
+    event, the deadline plus the threshold for an expiring exception. A finding
+    whose clock restarts (a reopen recomputes ``due_at``) therefore gets a new
+    marker and is announced once more, while the same deadline is announced
+    once however many times the worker looks at it.
+
+    For ``agent_offline`` the discriminator is the *episode* rather than any
+    timestamp: the marker is the constant ``"offline"`` (0056), claimed when
+    the agent goes quiet and released by the escalation worker when it comes
+    back for a run of heartbeats long enough to count. Keyed on ``last_seen_at``
+    — as it was until 0056 — an agent whose link dropped every other beat
+    presented a different-but-still-stale timestamp on every tick and was
+    announced on every one of them. The beat it fell silent after still keys
+    the *envelope*, so two episodes are two events on the bus.
 
     **The insert is the claim.** The unique constraint decides, so two replicas
     that both believe they lead — the advisory lock is not fenced — send one

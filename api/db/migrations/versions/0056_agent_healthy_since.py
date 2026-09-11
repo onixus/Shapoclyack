@@ -31,9 +31,19 @@ last beat is the only evidence there is. A replica still running 0053 writes
 starting at the last beat — conservative, since that postpones a recovery
 rather than inventing one.
 
-The downgrade drops the column. The markers survive it, so an agent announced
-offline before the downgrade stays announced until it is announced again under
-the old, per-timestamp key.
+The revision also folds the markers themselves. Every ``agent_offline`` claim
+standing under the old per-timestamp key becomes the one ``offline`` claim the
+new code takes — the storm's debris (one row per tick per degraded agent)
+collapses into one row per agent, and, more to the point, the first tick after
+the upgrade finds the claim already taken. Without that fold it would take a
+fresh one for every agent that was *already* quiet and announce the lot again:
+``webhook_deliveries`` would de-duplicate it by ``event_id``, which does not
+change, but the copy on the bus would not be — JetStream's content window is
+minutes wide and these agents have been silent for hours.
+
+The downgrade drops the column and leaves the folded markers, so an agent
+announced offline before the downgrade is announced once more under the old,
+per-timestamp key the next time the old code looks at it.
 """
 from __future__ import annotations
 
@@ -51,6 +61,31 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column("agents", sa.Column("healthy_since", sa.DateTime(), nullable=True))
     op.execute("UPDATE agents SET healthy_since = last_seen_at WHERE healthy_since IS NULL")
+    # One standing claim per agent, dated from the last time the agent was
+    # announced: the worker releases a claim only for a run of heartbeats that
+    # began *after* it was taken, so the newest of the old rows is the honest
+    # date and the conservative one.
+    op.execute(
+        """
+        INSERT INTO workflow_event_markers
+            (marker_id, tenant_id, kind, subject_id, marker, created_at)
+        SELECT
+            'wem_' || substr(md5(random()::text || clock_timestamp()::text || subject_id), 1, 16),
+            tenant_id,
+            'agent_offline',
+            subject_id,
+            'offline',
+            max(created_at)
+        FROM workflow_event_markers
+        WHERE kind = 'agent_offline' AND marker <> 'offline'
+        GROUP BY tenant_id, subject_id
+        ON CONFLICT ON CONSTRAINT uq_workflow_event_marker DO NOTHING
+        """
+    )
+    op.execute(
+        "DELETE FROM workflow_event_markers "
+        "WHERE kind = 'agent_offline' AND marker <> 'offline'"
+    )
 
 
 def downgrade() -> None:

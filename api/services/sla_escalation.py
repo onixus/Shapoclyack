@@ -70,7 +70,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import select, tuple_
 
 from api.db import models
 from api.db.engine import get_session
@@ -557,43 +557,53 @@ class SlaEscalationWorker:
 
         for agent in pending:
             last_seen = agent.pop("last_seen_at")
-            if not workflow_events.claim(
-                self._settings,
-                tenant_id=agent["tenant_id"],
-                kind="agent_offline",
-                subject_id=agent["agent_id"],
-                marker=AGENT_OFFLINE_MARKER,
-                now=now,
-            ):
-                continue
-            self._stats["agents_offline"] += 1
-            workflow_events.emit(
+            # ``emit_once`` rather than a claim of our own: a claim held for an
+            # event the fan-out dropped is worse here than anywhere else in
+            # this worker, because this one is held for the whole episode. It
+            # would be given back by a recovery that, for a host that died, is
+            # never coming — so the agent would stay suppressed until the
+            # retention sweep a year later. The claim covers the agent and the
+            # envelope carries the beat, hence the two markers.
+            announced = workflow_events.emit_once(
                 self._settings,
                 "agent_offline",
                 tenant_id=agent["tenant_id"],
                 subject_id=agent["agent_id"],
-                marker=_stamp(last_seen),
+                marker=AGENT_OFFLINE_MARKER,
+                event_marker=_stamp(last_seen),
                 data={
                     **agent,
                     "last_seen_at": _stamp(last_seen),
                     "silent_for_seconds": int(_seconds_between(last_seen, now)),
                     "stale_after_seconds": self._settings.agent_stale_seconds,
                 },
-                occurred_at=now,
+                now=now,
             )
-        self._agent_recoveries(now, cutoff=cutoff, limit=limit)
+            if announced:
+                self._stats["agents_offline"] += 1
+        self._agent_recoveries(now, limit=limit)
 
-    def _agent_recoveries(self, now: datetime, *, cutoff: datetime, limit: int) -> None:
+    def _agent_recoveries(self, now: datetime, *, limit: int) -> None:
         """Give back the claim of every agent that is properly back.
 
         "Properly" is the whole difficulty. An agent that is merely *seen*
         within the stale window is seen half the time while it flaps, and
         releasing on that would let the next tick announce it again — the
         duplicate storm, one release later. So recovery is a *run*: the agent
-        has been heard from, and ``agents.healthy_since`` says its current
-        unbroken run of heartbeats is at least
-        :data:`AGENT_RECOVERY_FACTOR` stale windows long. A link that drops
-        every other beat never gets there, and stays one episode.
+        kept an unbroken run of heartbeats, begun after the claim was taken, of
+        at least :data:`AGENT_RECOVERY_FACTOR` stale windows
+        (``agents.healthy_since``). A link that drops every other beat never
+        gets there, and stays one episode.
+
+        What the release deliberately does **not** ask is whether the agent is
+        there *now*. It did, and that made closing an episode depend on a tick
+        landing inside a two-minute window it visits every fifteen: an agent
+        that was genuinely back for ten minutes and then died for good stayed
+        "already announced" for ever, and its second, real death was never
+        announced at all. A run is what was *observed*, so a tick that arrives
+        an hour late still sees it. The run must have begun after the claim,
+        or every dead agent — whose last run was long and ended when it died —
+        would be released on the tick after it was announced.
 
         Driven from the markers rather than from the fleet: the standing claims
         are the agents the platform believes are offline, which is a much
@@ -607,7 +617,7 @@ class SlaEscalationWorker:
         agent while it was offline still wants its claim cleared when the link
         comes back, or the next real silence would go unannounced.
         """
-        run_started_before = _naive(now) - timedelta(
+        run_length = timedelta(
             seconds=self._settings.agent_stale_seconds * AGENT_RECOVERY_FACTOR
         )
         with get_session(self._settings.postgres_url) as session:
@@ -623,12 +633,15 @@ class SlaEscalationWorker:
                 .where(
                     models.WorkflowEventMarker.kind == "agent_offline",
                     models.WorkflowEventMarker.marker == AGENT_OFFLINE_MARKER,
-                    models.Agent.last_seen_at >= cutoff,
-                    # NULL on rows written before 0056: read as a run starting
-                    # at the last beat, which postpones a recovery rather than
-                    # inventing one.
-                    func.coalesce(models.Agent.healthy_since, models.Agent.last_seen_at)
-                    <= run_started_before,
+                    # The run began after the platform said the agent was
+                    # gone... NULL on a row written by a replica still on 0053
+                    # fails this comparison, which postpones a recovery rather
+                    # than inventing one.
+                    models.Agent.healthy_since > models.WorkflowEventMarker.created_at,
+                    # ...and it is long enough to be a return rather than a
+                    # blink. Measured between the two columns, not against the
+                    # clock: it is the run the platform saw.
+                    models.Agent.healthy_since + run_length <= models.Agent.last_seen_at,
                 )
                 .order_by(models.WorkflowEventMarker.subject_id.asc())
                 .limit(limit)
