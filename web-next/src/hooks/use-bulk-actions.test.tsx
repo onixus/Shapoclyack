@@ -229,6 +229,38 @@ describe("useBulkVulnerabilityAction", () => {
     });
   });
 
+  it("warns when the budget left ids untouched, even with nothing refused", async () => {
+    // A batch the budget cut short refuses nothing, so `failed` stays 0. The
+    // toast still has to be the one that stays on screen: the operator has to
+    // come back and select the remainder, and a self-dismissing success says
+    // the opposite.
+    vi.mocked(bulkVulnerabilityAction).mockResolvedValue(
+      report({
+        requested: 3,
+        succeeded: 1,
+        failed: 0,
+        not_attempted: 2,
+        deadline: true,
+        results: [
+          { id: "vln_1", ok: true, outcome: "ok", error: null },
+          { id: "vln_2", ok: false, outcome: "deadline", error: "not attempted" },
+          { id: "vln_3", ok: false, outcome: "deadline", error: "not attempted" },
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useBulkVulnerabilityAction(), { wrapper });
+
+    result.current.mutate({
+      action: "assign",
+      vuln_ids: ["vln_1", "vln_2", "vln_3"],
+      payload: { assignee: "ada" },
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.warning).toHaveBeenCalled();
+  });
+
   it("reports a request that never landed as an error", async () => {
     vi.mocked(bulkVulnerabilityAction).mockRejectedValue(new Error("Idempotency-Key taken"));
     const { result } = renderHook(() => useBulkVulnerabilityAction(), { wrapper });

@@ -66,7 +66,8 @@ answer instead of applying its batch a second time. That fallback, the partial
 index and the trigger are the temporary half of this change; all three go once
 no legacy row can exist, which is ``RETENTION_SECONDS`` (24h) after the deploy
 — the "contract" step in ``docs/operations.md`` terms, tracked in ``ROADMAP.md``,
-and it needs a migration only to drop the trigger.
+and it needs a migration to drop the trigger and the narrowed legacy
+index alike — the index outlives the fallback that reads it.
 """
 from __future__ import annotations
 
@@ -91,6 +92,11 @@ depends_on: Union[str, Sequence[str], None] = None
 _CROSS_GENERATION_FUNCTION = """
 CREATE OR REPLACE FUNCTION idempotency_cross_generation() RETURNS trigger
 LANGUAGE plpgsql
+-- Qualified like the audit trigger of 0037: a loader that arrives with an empty
+-- search_path (``pg_dump --data-only``, logical replication, a hand-run COPY)
+-- would otherwise abort on "relation idempotency_records does not exist". The
+-- custom-format dump and restore this repo actually ships were never affected.
+SET search_path = pg_catalog, public
 AS $$
 BEGIN
     -- Taken before the look-ahead below and held to commit, so two inserts for

@@ -82,7 +82,7 @@ export function bulkFailureDetail(report: BulkActionReport): string | undefined 
 function announce(report: BulkActionReport, noun: string) {
   const summary = bulkSummary(report, noun);
   const detail = bulkFailureDetail(report);
-  if (report.failed > 0) {
+  if (report.failed > 0 || (report.not_attempted ?? 0) > 0) {
     toast.warning(summary, { description: detail });
     return;
   }

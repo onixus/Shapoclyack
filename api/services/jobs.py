@@ -2305,9 +2305,10 @@ def _release_results_reservation(
 #: first upload and the whole ``job_cancel_grace_seconds`` window was open to a
 #: second, different archive: another extraction into ``runs/<run_id>``, another
 #: NATS publish, another asset upsert. A reservation the *server* writes is what
-#: makes the fact of the ingest visible to the next upload; it is deliberately
-#: not a key any agent could send, so it never matches one and the second copy
-#: meets the ordinary transition check.
+#: makes the fact of the ingest visible to the next upload. An agent *could*
+#: post this exact string as its own key — the field is unvalidated form data —
+#: and it would then read as a replay rather than the 422 the second copy earns.
+#: Nothing is re-ingested either way, so the guard holds where it matters.
 LATE_ARCHIVE_RESERVATION = "late-archive:unkeyed"
 
 
