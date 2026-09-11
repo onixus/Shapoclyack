@@ -16,10 +16,13 @@ each into an event exactly once:
     ``vulnerabilities.DUE_SOON_DAYS``.
 
 ``exception_expiring``
-    Accepted risk about to lapse, at 30, 14 and 7 days. The event and its
-    emitter are here; the *approval* workflow for exceptions is #348 and this
-    module deliberately does not touch it — it reads ``exception_until`` and
-    says what it sees.
+    Accepted risk about to lapse, at 30, 14 and 7 days. It reads
+    ``exception_until``, which since #348 only an *approval* writes — so a
+    request still waiting for its second signature is not announced as
+    expiring, because there is nothing yet to expire. The tick also records the
+    lapse itself when the window finally passes
+    (:meth:`SlaEscalationWorker._expire_exceptions`); the approval workflow
+    around it stays in ``api/services/vulnerabilities.py``.
 
 ``agent_offline``
     An agent whose ``last_seen_at`` crossed ``OCTO_AGENT_STALE_SECONDS``.
@@ -121,6 +124,7 @@ class SlaEscalationWorker:
             "breached": 0,
             "due_soon": 0,
             "exception_expiring": 0,
+            "exception_expired": 0,
             "agents_offline": 0,
             "escalated": 0,
             "digests_sent": 0,
@@ -243,6 +247,7 @@ class SlaEscalationWorker:
             if emitted:
                 self._stats["breached" if state == "breached" else "due_soon"] += 1
         self._exceptions(tenant_id, now)
+        self._expire_exceptions(tenant_id, now)
         if digest_on:
             self._send_digests(tenant_id, self._digest_population(tenant_id, now), now)
 
@@ -359,6 +364,25 @@ class SlaEscalationWorker:
                 if finding["sla_state"] in ("breached", "due_soon"):
                     digest.setdefault(owner_email, []).append(finding)
         return digest
+
+    def _expire_exceptions(self, tenant_id: str, now: datetime) -> None:
+        """Write down the acceptances whose window has just run out (#348).
+
+        The counterpart of :meth:`_exceptions`: that one warns at 30, 14 and 7
+        days, this one records the day it actually lapsed, as a finding event
+        and an ``audit_events`` row. Nothing else changes — the SLA reading
+        went back to breached on its own the moment ``exception_until`` passed,
+        because it is derived — so this is purely the trail, which is the half
+        an auditor reads.
+
+        No marker is needed to keep it from firing twice: the state move
+        ``exception_approved → exception_expired`` is the record, and the
+        second tick's query no longer matches the row.
+        """
+        expired = vulns_service.expire_exceptions(self._settings, tenant_id=tenant_id, now=now)
+        if expired:
+            self._stats["exception_expired"] += expired
+            LOG.info("Recorded %d lapsed risk acceptance(s) for tenant %s", expired, tenant_id)
 
     def _exceptions(self, tenant_id: str, now: datetime) -> None:
         """Announce accepted risk that is about to lapse, once per threshold.

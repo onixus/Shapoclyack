@@ -316,7 +316,7 @@ and the verbs:
 | **Assign** | operator | assignee and owner team. A field left blank is **not sent**, so the finding keeps what it has; clearing one is its own checkbox (*Unassign every selected finding*, *Clear the owning team*), because "I only wanted to set the assignee" must never be read as "and drop the owning team of all two hundred". Apply stays disabled until at least one of the four decisions is made |
 | **Move to…** | operator | one button per lifecycle state; the API refuses the states a given finding cannot reach and says so per id |
 | **Link ticket** | operator | tracker, key and URL |
-| **Accept risk** | tenant admin | expiry and reason, both required before Apply enables |
+| **Accept risk** | tenant admin | expiry and reason, both required before Apply enables. Files a *request* per finding (#348); each one is approved individually, and nothing is suspended until it is |
 | **False positive** | tenant admin | reason and suppression window (1–365 days) |
 
 The two admin verbs are **not rendered** for an operator: the API needs tenant
@@ -346,12 +346,28 @@ operator's next, different batch mints its own key.
 - lifecycle stepper `OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`;
 - operator **Move lifecycle** (legal transitions only; the API still 409s an
   illegal move) and **Ownership**;
-- admin **Accepted risk** (expiry and reason are both required);
+- **Accepted risk**, whose two halves are shown to two different people
+  ([#348](https://github.com/onixus/Shapoclyack/issues/348)). The request form
+  (expiry and reason both required, the button reading **Request acceptance**,
+  because asking is what it does) is for the tenant `admin`; **Approve** /
+  **Reject** appear only for whoever holds `vulnerability.exception.approve`
+  in this tenant — the `risk-approver`, who is a plain `viewer` *globally*, so
+  the panel gates on the permission and not on the role name. The requester
+  does not get the buttons at all, since the API refuses their own signature by
+  name; the panel says so instead. A pending request says who asked, until
+  when, and that the SLA clock is still running — next to the acceptance in
+  force, when the request is for an extension, because those are two different
+  windows and two different justifications. A rejected or lapsed acceptance is
+  said so in the same panel rather than reading as "no exception", and an
+  expiry is read off the date rather than off the workflow state: the worker
+  that stamps a lapse runs on a tick, and until it does a window that ran out
+  an hour ago must not still read "in force";
 - CVSS / risk / owner / first-and-last-seen / SLA, plus EPSS, KEV and the
   risk explanation copied from the last observing run when that run is still
   on disk;
 - the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
-  `exception_set`, `exception_cleared`).
+  `exception_requested`, `exception_approved`, `exception_rejected`,
+  `exception_expired`, `exception_cleared`).
 
 For an endpoint-software finding the **Verify** button is not shown at all: the
 API refuses the dispatch (`409`) because a re-scan does not observe an installed

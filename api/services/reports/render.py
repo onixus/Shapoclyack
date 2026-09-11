@@ -312,6 +312,38 @@ def render_pdf(body: dict[str, Any]) -> bytes:
         _kv(pdf, "Without an owner", assets.get("without_owner", 0))
         _kv(pdf, "With a business service", assets.get("with_business_service", 0))
 
+    if "risk_acceptance" in sections:
+        register = body.get("risk_acceptance") or {}
+        entries = register.get("entries") or []
+        _title(pdf, "Accepted risk register")
+        _kv(pdf, "Acceptances in force", register.get("active", 0))
+        _kv(pdf, "Lapsed in this period", register.get("expired", 0))
+        if register.get("self_approved"):
+            # Named on the page, not only in the data: an acceptance the
+            # requester signed themselves is the finding this report exists to
+            # surface, and a reader who has to count columns will not.
+            _kv(pdf, "Approved by the requester", register.get("self_approved", 0))
+        if entries:
+            _table(
+                pdf,
+                ["Finding", "Owner", "Approved by", "Until", "Status"],
+                [
+                    [
+                        str(entry.get("cve") or entry.get("title") or entry.get("vuln_id") or ""),
+                        str(entry.get("asset_owner") or entry.get("assignee") or ""),
+                        str(entry.get("approved_by") or ""),
+                        _fmt_date(entry.get("until")),
+                        str(entry.get("status") or ""),
+                    ]
+                    for entry in entries
+                ],
+                [width * 0.28, width * 0.22, width * 0.20, width * 0.20, width * 0.10],
+            )
+            if register.get("truncated"):
+                _kv(pdf, "Not shown", f"{register.get('truncated')} more")
+        else:
+            _kv(pdf, "Accepted risk", "none")
+
     if "compliance" in sections:
         for framework in body.get("compliance") or []:
             _title(pdf, f"{framework.get('name')} {framework.get('version')}")
@@ -454,6 +486,45 @@ def render_html(body: dict[str, Any]) -> str:
                 ]
             )
             + "</table>"
+        )
+    if "risk_acceptance" in sections:
+        register = body.get("risk_acceptance") or {}
+        rows = "".join(
+            "<tr><td>{title}</td><td>{owner}</td><td>{requested}</td><td>{approved}</td>"
+            "<td>{until}</td><td>{status}</td></tr>".format(
+                title=html.escape(
+                    str(entry.get("cve") or entry.get("title") or entry.get("vuln_id") or "")
+                ),
+                owner=html.escape(str(entry.get("asset_owner") or entry.get("assignee") or "-")),
+                requested=html.escape(str(entry.get("requested_by") or "-")),
+                approved=html.escape(str(entry.get("approved_by") or "-"))
+                # The register's own warning label, next to the name that
+                # carries it rather than in a footnote.
+                + (" (self-approved)" if entry.get("self_approved") else ""),
+                until=html.escape(_fmt_date(entry.get("until"))),
+                status=html.escape(str(entry.get("status") or "")),
+            )
+            for entry in register.get("entries") or []
+        )
+        parts.append(
+            "<h2>Accepted risk register</h2><table>"
+            + _rows(
+                [
+                    ("Acceptances in force", register.get("active", 0)),
+                    ("Lapsed in this period", register.get("expired", 0)),
+                    ("Approved by the requester", register.get("self_approved", 0)),
+                ]
+            )
+            + "</table><table><tr><th>Finding</th><th>Owner</th><th>Requested by</th>"
+            "<th>Approved by</th><th>Until</th><th>Status</th></tr>"
+            + (rows or "<tr><td colspan=6>No accepted risk</td></tr>")
+            + "</table>"
+            + (
+                f"<p class=note>{int(register.get('truncated', 0))} further "
+                "acceptances not shown; the full register is the CSV export.</p>"
+                if register.get("truncated")
+                else ""
+            )
         )
     if "compliance" in sections:
         for framework in body.get("compliance") or []:

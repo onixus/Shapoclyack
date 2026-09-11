@@ -121,9 +121,19 @@ Three kinds:
 
 | Kind | Sections | For |
 |---|---|---|
-| `executive` | KPIs, risk trend, severity, SLA, compliance scores | The customer's management report |
+| `executive` | KPIs, risk trend, severity, SLA, accepted risk, compliance scores | The customer's management report |
 | `technical` | KPIs, severity, top findings, asset coverage | The team doing the work |
-| `compliance` | KPIs plus the full control table for one framework | The auditor |
+| `compliance` | KPIs, accepted risk, plus the full control table for one framework | The auditor |
+
+The `risk_acceptance` section is the register from
+[#348](https://github.com/onixus/Shapoclyack/issues/348): how many acceptances
+are in force, how many lapsed inside the reporting period, how many were
+approved by the person who asked for them, and up to 25 of them with the owner,
+the approver and the expiry. It is on by default in the two kinds somebody
+signs off, because an executive summary that reports 12 breaches without saying
+that 30 findings are deliberately exempt from being counted is a flattering
+number. The full list is `GET /api/vulnerabilities/risk-register?format=csv` —
+a PDF with two hundred rows in it is not read.
 
 An executive report carries every framework's score but no control tables; only
 a compliance report carries the tables. A thirty-page control appendix on a

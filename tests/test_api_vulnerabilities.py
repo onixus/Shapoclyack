@@ -313,7 +313,7 @@ def test_assign_touches_only_the_keys_that_were_sent(tmp_path, monkeypatch):
     assert cleared.json()["owner_team"] == "platform"
 
 
-def test_accepting_risk_is_admin_only(tmp_path, monkeypatch):
+def test_requesting_risk_acceptance_is_admin_only(tmp_path, monkeypatch):
     client = configured_client(tmp_path, monkeypatch)
     _seed(tmp_path)
     operator = auth_headers(client, "operator")
@@ -330,14 +330,18 @@ def test_accepting_risk_is_admin_only(tmp_path, monkeypatch):
         == 403
     )
 
-    accepted = client.post(
+    requested = client.post(
         f"/api/vulnerabilities/{vuln_id}/exception",
         json={"until": until, "reason": "vendor patch pending"},
         headers=admin,
     )
-    assert accepted.status_code == 200
-    assert accepted.json()["sla_state"] == "accepted"
-    assert accepted.json()["exception_by"] == "admin"
+    assert requested.status_code == 200
+    # An admin asks; the clock does not stop until a risk-approver signs (#348,
+    # tests/test_vuln_exception_approval.py).
+    assert requested.json()["exception_state"] == "exception_requested"
+    assert requested.json()["sla_state"] != "accepted"
+    assert requested.json()["exception_requested_by"] == "admin"
+    assert requested.json()["exception_until"] is None
 
     expired = client.post(
         f"/api/vulnerabilities/{vuln_id}/exception",
@@ -352,6 +356,7 @@ def test_accepting_risk_is_admin_only(tmp_path, monkeypatch):
     withdrawn = client.delete(f"/api/vulnerabilities/{vuln_id}/exception", headers=admin)
     assert withdrawn.status_code == 200
     assert withdrawn.json()["exception_until"] is None
+    assert withdrawn.json()["exception_state"] == "none"
 
 
 def test_sla_policy_crud_is_admin_only(tmp_path, monkeypatch):
