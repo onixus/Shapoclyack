@@ -113,6 +113,14 @@ ACTION_VULN_EXCEPTION_WITHDRAW = "vulnerability.exception_withdraw"
 ACTION_VULN_EXCEPTION_EXPIRE = "vulnerability.exception_expire"
 ACTION_ASSET_BULK = "asset.bulk"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
+# How hard a tenant may be scanned (#362). The first is the operator's edit —
+# raising a rate ceiling or taking a fieldbus port off the avoid-list is a
+# decision about somebody's production network, and the row carries the whole
+# document before and after so the change is readable years later. The second
+# is not an edit but a refusal: the platform declining a scan because the
+# policy forbids that speed or that port.
+ACTION_SCAN_POLICY_UPDATE = "scan_policy.update"
+ACTION_SCAN_POLICY_BLOCK = "scan.policy_block"
 # Where a tenant's finished runs are announced (#351). Audited although the
 # neighbouring webhook subscriptions are not: a channel is a destination for
 # this tenant's exposure data chosen by a tenant admin, and "who pointed our

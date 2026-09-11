@@ -81,6 +81,14 @@ TENANT_CREDENTIAL_MANAGE = "tenant.credential.manage"
 #: on claim, so this is the authority to change which worker may execute which
 #: customer's scan — a tenant-administration decision, never the agent's own.
 AGENT_GROUP_MANAGE = "agent.group.manage"
+#: Set how hard this tenant may be scanned (``PUT …/scan-policy``, #362): the
+#: rate ceilings pushed to the agent, the ports its scans must never touch, and
+#: whether it may run anything but the ``safe`` speed profile. A tenant
+#: administration decision rather than a scope approval — it narrows what the
+#: platform does to a network it is already approved for — so the tenant's own
+#: ``admin`` holds it. Reading it needs only ``scan_scope.read``: whoever may
+#: see what a tenant is allowed to scan may see how hard.
+SCAN_POLICY_MANAGE = "scan_policy.manage"
 #: Read what the tenant was sold (``GET …/quota``).
 TENANT_QUOTA_READ = "tenant.quota.read"
 #: Change it. Platform-only on purpose: a tenant admin who could raise their
@@ -114,6 +122,7 @@ PERMISSIONS: dict[str, str] = {
     TENANT_MEMBER_MANAGE: "Grant and revoke the tenant's members",
     TENANT_CREDENTIAL_MANAGE: "Manage the tenant's provisioning keys and service tokens",
     AGENT_GROUP_MANAGE: "Manage the tenant's agent groups and their members",
+    SCAN_POLICY_MANAGE: "Set how hard this tenant may be scanned",
     TENANT_QUOTA_READ: "Read the tenant's quota",
     PLATFORM_QUOTA_MANAGE: "Set any tenant's quota",
     PLATFORM_TENANT_MANAGE: "Create tenants",
@@ -174,6 +183,7 @@ _TENANT_ADMIN_PERMISSIONS = (
     TENANT_MEMBER_MANAGE,
     TENANT_CREDENTIAL_MANAGE,
     AGENT_GROUP_MANAGE,
+    SCAN_POLICY_MANAGE,
     TENANT_QUOTA_READ,
 )
 

@@ -136,6 +136,18 @@ QUOTA_DENIED_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+SCAN_POLICY_REFUSALS_TOTAL = Counter(
+    "octo_scan_policy_refusals_total",
+    "Scans refused by a tenant's scan policy (#362), by reason. 'safe_only' "
+    "and 'avoid_ports' are a start the operator sees as a 403; "
+    "'agent_unsupported' is a job left in the queue because the agent that "
+    "asked for it does not declare the 'scan_policy' capability and so cannot "
+    "pace itself — that one is the series to alert on, because nobody is told "
+    "about it interactively and the scan simply does not happen.",
+    ["reason"],
+    registry=REGISTRY,
+)
+
 NATS_CONSUMER_PENDING = Gauge(
     "octo_nats_consumer_pending",
     "JetStream durable consumer pending message count (consumer lag).",

@@ -19,6 +19,7 @@ from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import maintenance
 from api.services import quotas
+from api.services import scan_policy
 from api.services import scan_scopes
 from api.settings import Settings
 
@@ -189,6 +190,13 @@ def start_job(
     except scan_scopes.ScanScopeDenied as exc:
         # 403, not 422: the targets are well-formed, this tenant is simply not
         # approved for them (#226). The refusal is already in the audit trail.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except scan_policy.ScanPolicyViolation as exc:
+        # 403 and not 409 (#362): unlike the maintenance block below, this
+        # refusal does not lift by itself — the tenant's policy forbids this
+        # speed profile or this port until somebody changes one of the two, so
+        # there is no honest ``Retry-After`` to offer. The refusal is already
+        # in audit_events and counted in octo_scan_policy_refusals_total.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except maintenance.MaintenanceBlocked as exc:
         # 409, neither 403 nor 429 (#352): the caller is entitled to this scan

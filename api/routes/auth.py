@@ -40,6 +40,8 @@ from api.schemas import (
     PromotedDomainInfo,
     ProvisioningKeyInfo,
     ReplaceScanScopeRequest,
+    ScanPolicyInfo,
+    ScanPolicyRequest,
     ScanScopeEntryInfo,
     SsoStatus,
     TenantInfo,
@@ -61,6 +63,7 @@ from api.services import mfa as mfa_service
 from api.services import oidc as oidc_service
 from api.services import promoted_domains
 from api.services import quotas
+from api.services import scan_policy
 from api.services import scan_scopes
 from api.services import sessions as sessions_service
 from api.services import tenant_posture
@@ -996,3 +999,110 @@ def replace_scan_scope(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return [ScanScopeEntryInfo.model_validate(entry) for entry in entries]
+
+
+def _policy_info(stored: dict) -> ScanPolicyInfo:
+    """One stored policy plus what it resolves to — see ScanPolicyInfo."""
+    return ScanPolicyInfo.model_validate(
+        {**stored, "effective": scan_policy.resolve(stored) or {}}
+    )
+
+
+@router.get("/tenants/{tenant_id}/scan-policy", response_model=ScanPolicyInfo | None)
+def get_scan_policy(
+    tenant_id: str,
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.SCAN_SCOPE_READ)),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ScanPolicyInfo | None:
+    """How hard this tenant may be scanned (#362).
+
+    ``null`` is the answer for a tenant that has no policy, and it is a
+    meaningful one rather than a missing resource: no ceilings are pushed, the
+    agent's local ``scanner/config/default.yaml`` decides the pace as it did
+    before #362, and every speed profile is allowed. That is every tenant until
+    somebody writes a policy, so a 404 here would report a normal state as an
+    error.
+
+    Gated on ``scan_scope.read`` rather than on a permission of its own:
+    whoever may see what a tenant is allowed to scan may see how hard. Writing
+    it is the separate ``scan_policy.manage`` below.
+    """
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    stored = scan_policy.get_policy(settings, tenant_id)
+    return None if stored is None else _policy_info(stored)
+
+
+@router.put("/tenants/{tenant_id}/scan-policy", response_model=ScanPolicyInfo)
+def replace_scan_policy(
+    tenant_id: str,
+    body: ScanPolicyRequest,
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.SCAN_POLICY_MANAGE)),
+    ],
+    _: StepUpDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> ScanPolicyInfo:
+    """Set the tenant's scan policy, replacing whatever it had.
+
+    ``scan_policy.manage`` (#318 machinery, #362 permission), held by the
+    tenant's own ``admin`` and the platform admin — unlike the scope approval
+    next door, which no role that can start a scan holds. The asymmetry is
+    deliberate: approving a scope decides that the platform may touch a network
+    at all, while this decides how gently it does so, and a tenant admin should
+    be able to say "our plant network is fragile" without filing a ticket.
+
+    Behind a step-up all the same, because the interesting direction is the
+    loosening one: taking 502 off the avoid-list or raising a rate ceiling on a
+    control network is not something an eight-hour-old session should be enough
+    for. The whole document, before and after, is in the audit trail.
+    """
+    try:
+        stored = scan_policy.replace_policy(
+            settings,
+            tenant_id=tenant_id,
+            profile=body.profile,
+            safe_only=body.safe_only,
+            max_discover_rate=body.max_discover_rate,
+            max_port_rate=body.max_port_rate,
+            max_host_concurrency=body.max_host_concurrency,
+            per_host_rate=body.per_host_rate,
+            avoid_ports=body.avoid_ports,
+            note=body.note,
+            updated_by=principal.username,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return _policy_info(stored)
+
+
+@router.delete("/tenants/{tenant_id}/scan-policy", status_code=status.HTTP_204_NO_CONTENT)
+def delete_scan_policy(
+    tenant_id: str,
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.SCAN_POLICY_MANAGE)),
+    ],
+    __: StepUpDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> Response:
+    """Remove the policy, putting the tenant back to no ceilings at all.
+
+    The loosening in its purest form, which is why it needs the same permission
+    and the same step-up as the write, and why the removed document is kept in
+    the audit row's ``before``. 204 whether or not there was a policy: the
+    caller asked for the tenant to have none and it has none.
+    """
+    if tenants_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    scan_policy.clear_policy(settings, tenant_id=tenant_id, audit=audit)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

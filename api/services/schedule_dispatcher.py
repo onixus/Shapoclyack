@@ -28,6 +28,7 @@ from api.services import jobs as jobs_service
 from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import quotas
+from api.services import scan_policy
 from api.services import scan_schedules
 from api.services.leader_lock import SCHEDULE_DISPATCHER_LOCK_ID, LeaderLock
 from api.settings import Settings
@@ -57,6 +58,7 @@ class ScheduleDispatcher:
             "skipped_overlap": 0,
             "skipped_not_leader": 0,
             "skipped_quota": 0,
+            "skipped_policy": 0,
             "deferred_maintenance": 0,
             "errors": 0,
         }
@@ -155,6 +157,21 @@ class ScheduleDispatcher:
             # claiming a run that did not happen.
             self._stats["skipped_quota"] += 1
             LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], exc)
+            scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
+            return
+        except scan_policy.ScanPolicyViolation as violation:
+            # The tenant's scan policy forbids what this schedule asks for
+            # (#362) — a speed profile it may not run, or a port on its
+            # avoid-list. Expected rather than an error, and *skipped* rather
+            # than deferred: unlike a blackout this does not lift by itself, so
+            # there is no moment to move the tick to. Counting it as an error
+            # would page whoever watches the dispatcher every cadence tick for
+            # something only an operator editing the schedule (or the policy)
+            # can fix; the refusal is in audit_events and in
+            # octo_scan_policy_refusals_total, where it is visible without
+            # being an alarm.
+            self._stats["skipped_policy"] += 1
+            LOG.warning("Schedule %s skipped: %s", sched["schedule_id"], violation)
             scan_schedules.record_skipped_dispatch(sched["schedule_id"], ran_at=now)
             return
         except maintenance.MaintenanceBlocked as blocked:
