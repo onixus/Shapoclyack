@@ -365,7 +365,7 @@ One row per administrative change, with the resource before and after it:
 | `tenant.change_freeze` | `PUT /api/change-freeze`. `before`/`after` carry the flag, the note and the stamp, so both the freeze and the thaw are rows — the thaw is the one that precedes the scan somebody did not expect |
 | `scan.maintenance_block` | Not an edit: the platform refusing a scan because a window or a freeze said so ([#352](https://github.com/onixus/Shapoclyack/issues/352)). Written by `jobs_service.start_scan`, so the console's `POST /api/jobs` and the recurring dispatcher leave the same row, with the `reason`, the `window_id` that refused and the `retry_at` it will lift at. Best-effort like the scope denial above: the scan is already refused, and losing the row must not turn a clean `409` into a `500` |
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
-| `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
+| `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_request_withdraw`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
 
 Every row carries the actor and what kind of principal it is (`user`,
@@ -596,7 +596,7 @@ then it applies in that tenant only.
 | `scan-operator` | write | Operator, named separately so "runs scans" can be granted without the word operator |
 | `scope-approver` | read | Approves what the tenant may scan (`PUT …/scan-scope`) and starts no scans |
 | `token-admin` | read | Manages the tenant's provisioning keys and service tokens, and nothing else |
-| `risk-approver` | read | Approves and rejects requested risk acceptances (`POST …/exception/approve`), and works no findings ([#348](https://github.com/onixus/Shapoclyack/issues/348)) |
+| `risk-approver` | read | Approves and rejects requested risk acceptances (`POST …/exception/approve`), revokes a granted one (`DELETE …/exception`), and works no findings ([#348](https://github.com/onixus/Shapoclyack/issues/348)) |
 
 The specialist roles are deliberately at **read** rank: a `scope-approver` at
 write rank would pass every `operator` gate in the API and could run the scans
@@ -618,7 +618,7 @@ it is only supposed to approve.
 | `scan_policy.manage` | tenant `admin`, platform admin. Reading a policy needs only `scan_scope.read`: whoever may see what a tenant is allowed to scan may see how hard |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
-| `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around |
+| `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one. It revokes a *granted* window and nothing else: with none granted it answers `409`, because closing somebody else's pending ask is the reject, which leaves a decision with a name on it. A requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
 
 `platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
 anyone below it: those counters span every tenant on the installation.
@@ -728,6 +728,15 @@ What comes back says what was actually stopped:
   ([#349](https://github.com/onixus/Shapoclyack/issues/349)); the upload itself
   is still sent without a beat behind it, so a very slow upload of a very large
   archive can still cross `OCTO_AGENT_STALE_SECONDS`;
+  read as a complete one would report hosts a scan never reached as gone. An
+  archive that arrives **after** the grace period — the agent obeyed, but a
+  large partial run on a narrow link did not finish uploading in time — is
+  still kept, for one further grace period after the job was closed. What is
+  kept is the bytes and not the verdict: the job stays `cancelled` with the
+  same `finished_at`, no `exit_code` and "did not confirm" still in `error`,
+  with a note saying the results turned up late. An upload with **no** archive
+  after the grace period is still `422`: it carries nothing to keep, and
+  accepting it would be recording a confirmation that never came;
 - a job already `cancelling` answers `200` with that job unchanged. The stop
   stands and its grace period is already running, so asking again is not a
   second decision — and terminalizing here would report a stop no agent has
@@ -894,6 +903,7 @@ The answer is **200 with a per-id report**, even when some ids failed:
 
 ```json
 {"action": "assign", "requested": 3, "succeeded": 2, "failed": 1,
+ "not_attempted": 0,
  "results": [{"id": "vln_a", "ok": true, "outcome": "ok", "error": null},
              {"id": "vln_x", "ok": false, "outcome": "not_found",
               "error": "not found in this tenant"}],
@@ -902,11 +912,17 @@ The answer is **200 with a per-id report**, even when some ids failed:
 
 `outcome` is the single-id endpoint's status code in words — `not_found` is its
 `404` (which is also what another tenant's id gets: a write scope never
-confirms existence), `conflict` its `409`, `invalid` its `422`. A batch is a
-partial success by design: one finding that closed since the operator loaded
+confirms existence), `conflict` its `409`, `invalid` its `422`. `deadline` is
+the one outcome that is not a status code; see the time budget below. A batch is
+a partial success by design: one finding that closed since the operator loaded
 the page must not refuse the other hundred and ninety-nine. A caller wanting
-all-or-nothing checks `failed == 0`. `422` is reserved for a request that
-applies to nothing at all. Duplicate ids are applied once.
+all-or-nothing checks `failed == 0` — `failed` counts only what the API
+*refused*. Ids the request ran out of time for are counted apart, in
+`not_attempted` (see the time budget below), because nothing was asked of them:
+folding them in would make a slow batch that refused nothing report eighty
+failures. `succeeded + failed + not_attempted == len(results)`. `422` is
+reserved for a request that applies to nothing at all. Duplicate ids are applied
+once.
 
 `POST /api/assets/bulk` (`operator`) is the same shape for the asset registry
 and has one verb, `context` — `PATCH /api/assets/{id}`'s body applied to a
@@ -922,6 +938,28 @@ per tenant it changed, filed in *that* tenant. The per-finding
 written, unchanged. Ids are capped at 48 characters as well as 200 per request,
 which is what keeps the row naming every one of them; see the audit section
 above for what gives way when a body is too big to fit beside them.
+
+**A time budget, not a timeout.** Each id is its own transaction and, for a
+finding carrying a tracker key, its own outbound call, so two hundred ids
+against a slow Jira is a request no proxy will wait out — and a `504` there is
+exactly the failure the per-id report exists to prevent: work half applied, and
+no statement of which half. So the batch carries a budget
+(`OCTO_BULK_ACTION_BUDGET_SECONDS`, default 45s — keep it below the read timeout
+of whatever sits in front of the API; `0` turns it off). When it is spent the
+request stops and answers **200** with the report it has: the ids it never
+reached carry outcome `deadline`, are counted in `not_attempted` rather than in
+`failed`, and `"deadline": true` is set on the envelope. Those ids were not
+refused and nothing was asked of them, so the caller finishes the job by sending
+them again — in a **new** request under a **new** key, since retrying the same
+key replays this same partial report.
+
+The one exception is a cut-short batch that applied **nothing** (`succeeded: 0`
+with `"deadline": true`), which does *not* burn its key: the first id is always
+attempted, but attempted is not applied — a stale selection whose first id has
+since closed comes back `not_found` — and storing that empty report would answer
+every retry "already done" for 24 hours. A pipeline sending a stable, meaningful
+key (`nightly-triage`) would then never get the rest of its batch in. So the
+reservation is released and the same key may be sent again.
 
 **`Idempotency-Key` on the bulk endpoints.** Both accept the header, and it
 matters most here: a bulk request is the slowest, so it is the one that times
@@ -946,9 +984,34 @@ is kept and the partial report (`aborted: true`) is stored as its answer:
 releasing it would let the retry re-apply the ids that landed (for `transition`
 a hundred `conflict`s, for `false_positive` a second suppression window),
 whereas replaying tells the caller which ids are still to send. Keys are
-namespaced per endpoint and per tenant, capped at 200 characters, and remembered
-for 24 hours (`api/services/idempotency.py`); the scan-start path is unchanged
-and keeps hanging its key on the job row it creates.
+namespaced per endpoint and **per caller** — the principal the audit trail
+records, so `service-token:nightly-ci` for an integration and the username for a
+person — capped at 200 characters, and remembered for 24 hours
+(`api/services/idempotency.py`); the scan-start path is unchanged and keeps
+hanging its key on the job row it creates — a scan-start key is still
+**tenant-wide**, so two pipelines of one customer must not name their runs the
+same thing.
+
+For the first 24 hours after the `0055` deploy a key reserved by a replica of
+the *previous* release is still tenant-wide, because the row it left carries no
+owner and the table never recorded one. Both directions of the rollout are
+closed — a retry landing on a new replica replays that row, and a retry landing
+on an old one cannot take a key a new replica already answered — but a
+neighbour in the tenant who guesses such a key inside that window is still
+handed its report as a replay, without an audit row of their own. See
+`docs/operations.md`.
+
+Per caller rather than per tenant, because the console mints a UUID per click
+but a CI pipeline sends a *meaningful* key (`nightly-triage`,
+`triage-2026-09-10`), and those are guessable. In one shared namespace any
+member of the tenant could take one and either hold it — every other run of that
+name answered `409` until the record aged out — or, with a body that happened to
+match, be handed the other pipeline's report as a replay, leaving no audit row
+of their own. Two integrations may now use the same name without meeting; one
+integration retrying still lands on its own key, because a service token's
+principal is the same on every retry. Rows written before this change carry no
+caller and keep the old tenant-wide reading for the 24 hours they survive, so a
+retry that crosses the upgrade still replays instead of re-applying its batch.
 
 ### Agent fleet, deployment and upgrade
 
@@ -960,8 +1023,8 @@ and keeps hanging its key on the job row it creates.
 | `PATCH /api/agents/{id}` | **admin** | Moves the agent between `active`, `disabled` and `quarantined` (`{"status": …, "reason": …}`), and answers the agent as it now stands. A non-`active` agent is refused job claims and result uploads with `403`; its heartbeat is still accepted so the reason reaches it. The state survives re-registration — a restart is not an appeal ([#308](https://github.com/onixus/Shapoclyack/issues/308)) |
 | `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the agent registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (an agent registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* agents that revocation stopped |
 | `GET /api/agent-groups` | viewer | The tenant's agent groups ([#361](https://github.com/onixus/Shapoclyack/issues/361)), each with the number of agents in it. Readable at viewer rank because it is the vocabulary of the scan form and of the approved scope |
-| `POST /api/agent-groups` | `agent.group.manage` | Create one (`{"name": "pci-segment", "description": …}`). Names are lowercase letters, digits and dashes, unique within the tenant, and **immutable** — the name is what jobs, agents and scope entries refer to, so a rename would silently re-point a restriction. `422` for a malformed or duplicate name |
-| `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. `409` while an agent, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any agent" |
+| `POST /api/agent-groups` | `agent.group.manage` | Create one (`{"name": "pci-segment", "description": …}`). Names are lowercase letters, digits and dashes, unique within the tenant, and **immutable** — the name is what jobs, agents and scope entries refer to, so a rename would silently re-point a restriction. `422` for a malformed or duplicate name — including when the duplicate is only discovered by the unique index, i.e. two operators posting the same name at the same instant |
+| `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. The name in the path is normalised the same way `POST` normalises it, so `DELETE /api/agent-groups/PCI` deletes the group that `POST {"name": "PCI"}` created; `422` for a name no group could have. `409` while an agent, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any agent". A reference cannot be written *while* the group is being deleted either: all four writers that name a group (`PUT /api/tenants/{id}/scan-scope`, `POST /api/jobs`, `POST /api/schedules`, `PUT /api/agents/{id}/group`) check the name inside the transaction that stores the reference and hold the group row while they do, so one of the two requests sees the other's result rather than the state that preceded it. The scan or schedule that loses is answered `422` with the group named; the deletion that loses is the `409` above |
 | `PUT /api/agents/{id}/group` | `agent.group.manage` | Put the agent into a group (`{"group": "pci-segment"}`) or take it out of every group (`{"group": null}`), and answer the agent as it now stands. The agent's own `labels` are never consulted: membership decides which of the tenant's jobs it may claim, so it is a grant rather than something the host declares. A job the agent already holds is not recalled; the move applies from its next claim |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
@@ -1111,6 +1174,15 @@ has a scan policy is handed only to an agent that reports the `scan_policy`
 capability (on `register` and on every heartbeat), because the ceilings are
 applied by the executor and an agent that ignores them would scan at whatever
 its local config says. The detail names the capability; the job stays queued.
+`capabilities` has three states on both `register` and `heartbeat`, and
+they mean different things. **Omitted** leaves the stored list alone — an
+agent that declares its capabilities only on the heartbeat must not lose
+them by restarting. **A list** replaces it. **The empty list** is a list,
+not silence: a worker rolled back to a build without `scan_policy` reports
+honestly that it has none, and treating that as "said nothing" would leave
+the API handing it policy-carrying jobs it then scans at whatever its local
+config says — the ceiling not applying, which is the failure the `426`
+exists to prevent.
 The heartbeat response carries `min_version`, `upgrade_required` and a
 human-readable `upgrade_message`, which is the only channel that reaches a
 running agent — `agent/worker.py` logs it once per change rather than once per

@@ -12,6 +12,17 @@ nowhere on the tenant's data to hang the key and no row to replay. It gets a
 table (``idempotency_records``), and the same contract the scan start already
 established, spelled the same way:
 
+**A key belongs to the caller, not to the tenant.** ``(tenant_id, endpoint,
+actor, key)`` is what is unique, where ``actor`` is the principal string the
+audit trail uses. The console mints a UUID per click and never noticed, but the
+CI integrations in ``docs/wiki/scenarios-architect.md`` send meaningful,
+guessable keys — ``nightly-triage`` — and under a tenant-wide namespace any
+member could take one and either 409 somebody else's pipeline or, with a body
+that happened to match, be handed its report as a replay without leaving an
+audit row of their own. Two pipelines may now both call their batch
+``nightly-triage``; one pipeline retrying still lands on its own key, because a
+service token's actor string is the same on every retry.
+
 * a key seen before with the **same** request replays the stored answer, and
   the route answers 200 rather than the endpoint's own success code — nothing
   was applied by *this* request;
@@ -93,6 +104,15 @@ RESERVATION_LEASE_SECONDS = 15 * 60
 #: on every one of them.
 _PURGE_INTERVAL_SECONDS = 300.0
 
+#: How many times :func:`reserve` will look again after losing its INSERT.
+#:
+#: Two, and only because a rolling deploy has two generations of writer: a
+#: replica of the previous release can take a key between this one's look-ahead
+#: for a legacy row and its own INSERT, which the cross-generation trigger in
+#: ``0055_idempotency_actor`` turns into an ``IntegrityError``. The second pass
+#: reads that row and replays it. Goes away with the fallback below.
+_RESERVE_ATTEMPTS = 2
+
 #: Ceiling on the key a client may name. Same 200 characters the scan start
 #: truncates to, so one client library can use one key everywhere.
 MAX_KEY_LENGTH = 200
@@ -156,6 +176,7 @@ def reserve(
     settings: Settings,
     *,
     tenant_id: str,
+    actor: str,
     endpoint: str,
     key: str,
     request_digest: str,
@@ -167,80 +188,176 @@ def reserve(
     this request's to execute. Raises :class:`IdempotencyMismatch` for a key
     reused with a different body and :class:`IdempotencyInFlight` for one whose
     first request has not finished.
+
+    ``actor`` is who the key belongs to, and it is part of the identity of the
+    reservation: two members of one tenant may both call their nightly batch
+    ``nightly-triage`` without taking it from each other.
     """
     _maybe_purge(settings)
-    with get_session(settings.postgres_url) as session:
-        try:
-            with session.begin_nested():
-                session.add(
-                    models.IdempotencyRecord(
-                        tenant_id=tenant_id,
-                        endpoint=endpoint,
-                        key=key,
-                        request_digest=request_digest,
-                        response=None,
-                        created_at=_now(),
-                    )
+    stored: dict[str, Any] | None = None
+    for _ in range(_RESERVE_ATTEMPTS):
+        with get_session(settings.postgres_url) as session:
+            # Looked up *before* the INSERT, and only this one is: a row written
+            # before keys had owners (``actor IS NULL``) lives in a different
+            # index from the one below, so without this read a retry arriving
+            # after the deploy would quietly execute its batch a second time. It
+            # goes away with the last legacy row — see ``0055_idempotency_actor``.
+            legacy = _row_for(
+                session, tenant_id=tenant_id, endpoint=endpoint, key=key, actor=None
+            )
+            if legacy is not None:
+                stored = _answer_from_legacy(
+                    session, legacy, endpoint=endpoint, key=key, request_digest=request_digest
                 )
-                session.flush()
-            return None
-        except IntegrityError:
-            # Lost the race on (tenant_id, endpoint, key), or the key was used
-            # in an earlier request altogether. Both are answered from the row
-            # that won.
-            pass
-        row = session.execute(
-            select(models.IdempotencyRecord).where(
-                models.IdempotencyRecord.tenant_id == tenant_id,
-                models.IdempotencyRecord.endpoint == endpoint,
-                models.IdempotencyRecord.key == key,
+            if stored is not None:
+                break
+            try:
+                with session.begin_nested():
+                    session.add(
+                        models.IdempotencyRecord(
+                            tenant_id=tenant_id,
+                            actor=actor,
+                            endpoint=endpoint,
+                            key=key,
+                            request_digest=request_digest,
+                            response=None,
+                            created_at=_now(),
+                        )
+                    )
+                    session.flush()
+                return None
+            except IntegrityError:
+                # Lost the race on (tenant_id, endpoint, actor, key), or this
+                # caller used the key in an earlier request altogether, or the
+                # cross-generation trigger refused us because a replica of the
+                # previous release took the key between the read above and this
+                # INSERT. All three are answered from the row that won.
+                pass
+            row = _row_for(
+                session, tenant_id=tenant_id, endpoint=endpoint, key=key, actor=actor
             )
-        ).scalars().first()
-        if row is None:
-            # The winner's row is gone — it was released as a failure between
-            # our INSERT and this read. Nobody holds the key and nobody has an
-            # answer, so this request executes.
-            return None
-        if row.response is None:
-            # Checked before the digest: an abandoned reservation holds a key
-            # nobody is using, and answering a different body "that key is
-            # taken" would keep it hostage for the lease as well.
-            if (_now() - row.created_at).total_seconds() < RESERVATION_LEASE_SECONDS:
-                raise IdempotencyInFlight(endpoint, key)
-            if not _claim_expired(
-                session,
-                tenant_id=tenant_id,
-                endpoint=endpoint,
-                key=key,
-                request_digest=request_digest,
-            ):
-                # Another retry took it over between the read and the write.
-                # It is the one executing now, so this one waits, exactly as it
-                # would have on the original request.
-                raise IdempotencyInFlight(endpoint, key)
-            LOG.warning(
-                "Idempotency reservation on %s for key %r (tenant %s) outlived its "
-                "%ds lease and was taken over; the request that made it never answered",
-                endpoint,
-                key,
-                tenant_id,
-                RESERVATION_LEASE_SECONDS,
-            )
-            return None
-        if row.request_digest and row.request_digest != request_digest:
-            raise IdempotencyMismatch(endpoint, key)
-        stored = dict(row.response)
+            if row is None:
+                if _row_for(
+                    session, tenant_id=tenant_id, endpoint=endpoint, key=key, actor=None
+                ) is None:
+                    # The winner's row is gone — it was released as a failure
+                    # between our INSERT and this read. Nobody holds the key and
+                    # nobody has an answer, so this request executes.
+                    return None
+                # A pre-deploy replica took the key while we were reading. Its
+                # row is the answer, and the pass below reads it with the
+                # legacy semantics it was written under.
+                continue
+            if row.response is None:
+                # Checked before the digest: an abandoned reservation holds a key
+                # nobody is using, and answering a different body "that key is
+                # taken" would keep it hostage for the lease as well.
+                if (_now() - row.created_at).total_seconds() < RESERVATION_LEASE_SECONDS:
+                    raise IdempotencyInFlight(endpoint, key)
+                if not _claim_expired(session, row, request_digest=request_digest):
+                    # Another retry took it over between the read and the write.
+                    # It is the one executing now, so this one waits, exactly as it
+                    # would have on the original request.
+                    raise IdempotencyInFlight(endpoint, key)
+                LOG.warning(
+                    "Idempotency reservation on %s for key %r (tenant %s, actor %s) outlived "
+                    "its %ds lease and was taken over; the request that made it never answered",
+                    endpoint,
+                    key,
+                    tenant_id,
+                    actor,
+                    RESERVATION_LEASE_SECONDS,
+                )
+                return None
+            if row.request_digest and row.request_digest != request_digest:
+                raise IdempotencyMismatch(endpoint, key)
+            stored = dict(row.response)
+            break
+    if stored is None:
+        # Both passes lost the key to a writer of the other generation and
+        # neither left an answer behind. Honest, and retryable: somebody else
+        # is executing this key right now.
+        raise IdempotencyInFlight(endpoint, key)
     metrics_service.IDEMPOTENT_REPLAYS_TOTAL.labels(endpoint=endpoint).inc()
     LOG.info("Idempotent replay on %s for key %r (tenant %s)", endpoint, key, tenant_id)
     return stored
 
 
-def _claim_expired(
+def _row_for(
+    session: Any, *, tenant_id: str, endpoint: str, key: str, actor: str | None
+) -> models.IdempotencyRecord | None:
+    """This key's record for one owner. ``actor=None`` asks for the legacy row."""
+    owner = (
+        models.IdempotencyRecord.actor.is_(None)
+        if actor is None
+        else models.IdempotencyRecord.actor == actor
+    )
+    return session.execute(
+        select(models.IdempotencyRecord).where(
+            models.IdempotencyRecord.tenant_id == tenant_id,
+            models.IdempotencyRecord.endpoint == endpoint,
+            models.IdempotencyRecord.key == key,
+            owner,
+        )
+    ).scalars().first()
+
+
+def _answer_from_legacy(
     session: Any,
+    legacy: models.IdempotencyRecord,
     *,
-    tenant_id: str,
     endpoint: str,
     key: str,
+    request_digest: str,
+) -> dict[str, Any] | None:
+    """What a pre-``actor`` row says about this request, or ``None`` for "nothing".
+
+    Rows written before ``0055_idempotency_actor`` carry no owner, and there is
+    nothing to derive one from: the table never recorded who reserved a key. So
+    for the day they survive they keep the semantics they were written under —
+    tenant-wide — which is the only reading that does not lose a replay. The
+    alternative, ignoring them, would let a retry arriving a second after the
+    deploy apply its batch again, and that is the one outcome the key exists to
+    prevent.
+
+    TODO(contract step, #346): delete this function, the ``actor=None`` read in
+    :func:`reserve`, the ``uq_idempotency_legacy_tenant_endpoint_key`` index and
+    the ``idempotency_records_cross_generation`` trigger one release after
+    ``0055`` ships. No row without an actor can exist :data:`RETENTION_SECONDS`
+    after that deploy, and while these stay a legacy key is still read
+    tenant-wide — the namespace this change exists to close. Tracked in
+    ``ROADMAP.md`` (Track A) and ``docs/operations.md``.
+
+    A legacy reservation whose lease is up is deleted rather than taken over:
+    the caller is about to insert a row of its own, owned properly, and two
+    rows for one key would then be two answers to one question.
+    """
+    if legacy.response is None:
+        if (_now() - legacy.created_at).total_seconds() < RESERVATION_LEASE_SECONDS:
+            raise IdempotencyInFlight(endpoint, key)
+        session.execute(
+            delete(models.IdempotencyRecord).where(
+                models.IdempotencyRecord.id == legacy.id,
+                models.IdempotencyRecord.response.is_(None),
+            )
+        )
+        LOG.warning(
+            "Dropped an unowned idempotency reservation on %s for key %r that outlived "
+            "its %ds lease",
+            endpoint,
+            key,
+            RESERVATION_LEASE_SECONDS,
+        )
+        return None
+    if legacy.request_digest and legacy.request_digest != request_digest:
+        raise IdempotencyMismatch(endpoint, key)
+    return dict(legacy.response)
+
+
+def _claim_expired(
+    session: Any,
+    row: models.IdempotencyRecord,
+    *,
     request_digest: str,
 ) -> bool:
     """Take over a reservation whose lease is up. True when this call won it.
@@ -254,9 +371,7 @@ def _claim_expired(
     result = session.execute(
         update(models.IdempotencyRecord)
         .where(
-            models.IdempotencyRecord.tenant_id == tenant_id,
-            models.IdempotencyRecord.endpoint == endpoint,
-            models.IdempotencyRecord.key == key,
+            models.IdempotencyRecord.id == row.id,
             models.IdempotencyRecord.response.is_(None),
             models.IdempotencyRecord.created_at
             < _now() - timedelta(seconds=RESERVATION_LEASE_SECONDS),
@@ -270,19 +385,16 @@ def complete(
     settings: Settings,
     *,
     tenant_id: str,
+    actor: str,
     endpoint: str,
     key: str,
     response: dict[str, Any],
 ) -> None:
     """Store the answer this key's request produced, so a retry replays it."""
     with get_session(settings.postgres_url) as session:
-        row = session.execute(
-            select(models.IdempotencyRecord).where(
-                models.IdempotencyRecord.tenant_id == tenant_id,
-                models.IdempotencyRecord.endpoint == endpoint,
-                models.IdempotencyRecord.key == key,
-            )
-        ).scalars().first()
+        row = _row_for(
+            session, tenant_id=tenant_id, endpoint=endpoint, key=key, actor=actor
+        )
         if row is None:
             # Purged, or released by a concurrent failure path. The work is
             # done and the caller is about to be told so; losing the ability to
@@ -294,17 +406,22 @@ def complete(
         row.response = response
 
 
-def release(settings: Settings, *, tenant_id: str, endpoint: str, key: str) -> None:
+def release(
+    settings: Settings, *, tenant_id: str, actor: str, endpoint: str, key: str
+) -> None:
     """Drop an *unanswered* reservation, so a failed request may be retried.
 
     Deliberately conditional on ``response IS NULL``: a record that already
     carries an answer is that answer, and deleting it would let a retry apply
-    the batch a second time.
+    the batch a second time. Conditional on ``actor`` for the same reason
+    :func:`reserve` is: the only reservation a failed request may give back is
+    its own.
     """
     with get_session(settings.postgres_url) as session:
         session.execute(
             delete(models.IdempotencyRecord).where(
                 models.IdempotencyRecord.tenant_id == tenant_id,
+                models.IdempotencyRecord.actor == actor,
                 models.IdempotencyRecord.endpoint == endpoint,
                 models.IdempotencyRecord.key == key,
                 models.IdempotencyRecord.response.is_(None),

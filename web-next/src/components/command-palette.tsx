@@ -108,7 +108,7 @@ export function CommandPalette({
   const listRef = useRef<HTMLUListElement>(null);
 
   const staticEntries = useMemo<PaletteEntry[]>(() => {
-    const pages: PaletteEntry[] = visibleNavGroups(user?.role, user?.permissions).flatMap((group) =>
+    const pages: PaletteEntry[] = visibleNavGroups(user).flatMap((group) =>
       group.items.map((item: NavItem) => ({
         id: item.href,
         group: "pages" as const,
@@ -138,7 +138,7 @@ export function CommandPalette({
         ]
       : [];
     return [...actions, ...pages];
-  }, [user?.role, canOperate, t]);
+  }, [user, canOperate, t]);
 
   const entries = useMemo(() => {
     const matched = filterEntries(staticEntries, query);

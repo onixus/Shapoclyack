@@ -11,12 +11,16 @@ pre-#361 code, which is what makes them worth having.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from api.services import scan_schedules
+from api.db import models
+from api.db.engine import get_session
+from api.services import agent_groups, scan_schedules, scan_scopes
 from api.settings import Settings
 from tests.conftest import (
     approve_scan_scope,
@@ -869,3 +873,309 @@ def test_the_unavailable_flag_clears_when_an_agent_joins_the_group(tmp_path, mon
     ]
     # Nothing stale was written onto the job either.
     assert "agent_group_unavailable" not in (job["scan_options"] or {})
+
+
+# ---------------------------------------------------------------------------
+# One name, one spelling, and no way to write a reference to a group that is
+# being deleted underneath it
+# ---------------------------------------------------------------------------
+
+
+def test_a_group_is_deleted_by_the_name_it_was_created_with(tmp_path, monkeypatch):
+    """Creating normalised the name and reading it did not, so an operator who
+    re-sent the exact string they had just posted was told there was no such
+    group."""
+    client = _client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+
+    created = client.post(
+        "/api/agent-groups", headers=admin, json={"name": "  PCI  "}
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["name"] == "pci"
+
+    deleted = client.delete("/api/agent-groups/PCI", headers=admin)
+    assert deleted.status_code == 200, deleted.text
+    assert client.get("/api/agent-groups", headers=admin).json() == []
+
+    # A name no group could have is a malformed request, not a busy group —
+    # the delete route answers 409 for "still in use" and must not reuse it
+    # here.
+    malformed = client.delete("/api/agent-groups/pci%20segment", headers=admin)
+    assert malformed.status_code == 422, malformed.text
+
+
+def test_the_loser_of_a_simultaneous_create_is_told_the_name_is_taken(
+    tmp_path, monkeypatch
+):
+    """``create_group`` checks and then inserts. Two requests for one name both
+    pass the check — each reads a snapshot taken before the other's insert —
+    and the loser met ``uq_agent_groups_tenant_name`` as an unhandled
+    IntegrityError, i.e. a 500 for a request whose only fault is being second.
+
+    The other request is run for real, on its own connection, in the window
+    between this one's check and its insert: nothing about the check's answer
+    is faked, so what decides the second request is the unique index, which is
+    what decides it in production.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+
+    real_row_by_name = agent_groups._row_by_name
+    winner: list[dict] = []
+    fired = threading.Event()
+
+    def _let_the_other_request_commit_first(session, **kwargs):
+        row = real_row_by_name(session, **kwargs)
+        if row is None and not fired.is_set():
+            fired.set()
+            thread = threading.Thread(
+                target=lambda: winner.append(
+                    agent_groups.create_group(
+                        settings, tenant_id="default", name="pci"
+                    )
+                ),
+                daemon=True,
+            )
+            thread.start()
+            thread.join(timeout=30)
+        return row
+
+    monkeypatch.setattr(agent_groups, "_row_by_name", _let_the_other_request_commit_first)
+    duplicate = client.post(
+        "/api/agent-groups", headers=auth_headers(client, "admin"), json={"name": "pci"}
+    )
+    assert winner and winner[0]["name"] == "pci"
+    assert duplicate.status_code == 422, duplicate.text
+    assert "already exists" in duplicate.json()["detail"]
+    # One group, not two rows nobody can tell apart.
+    assert [row["name"] for row in agent_groups.list_groups(settings, "default")] == ["pci"]
+
+
+class _DeleteFiredFromInsideTheWriter:
+    """``delete_group`` on a connection of its own, started from inside the
+    writer that is putting a reference to the group in.
+
+    What the four writers (a scope entry, a job, a schedule, an agent's
+    membership) have to guarantee is not that they validate the name before
+    they store it — validating on a second connection does that much and
+    leaves the whole window open — but that the validation holds the group row
+    until the reference is committed. So the deletion is fired the first time
+    the writer takes such a lock and is given time to queue behind it: it
+    either waits and then counts the reference among its blockers, or it goes
+    straight through, which is the defect.
+
+    A writer that takes no lock at all never fires it, and :attr:`outcome`
+    says so rather than the test passing on a deletion that never ran.
+    """
+
+    def __init__(self, settings: Settings, name: str) -> None:
+        self.settings = settings
+        self.name = name
+        self.outcome = "never fired: the writer took no lock on the group rows"
+        self._thread: threading.Thread | None = None
+        self._fired = False
+
+    def install(self, monkeypatch) -> None:
+        real_lock = agent_groups.lock_existing_names
+        real_row_by_name = agent_groups._row_by_name
+
+        def _lock_existing_names(session, **kwargs):
+            held = real_lock(session, **kwargs)
+            self._fire()
+            return held
+
+        def _row_by_name(session, *, for_update: bool = False, **kwargs):
+            row = real_row_by_name(session, for_update=for_update, **kwargs)
+            if for_update:
+                self._fire()
+            return row
+
+        monkeypatch.setattr(agent_groups, "lock_existing_names", _lock_existing_names)
+        monkeypatch.setattr(agent_groups, "_row_by_name", _row_by_name)
+
+    def _fire(self) -> None:
+        if self._fired:
+            # The deletion takes the same lock on its way in; only the writer
+            # that started it fires this.
+            return
+        self._fired = True
+        self._thread = threading.Thread(target=self._delete, daemon=True)
+        self._thread.start()
+        # Long enough for the deletion to reach the row and queue behind the
+        # lock this writer is holding. If nothing is holding it, this is the
+        # window the deletion goes through — which is the failure under test.
+        time.sleep(0.5)
+
+    def _delete(self) -> None:
+        try:
+            agent_groups.delete_group(
+                self.settings, tenant_id="default", name=self.name
+            )
+            self.outcome = "deleted"
+        except agent_groups.GroupInUse as exc:
+            self.outcome = f"refused: {exc}"
+        except Exception as exc:  # noqa: BLE001 - reported by the test, not swallowed
+            self.outcome = f"{type(exc).__name__}: {exc}"
+
+    def wait(self) -> str:
+        if self._thread is not None:
+            self._thread.join(timeout=30)
+            assert not self._thread.is_alive(), "the deletion never returned"
+        return self.outcome
+
+
+def test_a_scope_entry_and_the_deletion_of_its_group_cannot_interleave(
+    tmp_path, monkeypatch
+):
+    """``PUT /api/tenants/{id}/scan-scope`` against ``DELETE /api/agent-groups``.
+
+    A scope entry restricted to a group that no longer exists is a restriction
+    no agent can satisfy: every scan of those targets queues and is claimed by
+    nobody. It used to be reachable by nothing worse than timing, because the
+    entry was validated on one connection and written on another.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    deleter = _DeleteFiredFromInsideTheWriter(settings, "pci")
+    deleter.install(monkeypatch)
+
+    approve_scan_scope(
+        settings,
+        entries=[
+            {
+                "effect": "allow",
+                "kind": "cidr",
+                "value": "10.1.0.0/16",
+                "agent_groups": ["pci"],
+            },
+        ],
+    )
+
+    assert "scan-scope entry(ies) require it" in deleter.wait(), deleter.outcome
+    assert [row["name"] for row in agent_groups.list_groups(settings, "default")] == ["pci"]
+    assert [
+        entry["agent_groups"]
+        for entry in scan_scopes.list_entries(settings, "default")
+        if entry["agent_groups"]
+    ] == [["pci"]]
+
+
+def test_a_scan_and_the_deletion_of_its_group_cannot_interleave(tmp_path, monkeypatch):
+    """``POST /api/jobs`` against ``DELETE /api/agent-groups``.
+
+    ``resolve_for_scan`` answered from a connection of its own and the job row
+    went in later, in another session, so a deletion landing in between found
+    no job addressed to the group and took it. What was left is a ``queued``
+    job nobody can claim — no agent can be put into a group that is not there
+    — carrying ``agent_group_unavailable`` and no error at all.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    deleter = _DeleteFiredFromInsideTheWriter(settings, "pci")
+    deleter.install(monkeypatch)
+
+    started = _start_scan(client, agent_group="pci")
+    assert started.status_code == 202, started.text
+
+    assert "unfinished job(s) are addressed to it" in deleter.wait(), deleter.outcome
+    assert [row["name"] for row in agent_groups.list_groups(settings, "default")] == ["pci"]
+    listed = client.get("/api/jobs", headers=auth_headers(client, "operator")).json()
+    assert [item["agent_group"] for item in listed["items"]] == ["pci"]
+
+
+def test_a_schedule_and_the_deletion_of_its_group_cannot_interleave(
+    tmp_path, monkeypatch
+):
+    """``POST /api/schedules`` against ``DELETE /api/agent-groups``.
+
+    The third reference by name, and the one with the quietest failure: the
+    dispatcher rebuilds its request from options stored days ago, ``start_scan``
+    refuses the unknown group, ``_tick`` swallows it into ``stats["errors"]``
+    and ``next_run_at`` does not move — so the nightly scans simply stop, with
+    nothing an operator is shown.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    deleter = _DeleteFiredFromInsideTheWriter(settings, "pci")
+    deleter.install(monkeypatch)
+
+    created = client.post(
+        "/api/schedules",
+        headers=auth_headers(client, "operator"),
+        json={
+            "name": "nightly",
+            "interval_seconds": 3600,
+            "domains": "example.com",
+            "agent_group": "pci",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    assert "schedule(s) dispatch to it" in deleter.wait(), deleter.outcome
+    assert [row["name"] for row in agent_groups.list_groups(settings, "default")] == ["pci"]
+    stored = scan_schedules.get_schedule(created.json()["schedule_id"])
+    assert stored["scan_options"]["agent_group"] == "pci"
+
+
+def test_an_assignment_and_the_deletion_of_its_group_cannot_interleave(
+    tmp_path, monkeypatch
+):
+    """``PUT /api/agents/{id}/group`` against ``DELETE /api/agent-groups``.
+
+    Both answered 200 and the agent stayed in a group that was gone. Because a
+    group name *is* the identifier, re-creating ``pci`` later put that
+    forgotten agent straight back into it — an office agent inside the card
+    segment, with nothing in the assignment journal to say it happened.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    agent_id = _register(client, "pci-1")
+    deleter = _DeleteFiredFromInsideTheWriter(settings, "pci")
+    deleter.install(monkeypatch)
+
+    _assign(client, agent_id, "pci")
+
+    assert "agent(s) are in it" in deleter.wait(), deleter.outcome
+    listed = agent_groups.list_groups(settings, "default")
+    assert [(row["name"], row["agent_count"]) for row in listed] == [("pci", 1)]
+
+
+def test_a_scan_restricted_to_a_group_that_is_gone_is_refused_not_queued(
+    tmp_path, monkeypatch
+):
+    """The residual case, however the scope came to name a missing group.
+
+    With one candidate the resolver used to take the scope's word for it
+    without checking the group still exists, so the job was queued to a name
+    nothing can join — ``set_agent_group`` refuses an unknown group — and it
+    was never claimed by anybody, with nothing in the job to say why.
+    """
+    client = _client(tmp_path, monkeypatch)
+    settings = _settings(tmp_path)
+    _create_group(client, "pci")
+    approve_scan_scope(
+        settings,
+        entries=[
+            {
+                "effect": "allow",
+                "kind": "cidr",
+                "value": "10.1.0.0/16",
+                "agent_groups": ["pci"],
+            },
+        ],
+    )
+    # Around the service, which would refuse the deletion: this is the state,
+    # not the path that reaches it.
+    with get_session(settings.postgres_url) as session:
+        session.query(models.AgentGroup).filter(
+            models.AgentGroup.name == "pci"
+        ).delete()
+
+    refused = _start_scan(client, domains=None, ranges="10.1.2.0/24")
+    assert refused.status_code == 403, refused.text
+    assert "pci" in refused.json()["detail"]

@@ -142,10 +142,21 @@ was given up on — those *do* land in the failure side of SLO 3.
 
 `octo_job_cancellations_total` counts the scans operators stopped, by how the
 stop ended: `queued` (never handed out), `confirmed` (the agent reported it put
-the scan down) and `unconfirmed` (the grace period expired first). The last one
-is the series to alert on — every increment is a job the control plane closed
-without ever being told the scan stopped, which usually means agents older than
-the release that added the heartbeat cancel channel.
+the scan down), `unconfirmed` (the grace period expired first) and
+`late_results` (the archive of a stop the grace period had already written off
+arrived afterwards and was kept). `unconfirmed` is the series to alert on —
+every increment is a job the control plane closed without ever being told the
+scan stopped, which usually means agents older than the release that added the
+heartbeat cancel channel.
+
+`sum by (outcome)` is therefore **not** the number of cancellations: one stop
+that is reaped and then delivers its archive increments `unconfirmed` and
+`late_results` both, which is the point — the second says the operator got the
+partial results anyway. Alert on `unconfirmed` alone and read `late_results`
+next to it: a rising share of it with a flat `confirmed` is an agent that cannot
+finish an upload inside `OCTO_JOB_CANCEL_GRACE_SECONDS`, which is a bandwidth or
+grace-period problem rather than a stuck agent. For "how many scans were
+stopped", use `queued + confirmed + unconfirmed`.
 
 ### 4. Job duration
 

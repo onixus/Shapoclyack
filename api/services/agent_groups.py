@@ -26,6 +26,27 @@ foreign key to do it (the reference is by name, on purpose), and the failure a
 cascade would produce is the wrong one: a scope entry restricted to a group
 that no longer exists would fall back to "any agent", turning a deletion into a
 silent widening of what a low-trust agent may reach.
+
+**The name is normalised once, in :func:`normalize_name`, on every path that
+takes one.** Creating a group normalised and reading one did not, so
+``POST {"name": "PCI"}`` created ``pci`` and ``DELETE /api/agent-groups/PCI``
+answered 404 for a group that was plainly there. Two spellings of one name is
+the failure this module exists to prevent, so there is one spelling and every
+entry point goes through it.
+
+**References are validated inside the transaction that writes them**, holding
+the group rows (:func:`lock_existing_names`). Validating on one connection and
+writing on another leaves a window in which a concurrent deletion sees no
+reference yet and the reference is committed against a row that is gone — the
+same silent widening a cascade would produce, arrived at by a race.
+
+All four writers that name a group do this, because the blockers
+:func:`delete_group` counts are only as good as the weakest of them: the scope
+entry (``scan_scopes.replace_scope``), the job (``jobs.start_scan``), the
+schedule (``scan_schedules.create_schedule``) and the agent's membership
+(:func:`set_agent_group`). One of the two requests therefore sees the other's
+result: either the reference is refused with the group named, or the deletion
+is refused with the reference counted.
 """
 
 from __future__ import annotations
@@ -36,6 +57,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from api.db import models
 from api.db.engine import get_session
@@ -53,6 +75,17 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 #: that one of these names cannot be deleted — the job would become unclaimable
 #: or, worse, claimable by anybody.
 _PENDING_JOB_STATES = ("queued", "claimed", "running")
+
+
+class GroupInUse(ValueError):
+    """Deleting the group is refused because something still names it.
+
+    A ValueError like the other refusals this module raises, so a caller that
+    does not care why the name was rejected keeps working — but its own class,
+    because the delete route answers "still in use" with 409 and a malformed
+    name with 422, and without the distinction a mistyped name in the path
+    would be reported as a group that is busy.
+    """
 
 
 def _now() -> datetime:
@@ -117,23 +150,67 @@ def list_groups(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
 
 
 def get_group(settings: Settings, *, tenant_id: str, name: str) -> dict[str, Any] | None:
-    """One group of this tenant by name, or None. Never crosses a tenant edge."""
+    """One group of this tenant by name, or None. Never crosses a tenant edge.
+
+    ``name`` arrives from a URL path, so it is put through
+    :func:`normalize_name` here rather than matched raw: the name an operator
+    sent to ``POST /api/agent-groups`` and the name that was stored are not
+    necessarily the same string, and looking up the one they typed has to find
+    the group they created. A name that cannot be normalised raises ValueError
+    — that is a malformed request, not a missing group.
+    """
+    normalized = normalize_name(name)
     with get_session(settings.postgres_url) as session:
-        row = _row_by_name(session, tenant_id=tenant_id, name=name)
+        row = _row_by_name(session, tenant_id=tenant_id, name=normalized)
         return _to_dict(row) if row is not None else None
 
 
-def _row_by_name(session, *, tenant_id: str, name: str) -> models.AgentGroup | None:
-    return (
-        session.execute(
-            select(models.AgentGroup).where(
-                models.AgentGroup.tenant_id == tenant_id,
-                models.AgentGroup.name == name,
-            )
-        )
-        .scalars()
-        .first()
+def _row_by_name(
+    session, *, tenant_id: str, name: str, for_update: bool = False
+) -> models.AgentGroup | None:
+    """The row, optionally held until the caller's transaction ends.
+
+    ``for_update`` is what a writer whose decision depends on the group still
+    existing takes — see :func:`lock_existing_names`. A no-op on the SQLite
+    fallback, which has no row locks and no second writer either.
+    """
+    stmt = select(models.AgentGroup).where(
+        models.AgentGroup.tenant_id == tenant_id,
+        models.AgentGroup.name == name,
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return session.execute(stmt).scalars().first()
+
+
+def lock_existing_names(session, *, tenant_id: str, names: set[str]) -> set[str]:
+    """Which of ``names`` the tenant has, holding those rows until commit.
+
+    :func:`existing_names` answers the same question on a connection of its
+    own, which is enough to *report* an unknown group and not enough to write
+    a reference to a known one: between that read and the write, a concurrent
+    ``delete_group`` sees no reference yet, finds no blocker and removes the
+    row. The reference then survives pointing at nothing — and because a scope
+    entry restricted to a missing group cannot be satisfied by any agent, the
+    jobs it covers are queued and never claimed.
+
+    Taking the rows ``FOR UPDATE`` inside the writing transaction serialises
+    the two: whichever gets there first makes the other see its result rather
+    than the state that preceded it.
+    """
+    if not names:
+        return set()
+    return {
+        name
+        for (name,) in session.execute(
+            select(models.AgentGroup.name)
+            .where(
+                models.AgentGroup.tenant_id == tenant_id,
+                models.AgentGroup.name.in_(sorted(names)),
+            )
+            .with_for_update()
+        ).all()
+    }
 
 
 def existing_names(settings: Settings, tenant_id: str) -> set[str]:
@@ -174,8 +251,19 @@ def create_group(
             created_at=_now(),
             created_by=created_by,
         )
-        session.add(row)
-        session.flush()
+        try:
+            # The check above is the fast path, not the decision: two operators
+            # posting the same name at once both find no row and both insert,
+            # and the loser met uq_agent_groups_tenant_name as an unhandled
+            # IntegrityError — a 500 for a request whose only fault is that it
+            # arrived second. Inside a SAVEPOINT so the failure is scoped to
+            # this insert instead of aborting the transaction the audit record
+            # is written in.
+            with session.begin_nested():
+                session.add(row)
+                session.flush()
+        except IntegrityError as exc:
+            raise ValueError(f"agent group already exists: {normalized}") from exc
         audit_service.record(
             session,
             audit,
@@ -194,17 +282,33 @@ def delete_group(
     tenant_id: str,
     name: str,
     audit: "audit_service.AuditContext | None" = None,
-) -> None:
+) -> str:
     """Delete one group, or refuse while something still refers to it.
 
-    LookupError when there is no such group in this tenant; ValueError naming
+    Returns the name as it was stored, which is what the caller answers with:
+    the spelling that came in is not necessarily the one that was there.
+
+    LookupError when there is no such group in this tenant; GroupInUse naming
     what still points at it — agents, pending jobs, schedules, or scope
     entries. See the module docstring for why this is not a cascade.
+
+    ``name`` comes from the URL path and is normalised the way the create path
+    normalises it, so ``DELETE /api/agent-groups/PCI`` removes the group that
+    ``POST {"name": "PCI"}`` created instead of reporting it missing.
+
+    The row is taken ``FOR UPDATE`` before the blockers are counted: the
+    references being counted are written by other transactions, and a
+    ``replace_scope`` that has validated its group list but not yet committed
+    its entries is invisible to that count. Both sides hold the same row, so
+    one of them sees the other's result instead of the state before it.
     """
+    normalized = normalize_name(name)
     with get_session(settings.postgres_url) as session:
-        row = _row_by_name(session, tenant_id=tenant_id, name=name)
+        row = _row_by_name(
+            session, tenant_id=tenant_id, name=normalized, for_update=True
+        )
         if row is None:
-            raise LookupError(f"agent group not found: {name}")
+            raise LookupError(f"agent group not found: {normalized}")
 
         blockers: list[str] = []
         agents = int(
@@ -268,7 +372,7 @@ def delete_group(
         if entries:
             blockers.append(f"{len(entries)} scan-scope entry(ies) require it")
         if blockers:
-            raise ValueError(
+            raise GroupInUse(
                 f"agent group {row.name} is still in use: {'; '.join(blockers)}"
             )
 
@@ -282,6 +386,7 @@ def delete_group(
             before={"name": row.name, "description": row.description or ""},
         )
         session.delete(row)
+        return normalized
 
 
 def set_agent_group(
@@ -303,6 +408,13 @@ def set_agent_group(
     the membership that applied when it was handed out, and taking it back here
     would abandon a scan that is already running on the customer's network. The
     move takes effect on the next claim.
+
+    The group row is taken ``FOR UPDATE``, as in :func:`delete_group`: the
+    membership is written on this connection and counted on the deleting one,
+    and without the lock both requests answered 200 — the agent stayed in a
+    group that was gone, and because the name is the identifier, re-creating
+    it later put that agent straight back into it, with nothing in the
+    assignment journal to say so.
     """
     normalized = normalize_name(name) if name else None
     with get_session(settings.postgres_url) as session:
@@ -312,7 +424,7 @@ def set_agent_group(
         if (agent.tenant_id or tenants_service.DEFAULT_TENANT_ID) != tenant_id:
             raise PermissionError("Cross-tenant agent access denied")
         if normalized is not None and _row_by_name(
-            session, tenant_id=tenant_id, name=normalized
+            session, tenant_id=tenant_id, name=normalized, for_update=True
         ) is None:
             raise LookupError(f"agent group not found: {normalized}")
 
@@ -416,7 +528,13 @@ def resolve_for_scan(
     from api.services import scan_scopes
 
     name = normalize_name(requested) if requested else None
-    if name is not None and name not in existing_names(settings, tenant_id):
+    if name is None and required is None:
+        # Nothing asked for and nothing required: the pre-#361 scan, and the
+        # only path with no group to validate. Answered without a query.
+        return None
+
+    known = existing_names(settings, tenant_id)
+    if name is not None and name not in known:
         raise ValueError(f"Unknown agent_group for tenant {tenant_id}: {name}")
 
     if required is None:
@@ -434,7 +552,21 @@ def resolve_for_scan(
             # One permitted group and nobody chose otherwise: the scope has
             # already made the decision, and asking the operator to retype it
             # would only create a way to get it wrong.
-            return next(iter(required))
+            only = next(iter(required))
+            if only not in known:
+                # The scope names a group the tenant no longer has. Queuing the
+                # job would be the worst answer available: no agent can be put
+                # into a group that does not exist, so nothing would ever claim
+                # it and the scan would sit in ``queued`` with no error against
+                # it. Refuse it here, where somebody is still looking.
+                raise scan_scopes.ScanScopeDenied(
+                    f"the approved scan scope of tenant {tenant_id} restricts these "
+                    f"targets to agent group {only}, which this tenant no longer "
+                    "has: no agent can be put into it, so the scan could never be "
+                    "executed. Re-create the group or re-approve the scope.",
+                    tenant_id=tenant_id,
+                )
+            return only
         raise ValueError(
             "these targets are restricted by the approved scan scope to agent "
             f"groups {', '.join(sorted(required))}; name one in agent_group"

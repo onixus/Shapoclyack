@@ -59,7 +59,9 @@ JOB_CANCELLATIONS_TOTAL = Counter(
     "octo_job_cancellations_total",
     "Scans stopped on an operator's request, by how the stop ended (#360): "
     "queued (never handed out), confirmed (the agent reported it put the scan "
-    "down), unconfirmed (the grace period expired first).",
+    "down), unconfirmed (the grace period expired first), late_results (an "
+    "unconfirmed one whose partial archive turned up afterwards and was kept "
+    "\u2014 its outcome is already counted under unconfirmed).",
     ["outcome"],
     registry=REGISTRY,
 )
@@ -85,7 +87,10 @@ IDEMPOTENT_REPLAYS_TOTAL = Counter(
 BULK_ACTION_ITEMS_TOTAL = Counter(
     "octo_bulk_action_items_total",
     "Ids processed by a bulk write, by endpoint, action and per-id outcome "
-    "(ok, not_found, conflict, invalid) — #346. A batch is a partial success "
+    "(ok, not_found, conflict, invalid, deadline) — #346. 'deadline' is an id "
+    "the request never reached because it spent its time budget, so a rising "
+    "share of it means batches are being cut short and resent rather than "
+    "failing. A batch is a partial success "
     "by design, so the ratio here is what says whether an operator's "
     "selection matched what they may act on. There is no 'forbidden': an id "
     "outside the caller's write scope is reported missing, never refused, for "

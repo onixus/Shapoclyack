@@ -393,6 +393,7 @@ read as one list than as five *Partial* rows spread over 40 KB:
 | Ownership graph | [P4.3](#p4-breakdown--differentiating-features) | **Done** — groups the 11.2 graph by operator-set unit/owner; unowned names by registrable domain |
 | Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Done** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it |
 | Endpoint-inventory NATS event (S8), cross-repo e2e test (S10) | [Agent_plan.md](Agent_plan.md) (Track D) | **Done** — merged |
+| Idempotency key `actor` — contract step | [#346](https://github.com/onixus/Shapoclyack/issues/346) | **Open** — one release after `0055` ships, drop the `actor IS NULL` fallback in `api/services/idempotency.py`, the `uq_idempotency_legacy_tenant_endpoint_key` index and the `idempotency_records_cross_generation` trigger. Until then a key reserved before the upgrade is still read tenant-wide; see [docs/operations.md](docs/operations.md) |
 
 Everything else in Phases 1–11 and P0–P3 is merged.
 

@@ -53,7 +53,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0056_agent_healthy_since"
-down_revision: Union[str, None] = "0053_tenant_scan_policy"
+down_revision: Union[str, None] = "0055_idempotency_actor"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

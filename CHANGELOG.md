@@ -24,7 +24,11 @@ All notable changes to Shapoclyack are documented in this file.
   alive hosts with no open ports (2500 and 1250 pps in the shipped config),
   the probe ladder's TCP step, nuclei's rate limit and concurrency, and
   naabu's own `-rate` when a batch is a single device, where the batch budget
-  and the per-host budget are the same number. `skip_service_probe` turns
+  and the per-host budget are the same number. The `-sn` step's probes are
+  spelled out with the avoided ports dropped, and carry `-wn` with them: naabu
+  2.6.1 rejects named probes unless host discovery is explicitly enabled, and
+  reads `-sn` as not enabling it, so the flag set without `-wn` exits 1 before
+  it sends anything. `skip_service_probe` turns
   nuclei off as well as NSE and pulse: it is the stage that sends HTTP
   payloads. Writing a policy also holds that tenant's still-**queued** jobs to
   the stricter of their frozen snapshot and the new document, and answers with
@@ -48,6 +52,61 @@ All notable changes to Shapoclyack are documented in this file.
   issue stays open: no console UI (the policy is API-only), the agent does not
   echo back the policy digest it applied, and target exclusions are still the
   scan scope's deny entries rather than a field of the policy.
+- **The fieldbus avoid-list now also stops the probe that decides who is
+  alive** ([#362](https://github.com/onixus/Shapoclyack/issues/362)). The port
+  stage handed naabu `-exclude-ports`, but discovery's TCP probe step picks a
+  port list of its own and SYNed it regardless — so an installation that turned
+  that step on with its own ports could have a scan touch modbus 502 while
+  `ports.exclude_ports` promised, in as many words, that nothing started from
+  this config would. The avoided ports are dropped from the probe's list and
+  handed to naabu as well, and a probe left with no ports is skipped instead of
+  run. The last step of the ladder, `naabu -sn`, picks its ports from naabu's
+  own defaults — SYN and ACK pings to 80 and 443, which `-exclude-ports` does
+  not cover — so it now spells its probes out with the avoided ports removed,
+  and falls back to ICMP alone when both are avoided. `pulse.host_parallel: 0`
+  was checked and is *not* a defect of this class — the scanner spells that 0
+  as pulse's `--host-first`, one host at a time, so reading it as "unlimited"
+  would have raised it to the policy's figure; there is now a test pinning that
+  and a comment saying why.
+- **Three ceilings that were correct in the config and lost on the way to the
+  command line** ([#362](https://github.com/onixus/Shapoclyack/issues/362)).
+  Found by reviewing the audit above, which had missed them. The policy wrote
+  its discovery ceiling into `discovery.tcp_probe.rate`, and the probe ladder
+  read that field as a rate that *replaces* the batch rate — throwing away the
+  per-host correction already applied to the batch, so a fragile tenant's
+  single PLC was sent `-rate 100` under a policy promising 25. The ICMP step
+  was paced with fping's `-p`, which only applies in loop and count modes and
+  so did nothing at all (measured: 20 addresses take 1.51s with `-p 200` and
+  with no flag, 8.2s with `-i 200`); it is `-i` now, and `max_discover_rate` is
+  turned into the interval rather than leaving the step at fping's default 100
+  pps. That inversion reads fping's own 10 ms as the configured value it is: an
+  unset `period_ms` counted as 0 made this the one ceiling in the file that
+  could *raise* a rate, and a policy of 2000 pps — the figure already in
+  `profiles.safe` — wrote `-i 1` and took the step from 100 pps to 1000 (fping
+  5.1, 254 addresses: 5.86s with no flag, 5.71s with `-i 10`, 1.58s with
+  `-i 1`). A ceiling no stricter than the tool's default now leaves the command
+  alone. `discovery.icmp.period_ms` also has a floor of 1 rather than 0: fping
+  refuses `-i 0` outright, and the stage read the resulting empty output as
+  nobody being alive. Tests are on the argv the tool receives, and cover all
+  three callers of the discovery probe rather than the one the first round
+  covered.
+- **"One host at a time" is documented for what it is, rather than made
+  literally true** ([#362](https://github.com/onixus/Shapoclyack/issues/362)).
+  `max_host_concurrency` limits how many *batches* run at once, and a batch is
+  a `/20` subnet or up to `max_targets_per_batch` addresses, so a `/24` in
+  scope reaches naabu as one invocation of 254 devices and the per-host ceiling
+  — which is naabu's per-batch `-rate` — does not land on it. Narrowing batches
+  to one address per batch would have made the sentence true and cost more than
+  it bought: a `/8` in scope expands to 16.7M batches and ~12 GB before a
+  packet is sent, the checkpoint rewrites its whole JSON after every batch (27
+  hours of pure IO on a `/12`), every batch leaves its own artefact files
+  behind (12276 files for a `/22`), IPv6 ranges were not narrowed at all, and a
+  batch of `x.x.x.0/32` put ICMP and SYN on the network and directed-broadcast
+  addresses that a `/24` batch had always excluded. `docs/operations.md` now
+  says which ceilings hold for a range and which hold only for a batch that is
+  one host, and points at scope and `batching.ipv4_prefix` — an agent-side
+  setting a policy never raises — for operators who need a device-by-device
+  walk.
 - **A tenant's agent no longer takes every one of that tenant's jobs**
   ([#361](https://github.com/onixus/Shapoclyack/issues/361)). `claim_job`
   filtered by tenant and by "queued" and nothing else, so an agent in a
@@ -587,7 +646,184 @@ All notable changes to Shapoclyack are documented in this file.
   other fan-out here. **Not done:** there is still no paired `agent_recovered`
   event, so a receiver's alert is closed by hand; the results upload after a
   cancellation is still sent with no heartbeat behind it.
-
+- **An `Idempotency-Key` belongs to the caller who minted it, not to the whole
+  tenant** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). The key
+  on the bulk verbs was unique per `(tenant, endpoint)`, and the CI recipes in
+  `docs/wiki/scenarios-architect.md` tell integrations to send guessable names
+  like `nightly-triage`. Any member of the tenant could take one and, for the
+  24 hours the record lives, either `409` every other run of that name or — with
+  a body that happened to match — be handed somebody else's report as a replay,
+  with no audit row of their own, because the replay branch returns before the
+  trail is written. The key now also carries the caller (migration 0055, the
+  principal the audit trail records). Rows written before the migration keep the
+  old tenant-wide reading for the 24 hours they survive, so a retry that crosses
+  the upgrade still replays instead of re-applying its batch. Both directions of
+  the rolling deploy are closed by a trigger that refuses an insert whose
+  owner-ness disagrees with the row already holding the key: without it a batch
+  answered by a new replica and retried against one the deploy had not reached
+  would have been applied a second time. The trigger, the narrowed index and the
+  fallback read come out together one release later — the contract step, now
+  tracked in `ROADMAP.md` and in a `TODO` in `api/services/idempotency.py`
+  rather than only in prose. Until they do, a
+  key a pre-upgrade replica reserved is still tenant-wide for the 24 hours that
+  row lives, and a neighbour who guesses it can still be handed its report
+  without an audit row of their own.
+- **A bulk action has a time budget and answers with a partial report instead of
+  a 504** ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Two
+  hundred ids are two hundred transactions and, for findings carrying a tracker
+  key, two hundred outbound calls, all inside one operator's request: against a
+  slow Jira that request outran the proxy in front of the API, which is the
+  "half applied, no report" failure the per-id report exists to prevent. Past
+  `OCTO_BULK_ACTION_BUDGET_SECONDS` (default 45s, `0` disables) the batch stops
+  and answers **200**; the ids it never reached carry the new outcome
+  `deadline`, the envelope carries `"deadline": true`, and the console's toast
+  says `N updated, M left — select them again to finish` rather than calling
+  them failures. Those ids are counted in the new `not_attempted` field and
+  **not** in `failed`, which stays what the API refused — `failed == 0` still
+  means "everything the batch asked for applied", which is what
+  `docs/api-and-rbac.md` tells integrations to check. Retrying the same key
+  replays the partial report, so nothing is lost and nothing is applied twice —
+  except for a batch that was cut short having applied *nothing* (its first id
+  had closed since the selection was made), which releases its key instead of
+  answering "already done" to every retry for a day.
+- **A partial archive that arrives after the cancellation grace period is kept**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The agent that
+  obeyed but was slow — a large partial `runs/<run_id>` on a narrow link — had
+  its upload refused `422` by `reap_stale_cancellations`'s terminal row, and an
+  archive nobody can produce again went in the bin, under a docs line promising
+  partial results are kept. The archive is now ingested for one further grace
+  period after the job was closed. What is accepted is the bytes and not the
+  verdict: the job keeps the reaper's outcome — `cancelled`, the same
+  `finished_at`, no `exit_code`, "did not confirm" still in `error` — plus a
+  note that the results turned up late, and is counted as
+  `octo_job_cancellations_total{outcome="late_results"}`. An upload with **no**
+  archive is still refused, because it carries nothing to keep and accepting it
+  would record a confirmation that never came. An agent too old to send an
+  idempotency key gets a server-side reservation on the row instead of none, so
+  the archive is taken once: before this, the "nothing has ever been ingested"
+  clause stayed true after every upload and the same job could be re-extracted,
+  re-published and re-upserted for the whole grace period.
+- **An agent group is the same name on every path, and a reference to one
+  cannot be written against a group being deleted**
+  ([#361](https://github.com/onixus/Shapoclyack/issues/361)). Creating a group
+  normalised its name and reading it did not, so `POST {"name": "PCI"}` made
+  `pci` and `DELETE /api/agent-groups/PCI` answered `404` for a group that was
+  plainly there; the name is now normalised in one place, on every entry point,
+  and a name no group could have is `422` rather than `409`. Two simultaneous
+  creates of one name no longer end in a `500` — the loser of the unique index
+  is told the name is taken. And all four references to a group by name — a
+  scope entry (`PUT /api/tenants/{id}/scan-scope`), a job (`POST /api/jobs`), a
+  schedule (`POST /api/schedules`) and an agent's membership (`PUT
+  /api/agents/{id}/group`) — are now checked inside the transaction that writes
+  them, holding the group row, where each used to ask on a connection of its
+  own and write on another. A `DELETE /api/agent-groups/{name}` landing in that
+  window counted the references, saw none of the one being written, and took
+  the row: what was left was a scope entry, a queued job, a schedule or an
+  agent pointing at a group that is gone — a restriction no agent can satisfy,
+  whose scans queue and are never claimed, and, because the name is the
+  identifier, an agent that a later group of the same name silently adopts.
+  One of the two requests now sees the other's result: the reference is
+  refused with the group named (`422`), or the deletion is refused with the
+  reference counted (`409`). Should such a state exist from before, starting a
+  scan against it is refused with the group named instead of queueing a job
+  nobody can take.
+- **An agent's declared capabilities survive its own restart, and an agent that
+  says it has none is believed**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). `capabilities`
+  defaulted to `[]` on both `register` and `heartbeat` where the service reads
+  "said nothing" as `None`, so an agent that declares them only on the
+  heartbeat — the pre-#362 shape, and what a third-party build still does —
+  had them erased by re-registering and by every beat after it, and every claim
+  of a job carrying a scan policy was answered `426`. The field is now
+  three-valued in both schemas: omitted keeps the stored list, and a list —
+  the empty one included — replaces it. The empty list mattered in the other
+  direction: a worker rolled back to a build without `scan_policy` reports
+  honestly that it has none, and reading that as silence left the API handing
+  it policy-carrying jobs it scanned at whatever its local config said.
+- **A 426 on every poll is one journal line, not one per second — and not one
+  per process either**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). The agent logged
+  the refusal at ERROR on each claim, unlike the lifecycle refusal beside it.
+  That was tolerable while `426` meant "below the version floor" and rare; it
+  is the steady state of a mixed fleet once a tenant has a scan policy. Logged
+  on change, like the other two — and the remembered message is now cleared by
+  a successful claim, so a refusal that comes back after a day of ordinary work
+  is a second line rather than silence.
+- **The console asks one question about authority, and asks it about the
+  tenant** ([#318](https://github.com/onixus/Shapoclyack/issues/318)). Every
+  page gate compared against the account's *global* role from the JWT, while
+  the API has checked the role held in the tenant since #318 — so an account
+  whose `scan-operator` role came from a membership is a global `viewer`, was
+  served `GET /api/jobs`, and had Scan jobs, both scanning surfaces, Agents,
+  Schedules and the quick-launch buttons hidden from it. Four of those were
+  fixed one page at a time during this wave; this replaces the pattern. One
+  function (`web-next/src/lib/authz.ts`) answers "may this principal do this",
+  the sidebar and the page gates ask it, and a requirement now says which
+  authority it means: a named permission, a rank **in the active tenant**, or
+  the account's own role — the last only for `/tenants` and `/users`, whose
+  routes really are gated on the account. The rank table it compares against is
+  a copy of `api/core/permissions.py` — it has to be, since the catalogue that
+  would serve it is gated on a permission the roles in question do not hold —
+  so a test reads the copy out of the console's source and asserts it equals
+  `BUILTIN_ROLES`: a ninth role added on one side only would score the
+  unknown-role rank and hide the scanning pages from it all over again.
+- **The console no longer keeps its own copy of the role table**
+  ([#318](https://github.com/onixus/Shapoclyack/issues/318)). `GET
+  /api/rbac/roles` existed and nobody called it: the membership editor and the
+  service-token panel each held a literal `viewer | operator | admin`, so
+  `auditor`, `scan-operator`, `scope-approver`, `token-admin` and
+  `risk-approver` could be granted only over the API. The editor reads the
+  catalogue now, shows the description the platform publishes for each role,
+  keeps a role the catalogue no longer lists rather than silently demoting the
+  member, and never offers `platform-admin`. The service-token role dropdown
+  is capped at what the caller may actually issue, instead of offering two
+  options the issuance ceiling answers `403` on.
+- **"Withdraw" on a pending extension no longer destroys the acceptance in
+  force** ([#348](https://github.com/onixus/Shapoclyack/issues/348)). With a
+  60-day acceptance signed by a second person and an extension request waiting,
+  the card's only button was wired to `DELETE /{id}/exception` — so a tenant
+  admin fixing a typo in their own request lost the signed window, the finding
+  was breached on the spot, and they had no second signature to put it back.
+  The two acts are now two: `DELETE /{id}/exception/request` withdraws your own
+  unanswered ask and touches nothing that was granted (`403` for somebody
+  else's — it is rejected, not erased), while `DELETE /{id}/exception` revokes
+  a granted acceptance and has moved from the tenant-admin rank to
+  `vulnerability.exception.approve`, the hand that could have signed it. The
+  console shows them as two buttons and confirms the destructive one by name
+  and date. Re-filing your own pending request is now legal, so correcting a
+  date is one step. Revoking is also now strictly about a *granted* window:
+  with none granted the route answers `409` instead of quietly erasing whatever
+  request was waiting — that erasure was recorded under the audit action for
+  withdrawing an acceptance and read "Acceptance revoked" in the console, for a
+  finding that had never had one. Closing somebody else's pending ask is the
+  reject, which leaves a decision with a name on it.
+  **Behaviour change, read this before upgrading:** revoking an acceptance now
+  takes `vulnerability.exception.approve`, and a tenant `admin` does not hold
+  it. This is not only about undoing somebody else's signature. Migration
+  `0050_vuln_exception_approval` records every acceptance made before this — when
+  one tenant admin was the whole procedure — as `exception_approved` with that
+  admin as both the requester and the approver. On an installation where
+  `risk-approver` has been granted to nobody, which is the default, an admin
+  will therefore find they cannot revoke an acceptance **they made themselves**.
+  Nothing is locked: the platform admin holds every permission and can revoke
+  it, and granting `risk-approver` to a second person restores the normal path.
+  Granting it to the admin is not the way out — a membership carries one role,
+  so they would lose `admin` to gain it. Decide who holds `risk-approver`
+  before you upgrade.
+- **A tenant-scoped request reads the tenant's status with its membership, not
+  after it** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
+  `require_active` was a second `SELECT` on **every** tenant-scoped request,
+  fired after the membership lookup had already opened a transaction — two
+  round trips to Postgres to answer one authorisation question, on the hot
+  listings (findings, assets) most of all. The status now comes back in the
+  membership query (one statement instead of two, asserted by a test that
+  counts them), and it is still read per request rather than cached, because
+  suspending a customer has to take effect on their next call. Two paths still
+  spend two: an account with no membership at all — the single-tenant
+  installation — and a service token, which reads the tenant row of its own. `GLOBAL_ROLES`
+  in `api/core/permissions.py` was documented as the truth about `users.role`
+  and read by nobody while a hand-written `Literal` did the validating; the
+  two are now held together by a test, as the tenant roles already were.
 - **A running scan can be stopped**
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
   legal only from `queued`; once an agent had claimed a job, the only bound on

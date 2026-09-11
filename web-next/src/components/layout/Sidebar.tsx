@@ -43,9 +43,12 @@ export function Sidebar() {
     setCollapsed(readCollapsed());
   }, []);
 
+  // The whole principal: which doors this account sees depends on its role
+  // *in the active tenant* and on the permissions that came with it (#318),
+  // and the global role is only the fallback for an older API.
   const groups = useMemo(
-    () => visibleNavGroups(user?.role, user?.permissions),
-    [user?.role, user?.permissions],
+    () => visibleNavGroups(user),
+    [user],
   );
   const active = activeNavHref(pathname, NAV);
 

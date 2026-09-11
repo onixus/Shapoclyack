@@ -513,17 +513,30 @@ def replace_scope(
         validated = _validated(entry)
         named_groups.update(validated["agent_groups"])
         seen[(validated["effect"], validated["kind"], validated["value"])] = validated
-    # A restriction to a group that does not exist is a restriction to nobody,
-    # and it would be discovered at the first scan of those targets rather than
-    # here, where the approver can still fix it.
-    unknown = sorted(named_groups - agent_groups_service.existing_names(settings, tenant_id))
-    if unknown:
-        raise ValueError(
-            f"unknown agent group(s) for tenant {tenant_id}: {', '.join(unknown)}"
-        )
-
     approved_at = _now()
     with get_session(settings.postgres_url) as session:
+        # A restriction to a group that does not exist is a restriction to
+        # nobody, and it would be discovered at the first scan of those targets
+        # rather than here, where the approver can still fix it.
+        #
+        # Checked inside this transaction and holding the group rows, not on a
+        # connection of its own beforehand: a concurrent
+        # ``DELETE /api/agent-groups/{name}`` counts what refers to the group
+        # before deleting it, and an entry validated but not yet inserted is
+        # not among them. The two used to be able to interleave into a scope
+        # entry restricted to a group that no longer exists — which no agent
+        # can be put into, so every scan of those targets queued and was never
+        # claimed (#361).
+        unknown = sorted(
+            named_groups
+            - agent_groups_service.lock_existing_names(
+                session, tenant_id=tenant_id, names=named_groups
+            )
+        )
+        if unknown:
+            raise ValueError(
+                f"unknown agent group(s) for tenant {tenant_id}: {', '.join(unknown)}"
+            )
         # Read before the delete below: a scope is replaced wholesale, so
         # without this snapshot the widening of a scope and its narrowing are
         # the same row (#327).

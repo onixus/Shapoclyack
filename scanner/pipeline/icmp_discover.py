@@ -62,7 +62,14 @@ def icmp_ping_filter(
         str(icmp.retries),
     ]
     if icmp.period_ms is not None:
-        cmd.extend(["-p", str(icmp.period_ms)])
+        # ``-i``, not ``-p``. fping's ``-p`` is the interval between packets to
+        # *one* target and it applies only in loop and count modes (``-l`` /
+        # ``-c``), neither of which this command asks for — so the knob was a
+        # no-op and the step ran at fping's default 10ms between packets,
+        # whatever the operator or the policy had set. ``-i`` is the interval
+        # between packets the run sends at all, which is the pace this field
+        # was always documented to mean (#397 review).
+        cmd.extend(["-i", str(icmp.period_ms)])
 
     result = run_command(cmd, timeout=timeout, retries=retries, check=False)
     alive = parse_fping_output(result.stdout or "")

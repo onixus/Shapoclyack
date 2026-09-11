@@ -30,6 +30,15 @@ TenantRoleName = Literal[
     "risk-approver",
 ]
 
+#: The roles an *account* may hold in ``users.role`` (``admin`` meaning the
+#: platform admin). Spelled out for the same reason as
+#: :data:`TenantRoleName` above — a Pydantic ``Literal`` needs literal values —
+#: and kept honest by the same test, which asserts it against
+#: :data:`api.core.permissions.GLOBAL_ROLES`. Before that assertion existed the
+#: constant and this Literal were two independent truths about one column, and
+#: whoever added a fourth global role would have found only one of them.
+GlobalRoleName = Literal["viewer", "operator", "admin"]
+
 
 class Page(BaseModel, Generic[T]):
     """Uniform envelope for every paginated list endpoint (ROADMAP P3.2).
@@ -414,7 +423,17 @@ class AgentRegisterRequest(BaseModel):
     # predating this sends nothing and is treated as unable, which is what it
     # is: the policy is enforced by the executor, so believing an old worker
     # would mean a ceiling that reads as enforced and is not.
-    capabilities: list[str] = Field(default_factory=list)
+    #
+    # ``None`` rather than ``[]`` for the default, here and on the heartbeat
+    # below, because the service has to tell "this request says nothing about
+    # capabilities" from "this build has none of them" and the two used to
+    # arrive as the same bytes. Omitted keeps what is stored — an agent that
+    # declares them only on the heartbeat must not lose them by restarting —
+    # and a list, empty included, replaces it: a worker rolled back to a build
+    # without ``scan_policy`` says so honestly, and reading that as silence
+    # would leave the API handing it policy-carrying jobs it scans at whatever
+    # its local config says.
+    capabilities: list[str] | None = None
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -423,7 +442,9 @@ class AgentHeartbeatRequest(BaseModel):
     current_job_id: str | None = None
     detail: str | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
-    capabilities: list[str] = Field(default_factory=list)
+    #: Omitted keeps the stored list, a list replaces it — see
+    #: ``AgentRegisterRequest.capabilities``.
+    capabilities: list[str] | None = None
 
 
 class AgentInfo(BaseModel):
@@ -1043,7 +1064,7 @@ class UserInfo(BaseModel):
     """A console account (#156). Carries no password material by construction."""
 
     username: str
-    role: Literal["viewer", "operator", "admin"]
+    role: GlobalRoleName
     disabled: bool = False
     # False for an account backfilled by migration 0013 from an orphan
     # membership: it exists and can be granted tenants, but cannot log in until
@@ -1220,7 +1241,7 @@ _PASSWORD = Field(min_length=12, max_length=72)
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = _PASSWORD
-    role: Literal["viewer", "operator", "admin"] = "viewer"
+    role: GlobalRoleName = "viewer"
     # Stored unverified. Marking an address verified is the administrative
     # assertion that makes an account linkable to an SSO identity by email,
     # and it stays its own deliberate call: PUT /users/{username}/email.
@@ -1232,7 +1253,7 @@ class SetUserPasswordRequest(BaseModel):
 
 
 class SetUserRoleRequest(BaseModel):
-    role: Literal["viewer", "operator", "admin"]
+    role: GlobalRoleName
 
 
 class SetUserDisabledRequest(BaseModel):
@@ -2041,11 +2062,16 @@ class BulkActionItemResult(BaseModel):
     ``conflict`` its 409, ``invalid`` its 422. ``error`` carries the refusal's
     own message so an operator does not have to guess which of a batch's
     hundred ids was already closed.
+
+    ``deadline`` is the one outcome that is not a status code: the batch spent
+    its time budget before reaching this id, so the verb was never asked of it.
+    It is not a refusal and not a failure of the finding — it is work left to
+    do, and the caller sends those ids again.
     """
 
     id: str
     ok: bool
-    outcome: Literal["ok", "not_found", "conflict", "invalid"]
+    outcome: Literal["ok", "not_found", "conflict", "invalid", "deadline"]
     error: str | None = None
 
 
@@ -2055,12 +2081,24 @@ class BulkActionReport(BaseModel):
     A batch is a partial success by design — one closed finding in a selection
     of two hundred must not refuse the other hundred and ninety-nine — so the
     envelope is a report and the status is 200 even when ``failed`` is nonzero.
-    A caller wanting all-or-nothing checks ``failed == 0``.
+    A caller wanting all-or-nothing checks ``failed == 0`` — which counts only
+    what the API *refused*. ``not_attempted`` is counted apart from it: an id
+    the time budget cut the loop before was never asked anything, and reporting
+    eighty of those as eighty failures is how a pipeline alerts on a batch that
+    rejected nothing. ``failed + not_attempted + succeeded == len(results)``.
 
     ``replayed`` is true when this answer came out of the ``Idempotency-Key``
     record of an earlier identical request rather than from work done now. The
     status code says so too (200 on a replay, where a fresh batch answers 200
     as well), so the flag is what a client actually reads.
+
+    ``deadline`` is true when the batch stopped on its time budget
+    (``OCTO_BULK_ACTION_BUDGET_SECONDS``) rather than on the end of its id
+    list: the ids it never reached carry outcome ``deadline``, and counting
+    them is what "N left" is made of. Still 200 and still a report — the
+    request did part of the work and says which part — so a client that wants
+    the rest sends those ids in a new request, under a **new** key: retrying
+    this one replays this report, which is how it learns nothing was lost.
 
     ``aborted`` is true when the batch stopped on something no per-id outcome
     describes — a deadlock, a tracker call that timed out — after applying part
@@ -2074,9 +2112,11 @@ class BulkActionReport(BaseModel):
     requested: int
     succeeded: int
     failed: int
+    not_attempted: int = 0
     results: list[BulkActionItemResult]
     replayed: bool = False
     aborted: bool = False
+    deadline: bool = False
 
 
 # One body per verb, selected by ``action`` — a discriminated union rather than

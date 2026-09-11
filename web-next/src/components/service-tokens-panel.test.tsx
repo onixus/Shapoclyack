@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ServiceTokensPanel } from "@/components/service-tokens-panel";
 import * as apiModule from "@/lib/api";
-import type { ServiceTokenInfo } from "@/lib/api";
+import type { Me, ServiceTokenInfo } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
 function token(overrides: Partial<ServiceTokenInfo> = {}): ServiceTokenInfo {
   return {
@@ -34,9 +35,28 @@ function renderPanel(canManage = true) {
   return queryClient;
 }
 
+/** Signs somebody in with a role *in the selected tenant* — which is what the
+ * issuance ceiling compares against (#318). */
+function signIn(user: Partial<Me> = {}) {
+  useAuthStore.setState({
+    user: {
+      username: "admin",
+      role: "admin",
+      tenants: ["acme"],
+      default_tenant: "acme",
+      is_platform_admin: true,
+      ...user,
+    },
+    activeTenant: "acme",
+    hydrated: true,
+    loading: false,
+  });
+}
+
 describe("ServiceTokensPanel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    signIn();
   });
 
   it("names the permission instead of showing the form without it", () => {
@@ -131,5 +151,44 @@ describe("ServiceTokensPanel", () => {
     vi.spyOn(apiModule, "fetchServiceTokens").mockRejectedValue(new Error("403 Forbidden"));
     renderPanel();
     expect(await screen.findByText("403 Forbidden")).toBeInTheDocument();
+  });
+
+  it("offers a token-admin only the role it can actually issue", async () => {
+    // `token-admin` holds `tenant.credential.manage` at rank 1, so the server
+    // refuses `operator` and `admin` (`_refuse_escalation`). Showing them was
+    // showing two choices that could only ever answer 403.
+    vi.spyOn(apiModule, "fetchServiceTokens").mockResolvedValue([]);
+    signIn({
+      username: "keymaster",
+      role: "viewer",
+      is_platform_admin: false,
+      tenant_role: "token-admin",
+      permissions: ["tenant.credential.manage"],
+    });
+    renderPanel();
+
+    const picker = await screen.findByLabelText("Role");
+    expect(within(picker).getByRole("option", { name: "viewer" })).toBeInTheDocument();
+    expect(within(picker).queryByRole("option", { name: "operator" })).toBeNull();
+    expect(within(picker).queryByRole("option", { name: "admin" })).toBeNull();
+    expect(screen.getByText(/cannot be stronger than the hand issuing it/i)).toBeInTheDocument();
+  });
+
+  it("leaves the full list to a tenant admin", async () => {
+    vi.spyOn(apiModule, "fetchServiceTokens").mockResolvedValue([]);
+    signIn({
+      username: "acme-admin",
+      role: "viewer",
+      is_platform_admin: false,
+      tenant_role: "admin",
+      permissions: ["tenant.credential.manage"],
+    });
+    renderPanel();
+
+    const picker = await screen.findByLabelText("Role");
+    for (const role of ["viewer", "operator", "admin"]) {
+      expect(within(picker).getByRole("option", { name: role })).toBeInTheDocument();
+    }
+    expect(screen.queryByText(/cannot be stronger than the hand issuing it/i)).toBeNull();
   });
 });

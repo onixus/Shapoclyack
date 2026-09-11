@@ -68,6 +68,50 @@ describe("bulkSummary", () => {
     );
   });
 
+  it("says how many ids are left when the server ran out of time", () => {
+    // The ids the batch never reached are not failures — nothing was asked of
+    // them — and calling them "skipped" would tell the operator the selection
+    // was rejected rather than that it is half done.
+    const cut = report({
+      succeeded: 1,
+      // Not a failure: `failed` is what the API refused, and it refused
+      // nothing here.
+      failed: 0,
+      not_attempted: 1,
+      deadline: true,
+      results: [
+        { id: "vln_1", ok: true, outcome: "ok", error: null },
+        { id: "vln_2", ok: false, outcome: "deadline", error: "not attempted" },
+      ],
+    });
+    expect(bulkSummary(cut, "finding")).toBe(
+      "1 finding updated, 1 left — select them again to finish",
+    );
+  });
+
+  it("counts a refusal and an id nobody reached separately", () => {
+    // The two live side by side in one report and mean different things: one
+    // finding was refused, one was never asked. Reading `failed` as "both"
+    // was what made the toast say two were skipped.
+    const mixed = report({
+      requested: 3,
+      succeeded: 1,
+      failed: 1,
+      not_attempted: 1,
+      deadline: true,
+      results: [
+        { id: "vln_1", ok: true, outcome: "ok", error: null },
+        { id: "vln_2", ok: false, outcome: "conflict", error: "already CLOSED" },
+        { id: "vln_3", ok: false, outcome: "deadline", error: "not attempted" },
+      ],
+    });
+    expect(bulkSummary(mixed, "finding")).toBe(
+      "1 finding updated, 1 skipped, 1 left — select them again to finish",
+    );
+    // And the toast's description names the refusal, not the budget message.
+    expect(bulkFailureDetail(mixed)).toBe("already CLOSED");
+  });
+
   it("says a replay applied nothing now", () => {
     // The batch was applied by the earlier request this one is a retry of;
     // reporting it as fresh work would tell the operator the click landed
@@ -183,6 +227,38 @@ describe("useBulkVulnerabilityAction", () => {
     expect(toast.warning).toHaveBeenCalledWith("1 finding updated, 1 skipped", {
       description: "not found in this tenant",
     });
+  });
+
+  it("warns when the budget left ids untouched, even with nothing refused", async () => {
+    // A batch the budget cut short refuses nothing, so `failed` stays 0. The
+    // toast still has to be the one that stays on screen: the operator has to
+    // come back and select the remainder, and a self-dismissing success says
+    // the opposite.
+    vi.mocked(bulkVulnerabilityAction).mockResolvedValue(
+      report({
+        requested: 3,
+        succeeded: 1,
+        failed: 0,
+        not_attempted: 2,
+        deadline: true,
+        results: [
+          { id: "vln_1", ok: true, outcome: "ok", error: null },
+          { id: "vln_2", ok: false, outcome: "deadline", error: "not attempted" },
+          { id: "vln_3", ok: false, outcome: "deadline", error: "not attempted" },
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useBulkVulnerabilityAction(), { wrapper });
+
+    result.current.mutate({
+      action: "assign",
+      vuln_ids: ["vln_1", "vln_2", "vln_3"],
+      payload: { assignee: "ada" },
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.warning).toHaveBeenCalled();
   });
 
   it("reports a request that never landed as an error", async () => {

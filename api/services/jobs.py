@@ -1758,6 +1758,22 @@ def start_scan(
     )
     try:
         with get_session(settings.postgres_url) as session:
+            if agent_group:
+                # Re-asked here, holding the group row, rather than trusted
+                # from the resolution above: that ran on a connection of its
+                # own and this insert is another, so a concurrent
+                # ``DELETE /api/agent-groups/{name}`` could count the pending
+                # jobs of the group, find this one not yet inserted, and take
+                # the row. What was left is a ``queued`` job addressed to a
+                # group that is gone — no agent can be put into one, so it is
+                # claimed by nobody, shows ``agent_group_unavailable`` in the
+                # console and raises no error anywhere (#361).
+                if not agent_groups_service.lock_existing_names(
+                    session, tenant_id=tenant_id, names={agent_group}
+                ):
+                    raise ValueError(
+                        f"Unknown agent_group for tenant {tenant_id}: {agent_group}"
+                    )
             session.add(row)
             session.flush()
             info = _to_info(
@@ -1771,6 +1787,14 @@ def start_scan(
                     else None
                 ),
             )
+    except ValueError:
+        # The group this scan is addressed to went while the row was being
+        # written. Nothing became a job, so the input files staged for it —
+        # and the merged config beside them — would be read by nobody;
+        # discarded here the way the idempotency loser's are.
+        _discard_job_wordlist(settings, job_id)
+        _discard_job_inputs(settings, job_id)
+        raise
     except IntegrityError:
         # Lost the race on (tenant_id, idempotency_key): another replica — or
         # this one, serving the client's retry concurrently — already created
@@ -2276,15 +2300,121 @@ class StaleAttempt(ValueError):
     """An upload from a lease that has already expired and been reissued."""
 
 
-def _release_results_reservation(settings: Settings, job_id: str, key: str) -> None:
+def _release_results_reservation(
+    settings: Settings, job_id: str, key: str, *, late: bool = False
+) -> None:
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id, with_for_update=True)
         # Only clear our own reservation, and only while the job is still
         # unfinished: once it is terminal the key is the record of what
         # produced that outcome, not a reservation.
-        if row is not None and row.status not in job_states.TERMINAL:
+        #
+        # ``late`` is the one exception, and it is not really one: a key
+        # reserved on the :func:`_accepts_late_archive` path sits on a row the
+        # *reaper* terminalized, so it records nothing about that outcome — it
+        # is a reservation like any other, and an ingest that failed under it
+        # must give it back or the agent's retry is replayed an upload that
+        # never landed.
+        if row is not None and (late or row.status not in job_states.TERMINAL):
             if row.results_idempotency_key == key:
                 row.results_idempotency_key = None
+
+
+#: Written into ``results_idempotency_key`` by a late-archive ingest whose
+#: agent sent no key of its own.
+#:
+#: The predicate below reads "no results key" as "nothing has ever been
+#: ingested", and for a pre-P1.5 agent — which this file already admits exists,
+#: unfenced — there is no key to write, so that clause stayed true after the
+#: first upload and the whole ``job_cancel_grace_seconds`` window was open to a
+#: second, different archive: another extraction into ``runs/<run_id>``, another
+#: NATS publish, another asset upsert. A reservation the *server* writes is what
+#: makes the fact of the ingest visible to the next upload. An agent *could*
+#: post this exact string as its own key — the field is unvalidated form data —
+#: and it would then read as a replay rather than the 422 the second copy earns.
+#: Nothing is re-ingested either way, so the guard holds where it matters.
+LATE_ARCHIVE_RESERVATION = "late-archive:unkeyed"
+
+
+def _accepts_late_archive(
+    settings: Settings, row: models.Job, *, cancelled: bool, has_archive: bool
+) -> bool:
+    """Whether this upload's *archive* may be kept on a job the reaper closed.
+
+    The case, from #360's own debt list: the agent obeyed. It signalled the
+    scanner, packed the partial ``runs/<run_id>`` and started uploading it on a
+    link that was never going to finish inside ``job_cancel_grace_seconds`` —
+    and ``reap_stale_cancellations`` wrote the row ``cancelled`` while the bytes
+    were still on the wire. The upload then met a terminal job, was refused 422,
+    and an archive nobody can produce again went in the bin, under a docs line
+    that promises partial results are kept.
+
+    **What is accepted is the bytes, not the verdict.** The row keeps the
+    outcome the reaper gave it — ``cancelled``, ``finished_at`` where the reaper
+    put it, ``exit_code`` still NULL, and "agent X did not confirm within Ns"
+    still in ``error``. Nothing here claims the agent confirmed, because nothing
+    here proves it did: a confirmation is a statement about *when* the scan
+    stopped, and this upload arrived after the API had already given up waiting
+    for one. That is why an upload carrying **no archive** is still refused — it
+    has nothing to keep and would be asking the API to accept exactly the
+    verdict it may not accept, which is the invariant #360's fixer left in place
+    and this does not touch.
+
+    Narrow on purpose, and every clause is load-bearing:
+
+    * ``cancelled`` — the agent says it stopped because it was asked to. An
+      ordinary late result is still a straggler, and still refused;
+    * ``cancel_requested_at`` — an operator did ask. A job cancelled out of the
+      queue never had an agent to obey;
+    * ``exit_code IS NULL`` and no results key — nothing has ever been ingested
+      for this job, so this cannot overwrite a run that was already reported.
+      An ingest on this path writes one even when the agent sent none
+      (:data:`LATE_ARCHIVE_RESERVATION`), which is what keeps the clause from
+      being permanently true for an agent old enough not to have a key;
+    * inside one further ``job_cancel_grace_seconds`` of ``finished_at``. The
+      agent that missed the first grace period gets one more to deliver what it
+      packed; past that "late" would mean "whenever", and an archive for a scan
+      closed last week is not a partial result but a surprise. Derived from the
+      knob #360 already has rather than from a second one of its own.
+    """
+    if not (cancelled and has_archive):
+        return False
+    if row.status != job_states.CANCELLED or row.cancel_requested_at is None:
+        return False
+    if row.exit_code is not None or row.results_idempotency_key is not None:
+        return False
+    if row.finished_at is None:
+        return False
+    grace = max(settings.job_cancel_grace_seconds, 1)
+    return (_now() - row.finished_at) <= timedelta(seconds=grace)
+
+
+def _record_late_cancellation_archive(
+    settings: Settings, job_id: str, *, agent_id: str, run_id: str | None
+) -> None:
+    """Note that the archive landed, without rewriting how the job ended.
+
+    Deliberately not :func:`_update_job`: ``status``, ``finished_at`` and
+    ``exit_code`` are the reaper's answer and stay its answer. What changes is
+    the two things that are about the *data* — which run directory now holds it,
+    and a line in ``error``, so an operator reading the drawer is not left
+    wondering why a job that "did not confirm" has results.
+    """
+    note = f"; partial results uploaded late by agent {agent_id}"
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id, with_for_update=True)
+        if row is None:  # pragma: no cover - the row was locked moments ago
+            return
+        if run_id and not row.run_id:
+            row.run_id = run_id
+        if note not in (row.error or ""):
+            row.error = f"{row.error or ''}{note}"[:2000]
+    _log.info(
+        "Kept a late partial archive for cancelled job %s from agent %s; the job's "
+        "outcome is unchanged",
+        job_id,
+        agent_id,
+    )
 
 
 def _classify_replay(
@@ -2388,6 +2518,7 @@ def complete_job(
     never reached.
     """
     replay_result: JobInfo | None = None
+    late_archive = False
     with get_session(settings.postgres_url) as session:
         # Locked for the whole check: concurrent uploads for the same job must
         # be decided one at a time, or both would read a non-terminal row and
@@ -2432,6 +2563,19 @@ def complete_job(
                 # across it would make a second agent's retry wait on the disk
                 # rather than on the decision.
                 replay_result = replay
+            elif _accepts_late_archive(
+                settings, row, cancelled=cancelled, has_archive=bool(archive_bytes)
+            ):
+                # The obedient-but-slow agent: its bytes are kept, the outcome
+                # the reaper wrote is not touched. See the predicate.
+                late_archive = True
+                # Reserved inside the lock like any other, so a second copy of
+                # this upload is recognised rather than extracted twice. Given
+                # back by the failure path below, which is told this is a
+                # reservation and not the record of an outcome. An agent that
+                # sent no key gets the server's own marker rather than nothing:
+                # see :data:`LATE_ARCHIVE_RESERVATION`.
+                row.results_idempotency_key = idempotency_key or LATE_ARCHIVE_RESERVATION
         elif idempotency_key:
             if row.results_idempotency_key == idempotency_key:
                 # Same key, job not finished: the first request holding this key
@@ -2448,7 +2592,7 @@ def complete_job(
         # for a job that already finished — or one an operator cancelled while
         # the agent was still working — must not overwrite the run directory
         # and re-publish to NATS before being rejected.
-        if replay_result is None:
+        if replay_result is None and not late_archive:
             job_states.check_transition(job_id, row.status, status)
         # Read under the lock, for the same reason the surface below is: the
         # confirming upload is the only writer that would otherwise erase who
@@ -2525,27 +2669,43 @@ def complete_job(
                     settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
                 )
 
-        _update_job(
-            settings,
-            job_id,
-            status=status,
-            finished_at=_now(),
-            exit_code=exit_code,
-            run_id=str(resolved_run_id) if resolved_run_id else None,
-            error=_merge_cancellation_reason(requested_reason, error),
-            # Recorded with the outcome, so a later upload can be told apart from
-            # the one that produced it.
-            results_idempotency_key=(idempotency_key or None),
-        )
+        if late_archive:
+            _record_late_cancellation_archive(
+                settings,
+                job_id,
+                agent_id=agent_id,
+                run_id=str(resolved_run_id) if resolved_run_id else None,
+            )
+        else:
+            _update_job(
+                settings,
+                job_id,
+                status=status,
+                finished_at=_now(),
+                exit_code=exit_code,
+                run_id=str(resolved_run_id) if resolved_run_id else None,
+                error=_merge_cancellation_reason(requested_reason, error),
+                # Recorded with the outcome, so a later upload can be told apart
+                # from the one that produced it.
+                results_idempotency_key=(idempotency_key or None),
+            )
     except Exception:
         # The reservation above is only meaningful while this upload is in
-        # flight. Releasing it lets the agent retry with the same key instead
-        # of meeting its own abandoned reservation forever.
-        if idempotency_key:
-            _release_results_reservation(settings, job_id, idempotency_key)
+        # flight. Releasing it lets the agent retry with the same key — or, on
+        # the late path, with no key at all — instead of meeting its own
+        # abandoned reservation forever.
+        held = idempotency_key or (LATE_ARCHIVE_RESERVATION if late_archive else None)
+        if held:
+            _release_results_reservation(settings, job_id, held, late=late_archive)
         raise
     if status == job_states.CANCELLED:
-        metrics_service.JOB_CANCELLATIONS_TOTAL.labels(outcome="confirmed").inc()
+        # Counted apart from a confirmation, because it is not one: the scan was
+        # written off unconfirmed and only its archive arrived afterwards. A
+        # rising share here is an agent that cannot upload inside the grace
+        # period — a bandwidth or grace-period problem, not a stuck agent.
+        metrics_service.JOB_CANCELLATIONS_TOTAL.labels(
+            outcome="late_results" if late_archive else "confirmed"
+        ).inc()
     agents_service.touch_job(agent_id, None, status="idle")
     # The job is terminal now: no further claim will serve these files (#258).
     # After the _update_job above, so a raise in ingestion leaves them for the

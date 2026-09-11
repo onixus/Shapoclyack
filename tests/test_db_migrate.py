@@ -18,6 +18,7 @@ import time
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from api.db import migrate
 from api.db.engine import _create_schema_if_unmanaged
@@ -141,3 +142,67 @@ def test_missing_database_url_is_refused_by_name(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(RuntimeError, match="OCTO_POSTGRES_URL"):
         migrate._database_url()
+
+
+@requires_postgres
+def test_the_idempotency_actor_rollback_survives_two_owners_of_one_key() -> None:
+    """``0055``'s downgrade has real work to do, and it can fail.
+
+    After the upgrade two callers in one tenant may each hold ``nightly-triage``
+    on one endpoint — that *is* the change — and the index the downgrade
+    rebuilds forbids exactly that. So the rows are deduplicated first, keeping
+    the most recent, and the client mid-retry re-executes its batch just as it
+    would have if the record had been swept. Nothing else remembers to test
+    this, and a downgrade that raises is one an operator discovers at 3am with
+    the release notes open.
+    """
+    engine = create_engine(POSTGRES_URL, future=True)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM idempotency_records"))
+        for actor, created in (("alice", "2026-09-11 10:00:00"), ("bob", "2026-09-11 10:00:01")):
+            conn.execute(
+                text(
+                    "INSERT INTO idempotency_records "
+                    "(tenant_id, actor, endpoint, key, request_digest, created_at) "
+                    "VALUES ('default', :actor, 'vulnerabilities.bulk', 'nightly-triage', "
+                    "'d', :created)"
+                ),
+                {"actor": actor, "created": created},
+            )
+    try:
+        migrate._downgrade("0053_tenant_scan_policy")
+
+        with engine.begin() as conn:
+            survivors = conn.execute(
+                text("SELECT key FROM idempotency_records")
+            ).scalars().all()
+            columns = {column["name"] for column in inspect(engine).get_columns("idempotency_records")}
+        assert survivors == ["nightly-triage"]
+        assert "actor" not in columns
+    finally:
+        migrate.run_upgrade(POSTGRES_URL, lock_timeout_seconds=30)
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM idempotency_records"))
+        # Back on the new schema, the guard that keeps a replica of the previous
+        # release from claiming a key this one already answered is back too.
+        conn.execute(
+            text(
+                "INSERT INTO idempotency_records "
+                "(tenant_id, actor, endpoint, key, request_digest, created_at) "
+                "VALUES ('default', 'alice', 'vulnerabilities.bulk', 'nightly-triage', "
+                "'d', '2026-09-11 10:00:00')"
+            )
+        )
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO idempotency_records "
+                    "(tenant_id, endpoint, key, request_digest, created_at) "
+                    "VALUES ('default', 'vulnerabilities.bulk', 'nightly-triage', "
+                    "'d', '2026-09-11 10:00:02')"
+                )
+            )
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM idempotency_records"))

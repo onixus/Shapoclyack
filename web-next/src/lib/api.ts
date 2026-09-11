@@ -155,7 +155,66 @@ function apiErrorMessage(error: unknown): string {
   return "Request failed";
 }
 
+/** The role an *account* holds (`users.role`). Three values, unchanged by
+ * #318, and `admin` here means the platform admin. */
 export type Role = "viewer" | "operator" | "admin";
+
+/** The role a *membership* names — a different thing with a different domain
+ * (#318). Deliberately not a union: the catalogue is served by
+ * `GET /api/rbac/roles` and grew five names with #318, with tenant-defined
+ * roles to come, so a union here would be a second copy of the role table
+ * that goes stale the next time the platform's vocabulary does. What the
+ * server accepts is what the catalogue lists. */
+export type TenantRoleName = string;
+
+/** One role from the catalogue (`GET /api/rbac/roles`). `tenant_id` is null
+ * for a built-in role; `rank` is the coarse read/write level the older gates
+ * compare against (1 reads, 2 writes, 3 administers). */
+export type RoleInfo = {
+  role_id: string;
+  tenant_id: string | null;
+  description: string;
+  builtin: boolean;
+  rank: number;
+  permissions: string[];
+};
+
+/** One named authority (`GET /api/rbac/permissions`). */
+export type PermissionInfo = {
+  permission_key: string;
+  description: string;
+};
+
+/** The roles that may be granted in one tenant, with what each one can do.
+ *
+ * Needs `tenant.member.read`, like the member list it is read alongside: this
+ * is the menu somebody opens in order to grant a membership. Reading it is
+ * how the console stops keeping its own copy of the role table — the three
+ * hard-coded lists it used to have could not offer `auditor`,
+ * `scan-operator`, `scope-approver`, `token-admin` or `risk-approver` at all,
+ * so the five roles #318 added were grantable only over `curl`.
+ */
+export async function fetchRoleCatalogue(tenantId?: string) {
+  try {
+    const { data } = await api.get<RoleInfo[]>("/rbac/roles", {
+      params: tenantParam(tenantId),
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Every named authority this platform knows about. Open to any authenticated
+ * caller: it is the vocabulary, not an answer about anybody. */
+export async function fetchPermissionCatalogue() {
+  try {
+    const { data } = await api.get<PermissionInfo[]>("/rbac/permissions");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
 
 export type Me = {
   username: string;
@@ -2310,24 +2369,35 @@ export const MAX_BULK_IDS = 200;
 /** One id's fate inside a batch. `outcome` is the single-id endpoint's status
  * code in words: `not_found` is its 404 (which is also what another tenant's id
  * gets — a write scope never confirms existence), `conflict` its 409, `invalid`
- * its 422. */
+ * its 422. `deadline` is the one that is not a status code: the request spent
+ * its time budget before reaching this id, so nothing was asked of it and
+ * sending it again applies it once. */
 export type BulkActionItemResult = {
   id: string;
   ok: boolean;
-  outcome: "ok" | "not_found" | "conflict" | "invalid";
+  outcome: "ok" | "not_found" | "conflict" | "invalid" | "deadline";
   error: string | null;
 };
 
 /** A batch is a partial success by design, so the response is a report and the
  * status is 200 even when `failed` is nonzero. `replayed` means the answer came
- * from the `Idempotency-Key` record of an earlier identical request. */
+ * from the `Idempotency-Key` record of an earlier identical request;
+ * `deadline` means the server stopped on its time budget and the ids carrying
+ * that outcome are work still to do. */
 export type BulkActionReport = {
   action: string;
   requested: number;
   succeeded: number;
+  /** Ids the API refused — closed, in another tenant, illegal transition. Does
+   * *not* include the ids a batch ran out of time for; those are
+   * `not_attempted`, because nothing was asked of them. */
   failed: number;
+  /** Ids the time budget cut the loop before. The operator's next step is to
+   * send them again; `0` on an older API that did not count them apart. */
+  not_attempted?: number;
   results: BulkActionItemResult[];
   replayed: boolean;
+  deadline?: boolean;
 };
 
 /** The verbs `POST /vulnerabilities/bulk` accepts, each carrying the same body
@@ -2514,6 +2584,24 @@ export async function decideVulnerabilityException(
   }
 }
 
+/** Take back your own pending request. The granted acceptance, if there is
+ * one, is untouched — which is the whole reason this is a separate call from
+ * `clearVulnerabilityException` below (#348). */
+export async function withdrawVulnerabilityExceptionRequest(vulnId: string) {
+  try {
+    const { data } = await api.delete<TrackedVulnerability>(
+      `/vulnerabilities/${encodeURIComponent(vulnId)}/exception/request`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Revoke a granted acceptance: the finding goes straight back under its
+ * original deadline, so the caller must have been told what they are undoing.
+ * Needs `vulnerability.exception.approve` — the hand that could have signed
+ * it. */
 export async function clearVulnerabilityException(vulnId: string) {
   try {
     const { data } = await api.delete<TrackedVulnerability>(
@@ -3793,11 +3881,13 @@ export async function downloadAuditExport(
 }
 
 /** One user's access to one tenant (ROADMAP P0). The role inside the tenant
- * can differ from the account's global role. */
+ * is a `TenantRoleName` and can differ from the account's global role — in
+ * name as well as in value, since #318 gave memberships five roles no account
+ * can hold. */
 export type MembershipInfo = {
   username: string;
   tenant_id: string;
-  role: Role;
+  role: TenantRoleName;
   created_at: string | null;
   created_by: string | null;
 };
@@ -3815,7 +3905,11 @@ export async function fetchTenantMembers(tenantId: string) {
 
 /** Grant or re-grant one user access to one tenant. Idempotent, so the same
  * call is both "add" and "change the role". */
-export async function grantMembership(tenantId: string, username: string, role: Role) {
+export async function grantMembership(
+  tenantId: string,
+  username: string,
+  role: TenantRoleName,
+) {
   try {
     const { data } = await api.put<MembershipInfo>(
       `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(username)}`,
