@@ -460,7 +460,12 @@ def test_a_late_result_for_a_cancellation_nobody_confirmed_is_still_refused(
     upload with no key — or a different one — arriving at a job the reaper
     finished is a different thing: nothing here produced that outcome, so it
     meets the transition check, and the refusal names what was reported rather
-    than inventing a failure the agent never claimed."""
+    than inventing a failure the agent never claimed.
+
+    This one carries **no archive**, which is why it is still refused: there is
+    nothing to keep, so accepting it would be accepting the verdict alone — a
+    cancellation nobody confirmed. An upload that does carry one is the test
+    below."""
     client = _client(tmp_path, monkeypatch)
     auth = auth_headers(client, "operator")
     agent_id, job_id, run_id = _running_agent_job(client, auth)
@@ -488,6 +493,106 @@ def test_a_late_result_for_a_cancellation_nobody_confirmed_is_still_refused(
     # The agent reported a cancellation; telling it the job "cannot move ... to
     # failed" would name an outcome nobody claimed.
     assert "to failed" not in detail
+
+
+def _age_finish(settings: Settings, job_id: str, seconds: int) -> None:
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        row.finished_at = row.finished_at - timedelta(seconds=seconds)
+
+
+def test_a_late_partial_archive_is_kept_without_confirming_the_cancellation(
+    tmp_path, monkeypatch
+):
+    """The obedient agent that is simply slow. It signalled its scanner, packed
+    a partial `runs/<run_id>` and started pushing it up a narrow link; the
+    reaper wrote the row off first. Refusing the upload threw away an archive
+    nobody can produce again, under a docs line promising partial results are
+    kept.
+
+    What is accepted is the bytes. The outcome stays the reaper's: `cancelled`,
+    the same `finished_at`, no `exit_code`, and "did not confirm" still in
+    `error` — because this upload proves the agent obeyed, not that it obeyed
+    in time."""
+    client = _client(tmp_path, monkeypatch)
+    auth = auth_headers(client, "operator")
+    agent_id, job_id, run_id = _running_agent_job(client, auth)
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=auth).status_code == 200
+
+    settings = _settings(tmp_path)
+    settings.job_cancel_grace_seconds = 1
+    _age_cancellation(settings, job_id, 300)
+    assert jobs_service.reap_stale_cancellations(settings) == 1
+    reaped = jobs_service.get_job(settings, job_id)
+
+    late = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={
+            "agent_id": agent_id,
+            "exit_code": "143",
+            "run_id": run_id,
+            "cancelled": "true",
+            "idempotency_key": f"{agent_id}:{job_id}:{run_id}:143",
+        },
+        files={"archive": ("run.tar.gz", _archive("findings.json"), "application/gzip")},
+    )
+
+    assert late.status_code == 200, late.text
+    assert (settings.output_dir / "runs" / run_id / "findings.json").is_file()
+    job = late.json()
+    assert job["status"] == "cancelled"
+    # Untouched: the reaper's verdict, not this upload's.
+    assert job["exit_code"] is None
+    assert job["finished_at"] == reaped.finished_at
+    assert "did not confirm" in job["error"]
+    # ...and the drawer says why a job that never confirmed has results.
+    assert "partial results uploaded late" in job["error"]
+    # The key the upload carried makes its retry a replay rather than a second
+    # extraction into the same run directory.
+    retry = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={
+            "agent_id": agent_id,
+            "exit_code": "143",
+            "run_id": run_id,
+            "cancelled": "true",
+            "idempotency_key": f"{agent_id}:{job_id}:{run_id}:143",
+        },
+        files={"archive": ("run.tar.gz", _archive("findings.json"), "application/gzip")},
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["error"].count("partial results uploaded late") == 1
+
+
+def test_an_archive_for_a_job_closed_long_ago_is_refused(tmp_path, monkeypatch):
+    """"Late" has to stop meaning "whenever". The agent that missed the grace
+    period gets one more of them to deliver what it packed; an archive for a
+    scan closed an hour ago is not a partial result, it is a surprise — and
+    accepting it would let a job's run directory be written by anything still
+    holding its id."""
+    client = _client(tmp_path, monkeypatch)
+    auth = auth_headers(client, "operator")
+    agent_id, job_id, run_id = _running_agent_job(client, auth)
+    assert client.post(f"/api/jobs/{job_id}/cancel", headers=auth).status_code == 200
+
+    settings = _settings(tmp_path)
+    settings.job_cancel_grace_seconds = 1
+    _age_cancellation(settings, job_id, 300)
+    assert jobs_service.reap_stale_cancellations(settings) == 1
+    _age_finish(settings, job_id, 3600)
+
+    late = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_agent_headers(),
+        data={"agent_id": agent_id, "exit_code": "143", "run_id": run_id, "cancelled": "true"},
+        files={"archive": ("run.tar.gz", _archive("findings.json"), "application/gzip")},
+    )
+
+    assert late.status_code == 422, late.text
+    assert "already cancelled" in late.json()["detail"]
+    assert not (settings.output_dir / "runs" / run_id / "findings.json").exists()
 
 
 def test_a_confirmed_cancellation_still_says_who_asked_for_it(tmp_path, monkeypatch):
