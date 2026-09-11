@@ -270,13 +270,17 @@ and not the next is not a ceiling:
   controllers), and the verify pass that re-probes alive hosts with no open
   ports. The shipped `default.yaml` gives the last two 2500 and 1250 pps of
   their own; the policy lowers those too, and so is the rate the TCP step of
-  the probe ladder uses.
+  the probe ladder uses. It is also the ICMP step, which has no rate of its
+  own: fping paces itself by the gap between packets, so the ceiling is turned
+  into `discovery.icmp.period_ms` — 100 pps is 10 ms — and passed as fping's
+  `-i`. A config that already waits longer keeps its own figure.
 * **25 pps at any single host** is the per-host figure, and naabu's `-rate` is
-  a budget for a whole batch. When the batch is one host — which is the shape a
-  fragile scan has, one device at a time — discovery and the port stage hold
-  that batch to the per-host figure instead. A batch of many hosts keeps the
-  batch budget: lowering it to 25 would make the scan as many times longer as
-  it has hosts.
+  a budget for a whole batch, so the two are the same number only when the
+  batch is one host. Under a policy that names both this figure and
+  `max_host_concurrency`, every batch *is* one address (see below), so
+  discovery and the port stage hold each invocation to 25. Without a per-host
+  figure the batch keeps the batch budget: narrowing a batch without one would
+  raise what a single device receives, not lower it.
 * **The service-probe stage off** means nmap NSE, pulse *and nuclei*. Nuclei is
   the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
   templates at whatever web interface an engineering station exposes — so a
@@ -284,17 +288,31 @@ and not the next is not a ceiling:
   silenced, `nuclei.rate_limit` is held to `per_host_rate` and
   `nuclei.concurrency` to `max_host_concurrency`.
 * **One host at a time** is `max_host_concurrency`: the discovery, port and NSE
-  worker counts, and pulse's `--host-parallel`. A config that already spells
-  that as `pulse.host_parallel: 0` keeps the 0 — the scanner passes it to pulse
-  as `--host-first`, which is one host at a time and so stricter than any
-  number a policy could put there.
-* **The avoid-list of fieldbus ports** is every stage that picks ports, not only
-  the port scan: naabu gets `-exclude-ports` there, and discovery's TCP probe
-  step — which chooses a port list of its own, and which an installation can
-  point at anything — drops the avoided ports from that list before it sends a
-  SYN. A probe whose whole port list is avoided is skipped instead of run. This
-  is what `ports.exclude_ports` says in `scanner/config/default.yaml`: ports no
-  scan started from this config may touch.
+  worker counts, pulse's `--host-parallel`, *and* the batch size. The worker
+  counts alone would have been a half-measure — a worker takes a whole batch,
+  and a batch is a `/24` or up to a thousand addresses, so a `/24` target
+  reached naabu as one invocation of 254 devices however low the worker count
+  was. When the policy names a per-host rate as well, batching is lowered to
+  one address per batch (`ipv4_prefix: 32`, `max_targets_per_batch: 1`), so the
+  hosts being touched at once really are the worker count and every invocation
+  is the single-host shape the per-host ceiling applies to. That is many more
+  invocations of naabu than one wide batch, and is part of why a fragile scan
+  is measured in hours. A config that already spells one host at a time as
+  `pulse.host_parallel: 0` keeps the 0 — the scanner passes it to pulse as
+  `--host-first`, which is stricter than any number a policy could put there.
+* **The avoid-list of fieldbus ports** is every stage that puts a port on the
+  wire, not only the port scan. The port scan gets `-exclude-ports`. Discovery's
+  TCP probe step — which chooses a port list of its own, and which an
+  installation can point at anything — drops the avoided ports from that list
+  before it sends a SYN, and a probe whose whole port list is avoided is
+  skipped instead of run. The last step of the ladder, `naabu -sn`, picks ports
+  from naabu's own defaults rather than from the config: left alone it SYN- and
+  ACK-pings 80 and 443, which `-exclude-ports` does not cover because that flag
+  belongs to the port scan. So the step now spells its probes out (`-pe -pp -ps
+  … -pa …`) with the avoided ports removed; if both are avoided it runs on ICMP
+  alone. This is what `ports.exclude_ports` says in
+  `scanner/config/default.yaml`: ports no scan started from this config may
+  touch.
 
 **Budget hours, not minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
 alternative it is measured against is not scanning the plant at all. If a

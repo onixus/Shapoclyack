@@ -56,11 +56,32 @@ All notable changes to Shapoclyack are documented in this file.
   `ports.exclude_ports` promised, in as many words, that nothing started from
   this config would. The avoided ports are dropped from the probe's list and
   handed to naabu as well, and a probe left with no ports is skipped instead of
-  run. Audited the rest of the pace knobs for the same class of defect while
-  here: `pulse.host_parallel: 0` is *not* one of them — the scanner spells that
-  0 as pulse's `--host-first`, one host at a time, so reading it as "unlimited"
+  run. The last step of the ladder, `naabu -sn`, picks its ports from naabu's
+  own defaults — SYN and ACK pings to 80 and 443, which `-exclude-ports` does
+  not cover — so it now spells its probes out with the avoided ports removed,
+  and falls back to ICMP alone when both are avoided. `pulse.host_parallel: 0`
+  was checked and is *not* a defect of this class — the scanner spells that 0
+  as pulse's `--host-first`, one host at a time, so reading it as "unlimited"
   would have raised it to the policy's figure; there is now a test pinning that
   and a comment saying why.
+- **Three ceilings that were correct in the config and lost on the way to the
+  command line** ([#362](https://github.com/onixus/Shapoclyack/issues/362)).
+  Found by reviewing the audit above, which had missed them. The policy wrote
+  its discovery ceiling into `discovery.tcp_probe.rate`, and the probe ladder
+  read that field as a rate that *replaces* the batch rate — throwing away the
+  per-host correction already applied to the batch, so a fragile tenant's
+  single PLC was sent `-rate 100` under a policy promising 25. The ICMP step
+  was paced with fping's `-p`, which only applies in loop and count modes and
+  so did nothing at all (measured: 20 addresses take 1.51s with `-p 200` and
+  with no flag, 8.2s with `-i 200`); it is `-i` now, and `max_discover_rate` is
+  turned into the interval rather than leaving the step at fping's default 100
+  pps. And **one host at a time** now means it: `max_host_concurrency` lowered
+  the worker counts but not the batch size, so a `/24` target reached naabu as
+  one invocation of 254 devices with the per-host ceiling not applied at all —
+  a policy that names both a concurrency and a per-host rate now narrows
+  batching to one address per batch. Tests are on the argv the tool receives,
+  and cover all three callers of the discovery probe rather than the one the
+  first round covered.
 - **A tenant's agent no longer takes every one of that tenant's jobs**
   ([#361](https://github.com/onixus/Shapoclyack/issues/361)). `claim_job`
   filtered by tenant and by "queued" and nothing else, so an agent in a
