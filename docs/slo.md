@@ -124,20 +124,28 @@ sum(rate(octo_job_duration_seconds_count[30d]))
 
 The histogram observes only terminal jobs (`succeeded` / `failed`), and only
 when both `started_at` and `finished_at` are present — a job killed before it
-recorded a finish time is invisible here. A `cancelled` job (ROADMAP P1.3) is
-deliberately not observed: it never executed, so counting it would charge an
-operator's decision against the success ratio. Cross-check against
-`octo_jobs_running`: a gauge stuck above zero with no matching histogram
-increments means jobs are being lost, and that is worse than a failure rate.
-`octo_jobs_running` counts both `running` and `claimed` jobs — a claimed job is
-out with a worker, so folding it into `octo_jobs_queued` would read as a
-backlog nothing is working on.
+recorded a finish time is invisible here. A `cancelled` job (ROADMAP P1.3,
+[#360](https://github.com/onixus/Shapoclyack/issues/360)) is deliberately not
+observed, whether it was stopped before it started or put down mid-scan:
+counting an operator's decision against the success ratio would make stopping a
+scan look like a defect. Cross-check against `octo_jobs_running`: a gauge stuck
+above zero with no matching histogram increments means jobs are being lost, and
+that is worse than a failure rate. `octo_jobs_running` counts `running`,
+`claimed` and `cancelling` jobs — all three are out with a worker, so folding
+them into `octo_jobs_queued` would read as a backlog nothing is working on.
 
 `octo_job_lease_expired_total{outcome="requeued"}` is the fleet-health signal
 underneath the ratio above: a rising rate means agents are dying mid-job and
 their work is being handed to someone else. `outcome="failed"` means a job
 exhausted `OCTO_JOB_MAX_ATTEMPTS` (or was a local job whose replica died) and
 was given up on — those *do* land in the failure side of SLO 3.
+
+`octo_job_cancellations_total` counts the scans operators stopped, by how the
+stop ended: `queued` (never handed out), `confirmed` (the agent reported it put
+the scan down) and `unconfirmed` (the grace period expired first). The last one
+is the series to alert on — every increment is a job the control plane closed
+without ever being told the scan stopped, which usually means agents older than
+the release that added the heartbeat cancel channel.
 
 ### 4. Job duration
 

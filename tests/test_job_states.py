@@ -30,13 +30,30 @@ def test_terminal_states_never_move_again(terminal):
         assert not job_states.can_transition(terminal, target)
 
 
-def test_only_a_queued_job_can_be_cancelled():
-    """Nothing can stop work already handed to an executor — an agent that has
-    claimed a job starts scanning without asking the API again — so cancelling
-    anything past `queued` would report a stop that never happened."""
+def test_a_started_job_stops_through_cancelling_and_never_straight_to_cancelled():
+    """Only a queued job is stopped by a single write: nothing has taken it.
+
+    A job an executor holds goes through `cancelling` (#360) — the API has
+    asked and has not been told the scan stopped — and writing `cancelled`
+    directly from `claimed`/`running` would report a stop that had not been
+    confirmed by anybody."""
     assert job_states.can_transition(job_states.QUEUED, job_states.CANCELLED)
     assert not job_states.can_transition(job_states.CLAIMED, job_states.CANCELLED)
     assert not job_states.can_transition(job_states.RUNNING, job_states.CANCELLED)
+    assert job_states.can_transition(job_states.CLAIMED, job_states.CANCELLING)
+    assert job_states.can_transition(job_states.RUNNING, job_states.CANCELLING)
+    assert job_states.can_transition(job_states.CANCELLING, job_states.CANCELLED)
+
+
+def test_a_cancelling_job_may_still_report_the_result_it_produced():
+    """The scan can finish on its own between the request and the signal, and a
+    real result must not be discarded to make the console's wording come true."""
+    assert job_states.can_transition(job_states.CANCELLING, job_states.SUCCEEDED)
+    assert job_states.can_transition(job_states.CANCELLING, job_states.FAILED)
+    # ...but it must not go back on the queue: the reaper requeues on the lease,
+    # and a second agent must never be handed a job that is being stopped.
+    assert not job_states.can_transition(job_states.CANCELLING, job_states.QUEUED)
+    assert job_states.CANCELLING not in job_states.IN_FLIGHT
 
 
 def test_check_transition_names_the_job_and_the_move():

@@ -45,7 +45,7 @@ Jobs and the agent registry are rows in PostgreSQL (`jobs`, `agents`), not proce
 
 ### Job lifecycle
 
-A job holds one of six states, and transitions are validated by `api/services/job_states.py`:
+A job holds one of seven states, and transitions are validated by `api/services/job_states.py`:
 
 ```text
 queued ─┬─→ claimed ─┬─→ running ──→ succeeded | failed
@@ -53,11 +53,16 @@ queued ─┬─→ claimed ─┬─→ running ──→ succeeded | failed
         ├─→ running ──→ succeeded | failed        (local execution)
         └─→ cancelled                             (nothing has taken it yet)
 
+claimed | running ──→ cancelling ──→ cancelled    (agent confirmed, or grace expired)
+                          └────────→ succeeded | failed   (finished before the stop landed)
+
 claimed | running ──→ queued                      (eligible expired agent lease)
 ```
 
 - `claimed` means an agent has taken the job but has not yet reported active work.
-- `cancelled` is available only before execution has started. The API does not claim to stop work that is already running.
+- `cancelled` straight from `queued` is a stop nothing had to be told about: the job is simply never handed out.
+- `cancelling` is an operator asking an agent to put a running scan down. The request travels on the agent's next heartbeat response; the agent signals its scanner's process group and uploads whatever the run produced as a cancelled result. If no confirmation arrives within `OCTO_JOB_CANCEL_GRACE_SECONDS` the job is finished as `cancelled` anyway, with the silence recorded in `error`. A `cancelling` job is deliberately outside the lease set, so the reaper never hands it to a second agent while the first is stopping — and asking for the same job again while it is there is a no-op, not a second decision: terminalizing it would report a stop no agent has confirmed and clear the flag before it was read.
+- a local scan that has already started cannot be cancelled: it is a subprocess inside one API replica, which is not necessarily the replica answering the request, so the API refuses rather than reporting a stop that did not happen.
 - terminal outcomes are not rewritten by late retries.
 
 ### Idempotency and fencing

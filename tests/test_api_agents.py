@@ -236,10 +236,14 @@ def test_reject_path_traversal_archive(tmp_path, monkeypatch):
     assert bad.status_code == 422
 
 
-def test_operator_cancels_a_queued_job_but_not_one_already_running(tmp_path, monkeypatch):
-    """POST /jobs/{id}/cancel (ROADMAP P1.3) only prevents execution: once the
-    agent reports the scan started there is no channel to stop it, so the API
-    answers 409 rather than marking a stop that never happened."""
+def test_operator_cancels_a_queued_job_outright_and_a_running_one_through_the_agent(
+    tmp_path, monkeypatch
+):
+    """POST /jobs/{id}/cancel answers with the stop it can actually make.
+
+    A queued job is `cancelled` on the spot — nothing has taken it. A scan an
+    agent is running is `cancelling` (#360), and the instruction reaches the
+    agent on the heartbeat it is already sending."""
     client = _client(tmp_path, monkeypatch)
     agent_id = client.post(
         "/api/agent/register", headers=_agent_headers(), json={"hostname": "worker"}
@@ -270,8 +274,18 @@ def test_operator_cancels_a_queued_job_but_not_one_already_running(tmp_path, mon
     )
     assert client.get(f"/api/jobs/{second}", headers=auth).json()["status"] == "running"
 
-    conflict = client.post(f"/api/jobs/{second}/cancel", headers=auth)
-    assert conflict.status_code == 409
+    asked = client.post(f"/api/jobs/{second}/cancel", headers=auth)
+    assert asked.status_code == 200
+    assert asked.json()["status"] == "cancelling"
+    assert asked.json()["finished_at"] is None
+
+    # ...and the next heartbeat is where the agent finds out.
+    beat = client.post(
+        "/api/agent/heartbeat",
+        headers=_agent_headers(),
+        json={"agent_id": agent_id, "status": "busy", "current_job_id": second},
+    )
+    assert beat.json()["cancel_requested"] is True
 
     assert client.post("/api/jobs/nope/cancel", headers=auth).status_code == 404
 

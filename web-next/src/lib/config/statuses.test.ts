@@ -44,6 +44,7 @@ describe("status maps", () => {
   it("cover every expected status value", () => {
     expect(Object.keys(JOB_STATUS).sort()).toEqual([
       "cancelled",
+      "cancelling",
       "claimed",
       "failed",
       "queued",

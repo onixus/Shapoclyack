@@ -47,6 +47,13 @@ export const JOB_STATUS: Record<JobInfo["status"], StatusStyle> = {
   claimed: { label: "claimed", className: "bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/30 font-semibold" },
   failed: { label: "failed", variant: "destructive", className: DANGER },
   queued: { label: "queued", variant: "secondary", className: MUTED },
+  // Amber like `claimed`, not red: the scan is on its way down at an
+  // operator's request, which is neither a failure nor finished (#360).
+  cancelling: {
+    label: "cancelling",
+    className:
+      "bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/30 font-semibold",
+  },
   cancelled: { label: "cancelled", variant: "secondary", className: MUTED },
 };
 

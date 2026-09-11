@@ -474,6 +474,60 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **A running scan can be stopped**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Cancelling was
+  legal only from `queued`; once an agent had claimed a job, the only bound on
+  it was the agent's own `--scan-timeout` — two hours of traffic at a target an
+  operator had already decided to leave alone. `POST /api/jobs/{id}/cancel` now
+  puts a claimed or running agent job into the new **`cancelling`** state, the
+  request reaches the agent on its next heartbeat response, and the agent
+  SIGTERMs its scanner's process group and uploads whatever the run produced
+  with `cancelled=true`. Partial results are kept; the job ends as `cancelled`
+  rather than `failed`, so an operator's decision is not filed as a defect. A
+  job whose agent never confirms (one too old to read the new field, say) is
+  finished as `cancelled` after `OCTO_JOB_CANCEL_GRACE_SECONDS` with the
+  silence recorded in `error`, and a `cancelling` job is never requeued by the
+  lease reaper, so it cannot be handed to a second agent while the first is
+  stopping. Gated on the named permission **`scan.cancel`** (migration 0051,
+  granted to exactly the roles that could cancel before) and written to
+  `audit_events`. The console offers Cancel on running jobs and says plainly
+  that a running scan is *asked* to stop. **A local scan that has already
+  started still cannot be cancelled** — it is a subprocess inside one API
+  replica, which is not necessarily the one answering the request — and the API
+  now refuses it with that reason instead of a generic 409.
+
+- **Five defects in that cancellation path, found by review of #360**
+  ([#360](https://github.com/onixus/Shapoclyack/issues/360)). Each was
+  reproduced against a live Postgres before the fix. (1) A **second Cancel on a
+  job already `cancelling`** wrote it `cancelled`: `cancelling` is deliberately
+  not "in flight", which made the naive reading of it "queued, so stop it
+  outright". Two consoles four seconds apart — the list's own poll interval —
+  or one proxy retry were enough, and the job was then terminal with
+  `cancel_requested` cleared before the agent had read it, so a scan nobody
+  stopped kept running for up to two hours under a row that said it had
+  stopped. Asking again is now a no-op that answers the job as it stands.
+  (2) **The retry of a confirming upload was refused with a 422.** Confirming a
+  cancellation is itself a result upload now, so it inherits the lost-response
+  problem P1.5 solved for every other upload; a retry carrying the same
+  deterministic `idempotency_key` is answered with the stored outcome. An
+  upload that no key ties to the outcome is still refused — and the refusal no
+  longer says "cannot move to failed" about an agent that reported a
+  cancellation. (3) **`OCTO_JOB_CANCEL_GRACE_SECONDS` was floored at 5s**,
+  which protected nothing: the stop reaches the agent on a heartbeat and the
+  reaper only looks once a tick, so anything below those two summed guaranteed
+  the job was finished as `unconfirmed` before the agent could answer. The
+  floor is now `OCTO_AGENT_STALE_SECONDS` + `OCTO_JOB_REAPER_INTERVAL_SECONDS`
+  (180s by default) and derived from them rather than written as a constant.
+  (4) **The console demanded the operator rank on top of `scan.cancel`**, so a
+  `scan-operator` — the tenant role #318 added for exactly this, and a viewer
+  in the global role — stopped scans over the API but saw neither the button
+  nor the `/scans` pages. Both are gated on the permission now, the rank
+  surviving only as the answer for an API too old to send a permission list.
+  (5) **The confirming upload erased the reason from `error`**, writing the
+  agent's string — or `NULL` — over "Cancellation requested by X" that
+  `docs/api-and-rbac.md` promises stays there; the two are joined instead, so a
+  finished cancelled job still says who asked for it.
+
 - **Five ways the workflow-event worker under-delivered, found by review of
   #349** ([#349](https://github.com/onixus/Shapoclyack/issues/349)). All five
   were reproduced against a live Postgres before the fix. (1)

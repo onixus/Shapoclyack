@@ -55,6 +55,15 @@ JOB_LEASE_EXPIRED_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+JOB_CANCELLATIONS_TOTAL = Counter(
+    "octo_job_cancellations_total",
+    "Scans stopped on an operator's request, by how the stop ended (#360): "
+    "queued (never handed out), confirmed (the agent reported it put the scan "
+    "down), unconfirmed (the grace period expired first).",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
 JOB_IDEMPOTENT_REPLAYS_TOTAL = Counter(
     "octo_job_idempotent_replays_total",
     "Requests recognised as a replay of one already applied, by operation "

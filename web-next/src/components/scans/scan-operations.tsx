@@ -24,7 +24,7 @@ import { useJobs } from "@/hooks/use-jobs";
 import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
 import { useSystemStatus } from "@/hooks/use-system";
-import { useAuthStore } from "@/lib/auth-store";
+import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 import { runDetailHref } from "@/lib/run-data";
 import { surfaceHref, type ScanSurface } from "@/lib/scan-surface";
@@ -177,8 +177,16 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
     }
   }, [searchParams, router, surface]);
 
+  // Reading this page is what the API gates on the operator rank *in the
+  // active tenant*, and `canOperate` above is the global role — the account a
+  // tenant made a `scan-operator` (#318) is a viewer globally, so gating on it
+  // alone hid the whole page from the one role docs/ui.md promises the Cancel
+  // button to. `scan.cancel` is the permission every role of that rank holds,
+  // so it is the closest thing the console has to the rank the API checks.
+  const canReadJobs = canOperate || holdsPermission(user, "scan.cancel");
+
   const pagination = usePagination({ sort: "started_at", order: "desc" });
-  const jobsQuery = useJobs(canOperate, pagination.params, surface ? { surface } : undefined);
+  const jobsQuery = useJobs(canReadJobs, pagination.params, surface ? { surface } : undefined);
   const family = surface ?? "all";
   const noJobsYet =
     !jobsQuery.isLoading && (jobsQuery.data?.total ?? 0) === 0 && !pagination.search;
@@ -200,7 +208,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
     [family],
   );
 
-  if (!canOperate) {
+  if (!canReadJobs) {
     return (
       <div className="space-y-2 rounded-xl border border-border bg-card p-8 text-center">
         <h1 className="text-2xl font-bold tracking-tight text-foreground">
@@ -261,7 +269,7 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
         </div>
       </PageHeader>
 
-      <SurfaceKpis surface={surface} canOperate={canOperate} />
+      <SurfaceKpis surface={surface} canOperate={canReadJobs} />
 
       {showLauncher ? (
         <ScanLauncher surface={surface} onStarted={() => setLauncherOpen(false)} />

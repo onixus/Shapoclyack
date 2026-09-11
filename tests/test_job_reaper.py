@@ -168,7 +168,13 @@ def test_reaper_worker_ticks_and_reports_what_it_did(settings):
     worker = job_reaper.JobReaper(settings=settings, poll_interval_seconds=3600)
     worker._tick()  # noqa: SLF001
 
-    assert worker.stats == {"ticks": 1, "requeued": 1, "failed": 0, "errors": 0}
+    assert worker.stats == {
+        "ticks": 1,
+        "requeued": 1,
+        "failed": 0,
+        "cancelled": 0,
+        "errors": 0,
+    }
     assert get_job(settings, job.job_id).status == "queued"
 
 

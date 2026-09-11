@@ -9,6 +9,7 @@ the same targets to a second agent.
 from __future__ import annotations
 
 import json
+import signal
 import threading
 import time
 from types import SimpleNamespace
@@ -22,11 +23,15 @@ class _FakeClient:
         self.heartbeats: list[dict[str, Any]] = []
         self.uploads: list[dict[str, Any]] = []
         self.lock = threading.Lock()
+        #: What the API answers every heartbeat with (#360). The instruction is
+        #: repeated rather than delivered once, which is what makes a lost
+        #: response cost a cancellation an interval instead of losing it.
+        self.cancel_requested = False
 
     def heartbeat(self, agent_id: str, *, status: str = "idle", current_job_id=None, detail=None):
         with self.lock:
             self.heartbeats.append({"status": status, "current_job_id": current_job_id, "detail": detail})
-        return {}
+        return {"cancel_requested": self.cancel_requested}
 
     def upload_results(self, job_id: str, **kwargs: Any):
         self.uploads.append({"job_id": job_id, **kwargs})
@@ -708,6 +713,134 @@ def test_run_scan_handles_timeout(monkeypatch, tmp_path):
     assert code == 124
     assert "timed out" in (err or "")
     assert archive is None
+
+
+def test_run_scan_puts_the_process_group_down_when_the_api_cancels(monkeypatch, tmp_path):
+    """The stop the heartbeat thread signalled has to reach the scanner (#360).
+
+    The process *group*, not the process: the scan is `scanner.main` shelling
+    out to nmap and nuclei, and killing only the parent would leave whatever is
+    actually touching the target running with nobody left to report it.
+    """
+    import subprocess
+    from unittest.mock import MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["scanner"], timeout=1.0)
+    mock_proc.pid = 12345
+    mock_proc.returncode = 143
+    signalled: list[int] = []
+
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: mock_proc)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("os.killpg", lambda pgid, sig: signalled.append(sig))
+
+    # What the run had written when the signal arrived. An operator who stops a
+    # scan asked for it to end, not for its findings so far to be dropped.
+    run_dir = tmp_path / "out" / "runs" / "run-cancelled"
+    run_dir.mkdir(parents=True)
+    (run_dir / "findings.json").write_text("{}", encoding="utf-8")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    cancel_event = threading.Event()
+    cancel_event.set()
+    code, err, archive = worker._run_scan(  # noqa: SLF001
+        config=tmp_path / "config.yaml",
+        job={"run_id": "run-cancelled", "inputs": {}},
+        workdir=workdir,
+        output_dir=tmp_path / "out",
+        # Far past anything this test waits for: the cancellation is what ends
+        # the scan here, not the timeout.
+        timeout=3600.0,
+        cancel_event=cancel_event,
+    )
+
+    assert code == 143
+    assert "cancelled" in (err or "")
+    assert signalled and signalled[0] == signal.SIGTERM
+    assert archive is not None and archive.is_file()
+
+
+def test_the_heartbeat_answer_stops_the_scan_and_the_upload_says_so(monkeypatch, tmp_path):
+    """End to end on the agent side: the API answers a heartbeat with
+    `cancel_requested`, the scan wait is released, and the result upload carries
+    `cancelled` so the job is not filed as a scan that failed."""
+    client = _FakeClient()
+    client.cancel_requested = True
+
+    def _waiting_scan(**kwargs: Any):
+        event = kwargs["cancel_event"]
+        # However long the scan would have taken; the heartbeat is what ends it.
+        assert event.wait(timeout=5.0), "the heartbeat never delivered the cancellation"
+        return 143, "cancelled on the operator's request", None
+
+    monkeypatch.setattr(worker, "_run_scan", _waiting_scan)
+    worker._execute_job(  # noqa: SLF001
+        client,
+        agent_id="agent-1",
+        job={"job_id": "job-1", "run_id": "run-1", "attempt": 1},
+        config=tmp_path / "config.yaml",
+        output_dir=tmp_path,
+        heartbeat_interval=0.05,
+    )
+
+    assert client.uploads[0]["cancelled"] is True
+    assert client.uploads[0]["exit_code"] == 143
+
+
+def test_a_scan_that_finished_anyway_is_not_reported_as_cancelled(monkeypatch, tmp_path):
+    """The stop can land in the second between the scan completing and the wait
+    noticing it. Reporting that run as cancelled to match the request would
+    throw away a whole sweep's findings, and the API accepts
+    `cancelling -> succeeded` for exactly this case."""
+    client = _FakeClient()
+
+    def _finished_first(**kwargs: Any):
+        # The operator clicks while the scan is on its last stage; the renewal
+        # thread delivers it, and the scan has already succeeded by then.
+        client.cancel_requested = True
+        assert kwargs["cancel_event"].wait(timeout=5.0)
+        return 0, None, None
+
+    monkeypatch.setattr(worker, "_run_scan", _finished_first)
+    worker._execute_job(  # noqa: SLF001
+        client,
+        agent_id="agent-1",
+        job={"job_id": "job-1", "run_id": "run-1", "attempt": 1},
+        config=tmp_path / "config.yaml",
+        output_dir=tmp_path,
+        heartbeat_interval=0.05,
+    )
+
+    assert client.uploads[0]["cancelled"] is False
+    assert client.uploads[0]["exit_code"] == 0
+
+
+def test_a_job_cancelled_before_the_scan_started_never_starts_it(monkeypatch, tmp_path):
+    """The stop can arrive between the claim and the first heartbeat. Launching
+    the scan anyway would put the targets through a sweep that is already
+    cancelled, only to kill it a minute later."""
+    client = _FakeClient()
+    client.cancel_requested = True
+    started = {"count": 0}
+
+    def _never(**_kwargs: Any):
+        started["count"] += 1
+        return 0, None, None
+
+    monkeypatch.setattr(worker, "_run_scan", _never)
+    worker._execute_job(  # noqa: SLF001
+        client,
+        agent_id="agent-1",
+        job={"job_id": "job-1", "run_id": "run-1", "attempt": 1},
+        config=tmp_path / "config.yaml",
+        output_dir=tmp_path,
+        heartbeat_interval=60.0,
+    )
+
+    assert started["count"] == 0
+    assert client.uploads[0]["cancelled"] is True
 
 
 class _FakeMsg:

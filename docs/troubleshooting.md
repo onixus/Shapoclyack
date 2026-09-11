@@ -69,9 +69,21 @@ A job stuck in `claimed` is a distinct symptom: an agent took it and never
 reported starting, so the worker most likely died between the claim and its
 first heartbeat. The lease sweep handles that on its own within
 `OCTO_JOB_LEASE_SECONDS` — the job returns to `queued` for another agent, and
-its `attempts` counter goes up. `POST /api/jobs/{job_id}/cancel` will not close
-it: cancellation is only offered while a job is still `queued`, because an
-agent that has claimed one is already scanning and the API cannot stop it.
+its `attempts` counter goes up. `POST /api/jobs/{job_id}/cancel` also closes
+it, through `cancelling` — see below.
+
+A job stuck in `cancelling` is an agent that was asked to stop and has not
+confirmed. Usually it is an agent older than the release that added the
+heartbeat cancel channel: it keeps scanning and keeps heartbeating, and nothing
+it sends will ever terminalize the job. The reaper finishes such a job as
+`cancelled` after `OCTO_JOB_CANCEL_GRACE_SECONDS` and writes *"agent … did not
+confirm"* into `error`; that message means the row is closed but the scan may
+still be running on the agent host, so check the agent (and upgrade it) rather
+than assuming the targets were left alone. A `cancelling` job is never requeued
+and never handed to a second agent. If *every* cancellation ends this way it is
+the agents, not the clock: `OCTO_JOB_CANCEL_GRACE_SECONDS` is floored at
+`OCTO_AGENT_STALE_SECONDS` + `OCTO_JOB_REAPER_INTERVAL_SECONDS`, so it can no
+longer be set shorter than the heartbeat the instruction travels on.
 
 Jobs that bounce between `queued` and `claimed` and then fail with *"Lease
 expired after N attempt(s)"* are killing whichever agent picks them up. Check

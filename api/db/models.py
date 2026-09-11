@@ -1637,6 +1637,13 @@ class Job(Base):
     # Incremented every time the job is handed to an executor, so the reaper
     # can stop requeueing one that kills whatever picks it up.
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    # When an operator asked a *running* scan to stop (#360). The request
+    # travels to the agent on its next heartbeat; this column is the deadline
+    # clock for the answer, so a job whose agent is too old to understand the
+    # request — or died with the signal in flight — is finished as `cancelled`
+    # by ``jobs.reap_stale_cancellations`` instead of sitting in `cancelling`
+    # forever. NULL for every job nobody has asked to stop.
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(default=None)
     queued_at: Mapped[datetime]
     started_at: Mapped[datetime | None] = mapped_column(default=None)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)

@@ -319,8 +319,12 @@ class StartScanRequest(BaseModel):
 class JobInfo(BaseModel):
     job_id: str
     # `claimed` (an agent holds the job but has not reported starting) and
-    # `cancelled` are ROADMAP P1.3 additions — see api/services/job_states.py.
-    status: Literal["queued", "claimed", "running", "succeeded", "failed", "cancelled"]
+    # `cancelled` are ROADMAP P1.3 additions; `cancelling` is #360 — the stop
+    # has been requested and the agent has not confirmed it yet. See
+    # api/services/job_states.py.
+    status: Literal[
+        "queued", "claimed", "running", "cancelling", "succeeded", "failed", "cancelled"
+    ]
     run_id: str | None = None
     mode: str
     command: list[str]
@@ -367,11 +371,12 @@ class JobSurfaceCounts(BaseModel):
 class JobSummary(BaseModel):
     """Queue depth for a scan console's header (`GET /api/jobs/summary`).
 
-    `by_status` carries all six lifecycle states, zero-filled, and `by_surface`
-    all four buckets including `unknown`, so a console renders a stable set of
-    tiles instead of one that appears as jobs happen to exist. `queued` is
-    queued plus claimed: a job an agent has taken but not started is still
-    waiting to be done.
+    `by_status` carries all seven lifecycle states, zero-filled, and
+    `by_surface` all four buckets including `unknown`, so a console renders a
+    stable set of tiles instead of one that appears as jobs happen to exist.
+    `queued` is queued plus claimed: a job an agent has taken but not started is
+    still waiting to be done. `running` is running plus cancelling: a scan
+    being stopped is still occupying its agent until the agent says otherwise.
     """
 
     by_status: dict[str, int] = Field(default_factory=dict)
@@ -432,6 +437,25 @@ class AgentInfo(BaseModel):
     # them (#308). Counted only on the single-agent read, which is where the
     # delete is confirmed; the fleet list leaves it at 0.
     other_agents_on_key: int = 0
+
+
+class AgentHeartbeatResponse(AgentInfo):
+    """What the API answers a heartbeat with — the agent, plus one instruction.
+
+    The heartbeat response is the only channel that reaches an agent while it
+    is scanning, so it is where a cancellation has to travel (#360): everything
+    else in the agent protocol is the agent asking for work or reporting on it.
+    A field rather than a status code, and repeated on every heartbeat until
+    the agent confirms, because one lost response must not lose the stop.
+
+    Extends :class:`AgentInfo` rather than wrapping it so an agent (or a test)
+    written against the previous response keeps reading the same document.
+    """
+
+    #: The job named in ``current_job_id`` has been cancelled: stop the scan
+    #: and upload whatever it produced with ``cancelled=true``. False for every
+    #: other case, including a heartbeat naming a job this agent does not hold.
+    cancel_requested: bool = False
 
 
 class UpdateAgentStatusRequest(BaseModel):
