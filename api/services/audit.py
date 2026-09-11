@@ -85,6 +85,14 @@ ACTION_AGENT_DISABLE = "agent.disable"
 ACTION_AGENT_ENABLE = "agent.enable"
 ACTION_AGENT_QUARANTINE = "agent.quarantine"
 ACTION_AGENT_DELETE = "agent.delete"
+# Agent groups (#361). Membership decides which worker may execute which of a
+# tenant's scans, so moving an agent between groups is an access-control change
+# and belongs in the same trail as granting a membership — "which agent was
+# allowed into the card segment last March" is asked afterwards, by somebody
+# who was not there.
+ACTION_AGENT_GROUP_CREATE = "agent_group.create"
+ACTION_AGENT_GROUP_DELETE = "agent_group.delete"
+ACTION_AGENT_GROUP_ASSIGN = "agent_group.assign"
 ACTION_REPORT_DOWNLOAD = "report.download"
 # One row per *bulk* request, listing the ids it acted on (#346), rather than
 # one row per id: a batch is one decision, and two hundred rows that each look

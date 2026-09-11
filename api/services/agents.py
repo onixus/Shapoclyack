@@ -349,6 +349,10 @@ def _to_info(row: models.Agent) -> AgentInfo:
         lifecycle_status=lifecycle_status,  # type: ignore[arg-type]
         lifecycle_reason=row.lifecycle_reason,
         lifecycle_message=lifecycle_message(lifecycle_status, row.lifecycle_reason),
+        # Read from the row, never from ``labels``: the group decides which of
+        # the tenant's jobs this agent may claim (#361), and an agent that
+        # could declare it would be choosing its own authority.
+        agent_group=row.agent_group,
     )
 
 

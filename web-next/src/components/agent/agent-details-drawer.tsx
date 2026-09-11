@@ -273,13 +273,24 @@ export function AgentDetailsDrawer({
                 </div>
               ) : null}
 
-              {/* Labels & Capabilities */}
+              {/* Labels & Capabilities. The agent group sits at the head of
+                  this block rather than among the labels on purpose (#361):
+                  a label is what the host says about itself, the group is what
+                  an operator decided, and only the second one governs which of
+                  the tenant's jobs this agent may claim. */}
               <div className="space-y-2">
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                   <Layers className="h-3.5 w-3.5 text-sky-500" />
                   Metadata & Labels
                 </h4>
                 <div className="flex flex-wrap gap-1.5">
+                  <span
+                    data-testid="agent-group"
+                    className="rounded-md border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 font-mono text-xs text-indigo-700 dark:text-indigo-300"
+                  >
+                    <span className="text-muted-foreground">group:</span>{" "}
+                    {agent.agent_group || "none (claims ungrouped jobs only)"}
+                  </span>
                   {Object.entries(agent.labels || {}).map(([k, v]) => (
                     <span
                       key={k}

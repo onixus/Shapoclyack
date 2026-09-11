@@ -41,14 +41,19 @@ describe("ScanLauncher", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAuthStore.setState({ activeTenant: null });
-    vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue({
+    mockSystemStatus("local");
+    vi.spyOn(apiModule, "fetchWordlists").mockResolvedValue([]);
+  });
+
+  function mockSystemStatus(jobExecutionMode: "local" | "agent") {
+    return vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue({
       app_version: "0.45",
       tools: [],
       enrichment: [],
       scan_config: { profiles: [], nse_profiles: [], stages: {}, service_backend: "pulse" },
       runtime: {
         allow_scan_start: true,
-        job_execution_mode: "local",
+        job_execution_mode: jobExecutionMode,
         nats_enabled: false,
         clickhouse_enabled: false,
         postgres_enabled: true,
@@ -70,8 +75,19 @@ describe("ScanLauncher", () => {
         retention_last_run_at: null,
       },
     });
-    vi.spyOn(apiModule, "fetchWordlists").mockResolvedValue([]);
-  });
+  }
+
+  function group(name: string, agentCount: number) {
+    return {
+      group_id: `agp_${name}`,
+      tenant_id: "default",
+      name,
+      description: "",
+      created_at: null,
+      created_by: null,
+      agent_count: agentCount,
+    };
+  }
 
   it("sends the page's surface and an idempotency key with the request", async () => {
     const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
@@ -113,5 +129,53 @@ describe("ScanLauncher", () => {
     expect(screen.queryByLabelText(/wordlist/i)).not.toBeInTheDocument();
     // Private ranges lead the form; the domains field explains internal names.
     expect(screen.getByPlaceholderText(/10\.0\.0\.0\/24/)).toBeInTheDocument();
+  });
+
+  it("sends the chosen agent group in agent mode (#361)", async () => {
+    mockSystemStatus("agent");
+    vi.spyOn(apiModule, "fetchAgentGroups").mockResolvedValue([
+      group("pci-segment", 2),
+      group("office", 1),
+    ]);
+    const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
+    renderLauncher("external");
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText(/Domains \/ FQDNs/), "api.example.com");
+    await user.click(await screen.findByRole("combobox", { name: /Agent group/ }));
+    await user.click(await screen.findByRole("option", { name: "pci-segment" }));
+    await user.click(screen.getByRole("button", { name: /Start scan/ }));
+    await user.click(await screen.findByRole("button", { name: /Confirm & launch/ }));
+
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(start.mock.calls[0][0].agent_group).toBe("pci-segment");
+  });
+
+  it("warns before launching into a group with nothing in it", async () => {
+    mockSystemStatus("agent");
+    vi.spyOn(apiModule, "fetchAgentGroups").mockResolvedValue([group("pci-segment", 0)]);
+    renderLauncher("external");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("combobox", { name: /Agent group/ }));
+    await user.click(await screen.findByRole("option", { name: "pci-segment" }));
+    expect(await screen.findByText(/no agent online/)).toBeInTheDocument();
+  });
+
+  it("does not offer an agent group when scans run locally", async () => {
+    const groups = vi.spyOn(apiModule, "fetchAgentGroups").mockResolvedValue([
+      group("pci-segment", 2),
+    ]);
+    const start = vi.spyOn(apiModule, "startScan").mockResolvedValue(job());
+    renderLauncher("external");
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText(/Domains \/ FQDNs/), "api.example.com");
+    await user.click(screen.getByRole("button", { name: /Start scan/ }));
+    await user.click(await screen.findByRole("button", { name: /Confirm & launch/ }));
+
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(start.mock.calls[0][0].agent_group).toBeUndefined();
+    expect(groups).not.toHaveBeenCalled();
   });
 });

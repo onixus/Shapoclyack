@@ -1038,6 +1038,57 @@ there now, so both `python -m agent` and `python -m agent.worker` run the
 agent, but the flags in an old unit are still wrong: **an agent installed by an
 older installer needs a re-run of this one.**
 
+### Agent groups: which agent may execute which scan
+
+Until [#361](https://github.com/onixus/Shapoclyack/issues/361) an agent job was
+claimable by *any* agent of the tenant. If you run one agent inside a
+customer's card-data segment and another in their office network, that was the
+whole of the control: the queue was flat and the first worker to poll won, so a
+scan of the card segment could be executed from the office network and the
+office agent was handed the card segment's target list.
+
+An **agent group** is a name inside one tenant (`pci-segment`, `ops-eu`), and
+three things refer to it by that name:
+
+- the agent an operator put in it — `PUT /api/agents/{id}/group`, permission
+  `agent.group.manage`. An agent's own `labels` are never consulted: a worker
+  that could declare its own group would be granting itself the jobs of a
+  segment it does not sit in;
+- the job it is addressed to — `agent_group` on `POST /api/jobs` and on a
+  schedule. A job addressed to a group is claimable only from that group; a job
+  addressed to none is claimable by anybody in the tenant;
+- the allow entry of the approved scan scope that requires it (`agent_groups`,
+  see "Approved scan scope per tenant" above). That is the rule that does not
+  depend on the operator remembering: the scope decides which groups may reach
+  which networks, and a request naming anything else is refused.
+
+**Nothing changes on upgrade.** Every existing agent is in no group, every
+existing job and schedule is addressed to none, and every existing scope entry
+permits any agent. Groups only start constraining anything once you create one
+and put an agent in it. An agent that is in a group still serves the ungrouped
+queue, so moving one agent into a group does not fence it off from the work it
+already did.
+
+A few edges worth knowing before you rely on it:
+
+- **Names are immutable.** The name is the reference, so there is no rename —
+  create the new group, move the agents, delete the old one, each visible in
+  the audit trail. Deleting a group is refused (`409`) while an agent, an
+  unfinished job or a scope entry still names it: a cascade would turn the
+  deletion into a silent widening of a restricted scope entry back to "any
+  agent".
+- **A job addressed to an empty group waits, visibly.** If the group has no
+  active agent with a recent heartbeat when the scan is queued, the job is
+  still accepted — an agent that is restarting is back in seconds — but it
+  carries `agent_group_unavailable: true`, the API logs a warning naming the
+  group, and the console shows it. It is not auto-failed: a timeout would be a
+  transition on the job state machine, and a restart must not cost you a scan.
+  If you see that flag, the fix is to register an agent into the group (or
+  re-address the scan), not to wait.
+- **Local execution has no groups.** The API container is in no group, so a
+  scan that resolves to a group under `OCTO_JOB_EXECUTION_MODE=local` is
+  refused rather than quietly run from the control plane.
+
 ### Agent lifecycle: disable, quarantine, deregister
 
 An agent has two states at once, and they answer different questions

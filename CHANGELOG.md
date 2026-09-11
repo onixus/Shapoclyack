@@ -6,6 +6,27 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **A tenant's agent no longer takes every one of that tenant's jobs**
+  ([#361](https://github.com/onixus/Shapoclyack/issues/361)). `claim_job`
+  filtered by tenant and by "queued" and nothing else, so an agent in a
+  customer's office network could be handed the scan of their card-data
+  segment, and the scan of that segment could be executed from anywhere. Agents
+  can now be put into named **agent groups** (migration 0052, permission
+  `agent.group.manage`), a scan and a schedule can be addressed to one
+  (`agent_group`), and the claim is filtered by it. The binding rule is on the
+  approved scan scope: an allow entry may name the groups entitled to scan what
+  it approves, and the server derives the job's group from that rather than
+  trusting the request — a selector naming a group the entry does not permit is
+  a `403`, targets whose entries share no group cannot be scanned in one job,
+  and an agent's self-reported `labels` grant it nothing. A job addressed to a
+  group with nothing in it is accepted but flagged `agent_group_unavailable`
+  rather than auto-failed; it is not given a queue timeout, which would be a
+  job-state transition. Existing agents, jobs, schedules and scope entries are
+  unchanged and need no administrator action. The console gets the selector on
+  the scan form and the group on the agent drawer; **assigning an agent to a
+  group is API-only** (`PUT /api/agents/{id}/group`), so #361 stays open for
+  the management UI.
+
 - **Named permissions, an auditor role, and a tenant admin that is not the
   platform admin** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
   Three ranked roles could not express "reads the audit trail and writes

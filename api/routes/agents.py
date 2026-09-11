@@ -17,8 +17,10 @@ from api.auth import (
     TenantPrincipal,
     get_settings,
     require_agent,
+    require_permission,
     require_tenant,
 )
+from api.core import permissions as permission_catalog
 from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
@@ -27,17 +29,21 @@ from api.schemas import (
     AgentDeploySSHRequest,
     AgentDeployStatusResponse,
     AgentFleetSummary,
+    AgentGroupInfo,
     AgentHeartbeatRequest,
     AgentInfo,
     AgentRegisterRequest,
     AgentSSHHostKeyInfo,
     AgentSSHHostKeyProbeRequest,
+    CreateAgentGroupRequest,
     CreateAgentDeploymentKeyRequest,
     JobInfo,
     Page,
+    SetAgentGroupRequest,
     UpdateAgentStatusRequest,
 )
 from api.services import agent_deployer
+from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
 from api.services import audit as audit_service
 from api.services import jobs as jobs_service
@@ -262,6 +268,112 @@ async def upload_results(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/agent-groups", response_model=list[AgentGroupInfo])
+def list_agent_groups(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict[str, Any]]:
+    """The tenant's agent groups — what a scan may be addressed to (#361).
+
+    Readable at viewer rank because it is the vocabulary of the scan form and
+    of the approved scope; *changing* it needs ``agent.group.manage``.
+    """
+    return agent_groups_service.list_groups(settings, principal.tenant_id)
+
+
+@router.post(
+    "/agent-groups", response_model=AgentGroupInfo, status_code=status.HTTP_201_CREATED
+)
+def create_agent_group(
+    body: CreateAgentGroupRequest,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.AGENT_GROUP_MANAGE))
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> dict[str, Any]:
+    try:
+        return agent_groups_service.create_group(
+            settings,
+            tenant_id=principal.tenant_id,
+            name=body.name,
+            description=body.description,
+            created_by=principal.username,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.delete("/agent-groups/{name}")
+def delete_agent_group(
+    name: str,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.AGENT_GROUP_MANAGE))
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> dict[str, str]:
+    """Delete one group, or 409 while an agent, a live job or a scope entry
+    still names it — see api/services/agent_groups.py for why that is not a
+    cascade."""
+    try:
+        agent_groups_service.delete_group(
+            settings, tenant_id=principal.tenant_id, name=name, audit=audit
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"status": "deleted", "name": name}
+
+
+@router.put("/agents/{agent_id}/group", response_model=AgentInfo)
+def set_agent_group(
+    agent_id: str,
+    body: SetAgentGroupRequest,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.AGENT_GROUP_MANAGE))
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> AgentInfo:
+    """Put one agent into a group, or take it out of every group with ``null``.
+
+    The agent is not consulted: which group a worker is in decides which of the
+    tenant's jobs it may claim, so it is an operator's grant rather than
+    something a host can report about itself (#361).
+    """
+    try:
+        agent_groups_service.set_agent_group(
+            settings,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+            name=body.group,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        # An agent in another tenant reads as absent, not forbidden — the id
+        # must not be confirmed to somebody with no right to know it (#223).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    agent = agents_service.get_agent(agent_id, tenant_id=principal.tenant_id)
+    if agent is None:  # pragma: no cover - deleted between the write and the read
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return agent
 
 
 @router.get("/agents/summary", response_model=AgentFleetSummary)

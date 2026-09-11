@@ -43,6 +43,7 @@ export const queryKeys = {
   agentSummary: ["agents", "summary"] as const,
   agentDetail: (agentId: string) => ["agents", "detail", agentId] as const,
   agentSnippets: ["agents", "snippets"] as const,
+  agentGroups: ["agents", "groups"] as const,
   deployStatus: (deployId: string) => ["agents", "deploy", deployId] as const,
   tenants: ["tenants"] as const,
   users: ["users"] as const,

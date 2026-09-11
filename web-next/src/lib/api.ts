@@ -424,6 +424,12 @@ export type JobInfo = {
   surface?: "external" | "internal" | "mixed" | null;
   /** Whether the operator declared the surface or the server derived it from the targets. */
   surface_source?: "operator" | "derived" | null;
+  /** The agent group this job is addressed to (#361); null means any agent of
+   * the tenant may claim it. */
+  agent_group?: string | null;
+  /** True when that group had no active agent with a recent heartbeat at the
+   * moment the scan was queued — the job is accepted but nothing is listening. */
+  agent_group_unavailable?: boolean;
 };
 
 /** `GET /api/jobs/summary`: one grouped count instead of paging the list. */
@@ -529,6 +535,9 @@ export type AgentInfo = {
    * above, which is what the agent last reported about itself. A non-active
    * agent still heartbeats — it just cannot claim work or upload results. */
   lifecycle_status?: AgentLifecycleStatus;
+  /** Which agent group an operator put this agent in (#361). Never derived
+   * from `labels`: it decides which of the tenant's jobs the agent may claim. */
+  agent_group?: string | null;
   lifecycle_reason?: string | null;
   lifecycle_message?: string | null;
   /** How many *other* agents registered with the same provisioning key — the
@@ -1372,6 +1381,57 @@ export async function fetchAgents(page?: PageParams) {
   }
 }
 
+/** One agent group of the tenant (#361) — the unit a scan can be addressed to. */
+export type AgentGroupInfo = {
+  group_id: string;
+  tenant_id: string;
+  name: string;
+  description: string;
+  created_at: string | null;
+  created_by: string | null;
+  /** How many agents are in it. Zero is a group nothing can be claimed from. */
+  agent_count: number;
+};
+
+export async function fetchAgentGroups() {
+  try {
+    const { data } = await api.get<AgentGroupInfo[]>("/agent-groups");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function createAgentGroup(body: { name: string; description?: string }) {
+  try {
+    const { data } = await api.post<AgentGroupInfo>("/agent-groups", body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function deleteAgentGroup(name: string) {
+  try {
+    await api.delete(`/agent-groups/${encodeURIComponent(name)}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Put an agent into a group, or take it out of every group with `null`. */
+export async function setAgentGroup(agentId: string, group: string | null) {
+  try {
+    const { data } = await api.put<AgentInfo>(
+      `/agents/${encodeURIComponent(agentId)}/group`,
+      { group },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchAgentSummary() {
   try {
     const { data } = await api.get<AgentFleetSummary>("/agents/summary");
@@ -1588,6 +1648,9 @@ export type StartScanBody = {
   ports_udp?: string;
   tenant_id?: string;
   wordlist_id?: string;
+  /** Which agent group must execute this scan (#361). Omitted lets the server
+   * decide from the approved scope — which may also refuse the one named. */
+  agent_group?: string;
 };
 
 export async function startScan(

@@ -42,6 +42,7 @@ from sqlalchemy.exc import IntegrityError
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
+from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
 from api.services import asset_events
 from api.services import assets as assets_service
@@ -131,6 +132,13 @@ def _to_info(row: models.Job) -> JobInfo:
         scan_options=dict(row.scan_options) if row.scan_options else None,
         surface=(row.scan_options or {}).get("surface"),
         surface_source=(row.scan_options or {}).get("surface_source"),
+        agent_group=row.agent_group,
+        # Lifted out of scan_options so a queue view can show "addressed to a
+        # group nothing is listening in" without reading the options blob. See
+        # start_scan for why an empty group warns rather than refuses.
+        agent_group_unavailable=bool(
+            (row.scan_options or {}).get("agent_group_unavailable", False)
+        ),
     )
 
 
@@ -1175,6 +1183,10 @@ _IDEMPOTENCY_FIELDS = (
     "export_defectdojo",
     "surface",
     "wordlist_id",
+    # Which agents may execute the scan is part of what was asked for (#361):
+    # answering a request for one group with the job of another would report a
+    # scan that reached the targets from somewhere else entirely.
+    "agent_group",
 )
 
 #: Target fields, compared line by line rather than character by character.
@@ -1435,6 +1447,58 @@ def start_scan(
         scan_scopes.record_denial(username=username, denied=denied)
         raise
 
+    # Which of the tenant's agents may execute this scan (#361). Two inputs,
+    # and the request's is the one that is not trusted: the scope decides which
+    # groups these targets may be reached from, and a selector naming anything
+    # else is refused rather than honoured. The promoted domains ride along in
+    # the target list for the same reason the maintenance check sees them —
+    # they are scanned too, and a restriction that ignored them would be
+    # bypassable by adding an unrestricted target to the request.
+    try:
+        required_groups = scan_scopes.required_agent_groups(
+            settings,
+            tenant_id=tenant_id,
+            ranges_text=request.ranges,
+            domains_text="\n".join([request.domains or "", *promoted_admitted]),
+        )
+        agent_group = agent_groups_service.resolve_for_scan(
+            settings,
+            tenant_id=tenant_id,
+            requested=request.agent_group,
+            required=required_groups,
+        )
+    except scan_scopes.ScanScopeDenied as denied:
+        scan_scopes.record_denial(username=username, denied=denied)
+        raise
+    if agent_group and execution != "agent":
+        # The group names remote workers, and a local scan runs in this
+        # container, which is in no group. Refused rather than quietly ignored:
+        # a scope entry that restricts targets to an agent group is an
+        # instruction about where the packets come from, and running it here
+        # anyway would be the control silently not applying.
+        raise ValueError(
+            f"agent_group {agent_group} requires a remote agent, but this "
+            "installation runs scans locally (OCTO_JOB_EXECUTION_MODE=local)"
+        )
+    agent_group_unavailable = bool(agent_group) and not agent_groups_service.live_agent_count(
+        settings, tenant_id=tenant_id, name=agent_group or ""
+    )
+    if agent_group_unavailable:
+        # A warning rather than a refusal, and a flag on the job rather than
+        # only a log line: an agent that is restarting is back in seconds, so
+        # refusing here would turn a blip into a failed scan — but a job
+        # addressed to a group nobody is in would otherwise sit in ``queued``
+        # indefinitely with nothing on it saying why. The console renders the
+        # flag next to the job; see docs/operations.md.
+        _log.warning(
+            "Job %s (tenant %s) is addressed to agent group %s, which has no "
+            "active agent seen within OCTO_AGENT_STALE_SECONDS: it stays queued "
+            "until one registers",
+            job_id,
+            tenant_id,
+            agent_group,
+        )
+
     try:
         resolved = scan_intents.resolve_scan_options(
             intent=request.intent,
@@ -1528,6 +1592,10 @@ def start_scan(
             ),
             "notify": request.notify,
             "export_defectdojo": request.export_defectdojo,
+            # Mirrored into the options so a schedule replaying this job's
+            # settings, and the idempotency digest, both see the selector.
+            **({"agent_group": agent_group} if agent_group else {}),
+            **({"agent_group_unavailable": True} if agent_group_unavailable else {}),
             # Only alongside a key: it exists to tell this request apart from
             # the next one carrying the same key, and nothing else reads it.
             **(
@@ -1539,6 +1607,7 @@ def start_scan(
         },
         target_counts=target_counts,
         requested_by=username,
+        agent_group=agent_group,
         assigned_agent_id=None,
         # Only local jobs are bound to this process; an agent job is claimable
         # by any worker and must not be reconciled when this replica restarts.
@@ -1644,6 +1713,15 @@ def claim_job(
     When ``job_id`` is set (NATS pull path), assign that specific job if still queued.
     When ``tenant_id`` is set, only jobs for that tenant are eligible.
 
+    Since #361 the tenant is not the only boundary: a job addressed to an agent
+    group is claimable only by an agent an operator put in that group, and a
+    job addressed to none is claimable by anybody in the tenant — which is
+    every job that existed before that revision, and still the default. The
+    filter is in the SQL rather than in a check after the fact so a claim that
+    is not permitted never takes the row's lock, and the NATS pull path (which
+    names a specific ``job_id``) is filtered by the same predicate: an agent
+    handed an offer for another group's job gets nothing back.
+
     The candidate row is locked with ``FOR UPDATE SKIP LOCKED`` (a no-op on the
     SQLite fallback, which has a single writer anyway): two agents claiming
     concurrently — against the same replica or different ones — each get a
@@ -1662,6 +1740,16 @@ def claim_job(
                 models.Job.status == "queued",
                 models.Job.assigned_agent_id.is_(None),
                 models.Job.tenant_id == effective_tenant,
+                # An ungrouped agent takes only ungrouped jobs; a grouped one
+                # takes its own group's and the ungrouped ones, so putting an
+                # agent into a group narrows what it may reach without taking
+                # away the queue it already served.
+                models.Job.agent_group.is_(None)
+                if not agent.agent_group
+                else or_(
+                    models.Job.agent_group.is_(None),
+                    models.Job.agent_group == agent.agent_group,
+                ),
             )
             .order_by(models.Job.queued_at, models.Job.job_id)
             .limit(1)
