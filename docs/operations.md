@@ -283,6 +283,18 @@ and not the next is not a ceiling:
   fragile run turns it off entirely. For a tenant that is throttled rather than
   silenced, `nuclei.rate_limit` is held to `per_host_rate` and
   `nuclei.concurrency` to `max_host_concurrency`.
+* **One host at a time** is `max_host_concurrency`: the discovery, port and NSE
+  worker counts, and pulse's `--host-parallel`. A config that already spells
+  that as `pulse.host_parallel: 0` keeps the 0 — the scanner passes it to pulse
+  as `--host-first`, which is one host at a time and so stricter than any
+  number a policy could put there.
+* **The avoid-list of fieldbus ports** is every stage that picks ports, not only
+  the port scan: naabu gets `-exclude-ports` there, and discovery's TCP probe
+  step — which chooses a port list of its own, and which an installation can
+  point at anything — drops the avoided ports from that list before it sends a
+  SYN. A probe whose whole port list is avoided is skipped instead of run. This
+  is what `ports.exclude_ports` says in `scanner/config/default.yaml`: ports no
+  scan started from this config may touch.
 
 **Budget hours, not minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
 alternative it is measured against is not scanning the plant at all. If a

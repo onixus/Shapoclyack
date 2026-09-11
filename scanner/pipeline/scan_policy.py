@@ -147,6 +147,14 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
                 profile.pulse.rate, per_host_rate, zero_is_unlimited=True
             )
         if max_concurrency is not None:
+            # ``host_parallel`` is the third field in this file that can hold a
+            # 0, and it is the one that must *not* get ``zero_is_unlimited``:
+            # the adapter spells 0 as ``--host-first`` rather than as a missing
+            # flag (``pulse_probe.build_pulse_command``), and pulse reads
+            # ``--host-first`` without ``--host-parallel`` as one host at a
+            # time. So 0 already is the strictest setting, and reading it as
+            # "unlimited" would raise it to the policy's figure — a ceiling
+            # loosening a config, which is the one thing this file may not do.
             pulse_updates["host_parallel"] = _ceiling(profile.pulse.host_parallel, max_concurrency)
             pulse_updates["concurrency"] = _ceiling(profile.pulse.concurrency, max_concurrency)
         if pulse_updates:

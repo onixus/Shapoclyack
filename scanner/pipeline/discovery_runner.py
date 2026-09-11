@@ -91,6 +91,7 @@ def _run_discover_batches(
             tag=bid,
             discovery=config.discovery,
             per_host_rate=config.runtime.per_host_rate,
+            exclude_ports=config.ports.exclude_ports,
         )
 
     run_batches_parallel(
@@ -253,6 +254,7 @@ def run_discovery_stage(
                 discovery=discovery,
                 tag="delta-refresh",
                 per_host_rate=config.runtime.per_host_rate,
+                exclude_ports=config.ports.exclude_ports,
             )
             confirmed_set = set(confirmed)
             for host in refresh_hosts:
@@ -377,6 +379,7 @@ def verify_alive_without_ports(
         discovery=config.discovery,
         tag="verify",
         per_host_rate=config.runtime.per_host_rate,
+        exclude_ports=config.ports.exclude_ports,
     )
     confirmed_set = set(confirmed)
     kept = sorted({host for host in alive_hosts if host in hosts_with_ports or host in confirmed_set})

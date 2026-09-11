@@ -48,6 +48,19 @@ All notable changes to Shapoclyack are documented in this file.
   issue stays open: no console UI (the policy is API-only), the agent does not
   echo back the policy digest it applied, and target exclusions are still the
   scan scope's deny entries rather than a field of the policy.
+- **The fieldbus avoid-list now also stops the probe that decides who is
+  alive** ([#362](https://github.com/onixus/Shapoclyack/issues/362)). The port
+  stage handed naabu `-exclude-ports`, but discovery's TCP probe step picks a
+  port list of its own and SYNed it regardless — so an installation that turned
+  that step on with its own ports could have a scan touch modbus 502 while
+  `ports.exclude_ports` promised, in as many words, that nothing started from
+  this config would. The avoided ports are dropped from the probe's list and
+  handed to naabu as well, and a probe left with no ports is skipped instead of
+  run. Audited the rest of the pace knobs for the same class of defect while
+  here: `pulse.host_parallel: 0` is *not* one of them — the scanner spells that
+  0 as pulse's `--host-first`, one host at a time, so reading it as "unlimited"
+  would have raised it to the policy's figure; there is now a test pinning that
+  and a comment saying why.
 - **A tenant's agent no longer takes every one of that tenant's jobs**
   ([#361](https://github.com/onixus/Shapoclyack/issues/361)). `claim_job`
   filtered by tenant and by "queued" and nothing else, so an agent in a

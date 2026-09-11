@@ -32,9 +32,30 @@ def tcp_port_probe(
     retries: int,
     tag: str,
     scope_members: list[str],
+    exclude_ports: list[int] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """TCP SYN probe on common ports; return (alive, pending)."""
-    if not targets or not ports:
+    """TCP SYN probe on common ports; return (alive, pending).
+
+    ``exclude_ports`` is ``ports.exclude_ports`` — the ports this run must not
+    touch (#362), a tenant's OT avoid-list or a local exclusion. This probe
+    decides whether a host is alive, not what is open, but it is still a SYN
+    aimed at a port of a device: the avoid-list means *no* stage may send one,
+    and ``default.yaml`` says so in as many words ("ports no scan started from
+    this config may touch"). The excluded ports are dropped from the selection
+    here rather than only handed to naabu, so a probe whose whole port list is
+    excluded sends nothing at all instead of a bare ``-p`` with everything
+    filtered out; ``-exclude-ports`` goes along for the same reason the port
+    stage passes it, so the guarantee does not rest on this arithmetic alone.
+    """
+    if not targets:
+        return [], list(targets)
+    excluded = sorted({int(p) for p in (exclude_ports or [])})
+    ports = [port for port in ports if port not in set(excluded)]
+    if not ports:
+        if excluded:
+            logging.info(
+                "TCP probe batch %s: skipped — every configured port is excluded (#362)", tag
+            )
         return [], list(targets)
 
     batch_dir = output_dir / "discover"
@@ -57,6 +78,7 @@ def tcp_port_probe(
             str(rate),
             "-retries",
             str(max(1, retries)),
+            *(["-exclude-ports", ",".join(str(port) for port in excluded)] if excluded else []),
         ],
         timeout=timeout,
         retries=retries,
@@ -129,8 +151,13 @@ def run_probe_ladder(
     retries: int,
     tag: str,
     scope_members: list[str],
+    exclude_ports: list[int] | None = None,
 ) -> tuple[list[str], dict[str, int]]:
-    """Run configured probe steps in order; return merged alive hosts and per-method counts."""
+    """Run configured probe steps in order; return merged alive hosts and per-method counts.
+
+    ``exclude_ports`` is the run's avoid-list, for the one step that picks
+    ports of its own (see :func:`tcp_port_probe`).
+    """
     pending = list(targets)
     alive_accum: set[str] = set()
     stats = {method: 0 for method in PROBE_METHODS}
@@ -164,6 +191,7 @@ def run_probe_ladder(
                 retries=retries,
                 tag=tag,
                 scope_members=scope_members,
+                exclude_ports=exclude_ports,
             )
             stats["tcp"] = len(tcp_alive)
             alive_accum.update(tcp_alive)

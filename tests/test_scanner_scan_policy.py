@@ -370,3 +370,173 @@ def test_a_discovery_batch_of_one_host_is_held_to_the_per_host_ceiling(tmp_path,
     )
     assert captured, "naabu was never invoked"
     assert captured[0][captured[0].index("-rate") + 1] == "25"
+
+
+# ---------------------------------------------------------------------------
+# The avoid-list, in the stage that picks ports of its own
+# ---------------------------------------------------------------------------
+
+
+def _tcp_probe_config(tightened, ports: list[int]):
+    """The tightened config with discovery's TCP probe on, scanning ``ports``.
+
+    The step ships disabled and on 80/443/22, so the hole it leaves is only
+    reachable on an installation that turned it on with a port list of its
+    own — which is exactly the installation that has OT ports to avoid.
+    """
+    return tightened.model_copy(
+        update={
+            "discovery": tightened.discovery.model_copy(
+                update={
+                    "probe_order": ["tcp"],
+                    "icmp": tightened.discovery.icmp.model_copy(update={"enabled": False}),
+                    "tcp_probe": tightened.discovery.tcp_probe.model_copy(
+                        update={"enabled": True, "ports": ports}
+                    ),
+                }
+            )
+        }
+    )
+
+
+def _capture_naabu(monkeypatch) -> list[list[str]]:
+    from scanner.pipeline import probe_ladder as ladder_mod
+
+    captured: list[list[str]] = []
+
+    class _Result:
+        stdout = ""
+
+    monkeypatch.setattr(
+        ladder_mod,
+        "run_command",
+        lambda command, **kwargs: (captured.append(command), _Result())[1],
+    )
+    return captured
+
+
+def test_the_avoid_list_reaches_the_discovery_tcp_probe(tmp_path, monkeypatch):
+    """``ports.exclude_ports`` is documented as "ports no scan started from this
+    config may touch", and the probe that decides whether a host is alive is a
+    scan started from this config: it used to SYN its own port list — a field
+    bus port among them, if the installation had configured one — while the
+    port stage next door honoured the very same avoid-list."""
+    from scanner.pipeline.discover import host_discovery
+
+    tightened = _tcp_probe_config(_fragile_run_config(), [80, 502])
+    assert 502 in tightened.ports.exclude_ports
+    captured = _capture_naabu(monkeypatch)
+    host_discovery(
+        ["10.0.0.7"],
+        output_dir=tmp_path,
+        rate=100,
+        timeout=60,
+        retries=1,
+        skip_discovery=False,
+        discovery=tightened.discovery,
+        tag="one",
+        exclude_ports=tightened.ports.exclude_ports,
+    )
+    assert captured, "naabu was never invoked"
+    command = captured[0]
+    assert command[command.index("-p") + 1] == "80"
+    assert command[command.index("-exclude-ports") + 1] == "502,20000"
+
+
+def test_a_tcp_probe_of_nothing_but_avoided_ports_sends_no_packets(tmp_path, monkeypatch):
+    """The ladder falls through to the next step instead of running naabu with
+    a port list the exclusions have emptied."""
+    from scanner.pipeline.discover import host_discovery
+
+    tightened = _tcp_probe_config(_fragile_run_config(), [502, 20000])
+    captured = _capture_naabu(monkeypatch)
+    alive = host_discovery(
+        ["10.0.0.7"],
+        output_dir=tmp_path,
+        rate=100,
+        timeout=60,
+        retries=1,
+        skip_discovery=False,
+        discovery=tightened.discovery,
+        tag="one",
+        exclude_ports=tightened.ports.exclude_ports,
+    )
+    assert captured == []
+    assert alive == []
+
+
+def test_the_verify_pass_carries_the_avoid_list_too(tmp_path, monkeypatch):
+    """Wiring, not intent: the probe reads the avoid-list from what its caller
+    hands it, so a caller that passed nothing would leave it as it was. The
+    verify pass is the one that re-probes the hosts that answered nothing,
+    which on an OT estate are the devices the list exists for."""
+    from scanner.pipeline.discovery_runner import verify_alive_without_ports
+
+    tightened = _tcp_probe_config(_fragile_run_config(), [80, 502])
+    captured = _capture_naabu(monkeypatch)
+    verify_alive_without_ports(
+        alive_hosts=["10.0.0.7"],
+        open_ports=[],
+        config=tightened,
+        profile=tightened.profiles["safe"],
+        output_dir=tmp_path,
+        timeout=60,
+        retries=1,
+    )
+    assert captured, "naabu was never invoked"
+    command = captured[0]
+    assert command[command.index("-p") + 1] == "80"
+    assert command[command.index("-exclude-ports") + 1] == "502,20000"
+
+
+# ---------------------------------------------------------------------------
+# The other fields that can hold a 0
+# ---------------------------------------------------------------------------
+
+
+def test_pulse_host_parallel_zero_stays_one_host_at_a_time():
+    """The other place a 0 lives, and the one that must *not* be read as
+    "unlimited": ``host_parallel: 0`` reaches pulse as ``--host-first``, which
+    is one host at a time — already stricter than any ceiling. Reading it as
+    unlimited would raise it to the policy's figure, which is this file
+    loosening a config."""
+    from scanner.pipeline.config_schema import merge_pulse_config
+    from scanner.pipeline.pulse_probe import build_pulse_command
+
+    config = _config()
+    safe = config.profiles["safe"]
+    config = config.model_copy(
+        update={
+            "profiles": {
+                **config.profiles,
+                "safe": safe.model_copy(
+                    update={"pulse": safe.pulse.model_copy(update={"host_parallel": 0})}
+                ),
+            }
+        }
+    )
+    tightened = apply_policy(config, _policy(max_host_concurrency=4))
+    pulse_cfg = merge_pulse_config(
+        tightened.service_probe.pulse, tightened.profiles["safe"].pulse
+    )
+    assert pulse_cfg.host_parallel == 0
+    command = build_pulse_command(
+        bin_path="pulse",
+        hosts_file=Path("hosts.txt"),
+        ports=[80],
+        concurrency=pulse_cfg.concurrency,
+        rate=pulse_cfg.rate,
+        adaptive=pulse_cfg.adaptive,
+        host_parallel=pulse_cfg.host_parallel,
+        timeout_ms=pulse_cfg.timeout_ms,
+        banner=pulse_cfg.banner,
+        os_detect=False,
+        os_mode=pulse_cfg.os_mode,
+        cve=False,
+        cve_online=False,
+        syn=False,
+        checkpoint=None,
+        max_hosts=pulse_cfg.max_hosts,
+    )
+    assert "--host-parallel" not in command
+    assert "--host-first" in command

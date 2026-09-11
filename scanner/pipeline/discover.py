@@ -32,11 +32,16 @@ def host_discovery(
     max_pending_hosts: int | None = 65536,
     tag: str = "all",
     per_host_rate: int | None = None,
+    exclude_ports: list[int] | None = None,
 ) -> list[str]:
     """Run host discovery for a single batch via the configured probe ladder.
 
     Per-batch inputs/outputs live under ``output_dir/discover/<tag>.*`` so each
     batch is independent and resumable. Returns the alive hosts for this batch.
+
+    ``exclude_ports`` is ``ports.exclude_ports`` — the avoid-list the policy
+    puts there (#362). Discovery's TCP probe picks ports of its own, so the
+    list has to travel this far too (see ``probe_ladder.tcp_port_probe``).
     """
     batch_dir = output_dir / "discover"
     input_file = batch_dir / f"{tag}.targets.txt"
@@ -93,6 +98,7 @@ def host_discovery(
         retries=retries,
         tag=tag,
         scope_members=targets,
+        exclude_ports=exclude_ports,
     )
     write_lines(alive_file, alive)
     return alive
