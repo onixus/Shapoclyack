@@ -323,7 +323,10 @@ and not the next is not a ceiling:
   ACK-pings 80 and 443, which `-exclude-ports` does not cover because that flag
   belongs to the port scan. So the step now spells its probes out (`-pe -pp -ps
   … -pa …`) with the avoided ports removed; if both are avoided it runs on ICMP
-  alone. This is what `ports.exclude_ports` says in
+  alone. Naming any probe means the command also carries `-wn` — naabu 2.6.1
+  refuses to start on probes without it, even alongside `-sn` — so that flag is
+  part of the fix and not a spare: dropping it turns every discovery batch into
+  `exit 1` and an estate that reads as dead. This is what `ports.exclude_ports` says in
   `scanner/config/default.yaml`: ports no scan started from this config may
   touch.
 

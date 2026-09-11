@@ -655,6 +655,49 @@ def test_the_last_ladder_step_keeps_both_probe_ports_when_neither_is_avoided(
     assert _flag(command, "-pa") == "80,443"
 
 
+@pytest.mark.parametrize(
+    ("exclude_ports", "expected_tail"),
+    [
+        ([], ["-pe", "-pp", "-ps", "80,443", "-pa", "80,443"]),
+        ([443, 502], ["-pe", "-pp", "-ps", "80", "-pa", "80"]),
+        ([80, 443, 502], ["-pe", "-pp"]),
+    ],
+    ids=["avoid-list-takes-neither", "avoid-list-takes-one", "avoid-list-takes-both"],
+)
+def test_the_last_ladder_step_builds_a_command_naabu_will_start_on(
+    exclude_ports, expected_tail
+):
+    """The whole argv, pinned, for every shape the avoid-list can leave it in.
+
+    The looser assertions above check that the avoid-list reached the flags,
+    which it did — and the command still could not run. naabu v2.6.1 refuses
+    to start when probes are named without ``-wn``: ``ValidateOptions`` tests
+    ``options.hasProbes() && !options.WithHostDiscovery`` and does not accept
+    ``OnlyHostDiscovery`` (``-sn``) in its place, so the fix that spelled the
+    probes out turned every ``-sn`` step into "discovery probes were provided
+    but host discovery is disabled", exit 1 — the first E2E scan on a built
+    image, and nothing before it. Reading the source is what produced the bug,
+    so this pins the bytes instead; ``test_naabu_live.py`` runs them.
+    """
+    from scanner.pipeline.probe_ladder import build_naabu_sn_command
+
+    assert build_naabu_sn_command(
+        "targets.txt", rate=25, retries=1, exclude_ports=exclude_ports
+    ) == [
+        "naabu",
+        "-list",
+        "targets.txt",
+        "-sn",
+        "-wn",
+        "-silent",
+        "-rate",
+        "25",
+        "-retries",
+        "1",
+        *expected_tail,
+    ]
+
+
 def test_the_ladder_hands_the_last_step_the_avoid_list(tmp_path, monkeypatch):
     """Wiring, not intent — the half of the previous round's lesson that still
     applied: the step reads the list from what the ladder hands it, and a

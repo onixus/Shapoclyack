@@ -19,6 +19,63 @@ PROBE_METHODS = ("icmp", "tcp", "naabu")
 NAABU_SN_PROBE_PORTS: tuple[int, ...] = (80, 443)
 
 
+def sn_probe_ports(exclude_ports: list[int] | None = None) -> list[int]:
+    """:data:`NAABU_SN_PROBE_PORTS` minus the run's avoid-list."""
+    excluded = {int(port) for port in (exclude_ports or [])}
+    return [port for port in NAABU_SN_PROBE_PORTS if port not in excluded]
+
+
+def build_naabu_sn_command(
+    input_file: str | Path,
+    *,
+    rate: int,
+    retries: int,
+    exclude_ports: list[int] | None = None,
+) -> list[str]:
+    """Build the argv of the ``naabu -sn`` host-discovery step.
+
+    Split out of :func:`naabu_host_discovery` so the flag set has one source
+    of truth that a test — and the image smoke stage, which runs it against a
+    real binary — can read without a scan. The previous round of this fix was
+    reviewed by reading naabu's source and shipped a command that the binary
+    refuses to start on, which no amount of reading caught.
+
+    ``-wn`` is why. Spelling the probes out is only legal in naabu v2.6.1 when
+    ``WithHostDiscovery`` is set: ``ValidateOptions`` rejects
+    ``options.hasProbes() && !options.WithHostDiscovery`` outright ("discovery
+    probes were provided but host discovery is disabled", exit 1) and does
+    *not* accept ``OnlyHostDiscovery`` in its place, though
+    ``shouldDiscoverHosts()`` two files over takes either. So ``-sn`` alone is
+    fine and ``-sn -pe …`` is fatal. ``-wn`` alongside ``-sn`` changes nothing
+    else about the run — ``OnlyHostDiscovery`` still returns the discovery
+    results and skips the port scan (``runner.go``) — and the resulting command
+    finds the same hosts as bare ``-sn`` did.
+    """
+    probe_ports = sn_probe_ports(exclude_ports)
+    return [
+        "naabu",
+        "-list",
+        str(input_file),
+        "-sn",
+        # Not redundant with -sn. See the docstring: without it naabu refuses
+        # to start as soon as any probe flag is named.
+        "-wn",
+        "-silent",
+        "-rate",
+        str(rate),
+        "-retries",
+        str(max(1, retries)),
+        "-pe",
+        "-pp",
+        *(
+            ["-ps", ",".join(str(port) for port in probe_ports)]
+            + ["-pa", ",".join(str(port) for port in probe_ports)]
+            if probe_ports
+            else []
+        ),
+    ]
+
+
 def parse_naabu_host_lines(stdout: str) -> list[str]:
     """Extract unique hosts from naabu stdout (host-only or host:port lines)."""
     hosts: set[str] = set()
@@ -130,12 +187,14 @@ def naabu_host_discovery(
     avoided ports are dropped from the pair. With both gone the step still
     runs, on ICMP alone: losing the TCP half of host discovery is a few
     missed hosts, and sending the SYN is the thing the list forbids.
+
+    The command itself is :func:`build_naabu_sn_command`, which is also where
+    the ``-wn`` that has to travel with a spelled-out probe set is explained.
     """
     if not targets:
         return []
 
-    excluded = {int(p) for p in (exclude_ports or [])}
-    probe_ports = [port for port in NAABU_SN_PROBE_PORTS if port not in excluded]
+    probe_ports = sn_probe_ports(exclude_ports)
     if len(probe_ports) != len(NAABU_SN_PROBE_PORTS):
         logging.info(
             "naabu -sn batch %s: host-discovery TCP pings narrowed to %s by the avoid-list (#362)",
@@ -149,25 +208,9 @@ def naabu_host_discovery(
     write_lines(input_file, targets)
 
     result = run_command(
-        [
-            "naabu",
-            "-list",
-            str(input_file),
-            "-sn",
-            "-silent",
-            "-rate",
-            str(rate),
-            "-retries",
-            str(max(1, retries)),
-            "-pe",
-            "-pp",
-            *(
-                ["-ps", ",".join(str(port) for port in probe_ports)]
-                + ["-pa", ",".join(str(port) for port in probe_ports)]
-                if probe_ports
-                else []
-            ),
-        ],
+        build_naabu_sn_command(
+            input_file, rate=rate, retries=retries, exclude_ports=exclude_ports
+        ),
         timeout=timeout,
         retries=retries,
     )

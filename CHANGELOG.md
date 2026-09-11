@@ -24,7 +24,11 @@ All notable changes to Shapoclyack are documented in this file.
   alive hosts with no open ports (2500 and 1250 pps in the shipped config),
   the probe ladder's TCP step, nuclei's rate limit and concurrency, and
   naabu's own `-rate` when a batch is a single device, where the batch budget
-  and the per-host budget are the same number. `skip_service_probe` turns
+  and the per-host budget are the same number. The `-sn` step's probes are
+  spelled out with the avoided ports dropped, and carry `-wn` with them: naabu
+  2.6.1 rejects named probes unless host discovery is explicitly enabled, and
+  reads `-sn` as not enabling it, so the flag set without `-wn` exits 1 before
+  it sends anything. `skip_service_probe` turns
   nuclei off as well as NSE and pulse: it is the stage that sends HTTP
   payloads. Writing a policy also holds that tenant's still-**queued** jobs to
   the stricter of their frozen snapshot and the new document, and answers with
