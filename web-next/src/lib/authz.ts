@@ -29,6 +29,15 @@ export type Principal = Pick<Me, "role" | "tenant_role" | "permissions"> | null 
  *
  * `platform-admin` is here because `tenant_role` can carry it, not because it
  * is grantable on a membership.
+ *
+ * A copy, and deliberately so: `GET /api/rbac/roles` publishes `rank`, but it
+ * is gated on `tenant.member.read`, which only the tenant admin holds — the
+ * principals whose menu this decides cannot read the catalogue, so the console
+ * would need a built-in table regardless. What a copy must not do is drift, so
+ * `tests/test_api_rbac_permissions.py` reads this table out of this file and
+ * asserts it equals `BUILTIN_ROLES`: a ninth role added there and forgotten
+ * here would score the unknown-role 1 and hide every scanning page from it —
+ * this file's own defect, reopened by an addition.
  */
 const ROLE_RANK: Record<string, number> = {
   viewer: 1,

@@ -24,7 +24,7 @@ import { useJobs } from "@/hooks/use-jobs";
 import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
 import { useSystemStatus } from "@/hooks/use-system";
-import { holdsPermission, useAuthStore } from "@/lib/auth-store";
+import { useAuthStore } from "@/lib/auth-store";
 import { holdsGlobalRole } from "@/lib/authz";
 import { useT } from "@/lib/i18n";
 import { runDetailHref } from "@/lib/run-data";
@@ -178,13 +178,14 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
     }
   }, [searchParams, router, surface]);
 
-  // Reading this page is what the API gates on the operator rank *in the
-  // active tenant*, and `canOperate` above is the global role — the account a
-  // tenant made a `scan-operator` (#318) is a viewer globally, so gating on it
-  // alone hid the whole page from the one role docs/ui.md promises the Cancel
-  // button to. `scan.cancel` is the permission every role of that rank holds,
-  // so it is the closest thing the console has to the rank the API checks.
-  const canReadJobs = canOperate || holdsPermission(user, "scan.cancel");
+  // `canOperate` is the operator rank *in the active tenant* (#318), which is
+  // exactly what `GET /api/jobs` gates on, so it is the whole answer. It used
+  // to be the account's global role, which hid this page from the very role a
+  // tenant grants `scan-operator` for — globally a viewer — and the fix here
+  // was an extra `holdsPermission(user, "scan.cancel")` arm. That arm is now
+  // dead weight: every role holding `scan.cancel` is rank 2 or better and
+  // already passes, and a reader trusting its comment would add a third.
+  const canReadJobs = canOperate;
 
   const pagination = usePagination({ sort: "started_at", order: "desc" });
   const jobsQuery = useJobs(canReadJobs, pagination.params, surface ? { surface } : undefined);
