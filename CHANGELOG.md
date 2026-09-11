@@ -552,6 +552,52 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **An agent group is the same name on every path, and a reference to one
+  cannot be written against a group being deleted**
+  ([#361](https://github.com/onixus/Shapoclyack/issues/361)). Creating a group
+  normalised its name and reading it did not, so `POST {"name": "PCI"}` made
+  `pci` and `DELETE /api/agent-groups/PCI` answered `404` for a group that was
+  plainly there; the name is now normalised in one place, on every entry point,
+  and a name no group could have is `422` rather than `409`. Two simultaneous
+  creates of one name no longer end in a `500` — the loser of the unique index
+  is told the name is taken. And all four references to a group by name — a
+  scope entry (`PUT /api/tenants/{id}/scan-scope`), a job (`POST /api/jobs`), a
+  schedule (`POST /api/schedules`) and an agent's membership (`PUT
+  /api/agents/{id}/group`) — are now checked inside the transaction that writes
+  them, holding the group row, where each used to ask on a connection of its
+  own and write on another. A `DELETE /api/agent-groups/{name}` landing in that
+  window counted the references, saw none of the one being written, and took
+  the row: what was left was a scope entry, a queued job, a schedule or an
+  agent pointing at a group that is gone — a restriction no agent can satisfy,
+  whose scans queue and are never claimed, and, because the name is the
+  identifier, an agent that a later group of the same name silently adopts.
+  One of the two requests now sees the other's result: the reference is
+  refused with the group named (`422`), or the deletion is refused with the
+  reference counted (`409`). Should such a state exist from before, starting a
+  scan against it is refused with the group named instead of queueing a job
+  nobody can take.
+- **An agent's declared capabilities survive its own restart, and an agent that
+  says it has none is believed**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). `capabilities`
+  defaulted to `[]` on both `register` and `heartbeat` where the service reads
+  "said nothing" as `None`, so an agent that declares them only on the
+  heartbeat — the pre-#362 shape, and what a third-party build still does —
+  had them erased by re-registering and by every beat after it, and every claim
+  of a job carrying a scan policy was answered `426`. The field is now
+  three-valued in both schemas: omitted keeps the stored list, and a list —
+  the empty one included — replaces it. The empty list mattered in the other
+  direction: a worker rolled back to a build without `scan_policy` reports
+  honestly that it has none, and reading that as silence left the API handing
+  it policy-carrying jobs it scanned at whatever its local config said.
+- **A 426 on every poll is one journal line, not one per second — and not one
+  per process either**
+  ([#362](https://github.com/onixus/Shapoclyack/issues/362)). The agent logged
+  the refusal at ERROR on each claim, unlike the lifecycle refusal beside it.
+  That was tolerable while `426` meant "below the version floor" and rare; it
+  is the steady state of a mixed fleet once a tenant has a scan policy. Logged
+  on change, like the other two — and the remembered message is now cleared by
+  a successful claim, so a refusal that comes back after a day of ordinary work
+  is a second line rather than silence.
 - **The console asks one question about authority, and asks it about the
   tenant** ([#318](https://github.com/onixus/Shapoclyack/issues/318)). Every
   page gate compared against the account's *global* role from the JWT, while
